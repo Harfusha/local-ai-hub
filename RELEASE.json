@@ -1,0 +1,7 @@
+{
+  "name": "local-ai-hub",
+  "version": "1.5.0",
+  "release_date": "2026-08-29",
+  "status": "production-ready",
+  "focus": "Production hardening: bounded transport/scheduler/cache waits, completed real Ollama and CodeIndex runtime contracts, non-destructive SQLite contention handling, per-root Git concurrency, managed-process lifecycle safety, stronger agent stop/reuse rules, and cross-platform installer/CI coverage."
+}

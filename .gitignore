@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+tool-envs/
+
+# Runtime state and generated local configuration
+state/
+data/*.sqlite3
+data/*.sqlite3-*
+generated/*
+!generated/.gitkeep
+!data/.gitkeep
+
+# User configuration (keep config.toml.example in repo)
+config.toml
+config.toml.local-ai-hub-backup-*
+
+# Build / packaging artifacts
+dist/
+build/
+*.egg-info/
+*.whl
+.local-ai-hub.zip
+
+# Coverage
+.coverage
+htmlcov/
+
+# Logs / temporary files
+*.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
+
+# Local overrides / IDE
+config.runtime.toml
+.env
+.env.*
+.vscode/
+.idea/
+
+# Agent workspace state (internal, not for distribution)
+.superpowers/
+.serena/
+agy-contextless-workspace/

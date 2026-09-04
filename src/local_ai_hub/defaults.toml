@@ -1,0 +1,779 @@
+[server]
+bind = "127.0.0.1"
+client_host = "" # optional client-side override; wildcard binds automatically connect via loopback
+port = 11435
+ollama_url = "http://127.0.0.1:11434"
+auto_start_ollama = true
+state_dir = "~/.local-ai-hub/state"
+request_timeout_seconds = 210
+# Slow/broken clients cannot occupy a handler while dribbling a request body.
+request_body_timeout_seconds = 15
+# Bound handler threads independently from the model queue so overload fails fast.
+max_concurrent_requests = 64
+overload_wait_seconds = 0.05
+max_request_body_bytes = 16777216 # 16 MiB for JSON/API requests; bundle upload has its own limit
+
+[security]
+# Fail closed if the HTTP hub is exposed beyond loopback. Multi-tenancy is scheduling/fairness, not authentication.
+allow_remote = false
+api_token = "" # required (>=16 chars) when allow_remote=true and bind is non-loopback
+
+[hardware]
+# auto detects OS/architecture, RAM and NVIDIA/AMD/Intel/Apple graphics.
+# Explicit values: cpu, low, balanced, high, max. User overrides always win.
+profile = "auto"
+auto_tune = true
+
+[models]
+# These are the only model choices most users need to edit.
+background_code = "qwen2.5-coder:3b"
+fast_code = "qwen2.5-coder:7b"
+heavy_code = "qwen3.5:9b"
+reasoning = "qwen3.5:9b"
+general = "qwen2.5-coder:7b"
+embedding = "BAAI/bge-small-en-v1.5"
+embedding_backend = "sentence-transformers"
+embedding_device = "cpu"
+reranker = "BAAI/bge-reranker-v2-m3"
+reranker_device = "cpu"
+
+
+[model_execution.background]
+# Dedicated idle-only Ollama process. Hardware profiles adjust parallelism and
+# batch sizes before user overrides are applied. It never delays foreground work.
+context_tokens = 32768
+large_context_tokens = 32768
+max_context_tokens = 32768
+background_context_tokens = 32768
+parallel = 4
+max_prompt_tokens = 28672
+context_reserve_tokens = 2048
+thinking = false
+
+[model_execution.fast]
+# Fast coding tier. Hardware profiles reduce parallelism/context pressure on smaller hosts.
+context_tokens = 32768
+large_context_tokens = 32768
+max_context_tokens = 32768
+background_context_tokens = 16384
+parallel = 2
+max_prompt_tokens = 28000
+context_reserve_tokens = 2048
+thinking = false
+
+[model_execution.smart]
+# Smart tier. Keep one slot by default; explicit hardware/user configuration may override it.
+context_tokens = 49152
+large_context_tokens = 65536
+max_context_tokens = 65536
+background_context_tokens = 24576
+parallel = 1
+max_prompt_tokens = 56000
+context_reserve_tokens = 3072
+thinking = false
+thinking_roles = ["reasoning", "critic", "second-opinion"]
+
+[model_execution.generic]
+context_tokens = 32768
+large_context_tokens = 49152
+max_context_tokens = 65536
+background_context_tokens = 16384
+parallel = 1
+max_prompt_tokens = 28000
+context_reserve_tokens = 2048
+thinking = false
+
+[routing]
+heavy_min_score = 3
+# Reviews need stronger evidence before spending smart-tier latency.
+review_heavy_min_score = 5
+max_fast_context_chars = 90000
+# Reuse a compatible resident Qwen instead of swapping fast <-> smart unnecessarily.
+prefer_resident_model = true
+resident_fast_margin = 0
+# Keep the configured reasoning role authoritative. Resident fallback is opt-in.
+reasoning_resident_fallback = false
+
+[background_gpu]
+# Separate opportunistic Ollama server for semantic preprocessing. This is
+# intentionally not the foreground scheduler's server because NUM_PARALLEL is
+# process-global in Ollama. The foreground runner is unloaded before lease.
+enabled = true
+ollama_url = "http://127.0.0.1:11436"
+# Optional serial CPU lane used while the GPU worker is not eligible. It is a
+# separate Ollama process, so it cannot alter the foreground GPU profile.
+cpu_fallback_enabled = false
+cpu_ollama_url = "http://127.0.0.1:11439"
+cpu_context_tokens = 32768
+idle_seconds = 60.0
+parallel = 4
+max_queue = 32
+keep_alive = "10m"
+request_timeout_seconds = 90
+flash_attention = true
+kv_cache_type = "q8_0"
+gpu_overhead_bytes = 268435456
+max_cpu_offload_fraction = 0.12
+profile_retry_cooldown_seconds = 120.0
+file_batch_size = 4
+module_batch_size = 4
+
+[scheduler]
+# Balanced baseline; the hardware profile overlays this before explicit user values.
+max_parallel = 2
+max_loaded_models = 1
+max_queue = 256
+max_queued_per_tenant = 64
+max_inflight_per_tenant = 2
+affinity_batch_jobs = 0 # 0 = drain current-model queue first
+affinity_batch_seconds = 0 # 0 = no time-based switch while current-model jobs remain
+max_other_model_wait_seconds = 30 # anti-starvation safety valve; 0 disables it
+switch_cooldown_seconds = 1
+# A failed model load fails queued callers immediately and briefly opens a circuit breaker.
+model_switch_failure_cooldown_seconds = 20
+# Absolute ceiling for any scheduler caller, including accidental unbounded waits.
+max_caller_wait_timeout_seconds = 900
+
+[async_jobs]
+enabled = true
+max_pending = 64
+wait_max_seconds = 90
+lease_seconds = 900
+result_ttl_seconds = 259200
+max_attempts = 2
+
+[debug_traces]
+enabled = true
+terminal_ttl_seconds = 259200
+max_bytes = 268435456
+max_sessions = 1000
+max_events_per_session = 2000
+max_event_bytes = 65536
+max_session_text_bytes = 8388608
+cleanup_batch_size = 50
+max_list_limit = 100
+
+[ollama]
+num_parallel = 2
+flash_attention = true
+kv_cache_type = "q8_0"
+gpu_overhead_bytes = 268435456 # reserve 256 MiB so desktop VRAM pressure does not turn into an OOM
+keep_alive = "24h" # keep the active model resident until the scheduler intentionally switches it
+request_attempts = 2
+retry_delay_seconds = 0.6
+startup_timeout_seconds = 12
+
+[smart_ollama]
+# Disabled by default: the foreground Ollama process remains user-managed.
+enabled = false
+url = "http://127.0.0.1:11437"
+model = ""
+num_parallel = 1
+context_length = 32768
+flash_attention = true
+kv_cache_type = "q8_0"
+keep_alive = "10m"
+startup_timeout_seconds = 30
+handoff_timeout_seconds = 10
+retry_cooldown_seconds = 120
+
+[ollama_subagents]
+# Named local agents remain advisory-only; they use Hub read tooling and never mutate repositories.
+enabled = true
+default_profile = "qwen-explorer"
+language = "match_input"
+
+[ollama_subagents.profiles.qwen-explorer]
+model = "qwen2.5-coder:7b"
+role = "explorer"
+max_steps = 3
+max_tool_calls = 6
+max_tokens = 700
+temperature = 0.05
+
+[ollama_subagents.profiles.qwen-drafter]
+model = "qwen2.5-coder:7b"
+role = "drafter"
+max_steps = 3
+max_tool_calls = 6
+max_tokens = 1100
+temperature = 0.08
+
+[ollama_subagents.profiles.qwen-critic]
+model = "qwen2.5-coder:7b"
+role = "critic"
+max_steps = 3
+max_tool_calls = 6
+max_tokens = 800
+temperature = 0.03
+
+[token_saving]
+# The hub itself reads/searches repositories so broad source context never has to enter the cloud agent.
+default_repo_context_tokens = 3200
+max_diff_tokens = 8000
+max_local_input_tokens = 56000
+max_local_output_tokens = 2400
+compression_chunk_tokens = 4200
+# Blended cloud-equivalent rate used for transparent savings estimates in dashboard.
+cloud_token_cost_usd_per_million = 3.0
+# Large local responses are stored outside agent context and represented by a compact preview + artifact id.
+compact_responses = true
+max_inline_chars = 1800
+artifact_ttl_hours = 72
+
+[cpu_retrieval]
+foreground_priority = 3
+# Runs outside the GPU scheduler. These limits bound CPU/RAM contention while the
+# foreground model is active; both layers retain their own persistent caches.
+embedding_trust_remote_code = true
+embedding_max_seq_length = 8192
+embedding_batch_size = 16
+reranker_batch_size = 4
+reranker_max_length = 1024
+
+[cache]
+# Two-tier cache. L1 RAM avoids SQLite round-trips; L2 SQLite survives restarts and is shared by all agents.
+l1_generation_entries = 2048
+l1_generation_ttl_seconds = 3600
+l1_repo_entries = 2048
+l1_repo_ttl_seconds = 1800
+l1_embedding_entries = 16384
+l1_embedding_ttl_seconds = 7200
+l1_reranker_entries = 8192
+l1_reranker_ttl_seconds = 7200
+# Exact local generations are shared across agents. Concurrent duplicates become one single-flight request.
+generation = true
+generation_ttl_seconds = 604800 # 7 days
+generation_max_entries = 10000
+# Embedding/reranker caches are cross-workspace and persist across restarts.
+embeddings = true
+embedding_ttl_seconds = 2592000 # 30 days
+embedding_max_entries = 100000
+reranker = true
+reranker_ttl_seconds = 1209600 # 14 days
+reranker_max_entries = 100000
+
+[semantic_cache]
+# Conservative semantic reuse: only rephrased tasks with an identical context/model/system/options scope may reuse an answer.
+enabled = true
+threshold = 0.935
+ttl_seconds = 604800
+max_entries = 10000
+max_candidates = 128
+min_query_chars = 8
+l1_entries = 512
+l1_ttl_seconds = 1800
+
+[workspace_cache]
+# Repo-state fingerprints invalidate repo/search/context/command caches as soon as workspace content changes.
+fingerprint_ttl_seconds = 10.0
+fingerprint_l1_entries = 256
+# Foreground Git probes are deliberately bounded. Slow Git degrades to a short stale/metadata fingerprint instead of blocking requests.
+git_probe_timeout_seconds = 1.0
+git_status_timeout_seconds = 2.5
+slow_git_cooldown_seconds = 12.0
+max_changed_paths = 512
+max_untracked_walk_files = 2048
+degraded_fingerprint_max_files = 2048
+non_git_max_files = 12000 # recursive metadata fingerprint; correctness-safe cache invalidation outside Git
+repo_result_ttl_seconds = 604800
+repo_result_max_entries = 20000
+rag_search_ttl_seconds = 86400
+rag_search_max_entries = 10000
+
+[commands]
+# Shared safe CLI broker. Read/validation/build commands are repo-state cached and single-flight across agents.
+enabled = true
+allow_read = true
+allow_validation = true
+allow_build = true
+allow_mutating = false
+allow_unknown = false
+timeout_seconds = 900
+# Duplicate agents wait only this long for an identical owner; the owner continues
+# and the waiter receives an in-progress response instead of hanging for the full build.
+coalesced_wait_seconds = 90
+terminate_grace_seconds = 2
+post_kill_drain_seconds = 2
+success_ttl_seconds = 43200
+failure_ttl_seconds = 180
+max_entries = 5000
+max_failure_entries = 1000
+l1_entries = 128
+l1_ttl_seconds = 900
+max_output_chars = 2000000
+inline_output_chars = 5000
+environment_keys = ["CI", "NODE_ENV", "APP_ENV", "PYTHONPATH"]
+
+[prewarm]
+# Warm the cheap default coder once the hub starts. Scheduler still owns all later model switches.
+enabled = true
+startup_model = "fast_code"
+delay_seconds = 1.5
+
+[search]
+special_filenames = ["Dockerfile", "Containerfile", "docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml", "Makefile", "GNUmakefile", "justfile", "Gemfile", "Pipfile", ".env", ".env.example", ".env.sample", ".gitlab-ci.yml", ".gitlab-ci.yaml", "azure-pipelines.yml", "azure-pipelines.yaml"]
+prefer_git_files = true
+# Optional deterministic accelerator; absence of rg falls back to Python scanning.
+use_ripgrep_if_available = true
+use_git_grep_fallback = true # fast tracked-file search when rg is unavailable
+ripgrep_timeout_seconds = 8.0
+# Keep foreground Git helpers strictly bounded; slow repositories fall back to cached/Python paths.
+git_grep_timeout_seconds = 4.0
+git_files_timeout_seconds = 3.0
+git_files_cache_ttl_seconds = 3.0
+git_files_slow_cooldown_seconds = 15.0
+max_snippets_per_file = 3
+semantic_fraction = 0.35
+max_files = 8000
+max_hits = 80
+snippet_lines = 5
+context_top_k = 14
+
+[observability]
+# Raw per-request/per-inference events are short-lived; compact daily rollups survive longer.
+max_events = 100000
+raw_retention_days = 30
+rollup_retention_days = 365
+batch_size = 64
+flush_interval_seconds = 0.5
+queue_size = 10000
+snapshot_interval_seconds = 60
+# Avoid self-observation noise from cheap health/status/report polling.
+exclude_http_paths = ["/health", "/dashboard", "/favicon.ico", "/v1/status", "/v1/live", "/v1/live/status", "/v1/metrics", "/v1/telemetry/report", "/v1/audit/tail", "/v1/control"]
+
+[logging]
+# Operational rotating logs. Do not log prompts/source/model output.
+level = "INFO"
+max_bytes = 5000000
+backup_count = 5
+queue_size = 5000
+
+[tools]
+serena_package = "serena-agent==1.7.0"
+codegraph_package = "codegraphcontext[gcf]==0.6.8"
+
+[code_intelligence]
+# Serena and CodeGraphContext are managed behind the hub so agents see one compact MCP surface.
+enabled = true
+serena_enabled = true
+codegraph_enabled = true
+preprocess_serena = true
+preprocess_codegraph = true
+# Set explicit executable paths only when auto-discovery is insufficient.
+serena_command = ""
+codegraph_command = ""
+serena_context = "ide-assistant"
+codegraph_output_format = "gcf"
+startup_timeout_seconds = 45
+query_timeout_seconds = 20
+index_timeout_seconds = 900
+max_output_chars = 9000
+failure_threshold = 2
+cooldown_seconds = 60
+max_sessions_per_backend = 8
+session_idle_ttl_seconds = 900
+# Optional escape hatch: expose Serena/CodeGraph directly to cloud agents as extra MCP servers.
+# Default false saves tool-schema tokens and routes usage through Local AI Hub.
+direct_agent_mcp = false
+
+[bundles]
+# Portable project-index snapshots. Import validates format, row counts and archive size.
+max_bundle_bytes = 134217728 # 128 MiB compressed upload
+max_json_bytes = 268435456 # 256 MiB uncompressed bundle.json
+max_rows_per_table = 1000000
+
+[features]
+rag = true
+reranker = true
+install_local_nlp_dependencies = true
+pull_models_during_setup = true
+
+[rag]
+scope = "shared" # shared across agent processes; set to "tenant" for retrieval isolation
+chunk_chars = 4500
+chunk_overlap_chars = 450
+embedding_batch_size = 12
+rerank_candidates = 16
+max_file_bytes = 2000000
+extensions = [
+  ".txt", ".md", ".rst", ".py", ".php", ".js", ".jsx", ".ts", ".tsx",
+  ".java", ".cs", ".go", ".rs", ".cpp", ".c", ".h", ".hpp", ".rb",
+  ".kt", ".kts", ".swift", ".scala", ".sh", ".ps1", ".yaml", ".yml", ".toml",
+  ".json", ".xml", ".html", ".css", ".sql", ".tf", ".tfvars", ".proto",
+  ".ini", ".cfg", ".properties", ".gradle"
+]
+ignore_dirs = [
+  ".git", ".svn", ".hg", ".idea", ".vscode", ".venv", "venv", "node_modules",
+  "vendor", "dist", "build", "bin", "obj", "coverage", ".next", ".cache",
+  ".serena", ".codegraphcontext", ".local-ai-hub", "tool-envs", "site-packages", "__pycache__"
+]
+
+
+[mcp]
+# One compact public MCP surface; Serena/CodeGraph stay behind it by default.
+compact_max_text_chars = 1800
+compact_max_evidence = 10
+# MCP calls are intentionally bounded. Preprocessing is asynchronous, so no normal
+# foreground tool should need an unbounded multi-hour socket wait.
+quick_timeout_seconds = 60
+context_timeout_seconds = 240
+model_timeout_seconds = 600
+long_timeout_seconds = 900
+host_tool_timeout_seconds = 900
+
+[workflow]
+direct_repo_context_tokens = 3000
+# Deterministic policy hints used by the compact task/repo tools.
+fast_repo_context_tokens = 8000
+heavy_repo_context_tokens = 16000
+impact_max_symbols = 48
+impact_max_dependents = 30
+
+[agents]
+agent_skills_standard = true
+codex = true
+claude = true
+gemini = true
+# Major MCP-native desktop/IDE agents. Setup preserves unrelated user configuration.
+cursor = true
+windsurf = true
+copilot = true
+# Additional MCP hosts can be wired explicitly without changing setup.py.
+# mcpServers-style JSON (Claude/Cursor/Gemini-compatible container):
+extra_mcp_json_paths = []
+# VS Code/Copilot `servers`-style JSON:
+extra_vscode_mcp_paths = []
+
+[setup]
+install_dir = "~/.local-ai-hub"
+backup_existing_configs = true
+install_agent_configs = true
+install_service = true
+install_optional_tools = true
+
+# ---------------- local-first orchestration ----------------
+[lossless_router]
+# Inspired by token-router: the local model chooses coordinates; the cloud receives
+# exact original lines, never a locally rewritten version of the evidence.
+enabled = true
+threshold_tokens = 1400
+max_ranges = 8
+context_lines = 4
+selector_output_tokens = 450
+# Skip the selector model when lexical/error/symbol scoring is already decisive.
+deterministic_skip_score = 4.5
+deterministic_skip_min_terms = 1
+max_scan_lines = 12000
+max_selector_chars = 100000
+max_output_lines = 140
+ttl_seconds = 604800
+max_entries = 10000
+l1_entries = 256
+l1_ttl_seconds = 1800
+
+[local_pipeline]
+# fast = explorer only; adaptive = worker/critic only when justified; quality = all stages.
+enabled = true
+default_mode = "adaptive"
+worker_min_complexity_score = 2
+critic_min_risk_score = 4
+explorer_skip_worker_confidence = 0.84
+direct_smart_enabled = true
+direct_smart_complexity_score = 4
+direct_smart_risk_score = 4
+explorer_max_tokens = 650
+worker_max_tokens = 1300
+critic_max_tokens = 750
+canonical_max_chars = 6000
+# Foreground execution uses one fast-tier pass, then escalates to the smart tier only when justified.
+same_model_worker_passes = 1
+second_pass_min_complexity_score = 2
+ttl_seconds = 604800
+max_entries = 12000
+l1_entries = 256
+l1_ttl_seconds = 1800
+
+[resilience]
+watchdog_enabled = true
+watchdog_interval_seconds = 5
+journal_stale_seconds = 900
+circuit_failure_threshold = 3
+circuit_cooldown_seconds = 20
+scheduler_wait_timeout_seconds = 225
+singleflight_wait_timeout_seconds = 45
+model_fallback_enabled = true
+max_model_fallbacks = 2
+serve_stale_on_error = true
+stale_generation_ttl_seconds = 2592000
+stale_generation_max_entries = 10000
+
+# Agent-specific projections happen after canonical local work, so they do not
+# fragment the expensive Ollama cache.
+[agent_output.codex]
+max_text = 1150
+max_evidence = 7
+raw_evidence = 1
+risks = "critical"
+relationships = false
+commands = true
+
+[agent_output.claude]
+max_text = 1700
+max_evidence = 10
+raw_evidence = 3
+risks = "all"
+relationships = true
+commands = true
+
+[agent_output.gemini]
+max_text = 1450
+max_evidence = 9
+raw_evidence = 3
+risks = "important"
+relationships = true
+commands = true
+
+[agent_output.cursor]
+max_text = 1250
+max_evidence = 8
+raw_evidence = 2
+risks = "important"
+relationships = true
+commands = true
+
+[agent_output.windsurf]
+max_text = 1250
+max_evidence = 8
+raw_evidence = 2
+risks = "important"
+relationships = true
+commands = true
+
+[agent_output.copilot]
+max_text = 1100
+max_evidence = 7
+raw_evidence = 2
+risks = "important"
+relationships = false
+commands = true
+
+[agent_output.generic]
+max_text = 1500
+max_evidence = 8
+raw_evidence = 2
+risks = "important"
+relationships = false
+commands = true
+
+[snapshot_cache]
+# Reuses decoded/hash file snapshots across different lexical queries in one hub process.
+max_entries = 4096
+max_bytes = 268435456
+# Bound coalesced waiters so a dead owner never stalls every agent indefinitely.
+# This is intentionally longer than normal model inference but still finite.
+# Can be overridden under [resilience].
+
+# ---------------- Idle project preprocessing ----------------
+[preprocessing]
+# Opportunistic whole-project warmup. Every expensive unit is a low-priority,
+# checkpointed micro-job and yields as soon as foreground work appears.
+enabled = true
+idle_grace_seconds = 0.0
+model_switch_idle_seconds = 60.0
+cpu_runs_during_foreground = false
+poll_seconds = 0.75
+# Watch registrations are reconciled independently from project scan cadence.
+watcher_refresh_seconds = 3.0
+auto_recheck_seconds = 1800
+# Background work is globally pausable; only this many projects preprocess simultaneously.
+max_preprocessing_projects = 3
+cpu_workers = 4
+touch_debounce_seconds = 15
+sqlite_busy_timeout_seconds = 0.5
+sqlite_write_retries = 6
+lookup_l1_ttl_seconds = 30
+reject_temp_projects = true
+require_project_markers = false
+ignore_internal_install = true
+major_change_ratio = 0.15
+major_change_files = 60
+major_change_ratio_min_files = 12
+hash_files_per_step = 256
+rag_files_per_step = 16
+# Skip embeddings for declarative files fully represented by deterministic parsers.
+skip_rag_for_deterministic_declarative = true
+compact_lexical_for_deterministic_declarative = true
+deterministic_lexical_max_chars = 12000
+db_maintenance_interval_seconds = 1800
+lexical_files_per_step = 128
+code_index_files_per_step = 256
+deterministic_files_per_step = 256
+# Most simple/source/test/config cards are built from parsers instead of Ollama.
+prefer_deterministic_cards = true
+# Aggregate deterministic file cards into module/project cards before considering Ollama enrichment.
+prefer_deterministic_modules = true
+deterministic_module_confidence = 0.84
+prefer_deterministic_project = true
+deterministic_project_confidence = 0.84
+deterministic_hot_query_confidence = 0.94
+learned_hot_queries = 12
+file_card_max_bytes = 180000
+file_card_max_lines = 900
+file_card_max_chars = 18000
+file_card_output_tokens = 320
+module_max_files = 80
+module_output_tokens = 420
+project_output_tokens = 650
+preprocess_symbol_sample = 300
+hot_query_top_k = 8
+hot_context_tokens = 1800
+lookup_file_cards = 5
+lookup_candidate_cards = 120
+background_request_timeout_seconds = 90
+background_scheduler_timeout_seconds = 75
+max_error_backoff_seconds = 300
+hot_queries = [
+  "architecture entry points main components dependencies",
+  "tests build lint static analysis validation commands",
+  "configuration startup environment dependency injection",
+  "API routes controllers handlers public interfaces",
+  "database persistence models repositories migrations data flow",
+  "authentication authorization security permissions secrets",
+  "errors exceptions retry recovery resilience logging",
+  "concurrency queues workers background jobs scheduling locking"
+]
+
+[local_tools]
+# Read-only tools exposed to Ollama explorer/worker loops. Calls reuse the same
+# project snapshots, RAG, reranker and preprocessing caches as cloud-facing MCP.
+enabled = true
+max_steps = 3
+max_tool_calls = 6
+bootstrap_deterministic_tools = true
+auto_register_project = false
+max_tool_result_chars = 4800
+preprocessed_context_chars = 2800
+semantic_bypass_confidence = 0.94 # local tools cannot waste RAG when exact deterministic facts suffice
+direct_synthesis_confidence = 0.90 # high-confidence warm evidence skips tool-schema round trips
+
+# ---------------- Adaptive execution / deterministic intelligence ----------------
+[code_index]
+enabled = true
+# Built-in Python AST + conservative generic symbol/call/import extractor. No external parser is required.
+max_query_results = 30
+# Content-addressed parser cache is shared across paths/worktrees.
+parse_blob_max_entries = 100000
+
+[evidence]
+# Immutable exact source slices are addressed by compact IDs and fetched lazily.
+max_entries = 100000
+
+[execution_planner]
+enabled = true
+direct_confidence = 0.93
+worker_below_confidence = 0.78
+critic_below_confidence = 0.68
+critic_risk_score = 4
+graph_weight = 0.65
+evidence_weight_per_item = 0.045
+max_evidence_confidence = 0.35
+
+[learning]
+# Stores only short task/query metadata, never source contents or conversations.
+enabled = true
+max_queries_per_project = 64
+max_query_chars = 240
+learned_hot_queries = 12
+
+[autotune]
+enabled = true
+ema_alpha = 0.20
+min_samples = 2
+resident_latency_ratio = 1.15
+
+# ---------------- Deterministic-first execution ----------------
+[deterministic]
+# Use scripts/parsers/caches before embeddings or any local LLM whenever possible.
+enabled = true
+direct_confidence = 0.94
+max_query_results = 30
+max_evidence = 12
+max_manifest_bytes = 4000000
+# Deterministic resolver results are revision-aware. A source/manifest update bumps the project generation.
+query_cache_l1_entries = 512
+query_cache_l1_ttl_seconds = 300
+query_cache_l2_ttl_seconds = 86400
+query_cache_l2_max_entries_per_root = 4000
+# Reuse deterministic AST/regex/manifest extraction across moved/copied files and worktrees.
+fact_blob_max_entries = 100000
+manifest_blob_max_entries = 20000
+compression = true
+compression_confidence = 0.88
+# When parser/index facts reach this confidence, skip semantic retrieval and seed local models directly.
+context_confidence = 0.80
+context_max_chars = 5200
+context_raw_evidence = 5
+
+[client]
+# MCP/CLI cold-start budgets. Stale startup locks are discarded immediately when their PID is gone.
+health_timeout_seconds = 0.75
+startup_wait_seconds = 15.0
+startup_poll_seconds = 0.15
+start_lock_stale_seconds = 20.0
+# Hard client-side ceiling even if an MCP wrapper accidentally requests a larger wait.
+max_request_timeout_seconds = 900.0
+
+[headless]
+enabled = true
+install_service = true
+manage_ollama = true
+health_check_interval_seconds = 2.0
+health_probe_timeout_seconds = 2.0
+unhealthy_grace_seconds = 15.0
+startup_grace_seconds = 180.0
+restart_backoff_initial_seconds = 1.0
+restart_backoff_max_seconds = 30.0
+rapid_crash_window_seconds = 60
+rapid_crash_limit = 8
+rapid_crash_cooldown_seconds = 60
+max_sessions_per_backend = 8
+session_idle_ttl_seconds = 900
+# A manual stop writes a disabled marker. MCP clients must not resurrect the service until start/install removes it.
+respect_disabled_marker = true
+stop_managed_ollama_on_stop = true
+
+[monitoring]
+dashboard_enabled = true
+live_event_buffer = 2500
+live_max_batch = 200
+
+[tool_policy]
+install_global_instructions = true
+
+[diagnostics]
+max_fast_cpu_offload_fraction = 0.08
+max_smart_cpu_offload_fraction = 0.20
+warn_if_external_ollama_profile_unknown = true
+
+[normalization]
+enabled = true
+strip_boundary_punctuation = true
+normalize_unicode = true
+normalize_paths = true
+split_code_identifiers = true
+custom_stop_words = []
+
+[postprocessing]
+enabled = true
+extract_thinking_tags = true
+strip_conversational_preamble = true
+repair_markdown_fences = true
+normalize_diffs = true
+
+[agent_state]
+enabled = false
+event_retention_days = 30
+max_payload_bytes = 65536
+snapshot_interval_events = 50
+cleanup_batch_size = 100

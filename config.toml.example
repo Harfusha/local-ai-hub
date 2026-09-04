@@ -1,0 +1,44 @@
+# Local AI Hub — example user configuration.
+# Copy this file to config.toml and adjust for your machine.
+# Full reference with all defaults: defaults.toml
+
+[hardware]
+# "auto" detects OS/CPU/RAM/GPU and selects a profile automatically.
+# Profiles: cpu | low | balanced | high | max
+profile = "auto"
+auto_tune = true
+
+[models]
+# Local Ollama models. Run ollama list to see available models.
+# fast_code = "qwen2.5-coder:7b"
+# heavy_code = "qwen2.5-coder:14b"
+# reasoning = "qwen2.5-coder:14b"
+# background_code = "qwen2.5-coder:3b"
+
+[code_intelligence]
+# Enable Serena (semantic symbols) and CodeGraphContext (call/dependency graphs).
+enabled = true
+serena_enabled = true
+codegraph_enabled = true
+# direct_agent_mcp = false
+
+[agents]
+# Enable MCP config injection for supported agents.
+codex = true
+claude = true
+gemini = true
+# cursor = true
+# windsurf = true
+# vscode = true
+
+[security]
+# Keep the hub bound to loopback unless you explicitly need remote access.
+allow_remote = false
+# api_token = "change-me-to-a-strong-random-token"   # required if allow_remote = true
+
+[commands]
+# Allow only read/validate commands by default.
+allow_mutating = false
+allow_unknown = false
+
+# See defaults.toml for the complete list of options.
