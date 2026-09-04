@@ -146,6 +146,7 @@ class LocalAIApp:
         self.services.set_commands(self.commands)
         self.services.set_task_store(self.agent_tasks)
         self.services.set_verification_store(self.agent_verification)
+        self.services.set_incident_store(self.agent_incidents)
         self.rag = RAGStore(self.config, self.services, self.reranker)
         self.services.set_rag(self.rag)
         self.preprocessor = ProjectPreprocessor(self.config, self.services, self.rag, self.scheduler, self.runtime, self.repo_tools, self.code_index, self.learner, self.deterministic, telemetry=self.telemetry, background_gpu=self.background_gpu, external_tools=self.external_tools)
@@ -317,13 +318,10 @@ class LocalAIApp:
             ollama = headless.get("ollama_online") if headless.get("supervisor") else None
             scheduler = self.scheduler.status()
             prep_stats = self.preprocessor.stats()
-            if not light:
-                try:
-                    prep_status = self.preprocessor.status()
-                except Exception:
-                    prep_status = {"success": False, "projects": []}
-            else:
-                prep_status = {"success": True, "projects": []}
+            try:
+                prep_status = self.preprocessor.status()
+            except Exception:
+                prep_status = {"success": False, "projects": []}
             projects = []
             for item in prep_status.get("projects", []) if isinstance(prep_status, dict) else []:
                 row = dict(item)

@@ -411,8 +411,8 @@ class HubClient:
                 "action": sub_act,
                 **kwargs,
             })
-        if act == "claim":
-            return self.post("/v1/leases/claim", {
+        if act in ("claim", "claim_batch"):
+            return self.post("/v1/leases/claim_batch", {
                 "root": kwargs.get("root", "."),
                 "paths": kwargs.get("paths") or [],
                 "ttl_seconds": kwargs.get("ttl_seconds", 900),

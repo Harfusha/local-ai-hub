@@ -48,6 +48,7 @@ class ToolOutcome:
     cancelled: bool = False
     timed_out: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+    affected_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,7 @@ class IncidentRecord:
     created_at: float = 0.0
     updated_at: float = 0.0
     expires_at: float | None = None
+    affected_paths: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -85,6 +87,7 @@ class IncidentRecord:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "expires_at": self.expires_at,
+            "affected_paths": list(self.affected_paths),
         }
 
 
@@ -209,10 +212,15 @@ class IncidentStore:
                     resolved INTEGER NOT NULL,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
-                    expires_at REAL
+                    expires_at REAL,
+                    affected_paths TEXT NOT NULL DEFAULT '[]'
                 );
                 """
             )
+            try:
+                con.execute("ALTER TABLE agent_incidents ADD COLUMN affected_paths TEXT NOT NULL DEFAULT '[]'")
+            except Exception:
+                pass
             con.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_agent_incidents_fp
@@ -249,13 +257,23 @@ class IncidentStore:
         eff_fix = meta_fix or auto_fix or None
         eff_conf = max(meta_conf, auto_conf)
 
+        # Extract affected paths from outcome or heuristically from error/command
+        paths: set[str] = set(outcome.affected_paths)
+        if not paths and outcome.metadata.get("affected_paths"):
+            for p in outcome.metadata["affected_paths"]:
+                paths.add(str(p))
+        if not paths:
+            found = re.findall(r"[\w\./\\-]+\.(?:py|js|ts|tsx|jsx|rs|go|c|cpp|h|cs|php|java|rb|json|toml|yaml|yml)", outcome.error + " " + outcome.command)
+            paths.update(p.replace("\\", "/").strip("./") for p in found if not p.startswith("http"))
+        affected = tuple(sorted(paths))
+
         now = time.time()
         self._init_table()
         con = connect_sqlite(self.state_store.db_path)
         try:
             row = con.execute(
                 """
-                SELECT incident_id, attempts, root_cause, verified_fix, confidence FROM agent_incidents
+                SELECT incident_id, attempts, root_cause, verified_fix, confidence, affected_paths FROM agent_incidents
                 WHERE operation_class = ? AND signature_hash = ? AND state_revision = ?
                 """,
                 (op_class, sig_hash, outcome.state_revision),
@@ -265,6 +283,7 @@ class IncidentStore:
 
         if row:
             inc_id, attempts, old_rc, old_fix, old_conf = row[0], row[1], row[2], row[3], row[4]
+            old_aff = tuple(json.loads(row[5]) if len(row) > 5 and row[5] else ())
             new_attempts = attempts + 1
             updated = IncidentRecord(
                 incident_id=inc_id,
@@ -280,6 +299,7 @@ class IncidentStore:
                 confidence=max(eff_conf, float(old_conf or 0.0)),
                 created_at=now,
                 updated_at=now,
+                affected_paths=affected or old_aff,
             )
             self._save_record(updated)
             return updated
@@ -299,6 +319,7 @@ class IncidentStore:
             confidence=eff_conf,
             created_at=now,
             updated_at=now,
+            affected_paths=affected,
         )
 
         event = AgentEvent.create(
@@ -340,6 +361,7 @@ class IncidentStore:
             created_at=record.created_at,
             updated_at=time.time(),
             expires_at=record.expires_at,
+            affected_paths=record.affected_paths,
         )
 
         event = AgentEvent.create(
@@ -415,7 +437,7 @@ class IncidentStore:
                 """
                 SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
                        state_revision, attempts, evidence_ids, root_cause, verified_fix,
-                       confidence, resolved, created_at, updated_at, expires_at
+                       confidence, resolved, created_at, updated_at, expires_at, affected_paths
                 FROM agent_incidents
                 WHERE incident_id = ?
                 """,
@@ -433,7 +455,7 @@ class IncidentStore:
         self._init_table()
         con = connect_sqlite(self.state_store.db_path)
         try:
-            query = "SELECT incident_id, operation_class, error_class, signature_hash, redacted_message, state_revision, attempts, evidence_ids, root_cause, verified_fix, confidence, resolved, created_at, updated_at, expires_at FROM agent_incidents"
+            query = "SELECT incident_id, operation_class, error_class, signature_hash, redacted_message, state_revision, attempts, evidence_ids, root_cause, verified_fix, confidence, resolved, created_at, updated_at, expires_at, affected_paths FROM agent_incidents"
             params: list[Any] = []
             if resolved is not None:
                 query += " WHERE resolved = ?"
@@ -460,8 +482,8 @@ class IncidentStore:
                         incident_id, operation_class, error_class, signature_hash,
                         redacted_message, state_revision, attempts, evidence_ids,
                         root_cause, verified_fix, confidence, resolved,
-                        created_at, updated_at, expires_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        created_at, updated_at, expires_at, affected_paths
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(incident_id) DO UPDATE SET
                         attempts = excluded.attempts,
                         root_cause = excluded.root_cause,
@@ -469,7 +491,8 @@ class IncidentStore:
                         confidence = excluded.confidence,
                         resolved = excluded.resolved,
                         updated_at = excluded.updated_at,
-                        expires_at = excluded.expires_at
+                        expires_at = excluded.expires_at,
+                        affected_paths = excluded.affected_paths
                     """,
                     (
                         record.incident_id,
@@ -487,6 +510,7 @@ class IncidentStore:
                         record.created_at,
                         record.updated_at,
                         record.expires_at,
+                        json.dumps(list(record.affected_paths)),
                     ),
                 )
                 con.execute("COMMIT")
@@ -518,7 +542,9 @@ class IncidentStore:
             created_at,
             updated_at,
             expires_at,
-        ) = row
+        ) = row[:15]
+        affected_paths_raw = row[15] if len(row) > 15 else "[]"
+        aff_paths = tuple(json.loads(affected_paths_raw) if affected_paths_raw else ())
         fp = IncidentFingerprint(
             error_class=error_class,
             operation_class=operation_class,
@@ -540,7 +566,61 @@ class IncidentStore:
             created_at=float(created_at),
             updated_at=float(updated_at),
             expires_at=float(expires_at) if expires_at is not None else None,
+            affected_paths=aff_paths,
         )
+
+    def find_regressions(self, paths: Collection[str]) -> list[dict[str, Any]]:
+        if not self.state_store.enabled or not self.state_store.db_path.exists() or not paths:
+            return []
+        self._init_table()
+        norm_targets = [p.replace("\\", "/").strip("/").lower() for p in paths if p]
+        if not norm_targets:
+            return []
+        con = connect_sqlite(self.state_store.db_path)
+        try:
+            cur = con.execute(
+                """
+                SELECT incident_id, operation_class, error_class, redacted_message,
+                       state_revision, root_cause, verified_fix, confidence, attempts, affected_paths, updated_at
+                FROM agent_incidents
+                WHERE verified_fix IS NOT NULL AND confidence >= 0.6
+                ORDER BY updated_at DESC
+                """
+            )
+            regressions: list[dict[str, Any]] = []
+            for row in cur.fetchall():
+                inc_id, op, err_cls, msg, rev, rc, fix, conf, attempts, aff_raw, updated_at = row
+                aff_paths = json.loads(aff_raw) if aff_raw else []
+                matched = False
+                for p in aff_paths:
+                    norm_p = str(p).replace("\\", "/").strip("/").lower()
+                    for target in norm_targets:
+                        if (
+                            norm_p == target
+                            or norm_p.endswith("/" + target)
+                            or target.endswith("/" + norm_p)
+                            or (norm_p.split("/")[-1] == target.split("/")[-1] and len(target.split("/")[-1]) > 3)
+                        ):
+                            matched = True
+                            break
+                    if matched:
+                        break
+                if matched:
+                    regressions.append({
+                        "incident_id": inc_id,
+                        "error_class": err_cls,
+                        "operation_class": op,
+                        "redacted_message": msg,
+                        "root_cause": rc or "",
+                        "verified_fix": fix or "",
+                        "confidence": float(conf or 0.0),
+                        "affected_paths": aff_paths,
+                        "attempts": int(attempts or 1),
+                        "updated_at": float(updated_at or 0.0),
+                    })
+            return regressions
+        finally:
+            con.close()
 
     def find_negative_knowledge(self, query: str = "", limit: int = 20) -> list[dict[str, Any]]:
         if not self.state_store.enabled or not self.state_store.db_path.exists():

@@ -553,6 +553,7 @@ class CommandBroker:
             self._active_cancel_keys[key] = (self._cancel_key(command, cwd), str(tenant)[:80])
         try:
             result = self._execute(command, cwd, int(timeout or self.timeout), cancel_event)
+            diag_paths = [d["path"] for d in result.get("diagnostics", []) if d.get("path")]
             if not result.get("success") and not result.get("cancelled") and self.incident_store is not None:
                 try:
                     from .agent_incidents import ToolOutcome
@@ -564,6 +565,7 @@ class CommandBroker:
                         state_revision=str(state.get("fingerprint", "")),
                         timed_out=bool(result.get("timed_out")),
                         cancelled=bool(result.get("cancelled")),
+                        affected_paths=tuple(set(diag_paths)),
                     ))
                     if inc and (inc.root_cause or inc.verified_fix):
                         result["remediation"] = {
@@ -575,6 +577,19 @@ class CommandBroker:
                         }
                 except Exception:
                     pass
+
+            if self.incident_store is not None:
+                try:
+                    target_paths = set(diag_paths)
+                    for cp in state.get("changed_paths", []):
+                        target_paths.add(str(cp))
+                    if target_paths:
+                        regs = self.incident_store.find_regressions(list(target_paths))
+                        if regs:
+                            result["regression_warnings"] = regs
+                except Exception:
+                    pass
+
             raw = dict(result)
             if classification["cacheable"] and not result.get("cancelled"):
                 (self.success_cache if result.get("success") else self.failure_cache).set(key, raw)

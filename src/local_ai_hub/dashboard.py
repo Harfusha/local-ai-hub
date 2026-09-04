@@ -279,6 +279,7 @@ tbody tr.click:hover{background:#162338}
       <button class="subtab-btn" id="subtabIncidents" data-agentos-tab="incidents">Negative Knowledge &amp; Incidents</button>
       <button class="subtab-btn" id="subtabVerification" data-agentos-tab="verification">Verification Receipts</button>
       <button class="subtab-btn" id="subtabContext" data-agentos-tab="context">Context Playground</button>
+      <button class="subtab-btn" id="subtabLiveStream" data-agentos-tab="liveStream">Live Stream 🔴</button>
     </div>
   </section>
 
@@ -337,6 +338,36 @@ tbody tr.click:hover{background:#162338}
         <button class="btn ok" id="agentOsCtxCompileBtn">Compile Context</button>
       </div>
       <pre id="agentOsCtxOut" style="margin:0;padding:12px;background:#0d1219;color:#c9d6e4;font-size:11px;max-height:450px;overflow:auto;display:none;border-top:1px solid #1e293b"></pre>
+    </section>
+  </div>
+  <div id="agentOsLiveStreamSec" style="display:none">
+    <section class="section">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span class="badge-status badge-waiting" id="sseStreamBadge">Connecting…</span>
+          <span class="tiny muted" id="sseStreamStats">0 events received</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="sseKindFilter" style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:4px;padding:4px 8px;font-size:11px">
+            <option value="">All event kinds</option>
+            <option value="task.">Tasks (task.*)</option>
+            <option value="memory.">Memory (memory.*)</option>
+            <option value="incident.">Incidents (incident.*)</option>
+            <option value="verification.">Verification (verification.*)</option>
+            <option value="policy.">Policy (policy.*)</option>
+          </select>
+          <button class="btn" id="sseReconnectBtn" style="padding:4px 8px;font-size:11px">Reconnect</button>
+          <button class="btn warn" id="sseClearBtn" style="padding:4px 8px;font-size:11px">Clear Feed</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Seq</th><th>Time</th><th>Stream ID</th><th>Kind</th><th>Actor</th><th>Payload / Details</th></tr>
+          </thead>
+          <tbody id="agentOsLiveStreamBody"></tbody>
+        </table>
+      </div>
     </section>
   </div>
 </div>
@@ -1497,14 +1528,87 @@ async function loadAgentOsView(){
   }catch(e){console.warn('Agent OS view load error', e)}
 }
 
+let sseSource=null, sseEvents=[], sseEventCount=0, sseDebounceTimer=null;
+
+function connectAgentOsStream(){
+  if(sseSource){
+    try{ sseSource.close(); }catch(e){}
+    sseSource=null;
+  }
+  const badge=$('sseStreamBadge');
+  if(badge){ badge.className='badge-status badge-waiting'; badge.textContent='Connecting…'; }
+  const token=localStorage.getItem('apiToken')||'';
+  const url='/v1/agent-state/events/stream'+(token?'?token='+encodeURIComponent(token):'');
+  try{
+    sseSource=new EventSource(url);
+    sseSource.onopen=()=>{
+      if(badge){ badge.className='badge-status badge-complete'; badge.textContent='🟢 Live Stream Connected'; }
+    };
+    sseSource.onerror=()=>{
+      if(badge){ badge.className='badge-status badge-error'; badge.textContent='🔴 Disconnected (Retrying…)'; }
+    };
+    sseSource.onmessage=(e)=>{
+      try{
+        const data=JSON.parse(e.data);
+        handleAgentOsStreamEvent(data);
+      }catch(err){}
+    };
+  }catch(e){
+    if(badge){ badge.className='badge-status badge-error'; badge.textContent='Error: '+e.message; }
+  }
+}
+
+function handleAgentOsStreamEvent(ev){
+  sseEventCount++;
+  sseEvents.unshift(ev);
+  if(sseEvents.length>200) sseEvents.pop();
+  if($('sseStreamStats')) $('sseStreamStats').textContent=`${sseEventCount} events received`;
+  renderLiveStreamTable();
+
+  // Debounced auto-refresh of background tables when state changes
+  clearTimeout(sseDebounceTimer);
+  sseDebounceTimer=setTimeout(()=>{
+    loadAgentOsView();
+  }, 1200);
+}
+
+function renderLiveStreamTable(){
+  const filter=String($('sseKindFilter')?.value||'').trim();
+  const filtered=filter?sseEvents.filter(e=>String(e.kind||'').startsWith(filter)):sseEvents;
+  rows('agentOsLiveStreamBody', filtered, ev=>{
+    const seq=esc(ev.seq!==undefined?ev.seq:'—');
+    const dt=ev.timestamp?new Date(ev.timestamp*1000).toLocaleTimeString():'—';
+    const stream=esc(ev.stream_id||'—');
+    const kind=esc(ev.kind||'unknown');
+    const actor=esc(ev.actor||'system');
+    let payloadStr=typeof ev.payload==='object'?JSON.stringify(ev.payload):String(ev.payload||'');
+    if(payloadStr.length>85) payloadStr=payloadStr.slice(0,82)+'...';
+    let kindBadge='badge-waiting';
+    if(kind.startsWith('task.')) kindBadge='badge-running';
+    else if(kind.startsWith('verification.')) kindBadge='badge-complete';
+    else if(kind.startsWith('incident.')) kindBadge='badge-error';
+    return clickableRow(ev, `<td><strong>${seq}</strong></td><td class="tiny">${dt}</td><td class="tiny mono">${stream}</td><td><span class="badge-status ${kindBadge}">${kind}</span></td><td class="tiny">${actor}</td><td class="tiny mono" title="${esc(typeof ev.payload==='object'?JSON.stringify(ev.payload,null,2):payloadStr)}">${esc(payloadStr)}</td>`);
+  }, 6);
+}
+
+$('sseReconnectBtn')?.addEventListener('click', connectAgentOsStream);
+$('sseClearBtn')?.addEventListener('click', () => {
+  sseEvents = [];
+  renderLiveStreamTable();
+});
+$('sseKindFilter')?.addEventListener('change', renderLiveStreamTable);
+
 function switchAgentOsSubtab(tabKey){
-  const subtabs=['tasks','memory','incidents','verification','context'];
+  const subtabs=['tasks','memory','incidents','verification','context','liveStream'];
   subtabs.forEach(t=>{
     const btn=$('subtab'+t.charAt(0).toUpperCase()+t.slice(1));
     const sec=$('agentOs'+t.charAt(0).toUpperCase()+t.slice(1)+'Sec');
     if(btn)btn.classList.toggle('active',t===tabKey);
     if(sec)sec.style.display=t===tabKey?'block':'none';
   });
+  if(tabKey==='liveStream' && !sseSource){
+    connectAgentOsStream();
+  }
 }
 document.querySelectorAll('.subtab-btn[data-agentos-tab]').forEach(btn=>{
   btn.addEventListener('click',()=>switchAgentOsSubtab(btn.dataset.agentosTab));

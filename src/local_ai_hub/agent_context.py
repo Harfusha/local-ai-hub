@@ -48,6 +48,8 @@ class CompiledContext:
     estimated_tokens: int
     token_budget: int
     truncated: bool = False
+    value_density: float = 0.0
+    packed_ratio: float = 0.0
 
     def text(self) -> str:
         return "\n\n".join(el.content for el in self.elements)
@@ -58,6 +60,8 @@ class CompiledContext:
             "estimated_tokens": self.estimated_tokens,
             "token_budget": self.token_budget,
             "truncated": self.truncated,
+            "value_density": round(self.value_density, 4),
+            "packed_ratio": round(self.packed_ratio, 4),
         }
 
 
@@ -258,6 +262,7 @@ class ContextCompiler:
 
     def compile(self, request: ContextRequest) -> CompiledContext:
         candidates: list[tuple[int, ContextElement]] = []
+        pinned_goal: ContextElement | None = None
 
         # 1. Fresh verification receipts (highest priority: 100)
         if self.verification_store is not None:
@@ -279,23 +284,20 @@ class ContextCompiler:
                         ),
                     ))
 
-        # 2. Task goal and checkpoint (priority: 90)
+        # 2. Task goal and checkpoint (priority: 95 / 90)
         if self.task_store is not None:
             task = self.task_store.get(request.task_id)
             if task:
                 goal_content = f"Task Goal: {task.contract.goal}\nCriteria: {', '.join(task.contract.acceptance_criteria)}"
-                candidates.append((
-                    95,
-                    ContextElement(
-                        element_id=f"goal_{task.task_id}",
-                        source_kind="task_goal",
-                        content=goal_content,
-                        estimated_tokens=_estimate_tokens(goal_content),
-                        reason="primary task goal and acceptance criteria",
-                        confidence=1.0,
-                        freshness=task.created_at,
-                    ),
-                ))
+                pinned_goal = ContextElement(
+                    element_id=f"goal_{task.task_id}",
+                    source_kind="task_goal",
+                    content=goal_content,
+                    estimated_tokens=_estimate_tokens(goal_content),
+                    reason="primary task goal and acceptance criteria",
+                    confidence=1.0,
+                    freshness=task.created_at,
+                )
                 if task.checkpoint.phase or task.checkpoint.next_action:
                     chk_content = f"Checkpoint: Phase={task.checkpoint.phase}, Next={task.checkpoint.next_action}"
                     candidates.append((
@@ -330,7 +332,7 @@ class ContextCompiler:
                         ),
                     ))
 
-        # 4. Negative knowledge / incidents (priority: 50)
+        # 4. Negative knowledge / incidents (priority: 60 / 50)
         if self.incident_store is not None:
             incidents = self.incident_store.list_incidents(limit=10)
             for inc in incidents:
@@ -363,23 +365,48 @@ class ContextCompiler:
                         ),
                     ))
 
-        # Sort by priority weight DESC, freshness DESC
-        candidates.sort(key=lambda x: (x[0], x[1].freshness), reverse=True)
-
-        selected: list[ContextElement] = []
+        selected: list[tuple[int, ContextElement]] = []
         spent_tokens = 0
         truncated = False
 
-        for _, el in candidates:
+        # Pin mandatory task goal contract first if budget allows
+        if pinned_goal is not None:
+            if pinned_goal.estimated_tokens <= request.token_budget:
+                selected.append((95, pinned_goal))
+                spent_tokens += pinned_goal.estimated_tokens
+            else:
+                truncated = True
+
+        # Value-density knapsack token budgeting for remaining candidates
+        # Score = (priority * confidence) / max(1, tokens)
+        ranked_candidates: list[tuple[float, int, ContextElement]] = []
+        for prio, el in candidates:
+            score = (prio * el.confidence) / max(1, el.estimated_tokens)
+            ranked_candidates.append((score, prio, el))
+
+        # Sort primarily by value density DESC, then priority DESC, freshness DESC
+        ranked_candidates.sort(key=lambda x: (x[0], x[1], x[2].freshness), reverse=True)
+
+        for _, prio, el in ranked_candidates:
             if spent_tokens + el.estimated_tokens <= request.token_budget:
-                selected.append(el)
+                selected.append((prio, el))
                 spent_tokens += el.estimated_tokens
             else:
                 truncated = True
 
+        # Presentation ordering: sort final prompt context by priority weight DESC, freshness DESC
+        selected.sort(key=lambda x: (x[0], x[1].freshness), reverse=True)
+        final_elements = [el for _, el in selected]
+
+        total_value = sum(prio * el.confidence for prio, el in selected)
+        value_density = total_value / max(1, spent_tokens) if spent_tokens > 0 else 0.0
+        packed_ratio = spent_tokens / request.token_budget if request.token_budget > 0 else 0.0
+
         return CompiledContext(
-            elements=selected,
+            elements=final_elements,
             estimated_tokens=spent_tokens,
             token_budget=request.token_budget,
             truncated=truncated,
+            value_density=value_density,
+            packed_ratio=packed_ratio,
         )

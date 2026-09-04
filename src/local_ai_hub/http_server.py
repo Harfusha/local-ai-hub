@@ -869,7 +869,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"success": True, "workspaces": APP.rag.list_workspaces(self._tenant())}); return
             if path == "/v1/leases":
                 root = (query.get("root") or [""])[0]
-                self._send(200, {"success": True, "leases": APP.leases.list(root)}); return
+                self._send(200, {"success": True, "leases": APP.leases.list(root), "waits": APP.leases.waits(root)}); return
             if path == "/v1/cross_project_graph":
                 roots = [str(p.get("root")) for p in APP.preprocessor.status().get("projects", []) if p.get("root")]
                 if APP.deterministic is not None:
@@ -1455,15 +1455,23 @@ class Handler(BaseHTTPRequestHandler):
                     verified_fix = str(payload.get("verified_fix", payload.get("fix", "")))
                     rev = str(payload.get("state_revision", payload.get("revision", "")))
                     evidence_ids = tuple(payload.get("evidence_ids") or ())
+                    raw_paths = payload.get("affected_paths") or payload.get("paths") or []
+                    aff_paths = tuple(str(p) for p in raw_paths) if isinstance(raw_paths, (list, tuple)) else ()
                     outcome = ToolOutcome(
                         tool_name=op, error=msg or "recorded incident", exit_code=int(payload.get("exit_code", 1)),
                         state_revision=rev, evidence_ids=evidence_ids,
                         metadata={"root_cause": root_cause, "verified_fix": verified_fix},
+                        affected_paths=aff_paths,
                     )
                     inc = APP.agent_incidents.capture(outcome)
                     if inc and (verified_fix or root_cause):
                         inc = APP.agent_incidents.resolve_fix(inc.incident_id, verified_fix=verified_fix, root_cause=root_cause)
                     self._send(200, {"success": True, "incident": inc.to_dict() if inc else None}); return
+                if action == "find_regressions":
+                    paths_param = payload.get("paths") or ([payload.get("path")] if payload.get("path") else [])
+                    p_list = [str(x) for x in paths_param] if isinstance(paths_param, list) else []
+                    regressions = APP.agent_incidents.find_regressions(p_list)
+                    self._send(200, {"success": True, "regressions": regressions}); return
                 if action == "find":
                     query_str = str(payload.get("query", payload.get("key", ""))).strip().lower()
                     resolved_filter = payload.get("resolved")
@@ -1840,9 +1848,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, APP.repo_tools.verify_evidence(str(payload.get("root", ".")), evidence if isinstance(evidence, list) else [])); return
             if path == "/v1/evidence/get":
                 self._send(200, APP.evidence.get(str(payload.get("evidence_id", "")), verify=bool(payload.get("verify", True)))); return
-            if path == "/v1/leases/claim":
+            if path in ("/v1/leases/claim", "/v1/leases/claim_batch"):
                 paths = payload.get("paths", [])
-                self._send(200, APP.leases.claim(tenant, str(payload.get("root", ".")), [str(x) for x in paths] if isinstance(paths, list) else [], int(payload.get("ttl_seconds", 900)), str(payload.get("purpose", "agent edit")))); return
+                self._send(200, APP.leases.claim_batch(tenant, str(payload.get("root", ".")), [str(x) for x in paths] if isinstance(paths, list) else [], int(payload.get("ttl_seconds", 900)), str(payload.get("purpose", "agent edit")))); return
             if path == "/v1/leases/release":
                 self._send(200, APP.leases.release(tenant, str(payload.get("lease_id", "")))); return
             if path == "/v1/memory/put":

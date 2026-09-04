@@ -74,6 +74,16 @@ from .process_utils import hidden_run_kwargs
 
 
 class LocalAIServices:
+    commands: Any = None
+    task_store: Any = None
+    verification_store: Any = None
+    incident_store: Any = None
+    rag: Any = None
+    token_router: Any = None
+    pipeline: Any = None
+    preprocessor: Any = None
+    tool_agent: Any = None
+
     def __init__(
         self,
         config: dict[str, Any],
@@ -111,6 +121,7 @@ class LocalAIServices:
         self.commands: Any | None = None
         self.task_store: Any | None = None
         self.verification_store: Any | None = None
+        self.incident_store: Any | None = None
         self.router = ModelRouter(config)
         self.model_policy = ModelExecutionPolicy(config)
         self.profile_catalog = OllamaSubagentCatalog(config)
@@ -183,6 +194,9 @@ class LocalAIServices:
 
     def set_verification_store(self, verification_store: Any) -> None:
         self.verification_store = verification_store
+
+    def set_incident_store(self, incident_store: Any) -> None:
+        self.incident_store = incident_store
 
     def set_token_router(self, token_router: Any) -> None:
         self.token_router = token_router
@@ -1474,6 +1488,22 @@ class LocalAIServices:
                 det_hint += "\nPOTENTIAL BREAKING CHANGES DETECTED:\n"
                 for bc in det_diff["breaking_changes"][:10]:
                     det_hint += f"- [{bc.get('type')}] {bc.get('symbol')} in {bc.get('file')}: {bc.get('description')}\n"
+
+        regressions: list[dict[str, Any]] = []
+        incident_store = getattr(self, "incident_store", None)
+        if incident_store is not None and diff.get("changed_files"):
+            try:
+                found = incident_store.find_regressions(diff["changed_files"])
+                if isinstance(found, list):
+                    regressions = [r for r in found if isinstance(r, dict)]
+            except Exception:
+                regressions = []
+        if regressions:
+            det_hint += "\nAUTO-REGRESSION WATCHDOG (verified fixes from prior incidents affecting changed files):\n"
+            for reg in regressions[:5]:
+                aff = ", ".join(reg.get("affected_paths", []))
+                det_hint += f"- [PRIOR VERIFIED FIX] {reg.get('error_class')} in {aff}: {reg.get('verified_fix')}\n"
+
         payload = {
             "code": diff["diff"],
             "instructions": instructions + det_hint,
@@ -1515,6 +1545,8 @@ class LocalAIServices:
             except Exception as exc:
                 result["consensus"] = {"enabled": True, "degraded": True, "error": str(exc)}
 
+        if regressions:
+            result["regressions"] = regressions
         result["diff"] = {
             "changed_files": diff["changed_files"],
             "truncated": diff["truncated"],

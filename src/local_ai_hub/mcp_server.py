@@ -665,8 +665,8 @@ def local_ai_coord(
             action="incident_decision", fingerprint=fingerprint or {},
             tool_outcome=tool_outcome or {}, root=root,
         ), "status")
-    if action == "claim":
-        return _compact(CLIENT.post("/v1/leases/claim", {
+    if action in ("claim", "claim_batch"):
+        return _compact(CLIENT.post("/v1/leases/claim_batch", {
             "root": root, "paths": paths or [], "ttl_seconds": ttl_seconds or 900, "purpose": value or "agent edit",
         }))
     if action == "release":
