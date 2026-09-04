@@ -80,7 +80,7 @@ class CommandBroker:
         except ValueError:
             return []
 
-    PURE_VALIDATORS = {"pytest", "phpunit", "phpstan", "pest", "ruff", "mypy", "eslint", "tsc"}
+    PURE_VALIDATORS = {"pytest", "phpunit", "phpstan", "pest", "ruff", "mypy", "eslint", "tsc", "pyflakes"}
 
     def classify(self, command: str) -> dict[str, Any]:
         tokens = self._tokens(command)
@@ -120,11 +120,48 @@ class CommandBroker:
                 if arg == "-m" and idx < len(tokens) - 1:
                     dash_m = tokens[idx + 1].lower()
                     break
-            if dash_m in {"pytest", "ruff", "mypy", "unittest", "flake8", "compileall"}:
+            if dash_m in {"pytest", "ruff", "mypy", "unittest", "flake8", "compileall", "pyflakes"}:
                 return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": f"python -m {dash_m} validation"}
+            if dash_m in {"build", "wheel"}:
+                return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": f"python -m {dash_m} packaging"}
+            if dash_m in {"local_ai_hub", "local_ai_hub.generator"}:
+                return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": f"python -m {dash_m} dynamic artifacts generator"}
             non_flag_args = [t for t in tokens[1:] if not t.startswith("-")]
-            if non_flag_args and any(f in non_flag_args[0].lower() for f in ("test", "validate", "check", "flow", "status", "audit", "doctor", "selftest")):
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "python validation script"}
+            if non_flag_args:
+                script_name = Path(non_flag_args[0].replace("\\", "/")).name.lower()
+                sub_args = [t.lower() for t in non_flag_args[1:]]
+                if script_name in {"hubctl.py", "hubctl"}:
+                    sub = sub_args[0] if sub_args else ""
+                    if sub == "tasks":
+                        is_mutating = any(t in lower for t in {"--complete", "--fail"})
+                        if is_mutating:
+                            return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": "hubctl tasks status mutation"}
+                        return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "hubctl tasks status check"}
+                    if sub in {"status", "service-status", "agent-state", "dashboard", "watch", "memory", "doctor", "logs"}:
+                        return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": f"hubctl {sub} status check"}
+                    if sub == "generate":
+                        return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "hubctl generate dynamic artifacts"}
+                    if sub in {"start", "stop", "restart", "cleanup"}:
+                        return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": f"hubctl {sub} service lifecycle mutation"}
+                if script_name in {"setup.py", "setup"}:
+                    if any(t in lower for t in {"--generate-only", "--help", "-h"}):
+                        return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "setup.py generate dynamic artifacts"}
+                if any(f in arg.lower() for arg in non_flag_args for f in ("test", "validate", "check", "flow", "status", "audit", "doctor", "selftest", "report")):
+                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "python validation script"}
+
+        if exe_base == "hubctl":
+            sub = lower[0] if lower else ""
+            if sub == "tasks":
+                is_mutating = any(t in lower for t in {"--complete", "--fail"})
+                if is_mutating:
+                    return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": "hubctl tasks status mutation"}
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "hubctl tasks status check"}
+            if sub in {"status", "service-status", "agent-state", "dashboard", "watch", "memory", "doctor", "logs"}:
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": f"hubctl {sub} status check"}
+            if sub == "generate":
+                return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "hubctl generate dynamic artifacts"}
+            if sub in {"start", "stop", "restart", "cleanup"}:
+                return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": f"hubctl {sub} service lifecycle mutation"}
 
         if exe_base in {"pwsh", "powershell"}:
             if any(f in t.lower() for t in tokens[1:] for f in ("invoke-woodboundcli", "test", "validate", "check", "status")):

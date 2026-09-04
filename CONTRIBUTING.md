@@ -4,8 +4,8 @@ Local AI Hub is an initial-release codebase. Prefer deletion/simplification over
 
 ## Getting started
 
-`ash
-git clone https://github.com/YOUR_GITHUB_USERNAME/local-ai-hub.git
+```bash
+git clone https://github.com/local-ai-hub/local-ai-hub.git
 cd local-ai-hub
 python -m venv .venv
 # Windows
@@ -15,24 +15,25 @@ source .venv/bin/activate
 
 pip install -r requirements-core.txt
 pip install -e ".[dev]"
-`
+```
 
 ## Before submitting a change
 
 Run the full validation suite locally before opening a PR:
 
-`ash
+```bash
 python -m compileall -q src mcp tools tests
 python -m pytest -q
 python tools/selftest.py
-`
+python tools/hubctl.py generate
+```
 
-All three commands must pass with no errors.
+All commands must pass with no errors.
 
 ## Design principles
 
 - Keep the **seven-tool MCP surface compact** — new repository capabilities should go through local_ai_repo or local_ai_command, not a new top-level MCP schema.
-- Keep **all waits bounded** — every subprocess, network call and model call must have a finite deadline. No 	ime.sleep in hot paths without a bounded loop.
+- Keep **all waits bounded** — every subprocess, network call and model call must have a finite deadline. No `time.sleep` in hot paths without a bounded loop.
 - Preserve **loopback-first security** — the server must bind to 127.0.0.1 by default. Remote exposure is opt-in and requires an API token.
 - **Optional external tooling must fail soft** — Serena, CodeGraphContext and Ollama absence, crash or timeout must degrade cleanly to built-in indexes, never block a request handler.
 - **No migration shims** in this initial-release branch. Derived SQLite state is disposable and may be rebuilt.
@@ -41,11 +42,11 @@ All three commands must pass with no errors.
 
 Use the imperative mood, present tense:
 
-`
+```text
 Add bounded retry for external MCP responses
 Fix SQLite busy handling in semantic cache
 Improve hardware detection for AMD GPUs
-`
+```
 
 Keep the subject line under 72 characters. Optionally add a body after a blank line for context.
 
@@ -54,6 +55,7 @@ Keep the subject line under 72 characters. Optionally add a body after a blank l
 - [ ] python -m compileall -q src mcp tools tests passes
 - [ ] python -m pytest -q passes
 - [ ] python tools/selftest.py passes
+- [ ] python tools/hubctl.py generate passes
 - [ ] No new MCP tool schemas added without discussion
 - [ ] All subprocess/network calls have timeouts
 - [ ] Optional backends degrade gracefully (no hard failures for missing Serena/CodeGraph)

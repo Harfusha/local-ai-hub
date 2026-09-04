@@ -17,63 +17,31 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from local_ai_hub.config import load_config as load_hub_config  # noqa: E402
+from local_ai_hub.features import FeatureSet  # noqa: E402
+from local_ai_hub.generator import generate_global_policy, write_all_generated  # noqa: E402
 
 MARKER_BEGIN = "# BEGIN LOCAL AI HUB MANAGED"
 MARKER_END = "# END LOCAL AI HUB MANAGED"
 GLOBAL_POLICY_BEGIN = "<!-- BEGIN LOCAL AI HUB TOOL POLICY -->"
 GLOBAL_POLICY_END = "<!-- END LOCAL AI HUB TOOL POLICY -->"
-GLOBAL_POLICY = """<!-- BEGIN LOCAL AI HUB TOOL POLICY -->
-Trigger map:
-- repository facts/files/symbols: `local_ai_repo`
-- tests/lint/typecheck/build: `local_ai_command`
-- exact source/evidence text: `local_ai_artifact`
-- shared findings or overlapping edits: `local_ai_coord`
-- semantic retrieval after indexed paths are insufficient: `local_ai_rag`
-- bounded local generation or second opinion: `local_ai_task`
 
-Recipes (guidance, not gates):
-- Recipe — Explore: preprocess once, use the cheapest repository action, fetch only required evidence slices.
-- Recipe — Change: gather indexed evidence, use `local_ai_repo(action="solve")` before edits, claim `local_ai_coord` leases for overlapping paths, then run indexed impact/review before validation.
-- Recipe — Validate: route repeatable commands through `local_ai_command`, reuse cached results, use `review_diff` or `security_audit` when relevant.
-- A recipe step may be skipped when irrelevant; one bounded fallback is allowed when Hub is unavailable.
 
-Delegation is the default for any task with useful bounded independent work.
-- After required indexed evidence, call AGY directly (`mcp__agy__agy` or `mcp__agy__agy_start`) first for research, planning, implementation, review, testing support, or other bounded sidecar work.
-- Use `local_ai_task` for bounded local-model work when local inference is the right fit. Do not use the native Codex `multi_agent_v1__spawn_agent` path unless the user explicitly requests a Codex subagent, the task requires a Codex-only capability or native Codex context/tool lifecycle, or one bounded AGY attempt reports AGY unavailable.
-- AGY is the mandatory first peer-agent choice for delegatable work; native Codex subagents are exception-only. Never duplicate the same scope across AGY and native Codex agents.
-- Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, and integration.
-- AGY is invoked and lifecycle-managed directly by Codex; Local AI Hub does not bootstrap, route, proxy, or own AGY tasks.
-- Do not duplicate the same scope across agents. Keep final decisions, edits, and integration in Codex.
-- Skip delegation only for trivial tasks, pure evidence lookups, security/privacy constraints, or no useful independent scope.
+def build_global_policy(cfg: dict[str, Any]) -> str:
+    """Build a config-aware LOCAL AI HUB TOOL POLICY block.
 
-Routing hierarchy: the main agent is the orchestrator, planner, integrator and final owner. Use Local AI Hub first for its own precise, bounded microtasks: deterministic facts, indexed/search retrieval, preprocess artifacts, targeted impact/review/security checks, safe commands, compression, local-model synthesis and second opinions. After that evidence, delegate every useful independent scope to AGY first. Native `multi_agent_v1__spawn_agent` is exception-only: explicit Codex-subagent request, Codex-only capability/context/lifecycle, or one bounded AGY-unavailable fallback. Neither is routed or managed by Local AI Hub.
+    Only mentions tools, backends and model names that are actually enabled in
+    the given merged config.  The returned string includes the BEGIN/END markers
+    so callers can embed it verbatim into AGENTS.md / CLAUDE.md / GEMINI.md.
+    """
+    return generate_global_policy(cfg)
 
-READ-ONLY AUDIT CONTRACT:
-- Read-only means no Git writes, `git worktree add` or removal, dependency installation, builds/imports, generated artifacts, or other workspace side effects. Never label such work read-only when any of these occur; split validation into a separately owned, explicitly side-effecting task.
-- Before native discovery or validation, retain preceding Hub result with action, absolute root, status, cache/in_progress state, and evidence IDs. Native discovery is fallback-only after one bounded terminal Hub failure.
-- Native validation fallback is allowed only after `local_ai_command` returns `terminal=true` and `retryable=false`; run one bounded fallback, state side effects/owner, and never repeat identical commands.
-- Codex controls subagent permissions per task. Native Codex subagents and AGY may write only when Codex explicitly enables it, and write work stays in the assigned workspace/worktree. Codex remains integrator.
-- Do not run parallel duplicate commands or scopes. Tool labels such as `Local ai repo` or `Agy start` are not evidence; preserve exact action, arguments, result, and ownership in the audit record.
 
-For every non-trivial repository task, use Local AI Hub before broad native discovery or repeatable validation. Keep one stable absolute project root. On the first task for that root call `local_ai_repo(action="preprocess", root=ABS_ROOT)` exactly once, then continue immediately; preprocessing is asynchronous, so never poll/wait/force-refresh it.
+# Keep a module-level default for callers that do not have a config available
+# (e.g. tests or tools that import setup.py directly).  The real policy is
+# always built via build_global_policy(cfg) at setup time.
+_DEFAULT_POLICY_CFG: dict[str, Any] = {}
+GLOBAL_POLICY = build_global_policy(_DEFAULT_POLICY_CFG)
 
-Adoption gate: `local_ai_command` alone is never sufficient for a repository task. The first useful Hub operation must be `local_ai_repo` (preprocess plus the cheapest applicable deterministic/code-index/search/context action); use the command broker only for commands, after repository evidence exists. For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence and before native edits. After edits, use the applicable indexed impact/review/security/evidence action before final validation.
-
-Use the cheapest sufficient path: `deterministic` for manifests/config/tests/entrypoints -> `code_index` for symbols/references or `search` for exact text/files -> `semantic`/`graph` only for language/relationship questions -> `context`/`solve` only when compact evidence is insufficient -> RAG/local-model reasoning last. Stop escalating as soon as a cheaper layer provides enough evidence. Do not fan out deterministic/search/context/RAG/model calls in parallel for the same question: the broader layers already compose/reuse the cheaper indexes. Parallelize only independent questions. Before native `find`/`rg`/`grep`/recursive glob/tree or opening more than two files for discovery, use that hub path first. Reuse fresh evidence IDs, artifact slices, memos and cache hits; do not repeat the same hub action with the same root/query while repository state is unchanged.
-
-Treat result state as a protocol: `cache_hit`/`coalesced` means reuse the result; `in_progress=true` means another owner is doing identical work, so never duplicate it; `retryable`/429/503 means back off and do independent work; `degraded`/`stale` means verify only the affected path/slice; a non-retryable failure permits one cheaper/native fallback. Never turn a transient result into larger timeouts, force refreshes, or polling loops.
-
-Route test/lint/typecheck/build/read-only commands through `local_ai_command` before running them natively. If it returns `in_progress=true`, do not launch a duplicate command. Before an expensive `solve`/model call, search coordination memos for reusable findings. For overlapping multi-agent edits use `local_ai_coord` leases and store concise reusable discoveries as memos. After edits, use indexed impact/review plus targeted cached validation; do not rerun broad discovery merely because files changed. `force` and `preprocess_refresh` are recovery/admin controls, never retry buttons. If an optional backend degrades, accept the hub's deterministic/index fallback. If the hub itself is unavailable, make one bounded health/retry attempt, then fall back to native tools. Never loop on health, status, preprocessing, model startup, a failing backend, or an identical command.
-
-Selection guide: `local_ai_repo` for bounded repository facts and checks (including `review_diff` and `security_audit`), `local_ai_command` for bounded repeatable commands, `local_ai_task` for small local-model work and second opinions, `local_ai_rag` only after cheaper indexed evidence, `local_ai_artifact` for exact slices, and `local_ai_coord` for leases/memos. AGY is default peer worker for useful delegated scopes, outside Hub orchestration. Native Codex `multi_agent_v1__spawn_agent` is exception-only under the routing rule above.
-
-Codex-owned AGY transport: pass an existing absolute workspace or worktree directory. The bridge uses it as subprocess `cwd` and passes it to AGY with `--add-dir`; never pass a missing path. `WinError 267` means invalid Windows working directory: validate the path before retrying. Codex chooses sandbox and write permissions per task; never use `--dangerously-skip-permissions`, provider API keys, or direct provider REST endpoints.
-- Direct AGY MCP calls use `mcp__agy__agy` or `mcp__agy__agy_start`; pass the existing absolute repository directory as `cd`. Detached jobs use bounded `mcp__agy__agy_status`, `mcp__agy__agy_read`, `mcp__agy__agy_result` and `mcp__agy__agy_cancel` operations.
-AGY model routing: the caller selects only `effort`; `low`/`medium` use Gemini 3.8 Flash, while `high`/complex or high-risk work uses Claude Sonnet. Claude Opus is never allowed. Do not expose routine provider/model selection or tune generation knobs.
-Sonnet quota fallback: on a quota/usage/rate-limit error, retry the same bounded task once on the highest Gemini model reported by the host, targeting `gemini-3.8-flash`. Gemini model usage is shared, so never walk down to weaker models; change only `effort`, report `degraded: Sonnet -> <model>`, and never degrade auth, permission, invalid-request, workspace or transport errors.
-
-Local model default: when generation is needed, use `qwen2.5-coder:7b` for ordinary `local_ai_task` delegate/reason/review/second-opinion/compress work. Escalate to `heavy_code` only for complex or high-risk work; deterministic and indexed Hub actions run first.
-<!-- END LOCAL AI HUB TOOL POLICY -->"""
 
 
 def log(message: str) -> None:
@@ -136,7 +104,7 @@ def copy_install_tree(install_dir: Path, config_source: Path) -> None:
             shutil.rmtree(dst)
         shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache"))
     for name in [
-        "requirements-core.txt", "requirements-local-nlp.txt", "defaults.toml", "pyproject.toml",
+        "requirements-core.txt", "requirements-local-nlp.txt", "defaults.toml", "config.toml.example", "pyproject.toml",
         "README.md", "FEATURES.md", "AGENTS.md", "LICENSE", "CHANGELOG.md", "THIRD_PARTY.md",
         "RELEASE.json", "CONTRIBUTING.md", "SECURITY.md", "install.ps1", "install.sh",
     ]:
@@ -236,11 +204,12 @@ def codex_mcp_merge(path: Path, servers: dict[str, dict[str, Any]], backup_enabl
     log(f"Codex MCP config updated: {path}")
 
 
-def merge_global_policy(path: Path, backup_enabled: bool) -> None:
+def merge_global_policy(path: Path, backup_enabled: bool, cfg: dict[str, Any] | None = None) -> None:
+    policy = build_global_policy(cfg or {})
     path.parent.mkdir(parents=True, exist_ok=True)
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     pattern = re.compile(re.escape(GLOBAL_POLICY_BEGIN) + r".*?" + re.escape(GLOBAL_POLICY_END), re.DOTALL)
-    updated = pattern.sub(GLOBAL_POLICY, text) if pattern.search(text) else (text.rstrip() + "\n\n" + GLOBAL_POLICY + "\n")
+    updated = pattern.sub(policy, text) if pattern.search(text) else (text.rstrip() + "\n\n" + policy + "\n")
     if updated != text:
         backup(path, backup_enabled)
         path.write_text(updated, encoding="utf-8")
@@ -357,19 +326,14 @@ def pull_ollama_models(cfg: dict[str, Any]) -> None:
 
 
 def write_generated_agent_manifests(install_dir: Path, hub_python: Path, serena: Path | None, codegraph: Path | None, cfg: dict[str, Any]) -> None:
-    generated_dir = install_dir / "generated"
-    generated_dir.mkdir(parents=True, exist_ok=True)
-    generic = build_mcp_entries(install_dir, hub_python, serena, codegraph, "generic", cfg)
-    vscode = build_mcp_entries(install_dir, hub_python, serena, codegraph, "copilot", cfg)
-    (generated_dir / "mcp-servers.json").write_text(json.dumps({"mcpServers": generic}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    (generated_dir / "vscode-mcp.json").write_text(json.dumps({"servers": {k: {"type": "stdio", **v} for k, v in vscode.items()}}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    (generated_dir / "agent-policy.md").write_text(GLOBAL_POLICY + "\n", encoding="utf-8")
-    log(f"Generic MCP manifests: {generated_dir}")
+    write_all_generated(cfg, install_dir, hub_python, serena, codegraph)
+    log(f"Dynamic skill, manifests, and schemas generated: {install_dir / 'generated'}")
 
 
 def configure_agents(install_dir: Path, hub_python: Path, serena: Path | None, codegraph: Path | None, cfg: dict[str, Any]) -> None:
     backup_enabled = bool(cfg.get("setup", {}).get("backup_existing_configs", True))
     agents_cfg = cfg.get("agents", {})
+    write_all_generated(cfg, install_dir, hub_python, serena, codegraph)
     source_skill = install_dir / "skills" / "local-ai-orchestrator"
     if agents_cfg.get("agent_skills_standard", True):
         install_skill(source_skill, Path.home() / ".agents" / "skills" / "local-ai-orchestrator")
@@ -377,10 +341,10 @@ def configure_agents(install_dir: Path, hub_python: Path, serena: Path | None, c
         codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
         install_skill(source_skill, codex_home / "skills" / "local-ai-orchestrator")
         if cfg.get("tool_policy", {}).get("install_global_instructions", True):
-            merge_global_policy(codex_home / ("AGENTS.override.md" if (codex_home / "AGENTS.override.md").exists() else "AGENTS.md"), backup_enabled)
+            merge_global_policy(codex_home / ("AGENTS.override.md" if (codex_home / "AGENTS.override.md").exists() else "AGENTS.md"), backup_enabled, cfg=cfg)
             # Keep the legacy Codex instruction file aligned too; otherwise it can
             # shadow the newer routing contract and steer the agent to commands only.
-            merge_global_policy(codex_home / "instructions.md", backup_enabled)
+            merge_global_policy(codex_home / "instructions.md", backup_enabled, cfg=cfg)
         codex_mcp_merge(
             codex_home / "config.toml", build_mcp_entries(install_dir, hub_python, serena, codegraph, "codex", cfg), backup_enabled,
             startup_timeout=int(cfg.get("client", {}).get("startup_wait_seconds", 15)) + 15,
@@ -389,13 +353,13 @@ def configure_agents(install_dir: Path, hub_python: Path, serena: Path | None, c
     if agents_cfg.get("claude", True):
         install_skill(source_skill, Path.home() / ".claude" / "skills" / "local-ai-orchestrator")
         if cfg.get("tool_policy", {}).get("install_global_instructions", True):
-            merge_global_policy(Path.home() / ".claude" / "CLAUDE.md", backup_enabled)
+            merge_global_policy(Path.home() / ".claude" / "CLAUDE.md", backup_enabled, cfg=cfg)
         json_mcp_merge(Path.home() / ".claude.json", build_mcp_entries(install_dir, hub_python, serena, codegraph, "claude", cfg), backup_enabled)
     if agents_cfg.get("gemini", True):
         install_skill(source_skill, Path.home() / ".gemini" / "skills" / "local-ai-orchestrator")
         install_skill(source_skill, Path.home() / ".gemini" / "config" / "skills" / "local-ai-orchestrator")
         if cfg.get("tool_policy", {}).get("install_global_instructions", True):
-            merge_global_policy(Path.home() / ".gemini" / "GEMINI.md", backup_enabled)
+            merge_global_policy(Path.home() / ".gemini" / "GEMINI.md", backup_enabled, cfg=cfg)
         json_mcp_merge(Path.home() / ".gemini" / "settings.json", build_mcp_entries(install_dir, hub_python, serena, codegraph, "gemini", cfg), backup_enabled)
     # Additional major MCP hosts. Their tool descriptions always carry the same
     # tool-first policy even when the host has no compatible global skill format.
@@ -447,9 +411,22 @@ def main() -> int:
     parser.add_argument("--skip-agent-config", action="store_true")
     parser.add_argument("--skip-service", action="store_true")
     parser.add_argument("--skip-ollama-install", action="store_true")
+    parser.add_argument("--generate-only", action="store_true", help="Generate dynamic skill, instructions, MCP manifests, and schemas without re-installing dependencies or service.")
     args = parser.parse_args()
 
     config_source, cfg, install_dir = select_config_source(args.config)
+    if args.generate_only:
+        hub_python = venv_python(install_dir / ".venv")
+        if not hub_python.exists():
+            hub_python = Path(sys.executable)
+        write_all_generated(cfg, SOURCE_ROOT, hub_python)
+        if install_dir.resolve() != SOURCE_ROOT.resolve():
+            write_all_generated(cfg, install_dir, hub_python)
+        if not args.skip_agent_config and bool(cfg.get("setup", {}).get("install_agent_configs", True)):
+            configure_agents(install_dir, hub_python, None, None, cfg)
+        log("Skill, agent instructions, and MCP artifacts successfully generated.")
+        return 0
+
     log(f"Installing to {install_dir}")
 
     # Stop a currently managed instance if this exact install already exists. This is

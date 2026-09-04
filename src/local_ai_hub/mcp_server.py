@@ -10,6 +10,7 @@ from local_ai_hub.client import HubClient
 from local_ai_hub.compact import compact_result
 from local_ai_hub.projection import AgentProjector
 from local_ai_hub.config import load_config
+from local_ai_hub.features import FeatureSet
 from local_ai_hub.ollama_subagents import OllamaSubagentCatalog
 
 try:
@@ -28,6 +29,7 @@ _workspace_hash = hashlib.sha1(_workspace.encode("utf-8"), usedforsecurity=False
 TENANT = os.environ.get("LOCAL_AI_TENANT") or f"{AGENT_NAME}:{_workspace_hash}:{os.getpid()}"
 CLIENT = HubClient(tenant=TENANT)
 CFG = load_config(os.environ.get("LOCAL_AI_CONFIG"))
+FEATURES = FeatureSet.from_config(CFG)
 MCP_CFG = CFG.get("mcp", {})
 PROJECTOR = AgentProjector(CFG)
 PROFILE_CATALOG = OllamaSubagentCatalog(CFG)
@@ -48,8 +50,146 @@ else:
     raise SystemExit("Missing MCP dependency. Re-run setup or install requirements-core.txt")
 
 
+# ---------------------------------------------------------------------------
+# Dynamic tool description builders — read FEATURES (from config) at import
+# time so tool schemas reflect only the active backends.
+# ---------------------------------------------------------------------------
+
+def _desc_status() -> str:
+    ollama_note = " ollama_online," if FEATURES.ollama else ""
+    return (
+        "Health/queue/token-saving status. detail: brief, cache, telemetry, full. scope: process (default) or window."
+        f" Telemetry is metadata-only.{ollama_note}"
+        " Do not poll status during normal repository work or while preprocessing/model startup is in progress;"
+        " one bounded health check is enough before native fallback."
+        " Use when: make one bounded health, cache, or telemetry check."
+        " Skip when: repository evidence or task work is needed."
+    )
+
+
+def _desc_task() -> str:
+    if not FEATURES.has_any_model():
+        return (
+            "Local-model worker — disabled on this installation (no Ollama runtime configured)."
+            " Returns unsupported=true for all actions."
+            " Use when: never (no local inference available). Skip when: always use indexed evidence only."
+            " Local AI Hub does not route or manage external agents."
+        )
+    profile_note = ""
+    if FEATURES.subagents and FEATURES.subagent_profiles:
+        profile_names = ", ".join(f"`{p}`" for p in FEATURES.subagent_profiles)
+        profile_note = (
+            f" Named advisory profiles ({profile_names}) use Local AI Hub read-only tooling"
+            " directly when `root` is supplied."
+        )
+    return (
+        f"Bounded local-model worker for the main agent."
+        f" Ordinary delegate/reason/review/second-opinion work uses the `{FEATURES.fast_model}` fast tier;"
+        f" configured smart models are reserved for genuinely complex routes."
+        f"{profile_note}"
+        " Deterministic compression and repository evidence run first when sufficient."
+        " Use it for one bounded local-model worker, review or second opinion after indexed evidence."
+        " It is not the orchestrator for native Codex subagents; those are managed directly by Codex outside Local AI Hub."
+        " Actions: delegate, reason, continue, review, second_opinion, compress, route, batch,"
+        " benchmark, evaluation_record, evaluation_report, submit, status, wait, result, cancel."
+        " `delivery=sync` preserves the foreground contract; `async` returns a durable job now;"
+        " `auto` requires a positive `latency_budget_ms` and only defers after sufficient endpoint history shows p95 above it."
+        " Evaluation stores only opaque ids, booleans, and numeric metadata; it never stores prompts or source text."
+        " Async wait is bounded to 90 seconds; never poll loops."
+        " Start a short-lived conversation with `conversation=true` on delegate or reason, then use `continue` with its opaque `conversation_id`; conversations are sync-only and process-memory only."
+        " Use when: bounded local generation, compression, review, routing, second opinion, or named advisory subagent work is needed."
+        " Skip when: task is trivial, pure evidence lookup, security/privacy constrained, no useful independent scope,"
+        " or Codex-owned subagent orchestration is the right owner."
+    )
+
+
+def _desc_repo() -> str:
+    semantic_hint = ""
+    if FEATURES.has_semantic():
+        semantic_hint = f" -> {FEATURES.semantic_hint()} for relationships"
+    model_hint = ""
+    if FEATURES.has_any_model():
+        model_hint = f" -> {FEATURES.fast_model} -> smart model"
+    rag_hint = " -> RAG" if FEATURES.rag else ""
+    return (
+        "Primary bounded repository worker for the main agent."
+        " CALL THIS BEFORE broad repository reads/searches for any non-trivial repo task. MANDATORY GATE."
+        f" Use deterministic, code_index/search,{' ' + FEATURES.semantic_hint() + ',' if FEATURES.has_semantic() else ''}"
+        " context and solve for bounded evidence and implementation support."
+        " For implementation, diagnosis, refactoring or complex review, call `solve` after evidence and before native edits."
+        f"{' When generation is needed, seed the basic `' + FEATURES.fast_model + '` fast tier before smart escalation.' if FEATURES.has_any_model() else ''}"
+        " `review_diff` and `security_audit` are targeted local checks."
+        f"{'  After indexed evidence, use `local_ai_task` for one bounded local-model worker/review/second opinion.' if FEATURES.has_any_model() else ''}"
+        " Codex separately decides whether to use native Codex subagents;"
+        " Local AI Hub does not route or manage those agents."
+        " On first use of a stable absolute root call action=preprocess exactly once and continue immediately;"
+        " never poll/wait/force-refresh preprocessing."
+        f" Cheapest sufficient path: deterministic -> code_index/search{semantic_hint} -> context/solve{rag_hint}{model_hint} last;"
+        " STOP as soon as a cheaper layer is sufficient and never fan out overlapping retrieval layers for the same question."
+        " Reuse fresh evidence/artifact slices and never repeat an identical root/query/action while repo state is unchanged."
+        " `in_progress` means another owner is doing identical work; retryable/429/503 means back off;"
+        " degraded/stale means verify only the affected slice."
+        " Always pass the stable absolute project root; never rely on MCP cwd. Never loop or increase timeouts indefinitely."
+        " Use when: every non-trivial repository task needs indexed evidence or a bounded Hub operation."
+        " Skip when: the task is not repository-scoped or fresh evidence already answers it and no independent Hub scope exists."
+    )
+
+
+def _desc_rag() -> str:
+    if not FEATURES.rag:
+        return (
+            "Semantic retrieval — RAG backend is disabled on this installation (`features.rag=false`)."
+            " All actions return unsupported=true. Enable RAG in config.toml to activate."
+            " Skip when: always (RAG disabled). Use when: never."
+        )
+    return (
+        "Fallback semantic retrieval for the main agent only after deterministic, code_index, search"
+        " and preprocessed evidence are insufficient."
+        " Keep queries bounded and use it only for bounded semantic retrieval, not open-ended agent orchestration."
+        " Actions: index, search, list. Index is file-incremental and query-cached."
+        " Do not trigger index repeatedly for a fresh stable workspace."
+        " Use when: cheaper indexed repository paths cannot answer a bounded semantic retrieval question."
+        " Skip when: deterministic/indexed evidence is sufficient or Codex-owned subagent orchestration is the right owner."
+    )
+
+
+def _desc_command() -> str:
+    agent_os_note = " Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts." if FEATURES.agent_os else ""
+    return (
+        "Bounded command broker for the main agent. MANDATORY for repeatable test/lint/typecheck/static-analysis/build/read-only commands whenever possible."
+        " Shared safe CLI broker. Actions: run, cancel, classify, discover, stats."
+        f"{agent_os_note}"
+        " Results are keyed by command + bounded repo state and duplicate runs coalesce across agents. Reuse fresh results."
+        " If run returns in_progress=true, DO NOT start the command natively or with force; continue independent work and retry later so the owner can populate the cache."
+        " cancel only stops an active matching command. force=true is exceptional recovery/admin behavior, never a retry button."
+        " Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed."
+        " Skip when: no command is needed or a fresh cached result already answers it."
+    )
+
+
+def _desc_coord() -> str:
+    agent_os_note = " task_create, task_get, task_checkpoint, task_transition, task_resume, task_list, memory_record, memory_get, memory_find, memory_promote, incident_decision," if FEATURES.agent_os else ""
+    return (
+        "Cross-agent coordination for the main agent and bounded Hub workers. Actions: claim, release, leases, memo_put, memo_get, memo_search, memo_delete,"
+        f"{agent_os_note}"
+        " Claim overlapping edit paths before concurrent Hub work."
+        " Search/get memos before repeating expensive investigation and store concise reusable findings after discovery."
+        " Native peer subagents are coordinated by Codex rather than by this Hub tool."
+        " Use when: Hub workers share edit paths, leases, or reusable findings."
+        " Skip when: work is isolated and no shared Hub state or memo is involved."
+    )
+
+
+def _desc_artifact() -> str:
+    return (
+        "Fetch one needed artifact section or exact evidence slice. Evidence IDs start with E."
+        " Use when: exact source or evidence text is required after indexed discovery."
+        " Skip when: no source slice is needed or the existing compact result is sufficient."
+    )
+
+
 TaskAction: TypeAlias = Literal[
-    "delegate", "reason", "review", "second_opinion", "compress", "route", "batch",
+    "delegate", "reason", "continue", "review", "second_opinion", "compress", "route", "batch",
     "benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait",
     "result", "cancel", "candidate_create", "candidate_promote",
 ]
@@ -66,8 +206,10 @@ RagAction: TypeAlias = Literal["index", "search", "list"]
 CommandAction: TypeAlias = Literal["run", "cancel", "classify", "discover", "stats"]
 CoordAction: TypeAlias = Literal[
     "claim", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete",
-    "task_create", "task_get", "task_checkpoint", "task_transition", "task_resume", "task_list",
-    "memory_record", "memory_get", "memory_find", "memory_promote", "incident_decision",
+    "task_create", "task_get", "task_checkpoint", "task_transition", "task_resume", "task_list", "task_complete", "task_fail",
+    "memory_record", "memory_get", "memory_find", "memory_promote",
+    "context_compile", "verify_receipt", "verify_completion",
+    "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
 ]
 StatusDetail: TypeAlias = Literal["brief", "cache", "telemetry", "full", "agent_state"]
 StatusScope: TypeAlias = Literal["process", "window"]
@@ -89,7 +231,9 @@ def _compact(value: Any, task_kind: str = "general") -> Any:
 
 @mcp.tool()
 def local_ai_status(detail: StatusDetail = "brief", scope: str = "process") -> dict[str, Any]:
-    """Health/queue/token-saving status. detail: brief, cache, telemetry, full. scope: process (default) or window. Telemetry is metadata-only. Do not poll status during normal repository work or while preprocessing/model startup is in progress; one bounded health check is enough before native fallback. Use when: make one bounded health, cache, or telemetry check. Skip when: repository evidence or task work is needed."""
+    """Health/queue/token-saving status. detail: brief, cache, telemetry, full, agent_state. scope: process (default) or window. Telemetry is metadata-only. Do not poll status during normal repository work or while preprocessing/model startup is in progress; one bounded health check is enough before native fallback. Use when: make one bounded health, cache, or telemetry check. Skip when: repository evidence or task work is needed."""
+    if not FEATURES.status:
+        return {"success": False, "unsupported": True, "error": "local_ai_status is disabled in configuration"}
     scope = scope.strip().lower()
     if scope not in {"process", "window"}:
         return {"success": False, "error": "scope must be process or window"}
@@ -163,11 +307,23 @@ def local_ai_task(
     profile: str = "",
     root: str = "",
     workspace: str = "",
+    conversation: bool = False,
+    conversation_id: str = "",
     approver: str = "",
     candidate_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Bounded local-model worker for the main agent. Ordinary delegate/reason/review/second-opinion work uses the basic `qwen2.5-coder:7b` fast tier; configured smart models are reserved for genuinely complex routes. Named Ollama profiles (`qwen-explorer`, `qwen-drafter`, `qwen-critic`) are advisory-only and use Local AI Hub read-only tooling directly when `root` is supplied. Deterministic compression and repository evidence run first when sufficient. Use it for one bounded local-model worker, review or second opinion after indexed evidence. It is not the orchestrator for native Codex subagents or AGY; those are managed directly by Codex outside Local AI Hub. Actions: delegate, reason, review, second_opinion, compress, route, batch, benchmark, evaluation_record, evaluation_report, submit, status, wait, result, cancel. `delivery=sync` preserves the foreground contract; `async` returns a durable job now; `auto` requires a positive `latency_budget_ms` and only defers after sufficient endpoint history shows p95 above it. Evaluation stores only opaque ids, booleans, and numeric metadata; it never stores prompts or source text. Async wait is bounded to 90 seconds; never poll loops. Use when: bounded local generation, compression, review, routing, second opinion, or named advisory subagent work is needed. Skip when: task is trivial, pure evidence lookup, security/privacy constrained, no useful independent scope, or Codex-owned subagent orchestration is the right owner."""
+    """Bounded local-model worker for the main agent. Ordinary delegate/reason/review/second-opinion work uses the fast coding tier; configured smart models are reserved for genuinely complex routes. Named advisory profiles (qwen-explorer, qwen-drafter, qwen-critic) use Local AI Hub read-only tooling directly when root is supplied. Deterministic compression and repository evidence run first when sufficient. Use it for one bounded local-model worker, review or second opinion after indexed evidence. It is not the orchestrator for native Codex subagents; those are managed directly by Codex outside Local AI Hub. Actions: delegate, reason, continue, review, second_opinion, compress, route, batch, benchmark, evaluation_record, evaluation_report, submit, status, wait, result, cancel, candidate_create, candidate_promote. delivery=sync preserves the foreground contract; async returns a durable job now; auto requires a positive latency_budget_ms and only defers after sufficient endpoint history shows p95 above it. Evaluation stores only opaque ids, booleans, and numeric metadata; it never stores prompts or source text. Async wait is bounded to 90 seconds; never poll loops. Start a short-lived conversation with conversation=true on delegate or reason, then use continue with its opaque conversation_id; conversations are sync-only and process-memory only. Use when: bounded local generation, compression, review, routing, second opinion, or named advisory subagent work is needed. Skip when: repository evidence or safe commands are sufficient without model inference, or independent peer-agent work is managed by Codex."""
+    if not FEATURES.tasks or not FEATURES.has_any_model():
+        return {"success": False, "unsupported": True, "error": "Local model execution is disabled (features.tasks=false or no Ollama runtime configured)"}
     action = action.strip().lower().replace("-", "_")
+    if action == "continue":
+        if profile:
+            return {"success": False, "unsupported": True, "error": "Conversations do not support profiles"}
+        if not conversation_id.strip():
+            return {"success": False, "error": "conversation_id is required", "terminal": True, "retryable": False}
+        return _compact(CLIENT.post("/v1/conversations/continue", {
+            "conversation_id": conversation_id, "task": task, "context": context,
+        }, timeout=_timeout("model")), "delegate")
     if profile:
         if not PROFILE_CATALOG.enabled:
             return {"success": False, "unsupported": True, "error": "Ollama subagent profiles disabled"}
@@ -183,6 +339,10 @@ def local_ai_task(
             }
         if action not in {"delegate", "reason", "review", "second_opinion", "submit"}:
             return {"success": False, "unsupported": True, "error": "Ollama profiles support delegate, reason, review, second_opinion and submit only"}
+    if conversation and action not in {"delegate", "reason"}:
+        return {"success": False, "error": "Conversations support delegate, reason and continue only", "terminal": True, "retryable": False}
+    if conversation and delivery.strip().lower() != "sync":
+        return {"success": False, "error": "Conversations require delivery=sync", "terminal": True, "retryable": False}
     if action in {"submit", "status", "wait", "result", "cancel"}:
         return _compact(CLIENT.post("/v1/async-jobs", {
             "action": action, "job_action": job_action, "job_id": job_id, "timeout_seconds": timeout_seconds,
@@ -198,15 +358,21 @@ def local_ai_task(
         endpoint = "/v1/delegate/repo" if root else "/v1/delegate"
         return _compact(CLIENT.post(endpoint, payload, timeout=_timeout("model")), "delegate")
     if action == "delegate":
-        return _compact(CLIENT.post("/v1/delegate", {
+        payload = {
             "task": task, "context": context, "complexity": complexity, "max_tokens": max_tokens or 1100,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms,
-        }), "delegate")
+        }
+        if conversation:
+            payload["conversation"] = True
+        return _compact(CLIENT.post("/v1/delegate", payload), "delegate")
     if action == "reason":
-        return _compact(CLIENT.post("/v1/reason", {
+        payload = {
             "problem": task, "context": context, "max_tokens": max_tokens or 1200,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms,
-        }), "reason")
+        }
+        if conversation:
+            payload["conversation"] = True
+        return _compact(CLIENT.post("/v1/reason", payload), "reason")
     if action == "review":
         return _compact(CLIENT.post("/v1/review", {
             "code": context, "instructions": task or "Report actionable defects only.",
@@ -268,7 +434,9 @@ def local_ai_repo(
     receipt: dict[str, Any] | None = None,
     task_id: str = "",
 ) -> dict[str, Any]:
-    """Primary bounded repository worker for the main agent. CALL THIS BEFORE broad repository reads/searches for any non-trivial repo task. MANDATORY GATE. Use deterministic, code_index/search, semantic/graph, context and solve for bounded evidence and implementation support. For implementation, diagnosis, refactoring or complex review, call `solve` after evidence and before native edits. When generation is needed, seed the basic `qwen2.5-coder:7b` fast tier before smart escalation. `review_diff` and `security_audit` are targeted local checks. After indexed evidence, use `local_ai_task` for one bounded local-model worker/review/second opinion. Codex separately decides whether to use native Codex subagents or AGY; Local AI Hub does not route or manage those agents. On first use of a stable absolute root call action=preprocess exactly once and continue immediately; never poll/wait/force-refresh preprocessing. Cheapest sufficient path: deterministic -> code_index/search -> semantic/graph -> context/solve -> Qwen 2.5 Coder -> smart model/RAG last; STOP as soon as a cheaper layer is sufficient and never fan out overlapping retrieval layers for the same question. Reuse fresh evidence/artifact slices and never repeat an identical root/query/action while repo state is unchanged. `in_progress` means another owner is doing identical work; retryable/429/503 means back off; degraded/stale means verify only the affected slice. Always pass the stable absolute project root; never rely on MCP cwd. Never loop or increase timeouts indefinitely. Use when: every non-trivial repository task needs indexed evidence or a bounded Hub operation. Skip when: the task is not repository-scoped or fresh evidence already answers it and no independent Hub scope exists."""
+    """Primary bounded repository worker for the main agent. CALL THIS BEFORE broad repository reads/searches for any non-trivial repo task. MANDATORY GATE. Use deterministic, code_index/search, semantic/graph, context and solve for bounded evidence and implementation support. For implementation, diagnosis, refactoring or complex review, call solve after evidence and before native edits. When generation is needed, seed the basic fast tier before smart escalation. review_diff and security_audit are targeted local checks. After indexed evidence, use local_ai_task for one bounded local-model worker/review/second opinion. Codex separately decides whether to use native Codex subagents; Local AI Hub does not route or manage those agents. On first use of a stable absolute root call action=preprocess exactly once and continue immediately; never poll/wait/force-refresh preprocessing. Cheapest sufficient path: deterministic -> code_index/search -> semantic/graph for relationships -> context/solve -> RAG -> local model last; STOP as soon as a cheaper layer is sufficient and never fan out overlapping retrieval layers for the same question. Reuse fresh evidence/artifact slices and never repeat an identical root/query/action while repo state is unchanged. in_progress means another owner is doing identical work; retryable/429/503 means back off; degraded/stale means verify only the affected slice. Always pass the stable absolute project root; never rely on MCP cwd. Never loop or increase timeouts indefinitely. Use when: every non-trivial repository task needs indexed evidence or a bounded Hub operation. Skip when: the task is not repository-scoped or fresh evidence already answers it and no independent Hub scope exists."""
+    if not FEATURES.repo:
+        return {"success": False, "unsupported": True, "error": "local_ai_repo is disabled in configuration"}
     action = action.strip().lower().replace("-", "_")
     if action in {"preprocess", "preprocess_refresh", "preprocess_cancel", "preprocess_unregister"}:
         candidate = Path(root).expanduser()
@@ -379,7 +547,9 @@ def local_ai_rag(
     query: str = "",
     top_k: int = 6,
 ) -> dict[str, Any]:
-    """Fallback semantic retrieval for the main agent only after deterministic, code_index, search and preprocessed evidence are insufficient. Keep queries bounded and use it only for bounded semantic retrieval, not open-ended agent orchestration. Actions: index, search, list. Index is file-incremental and query-cached. Do not trigger index repeatedly for a fresh stable workspace. Use when: cheaper indexed repository paths cannot answer a bounded semantic retrieval question. Skip when: deterministic/indexed evidence is sufficient or Codex-owned subagent orchestration is the right owner."""
+    """Fallback semantic retrieval after deterministic and indexed repository evidence. Use RAG only when cheaper Local AI Hub evidence is insufficient. Actions: index, search, list. Workspace is required for rag search. Use when: semantic retrieval is needed after cheaper code_index and search paths are insufficient. Skip when: deterministic manifests, symbols, or exact ripgrep search already locate the evidence."""
+    if not FEATURES.rag:
+        return {"success": False, "unsupported": True, "error": "RAG backend is disabled (features.rag=false in config.toml)"}
     action = action.strip().lower().replace("-", "_")
     if action == "index":
         return _compact(CLIENT.post("/v1/rag/index", {"root": root, "workspace": workspace or None}, timeout=_timeout("long")))
@@ -405,6 +575,8 @@ def local_ai_command(
     criterion: str = "",
 ) -> dict[str, Any]:
     """Bounded command broker for the main agent. MANDATORY for repeatable test/lint/typecheck/static-analysis/build/read-only commands whenever possible. Shared safe CLI broker. Actions: run, cancel, classify, discover, stats. Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts. Results are keyed by command + bounded repo state and duplicate runs coalesce across agents. Reuse fresh results. If run returns in_progress=true, DO NOT start the command natively or with force; continue independent work and retry later so the owner can populate the cache. cancel only stops an active matching command. force=true is exceptional recovery/admin behavior, never a retry button. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
+    if not FEATURES.commands:
+        return {"success": False, "unsupported": True, "error": "local_ai_command is disabled in configuration"}
     action = action.strip().lower().replace("-", "_")
     host_timeout = _timeout("long")
     configured_command_timeout = int(CFG.get("commands", {}).get("timeout_seconds", 900))
@@ -444,7 +616,9 @@ def local_ai_coord(
     fingerprint: dict[str, Any] | None = None,
     tool_outcome: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Cross-agent coordination for the main agent and bounded Hub workers. Actions: claim, release, leases, memo_put, memo_get, memo_search, memo_delete, task_create, task_get, task_checkpoint, task_transition, task_resume, task_list, memory_record, memory_get, memory_find, memory_promote, incident_decision. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Codex-owned peer subagents, including AGY, are coordinated by Codex rather than by this Hub tool. Use when: Hub workers share edit paths, leases, or reusable findings. Skip when: work is isolated and no shared Hub state or memo is involved."""
+    """Cross-agent coordination for the main agent and bounded Hub workers. Actions: claim, release, leases, memo_put, memo_get, memo_search, memo_delete, task_create, task_get, task_checkpoint, task_transition, task_resume, task_list, task_complete, task_fail, memory_record, memory_get, memory_find, memory_promote, context_compile, verify_receipt, verify_completion, negative_knowledge_record, negative_knowledge_find, incident_decision. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool. Use when: Hub workers share edit paths, leases, or reusable findings. Skip when: work is isolated and no shared Hub state or memo is involved."""
+    if not FEATURES.coord:
+        return {"success": False, "unsupported": True, "error": "local_ai_coord is disabled in configuration"}
     action = action.strip().lower().replace("-", "_")
     if action.startswith("task_"):
         return _compact(CLIENT.coord(
@@ -458,6 +632,31 @@ def local_ai_coord(
             target_scope=target_scope, approver=approver, key=key,
             value=value, query=query, root=root, ttl_seconds=ttl_seconds,
         ), "status")
+    if action == "context_compile":
+        return _compact(CLIENT.post("/v1/agent-state/context", {
+            "action": "compile", "task_id": task_id or query or value or key,
+            "token_budget": ttl_seconds or 4000, "root": root,
+            "changed_paths": paths or [],
+        }, timeout=_timeout("context")), "context")
+    if action == "verify_receipt":
+        return _compact(CLIENT.post("/v1/agent-state/verification", {
+            "action": "receipt", "receipt": checkpoint or {
+                "task_id": task_id,
+                "criterion": key or value or query,
+                "passed": status.lower() in {"passed", "true", "1", "pass", "ok"} if status else True,
+            }, "root": root,
+        }, timeout=_timeout("quick")), "verify")
+    if action == "verify_completion":
+        return _compact(CLIENT.post("/v1/agent-state/verification", {
+            "action": "completion", "task_id": task_id or query or value or key, "root": root,
+        }, timeout=_timeout("quick")), "verify")
+    if action.startswith("negative_knowledge_"):
+        sub_act = "record" if action == "negative_knowledge_record" else "find"
+        return _compact(CLIENT.post("/v1/agent-state/incidents", {
+            "action": sub_act, "error_class": key or "AgentError", "message": value or query,
+            "query": query or key or value, "root": root,
+            "root_cause": reason, "verified_fix": status,
+        }, timeout=_timeout("quick")), "status")
     if action == "incident_decision":
         return _compact(CLIENT.coord(
             action="incident_decision", fingerprint=fingerprint or {},
@@ -487,11 +686,36 @@ def local_ai_coord(
 @mcp.tool()
 def local_ai_artifact(artifact_id: str, offset: int = 0, max_chars: int = 4000, section: str = "") -> dict[str, Any]:
     """Fetch one needed artifact section or exact evidence slice. Evidence IDs start with E. Use when: exact source or evidence text is required after indexed discovery. Skip when: no source slice is needed or the existing compact result is sufficient."""
+    if not FEATURES.artifacts:
+        return {"success": False, "unsupported": True, "error": "local_ai_artifact is disabled in configuration"}
     if artifact_id.startswith("E"):
         return _compact(CLIENT.post("/v1/evidence/get", {"evidence_id": artifact_id, "verify": True}), "artifact")
     return _compact(CLIENT.post("/v1/artifact/get", {
         "artifact_id": artifact_id, "offset": offset, "max_chars": max(512, min(max_chars, 12000)), "section": section,
     }), "artifact")
+
+
+# Unregister tools that are disabled in current configuration so MCP clients do not receive them
+for _disabled in FEATURES.disabled_tools:
+    if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools"):
+        mcp._tool_manager._tools.pop(_disabled, None)
+    if hasattr(mcp, "tools") and isinstance(mcp.tools, list):
+        mcp.tools = [t for t in mcp.tools if getattr(t, "__name__", "") != _disabled]
+
+# Ensure tool descriptions registered in FastMCP carry the complete dynamic guidance
+_all_desc_map = {
+    "local_ai_status": _desc_status,
+    "local_ai_task": _desc_task,
+    "local_ai_repo": _desc_repo,
+    "local_ai_rag": _desc_rag,
+    "local_ai_command": _desc_command,
+    "local_ai_coord": _desc_coord,
+    "local_ai_artifact": _desc_artifact,
+}
+if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools"):
+    for _tool_name, _desc_fn in _all_desc_map.items():
+        if _tool_name in mcp._tool_manager._tools:
+            mcp._tool_manager._tools[_tool_name].description = _desc_fn()
 
 
 if __name__ == "__main__":

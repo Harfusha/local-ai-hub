@@ -4,7 +4,7 @@ Local AI Hub exposes seven compact MCP tools instead of mirroring every internal
 
 ## Mandatory local-first gate
 
-The main agent remains the orchestrator, planner, integrator and final owner. Delegation is the default for any task with useful bounded independent work: after required indexed evidence, call AGY directly first for bounded research, planning, implementation, review, testing support, or other sidecar work. Use bounded `local_ai_task` for local-model work when local inference is the right fit. Use native Codex `multi_agent_v1__spawn_agent` only for an explicit Codex-subagent request, a Codex-only capability or native Codex context/tool lifecycle, or one bounded AGY-unavailable fallback. Codex controls scope, `allow_write`, workspace/worktree, timeout, cancellation and integration. Local AI Hub does not bootstrap, route, proxy or own AGY tasks. Skip only for trivial tasks, pure evidence lookups, security/privacy constraints or no useful independent scope. Never duplicate the same scope across agents.
+The main agent remains the orchestrator, planner, integrator and final owner. Delegation is the default for useful bounded independent work after indexed evidence. Use bounded `local_ai_task` for local-model work when local inference is the right fit; use native Codex subagents only for explicit Codex-subagent requests or Codex-only capabilities. Codex controls scope, write access, workspace/worktree, timeout, cancellation and integration. Never duplicate the same scope across agents.
 
 For every non-trivial repository task, agents should start preprocessing the stable absolute project root once with `local_ai_repo(action="preprocess", root=...)` and continue immediately. Preprocessing is opportunistic: never poll or wait for it.
 
@@ -38,7 +38,7 @@ For an honest deployment cohort, use `/v1/metrics?scope=process` or `/v1/telemet
 
 ## Agent configuration
 
-Setup preserves unrelated user configuration and can install MCP entries for Codex, Claude, Gemini, Cursor, Windsurf and VS Code/Copilot. Portable generated manifests intentionally contain the Hub-only `local-ai` entry by default; AGY is a separately installed, Codex-owned peer server and is the mandatory first delegated route after Hub evidence, while native Codex `multi_agent_v1__spawn_agent` is exception-only and direct Serena/CodeGraph entries remain opt-in via `code_intelligence.direct_agent_mcp`. `[agents].extra_mcp_json_paths` / `extra_vscode_mcp_paths` can write explicitly requested custom host configs. The `local-ai-orchestrator` skill and MCP tool descriptions intentionally repeat the same policy so hosts that do not load external skill files still receive the routing contract.
+Setup preserves unrelated user configuration and can install MCP entries for Codex, Claude, Gemini, Cursor, Windsurf and VS Code/Copilot. Portable generated manifests intentionally contain the Hub-only `local-ai` entry by default; direct Serena/CodeGraph entries remain opt-in via `code_intelligence.direct_agent_mcp`. `[agents].extra_mcp_json_paths` / `extra_vscode_mcp_paths` can write explicitly requested custom host configs. The `local-ai-orchestrator` skill and MCP tool descriptions intentionally repeat the same policy so hosts that do not load external skill files still receive the routing contract.
 
 For concurrent agents, use `local_ai_coord` leases before overlapping edits and memos for reusable findings.
 
@@ -46,14 +46,16 @@ For concurrent agents, use `local_ai_coord` leases before overlapping edits and 
 
 Named profiles are available through existing `local_ai_task` and `local_ai_repo` tools: `qwen-explorer` for reconnaissance, `qwen-drafter` for proposed implementation guidance, and `qwen-critic` for independent review. With a repository `root`, each profile uses Hub read-only tooling directly, in order: preprocessing/deterministic facts, code index, Serena/CodeGraph, search/RAG, evidence IDs, then bounded file slices. Profiles never write files, run commands, create worktrees, or apply proposals. Default model is `qwen2.5-coder:7b`; output mirrors task language and preserves technical tokens. Skip named profiles when deterministic/indexed evidence is sufficient.
 
-## Codex-owned AGY peer agents on Windows
+## Local model conversations
 
-Treat AGY as the default Codex-owned peer agent for every useful delegated scope. Codex assigns whether it may write, the smallest useful scope, workspace/worktree, timeout and sandbox. Invoke AGY directly from Codex; do not send it through `local_ai_task`, Hub bootstrap, Hub routing or Hub lifecycle management. Use native `multi_agent_v1__spawn_agent` only for explicit Codex-subagent requests, Codex-only capabilities/context/lifecycle, or one bounded AGY-unavailable fallback. Pass `workspace` as an existing absolute directory, such as `C:\path\to\workspace`. The bridge validates it, uses it as subprocess `cwd`, and passes it to AGY with `--add-dir`. `WinError 267` means the workspace is not a usable Windows directory; correct the path before retrying. Never use `--dangerously-skip-permissions`, provider API keys or direct provider REST endpoints.
- 
+Start a synchronous conversation with `local_ai_task(action="delegate"|"reason", conversation=true, ...)`. The response returns an opaque `conversation_id`; continue it with `local_ai_task(action="continue", conversation_id=..., task="...")`. A conversation pins its initial model, route and system instructions, accepts one active turn, and is bound to its MCP tenant.
+
+Conversation history is process-memory only: it expires after inactivity and disappears after a hub restart. It bypasses generation, semantic and artifact caches, so no transcript or continuation output becomes durable cache state. Profiles and async/auto delivery are unsupported for conversations. Omit `conversation=true` to retain normal stateless behavior.
+
 ## Agent Operating System projection
  
 When `[agent_state].enabled` is active, the compact seven-tool MCP surface projects durable agent operating system state without adding new tools:
-- `local_ai_coord`: `task_create`, `task_get`, `task_checkpoint`, `task_transition`, `task_resume`, `task_list`, `memory_record`, `memory_get`, `memory_find`, `memory_promote`, `incident_decision`.
+- `local_ai_coord`: `task_create`, `task_get`, `task_checkpoint`, `task_transition`, `task_resume`, `task_list`, `task_complete`, `task_fail`, `memory_record`, `memory_get`, `memory_find`, `memory_promote`, `context_compile`, `verify_receipt`, `verify_completion`, `negative_knowledge_record`, `negative_knowledge_find`, `incident_decision`.
 - `local_ai_repo`: `context_compile`, `verify_receipt`, `verify_completion`.
 - `local_ai_task`: `candidate_create`, `candidate_promote`.
 - `local_ai_status`: `detail="agent_state"` for health and counts.

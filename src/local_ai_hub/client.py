@@ -381,6 +381,36 @@ class HubClient:
                 "fingerprint": kwargs.get("fingerprint") or {},
                 "state_revision": kwargs.get("state_revision", kwargs.get("revision", "")),
             })
+        if act == "context_compile":
+            return self.post("/v1/agent-state/context", {
+                "action": "compile",
+                "task_id": kwargs.get("task_id") or kwargs.get("query") or kwargs.get("task") or "",
+                "token_budget": kwargs.get("token_budget") or kwargs.get("max_tokens") or 4000,
+                "changed_paths": kwargs.get("changed_paths") or kwargs.get("paths") or [],
+                "root": kwargs.get("root", "."),
+            })
+        if act == "verify_receipt":
+            return self.post("/v1/agent-state/verification", {
+                "action": "receipt",
+                "receipt": kwargs.get("receipt") or {
+                    "task_id": kwargs.get("task_id", ""),
+                    "criterion": kwargs.get("criterion", kwargs.get("key", "")),
+                    "passed": kwargs.get("passed", True),
+                },
+                "root": kwargs.get("root", "."),
+            })
+        if act == "verify_completion":
+            return self.post("/v1/agent-state/verification", {
+                "action": "completion",
+                "task_id": kwargs.get("task_id") or kwargs.get("query") or kwargs.get("task") or "",
+                "root": kwargs.get("root", "."),
+            })
+        if act in {"negative_knowledge_record", "negative_knowledge_find"}:
+            sub_act = "record" if act == "negative_knowledge_record" else "find"
+            return self.post("/v1/agent-state/incidents", {
+                "action": sub_act,
+                **kwargs,
+            })
         if act == "claim":
             return self.post("/v1/leases/claim", {
                 "root": kwargs.get("root", "."),
@@ -420,3 +450,82 @@ class HubClient:
             "action": "completion",
             "task_id": task_id,
         })
+
+    def create_task(self, goal: str, acceptance_criteria: list[str] | None = None, task_id: str = "", scope: str = "task", **kwargs: Any) -> dict[str, Any]:
+        payload = {
+            "action": "create",
+            "goal": goal,
+            "acceptance_criteria": acceptance_criteria or [],
+            "task_id": task_id,
+            "scope": scope,
+            **kwargs,
+        }
+        return self.post("/v1/agent-state/tasks", payload)
+
+    def get_task(self, task_id: str) -> dict[str, Any]:
+        return self.post("/v1/agent-state/tasks", {"action": "get", "task_id": task_id})
+
+    def list_tasks(self, status: str | None = None, limit: int = 100) -> dict[str, Any]:
+        payload: dict[str, Any] = {"action": "list", "limit": limit}
+        if status:
+            payload["status"] = status
+        return self.post("/v1/agent-state/tasks", payload)
+
+    def complete_task(self, task_id: str, reason: str = "completed by agent") -> dict[str, Any]:
+        return self.post("/v1/agent-state/tasks", {"action": "complete", "task_id": task_id, "reason": reason})
+
+    def fail_task(self, task_id: str, reason: str = "failed by agent") -> dict[str, Any]:
+        return self.post("/v1/agent-state/tasks", {"action": "fail", "task_id": task_id, "reason": reason})
+
+    def checkpoint_task(self, task_id: str, phase: str = "", next_action: str = "", affected_paths: list[str] | None = None, **kwargs: Any) -> dict[str, Any]:
+        payload = {
+            "action": "checkpoint",
+            "task_id": task_id,
+            "phase": phase,
+            "next_action": next_action,
+            "affected_paths": affected_paths or [],
+            **kwargs,
+        }
+        return self.post("/v1/agent-state/tasks", payload)
+
+    def record_memory(self, key: str, value: Any, scope: str = "task", kind: str = "fact", **kwargs: Any) -> dict[str, Any]:
+        payload = {
+            "action": "record",
+            "key": key,
+            "value": value,
+            "scope": scope,
+            "kind": kind,
+            **kwargs,
+        }
+        return self.post("/v1/agent-state/memory", payload)
+
+    def find_memory(self, scope: str | None = None, key: str | None = None, query: str | None = None, limit: int = 100) -> dict[str, Any]:
+        payload: dict[str, Any] = {"action": "find", "limit": limit}
+        if scope:
+            payload["scope"] = scope
+        if key:
+            payload["key"] = key
+        if query:
+            payload["query"] = query
+        return self.post("/v1/agent-state/memory", payload)
+
+    def continue_conversation(self, conversation_id: str, prompt: str, model: str | None = None, system: str | None = None, max_tokens: int | None = None, temperature: float | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "conversation_id": conversation_id,
+            "prompt": prompt,
+        }
+        if model:
+            payload["model"] = model
+        if system:
+            payload["system"] = system
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+        if temperature is not None:
+            payload["temperature"] = temperature
+        return self.post("/v1/conversations/continue", payload)
+
+    def doctor(self) -> dict[str, Any]:
+        return self.get("/v1/doctor")
+
+    def logs(self, lines: int = 200) -> dict[str, Any]:
+        return self.get(f"/v1/logs/tail?lines={max(1, min(int(lines), 1000))}")

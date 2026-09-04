@@ -259,7 +259,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             failed = status >= 400 or (isinstance(data, dict) and data.get("success") is False)
-            detail = error or (str(data.get("error", "")) if isinstance(data, dict) else "")
+            redacted = bool(getattr(self, "_debug_trace_redacted", False))
+            detail = "" if redacted else error or (str(data.get("error", "")) if isinstance(data, dict) else "")
+            if redacted:
+                data = {"success": not failed, "conversation_redacted": True}
             state = "failed" if failed else "done"
             finished = store.finish(trace_id, state=state, response=data, error=detail)
             if not finished:
@@ -273,6 +276,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._debug_trace_finished = True
         except Exception:
             pass
+
+    def _redact_debug_trace(self) -> None:
+        """Keep in-memory conversation transcripts out of durable debug traces."""
+        token = getattr(self, "_debug_observer_token", None)
+        if token is not None:
+            try:
+                reset_observer(token)
+            except Exception:
+                pass
+            self._debug_observer_token = None
+        self._debug_trace_redacted = True
 
     def _reconcile_debug_trace(self, trace: dict[str, Any]) -> dict[str, Any]:
         """Make a stale trace follow the request journal when it is terminal."""
@@ -478,6 +492,10 @@ class Handler(BaseHTTPRequestHandler):
         job_action = action_by_path.get(path)
         if not job_action:
             return None
+        if bool(payload.get("conversation", False)):
+            if str(payload.get("delivery", "sync")).strip().lower() != "sync":
+                return 400, {"success": False, "error": "conversations require delivery=sync", "terminal": True, "retryable": False}
+            return None
         try:
             estimate = APP.telemetry.http_latency_estimate(path)
             decision = decide_delivery(
@@ -632,7 +650,7 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         try:
             if path == "/dashboard":
-                if not bool(APP.config.get("monitoring", {}).get("dashboard_enabled", True)):
+                if not bool(APP.config.get("monitoring", {}).get("dashboard_enabled", True)) or not bool(APP.config.get("features", {}).get("dashboard", True)):
                     self._send(404, {"error": "dashboard disabled"}); return
                 self._telemetry_finished = True
                 self._send_html(200, DASHBOARD_HTML); return
@@ -671,6 +689,52 @@ class Handler(BaseHTTPRequestHandler):
                 if isinstance(self.server, LocalAIHTTPServer):
                     status["http_concurrency"] = self.server.concurrency_stats()
                 self._send(200, status); return
+            if path == "/v1/agent-state/tasks":
+                if not getattr(APP, "agent_tasks", None) or not APP.agent_tasks.state_store.enabled:
+                    self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
+                task_id = (query.get("task_id") or [""])[0]
+                if task_id:
+                    task = APP.agent_tasks.get(task_id)
+                    if not task:
+                        self._send(404, {"success": False, "error": "task not found", "terminal": True, "retryable": False}); return
+                    self._send(200, {"success": True, "task": task.to_dict()}); return
+                status_filter = None
+                if query.get("status"):
+                    try:
+                        status_filter = TaskStatus(str(query.get("status")[0]).strip().lower())
+                    except ValueError:
+                        pass
+                limit = int((query.get("limit") or [100])[0])
+                tasks = APP.agent_tasks.list_tasks(status=status_filter, limit=limit)
+                self._send(200, {"success": True, "tasks": [t.to_dict() for t in tasks]}); return
+            if path == "/v1/agent-state/memory":
+                if not getattr(APP, "agent_memory", None) or not APP.agent_memory.state_store.enabled:
+                    self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
+                rec_id = (query.get("record_id") or [""])[0]
+                if rec_id:
+                    rec = APP.agent_memory.get(rec_id)
+                    if not rec:
+                        self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
+                    self._send(200, {"success": True, "record": rec.to_dict()}); return
+                scope_raw = (query.get("scope") or [None])[0]
+                scope_val = None
+                if scope_raw:
+                    try:
+                        scope_val = AgentScope(str(scope_raw).lower())
+                    except ValueError:
+                        pass
+                key_val = (query.get("key") or [None])[0]
+                query_val = (query.get("query") or [None])[0]
+                status_raw = (query.get("status") or [None])[0]
+                status_val = None
+                if status_raw:
+                    try:
+                        status_val = MemoryStatus(str(status_raw).lower())
+                    except ValueError:
+                        pass
+                limit_val = int((query.get("limit") or [100])[0])
+                records = APP.agent_memory.find(scope=scope_val, key=key_val, query=query_val, status=status_val, limit=limit_val)
+                self._send(200, {"success": True, "records": [r.to_dict() for r in records]}); return
             if path == "/v1/capabilities":
                 self._send(200, APP.capabilities()); return
             if path == "/v1/metrics":
@@ -919,6 +983,10 @@ class Handler(BaseHTTPRequestHandler):
         except RequestBodyError as exc:
             self._send(exc.status, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
         self._request_evaluation = payload.get("evaluation")
+        if path == "/v1/conversations/continue" or (
+            path in {"/v1/delegate", "/v1/reason"} and bool(payload.get("conversation", False))
+        ):
+            self._redact_debug_trace()
         trace_store = getattr(APP, "debug_traces", None)
         api_trace_id = str(getattr(self, "_debug_trace_id", "") or "")
         if trace_store is not None and api_trace_id:
@@ -965,6 +1033,11 @@ class Handler(BaseHTTPRequestHandler):
                     "code_intelligence.serena_enabled": {True, False},
                     "code_intelligence.codegraph_enabled": {True, False},
                     "monitoring.dashboard_enabled": {True, False},
+                    **{f"features.{feat_name}": {True, False} for feat_name in (
+                        "status", "repo", "tasks", "rag", "commands", "coord",
+                        "artifacts", "code_intelligence", "preprocessing",
+                        "subagents", "agent_os", "dashboard",
+                    )},
                 }
                 patch: dict[str, Any] = {}
                 for dotted, value in requested.items():
@@ -1012,6 +1085,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(*delivery); return
             if path == "/v1/delegate":
                 self._send(200, APP.services.delegate(payload, tenant)); return
+            if path == "/v1/conversations/continue":
+                self._send(200, APP.services.continue_conversation(payload, tenant)); return
             if path == "/v1/async-jobs":
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
                 if action == "submit":
@@ -1077,6 +1152,28 @@ class Handler(BaseHTTPRequestHandler):
                             str(payload.get("task_id", "")),
                             target_status,
                             reason=str(payload.get("reason", "")),
+                            actor=actor,
+                            idempotency_key=idempotency_key,
+                        )
+                        self._send(200, {"success": True, "task": task.to_dict()}); return
+                    except (KeyError, InvalidTransitionError, CompletionGateError) as exc:
+                        self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                if action == "complete":
+                    try:
+                        task = APP.agent_tasks.complete(
+                            str(payload.get("task_id", "")),
+                            reason=str(payload.get("reason", payload.get("value", "completed by agent"))),
+                            actor=actor,
+                            idempotency_key=idempotency_key,
+                        )
+                        self._send(200, {"success": True, "task": task.to_dict()}); return
+                    except (KeyError, InvalidTransitionError, CompletionGateError) as exc:
+                        self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                if action == "fail":
+                    try:
+                        task = APP.agent_tasks.fail(
+                            str(payload.get("task_id", "")),
+                            reason=str(payload.get("reason", payload.get("value", payload.get("error", "failed by agent")))),
                             actor=actor,
                             idempotency_key=idempotency_key,
                         )
@@ -1236,6 +1333,36 @@ class Handler(BaseHTTPRequestHandler):
                     rev = str(payload.get("state_revision", payload.get("revision", "")))
                     dec = APP.agent_incidents.retry_decision(fp, rev)
                     self._send(200, {"success": True, "decision": dec.to_dict()}); return
+                if action == "record":
+                    err_class = str(payload.get("error_class", payload.get("class", "AgentError")))
+                    msg = str(payload.get("message", payload.get("redacted_message", payload.get("value", ""))))
+                    op = str(payload.get("operation_class", payload.get("tool_name", payload.get("key", "agent"))))
+                    root_cause = str(payload.get("root_cause", ""))
+                    verified_fix = str(payload.get("verified_fix", payload.get("fix", "")))
+                    rev = str(payload.get("state_revision", payload.get("revision", "")))
+                    evidence_ids = tuple(payload.get("evidence_ids") or ())
+                    outcome = ToolOutcome(
+                        tool_name=op, error=msg or "recorded incident", exit_code=int(payload.get("exit_code", 1)),
+                        state_revision=rev, evidence_ids=evidence_ids,
+                        metadata={"root_cause": root_cause, "verified_fix": verified_fix},
+                    )
+                    inc = APP.agent_incidents.capture(outcome)
+                    if inc and (verified_fix or root_cause):
+                        inc = APP.agent_incidents.resolve_fix(inc.incident_id, verified_fix=verified_fix, root_cause=root_cause)
+                    self._send(200, {"success": True, "incident": inc.to_dict() if inc else None}); return
+                if action == "find":
+                    query_str = str(payload.get("query", payload.get("key", ""))).strip().lower()
+                    resolved_filter = payload.get("resolved")
+                    limit_val = int(payload.get("limit", 100))
+                    all_incs = APP.agent_incidents.list_incidents(resolved=resolved_filter, limit=limit_val * 2)
+                    if query_str:
+                        matched = [
+                            i for i in all_incs
+                            if query_str in i.error_class.lower() or query_str in i.redacted_message.lower() or (i.root_cause and query_str in i.root_cause.lower()) or (i.verified_fix and query_str in i.verified_fix.lower())
+                        ][:limit_val]
+                    else:
+                        matched = all_incs[:limit_val]
+                    self._send(200, {"success": True, "incidents": [i.to_dict() for i in matched]}); return
                 if action == "list":
                     resolved_filter = payload.get("resolved")
                     limit_val = int(payload.get("limit", 100))
@@ -1336,6 +1463,12 @@ class Handler(BaseHTTPRequestHandler):
                     candidates = APP.agent_learning.list_candidates(limit=limit_val)
                     self._send(200, {"success": True, "candidates": [c.to_dict() for c in candidates]}); return
                 self._send(400, {"success": False, "error": f"unknown learning action '{action}'", "terminal": True, "retryable": False}); return
+            if path == "/v1/agent-state/cleanup":
+                if not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
+                    self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
+                retention = int(payload.get("retention_days") or APP.config.get("agent_state", {}).get("retention_days", 30))
+                res = APP.agent_state.cleanup(retention_days=retention)
+                self._send(200, res); return
             if path == "/v1/delegate/repo":
                 self._send(200, APP.services.delegate_repo(payload, tenant)); return
             if path == "/v1/solve/repo":

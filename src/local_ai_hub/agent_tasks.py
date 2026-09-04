@@ -37,7 +37,7 @@ class TaskStatus(str, Enum):
 
 VALID_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     TaskStatus.DRAFT: {TaskStatus.PLANNED, TaskStatus.CANCELLED},
-    TaskStatus.PLANNED: {TaskStatus.ACTIVE, TaskStatus.CANCELLED},
+    TaskStatus.PLANNED: {TaskStatus.ACTIVE, TaskStatus.CANCELLED, TaskStatus.FAILED},
     TaskStatus.ACTIVE: {
         TaskStatus.VERIFYING,
         TaskStatus.WAITING,
@@ -52,9 +52,9 @@ VALID_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.FAILED,
         TaskStatus.CANCELLED,
     },
-    TaskStatus.WAITING: {TaskStatus.ACTIVE, TaskStatus.CANCELLED, TaskStatus.ABANDONED},
-    TaskStatus.BLOCKED: {TaskStatus.ACTIVE, TaskStatus.CANCELLED, TaskStatus.ABANDONED},
-    TaskStatus.ABANDONED: {TaskStatus.ACTIVE, TaskStatus.CANCELLED},
+    TaskStatus.WAITING: {TaskStatus.ACTIVE, TaskStatus.CANCELLED, TaskStatus.ABANDONED, TaskStatus.FAILED},
+    TaskStatus.BLOCKED: {TaskStatus.ACTIVE, TaskStatus.CANCELLED, TaskStatus.ABANDONED, TaskStatus.FAILED},
+    TaskStatus.ABANDONED: {TaskStatus.ACTIVE, TaskStatus.CANCELLED, TaskStatus.FAILED},
     TaskStatus.FAILED: {TaskStatus.ACTIVE, TaskStatus.CANCELLED},
     TaskStatus.COMPLETED: set(),
     TaskStatus.CANCELLED: set(),
@@ -298,6 +298,20 @@ class TaskStore:
         finally:
             con.close()
 
+    def count(self, status: TaskStatus | None = None) -> int:
+        if not self.state_store.enabled or not self.state_store.db_path.exists():
+            return 0
+        self._init_projection_table()
+        con = connect_sqlite(self.state_store.db_path)
+        try:
+            if status is not None:
+                row = con.execute("SELECT COUNT(1) FROM agent_tasks_projection WHERE status = ?", (status.value,)).fetchone()
+            else:
+                row = con.execute("SELECT COUNT(1) FROM agent_tasks_projection").fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            con.close()
+
     def add_verification_receipt(self, task_id: str, criterion: str, receipt_id: str) -> TaskState:
         current = self.get(task_id)
         if not current:
@@ -380,6 +394,96 @@ class TaskStore:
         self.state_store.append(event)
         self._save_projection(updated)
         return updated
+
+    def complete(
+        self,
+        task_id: str,
+        *,
+        reason: str = "completed by agent",
+        actor: str = "agent",
+        idempotency_key: str = "",
+    ) -> TaskState:
+        current = self.get(task_id)
+        if not current:
+            raise KeyError(f"Task {task_id} not found")
+        if current.status == TaskStatus.COMPLETED:
+            return current
+        if current.status == TaskStatus.PLANNED:
+            current = self.transition(
+                task_id,
+                TaskStatus.ACTIVE,
+                reason="auto-activated before completion",
+                actor=actor,
+                idempotency_key=f"{idempotency_key}_act" if idempotency_key else "",
+            )
+        if current.status == TaskStatus.ACTIVE:
+            current = self.transition(
+                task_id,
+                TaskStatus.VERIFYING,
+                reason="auto-verifying before completion",
+                actor=actor,
+                idempotency_key=f"{idempotency_key}_ver" if idempotency_key else "",
+            )
+        if current.status != TaskStatus.VERIFYING:
+            raise InvalidTransitionError(
+                f"Cannot complete task {task_id} from {current.status.value}"
+            )
+        return self.transition(
+            task_id,
+            TaskStatus.COMPLETED,
+            reason=reason,
+            actor=actor,
+            idempotency_key=idempotency_key,
+        )
+
+    def fail(
+        self,
+        task_id: str,
+        *,
+        reason: str = "failed by agent",
+        actor: str = "agent",
+        idempotency_key: str = "",
+    ) -> TaskState:
+        current = self.get(task_id)
+        if not current:
+            raise KeyError(f"Task {task_id} not found")
+        if current.status == TaskStatus.FAILED:
+            return current
+        if current.status in (
+            TaskStatus.PLANNED,
+            TaskStatus.ACTIVE,
+            TaskStatus.VERIFYING,
+            TaskStatus.WAITING,
+            TaskStatus.BLOCKED,
+            TaskStatus.ABANDONED,
+        ):
+            now = time.time()
+            updated = TaskState(
+                task_id=current.task_id,
+                status=TaskStatus.FAILED,
+                contract=current.contract,
+                context=current.context,
+                owner=actor,
+                lease_id=current.lease_id,
+                created_at=current.created_at,
+                updated_at=now,
+                heartbeat_expires_at=0.0,
+                checkpoint=current.checkpoint,
+                verification_receipts=current.verification_receipts,
+            )
+            event = AgentEvent.create(
+                stream_id=f"task:{task_id}",
+                kind="task.transitioned",
+                payload={"from_status": current.status.value, "to_status": TaskStatus.FAILED.value, "reason": reason},
+                idempotency_key=idempotency_key,
+                actor=actor,
+            )
+            self.state_store.append(event)
+            self._save_projection(updated)
+            return updated
+        raise InvalidTransitionError(
+            f"Cannot fail task {task_id} from {current.status.value}"
+        )
 
     def checkpoint(
         self,

@@ -360,3 +360,30 @@ class AgentStateStore:
             }
         finally:
             con.close()
+
+    def cleanup(self, retention_days: int = 30) -> dict[str, Any]:
+        if not self.enabled or not self.db_path.exists():
+            return {"success": True, "deleted_events": 0, "deleted_snapshots": 0}
+        self._ensure_schema()
+        cutoff = time.time() - (max(1, int(retention_days)) * 86400)
+
+        def _do_cleanup() -> dict[str, Any]:
+            con = connect_sqlite(self.db_path, isolation_level=None)
+            try:
+                con.execute("BEGIN IMMEDIATE")
+                cur_ev = con.execute("DELETE FROM agent_events WHERE created_at < ?", (cutoff,))
+                deleted_events = cur_ev.rowcount if cur_ev else 0
+                cur_snap = con.execute("DELETE FROM agent_snapshots WHERE created_at < ?", (cutoff,))
+                deleted_snaps = cur_snap.rowcount if cur_snap else 0
+                con.execute("COMMIT")
+                return {"success": True, "deleted_events": deleted_events, "deleted_snapshots": deleted_snaps}
+            except Exception:
+                try:
+                    con.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+            finally:
+                con.close()
+
+        return retry_busy(_do_cleanup, retries=5, base_delay_seconds=0.02)

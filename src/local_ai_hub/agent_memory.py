@@ -415,6 +415,17 @@ class MemoryStore:
         finally:
             con.close()
 
+    def count(self) -> int:
+        if not self.state_store.enabled or not self.state_store.db_path.exists():
+            return 0
+        self._init_table()
+        con = connect_sqlite(self.state_store.db_path)
+        try:
+            row = con.execute("SELECT COUNT(1) FROM agent_memory_records").fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            con.close()
+
     def _save_record(self, record: MemoryRecord) -> None:
         if not self.state_store.enabled:
             return

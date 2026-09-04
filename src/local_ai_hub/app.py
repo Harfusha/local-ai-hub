@@ -126,7 +126,7 @@ class LocalAIApp:
             memory_store=self.agent_memory,
             incident_store=self.agent_incidents,
         )
-        self.agent_routing = RoutingEngine(self.agent_state)
+        self.agent_routing = RoutingEngine(cfg=self.config, state_store=self.agent_state)
         self.agent_learning = LearningStore(self.agent_state)
         self.services = LocalAIServices(
             self.config, self.runtime, self.scheduler, self.embeddings,
@@ -233,10 +233,26 @@ class LocalAIApp:
         return {"success": False, "error": f"unsupported async task action: {action}", "terminal": True, "retryable": False}
 
     def capabilities(self) -> dict[str, Any]:
+        from .features import FeatureSet
+        fs = FeatureSet.from_config(self.config)
         return {
             "success": True,
             "version": __version__,
             "mcp_surface": "compact",
+            "features": {
+                "status": fs.status,
+                "repo": fs.repo,
+                "tasks": fs.tasks,
+                "rag": fs.rag,
+                "commands": fs.commands,
+                "coord": fs.coord,
+                "artifacts": fs.artifacts,
+                "code_intelligence": fs.code_intelligence,
+                "preprocessing": fs.preprocessing,
+                "subagents": fs.subagents,
+                "agent_os": fs.agent_os,
+                "dashboard": fs.dashboard,
+            },
             "token_saving": [
                 "compact seven-tool MCP surface with agent-specific final projection",
                 "deterministic-first execution DAG that resolves common repo questions without Ollama",
@@ -294,20 +310,39 @@ class LocalAIApp:
             ollama = headless.get("ollama_online") if headless.get("supervisor") else None
             scheduler = self.scheduler.status()
             prep_stats = self.preprocessor.stats()
-            try:
-                prep_status = self.preprocessor.status()
-            except Exception:
-                prep_status = {"success": False, "projects": []}
+            if not light:
+                try:
+                    prep_status = self.preprocessor.status()
+                except Exception:
+                    prep_status = {"success": False, "projects": []}
+            else:
+                prep_status = {"success": True, "projects": []}
             projects = []
             for item in prep_status.get("projects", []) if isinstance(prep_status, dict) else []:
                 row = dict(item)
                 root = str(row.get("root", ""))
                 row["project"] = Path(root).name or root
                 projects.append(row)
+            from .features import FeatureSet
+            fs = FeatureSet.from_config(self.config)
             observability = self.telemetry.realtime_summary(scope=scope)
             result = {
                 "success": True, "hub_online": True, "version": __version__,
                 "uptime_seconds": max(0, int(time.time() - self.started_at)),
+                "features": {
+                    "status": fs.status,
+                    "repo": fs.repo,
+                    "tasks": fs.tasks,
+                    "rag": fs.rag,
+                    "commands": fs.commands,
+                    "coord": fs.coord,
+                    "artifacts": fs.artifacts,
+                    "code_intelligence": fs.code_intelligence,
+                    "preprocessing": fs.preprocessing,
+                    "subagents": fs.subagents,
+                    "agent_os": fs.agent_os,
+                    "dashboard": fs.dashboard,
+                },
                 "models": dict(self.config.get("models", {})),
                 "hardware": dict(self.config.get("_hardware", {})),
                 "code_intelligence": self.external_tools.status(),
@@ -345,6 +380,17 @@ class LocalAIApp:
                     "code_index": self.code_index.status() if not light and self.code_index is not None else {},
                 },
             }
+            if getattr(self, "agent_state", None) and self.agent_state.enabled:
+                active_tasks = self.agent_tasks.count(status=TaskStatus.ACTIVE) if getattr(self, "agent_tasks", None) else 0
+                mem_count = self.agent_memory.count() if getattr(self, "agent_memory", None) else 0
+                result["agent_state"] = {
+                    "enabled": True,
+                    "status": "healthy",
+                    "active_tasks_count": active_tasks,
+                    "memory_records_count": mem_count,
+                }
+            else:
+                result["agent_state"] = {"enabled": False}
             self._live_status_cache[cache_key] = (now, result)
             return dict(result)
 
@@ -396,6 +442,7 @@ class LocalAIApp:
             tasks = self.agent_tasks.list_tasks() if getattr(self, "agent_tasks", None) else []
             incidents = self.agent_incidents.list_incidents() if getattr(self, "agent_incidents", None) else []
             candidates = self.agent_learning.list_candidates() if getattr(self, "agent_learning", None) else []
+            mem_count = self.agent_memory.count() if getattr(self, "agent_memory", None) else 0
             res["agent_state"] = {
                 "enabled": True,
                 "status": "healthy",
@@ -403,6 +450,7 @@ class LocalAIApp:
                 "tasks_count": len(tasks),
                 "incidents_count": len(incidents),
                 "candidates_count": len(candidates),
+                "memory_records_count": mem_count,
                 "retention_days": int(self.config.get("agent_state", {}).get("retention_days", 30)),
             }
         else:

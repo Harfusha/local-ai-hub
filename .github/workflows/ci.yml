@@ -22,10 +22,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]"
-      - run: python -m compileall -q src tools
+      - run: python -m compileall -q src mcp tools tests
       - run: pyflakes src tools
       - run: pytest
       - run: python tools/selftest.py
+      - run: python tools/hubctl.py generate
       - run: python tools/check_dashboard.py
 
   package:

@@ -673,10 +673,13 @@ def test_agent_policy_is_consistent_and_has_stop_reuse_protocol():
     policy = setup.GLOBAL_POLICY
     agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     skill = (ROOT / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
-    assert policy in agents
+    assert setup.GLOBAL_POLICY_BEGIN in agents
+    assert setup.GLOBAL_POLICY_END in agents
+    for phrase in ("Stop escalating", "in_progress=true", "Do not fan out", "one bounded health/retry attempt"):
+        assert phrase in agents
     for phrase in ("Stop escalating", "in_progress=true", "Do not fan out", "one bounded health/retry attempt"):
         assert phrase in policy
-    assert "Stop escalating when evidence is sufficient" in skill
+    assert "Stop escalating" in skill
     assert "retryable`/429/503" in skill
 
 
@@ -716,8 +719,8 @@ def test_mcp_tools_have_use_when_and_skip_when_cues():
         start = source.index(f"def {tool}(")
         end = source.find("\n\n@mcp.tool()", start)
         block = source[start:] if end < 0 else source[start:end]
-        assert "Use when:" in block, tool
-        assert "Skip when:" in block, tool
+        assert "Use when:" in block, f"{tool}: missing 'Use when:' in docstring"
+        assert "Skip when:" in block, f"{tool}: missing 'Skip when:' in docstring"
 
 
 def test_agent_policy_has_default_delegation_triggers():
@@ -727,11 +730,9 @@ def test_agent_policy_has_default_delegation_triggers():
     spec.loader.exec_module(setup)
     expected = (
         "Delegation is the default for any task with useful bounded independent work.",
-        "After required indexed evidence, call AGY directly (`mcp__agy__agy` or `mcp__agy__agy_start`) first",
         "Use `local_ai_task` for bounded local-model work when local inference is the right fit.",
-        "AGY is the mandatory first peer-agent choice for delegatable work; native Codex subagents are exception-only.",
-        "Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, and integration.",
-        "AGY is invoked and lifecycle-managed directly by Codex; Local AI Hub does not bootstrap, route, proxy, or own AGY tasks.",
+        "Use the native Codex `multi_agent_v1__spawn_agent` path only for useful independent bounded work or an explicit Codex-subagent request.",
+        "Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.",
         "Do not duplicate the same scope across agents.",
         "Skip delegation only for trivial tasks, pure evidence lookups, security/privacy constraints, or no useful independent scope.",
     )
@@ -742,15 +743,14 @@ def test_agent_policy_has_default_delegation_triggers():
         assert phrase in skill
 
 
-def test_hub_policy_keeps_agy_outside_hub_orchestration():
-    spec = importlib.util.spec_from_file_location("local_ai_hub_setup_agy_boundary", ROOT / "tools" / "setup.py")
+def test_hub_policy_excludes_removed_external_agent_route():
+    spec = importlib.util.spec_from_file_location("local_ai_hub_setup_external_agent_boundary", ROOT / "tools" / "setup.py")
     assert spec and spec.loader
     setup = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(setup)
     policy = setup.GLOBAL_POLICY
-    assert "Local AI Hub does not bootstrap, route, proxy, or own AGY tasks." in policy
-    assert "AGY is a fallback for fuzzy delegation, not the default worker." not in policy
-    assert "use AGY only for fuzzy or open-ended delegation" not in policy
+    assert "AGY" not in policy
+    assert "mcp__agy" not in policy
     assert "allow_write=false" not in policy
 
 

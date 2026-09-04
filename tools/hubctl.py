@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from local_ai_hub.client import HubClient
@@ -90,8 +91,36 @@ def start() -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Control the Local AI Hub singleton")
-    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup"])
+    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "generate", "tasks", "memory", "doctor", "logs"])
+    parser.add_argument("--config", type=Path, default=None, help="Path to config.toml")
+    parser.add_argument("--install", action="store_true", help="Also deploy generated skill/instructions to configured agents")
+    parser.add_argument("--task-id", type=str, default="", help="Task ID for task lookup")
+    parser.add_argument("--status", type=str, default="", help="Task status filter (planned, active, verifying, completed, failed, blocked)")
+    parser.add_argument("--complete", action="store_true", help="Mark task as completed")
+    parser.add_argument("--fail", action="store_true", help="Mark task as failed")
+    parser.add_argument("--reason", type=str, default="", help="Reason for completing or failing task")
+    parser.add_argument("--scope", type=str, default="", help="Memory scope filter (task, session, branch, project, user, global)")
+    parser.add_argument("--key", type=str, default="", help="Memory key filter")
+    parser.add_argument("--query", type=str, default="", help="Memory search query")
+    parser.add_argument("--limit", type=int, default=50, help="Maximum items to return")
+    parser.add_argument("--json", dest="raw_json", action="store_true", help="Output raw JSON")
     args = parser.parse_args()
+    if args.action == "generate":
+        cfg_path = args.config or (ROOT / "config.toml")
+        cfg = load_config(str(cfg_path))
+        from local_ai_hub.generator import write_all_generated
+        from tools import setup as setup_mod
+        python_bin = setup_mod.venv_python(ROOT / ".venv")
+        if not python_bin.exists():
+            python_bin = Path(sys.executable)
+        res = write_all_generated(cfg, ROOT, python_bin)
+        install_dir = setup_mod.expand(cfg.get("setup", {}).get("install_dir", "~/.local-ai-hub"))
+        if install_dir.resolve() != ROOT.resolve():
+            write_all_generated(cfg, install_dir, python_bin)
+        if args.install or bool(cfg.get("setup", {}).get("install_agent_configs", False)):
+            setup_mod.configure_agents(install_dir, python_bin, None, None, cfg)
+        print(json.dumps({"success": True, "generated": res}, indent=2, ensure_ascii=False))
+        return 0
     if args.action == "watch":
         return subprocess.call([sys.executable, str(ROOT / "tools" / "monitor.py")])
     if args.action == "dashboard":
@@ -107,6 +136,92 @@ def main() -> int:
         c = client()
         res = c.post("/v1/agent-state/cleanup", {})
         print(json.dumps(res, indent=2, ensure_ascii=False))
+        return 0 if res.get("success", True) else 1
+    if args.action == "tasks":
+        c = client()
+        if args.complete or args.fail:
+            if not args.task_id:
+                print("Error: --task-id is required when completing or failing a task.", file=sys.stderr)
+                return 1
+            reason = args.reason or ("completed via hubctl" if args.complete else "failed via hubctl")
+            res = c.complete_task(args.task_id, reason=reason) if args.complete else c.fail_task(args.task_id, reason=reason)
+            if args.raw_json:
+                print(json.dumps(res, indent=2, ensure_ascii=False))
+                return 0 if res.get("success", True) else 1
+            if res.get("success", False):
+                status_word = "completed" if args.complete else "failed"
+                print(f"Task {args.task_id} {status_word}: {reason}")
+                return 0
+            else:
+                print(f"Failed to update task {args.task_id}: {res.get('error', 'unknown error')}", file=sys.stderr)
+                return 1
+        if args.task_id:
+            res = c.get_task(args.task_id)
+        else:
+            res = c.list_tasks(status=args.status or None, limit=args.limit)
+        if args.raw_json:
+            print(json.dumps(res, indent=2, ensure_ascii=False))
+            return 0 if res.get("success", True) else 1
+        if args.task_id:
+            t = res.get("task")
+            if not t:
+                print(f"Task {args.task_id} not found: {res.get('error', 'unknown error')}", file=sys.stderr)
+                return 1
+            print(f"Task ID:   {t.get('task_id')}")
+            print(f"Status:    {t.get('status')}")
+            print(f"Goal:      {t.get('contract', {}).get('goal')}")
+            criteria = t.get("contract", {}).get("acceptance_criteria", [])
+            if criteria:
+                print(f"Criteria:  {', '.join(criteria)}")
+            chk = t.get("checkpoint")
+            if chk:
+                print(f"Phase:     {chk.get('phase', '')} -> {chk.get('next_action', '')}")
+            return 0
+        tasks = res.get("tasks", [])
+        if not tasks:
+            print("No agent tasks found.")
+            return 0
+        print(f"{'STATUS':<12} {'TASK ID':<24} {'GOAL'}")
+        print("-" * 65)
+        for t in tasks:
+            st = str(t.get("status", "")).upper()
+            tid = str(t.get("task_id", ""))[:23]
+            goal = str(t.get("contract", {}).get("goal", ""))
+            if len(goal) > 40:
+                goal = goal[:37] + "..."
+            print(f"{st:<12} {tid:<24} {goal}")
+        return 0
+    if args.action == "memory":
+        c = client()
+        res = c.find_memory(scope=args.scope or None, key=args.key or None, query=args.query or None, limit=args.limit)
+        if args.raw_json:
+            print(json.dumps(res, indent=2, ensure_ascii=False))
+            return 0 if res.get("success", True) else 1
+        records = res.get("records", [])
+        if not records:
+            print("No memory records found.")
+            return 0
+        print(f"{'SCOPE':<10} {'KIND':<8} {'KEY':<24} {'VALUE'}")
+        print("-" * 65)
+        for r in records:
+            sc = str(r.get("scope", "")).lower()
+            kd = str(r.get("kind", "")).lower()
+            k = str(r.get("key", ""))[:23]
+            v = str(r.get("value", ""))
+            if len(v) > 30:
+                v = v[:27] + "..."
+            print(f"{sc:<10} {kd:<8} {k:<24} {v}")
+        return 0
+    if args.action == "doctor":
+        c = client()
+        res = c.doctor()
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+        return 0 if res.get("success", True) else 1
+    if args.action == "logs":
+        c = client()
+        res = c.logs(lines=args.limit or 200)
+        for line in res.get("lines", []):
+            print(line)
         return 0 if res.get("success", True) else 1
     if args.action == "status":
         print(json.dumps(status(), indent=2, ensure_ascii=False))

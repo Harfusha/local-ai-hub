@@ -41,4 +41,23 @@ allow_remote = false
 allow_mutating = false
 allow_unknown = false
 
+[features]
+# Granular toggles: disable components you do not need.
+# When disabled, tools are omitted from the MCP server, agent skills, instructions, and schemas.
+# tasks = true              # local model inference worker (local_ai_task)
+# rag = true                # semantic retrieval fallback (local_ai_rag)
+# commands = true           # safe command execution broker (local_ai_command)
+# coord = true              # coordination leases, memos, task contracts (local_ai_coord)
+# artifacts = true          # compact responses & evidence slicing (local_ai_artifact)
+# code_intelligence = true  # Serena / CodeGraphContext backends
+# preprocessing = true      # background idle project warmup
+# subagents = true          # advisory local profiles
+# agent_os = true           # durable execution: tasks, verification receipts, memory
+# dashboard = true          # realtime web dashboard at /dashboard
+
+# After changing configuration, regenerate dynamic agent skills, instructions, and MCP schemas:
+#   python tools/hubctl.py generate
+#   or
+#   python tools/setup.py --generate-only
+
 # See defaults.toml for the complete list of options.

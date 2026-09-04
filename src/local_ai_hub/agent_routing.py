@@ -69,8 +69,11 @@ class ToolObservation:
 
 
 class RoutingEngine:
-    def __init__(self, state_store: Any | None = None) -> None:
+    def __init__(self, cfg: dict[str, Any] | None = None, state_store: Any | None = None) -> None:
         self.state_store = state_store
+        self._fast_model: str = (
+            (cfg or {}).get("models", {}).get("fast_code", "qwen2.5-coder:7b")
+        )
         self._known_flakes: set[str] = set()
         self._observations: list[ToolObservation] = []
 
@@ -112,7 +115,7 @@ class RoutingEngine:
         if request.needs_model:
             return RoutingDecision(
                 kind="local_model",
-                target="qwen2.5-coder:7b",
+                target=self._fast_model,
                 reason="local model reasoning selected",
                 confidence=0.80,
             )

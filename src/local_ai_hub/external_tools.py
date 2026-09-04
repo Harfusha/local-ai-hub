@@ -419,7 +419,7 @@ class ExternalCodeIntelligence:
 
     def _record_failure(self, backend: str, exc: Exception, *, operation: str, root: str | None = None) -> None:
         message = str(exc)
-        if backend == "codegraph" and "No module named 'codegraphcontext'" in message:
+        if backend == "codegraph" and any(marker in message.lower() for marker in ("no module named 'codegraphcontext'", "no module named codegraphcontext", "cannot import name")):
             self.codegraph_enabled = False
             self._codegraph = None
             self._cooldown_until[backend] = 0.0
@@ -526,9 +526,11 @@ class ExternalCodeIntelligence:
             self._record_success(backend, root=root)
             return {"success": True, "backend": backend, "elapsed_ms": round((time.perf_counter() - started) * 1000, 1), "output": (stdout or "").strip()[-self.max_output_chars:]}
         except Exception as exc:
-            self.index_failures += 1
+            msg = str(exc)
+            if not self._is_revision_scoped_index_error("index", msg) and not (backend == "codegraph" and any(m in msg.lower() for m in ("no module named", "cannot import"))):
+                self.index_failures += 1
             self._record_failure(backend, exc, operation="index", root=root)
-            return {"success": False, "backend": backend, "error": str(exc), "error_type": type(exc).__name__}
+            return {"success": False, "backend": backend, "error": msg, "error_type": type(exc).__name__}
 
     def index(self, backend: str, root: str) -> dict[str, Any]:
         backend = backend.strip().lower()

@@ -44,6 +44,54 @@ def test_command_validator_classifies_doctor_and_selftest(tmp_path: Path):
     assert self_res["allowed"] is True
     assert self_res["class"] == "validation"
 
+    hubctl_status = broker.classify("python tools/hubctl.py status")
+    assert hubctl_status["allowed"] is True
+    assert hubctl_status["class"] == "validation"
+
+    hubctl_tasks = broker.classify("python tools/hubctl.py tasks")
+    assert hubctl_tasks["allowed"] is True
+    assert hubctl_tasks["class"] == "validation"
+
+    hubctl_tasks_comp = broker.classify("python tools/hubctl.py tasks --task-id t-1 --complete")
+    assert hubctl_tasks_comp["class"] == "mutating"
+    assert hubctl_tasks_comp["allowed"] is False
+
+    hubctl_tasks_fail = broker.classify("python tools/hubctl.py tasks --task-id t-1 --fail")
+    assert hubctl_tasks_fail["class"] == "mutating"
+    assert hubctl_tasks_fail["allowed"] is False
+
+    hubctl_stop = broker.classify("python tools/hubctl.py stop")
+    assert hubctl_stop["class"] == "mutating"
+    assert hubctl_stop["allowed"] is False
+
+    hubctl_gen = broker.classify("python tools/hubctl.py generate")
+    assert hubctl_gen["allowed"] is True
+    assert hubctl_gen["class"] == "build"
+
+    pkg_gen = broker.classify("python -m local_ai_hub --generate")
+    assert pkg_gen["allowed"] is True
+    assert pkg_gen["class"] == "build"
+
+    setup_gen = broker.classify("python tools/setup.py --generate-only")
+    assert setup_gen["allowed"] is True
+    assert setup_gen["class"] == "build"
+
+    build_res = broker.classify("python -m build")
+    assert build_res["allowed"] is True
+    assert build_res["class"] == "build"
+
+    pyflakes_res = broker.classify("pyflakes src tools")
+    assert pyflakes_res["allowed"] is True
+    assert pyflakes_res["class"] == "validation"
+
+    m_pyflakes = broker.classify("python -m pyflakes src")
+    assert m_pyflakes["allowed"] is True
+    assert m_pyflakes["class"] == "validation"
+
+    telem_res = broker.classify("python tools/telemetry_report.py --days 30")
+    assert telem_res["allowed"] is True
+    assert telem_res["class"] == "validation"
+
 
 def test_command_broker_auto_registers_verification_receipt(tmp_path: Path):
     state_dir = tmp_path / "state"
@@ -207,4 +255,135 @@ def test_hubctl_agent_state_and_cleanup(monkeypatch, capsys):
     assert ret2 == 0
     out2 = capsys.readouterr().out
     assert '"cleaned": 5' in out2
+
+
+def test_task_store_auto_complete_and_fail(tmp_path: Path):
+    import pytest
+    from local_ai_hub.agent_tasks import TaskStatus, CompletionGateError, InvalidTransitionError
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    state_store = AgentStateStore(state_dir / "agent_state.sqlite3", enabled=True)
+    task_store = TaskStore(state_store)
+    mem_store = MemoryStore(state_store)
+
+    # 1. Auto complete without criteria: PLANNED -> ACTIVE -> VERIFYING -> COMPLETED
+    t1 = task_store.create(GoalContract(goal="Do quick task"), ScopeContext(task_id="t-1"), task_id="t-1")
+    assert t1.status == TaskStatus.PLANNED
+    assert task_store.count() == 1
+    assert task_store.count(TaskStatus.PLANNED) == 1
+
+    c1 = task_store.complete("t-1", reason="done quickly")
+    assert c1.status == TaskStatus.COMPLETED
+    assert task_store.count(TaskStatus.COMPLETED) == 1
+    # Idempotent call
+    assert task_store.complete("t-1").status == TaskStatus.COMPLETED
+
+    # 2. Auto complete with criteria gates
+    t2 = task_store.create(
+        GoalContract(goal="Guarded task", acceptance_criteria=["criterion 1"]),
+        ScopeContext(task_id="t-2"),
+        task_id="t-2",
+    )
+    # Attempting to complete without receipt fails at verification gate
+    with pytest.raises(CompletionGateError):
+        task_store.complete("t-2")
+
+    # State should now be in VERIFYING
+    assert task_store.get("t-2").status == TaskStatus.VERIFYING
+
+    # Add receipt and complete
+    task_store.add_verification_receipt("t-2", "criterion 1", "receipt-abc")
+    c2 = task_store.complete("t-2")
+    assert c2.status == TaskStatus.COMPLETED
+
+    # 3. Direct fail from PLANNED and ACTIVE
+    t3 = task_store.create(GoalContract(goal="Failing task"), ScopeContext(task_id="t-3"), task_id="t-3")
+    f3 = task_store.fail("t-3", reason="abandoned before start")
+    assert f3.status == TaskStatus.FAILED
+    assert task_store.fail("t-3").status == TaskStatus.FAILED
+
+    # Cannot complete a failed task
+    with pytest.raises(InvalidTransitionError):
+        task_store.complete("t-3")
+
+    # 4. Fail from WAITING and BLOCKED
+    t4 = task_store.create(GoalContract(goal="Wait task"), ScopeContext(task_id="t-4"), task_id="t-4")
+    task_store.transition("t-4", TaskStatus.ACTIVE, reason="activate", actor="agent", idempotency_key="act-4")
+    task_store.transition("t-4", TaskStatus.WAITING, reason="waiting", actor="agent", idempotency_key="wait-4")
+    f4 = task_store.fail("t-4", reason="timed out waiting")
+    assert f4.status == TaskStatus.FAILED
+
+    # 5. Counts
+    assert task_store.count(TaskStatus.FAILED) == 2
+    assert task_store.count(TaskStatus.COMPLETED) == 2
+    assert task_store.count() == 4
+
+    # 6. MemoryStore count
+    assert mem_store.count() == 0
+    mem_store.record(MemoryRecord.create(key="k1", value="v1", kind="fact", scope="repo"))
+    mem_store.record(MemoryRecord.create(key="k2", value="v2", kind="decision", scope="repo"))
+    assert mem_store.count() == 2
+
+
+def test_hubctl_tasks_mutation_cli(monkeypatch, capsys):
+    import sys
+    from tools import hubctl as hubctl_mod
+
+    calls = []
+
+    class MockClient:
+        def complete_task(self, task_id, reason=""):
+            calls.append(("complete", task_id, reason))
+            return {"success": True, "task": {"task_id": task_id, "status": "completed"}}
+
+        def fail_task(self, task_id, reason=""):
+            calls.append(("fail", task_id, reason))
+            return {"success": True, "task": {"task_id": task_id, "status": "failed"}}
+
+    monkeypatch.setattr(hubctl_mod, "client", lambda: MockClient())
+
+    # 1. Complete with reason
+    monkeypatch.setattr(sys, "argv", ["hubctl.py", "tasks", "--task-id", "task-100", "--complete", "--reason", "All done"])
+    rc = hubctl_mod.main()
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Task task-100 completed: All done" in out
+    assert calls[-1] == ("complete", "task-100", "All done")
+
+    # 2. Fail with default reason
+    monkeypatch.setattr(sys, "argv", ["hubctl.py", "tasks", "--task-id", "task-200", "--fail"])
+    rc = hubctl_mod.main()
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Task task-200 failed: failed via hubctl" in out
+    assert calls[-1] == ("fail", "task-200", "failed via hubctl")
+
+    # 3. Missing task-id error
+    monkeypatch.setattr(sys, "argv", ["hubctl.py", "tasks", "--complete"])
+    rc = hubctl_mod.main()
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "--task-id is required" in err
+
+
+def test_external_tools_index_failure_suppression(tmp_path: Path):
+    from local_ai_hub.external_tools import ExternalCodeIntelligence
+
+    mgr = ExternalCodeIntelligence({"server": {"state_dir": str(tmp_path)}})
+    assert mgr.index_failures == 0
+
+    # Revision scoped error should not increment index_failures
+    mgr._record_failure("serena", RuntimeError("indexing exceeded 60s"), operation="index", root=str(tmp_path))
+    assert mgr.index_failures == 0
+
+    # Codegraph missing module should not increment index_failures and should disable backend cleanly
+    mgr.codegraph_enabled = True
+    mgr._codegraph = "cgc"
+    mgr._record_failure("codegraph", RuntimeError("No module named 'codegraphcontext'"), operation="index", root=str(tmp_path))
+    assert mgr.index_failures == 0
+    assert mgr.codegraph_enabled is False
+    assert mgr._codegraph is None
+
+
 

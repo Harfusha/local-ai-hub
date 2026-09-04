@@ -27,13 +27,14 @@ build/
 .local-ai-hub.zip
 
 # Coverage
-.coverage
+.coverage*
 htmlcov/
 
 # Logs / temporary files
 *.log
 *.tmp
 *.bak
+ORIGINAL_REQUEST.md
 .DS_Store
 Thumbs.db
 
@@ -47,4 +48,4 @@ config.runtime.toml
 # Agent workspace state (internal, not for distribution)
 .superpowers/
 .serena/
-agy-contextless-workspace/
+.agents/

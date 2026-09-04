@@ -12,10 +12,10 @@ from local_ai_hub import mcp_server as local_ai_mcp  # noqa: E402
 
 def test_public_action_parameters_are_explicit_literals() -> None:
     expected = {
-        "local_ai_task": {"delegate", "reason", "review", "second_opinion", "compress", "route", "batch", "benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait", "result", "cancel", "candidate_create", "candidate_promote"},
+        "local_ai_task": {"delegate", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait", "result", "cancel", "candidate_create", "candidate_promote"},
         "local_ai_repo": {"profile", "deterministic", "search", "map", "code_index", "semantic", "graph", "intelligence", "context", "route", "delegate", "solve", "review_diff", "impact", "refactor_impact", "resolve_imports", "generate_tests", "validate_patch", "audit_dependencies", "ast_outline", "test_matrix", "security_audit", "git_status", "synthesize_commit", "verify", "preprocess", "preprocess_status", "preprocess_refresh", "preprocess_pause", "preprocess_resume", "preprocess_cancel", "preprocess_unregister", "context_compile", "verify_receipt", "verify_completion"},
         "local_ai_rag": {"index", "search", "list"},
-        "local_ai_coord": {"claim", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete", "task_create", "task_get", "task_checkpoint", "task_transition", "task_resume", "task_list", "memory_record", "memory_get", "memory_find", "memory_promote", "incident_decision"},
+        "local_ai_coord": {"claim", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete", "task_create", "task_get", "task_checkpoint", "task_transition", "task_resume", "task_list", "task_complete", "task_fail", "memory_record", "memory_get", "memory_find", "memory_promote", "context_compile", "verify_receipt", "verify_completion", "negative_knowledge_record", "negative_knowledge_find", "incident_decision"},
         "local_ai_command": {"run", "cancel", "classify", "discover", "stats"},
     }
     for name, values in expected.items():
@@ -30,7 +30,7 @@ def test_mcp_descriptions_explain_agent_tier_boundaries() -> None:
         for name in ["local_ai_task", "local_ai_repo", "local_ai_rag", "local_ai_command", "local_ai_coord", "local_ai_artifact"]
     )
     assert "main agent" in descriptions
-    assert "AGY" in descriptions
+    assert "AGY" not in descriptions
     assert "bounded" in descriptions
     assert "Codex" in descriptions
     assert "does not route or manage" in descriptions
@@ -59,6 +59,29 @@ def test_local_ai_task_exposes_named_profile_fields() -> None:
     assert "profile" in parameters
     assert "root" in parameters
     assert "workspace" in parameters
+
+
+def test_local_ai_task_forwards_continue_with_opaque_conversation_id(monkeypatch) -> None:
+    captured = {}
+
+    def fake_post(path, payload, **kwargs):
+        captured.update({"path": path, **payload})
+        return {"success": True, "conversation_id": payload["conversation_id"], "text": "doplnění"}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    result = local_ai_mcp.local_ai_task(
+        action="continue",
+        conversation_id="opaque-id",
+        task="Doplň detaily.",
+    )
+
+    assert result["success"] is True
+    assert captured == {
+        "path": "/v1/conversations/continue",
+        "conversation_id": "opaque-id",
+        "task": "Doplň detaily.",
+        "context": "",
+    }
 
 
 def test_invalid_ollama_profile_returns_structured_error() -> None:

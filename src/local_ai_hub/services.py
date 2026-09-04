@@ -14,6 +14,7 @@ from typing import Any
 from .artifacts import ArtifactStore
 from .budget import chars_for_tokens, estimate_tokens, fit_text
 from .cache import MemoryLRUCache, SQLiteCache, TieredCache, SingleFlightCache, SingleFlightGroup, stable_hash
+from .conversations import Conversation, ConversationStore
 from .normalizer import normalize_query, postprocess_model_output
 from .semantic_cache import SemanticGenerationCache
 from .model_policy import ModelExecutionPolicy
@@ -163,6 +164,11 @@ class LocalAIServices:
         self._index_refresh_lock = threading.Lock()
         self._index_refresh_state: dict[str, str] = {}
         self._query_expansion_l1 = MemoryLRUCache(1024, ttl_seconds=3600)
+        conversation_cfg = config.get("model_conversations", {})
+        self.conversations = ConversationStore(
+            idle_ttl_seconds=float(conversation_cfg.get("idle_ttl_seconds", 900)),
+            max_turns=int(conversation_cfg.get("max_turns", 12)),
+        )
 
     def set_rag(self, rag: Any) -> None:
         self.rag = rag
@@ -295,6 +301,7 @@ class LocalAIServices:
         semantic_query: str = "",
         semantic_context_fingerprint: str = "",
         internal: bool = False,
+        use_cache: bool = True,
     ) -> dict[str, Any]:
         saving = self.config.get("token_saving", {})
         resilience = self.config.get("resilience", {})
@@ -346,7 +353,7 @@ class LocalAIServices:
 
         def compute_inner() -> dict[str, Any]:
             nonlocal semantic_score
-            if semantic_query:
+            if use_cache and semantic_query:
                 semantic, semantic_score = self.semantic_cache.get(semantic_scope, semantic_query)
                 if isinstance(semantic, dict):
                     reused = copy.deepcopy(semantic)
@@ -424,7 +431,7 @@ class LocalAIServices:
                 errors.append(f"{candidate}: {attempt_error}")
 
             # Same exact prompt may be served stale only as a resilience fallback.
-            if bool(resilience.get("serve_stale_on_error", True)):
+            if use_cache and bool(resilience.get("serve_stale_on_error", True)):
                 stale = self.stale_generation_cache.get(cache_key)
                 if isinstance(stale, dict):
                     reused = copy.deepcopy(stale)
@@ -456,9 +463,14 @@ class LocalAIServices:
                         pass
                 return result
 
-        raw, cache_hit, coalesced = self.generation_cache.get_or_compute(cache_key, compute)
+        if use_cache:
+            raw, cache_hit, coalesced = self.generation_cache.get_or_compute(cache_key, compute)
+        else:
+            raw, cache_hit, coalesced = compute_inner(), False, False
         origin = str(raw.get("_lah_cache_origin", "")) if isinstance(raw, dict) else ""
-        if coalesced:
+        if not use_cache:
+            cache_layer = "disabled"
+        elif coalesced:
             cache_layer = "single-flight"
         elif cache_hit:
             cache_layer = "exact"
@@ -473,7 +485,7 @@ class LocalAIServices:
                 clean = {k: v for k, v in raw.items() if not str(k).startswith("_lah_")}
                 self.semantic_cache.set(semantic_scope, semantic_query, clean)
 
-        if isinstance(raw, dict) and raw.get("success", "error" not in raw) and origin != "stale" and not raw.get("fallback_used", False):
+        if use_cache and isinstance(raw, dict) and raw.get("success", "error" not in raw) and origin != "stale" and not raw.get("fallback_used", False):
             clean_stale = {k: v for k, v in raw.items() if not str(k).startswith("_lah_")}
             self.stale_generation_cache.set(cache_key, clean_stale)
 
@@ -489,7 +501,7 @@ class LocalAIServices:
             action=source,
             stage="cache_decision",
             success=True,
-            error_type=cache_decision_reason(cache_layer, semantic_query=semantic_query),
+            error_type="cache_disabled" if not use_cache else cache_decision_reason(cache_layer, semantic_query=semantic_query),
         )
         result["cache_hit"] = effective_cache_hit
         result["cache_layer"] = cache_layer
@@ -536,7 +548,105 @@ class LocalAIServices:
             self.telemetry.record_error("ollama", source, result.get("error", "model request failed"), tenant=tenant, retryable=True)
         return result
 
+    @staticmethod
+    def _conversation_user_prompt(task: str, context: str = "") -> str:
+        prompt = f"TASK:\n{task}\n"
+        if context:
+            prompt += f"\nCONTEXT:\n{context}\n"
+        return prompt
+
+    @staticmethod
+    def _conversation_transcript(messages: list[dict[str, str]], next_user_prompt: str) -> str:
+        rendered = []
+        for message in messages:
+            role = "USER" if message.get("role") == "user" else "ASSISTANT"
+            rendered.append(f"{role}:\n{message.get('content', '')}")
+        rendered.append(f"USER:\n{next_user_prompt}")
+        return "CONVERSATION:\n\n" + "\n\n".join(rendered)
+
+    def _conversation_prompt_limit(self) -> int:
+        cfg = self.config.get("model_conversations", {})
+        return max(256, int(cfg.get("max_prompt_tokens", self.config.get("token_saving", {}).get("max_local_input_tokens", 56000))))
+
+    def _conversation_error(self, conversation_id: str, error: str) -> dict[str, Any]:
+        active = error == "conversation is already running"
+        return {
+            "success": False,
+            "conversation_id": conversation_id,
+            "error": error,
+            "terminal": not active,
+            "retryable": active,
+            "in_progress": active,
+        }
+
+    def _start_conversation(
+        self,
+        *,
+        tenant: str,
+        prompt: str,
+        route: dict[str, Any],
+        system: str,
+        max_tokens: int,
+        temperature: float,
+        source: str,
+        priority: int,
+    ) -> dict[str, Any]:
+        if estimate_tokens(prompt) + estimate_tokens(system) > self._conversation_prompt_limit():
+            return self._conversation_error("", "conversation prompt limit exceeded")
+        conversation = self.conversations.start(tenant, {
+            "model": route["model"], "system": system, "max_tokens": max_tokens,
+            "temperature": temperature, "source": source, "priority": priority,
+            "route": dict(route),
+        })
+        self.conversations.reserve(conversation.conversation_id, tenant)
+        result = self._generate(
+            route["model"], prompt, system, max_tokens, temperature, tenant, source, priority,
+            internal=True, use_cache=False,
+        )
+        if not result.get("success", "error" not in result):
+            self.conversations.discard(conversation.conversation_id, tenant)
+            return result
+        self.conversations.complete(conversation.conversation_id, tenant, prompt, str(result.get("text", "")))
+        result["conversation_id"] = conversation.conversation_id
+        result["route"] = dict(route)
+        return result
+
+    def continue_conversation(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+        conversation_id = str(args.get("conversation_id", "")).strip()
+        task = str(args.get("task", "")).strip()
+        if not conversation_id:
+            return self._conversation_error("", "conversation_id is required")
+        if not task:
+            return self._conversation_error(conversation_id, "task is required")
+        conversation, error = self.conversations.reserve(conversation_id, tenant)
+        if error:
+            return self._conversation_error(conversation_id, error)
+        assert conversation is not None
+        user_prompt = self._conversation_user_prompt(task, str(args.get("context", "")))
+        prompt = self._conversation_transcript(conversation.messages, user_prompt)
+        settings = conversation.settings
+        if estimate_tokens(prompt) + estimate_tokens(str(settings["system"])) > self._conversation_prompt_limit():
+            self.conversations.abort(conversation_id, tenant)
+            return self._conversation_error(conversation_id, "conversation prompt limit exceeded")
+        result = self._generate(
+            str(settings["model"]), prompt, str(settings["system"]), int(settings["max_tokens"]),
+            float(settings["temperature"]), tenant, str(settings["source"]), int(settings["priority"]),
+            internal=True, use_cache=False,
+        )
+        if not result.get("success", "error" not in result):
+            self.conversations.abort(conversation_id, tenant)
+            return result
+        self.conversations.complete(conversation_id, tenant, user_prompt, str(result.get("text", "")))
+        result["conversation_id"] = conversation_id
+        result["route"] = dict(settings["route"])
+        return result
+
     def delegate(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+        if bool(args.get("conversation", False)):
+            if str(args.get("profile", "")).strip():
+                return self._conversation_error("", "conversations do not support profiles")
+            if str(args.get("delivery", "sync")).strip().lower() != "sync":
+                return self._conversation_error("", "conversations require delivery=sync")
         if str(args.get("profile", "")).strip():
             return self.delegate_profile(args, tenant)
         task = str(args.get("task", ""))
@@ -564,13 +674,19 @@ class LocalAIServices:
                 "decisions, identifiers, numbers and uncertainty. Do not repeat the prompt."
             ),
         }[task_type]
-        prompt = f"TASK:\n{task}\n"
-        if context:
-            prompt += f"\nCONTEXT:\n{context}\n"
+        prompt = self._conversation_user_prompt(task, context)
+        max_tokens = int(args.get("max_tokens", 1400))
+        temperature = float(args.get("temperature", 0.15))
+        source = f"delegate:{task_type}"
+        priority = int(args.get("priority", 5))
+        if bool(args.get("conversation", False)):
+            return self._start_conversation(
+                tenant=tenant, prompt=prompt, route=route, system=system, max_tokens=max_tokens,
+                temperature=temperature, source=source, priority=priority,
+            )
         result = self._generate(
             route["model"], prompt, system,
-            int(args.get("max_tokens", 1400)), float(args.get("temperature", 0.15)),
-            tenant, f"delegate:{task_type}", int(args.get("priority", 5)),
+            max_tokens, temperature, tenant, source, priority,
             avoided_cloud_tokens=int(args.get("_avoided_cloud_tokens", 0)),
             semantic_query=task, semantic_context_fingerprint=stable_hash(context),
         )

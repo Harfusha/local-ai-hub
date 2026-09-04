@@ -323,11 +323,11 @@ def _free_port() -> int:
 def _request(url: str, *, method="GET", body: bytes | None=None, headers=None):
     req=urllib.request.Request(url, data=body, method=method, headers=headers or {})
     try:
-        with urllib.request.urlopen(req, timeout=5) as r:
+        with urllib.request.urlopen(req, timeout=10) as r:
             return r.status, dict(r.headers), r.read()
     except urllib.error.HTTPError as e:
         return e.code, dict(e.headers), e.read()
-    except urllib.error.URLError:
+    except (urllib.error.URLError, TimeoutError, OSError):
         return 0, {}, b""
 
 

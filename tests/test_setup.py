@@ -37,7 +37,7 @@ def test_global_policy_has_explicit_read_only_and_fallback_contract() -> None:
         "sandbox",
         "allow_write",
         "Codex controls each subagent's scope",
-        "Local AI Hub does not bootstrap, route, proxy, or own AGY tasks.",
+        "Native `multi_agent_v1__spawn_agent` is used only for useful independent bounded work",
     ):
         assert phrase in policy
 

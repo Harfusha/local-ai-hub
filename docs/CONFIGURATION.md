@@ -52,7 +52,7 @@ Loopback is the default. Remote binding requires explicit remote access and a co
 
 ## Agent Operating System state
 
-`[agent_state]` controls the local agent operating system state layer. It is feature-flagged and disabled by default (`enabled = false`). When enabled, state is stored in `agent_state.sqlite3` under `server.state_dir`.
+`[agent_state]` controls the local agent operating system state layer. It is enabled by default (`enabled = true`). When enabled, state is stored in `agent_state.sqlite3` under `server.state_dir`.
 - `retention_days = 30`: TTL for terminal tasks, incidents, and unconfirmed memory candidates.
 - `snapshot_interval_events = 100`: Periodic state snapshot interval.
 - `max_event_bytes = 65536`: Event payload size ceiling.
@@ -62,3 +62,40 @@ Loopback is the default. Remote binding requires explicit remote access and a co
 ## Dashboard-managed overrides
 
 The dashboard writes only `config.runtime.toml` next to the active primary configuration. It never rewrites `config.toml`; this preserves comments, secrets and hand-maintained settings. Runtime overrides are merged last and require a hub restart to take effect. Resetting dashboard overrides deletes only the sidecar.
+
+## Modular Features and Dynamic Generation
+
+Every primary tool and capability can be toggled via `[features]` in `config.toml`:
+
+```toml
+[features]
+status = true             # local_ai_status tool
+repo = true               # local_ai_repo tool
+tasks = true              # local_ai_task local model tool
+rag = true                # local_ai_rag semantic retrieval tool
+commands = true           # local_ai_command safe CLI broker
+coord = true              # local_ai_coord coordination/leases tool
+artifacts = true          # local_ai_artifact evidence slice tool
+code_intelligence = true  # Serena & CodeGraphContext backends
+preprocessing = true      # Background idle project warmup
+subagents = true          # Named advisory subagent profiles
+agent_os = true           # Durable execution: task contracts, receipts, memory
+```
+
+When a feature is disabled:
+- The MCP server unregisters the tool so connected agents do not receive its schema.
+- Action lists and documentation for composite tools (`local_ai_repo`, `local_ai_task`, `local_ai_coord`) automatically omit unsupported actions.
+- Dynamic agent skills (`SKILL.md`) and instruction policies (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`) omit all disabled tools, recipes, and models.
+
+### Regenerating Artifacts
+
+Whenever you change feature toggles or models in `config.toml`:
+
+```bash
+# Regenerate skills, instructions, MCP manifests, and schemas:
+python tools/hubctl.py generate
+
+# Or via setup:
+python tools/setup.py --generate-only
+```
+

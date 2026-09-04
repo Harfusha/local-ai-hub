@@ -32,10 +32,17 @@ def test_release_has_compact_mcp_surface_and_tool_first_policy():
 
 def test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources():
     forbidden = ("C:" + "\\Users\\" + "Adam", "/Users/" + "Adam", "DROP" + "IN", "RTX " + "4060")
+    skip_parts = {
+        ".git", "__pycache__", ".pytest_cache", ".venv", "tool-envs", "state", "data", "generated",
+        ".agents", ".serena", ".superpowers", "agy-contextless-workspace",
+    }
+    skip_files = {"ORIGINAL_REQUEST.md", ".coverage"}
     for path in ROOT.rglob("*"):
-        if not path.is_file() or any(part in {".git", "__pycache__", ".pytest_cache", ".venv", "tool-envs", "state", "data", "generated"} for part in path.parts):
+        if not path.is_file():
             continue
-        if path.suffix in {".pyc", ".sqlite3", ".db"}:
+        if any(part in skip_parts for part in path.parts) or path.name in skip_files or path.name.startswith(".coverage"):
+            continue
+        if path.suffix in {".pyc", ".sqlite3", ".db", ".zip", ".pkl"} or ".local-ai-hub-backup-" in path.name:
             continue
         try:
             text = path.read_text(encoding="utf-8")

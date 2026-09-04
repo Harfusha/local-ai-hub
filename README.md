@@ -18,7 +18,8 @@ Version 1.5 hardens the hub under contention: HTTP admission, model scheduling, 
 - exact evidence IDs and artifact-backed large responses;
 - model-affinity scheduling, bounded fallbacks and an optional preemptible background Ollama runtime;
 - automatic hardware profile selection across Windows, macOS and Linux, including NVIDIA, AMD, Intel and Apple graphics detection;
-- metadata-only telemetry, realtime monitoring and a self-contained dashboard.
+- metadata-only telemetry, realtime monitoring and a self-contained dashboard;
+- **Agent Operating System**: durable execution state, scoped key-value memory, exact token-bounded context compilation, verification receipts, and negative knowledge incident avoidance.
 
 ## Installation
 
@@ -55,9 +56,11 @@ python tools/setup.py --profile cpu
 python tools/setup.py --profile balanced --skip-model-pull
 python tools/setup.py --skip-tools
 python tools/setup.py --skip-agent-config --skip-service
+python tools/setup.py --generate-only
 ```
 
 Run `python tools/setup.py --help` for the complete list. Normal setup reruns preserve the configuration already installed in `~/.local-ai-hub`; pass `--config <path>` explicitly when you intend to import/replace it.
+Run `python tools/hubctl.py generate` (or `python tools/setup.py --generate-only`) at any time to regenerate dynamic agent skills, instructions, and MCP tool schemas matching your active `config.toml` feature toggles and models.
 
 ## Hardware profiles
 
@@ -92,7 +95,7 @@ To expose Serena/CodeGraph as independent MCP servers as well as through the hub
 
 ## Agent behavior
 
-The main agent owns orchestration and final integration. Delegation is the default for any task with useful bounded independent work: after required indexed evidence, call AGY directly first for bounded research, planning, implementation, review, testing support, or other sidecar work. Use bounded `local_ai_task` for local-model work when local inference is the right fit. Use native Codex `multi_agent_v1__spawn_agent` only for an explicit Codex-subagent request, a Codex-only capability or native Codex context/tool lifecycle, or one bounded AGY-unavailable fallback. Codex controls scope, `allow_write`, workspace/worktree, timeout, cancellation and integration. Local AI Hub does not bootstrap, route, proxy or own AGY tasks. Skip only for trivial tasks, pure evidence lookups, security/privacy constraints or no useful independent scope. Never duplicate the same scope across agents.
+The main agent owns orchestration and final integration. Delegation is the default for useful bounded independent work after indexed evidence. Use bounded `local_ai_task` for local-model work when local inference is the right fit; use native Codex subagents only for explicit Codex-subagent requests or Codex-only capabilities. Codex controls scope, write access, workspace/worktree, timeout, cancellation and integration. Never duplicate the same scope across agents.
 
 Setup installs the `local-ai-orchestrator` skill/policy where the host supports it and MCP entries for Codex, Claude, Gemini, Cursor, Windsurf and VS Code/Copilot. Portable manifests are also emitted under `generated/`. The intended order is:
 
@@ -129,7 +132,7 @@ Relationship-heavy tasks are bootstrapped toward CodeGraph and symbol/reference-
 
 Named advisory profiles are available through the existing compact MCP surface: `qwen-explorer` for repository reconnaissance, `qwen-drafter` for solution guidance, and `qwen-critic` for independent review. With an absolute repository root, profiles use Local AI Hub read-only tooling directly and never write files or run commands. Example: `local_ai_task(action="delegate", profile="qwen-explorer", root="C:\\project", task="Find the relevant entry points")`.
 
-Portable generated MCP manifests intentionally include only `local-ai` by default. AGY remains a separately configured, Codex-owned peer route and is the mandatory first delegated agent after Hub evidence; native Codex `multi_agent_v1__spawn_agent` is exception-only. Direct Serena/CodeGraph MCP servers are opt-in.
+Portable generated MCP manifests intentionally include only `local-ai` by default. Direct Serena/CodeGraph MCP servers are opt-in.
 
 ## Reliability
 
@@ -151,11 +154,15 @@ No software can guarantee survival of OS, driver, power or hardware failures, bu
 
 Dashboard: `http://127.0.0.1:11435/dashboard`
 
-It shows hub/Ollama state, selected hardware profile, CPU/RAM/graphics, scheduler/model activity, preprocessing progress including Serena/CodeGraph phases, code-intelligence backend status, cache/token-saving counters and metadata-only activity/error telemetry.
+It shows hub/Ollama state, Agent OS tasks/memory records, selected hardware profile, CPU/RAM/graphics, scheduler/model activity, preprocessing progress including Serena/CodeGraph phases, code-intelligence backend status, cache/token-saving counters and metadata-only activity/error telemetry.
 
 ```bash
 python tools/doctor.py
 python tools/hubctl.py status
+python tools/hubctl.py tasks
+python tools/hubctl.py memory
+python tools/hubctl.py doctor
+python tools/hubctl.py logs --limit 50
 python tools/hubctl.py watch
 python tools/telemetry_report.py --days 30
 ```

@@ -22,7 +22,8 @@ STATE = Path(CFG["server"]["state_dir"])
 STATE.mkdir(parents=True, exist_ok=True)
 DISABLED = STATE / "service.disabled"
 MANAGED = STATE / "service.managed"
-PY = Path(sys.executable)
+_venv_py = ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+PY = _venv_py if _venv_py.exists() else Path(sys.executable)
 PYWIN = PY.with_name("pythonw.exe") if os.name == "nt" else PY
 if os.name == "nt" and not PYWIN.exists():
     PYWIN = PY

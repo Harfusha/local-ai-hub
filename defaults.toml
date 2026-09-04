@@ -384,7 +384,20 @@ max_json_bytes = 268435456 # 256 MiB uncompressed bundle.json
 max_rows_per_table = 1000000
 
 [features]
-rag = true
+# Master feature switches. Disabling a feature removes it from MCP registration,
+# dynamic agent skills, instructions, and generated schemas.
+status = true # health, queue, cache, telemetry inspection (local_ai_status)
+repo = true # primary repository worker (local_ai_repo)
+tasks = true # local model inference worker (local_ai_task)
+rag = true # semantic retrieval fallback (local_ai_rag)
+commands = true # safe command execution broker (local_ai_command)
+coord = true # coordination leases, memos, task contracts (local_ai_coord)
+artifacts = true # compact responses & evidence slicing (local_ai_artifact)
+code_intelligence = true # Serena / CodeGraphContext backends
+preprocessing = true # background idle project warmup
+subagents = true # advisory local profiles (qwen-explorer, etc.)
+agent_os = true # durable execution: tasks, verification receipts, memory
+dashboard = true # realtime web dashboard at /dashboard
 reranker = true
 install_local_nlp_dependencies = true
 pull_models_during_setup = true
@@ -772,7 +785,7 @@ repair_markdown_fences = true
 normalize_diffs = true
 
 [agent_state]
-enabled = false
+enabled = true
 event_retention_days = 30
 max_payload_bytes = 65536
 snapshot_interval_events = 50
