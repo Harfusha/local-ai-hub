@@ -1444,6 +1444,34 @@ class LocalAIServices:
         review_payload["task"] = review_payload.pop("instructions")
         review_payload["context"] = review_payload.pop("code")
         result = self.delegate(review_payload, tenant)
+
+        # Multi-model consensus review for high-risk breaking changes or when explicitly requested
+        consensus_requested = bool(args.get("consensus", False))
+        auto_consensus = args.get("consensus") is None and bool(det_diff.get("breaking_changes"))
+
+        if consensus_requested or auto_consensus:
+            try:
+                sec_payload = dict(review_payload)
+                sec_payload["task_type"] = "reasoning"
+                sec_payload["task"] = (
+                    "CRITICAL COUNTER-REVIEW / CONSENSUS AUDIT:\n"
+                    "Analyze the diff independently and verify potential defects or breaking changes. "
+                    "Confirm genuine issues and flag false positives.\n\n"
+                    + str(review_payload["task"])
+                )
+                sec_result = self.delegate(sec_payload, tenant)
+                if isinstance(sec_result, dict) and sec_result.get("text"):
+                    result["consensus"] = {
+                        "enabled": True,
+                        "triggered_by": "explicit" if consensus_requested else "breaking_changes",
+                        "primary_model": result.get("model", "primary"),
+                        "secondary_model": sec_result.get("model", "secondary"),
+                        "secondary_review": sec_result.get("text", ""),
+                    }
+                    result["text"] = str(result.get("text", "")) + "\n\n### Consensus / Counter-Review Findings:\n" + str(sec_result.get("text", ""))
+            except Exception as exc:
+                result["consensus"] = {"enabled": True, "degraded": True, "error": str(exc)}
+
         result["diff"] = {
             "changed_files": diff["changed_files"],
             "truncated": diff["truncated"],

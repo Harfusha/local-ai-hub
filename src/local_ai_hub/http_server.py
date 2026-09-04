@@ -1319,9 +1319,21 @@ class Handler(BaseHTTPRequestHandler):
                             reason=reason,
                             actor=actor,
                         )
-                        self._send(200, {"success": True, "record": quarantined.to_dict()}); return
                     except KeyError as exc:
                         self._send(404, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                if action == "compact":
+                    scope_val = payload.get("scope")
+                    older_than = float(payload.get("older_than_seconds", 0.0))
+                    min_recs = int(payload.get("min_records", 3))
+                    target_scope = payload.get("target_scope")
+                    res = APP.agent_memory.compact(
+                        scope=scope_val,
+                        older_than_seconds=older_than,
+                        min_records=min_recs,
+                        target_scope=target_scope,
+                        actor=actor,
+                    )
+                    self._send(200, res); return
                 self._send(400, {"success": False, "error": f"unknown memory action '{action}'", "terminal": True, "retryable": False}); return
             if path == "/v1/agent-state/incidents":
                 if not getattr(APP, "agent_incidents", None) or not APP.agent_incidents.state_store.enabled:

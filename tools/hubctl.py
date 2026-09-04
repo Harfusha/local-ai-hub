@@ -103,6 +103,8 @@ def main() -> int:
     parser.add_argument("--key", type=str, default="", help="Memory key filter")
     parser.add_argument("--query", type=str, default="", help="Memory search query")
     parser.add_argument("--limit", type=int, default=50, help="Maximum items to return")
+    parser.add_argument("--compact", action="store_true", help="Compact older memory records into digest summaries")
+    parser.add_argument("--vacuum", action="store_true", help="Run SQLite WAL checkpoint and VACUUM during cleanup")
     parser.add_argument("--ports", action="store_true", help="Also terminate orphaned background processes on ports 11436, 11437, 11439")
     parser.add_argument("--json", dest="raw_json", action="store_true", help="Output raw JSON")
     args = parser.parse_args()
@@ -144,11 +146,30 @@ def main() -> int:
                     cleaned_ports.append({"port": port, "pid": pid})
         c = client()
         try:
-            res = c.post("/v1/agent-state/cleanup", {})
+            try:
+                res = c.post("/v1/agent-state/cleanup", {}, timeout=3.0)
+            except TypeError:
+                res = c.post("/v1/agent-state/cleanup", {})
         except Exception as e:
             res = {"success": bool(cleaned_ports), "server_status": "offline", "detail": str(e)}
         if cleaned_ports:
             res["cleaned_ports"] = cleaned_ports
+
+        vacuum_results: list[dict[str, Any]] = []
+        if args.vacuum:
+            from local_ai_hub.sqlite_support import optimize_db
+            cfg = load_config(str(args.config or (ROOT / "config.toml")))
+            state_dir = Path(cfg.get("server", {}).get("state_dir", "~/.local-ai-hub/state")).expanduser().resolve()
+            if state_dir.exists():
+                for db_file in state_dir.rglob("*.sqlite3"):
+                    try:
+                        res_opt = optimize_db(db_file, wal_checkpoint=True, vacuum=True)
+                        vacuum_results.append(res_opt)
+                    except Exception as e:
+                        vacuum_results.append({"path": str(db_file), "success": False, "error": str(e)})
+        if vacuum_results:
+            res["vacuum_results"] = vacuum_results
+
         print(json.dumps(res, indent=2, ensure_ascii=False))
         return 0 if res.get("success", True) else 1
     if args.action == "tasks":
@@ -207,6 +228,13 @@ def main() -> int:
         return 0
     if args.action == "memory":
         c = client()
+        if args.compact:
+            res = c.coord("memory_compact", scope=args.scope or None, limit=args.limit)
+            if args.raw_json:
+                print(json.dumps(res, indent=2, ensure_ascii=False))
+            else:
+                print(f"Compacted {res.get('compacted_records', 0)} records into {res.get('compacted_groups', 0)} digest group(s).")
+            return 0 if res.get("success", True) else 1
         res = c.find_memory(scope=args.scope or None, key=args.key or None, query=args.query or None, limit=args.limit)
         if args.raw_json:
             print(json.dumps(res, indent=2, ensure_ascii=False))

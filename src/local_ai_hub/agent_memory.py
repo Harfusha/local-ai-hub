@@ -4,6 +4,7 @@ import json
 import sqlite3
 import time
 import uuid
+from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -161,6 +162,28 @@ class MemoryRecord:
             contradicts_record_id=self.contradicts_record_id,
             supersedes_record_id=self.supersedes_record_id,
             quarantine_reason=None,
+            provenance=self.provenance,
+            created_at=self.created_at,
+            updated_at=time.time(),
+            expires_at=self.expires_at,
+        )
+
+    def with_superseded_by(self, new_record_id: str) -> MemoryRecord:
+        return MemoryRecord(
+            record_id=self.record_id,
+            kind=self.kind,
+            scope=self.scope,
+            scope_id=self.scope_id,
+            key=self.key,
+            value=self.value,
+            confidence=self.confidence,
+            status=MemoryStatus.SUPERSEDED,
+            source=self.source,
+            evidence_ids=self.evidence_ids,
+            sensitivity=self.sensitivity,
+            contradicts_record_id=self.contradicts_record_id,
+            supersedes_record_id=new_record_id,
+            quarantine_reason=self.quarantine_reason,
             provenance=self.provenance,
             created_at=self.created_at,
             updated_at=time.time(),
@@ -548,3 +571,105 @@ class MemoryStore:
             return cnt > 0
         finally:
             con.close()
+
+    def compact(
+        self,
+        *,
+        scope: AgentScope | str | None = None,
+        older_than_seconds: float = 0.0,
+        min_records: int = 3,
+        target_scope: AgentScope | str | None = None,
+        actor: str = "compactor",
+    ) -> dict[str, Any]:
+        """Compact older or fragmented memories of the same scope/kind into a digest record."""
+        if not self.state_store.enabled or not self.state_store.db_path.exists():
+            return {"success": False, "compacted_groups": 0, "compacted_records": 0, "created_records": []}
+
+        now = time.time()
+        records = self.find(scope=scope, limit=1000)
+        candidates = [
+            r for r in records
+            if r.status in (MemoryStatus.ACTIVE, MemoryStatus.CONFIRMED)
+            and not r.key.startswith("compacted_")
+            and (older_than_seconds <= 0.0 or (now - r.updated_at) >= older_than_seconds)
+        ]
+
+        groups: dict[tuple[AgentScope, MemoryKind], list[MemoryRecord]] = defaultdict(list)
+        for r in candidates:
+            groups[(r.scope, r.kind)].append(r)
+
+        created_records: list[dict[str, Any]] = []
+        total_compacted = 0
+
+        for (grp_scope, grp_kind), grp_records in groups.items():
+            if len(grp_records) < max(2, min_records):
+                continue
+
+            out_scope = grp_scope
+            if target_scope is not None:
+                if isinstance(target_scope, str):
+                    try:
+                        out_scope = AgentScope(target_scope.lower())
+                    except ValueError:
+                        out_scope = grp_scope
+                else:
+                    out_scope = target_scope
+
+            digest_key = f"compacted_{grp_kind.value}_{int(now)}"
+            all_ev: set[str] = set()
+            for r in grp_records:
+                all_ev.update(r.evidence_ids)
+
+            avg_conf = sum(r.confidence for r in grp_records) / len(grp_records)
+
+            digest_value = {
+                "type": "compacted_memory_digest",
+                "kind": grp_kind.value,
+                "record_count": len(grp_records),
+                "keys": [r.key for r in grp_records if r.key],
+                "items": [
+                    {"key": r.key, "value": r.value, "confidence": r.confidence, "created_at": r.created_at}
+                    for r in grp_records
+                ],
+                "summary": f"Compacted digest of {len(grp_records)} {grp_kind.value} records across sessions."
+            }
+
+            digest_record = MemoryRecord.create(
+                kind=grp_kind,
+                scope=out_scope,
+                key=digest_key,
+                value=digest_value,
+                confidence=round(avg_conf, 3),
+                status=MemoryStatus.CONFIRMED if out_scope != grp_scope else MemoryStatus.ACTIVE,
+                source="memory_compactor",
+                evidence_ids=tuple(sorted(all_ev)),
+            )
+
+            self._save_record(digest_record)
+
+            for src_rec in grp_records:
+                superseded_rec = src_rec.with_superseded_by(digest_record.record_id)
+                self._save_record(superseded_rec)
+                total_compacted += 1
+
+            event = AgentEvent.create(
+                stream_id=f"memory:{out_scope.value}:{digest_key}",
+                kind="memory.compacted",
+                payload={
+                    "digest_record_id": digest_record.record_id,
+                    "compacted_count": len(grp_records),
+                    "source_record_ids": [r.record_id for r in grp_records],
+                },
+                idempotency_key=f"compact_{digest_record.record_id}",
+                actor=actor,
+            )
+            self.state_store.append(event)
+            created_records.append(digest_record.to_dict())
+
+        return {
+            "success": True,
+            "compacted_groups": len(created_records),
+            "compacted_records": total_compacted,
+            "created_records": created_records,
+        }
+

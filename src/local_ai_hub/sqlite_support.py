@@ -70,3 +70,46 @@ def retry_busy(
             if delay:
                 time.sleep(min(0.20, delay * (2 ** attempt)))
     raise AssertionError("unreachable")
+
+
+def optimize_db(
+    path: Path,
+    *,
+    wal_checkpoint: bool = True,
+    vacuum: bool = False,
+    timeout_seconds: float = 5.0,
+) -> dict[str, Any]:
+    """Perform bounded maintenance on an SQLite database (WAL checkpoint truncate, pragma optimize, vacuum)."""
+    if not path.exists():
+        return {"success": False, "error": "file_not_found", "path": str(path)}
+
+    timeout = max(0.1, float(timeout_seconds))
+    result: dict[str, Any] = {
+        "success": True,
+        "path": str(path),
+        "initial_size": path.stat().st_size if path.exists() else 0,
+    }
+
+    try:
+        con = sqlite3.connect(path, timeout=timeout)
+        try:
+            con.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
+            if wal_checkpoint:
+                row = con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                if row:
+                    result["wal_checkpoint"] = {
+                        "busy": row[0],
+                        "log_pages": row[1],
+                        "checkpointed_pages": row[2],
+                    }
+            con.execute("PRAGMA optimize")
+            if vacuum:
+                con.execute("VACUUM")
+        finally:
+            con.close()
+        result["final_size"] = path.stat().st_size if path.exists() else 0
+        result["freed_bytes"] = max(0, result["initial_size"] - result["final_size"])
+        return result
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "path": str(path)}
+
