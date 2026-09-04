@@ -1133,8 +1133,8 @@ class LocalAIServices:
                         signals = det.get("risk_signals", {}) if isinstance(det, dict) else {}
                         score = 0; reasons: list[str] = []
                         if len(changed) >= 6: score += 2; reasons.append("multi-file change")
-                        if len(changed) >= 15: score += 2; reasons.append("large change surface")
                         if det.get("manifest_files"): score += 2; reasons.append("manifest/build metadata changed")
+                        if det.get("breaking_changes"): score += 4; reasons.append(f"{len(det['breaking_changes'])} breaking change(s) detected")
                         for key, weight, label in (("security",2,"security-sensitive code"),("concurrency",2,"concurrency-sensitive code"),("database",1,"database/persistence code"),("shell-exec",2,"process/shell execution"),("dynamic-eval",3,"dynamic evaluation")):
                             if int(signals.get(key, 0) or 0): score += weight; reasons.append(label)
                         if len(indexed.get("likely_dependents", [])) >= 10: score += 1; reasons.append("many indexed dependents")
@@ -1427,6 +1427,10 @@ class LocalAIServices:
         det_hint = ""
         if det_diff:
             det_hint = "\nDETERMINISTIC DIFF METADATA (facts only, verify semantics in the diff):\n" + json.dumps(det_diff, ensure_ascii=False, separators=(",", ":"))[:1800] + "\n"
+            if det_diff.get("breaking_changes"):
+                det_hint += "\nPOTENTIAL BREAKING CHANGES DETECTED:\n"
+                for bc in det_diff["breaking_changes"][:10]:
+                    det_hint += f"- [{bc.get('type')}] {bc.get('symbol')} in {bc.get('file')}: {bc.get('description')}\n"
         payload = {
             "code": diff["diff"],
             "instructions": instructions + det_hint,

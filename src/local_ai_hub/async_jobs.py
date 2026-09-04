@@ -20,7 +20,16 @@ class AsyncJobManager:
 
     ACTIONS = {"delegate", "reason", "review", "second_opinion", "compress", "route", "batch"}
 
-    def __init__(self, config: dict[str, Any], scheduler: Any, artifacts: Any, executor: Callable[[str, dict[str, Any], str], dict[str, Any]], debug_traces: Any | None = None):
+    def __init__(
+        self,
+        config: dict[str, Any],
+        scheduler: Any,
+        artifacts: Any,
+        executor: Callable[[str, dict[str, Any], str], dict[str, Any]],
+        debug_traces: Any | None = None,
+        task_store: Any | None = None,
+        verification_store: Any | None = None,
+    ):
         cfg = config.get("async_jobs", {})
         self.enabled = bool(cfg.get("enabled", True))
         self.max_pending = max(1, int(cfg.get("max_pending", 64)))
@@ -29,6 +38,8 @@ class AsyncJobManager:
         self.result_ttl_seconds = max(60.0, float(cfg.get("result_ttl_seconds", 259200)))
         self.max_attempts = max(1, int(cfg.get("max_attempts", 2)))
         self.scheduler, self.artifacts, self.executor, self.debug_traces = scheduler, artifacts, executor, debug_traces
+        self.task_store = task_store
+        self.verification_store = verification_store
         self.path = Path(config["server"]["state_dir"]) / "async_jobs.sqlite3"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -48,18 +59,20 @@ class AsyncJobManager:
                 artifact_id TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', lease_until REAL NOT NULL DEFAULT 0,
                 attempts INTEGER NOT NULL DEFAULT 0, cancel_requested INTEGER NOT NULL DEFAULT 0,
                 created_at REAL NOT NULL, updated_at REAL NOT NULL, expires_at REAL NOT NULL,
-                trace_id TEXT NOT NULL DEFAULT ''
+                trace_id TEXT NOT NULL DEFAULT '', task_id TEXT NOT NULL DEFAULT ''
             )""")
             columns = {str(row[1]) for row in con.execute("PRAGMA table_info(async_jobs)")}
             if "trace_id" not in columns:
                 con.execute("ALTER TABLE async_jobs ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''")
+            if "task_id" not in columns:
+                con.execute("ALTER TABLE async_jobs ADD COLUMN task_id TEXT NOT NULL DEFAULT ''")
             con.execute("CREATE INDEX IF NOT EXISTS idx_async_jobs_state ON async_jobs(state, lease_until, expires_at)")
             con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_async_jobs_active_dedupe ON async_jobs(tenant, request_hash) WHERE state IN ('queued','running')")
             con.commit()
 
     @staticmethod
     def _safe_payload(payload: dict[str, Any]) -> dict[str, Any]:
-        allowed = {"task", "context", "candidate", "complexity", "max_tokens", "tasks"}
+        allowed = {"task", "context", "candidate", "complexity", "max_tokens", "tasks", "task_id"}
         return {key: payload[key] for key in allowed if key in payload}
 
     def _event(self, job_id: str) -> threading.Event:
@@ -77,17 +90,18 @@ class AsyncJobManager:
         if len(encoded.encode("utf-8")) > 2_000_000:
             return {"success": False, "error": "async task payload exceeds 2MB", "terminal": True, "retryable": False}
         request_hash = stable_hash({"tenant": tenant, "action": action, "payload": clean})
+        task_id = str(clean.get("task_id") or "")
         now = time.time()
         with self._lock, closing(self._connect()) as con:
-            existing = con.execute("SELECT job_id,state,trace_id FROM async_jobs WHERE tenant=? AND request_hash=? AND state IN ('queued','running')", (tenant, request_hash)).fetchone()
+            existing = con.execute("SELECT job_id,state,trace_id,task_id FROM async_jobs WHERE tenant=? AND request_hash=? AND state IN ('queued','running')", (tenant, request_hash)).fetchone()
             if existing:
                 self._stats["coalesced"] += 1
-                return {"success": True, "job_id": existing[0], "trace_id": str(existing[2] or ""), "state": existing[1], "coalesced": True}
+                return {"success": True, "job_id": existing[0], "trace_id": str(existing[2] or ""), "task_id": str(existing[3] or ""), "state": existing[1], "coalesced": True}
             pending = int(con.execute("SELECT COUNT(*) FROM async_jobs WHERE state IN ('queued','running')").fetchone()[0])
             if pending >= self.max_pending:
                 return {"success": False, "error": "async job queue limit reached", "retryable": True}
             job_id = uuid.uuid4().hex
-            con.execute("INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,'queued',?,?,?)", (job_id, tenant, action, request_hash, encoded, now, now, now + self.result_ttl_seconds))
+            con.execute("INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at,task_id) VALUES(?,?,?,?,?,'queued',?,?,?,?)", (job_id, tenant, action, request_hash, encoded, now, now, now + self.result_ttl_seconds, task_id))
             con.commit()
             self._stats["submitted"] += 1
         trace_id = ""
@@ -102,7 +116,7 @@ class AsyncJobManager:
                 trace_id = ""
         self._event(job_id)
         self._dispatch(job_id)
-        return {"success": True, "job_id": job_id, "trace_id": trace_id, "state": "queued", "coalesced": False}
+        return {"success": True, "job_id": job_id, "trace_id": trace_id, "task_id": task_id, "state": "queued", "coalesced": False}
 
     def _row(self, tenant: str, job_id: str) -> sqlite3.Row | None:
         with closing(self._connect()) as con:
@@ -170,6 +184,13 @@ class AsyncJobManager:
             con.execute("UPDATE async_jobs SET state='running',attempts=attempts+1,lease_until=?,updated_at=? WHERE job_id=?", (time.time() + self.lease_seconds, time.time(), job_id))
             con.commit()
             tenant, action, payload, trace_id = str(row["tenant"]), str(row["action"]), json.loads(str(row["payload_json"])), str(row["trace_id"] or "")
+            task_id = str(row["task_id"] or "") if "task_id" in row.keys() else ""
+        if task_id and self.task_store is not None:
+            try:
+                from .agent_tasks import TaskCheckpoint
+                self.task_store.checkpoint(task_id, TaskCheckpoint(phase=f"async_job:{action}", next_action="running"))
+            except Exception:
+                pass
         if self.debug_traces is not None and trace_id:
             try:
                 self.debug_traces.update(trace_id, state="running")
@@ -190,6 +211,11 @@ class AsyncJobManager:
                 con.execute("UPDATE async_jobs SET state='cancelled',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id))
                 self._stats["cancelled"] += 1
                 final = {"success": False, "error": "async job cancelled", "terminal": True, "retryable": False}
+                if task_id and self.task_store is not None:
+                    try:
+                        self.task_store.fail(task_id, reason="async job cancelled")
+                    except Exception:
+                        pass
             elif result.get("success"):
                 artifact_id = ""
                 try: artifact_id = str(self.artifacts.put(json.dumps(result, ensure_ascii=False, separators=(",", ":")), tenant, "async-job"))
@@ -197,10 +223,41 @@ class AsyncJobManager:
                 con.execute("UPDATE async_jobs SET state='done',result_json=?,artifact_id=?,lease_until=0,updated_at=? WHERE job_id=?", (json.dumps(result, ensure_ascii=False, separators=(",", ":")), artifact_id, time.time(), job_id))
                 self._stats["completed"] += 1
                 final = result
+                if task_id and self.task_store is not None:
+                    try:
+                        from .agent_tasks import TaskCheckpoint
+                        self.task_store.checkpoint(
+                            task_id,
+                            TaskCheckpoint(
+                                phase=f"async_job:{action}:done",
+                                next_action="complete",
+                                evidence_ids=(artifact_id,) if artifact_id else (),
+                            ),
+                        )
+                    except Exception:
+                        pass
+                if task_id and self.verification_store is not None:
+                    try:
+                        from .agent_verification import VerificationReceipt
+                        rcpt = VerificationReceipt.create(
+                            task_id=task_id,
+                            criterion=f"async_job:{action}",
+                            passed=True,
+                            evidence_id=artifact_id,
+                            details={"job_id": job_id, "action": action},
+                        )
+                        self.verification_store.record(rcpt)
+                    except Exception:
+                        pass
             else:
                 con.execute("UPDATE async_jobs SET state='failed',result_json=?,error=?,lease_until=0,updated_at=? WHERE job_id=?", (json.dumps(result, ensure_ascii=False, separators=(",", ":")), str(result.get("error", "async job failed"))[:500], time.time(), job_id))
                 self._stats["failed"] += 1
                 final = result
+                if task_id and self.task_store is not None:
+                    try:
+                        self.task_store.fail(task_id, reason=str(result.get("error", "async job failed")))
+                    except Exception:
+                        pass
             con.commit()
         self._event(job_id).set()
         if self.debug_traces is not None and trace_id:

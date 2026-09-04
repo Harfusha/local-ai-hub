@@ -140,6 +140,47 @@ def _classify_error(error_msg: str, timed_out: bool) -> str:
     return "CommandExecutionError"
 
 
+def _extract_root_cause_and_fix(error_msg: str, tool_name: str = "", timed_out: bool = False) -> tuple[str, str, float]:
+    """Analyze error patterns to extract actionable root cause and resolution guidance."""
+    if timed_out:
+        return "operation exceeded deadline or hung", "increase timeout or check for blocking calls", 0.85
+
+    match = re.search(r"No module named ['\"]?([a-zA-Z0-9_\.-]+)['\"]?", error_msg)
+    if match:
+        mod = match.group(1)
+        return f"missing Python module '{mod}'", f"install '{mod}' or verify active virtual environment", 0.95
+
+    match = re.search(r"(?:No such file or directory|cannot find the (?:path|file) specified)[:\s]*['\"]?([^\r\n'\"]+)", error_msg, re.IGNORECASE)
+    if match:
+        target = match.group(1).strip()
+        return f"target path does not exist: {target}", f"ensure target path exists before accessing: {target}", 0.90
+
+    match = re.search(r"missing script:\s*([a-zA-Z0-9_\.-]+)", error_msg, re.IGNORECASE)
+    if match:
+        script = match.group(1)
+        return f"package.json missing script '{script}'", f"check available npm scripts in package.json", 0.95
+
+    low = error_msg.lower()
+    if "database is locked" in low or "database table is locked" in low or "sqlite3.busyerror" in low:
+        return "concurrent write lock contention on SQLite", "retry with busy backoff and avoid long-running transactions", 0.90
+
+    if "permission denied" in low or "access is denied" in low:
+        return "insufficient filesystem or execution permissions", "check file permissions or run in authorized directory", 0.85
+
+    if "connection refused" in low or "actively refused" in low:
+        return "target network service is offline or port is closed", "start backend service or verify configured port/URL", 0.90
+
+    if "syntaxerror" in low or "invalid syntax" in low:
+        return "source code syntax error", "check syntax at the reported line and column", 0.85
+
+    match = re.search(r"(?:unrecognized option|unknown option|no such option|unexpected argument)[:\s]*['\"]?([^\r\n'\"]+)", error_msg, re.IGNORECASE)
+    if match:
+        flag = match.group(1).strip()
+        return f"unrecognized command line flag '{flag}'", f"remove or correct flag '{flag}' using tool help", 0.90
+
+    return "", "", 0.0
+
+
 class IncidentStore:
     def __init__(self, state_store: AgentStateStore) -> None:
         self.state_store = state_store
@@ -200,13 +241,21 @@ class IncidentStore:
             signature_hash=sig_hash,
         )
 
+        meta_rc = str(outcome.metadata.get("root_cause") or "")
+        meta_fix = str(outcome.metadata.get("verified_fix") or "")
+        meta_conf = float(outcome.metadata.get("confidence") or 0.0)
+        auto_rc, auto_fix, auto_conf = _extract_root_cause_and_fix(outcome.error, outcome.tool_name, outcome.timed_out)
+        eff_rc = meta_rc or auto_rc or None
+        eff_fix = meta_fix or auto_fix or None
+        eff_conf = max(meta_conf, auto_conf)
+
         now = time.time()
         self._init_table()
         con = connect_sqlite(self.state_store.db_path)
         try:
             row = con.execute(
                 """
-                SELECT incident_id, attempts FROM agent_incidents
+                SELECT incident_id, attempts, root_cause, verified_fix, confidence FROM agent_incidents
                 WHERE operation_class = ? AND signature_hash = ? AND state_revision = ?
                 """,
                 (op_class, sig_hash, outcome.state_revision),
@@ -215,7 +264,7 @@ class IncidentStore:
             con.close()
 
         if row:
-            inc_id, attempts = row
+            inc_id, attempts, old_rc, old_fix, old_conf = row[0], row[1], row[2], row[3], row[4]
             new_attempts = attempts + 1
             updated = IncidentRecord(
                 incident_id=inc_id,
@@ -226,6 +275,9 @@ class IncidentStore:
                 state_revision=outcome.state_revision,
                 attempts=new_attempts,
                 evidence_ids=outcome.evidence_ids,
+                root_cause=eff_rc or old_rc,
+                verified_fix=eff_fix or old_fix,
+                confidence=max(eff_conf, float(old_conf or 0.0)),
                 created_at=now,
                 updated_at=now,
             )
@@ -242,6 +294,9 @@ class IncidentStore:
             state_revision=outcome.state_revision,
             attempts=1,
             evidence_ids=outcome.evidence_ids,
+            root_cause=eff_rc,
+            verified_fix=eff_fix,
+            confidence=eff_conf,
             created_at=now,
             updated_at=now,
         )
@@ -326,7 +381,7 @@ class IncidentStore:
 
         # Check for verified fix first
         for _, rev, fix, conf, resolved in rows:
-            if resolved and fix and conf >= 0.8:
+            if fix and conf >= 0.8:
                 return RetryDecision(
                     action="apply_verified_fix",
                     reason="verified fix exists with high confidence",
@@ -486,3 +541,46 @@ class IncidentStore:
             updated_at=float(updated_at),
             expires_at=float(expires_at) if expires_at is not None else None,
         )
+
+    def find_negative_knowledge(self, query: str = "", limit: int = 20) -> list[dict[str, Any]]:
+        if not self.state_store.enabled or not self.state_store.db_path.exists():
+            return []
+        self._init_table()
+        con = connect_sqlite(self.state_store.db_path)
+        try:
+            cur = con.execute(
+                """
+                SELECT incident_id, operation_class, error_class, redacted_message, state_revision,
+                       root_cause, verified_fix, confidence, attempts, updated_at
+                FROM agent_incidents
+                ORDER BY updated_at DESC
+                """
+            )
+            q_norm = str(query or "").strip().lower()
+            results: list[dict[str, Any]] = []
+            for r in cur.fetchall():
+                rc = str(r[5] or "")
+                fix = str(r[6] or "")
+                msg = str(r[3] or "")
+                err_cls = str(r[2] or "")
+                if q_norm:
+                    if (q_norm not in rc.lower() and q_norm not in fix.lower() and
+                        q_norm not in msg.lower() and q_norm not in err_cls.lower()):
+                        continue
+                results.append({
+                    "incident_id": r[0],
+                    "operation_class": r[1],
+                    "error_class": err_cls,
+                    "redacted_message": msg,
+                    "state_revision": r[4],
+                    "root_cause": rc,
+                    "verified_fix": fix,
+                    "confidence": float(r[7] or 0.0),
+                    "attempts": int(r[8] or 1),
+                    "updated_at": float(r[9] or 0.0),
+                })
+                if len(results) >= limit:
+                    break
+            return results
+        finally:
+            con.close()

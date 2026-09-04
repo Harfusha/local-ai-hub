@@ -133,7 +133,12 @@ class LocalAIApp:
             self.artifacts, self.telemetry, self.repo_tools, self.repo_state,
             code_index=self.code_index, evidence=self.evidence, learner=self.learner, tuner=self.tuner, deterministic=self.deterministic, external_tools=self.external_tools,
         )
-        self.async_jobs = AsyncJobManager(self.config, self.scheduler, self.artifacts, self._execute_async_task, debug_traces=self.debug_traces)
+        self.async_jobs = AsyncJobManager(
+            self.config, self.scheduler, self.artifacts, self._execute_async_task,
+            debug_traces=self.debug_traces,
+            task_store=self.agent_tasks,
+            verification_store=self.agent_verification,
+        )
         self.async_jobs.recover()
         self.commands = CommandBroker(self.config, self.artifacts, self.repo_state)
         self.commands.set_incident_store(self.agent_incidents)

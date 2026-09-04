@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sqlite3
+import tempfile
 import threading
 import time
 import tomllib
@@ -60,7 +61,8 @@ class DeterministicEngine:
 
     VERSION = 1
 
-    def __init__(self, config: dict[str, Any], repo_tools: Any, code_index: Any, evidence: Any | None = None):
+    def __init__(self, config: dict[str, Any] | None = None, repo_tools: Any = None, code_index: Any = None, evidence: Any | None = None):
+        config = config or {"server": {"state_dir": tempfile.gettempdir()}}
         self.config = config
         self.repo_tools = repo_tools
         self.code_index = code_index
@@ -71,7 +73,7 @@ class DeterministicEngine:
         self.max_query_results = int(cfg.get("max_query_results", 24))
         self.max_evidence = int(cfg.get("max_evidence", 12))
         self.max_manifest_bytes = int(cfg.get("max_manifest_bytes", 1_500_000))
-        self.db_path = Path(config["server"]["state_dir"]) / "deterministic.sqlite3"
+        self.db_path = Path(config.get("server", {}).get("state_dir", tempfile.gettempdir())) / "deterministic.sqlite3"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._stats = Counter()
@@ -1977,15 +1979,246 @@ class DeterministicEngine:
         }
         return {"success": True, "deterministic": True, "confidence": round(confidence, 4), "card": card}
 
+    @staticmethod
+    def _extract_py_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
+        defs: dict[str, dict[str, Any]] = {}
+        i = 0
+        n = len(lines)
+        while i < n:
+            raw = lines[i]
+            s = raw.strip()
+            if s.startswith(("def ", "async def ", "class ")):
+                stmt = s
+                paren_count = stmt.count("(") - stmt.count(")")
+                while paren_count > 0 and i + 1 < n:
+                    i += 1
+                    stmt += " " + lines[i].strip()
+                    paren_count = stmt.count("(") - stmt.count(")")
+                try:
+                    to_parse = stmt
+                    if not to_parse.endswith(":"):
+                        to_parse += ":"
+                    to_parse += "\n    pass"
+                    tree = ast.parse(to_parse)
+                    for node in tree.body:
+                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            if node.name.startswith("_") and node.name not in ("__init__", "__call__", "__getitem__", "__enter__", "__exit__"):
+                                continue
+                            pos_args = [a.arg for a in node.args.args]
+                            clean_args = [a for a in pos_args if a not in ("self", "cls")]
+                            defaults_count = len(node.args.defaults)
+                            req_total = len(pos_args) - defaults_count
+                            clean_req = max(0, req_total - (1 if pos_args and pos_args[0] in ("self", "cls") else 0))
+                            defs[node.name] = {
+                                "name": node.name,
+                                "kind": "function",
+                                "pos_args": clean_args,
+                                "required_count": clean_req,
+                                "sig": stmt,
+                            }
+                        elif isinstance(node, ast.ClassDef):
+                            if node.name.startswith("_"):
+                                continue
+                            defs[node.name] = {
+                                "name": node.name,
+                                "kind": "class",
+                                "sig": stmt,
+                            }
+                except Exception:
+                    m = re.match(r"(?:async\s+)?def\s+([A-Za-z0-9_]+)\s*\((.*?)\)", stmt)
+                    if m:
+                        name, args_part = m.group(1), m.group(2)
+                        if not name.startswith("_") or name in ("__init__", "__call__"):
+                            raw_args = [a.strip() for a in args_part.split(",") if a.strip()]
+                            clean_args = [a.split(":")[0].split("=")[0].strip() for a in raw_args if a.split(":")[0].strip() not in ("self", "cls")]
+                            req_args = [a for a in raw_args if "=" not in a and a.split(":")[0].strip() not in ("self", "cls")]
+                            defs[name] = {
+                                "name": name,
+                                "kind": "function",
+                                "pos_args": clean_args,
+                                "required_count": len(req_args),
+                                "sig": stmt,
+                            }
+                    else:
+                        m = re.match(r"class\s+([A-Za-z0-9_]+)", stmt)
+                        if m:
+                            name = m.group(1)
+                            if not name.startswith("_"):
+                                defs[name] = {"name": name, "kind": "class", "sig": stmt}
+            i += 1
+        return defs
+
+    @staticmethod
+    def _extract_ts_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
+        defs: dict[str, dict[str, Any]] = {}
+        ts_pattern = re.compile(
+            r"^\s*export\s+(?:default\s+)?(?:async\s+)?(function|class|interface|type|const|let|var)\s+([A-Za-z0-9_$]+)(?:\s*<.*?>)?(?:\s*\((.*?)\))?",
+        )
+        for raw in lines:
+            line = raw.strip()
+            m = ts_pattern.search(line)
+            if m:
+                kind = m.group(1)
+                name = m.group(2)
+                params_raw = m.group(3)
+                if kind in ("let", "var"):
+                    continue
+                d: dict[str, Any] = {"name": name, "kind": kind, "sig": line}
+                if params_raw is not None and kind == "function":
+                    parts = []
+                    depth = 0
+                    cur = ""
+                    for ch in params_raw:
+                        if ch in "({[<": depth += 1; cur += ch
+                        elif ch in ")}]>": depth -= 1; cur += ch
+                        elif ch == "," and depth == 0:
+                            if cur.strip(): parts.append(cur.strip())
+                            cur = ""
+                        else: cur += ch
+                    if cur.strip(): parts.append(cur.strip())
+                    req_count = 0
+                    param_names = []
+                    for p in parts:
+                        p_name = p.split(":")[0].strip()
+                        is_opt = "?" in p_name or "=" in p
+                        clean_p = p_name.rstrip("?").strip()
+                        if not is_opt:
+                            req_count += 1
+                        param_names.append(clean_p)
+                    d["params"] = param_names
+                    d["required_count"] = req_count
+                defs[name] = d
+        return defs
+
+    @staticmethod
+    def _extract_cs_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
+        defs: dict[str, dict[str, Any]] = {}
+        class_re = re.compile(r"^\s*public\s+(?:static\s+|sealed\s+|abstract\s+|partial\s+)*(class|interface|struct|record|enum)\s+([A-Za-z0-9_]+)")
+        method_re = re.compile(r"^\s*public\s+(?:static\s+|virtual\s+|override\s+|async\s+|sealed\s+|abstract\s+)*([\w<>\[\],\s\?]+?)\s+([A-Za-z0-9_]+)\s*\((.*?)\)")
+        for raw in lines:
+            line = raw.strip()
+            cm = class_re.search(line)
+            if cm:
+                defs[cm.group(2)] = {"name": cm.group(2), "kind": cm.group(1), "sig": line}
+                continue
+            mm = method_re.search(line)
+            if mm:
+                name, params_raw = mm.group(2), mm.group(3)
+                parts = [p.strip() for p in params_raw.split(",") if p.strip()]
+                req_count = sum(1 for p in parts if "=" not in p)
+                defs[name] = {"name": name, "kind": "method", "required_count": req_count, "sig": line}
+        return defs
+
+    @staticmethod
+    def _extract_go_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
+        defs: dict[str, dict[str, Any]] = {}
+        func_re = re.compile(r"^\s*func\s+(?:\([^)]+\)\s+)?([A-Z][A-Za-z0-9_]*)\s*\((.*?)\)")
+        type_re = re.compile(r"^\s*type\s+([A-Z][A-Za-z0-9_]*)\s+(struct|interface)")
+        for raw in lines:
+            line = raw.strip()
+            fm = func_re.search(line)
+            if fm:
+                name = fm.group(1)
+                defs[name] = {"name": name, "kind": "function", "sig": line}
+                continue
+            tm = type_re.search(line)
+            if tm:
+                name, kind = tm.group(1), tm.group(2)
+                defs[name] = {"name": name, "kind": kind, "sig": line}
+        return defs
+
+    @staticmethod
+    def _extract_rust_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
+        defs: dict[str, dict[str, Any]] = {}
+        rust_re = re.compile(r"^\s*pub(?:\(.*?\))?\s+(fn|struct|enum|trait|type)\s+([A-Za-z0-9_]+)")
+        for raw in lines:
+            line = raw.strip()
+            rm = rust_re.search(line)
+            if rm:
+                kind, name = rm.group(1), rm.group(2)
+                defs[name] = {"name": name, "kind": kind, "sig": line}
+        return defs
+
+    def _detect_breaking_changes(self, file_path: str, deleted_lines: list[str], added_lines: list[str]) -> list[dict[str, Any]]:
+        if self._is_test(file_path):
+            return []
+        lang = self._language(file_path)
+        if lang == "python":
+            old_defs = self._extract_py_diff_defs(deleted_lines)
+            new_defs = self._extract_py_diff_defs(added_lines)
+        elif lang in ("typescript", "javascript"):
+            old_defs = self._extract_ts_diff_defs(deleted_lines)
+            new_defs = self._extract_ts_diff_defs(added_lines)
+        elif lang in ("csharp", "java"):
+            old_defs = self._extract_cs_diff_defs(deleted_lines)
+            new_defs = self._extract_cs_diff_defs(added_lines)
+        elif lang == "go":
+            old_defs = self._extract_go_diff_defs(deleted_lines)
+            new_defs = self._extract_go_diff_defs(added_lines)
+        elif lang == "rust":
+            old_defs = self._extract_rust_diff_defs(deleted_lines)
+            new_defs = self._extract_rust_diff_defs(added_lines)
+        else:
+            return []
+
+        breaking: list[dict[str, Any]] = []
+        for name, old_d in old_defs.items():
+            kind = old_d.get("kind", "symbol")
+            if name not in new_defs:
+                breaking.append({
+                    "type": "removed_symbol",
+                    "symbol": name,
+                    "file": file_path,
+                    "kind": kind,
+                    "description": f"Public {kind} '{name}' was removed",
+                })
+            else:
+                new_d = new_defs[name]
+                if kind in ("function", "method") and new_d.get("kind") in ("function", "method"):
+                    old_req = old_d.get("required_count", 0)
+                    new_req = new_d.get("required_count", 0)
+                    old_args = old_d.get("pos_args") or old_d.get("params") or []
+                    new_args = new_d.get("pos_args") or new_d.get("params") or []
+                    if new_req > old_req:
+                        added_req = [a for a in new_args[:new_req] if a not in old_args[:old_req]]
+                        detail = f": {', '.join(added_req)}" if added_req else ""
+                        breaking.append({
+                            "type": "signature_changed",
+                            "symbol": name,
+                            "file": file_path,
+                            "kind": kind,
+                            "description": f"Signature of {kind} '{name}' added required parameter(s){detail}",
+                        })
+                    elif old_args and new_args:
+                        removed_args = [a for a in old_args[:old_req] if a not in new_args]
+                        if removed_args:
+                            breaking.append({
+                                "type": "signature_changed",
+                                "symbol": name,
+                                "file": file_path,
+                                "kind": kind,
+                                "description": f"Signature of {kind} '{name}' removed or renamed parameter(s): {', '.join(removed_args)}",
+                            })
+        return breaking
+
     def diff_facts(self, diff: str) -> dict[str, Any]:
         """Parse a unified diff into factual risk/validation metadata without an LLM."""
         files: list[str] = []
         added = deleted = hunks = 0
         added_lines: list[tuple[str, str]] = []
+        file_diff_lines: dict[str, dict[str, list[str]]] = defaultdict(lambda: {"added": [], "deleted": []})
         current = ""
+        orig_file = ""
         for line in diff.splitlines():
-            if line.startswith("+++ b/"):
+            if line.startswith("--- a/"):
+                orig_file = line[6:].strip()
+                current = ""
+            elif line.startswith("+++ b/"):
                 current = line[6:].strip()
+                if current and current not in files:
+                    files.append(current)
+            elif line.startswith("+++ /dev/null") and orig_file:
+                current = orig_file
                 if current and current not in files:
                     files.append(current)
             elif line.startswith("@@"):
@@ -1993,8 +2226,22 @@ class DeterministicEngine:
             elif line.startswith("+") and not line.startswith("+++"):
                 added += 1
                 added_lines.append((current, line[1:]))
+                if current:
+                    file_diff_lines[current]["added"].append(line[1:])
             elif line.startswith("-") and not line.startswith("---"):
                 deleted += 1
+                target = current or orig_file
+                if target:
+                    file_diff_lines[target]["deleted"].append(line[1:])
+
+        breaking_changes: list[dict[str, Any]] = []
+        for file_path, lines_dict in file_diff_lines.items():
+            bcs = self._detect_breaking_changes(file_path, lines_dict["deleted"], lines_dict["added"])
+            breaking_changes.extend(bcs)
+            if len(breaking_changes) >= 50:
+                breaking_changes = breaking_changes[:50]
+                break
+
         test_files = [p for p in files if self._is_test(p)]
         manifests = [p for p in files if Path(p).name.lower() in {"package.json","composer.json","pyproject.toml","cargo.toml","go.mod","pom.xml"} or Path(p).suffix.lower() in {".csproj",".fsproj",".vbproj"}]
         signals: Counter[str] = Counter()
@@ -2008,16 +2255,23 @@ class DeterministicEngine:
             for name, pattern in signal_patterns.items():
                 if pattern.search(text):
                     signals[name] += 1
+        if breaking_changes:
+            signals["breaking-change"] = len(breaking_changes)
         docs_only = bool(files) and all(Path(p).suffix.lower() in {".md", ".rst", ".txt", ".adoc"} for p in files)
         tests_only = bool(files) and len(test_files) == len(files)
         score = min(100, len(files) * 3 + hunks * 2 + len(manifests) * 12 + signals.get("security",0) * 4 + signals.get("database",0) * 3 + signals.get("concurrency",0) * 4 + signals.get("shell-exec",0) * 8 + signals.get("dynamic-eval",0) * 10)
         if docs_only or tests_only:
             score = max(0, score - 12)
-        level = "high" if score >= 45 else "medium" if score >= 18 else "low"
+        if breaking_changes:
+            score = min(100, max(50, score + len(breaking_changes) * 15))
+            level = "high"
+        else:
+            level = "high" if score >= 45 else "medium" if score >= 18 else "low"
         return {
             "deterministic": True, "files": files, "file_count": len(files), "hunks": hunks,
             "additions": added, "deletions": deleted, "test_files": test_files, "manifest_files": manifests,
             "docs_only": docs_only, "tests_only": tests_only, "risk_signals": dict(signals),
+            "breaking_changes": breaking_changes,
             "risk_score": score, "risk_level": level,
         }
 

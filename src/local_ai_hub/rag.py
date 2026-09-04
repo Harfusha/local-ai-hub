@@ -129,6 +129,18 @@ class RAGStore:
                     PRIMARY KEY (tenant, workspace, path)
                 )"""
             )
+            try:
+                con.execute(
+                    """CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(
+                        tenant UNINDEXED,
+                        workspace UNINDEXED,
+                        path UNINDEXED,
+                        chunk_no UNINDEXED,
+                        text
+                    )"""
+                )
+            except Exception:
+                pass
             con.execute(
                 """CREATE TABLE IF NOT EXISTS rag_meta (
                     key TEXT PRIMARY KEY,
@@ -562,6 +574,10 @@ class RAGStore:
             for rel in deleted:
                 con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
                 con.execute("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
+                try:
+                    con.execute("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
+                except Exception:
+                    pass
             con.commit()
         return len(deleted)
 
@@ -584,6 +600,10 @@ class RAGStore:
                 ).fetchone()
                 con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
                 con.execute("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
+                try:
+                    con.execute("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
+                except Exception:
+                    pass
                 removed += int(row is not None)
             con.commit()
         return removed
@@ -750,10 +770,21 @@ class RAGStore:
                     placeholders = ",".join("?" for _ in batch_rels)
                     con.execute(f"DELETE FROM chunks WHERE tenant=? AND workspace=? AND path IN ({placeholders})", (scope_key, workspace, *batch_rels))
                     con.execute(f"DELETE FROM files WHERE tenant=? AND workspace=? AND path IN ({placeholders})", (scope_key, workspace, *batch_rels))
+                    try:
+                        con.execute(f"DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path IN ({placeholders})", (scope_key, workspace, *batch_rels))
+                    except Exception:
+                        pass
                 con.executemany(
                     "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) VALUES(?,?,?,?,?,?,?)",
                     chunks_to_insert,
                 )
+                try:
+                    con.executemany(
+                        "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
+                        [(c[0], c[1], c[2], c[3], c[5]) for c in chunks_to_insert],
+                    )
+                except Exception:
+                    pass
                 con.executemany(
                     "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
                     files_to_insert,
@@ -822,6 +853,10 @@ class RAGStore:
                     for rel in deleted:
                         con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
                         con.execute("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
+                        try:
+                            con.execute("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
+                        except Exception:
+                            pass
                     con.commit()
 
             processed = 0
@@ -908,10 +943,21 @@ class RAGStore:
                 with closing(self._connect()) as con:
                     con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
                     con.execute("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
+                    try:
+                        con.execute("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
+                    except Exception:
+                        pass
                     con.executemany(
                         "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) VALUES(?,?,?,?,?,?,?)",
                         [(scope_key, workspace, rel, r["chunk_no"], r["hash"], r["text"], r["embedding"]) for r in records],
                     )
+                    try:
+                        con.executemany(
+                            "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
+                            [(scope_key, workspace, rel, r["chunk_no"], r["text"]) for r in records],
+                        )
+                    except Exception:
+                        pass
                     con.execute(
                         "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
                         (scope_key, workspace, rel, mtime_ns, size, file_hash),
@@ -1093,6 +1139,69 @@ class RAGStore:
             scored.sort(key=lambda item: item["embedding_score"], reverse=True)
             candidates = scored[: int(self.config.get("rag", {}).get("rerank_candidates", 16))]
 
+        # Hybrid search: combine vector candidates with FTS5 keyword hits via Reciprocal Rank Fusion (RRF)
+        fts_candidates: list[dict[str, Any]] = []
+        try:
+            import re
+            tokens = [re.sub(r"[^\w_]", "", t) for t in query.split()]
+            tokens = [t for t in tokens if len(t) > 1]
+            if tokens:
+                fts_expr = " OR ".join(f'"{t}"' for t in tokens[:8])
+                with closing(self._connect()) as con:
+                    if scope_path:
+                        norm_scope = scope_path.replace("\\", "/").rstrip("/")
+                        fts_rows = con.execute(
+                            """SELECT c.path, c.chunk_no, c.text, c.content_hash, bm25(chunk_fts)
+                               FROM chunk_fts
+                               JOIN chunks c ON c.tenant=chunk_fts.tenant AND c.workspace=chunk_fts.workspace AND c.path=chunk_fts.path AND c.chunk_no=chunk_fts.chunk_no
+                               WHERE chunk_fts.tenant=? AND chunk_fts.workspace=? AND (chunk_fts.path=? OR chunk_fts.path LIKE ? || '/%') AND chunk_fts MATCH ?
+                               ORDER BY bm25(chunk_fts) LIMIT ?""",
+                            (scope_key, workspace, norm_scope, norm_scope, fts_expr, 16),
+                        ).fetchall()
+                    else:
+                        fts_rows = con.execute(
+                            """SELECT c.path, c.chunk_no, c.text, c.content_hash, bm25(chunk_fts)
+                               FROM chunk_fts
+                               JOIN chunks c ON c.tenant=chunk_fts.tenant AND c.workspace=chunk_fts.workspace AND c.path=chunk_fts.path AND c.chunk_no=chunk_fts.chunk_no
+                               WHERE chunk_fts.tenant=? AND chunk_fts.workspace=? AND chunk_fts MATCH ?
+                               ORDER BY bm25(chunk_fts) LIMIT ?""",
+                            (scope_key, workspace, fts_expr, 16),
+                        ).fetchall()
+                    fts_candidates = [
+                        {
+                            "path": r[0], "chunk_no": r[1], "text": r[2], "content_hash": r[3],
+                            "fts_score": float(r[4]),
+                        }
+                        for r in fts_rows
+                    ]
+        except Exception:
+            fts_candidates = []
+
+        is_hybrid = bool(fts_candidates)
+        if is_hybrid:
+            k_rrf = 60.0
+            combined: dict[tuple[str, int], dict[str, Any]] = {}
+            for rank, c in enumerate(candidates):
+                ckey = (c["path"], c["chunk_no"])
+                item = dict(c)
+                item["rrf_score"] = 1.0 / (k_rrf + rank + 1)
+                combined[ckey] = item
+
+            for rank, c in enumerate(fts_candidates):
+                ckey = (c["path"], c["chunk_no"])
+                rrf_delta = 1.0 / (k_rrf + rank + 1)
+                if ckey in combined:
+                    combined[ckey]["rrf_score"] += rrf_delta
+                    combined[ckey]["fts_score"] = c.get("fts_score", 0.0)
+                else:
+                    item = dict(c)
+                    item["rrf_score"] = rrf_delta
+                    item["embedding_score"] = 0.0
+                    combined[ckey] = item
+
+            candidates = sorted(combined.values(), key=lambda x: x.get("rrf_score", 0.0), reverse=True)
+            candidates = candidates[:max(16, int(self.config.get("rag", {}).get("rerank_candidates", 16)))]
+
         reranked = False
         if use_reranker and self.config.get("features", {}).get("reranker", True) and candidates:
             rr = self.reranker.rerank(query, [c["text"] for c in candidates], top_k=top_k, priority=priority)
@@ -1105,7 +1214,7 @@ class RAGStore:
                 candidates = ordered
                 reranked = True
 
-        return {"success": True, "workspace": workspace, "reranked": reranked, "results": candidates[:top_k]}
+        return {"success": True, "workspace": workspace, "reranked": reranked, "hybrid": is_hybrid, "results": candidates[:top_k]}
 
     def list_workspaces(self, tenant: str) -> list[dict[str, Any]]:
         scope_key = self._scope_key(tenant)

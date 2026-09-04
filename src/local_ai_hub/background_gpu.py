@@ -168,11 +168,13 @@ class IdleGPUWorker:
                 if self.runtime.is_online() and not self.runtime.managed_profile_status().get("managed"):
                     parsed_port = urlparse(self.endpoint).port or 11436
                     listening_pid = find_listening_pid(parsed_port)
-                    if listening_pid and "ollama" in (process_executable(listening_pid) or "").lower():
-                        # Orphaned background Ollama from a prior hub run -> terminate and start clean
-                        terminate_tree(listening_pid, grace_seconds=2.0)
-                        time.sleep(0.4)
-                    elif self.runtime.is_online():
+                    exe_name = (process_executable(listening_pid) or "").lower() if listening_pid else ""
+                    if listening_pid and ("ollama" in exe_name or not exe_name):
+                        terminate_tree(listening_pid, grace_seconds=2.5)
+                        deadline = time.monotonic() + 2.5
+                        while time.monotonic() < deadline and self.runtime.is_online():
+                            time.sleep(0.15)
+                    if self.runtime.is_online() and not self.runtime.managed_profile_status().get("managed"):
                         with self._lock:
                             self._stats["unmanaged_endpoint_rejections"] += 1
                         self._cool_down_after_start_failure(

@@ -103,6 +103,7 @@ def main() -> int:
     parser.add_argument("--key", type=str, default="", help="Memory key filter")
     parser.add_argument("--query", type=str, default="", help="Memory search query")
     parser.add_argument("--limit", type=int, default=50, help="Maximum items to return")
+    parser.add_argument("--ports", action="store_true", help="Also terminate orphaned background processes on ports 11436, 11437, 11439")
     parser.add_argument("--json", dest="raw_json", action="store_true", help="Output raw JSON")
     args = parser.parse_args()
     if args.action == "generate":
@@ -133,8 +134,21 @@ def main() -> int:
         print(json.dumps(c.status(detail="agent_state"), indent=2, ensure_ascii=False))
         return 0
     if args.action == "cleanup":
+        cleaned_ports: list[dict[str, Any]] = []
+        if args.ports:
+            from local_ai_hub.process_utils import find_listening_pid, terminate_tree
+            for port in [11436, 11437, 11439]:
+                pid = find_listening_pid(port)
+                if pid and pid > 0 and pid != os.getpid():
+                    terminate_tree(pid, grace_seconds=2.0)
+                    cleaned_ports.append({"port": port, "pid": pid})
         c = client()
-        res = c.post("/v1/agent-state/cleanup", {})
+        try:
+            res = c.post("/v1/agent-state/cleanup", {})
+        except Exception as e:
+            res = {"success": bool(cleaned_ports), "server_status": "offline", "detail": str(e)}
+        if cleaned_ports:
+            res["cleaned_ports"] = cleaned_ports
         print(json.dumps(res, indent=2, ensure_ascii=False))
         return 0 if res.get("success", True) else 1
     if args.action == "tasks":
