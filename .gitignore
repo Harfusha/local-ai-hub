@@ -16,6 +16,8 @@ generated/*
 # User configuration (keep config.toml.example in repo)
 config.toml
 config.toml.local-ai-hub-backup-*
+# Hub backup files anywhere in the repo
+*.local-ai-hub-backup-*
 
 # Build / packaging artifacts
 dist/
