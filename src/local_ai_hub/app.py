@@ -144,6 +144,8 @@ class LocalAIApp:
         self.commands.set_incident_store(self.agent_incidents)
         self.commands.set_verification_store(self.agent_verification)
         self.services.set_commands(self.commands)
+        self.services.set_task_store(self.agent_tasks)
+        self.services.set_verification_store(self.agent_verification)
         self.rag = RAGStore(self.config, self.services, self.reranker)
         self.services.set_rag(self.rag)
         self.preprocessor = ProjectPreprocessor(self.config, self.services, self.rag, self.scheduler, self.runtime, self.repo_tools, self.code_index, self.learner, self.deterministic, telemetry=self.telemetry, background_gpu=self.background_gpu, external_tools=self.external_tools)

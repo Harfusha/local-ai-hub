@@ -2961,24 +2961,74 @@ class DeterministicEngine:
         except Exception as exc:
             return {"success": False, "error": str(exc), "is_git": False}
 
-    def synthesize_commit(self, root: str, message_hint: str = "") -> dict[str, Any]:
+    def synthesize_commit(
+        self,
+        root: str,
+        message_hint: str = "",
+        *,
+        task_id: str = "",
+        tasks: list[dict[str, Any]] | None = None,
+        receipts: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         """Analyze local git diff and synthesize a clean Conventional Commit message."""
         import subprocess, shutil
         from .process_utils import hidden_run_kwargs
+
+        task_list = list(tasks or [])
+        receipt_list = list(receipts or [])
+        primary_goal = ""
+        for t in task_list:
+            g = str(t.get("goal") or (t.get("contract", {}) if isinstance(t.get("contract"), dict) else {}).get("goal", "")).strip()
+            if g:
+                primary_goal = g
+                break
+
+        effective_hint = message_hint or primary_goal
+
+        def _format_body_sections(file_lines: list[str]) -> tuple[str, str]:
+            sections: list[str] = []
+            if file_lines:
+                sections.append("\n".join(file_lines))
+            if task_list:
+                t_lines = ["Tasks:"]
+                for t in task_list[:5]:
+                    tid = t.get("task_id", "")
+                    g = str(t.get("goal") or (t.get("contract", {}) if isinstance(t.get("contract"), dict) else {}).get("goal", "")).strip()
+                    if tid and g:
+                        t_lines.append(f"- [{tid}]: {g}")
+                    elif g:
+                        t_lines.append(f"- {g}")
+                if len(t_lines) > 1:
+                    sections.append("\n".join(t_lines))
+            if receipt_list:
+                r_lines = ["Verified Criteria:"]
+                for r in receipt_list[:10]:
+                    crit = r.get("criterion", "")
+                    ev_id = r.get("evidence_id", "")
+                    suffix = f" (evidence: {ev_id})" if ev_id else ""
+                    r_lines.append(f"- [x] {crit}{suffix}")
+                if len(r_lines) > 1:
+                    sections.append("\n".join(r_lines))
+            body_text = "\n\n".join(sections)
+            return body_text, sections[0] if sections else ""
+
         st = self.git_status(root)
         if not st.get("is_git"):
-            header = f"feat(core): {message_hint or 'update repository files'}"
+            header = f"feat(core): {effective_hint or 'update repository files'}"
+            body_text, _ = _format_body_sections(["- modified repository files"])
             return {
                 "success": True,
                 "branch": "main (non-git)",
                 "primary_scope": "core",
                 "type": "feat",
                 "header": header,
-                "body": "- modified repository files",
-                "commit_message": f"{header}\n\n- modified repository files",
+                "body": body_text,
+                "commit_message": f"{header}\n\n{body_text}",
                 "stat_summary": "Non-git directory",
+                "tasks": task_list,
+                "receipts": receipt_list,
             }
-            
+
         resolved = self._root(root)
         git_exe = shutil.which("git") or "git"
         try:
@@ -2995,7 +3045,7 @@ class DeterministicEngine:
         mod_files = st.get("modified", []) + st.get("staged", [])
         if not mod_files:
             return {"success": True, "commit_message": "chore: no modified files detected", "summary": "Working tree clean"}
-            
+
         # Determine primary scope
         scopes = []
         for f in mod_files:
@@ -3005,32 +3055,35 @@ class DeterministicEngine:
             else:
                 scopes.append(parts[0])
         primary_scope = max(set(scopes), key=scopes.count) if scopes else "core"
-        
+
         # Determine conventional type
         any_test = any("test" in f.lower() for f in mod_files)
         any_doc = any(f.endswith(".md") or "doc" in f.lower() for f in mod_files)
         any_src = any(f.endswith((".py", ".cs", ".ts", ".js", ".go", ".rs")) for f in mod_files)
-        
+
         c_type = "feat" if any_src else "test" if any_test else "docs" if any_doc else "refactor"
-        if message_hint:
-            header = f"{c_type}({primary_scope}): {message_hint}"
+        if effective_hint:
+            header = f"{c_type}({primary_scope}): {effective_hint}"
         else:
             header = f"{c_type}({primary_scope}): update {len(mod_files)} component(s)"
-            
+
         body_lines = [f"- update `{f}`" for f in mod_files[:10]]
         if len(mod_files) > 10:
             body_lines.append(f"- and {len(mod_files) - 10} other file(s)")
-            
-        full_message = header + "\n\n" + "\n".join(body_lines)
+
+        body_text, _ = _format_body_sections(body_lines)
+        full_message = f"{header}\n\n{body_text}"
         return {
             "success": True,
             "branch": st.get("branch"),
             "primary_scope": primary_scope,
             "type": c_type,
             "header": header,
-            "body": "\n".join(body_lines),
+            "body": body_text,
             "commit_message": full_message,
             "stat_summary": stat_summary,
+            "tasks": task_list,
+            "receipts": receipt_list,
         }
 
     def ast_outline(self, root: str, path: str) -> dict[str, Any]:

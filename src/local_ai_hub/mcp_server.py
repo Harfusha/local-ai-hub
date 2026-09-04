@@ -506,7 +506,10 @@ def local_ai_repo(
     if action == "git_status":
         return _compact(CLIENT.get(f"/v1/git/status?root={quote(root)}"), "status")
     if action == "synthesize_commit":
-        return _compact(CLIENT.post("/v1/git/synthesize_commit", {"root": root, "hint": query or task}, timeout=_timeout("quick")), "status")
+        synth_payload = {"root": root, "hint": query or task}
+        if task and str(task).startswith("task-"):
+            synth_payload["task_id"] = str(task)
+        return _compact(CLIENT.post("/v1/git/synthesize_commit", synth_payload, timeout=_timeout("quick")), "status")
     if action == "verify":
         return _compact(CLIENT.post("/v1/evidence/verify", {"root": root, "evidence": evidence or []}), "verify")
     if action == "preprocess":

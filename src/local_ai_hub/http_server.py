@@ -3,6 +3,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import queue
 import socket
 import uuid
 import time
@@ -459,6 +460,20 @@ class Handler(BaseHTTPRequestHandler):
         elif path in {"/v1/preprocess", "/v1/repo/profile", "/v1/repo/map", "/v1/repo/code-index", "/v1/repo/deterministic", "/v1/search"}:
             if "root" in payload:
                 text(payload["root"], "root", 4096)
+        elif path == "/v1/memory/put":
+            required_text("key", maximum=160)
+            required_text("value", maximum=1000000)
+            if "root" in payload:
+                text(payload["root"], "root", 4096)
+        elif path in {"/v1/memory/get", "/v1/memory/delete"}:
+            required_text("key", maximum=160)
+            if "root" in payload:
+                text(payload["root"], "root", 4096)
+        elif path == "/v1/memory/search":
+            if "root" in payload:
+                text(payload["root"], "root", 4096)
+            if "query" in payload:
+                text(payload["query"], "query", 4096)
         elif path == "/v1/code/symbol":
             required_text("symbol", maximum=1024)
         elif path == "/v1/code/find_symbol":
@@ -632,6 +647,71 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         self._close_trace_context()
 
+    def _stream_agent_events(self, stream_id: str = "", kind: str = "", after_seq: int = 0, timeout: float = 0.0) -> None:
+        if APP is None or not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
+            self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False})
+            return
+
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self._common_headers()
+            self.end_headers()
+        except OSError:
+            self._finish_stream_request(False, error="client disconnected before headers")
+            return
+
+        last_seq = after_seq
+        if stream_id and after_seq >= 0:
+            past = APP.agent_state.events(stream_id=stream_id, after_seq=after_seq, limit=1000)
+            for ev in past:
+                if kind and ev.kind != kind:
+                    continue
+                last_seq = max(last_seq, ev.seq or 0)
+                payload = json.dumps(ev.to_dict(), separators=(",", ":"))
+                msg = f"id: {ev.seq}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
+                try:
+                    self.wfile.write(msg)
+                    self.wfile.flush()
+                except OSError:
+                    self._finish_stream_request(True)
+                    return
+
+        q = APP.agent_state.subscribe(maxsize=200)
+        start_time = time.time()
+        try:
+            while True:
+                if timeout > 0 and (time.time() - start_time) >= timeout:
+                    break
+                try:
+                    ev = q.get(timeout=1.0)
+                    if ev.seq is not None and ev.seq <= last_seq:
+                        continue
+                    if stream_id and ev.stream_id != stream_id:
+                        continue
+                    if kind and ev.kind != kind:
+                        continue
+                    if ev.seq is not None:
+                        last_seq = max(last_seq, ev.seq)
+                    payload = json.dumps(ev.to_dict(), separators=(",", ":"))
+                    msg = f"id: {ev.seq or 0}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
+                    self.wfile.write(msg)
+                    self.wfile.flush()
+                except queue.Empty:
+                    try:
+                        self.wfile.write(b": keep-alive\n\n")
+                        self.wfile.flush()
+                    except OSError:
+                        break
+        except (OSError, Exception):
+            pass
+        finally:
+            APP.agent_state.unsubscribe(q)
+            self._finish_stream_request(True)
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
@@ -735,6 +815,23 @@ class Handler(BaseHTTPRequestHandler):
                 limit_val = int((query.get("limit") or [100])[0])
                 records = APP.agent_memory.find(scope=scope_val, key=key_val, query=query_val, status=status_val, limit=limit_val)
                 self._send(200, {"success": True, "records": [r.to_dict() for r in records]}); return
+            if path == "/v1/agent-state/events":
+                if not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
+                    self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
+                stream_id = (query.get("stream_id") or [""])[0]
+                after_seq = int((query.get("after_seq") or [0])[0])
+                limit = int((query.get("limit") or [100])[0])
+                evs = APP.agent_state.events(stream_id=stream_id, after_seq=after_seq, limit=limit)
+                self._send(200, {"success": True, "events": [e.to_dict() for e in evs]}); return
+            if path == "/v1/agent-state/events/stream":
+                if not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
+                    self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
+                stream_filter = (query.get("stream_id") or [""])[0]
+                kind_filter = (query.get("kind") or [""])[0]
+                after_seq = int((query.get("after_seq") or [0])[0])
+                timeout = float((query.get("timeout") or [0.0])[0])
+                self._stream_agent_events(stream_id=stream_filter, kind=kind_filter, after_seq=after_seq, timeout=timeout)
+                return
             if path == "/v1/capabilities":
                 self._send(200, APP.capabilities()); return
             if path == "/v1/metrics":
@@ -936,8 +1033,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/v1/git/synthesize_commit":
                 root = (query.get("root") or ["."])[0]
                 hint = (query.get("hint") or [""])[0]
+                task_id = (query.get("task_id") or [""])[0]
                 if APP.deterministic is not None:
-                    self._send(200, APP.services.synthesize_commit(root, hint))
+                    self._send(200, APP.services.synthesize_commit(root, hint, task_id=task_id))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
@@ -945,6 +1043,10 @@ class Handler(BaseHTTPRequestHandler):
                 models = APP.runtime.installed_models()
                 self._send(200, {"object": "list", "data": [{"id": m, "object": "model", "owned_by": "ollama"} for m in models]}); return
             self._send(404, {"error": "not found"})
+        except (ValueError, RequestBodyError) as exc:
+            self._send(400, {"success": False, "error": str(exc), "status_code": 400, "terminal": True, "retryable": False})
+        except KeyError as exc:
+            self._send(404, {"success": False, "error": str(exc), "status_code": 404, "terminal": True, "retryable": False})
         except Exception as exc:
             if _is_client_disconnect(exc):
                 self._finish_debug_trace(499, {"success": False, "terminal": True}, error="client disconnected")
@@ -1544,8 +1646,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/v1/git/synthesize_commit":
                 root = str(payload.get("root", "."))
                 hint = str(payload.get("hint", payload.get("message", "")))
+                task_id = str(payload.get("task_id", ""))
                 if APP.deterministic is not None:
-                    self._send(200, APP.services.synthesize_commit(root, hint))
+                    self._send(200, APP.services.synthesize_commit(root, hint, task_id=task_id))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
@@ -1786,6 +1889,14 @@ class Handler(BaseHTTPRequestHandler):
         except ModelUnavailableError as exc:
             APP.logger.warning("model unavailable path=%s tenant=%s error=%s", path, tenant, exc)
             self._send(503, {"success": False, "error": str(exc), "status_code": 503, "retryable": True})
+        except (ValueError, RequestBodyError) as exc:
+            if APP is not None:
+                APP.logger.warning("invalid request payload path=%s tenant=%s error=%s", path, tenant, exc)
+            self._send(400, {"success": False, "error": str(exc), "status_code": 400, "terminal": True, "retryable": False})
+        except KeyError as exc:
+            if APP is not None:
+                APP.logger.warning("resource not found path=%s tenant=%s key=%s", path, tenant, exc)
+            self._send(404, {"success": False, "error": str(exc), "status_code": 404, "terminal": True, "retryable": False})
         except Exception as exc:
             if _is_client_disconnect(exc):
                 self._finish_debug_trace(499, {"success": False, "terminal": True}, error="client disconnected")

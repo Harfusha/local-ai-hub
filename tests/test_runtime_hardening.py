@@ -165,6 +165,26 @@ def test_supervisor_status_replaces_stale_hub_pid_with_owned_child(tmp_path):
     assert json.loads(supervisor.status_path.read_text(encoding="utf-8"))["hub_pid"] == os.getpid()
 
 
+def test_supervisor_terminate_child_reaps_orphaned_pid_and_unlinks_file(tmp_path, monkeypatch):
+    terminated: list[int] = []
+    monkeypatch.setattr(supervisor_module, "terminate_tree", lambda pid, grace_seconds=5.0: terminated.append(pid))
+    monkeypatch.setattr(supervisor_module, "find_listening_pid", lambda _port: 55555)
+    monkeypatch.setattr(supervisor_module, "pid_alive", lambda pid: True)
+
+    supervisor = Supervisor.__new__(Supervisor)
+    supervisor.state_dir = tmp_path
+    supervisor.child = None
+    supervisor.config = {"server": {"port": 11435}}
+    pid_file = tmp_path / "hub.pid"
+    pid_file.write_text("66666", encoding="utf-8")
+
+    supervisor.terminate_child()
+
+    assert 55555 in terminated
+    assert 66666 in terminated
+    assert not pid_file.exists()
+
+
 def test_embedding_first_batch_uses_persistent_cache(tmp_path, monkeypatch):
     model_name = "BAAI/bge-small-en-v1.5"
     embeddings = EmbeddingModel(

@@ -553,13 +553,10 @@ class CommandBroker:
             self._active_cancel_keys[key] = (self._cancel_key(command, cwd), str(tenant)[:80])
         try:
             result = self._execute(command, cwd, int(timeout or self.timeout), cancel_event)
-            raw = dict(result)
-            if classification["cacheable"] and not result.get("cancelled"):
-                (self.success_cache if result.get("success") else self.failure_cache).set(key, raw)
             if not result.get("success") and not result.get("cancelled") and self.incident_store is not None:
                 try:
                     from .agent_incidents import ToolOutcome
-                    self.incident_store.capture(ToolOutcome(
+                    inc = self.incident_store.capture(ToolOutcome(
                         tool_name="command",
                         command=command,
                         error=str(result.get("error") or result.get("stderr") or ("exit code " + str(result.get("exit_code", 1)))),
@@ -568,8 +565,19 @@ class CommandBroker:
                         timed_out=bool(result.get("timed_out")),
                         cancelled=bool(result.get("cancelled")),
                     ))
+                    if inc and (inc.root_cause or inc.verified_fix):
+                        result["remediation"] = {
+                            "incident_id": inc.incident_id,
+                            "root_cause": inc.root_cause,
+                            "verified_fix": inc.verified_fix,
+                            "confidence": inc.confidence,
+                            "attempts": inc.attempts,
+                        }
                 except Exception:
                     pass
+            raw = dict(result)
+            if classification["cacheable"] and not result.get("cancelled"):
+                (self.success_cache if result.get("success") else self.failure_cache).set(key, raw)
             if result.get("success") and task_id and self.verification_store is not None:
                 try:
                     from .agent_verification import VerificationReceipt
@@ -610,7 +618,18 @@ class CommandBroker:
         stdout = str(result.get("stdout", "")); stderr = str(result.get("stderr", ""))
         combined_chars = len(stdout) + len(stderr)
         result["summary"] = self._deterministic_summary(result)
-        result["diagnostics"] = self._extract_diagnostics(result)
+        diagnostics = self._extract_diagnostics(result)
+        if result.get("remediation"):
+            rem = result["remediation"]
+            fix_msg = rem.get("verified_fix") or rem.get("root_cause")
+            if fix_msg:
+                diagnostics.insert(0, {
+                    "path": "",
+                    "line": 0,
+                    "column": 0,
+                    "message": f"Remediation guidance: {fix_msg}",
+                })
+        result["diagnostics"] = diagnostics
         if combined_chars > self.inline_chars:
             full = f"$ {command}\n\nSTDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
             result["artifact_id"] = self.artifacts.put(full, tenant, "command")

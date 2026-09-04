@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import queue
 import sqlite3
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -165,6 +167,8 @@ class AgentStateStore:
         self.enabled = bool(enabled)
         self.max_payload_bytes = int(max_payload_bytes)
         self._initialized = False
+        self._subscribers: list[queue.Queue[AgentEvent]] = []
+        self._subscribers_lock = threading.Lock()
 
     def _ensure_schema(self) -> None:
         if self._initialized or not self.enabled:
@@ -268,11 +272,34 @@ class AgentStateStore:
                 con.close()
 
         try:
-            return retry_busy(_do_append, retries=5, base_delay_seconds=0.02)
+            res = retry_busy(_do_append, retries=5, base_delay_seconds=0.02)
+            if not res.duplicate and res.event is not None:
+                self._publish(res.event)
+            return res
         except Exception as exc:
             if is_busy_error(exc):
                 return AppendResult(seq=0, duplicate=False, retryable=True, error=str(exc))
             raise
+
+    def subscribe(self, maxsize: int = 100) -> queue.Queue[AgentEvent]:
+        q: queue.Queue[AgentEvent] = queue.Queue(maxsize=maxsize)
+        with self._subscribers_lock:
+            self._subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: queue.Queue[AgentEvent]) -> None:
+        with self._subscribers_lock:
+            if q in self._subscribers:
+                self._subscribers.remove(q)
+
+    def _publish(self, event: AgentEvent) -> None:
+        with self._subscribers_lock:
+            subscribers = list(self._subscribers)
+        for q in subscribers:
+            try:
+                q.put_nowait(event)
+            except Exception:
+                pass
 
     def events(self, stream_id: str, after_seq: int = 0, limit: int = 1000) -> list[AgentEvent]:
         if not self.enabled or not self.db_path.exists():

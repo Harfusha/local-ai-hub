@@ -61,3 +61,20 @@ def test_payload_size_limit(tmp_path: Path):
     event = AgentEvent.create("task-1", "task.large", large_payload, "k-large")
     with pytest.raises(ValueError, match="payload exceeds"):
         store.append(event)
+
+
+def test_subscribe_and_publish_events(tmp_path: Path):
+    store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    q = store.subscribe()
+    ev1 = AgentEvent.create("task-1", "task.created", {"step": 1}, "k1")
+    store.append(ev1)
+    received = q.get_nowait()
+    assert received.kind == "task.created"
+    assert received.seq == 1
+    assert received.stream_id == "task-1"
+
+    # Unsubscribe
+    store.unsubscribe(q)
+    ev2 = AgentEvent.create("task-1", "task.step", {"step": 2}, "k2")
+    store.append(ev2)
+    assert q.empty()

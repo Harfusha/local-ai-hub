@@ -184,31 +184,50 @@ class Supervisor:
         return subprocess.Popen([py_exe, "-X", "utf8", "-m", "local_ai_hub.http_server"], **kwargs)
 
     def terminate_child(self) -> None:
+        target_pids: set[int] = set()
         child = self.child
-        if child is None or child.poll() is not None:
-            return
-        child_pid = int(child.pid)
+        if child is not None and child.poll() is None:
+            target_pids.add(int(child.pid))
+
+        # Also reap port owner and hub.pid if child is not tracking it or port is still held
+        port = int(self.config.get("server", {}).get("port", 11435))
         try:
-            terminate_tree(child.pid, grace_seconds=5.0)
+            port_owner = find_listening_pid(port)
+            if port_owner and int(port_owner) != os.getpid():
+                target_pids.add(int(port_owner))
+        except Exception:
+            pass
+
+        pid_file = self.state_dir / "hub.pid"
+        if pid_file.exists():
+            try:
+                candidate = int(pid_file.read_text(encoding="utf-8").strip() or 0)
+                if candidate and candidate != os.getpid() and pid_alive(candidate):
+                    target_pids.add(candidate)
+            except Exception:
+                pass
+
+        for pid in target_pids:
+            try:
+                terminate_tree(pid, grace_seconds=5.0)
+            except Exception:
+                pass
+
+        if child is not None:
             try:
                 child.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                child.kill()
-                child.wait(timeout=1.0)
-        except Exception:
-            try:
-                child.kill()
-                child.wait(timeout=1.0)
             except Exception:
-                pass
-        finally:
-            try:
-                p = self.state_dir / "hub.pid"
-                if p.exists() and int(p.read_text(encoding="utf-8").strip() or 0) == child_pid:
-                    p.unlink(missing_ok=True)
-            except Exception:
-                pass
+                try:
+                    child.kill()
+                    child.wait(timeout=1.0)
+                except Exception:
+                    pass
             self.child = None
+
+        try:
+            pid_file.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def run(self) -> int:
         if bool(self.cfg.get("respect_disabled_marker", True)) and self.disabled_path.exists():

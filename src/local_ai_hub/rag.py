@@ -16,6 +16,9 @@ from .normalizer import normalize_query
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
 
 
+import re
+
+
 def _canonical_fragment_text(text: str) -> str:
     """Normalize transport-only differences without changing source semantics."""
     return str(text).replace("\r\n", "\n").replace("\r", "\n")
@@ -25,6 +28,31 @@ def _fragment_hash(text: str) -> str:
     return hashlib.sha1(
         _canonical_fragment_text(text).encode("utf-8"), usedforsecurity=False
     ).hexdigest()
+
+
+def _simhash(text: str) -> int:
+    """Compute 64-bit SimHash of text based on character 4-grams."""
+    clean = re.sub(r"\s+", " ", text.lower().strip())
+    if len(clean) < 4:
+        shingles = [clean] if clean else []
+    else:
+        shingles = [clean[i : i + 4] for i in range(len(clean) - 3)]
+    if not shingles:
+        return 0
+
+    v = [0] * 64
+    for s in shingles:
+        h = int(hashlib.md5(s.encode("utf-8"), usedforsecurity=False).hexdigest()[:16], 16)
+        for i in range(64):
+            if (h >> i) & 1:
+                v[i] += 1
+            else:
+                v[i] -= 1
+    fp = 0
+    for i in range(64):
+        if v[i] > 0:
+            fp |= (1 << i)
+    return fp
 
 
 class RAGStore:
@@ -436,6 +464,10 @@ class RAGStore:
         reused_chunks = 0
         changed_indices: list[int] = []
         changed_texts: list[str] = []
+        rag_cfg = self.config.get("rag", {})
+        dedup_near_duplicates = bool(rag_cfg.get("dedup_near_duplicates", True))
+        max_hamming = int(rag_cfg.get("near_duplicate_max_hamming", 4))
+        near_duplicates_skipped = 0
 
         for rel in changed_paths:
             path, mtime_ns, size = current_meta[rel]
@@ -448,15 +480,27 @@ class RAGStore:
                 skipped += 1
                 continue
             file_rows.append((rel, mtime_ns, size, file_hash))
-            for chunk_no, chunk in enumerate(self._chunks(text, path=rel)):
+            file_chunks = self._chunks(text, path=rel)
+            seen_simhashes: list[int] = []
+            chunk_seq = 0
+            for chunk in file_chunks:
+                if dedup_near_duplicates and len(chunk) > 80:
+                    fp = _simhash(chunk)
+                    if fp != 0 and any((fp ^ s_fp).bit_count() <= max_hamming for s_fp in seen_simhashes):
+                        near_duplicates_skipped += 1
+                        continue
+                    if fp != 0:
+                        seen_simhashes.append(fp)
+
                 chunk_hash = _fragment_hash(chunk)
                 record = {
                     "path": rel,
-                    "chunk_no": chunk_no,
+                    "chunk_no": chunk_seq,
                     "text": chunk,
                     "hash": chunk_hash,
-                    "embedding": old_chunks.get((rel, chunk_no, chunk_hash)),
+                    "embedding": old_chunks.get((rel, chunk_seq, chunk_hash)),
                 }
+                chunk_seq += 1
                 idx = len(changed_records)
                 changed_records.append(record)
                 if record["embedding"] is None:
@@ -559,6 +603,7 @@ class RAGStore:
             "embedded_chunks": len(changed_indices),
             "reused_chunks": reused_chunks,
             "skipped_files": skipped,
+            "near_duplicates_skipped": near_duplicates_skipped,
         }
 
 

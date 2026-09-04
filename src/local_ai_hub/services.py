@@ -109,6 +109,8 @@ class LocalAIServices:
         self.deterministic = deterministic
         self.external_tools = external_tools
         self.commands: Any | None = None
+        self.task_store: Any | None = None
+        self.verification_store: Any | None = None
         self.router = ModelRouter(config)
         self.model_policy = ModelExecutionPolicy(config)
         self.profile_catalog = OllamaSubagentCatalog(config)
@@ -175,6 +177,12 @@ class LocalAIServices:
 
     def set_commands(self, commands: Any) -> None:
         self.commands = commands
+
+    def set_task_store(self, task_store: Any) -> None:
+        self.task_store = task_store
+
+    def set_verification_store(self, verification_store: Any) -> None:
+        self.verification_store = verification_store
 
     def set_token_router(self, token_router: Any) -> None:
         self.token_router = token_router
@@ -1055,8 +1063,43 @@ class LocalAIServices:
     def dead_code(self, root: str, limit: int = 200) -> dict[str, Any]:
         return self.deterministic_operation("dead-code", root, {"limit": int(limit)}, lambda: self.deterministic.detect_dead_code(root, int(limit)))
 
-    def synthesize_commit(self, root: str, hint: str = "") -> dict[str, Any]:
-        return self.deterministic_operation("commit-synthesis", root, {"hint": hint}, lambda: self.deterministic.synthesize_commit(root, hint))
+    def synthesize_commit(self, root: str, hint: str = "", task_id: str = "") -> dict[str, Any]:
+        tasks_data: list[dict[str, Any]] = []
+        receipts_data: list[dict[str, Any]] = []
+
+        if self.task_store is not None:
+            try:
+                if task_id:
+                    t = self.task_store.get(task_id)
+                    if t:
+                        tasks_data.append(t.to_dict())
+                else:
+                    active = self.task_store.list_tasks(status=None, limit=5)
+                    for t in active:
+                        tasks_data.append(t.to_dict())
+            except Exception:
+                pass
+
+        if self.verification_store is not None:
+            try:
+                tids = [task_id] if task_id else [str(t.get("task_id")) for t in tasks_data if t.get("task_id")]
+                for tid in tids[:5]:
+                    comp = self.verification_store.completion(tid)
+                    for r in comp.receipts:
+                        if r.passed:
+                            receipts_data.append(r.to_dict())
+            except Exception:
+                pass
+
+        params = {"hint": hint, "task_id": task_id, "tasks_count": len(tasks_data), "receipts_count": len(receipts_data)}
+        return self.deterministic_operation(
+            "commit-synthesis",
+            root,
+            params,
+            lambda: self.deterministic.synthesize_commit(
+                root, hint, task_id=task_id, tasks=tasks_data, receipts=receipts_data
+            ),
+        )
 
     def code_inspect_symbol(self, root: str, symbol: str) -> dict[str, Any]:
         if self.code_index is None:

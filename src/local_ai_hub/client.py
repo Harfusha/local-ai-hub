@@ -529,3 +529,53 @@ class HubClient:
 
     def logs(self, lines: int = 200) -> dict[str, Any]:
         return self.get(f"/v1/logs/tail?lines={max(1, min(int(lines), 1000))}")
+
+    def events(self, stream_id: str = "", after_seq: int = 0, limit: int = 100) -> dict[str, Any]:
+        import urllib.parse
+        params = []
+        if stream_id:
+            params.append(f"stream_id={urllib.parse.quote(stream_id)}")
+        if after_seq > 0:
+            params.append(f"after_seq={after_seq}")
+        if limit != 100:
+            params.append(f"limit={limit}")
+        qs = ("?" + "&".join(params)) if params else ""
+        return self.get(f"/v1/agent-state/events{qs}")
+
+    def stream_events(self, stream_id: str = "", kind: str = "", after_seq: int = 0, timeout: float = 30.0):
+        """Yield parsed SSE events (event_type, data_dict) from /v1/agent-state/events/stream."""
+        import urllib.parse
+        params = []
+        if stream_id:
+            params.append(f"stream_id={urllib.parse.quote(stream_id)}")
+        if kind:
+            params.append(f"kind={urllib.parse.quote(kind)}")
+        if after_seq > 0:
+            params.append(f"after_seq={after_seq}")
+        if timeout > 0:
+            params.append(f"timeout={timeout}")
+        qs = ("?" + "&".join(params)) if params else ""
+        url = f"{self.base_url}/v1/agent-state/events/stream{qs}"
+        req = Request(url, headers={"Authorization": f"Bearer {self.api_token}"} if self.api_token else {})
+        with urlopen(req, timeout=timeout + 5.0 if timeout > 0 else 60.0) as resp:
+            cur_event = ""
+            cur_data = []
+            for raw_line in resp:
+                line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+                if not line:
+                    if cur_data:
+                        data_str = "\n".join(cur_data)
+                        try:
+                            parsed_data = json.loads(data_str)
+                        except Exception:
+                            parsed_data = {"raw": data_str}
+                        yield cur_event or "message", parsed_data
+                    cur_event = ""
+                    cur_data = []
+                    continue
+                if line.startswith(":"):
+                    continue
+                if line.startswith("event:"):
+                    cur_event = line[len("event:"):].strip()
+                elif line.startswith("data:"):
+                    cur_data.append(line[len("data:"):].strip())
