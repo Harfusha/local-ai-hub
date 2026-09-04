@@ -27,7 +27,7 @@ def status() -> dict:
     if not c._online():
         return {"running": False}
     try:
-        data = c.get("/v1/status")
+        data = c.status()
     except Exception:
         data = {}
     data["running"] = True
