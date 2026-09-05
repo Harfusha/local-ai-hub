@@ -83,6 +83,7 @@ class LocalAIServices:
     pipeline: Any = None
     preprocessor: Any = None
     tool_agent: Any = None
+    blackboard: Any = None
 
     def __init__(
         self,
@@ -209,6 +210,9 @@ class LocalAIServices:
 
     def set_tool_agent(self, tool_agent: Any) -> None:
         self.tool_agent = tool_agent
+
+    def set_blackboard(self, blackboard: Any) -> None:
+        self.blackboard = blackboard
 
     def _touch_project(self, root: str) -> None:
         # Local AI: repository reads refresh only explicitly registered projects.
@@ -1898,11 +1902,21 @@ class LocalAIServices:
         if self.commands is None:
             return {"success": False, "error": "command broker unavailable"}
         action = str(args.get("action", "run")).strip().lower().replace("-", "_")
+        if action in {"repair_loop", "auto_fix"}:
+            return self.commands.repair_loop(
+                str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))), tenant,
+                timeout=int(args.get("timeout", 0) or 0) or None,
+                task_id=str(args.get("task_id", "")), criterion=str(args.get("criterion", "")),
+                max_attempts=int(args.get("max_attempts", 3)),
+                fix_generator=self._synthesize_repair_patch,
+            )
         if action == "run":
             return self.commands.run(
                 str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))), tenant,
                 timeout=int(args.get("timeout", 0) or 0) or None, force=bool(args.get("force", False)),
                 task_id=str(args.get("task_id", "")), criterion=str(args.get("criterion", "")),
+                auto_fix=bool(args.get("auto_fix", False)),
+                fix_generator=self._synthesize_repair_patch if bool(args.get("auto_fix", False)) else None,
             )
         if action == "cancel":
             return self.commands.cancel(
@@ -1925,6 +1939,33 @@ class LocalAIServices:
                 "deterministic": bool(scripts),
             }
         return {"success": False, "error": f"unknown command action: {action}"}
+
+    def _synthesize_repair_patch(self, command: str, cwd: str, failure_result: dict[str, Any]) -> dict[str, str] | None:
+        """Synthesize candidate code fix diffs/patches using local fast model or remediation."""
+        if not failure_result or failure_result.get("success"):
+            return None
+        rem = failure_result.get("remediation") or {}
+        if rem.get("verified_fix") and isinstance(rem["verified_fix"], dict):
+            return {str(k): str(v) for k, v in rem["verified_fix"].items()}
+        model = self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b")
+        diag = failure_result.get("diagnostics", [])
+        stderr = str(failure_result.get("stderr", "") or failure_result.get("error", ""))[:2000]
+        prompt = (
+            f"Fix this command failure in {cwd}:\nCommand: {command}\nError:\n{stderr}\n"
+            f"Diagnostics:\n{json.dumps(diag[:5])}\n"
+            "Respond ONLY with a JSON object format: {\"relative_file_path\": \"full corrected file content\"}"
+        )
+        try:
+            res = self.proxy_request("/api/generate", {"model": model, "prompt": prompt, "format": "json"}, "hub", "repair_loop")
+            raw_text = str(res.get("response", "")).strip()
+            parsed = json.loads(raw_text)
+            if isinstance(parsed, dict) and "files" in parsed and isinstance(parsed["files"], dict):
+                return {str(k): str(v) for k, v in parsed["files"].items()}
+            if isinstance(parsed, dict):
+                return {str(k): str(v) for k, v in parsed.items() if isinstance(v, str)}
+        except Exception:
+            pass
+        return None
 
     def proxy_request(self, endpoint: str, payload: dict[str, Any], tenant: str, source: str) -> dict[str, Any]:
         if payload.get("stream") is True:

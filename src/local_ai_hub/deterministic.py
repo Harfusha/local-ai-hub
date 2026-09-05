@@ -2469,6 +2469,154 @@ class DeterministicEngine:
             "shared_routes": len([r for r, rs in route_map.items() if len(rs) >= 2]),
         }
 
+    def cross_repo_symbol_find(self, roots: list[str], query: str, limit: int = 50) -> dict[str, Any]:
+        """Find symbols matching query across multiple repository roots."""
+        matches: list[dict[str, Any]] = []
+        clean_query = query.strip()
+        if not clean_query:
+            return {"success": True, "symbols": [], "total": 0}
+
+        for raw_root in roots:
+            resolved = self._root(raw_root)
+            if self.code_index is not None:
+                try:
+                    with self.code_index._lock, closing(self.code_index._connect()) as con:
+                        rows = con.execute(
+                            "SELECT name, kind, path, line, end_line FROM symbols "
+                            "WHERE root=? AND (name LIKE ? OR lower(name)=lower(?)) LIMIT ?",
+                            (resolved, f"%{clean_query}%", clean_query, limit),
+                        ).fetchall()
+                        for r in rows:
+                            matches.append({
+                                "repo": raw_root,
+                                "name": str(r[0]),
+                                "kind": str(r[1]),
+                                "path": str(r[2]),
+                                "line": int(r[3]),
+                                "end_line": int(r[4] or r[3]),
+                            })
+                except Exception:
+                    pass
+            try:
+                with self._lock, closing(self._connect()) as con:
+                    f_rows = con.execute(
+                        "SELECT name, kind, path, line, value FROM facts "
+                        "WHERE root=? AND (name LIKE ? OR value LIKE ?) LIMIT ?",
+                        (resolved, f"%{clean_query}%", f"%{clean_query}%", limit),
+                    ).fetchall()
+                    for fr in f_rows:
+                        matches.append({
+                            "repo": raw_root,
+                            "name": str(fr[0] or fr[4]),
+                            "kind": str(fr[1]),
+                            "path": str(fr[2] or ""),
+                            "line": int(fr[3] or 1),
+                            "detail": str(fr[4] or ""),
+                        })
+            except Exception:
+                pass
+
+        seen: set[tuple[str, str, str, int]] = set()
+        deduped: list[dict[str, Any]] = []
+        for m in matches:
+            k = (m["repo"], m["name"], m["path"], m.get("line", 0))
+            if k not in seen:
+                seen.add(k)
+                deduped.append(m)
+
+        return {
+            "success": True,
+            "query": clean_query,
+            "total": len(deduped),
+            "symbols": deduped[:limit],
+            "repos": list({m["repo"] for m in deduped}),
+        }
+
+    def cross_project_impact(self, symbol: str, roots: list[str], origin_root: str | None = None) -> dict[str, Any]:
+        """Compute blast radius and cross-boundary references of a symbol across multiple projects.
+
+        Helps coordinate cross-repo refactors (e.g. backend API -> Unity client -> Web frontend).
+        """
+        clean_symbol = symbol.strip()
+        if not clean_symbol or not roots:
+            return {"success": False, "error": "symbol and roots are required"}
+
+        declared_repos: list[str] = []
+        references_by_repo: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        declarations: list[dict[str, Any]] = []
+
+        for raw_root in roots:
+            resolved = self._root(raw_root)
+            if self.code_index is not None:
+                try:
+                    with self.code_index._lock, closing(self.code_index._connect()) as con:
+                        syms = con.execute(
+                            "SELECT name, kind, path, line FROM symbols WHERE root=? AND (name=? OR lower(name)=lower(?))",
+                            (resolved, clean_symbol, clean_symbol),
+                        ).fetchall()
+                        for s in syms:
+                            declarations.append({
+                                "repo": raw_root, "name": str(s[0]), "kind": str(s[1]),
+                                "path": str(s[2]), "line": int(s[3]),
+                            })
+                            if raw_root not in declared_repos:
+                                declared_repos.append(raw_root)
+
+                        refs = con.execute(
+                            "SELECT DISTINCT path, line FROM refs WHERE root=? AND (name=? OR lower(name)=lower(?)) LIMIT 100",
+                            (resolved, clean_symbol, clean_symbol),
+                        ).fetchall()
+                        for rf in refs:
+                            references_by_repo[raw_root].append({
+                                "path": str(rf[0]), "line": int(rf[1]),
+                            })
+                except Exception:
+                    pass
+
+            try:
+                with self._lock, closing(self._connect()) as con:
+                    f_rows = con.execute(
+                        "SELECT kind, path, line, value FROM facts WHERE root=? AND (name=? OR value=?)",
+                        (resolved, clean_symbol, clean_symbol),
+                    ).fetchall()
+                    for fr in f_rows:
+                        declarations.append({
+                            "repo": raw_root, "name": clean_symbol, "kind": str(fr[0]),
+                            "path": str(fr[1] or ""), "line": int(fr[2] or 1), "value": str(fr[3]),
+                        })
+                        if raw_root not in declared_repos:
+                            declared_repos.append(raw_root)
+            except Exception:
+                pass
+
+        detected_origin = origin_root or (declared_repos[0] if declared_repos else roots[0])
+        impacted_repos = [r for r in roots if r != detected_origin and references_by_repo.get(r)]
+        total_cross_refs = sum(len(references_by_repo.get(r, [])) for r in impacted_repos)
+
+        if not impacted_repos:
+            risk = "low"
+        elif len(impacted_repos) == 1 and total_cross_refs <= 3:
+            risk = "medium"
+        elif len(impacted_repos) >= 2 or total_cross_refs > 10:
+            risk = "critical"
+        else:
+            risk = "high"
+
+        suggested_order = [detected_origin] + impacted_repos
+
+        return {
+            "success": True,
+            "symbol": clean_symbol,
+            "origin_repo": detected_origin,
+            "declared_in": declared_repos,
+            "declarations": declarations,
+            "impacted_repos": impacted_repos,
+            "cross_boundary_references_count": total_cross_refs,
+            "references_by_repo": {r: references_by_repo[r] for r in impacted_repos},
+            "risk_score": risk,
+            "suggested_order_of_edits": suggested_order,
+        }
+
     def symbol_callgraph(self, root: str, symbol_name: str | None = None, limit: int = 50) -> dict[str, Any]:
         """Compute caller/callee callgraph for a specific symbol or top symbols in the project."""
         resolved = self._root(root)

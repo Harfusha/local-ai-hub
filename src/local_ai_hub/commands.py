@@ -96,8 +96,9 @@ class CommandBroker:
 
         if exe_base in self.DANGEROUS_EXES:
             return {"class": "dangerous", "cacheable": False, "allowed": False, "reason": "dangerous executable"}
+        unquoted = re.sub(r'("[^"]*"|\'[^\']*\')', '', command)
         if (any(x in {"&&", "||", ";", "|", "&", ">", ">>", "<", "<<"} for x in tokens)
-                or any(op in command for op in ("&&", "||", ";", "`", "$("))):
+                or any(op in unquoted for op in ("&&", "||", ";", "`", "$("))):
             return {"class": "unknown", "cacheable": False, "allowed": False, "reason": "shell operators are not accepted"}
 
         if exe_base == "git":
@@ -322,10 +323,13 @@ class CommandBroker:
                 argv = tokens
         else:
             argv = tokens
+        proc_env = os.environ.copy()
+        proc_env["PYTHONDONTWRITEBYTECODE"] = "1"
         kwargs: dict[str, Any] = {
             "cwd": str(Path(cwd).resolve()), "stdin": subprocess.DEVNULL,
             "stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
             "text": True, "encoding": "utf-8", "errors": "replace",
+            "env": proc_env,
         }
         if os.name == "nt":
             kwargs.update(hidden_run_kwargs(new_group=True))
@@ -445,7 +449,20 @@ class CommandBroker:
             selected = lines[: max(8, limit // 5)] + selected
         return "\n".join(selected[:limit])
 
-    def run(self, command: str, cwd: str, tenant: str, *, timeout: int | None = None, force: bool = False, task_id: str = "", criterion: str = "") -> dict[str, Any]:
+    def run(
+        self,
+        command: str,
+        cwd: str,
+        tenant: str,
+        *,
+        timeout: int | None = None,
+        force: bool = False,
+        task_id: str = "",
+        criterion: str = "",
+        auto_fix: bool = False,
+        fix_generator: Any | None = None,
+        max_repair_attempts: int = 3,
+    ) -> dict[str, Any]:
         if not self.enabled:
             return {"success": False, "error": "command broker disabled"}
         classification = self.classify(command)
@@ -614,11 +631,7 @@ class CommandBroker:
                 self.suppression_cache.set(attempt_key, raw)
             with self._lock:
                 self._last[key] = raw
-                if len(self._last) > 128:
-                    for k in list(self._last.keys())[:-64]:
-                        self._last.pop(k, None)
             result.update({"cache_hit": False, "coalesced": False, "classification": classification, "repo_state": state})
-            return self._compact(result, tenant, command)
         except subprocess.TimeoutExpired:
             return {"success": False, "error": "command timed out", "classification": classification, "cache_hit": False}
         finally:
@@ -628,6 +641,175 @@ class CommandBroker:
                 self._cancel_events.pop(key, None)
                 self._active_cancel_keys.pop(key, None)
                 event.set()
+
+        compacted = self._compact(result, tenant, command)
+        if auto_fix and not compacted.get("success") and not compacted.get("cancelled"):
+            return self.repair_loop(
+                command, cwd, tenant,
+                max_attempts=max_repair_attempts,
+                task_id=task_id, criterion=criterion,
+                timeout=timeout,
+                fix_generator=fix_generator,
+                initial_result=compacted,
+            )
+        return compacted
+
+    def repair_loop(
+        self,
+        command: str,
+        cwd: str | Path,
+        tenant: str,
+        *,
+        max_attempts: int = 3,
+        task_id: str = "",
+        criterion: str = "",
+        timeout: int | None = None,
+        fix_generator: Any | None = None,
+        initial_result: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Execute autonomous self-healing test loop on command failure.
+
+        Synthesizes candidate diffs/patches, applies them with in-memory file backups,
+        re-tests, and if successful, mints a VerificationReceipt and keeps the fix.
+        If all attempts fail, cleanly rolls back all modified files to pristine state.
+        """
+        cwd_path = Path(cwd).expanduser().resolve(strict=False)
+        initial = initial_result or self.run(
+            command, str(cwd_path), tenant, timeout=timeout, force=True,
+            task_id=task_id, criterion=criterion, auto_fix=False,
+        )
+        if initial.get("success"):
+            return {
+                "success": True,
+                "repaired": False,
+                "attempts": 0,
+                "result": initial,
+                "message": "command passed without repair",
+            }
+
+        original_files: dict[Path, str | None] = {}
+        attempt_history: list[dict[str, Any]] = []
+        last_result = initial
+
+        try:
+            for attempt in range(1, max(1, max_attempts) + 1):
+                patches: dict[str, str] = {}
+                if callable(fix_generator):
+                    try:
+                        gen_res = fix_generator(command, str(cwd_path), last_result)
+                        if isinstance(gen_res, dict):
+                            patches = {str(k): str(v) for k, v in gen_res.items()}
+                    except Exception as exc:
+                        attempt_history.append({"attempt": attempt, "error": f"fix generator error: {exc}"})
+                        continue
+                elif self.incident_store is not None:
+                    rem = last_result.get("remediation") or {}
+                    fix = rem.get("verified_fix")
+                    if isinstance(fix, dict):
+                        patches = {str(k): str(v) for k, v in fix.items()}
+
+                if not patches:
+                    attempt_history.append({"attempt": attempt, "error": "no candidate patches synthesized"})
+                    continue
+
+                applied_paths: list[Path] = []
+                for rel_path, new_content in patches.items():
+                    target = (cwd_path / rel_path).resolve()
+                    try:
+                        target.relative_to(cwd_path)
+                    except ValueError:
+                        continue
+                    if target not in original_files:
+                        original_files[target] = target.read_text(encoding="utf-8") if target.is_file() else None
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(new_content, encoding="utf-8")
+                    if target.suffix.lower() in {".py", ".pyw"}:
+                        pycache = target.parent / "__pycache__"
+                        if pycache.is_dir():
+                            for pyc in pycache.glob(f"{target.stem}*.pyc"):
+                                try:
+                                    pyc.unlink(missing_ok=True)
+                                except Exception:
+                                    pass
+                    applied_paths.append(target)
+
+                re_result = self.run(command, str(cwd_path), tenant, timeout=timeout, force=True, auto_fix=False)
+                last_result = re_result
+                attempt_history.append({
+                    "attempt": attempt,
+                    "applied_files": [str(p.relative_to(cwd_path)) for p in applied_paths],
+                    "success": bool(re_result.get("success")),
+                    "re_stderr": re_result.get("stderr"),
+                    "re_exit_code": re_result.get("exit_code"),
+                })
+
+                if re_result.get("success"):
+                    rcpt_dict = None
+                    if self.verification_store is not None:
+                        try:
+                            import uuid
+                            from .agent_verification import VerificationReceipt
+                            rcpt = VerificationReceipt.create(
+                                task_id=task_id or f"repair-{uuid.uuid4().hex[:8]}",
+                                criterion=criterion or f"repair:{self._safe_label(command)}",
+                                passed=True,
+                                command_id=command,
+                                evidence_id=str(re_result.get("artifact_id") or ""),
+                                repository_revision=str(re_result.get("repo_state", {}).get("fingerprint", "")),
+                                details={
+                                    "exit_code": 0,
+                                    "attempts": attempt,
+                                    "repaired_paths": [str(p.relative_to(cwd_path)) for p in applied_paths],
+                                },
+                            )
+                            self.verification_store.record(rcpt)
+                            rcpt_dict = rcpt.to_dict()
+                        except Exception:
+                            pass
+
+                    original_files.clear()
+                    return {
+                        "success": True,
+                        "repaired": True,
+                        "attempts": attempt,
+                        "patches_applied": [str(p.relative_to(cwd_path)) for p in applied_paths],
+                        "verification_receipt": rcpt_dict,
+                        "result": re_result,
+                    }
+                else:
+                    for target, orig_content in list(original_files.items()):
+                        if orig_content is None:
+                            target.unlink(missing_ok=True)
+                        else:
+                            target.write_text(orig_content, encoding="utf-8")
+                        if target.suffix.lower() in {".py", ".pyw"}:
+                            pycache = target.parent / "__pycache__"
+                            if pycache.is_dir():
+                                for pyc in pycache.glob(f"{target.stem}*.pyc"):
+                                    try:
+                                        pyc.unlink(missing_ok=True)
+                                    except Exception:
+                                        pass
+                    original_files.clear()
+
+        finally:
+            for target, orig_content in original_files.items():
+                try:
+                    if orig_content is None:
+                        target.unlink(missing_ok=True)
+                    else:
+                        target.write_text(orig_content, encoding="utf-8")
+                except Exception:
+                    pass
+
+        return {
+            "success": False,
+            "repaired": False,
+            "attempts": len(attempt_history),
+            "history": attempt_history,
+            "original_result": initial,
+            "error": "Self-healing repair loop exhausted without passing command.",
+        }
 
     def _compact(self, result: dict[str, Any], tenant: str, command: str) -> dict[str, Any]:
         stdout = str(result.get("stdout", "")); stderr = str(result.get("stderr", ""))

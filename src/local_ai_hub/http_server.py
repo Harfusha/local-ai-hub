@@ -823,6 +823,12 @@ class Handler(BaseHTTPRequestHandler):
                 limit = int((query.get("limit") or [100])[0])
                 evs = APP.agent_state.events(stream_id=stream_id, after_seq=after_seq, limit=limit)
                 self._send(200, {"success": True, "events": [e.to_dict() for e in evs]}); return
+            if path == "/v1/agent-state/blackboard":
+                if not getattr(APP, "agent_blackboard", None):
+                    self._send(503, {"success": False, "error": "blackboard unavailable"}); return
+                board_id = (query.get("board_id") or ["default"])[0]
+                section = (query.get("section") or [None])[0]
+                self._send(200, APP.agent_blackboard.get(board_id, section=section)); return
             if path == "/v1/agent-state/events/stream":
                 if not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
@@ -1448,11 +1454,18 @@ class Handler(BaseHTTPRequestHandler):
                     dec = APP.agent_incidents.retry_decision(fp, rev)
                     self._send(200, {"success": True, "decision": dec.to_dict()}); return
                 if action == "record":
+                    inc_id = str(payload.get("incident_id", payload.get("id", payload.get("record_id", ""))))
+                    root_cause = str(payload.get("root_cause", payload.get("reason", "")))
+                    verified_fix = str(payload.get("verified_fix", payload.get("fix", payload.get("status", ""))))
+                    if inc_id and (verified_fix or root_cause):
+                        try:
+                            inc = APP.agent_incidents.resolve(inc_id, verified_fix=verified_fix or "resolved", root_cause=root_cause or None)
+                            self._send(200, {"success": True, "incident": inc.to_dict()}); return
+                        except KeyError:
+                            pass
                     err_class = str(payload.get("error_class", payload.get("class", "AgentError")))
                     msg = str(payload.get("message", payload.get("redacted_message", payload.get("value", ""))))
                     op = str(payload.get("operation_class", payload.get("tool_name", payload.get("key", "agent"))))
-                    root_cause = str(payload.get("root_cause", ""))
-                    verified_fix = str(payload.get("verified_fix", payload.get("fix", "")))
                     rev = str(payload.get("state_revision", payload.get("revision", "")))
                     evidence_ids = tuple(payload.get("evidence_ids") or ())
                     raw_paths = payload.get("affected_paths") or payload.get("paths") or []
@@ -1465,8 +1478,18 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     inc = APP.agent_incidents.capture(outcome)
                     if inc and (verified_fix or root_cause):
-                        inc = APP.agent_incidents.resolve_fix(inc.incident_id, verified_fix=verified_fix, root_cause=root_cause)
+                        inc = APP.agent_incidents.resolve(inc.incident_id, verified_fix=verified_fix or "resolved", root_cause=root_cause or None)
                     self._send(200, {"success": True, "incident": inc.to_dict() if inc else None}); return
+                if action == "resolve":
+                    inc_id = str(payload.get("incident_id", payload.get("id", payload.get("record_id", ""))))
+                    fix = str(payload.get("verified_fix", payload.get("fix", payload.get("status", "manually resolved"))))
+                    rc = str(payload.get("root_cause", payload.get("reason", ""))) or None
+                    conf = float(payload.get("confidence", 1.0))
+                    try:
+                        inc = APP.agent_incidents.resolve(inc_id, verified_fix=fix, confidence=conf, root_cause=rc)
+                        self._send(200, {"success": True, "incident": inc.to_dict()}); return
+                    except KeyError:
+                        self._send(404, {"success": False, "error": f"incident {inc_id} not found", "terminal": True, "retryable": False}); return
                 if action == "find_regressions":
                     paths_param = payload.get("paths") or ([payload.get("path")] if payload.get("path") else [])
                     p_list = [str(x) for x in paths_param] if isinstance(paths_param, list) else []
@@ -1591,6 +1614,30 @@ class Handler(BaseHTTPRequestHandler):
                 retention = int(payload.get("retention_days") or APP.config.get("agent_state", {}).get("retention_days", 30))
                 res = APP.agent_state.cleanup(retention_days=retention)
                 self._send(200, res); return
+            if path == "/v1/agent-state/blackboard":
+                if not getattr(APP, "agent_blackboard", None):
+                    self._send(503, {"success": False, "error": "blackboard unavailable"}); return
+                action = str(payload.get("action", "get")).strip().lower().replace("-", "_")
+                board_id = str(payload.get("board_id", payload.get("task_id", payload.get("key", "default"))))
+                if action in {"update", "put", "blackboard_update"}:
+                    section = str(payload.get("section", payload.get("key", "main")))
+                    content = payload.get("content", payload.get("value"))
+                    author = str(payload.get("author", payload.get("approver", tenant or "agent")))
+                    clock = payload.get("clock")
+                    res = APP.agent_blackboard.update(board_id, section, content, author, clock=clock)
+                    self._send(200, res); return
+                if action in {"get", "read", "blackboard_get"}:
+                    section = payload.get("section")
+                    res = APP.agent_blackboard.get(board_id, section=str(section) if section else None)
+                    self._send(200, res); return
+                if action in {"list", "blackboard_list"}:
+                    boards = APP.agent_blackboard.list_boards()
+                    self._send(200, {"success": True, "boards": boards, "count": len(boards)}); return
+                if action in {"merge", "blackboard_merge"}:
+                    remote = payload.get("remote_sections", payload.get("sections", payload.get("record", {})))
+                    res = APP.agent_blackboard.merge(board_id, remote)
+                    self._send(200, res); return
+                self._send(400, {"success": False, "error": f"unknown blackboard action '{action}'"}); return
             if path == "/v1/delegate/repo":
                 self._send(200, APP.services.delegate_repo(payload, tenant)); return
             if path == "/v1/solve/repo":
@@ -1778,6 +1825,28 @@ class Handler(BaseHTTPRequestHandler):
                     roots = [str(p.get("root")) for p in APP.preprocessor.status().get("projects", []) if p.get("root")]
                 if APP.deterministic is not None:
                     self._send(200, APP.deterministic.cross_project_graph([str(r) for r in roots]))
+                else:
+                    self._send(200, {"success": False, "error": "deterministic engine disabled"})
+                return
+            if path == "/v1/cross_project_symbols":
+                roots = payload.get("roots")
+                if not isinstance(roots, list) or not roots:
+                    roots = [str(p.get("root")) for p in APP.preprocessor.status().get("projects", []) if p.get("root")]
+                query = str(payload.get("query", ""))
+                limit = int(payload.get("limit", 50))
+                if APP.deterministic is not None:
+                    self._send(200, APP.deterministic.cross_repo_symbol_find([str(r) for r in roots], query, limit))
+                else:
+                    self._send(200, {"success": False, "error": "deterministic engine disabled"})
+                return
+            if path == "/v1/cross_project_impact":
+                roots = payload.get("roots")
+                if not isinstance(roots, list) or not roots:
+                    roots = [str(p.get("root")) for p in APP.preprocessor.status().get("projects", []) if p.get("root")]
+                symbol = str(payload.get("symbol", payload.get("query", "")))
+                origin_root = payload.get("origin_root")
+                if APP.deterministic is not None:
+                    self._send(200, APP.deterministic.cross_project_impact(symbol, [str(r) for r in roots], str(origin_root) if origin_root else None))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return

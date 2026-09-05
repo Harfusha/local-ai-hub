@@ -201,15 +201,18 @@ RepoAction: TypeAlias = Literal[
     "synthesize_commit", "verify", "preprocess", "preprocess_status", "preprocess_refresh",
     "preprocess_pause", "preprocess_resume", "preprocess_cancel", "preprocess_unregister",
     "context_compile", "verify_receipt", "verify_completion",
+    "cross_project_graph", "cross_project_symbols", "cross_project_impact",
+    "cross_repo_graph", "cross_repo_symbols", "cross_repo_impact",
 ]
 RagAction: TypeAlias = Literal["index", "search", "list"]
-CommandAction: TypeAlias = Literal["run", "cancel", "classify", "discover", "stats"]
+CommandAction: TypeAlias = Literal["run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix"]
 CoordAction: TypeAlias = Literal[
     "claim", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete",
     "task_create", "task_get", "task_checkpoint", "task_transition", "task_resume", "task_list", "task_complete", "task_fail",
     "memory_record", "memory_get", "memory_find", "memory_promote",
     "context_compile", "verify_receipt", "verify_completion",
     "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
+    "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_merge",
 ]
 StatusDetail: TypeAlias = Literal["brief", "cache", "telemetry", "full", "agent_state"]
 StatusScope: TypeAlias = Literal["process", "window"]
@@ -271,7 +274,8 @@ def local_ai_status(detail: StatusDetail = "brief", scope: str = "process") -> d
         }, "status")
     sched = status.get("scheduler", {}) if isinstance(status, dict) else {}
     saving = status.get("observability", {}) if isinstance(status, dict) else {}
-    return {
+    vram = status.get("vram_balancer") if isinstance(status, dict) else None
+    res = {
         "success": bool(status.get("hub_online", False)),
         "version": status.get("version"),
         "ollama_online": status.get("ollama_online"),
@@ -282,6 +286,10 @@ def local_ai_status(detail: StatusDetail = "brief", scope: str = "process") -> d
         "cache_hits": saving.get("cache_hits", 0),
         "coalesced_waiters": saving.get("coalesced_waiters", 0),
     }
+    if vram and isinstance(vram, dict):
+        res["vram_pressure"] = vram.get("pressure_level", "nominal")
+        res["context_budget_factor"] = vram.get("context_budget_factor", 1.0)
+    return res
 
 
 @mcp.tool()
@@ -539,6 +547,12 @@ def local_ai_repo(
         return _compact(CLIENT.post("/v1/agent-state/verification", {
             "action": "completion", "task_id": task_id or query or task, "root": root,
         }, timeout=_timeout("quick")), "verify")
+    if action in {"cross_project_graph", "cross_repo_graph"}:
+        return _compact(CLIENT.post("/v1/cross_project_graph", {"roots": [root] if root else []}, timeout=_timeout("quick")), "architecture")
+    if action in {"cross_project_symbols", "cross_repo_symbols"}:
+        return _compact(CLIENT.post("/v1/cross_project_symbols", {"roots": [root] if root else [], "query": query or task, "limit": 50}, timeout=_timeout("quick")), "architecture")
+    if action in {"cross_project_impact", "cross_repo_impact"}:
+        return _compact(CLIENT.post("/v1/cross_project_impact", {"roots": [root] if root else [], "symbol": query or task}, timeout=_timeout("quick")), "impact")
     return _invalid_action("local_ai_repo", action, tuple(RepoAction.__args__), "Keep work bounded in Local AI Hub; use Codex-owned orchestration for peer subagents.")
 
 
@@ -576,8 +590,10 @@ def local_ai_command(
     force: bool = False,
     task_id: str = "",
     criterion: str = "",
+    auto_fix: bool = False,
+    max_attempts: int = 3,
 ) -> dict[str, Any]:
-    """Bounded command broker for the main agent. MANDATORY for repeatable test/lint/typecheck/static-analysis/build/read-only commands whenever possible. Shared safe CLI broker. Actions: run, cancel, classify, discover, stats. Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts. Results are keyed by command + bounded repo state and duplicate runs coalesce across agents. Reuse fresh results. If run returns in_progress=true, DO NOT start the command natively or with force; continue independent work and retry later so the owner can populate the cache. cancel only stops an active matching command. force=true is exceptional recovery/admin behavior, never a retry button. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
+    """Bounded command broker for the main agent. MANDATORY for repeatable test/lint/typecheck/static-analysis/build/read-only commands whenever possible. Shared safe CLI broker. Actions: run, cancel, classify, discover, stats, repair_loop, auto_fix. Optional auto_fix=true or action=repair_loop runs autonomous self-healing test loop with safe rollback on failure. Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts. Results are keyed by command + bounded repo state and duplicate runs coalesce across agents. Reuse fresh results. If run returns in_progress=true, DO NOT start the command natively or with force; continue independent work and retry later so the owner can populate the cache. cancel only stops an active matching command. force=true is exceptional recovery/admin behavior, never a retry button. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
     if not FEATURES.commands:
         return {"success": False, "unsupported": True, "error": "local_ai_command is disabled in configuration"}
     action = action.strip().lower().replace("-", "_")
@@ -594,6 +610,7 @@ def local_ai_command(
         "action": action, "command": command, "cwd": cwd, "root": cwd,
         "timeout": effective_command_timeout, "force": force,
         "task_id": task_id, "criterion": criterion,
+        "auto_fix": auto_fix, "max_attempts": max_attempts,
     }, timeout=host_timeout), "command")
 
 
@@ -659,6 +676,7 @@ def local_ai_coord(
             "action": sub_act, "error_class": key or "AgentError", "message": value or query,
             "query": query or key or value, "root": root,
             "root_cause": reason, "verified_fix": status,
+            "incident_id": record_id,
         }, timeout=_timeout("quick")), "status")
     if action == "incident_decision":
         return _compact(CLIENT.coord(
@@ -683,6 +701,17 @@ def local_ai_coord(
         return _compact(CLIENT.post("/v1/memory/search", {"root": root, "query": query, "limit": 12}))
     if action == "memo_delete":
         return _compact(CLIENT.post("/v1/memory/delete", {"root": root, "key": key}))
+    if action.startswith("blackboard_"):
+        sub = action[len("blackboard_"):]
+        board = task_id or (key if sub in {"get", "list", "merge"} and not value else "") or "default"
+        sec = key or target_scope or "main"
+        content = record if record is not None else (value or query)
+        author = approver or "agent"
+        return _compact(CLIENT.post("/v1/agent-state/blackboard", {
+            "action": sub, "board_id": board, "section": sec,
+            "content": content, "author": author,
+            "remote_sections": record or {},
+        }, timeout=_timeout("quick")), "status")
     return _invalid_action("local_ai_coord", action, tuple(CoordAction.__args__), "Use coordination for bounded shared state; the main agent remains the owner of final integration.")
 
 
