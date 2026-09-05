@@ -30,7 +30,7 @@ def test_packaged_defaults_match_source_defaults():
 
 
 def test_version_and_disconnect_regressions(tmp_path: Path):
-    assert __version__ == "1.5.0"
+    assert __version__ == "1.6.0"
     assert _is_client_disconnect(BrokenPipeError()) is True
     assert _is_client_disconnect(ConnectionResetError()) is True
     assert _is_client_disconnect(ConnectionAbortedError()) is True

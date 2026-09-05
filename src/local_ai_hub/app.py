@@ -54,6 +54,8 @@ from .agent_routing import RoutingEngine
 from .agent_learning import LearningStore
 from .agent_blackboard import BlackboardStore
 from .vram_balancer import VRAMBalancer
+from .swarm import SwarmCoordinator
+from .benchmark import HardwareBenchmarkRunner
 
 
 class BundleValidationError(ValueError):
@@ -62,6 +64,8 @@ class BundleValidationError(ValueError):
 
 class LocalAIApp:
     vram_balancer: Any = None
+    swarm: Any = None
+    benchmark_runner: Any = None
 
     def __init__(self, config_path: str | None = None):
         self.config = load_config(config_path)
@@ -151,8 +155,11 @@ class LocalAIApp:
         self.services.set_task_store(self.agent_tasks)
         self.services.set_verification_store(self.agent_verification)
         self.services.set_incident_store(self.agent_incidents)
+        self.services.set_agent_state(self.agent_state)
         self.agent_blackboard = BlackboardStore(state_dir / "agent_state.sqlite3")
         self.services.set_blackboard(self.agent_blackboard)
+        self.swarm = SwarmCoordinator(state_dir / "agent_state.sqlite3", leases=self.leases, blackboard=self.agent_blackboard, verifications=self.agent_verification)
+        self.services.set_swarm(self.swarm)
         self.rag = RAGStore(self.config, self.services, self.reranker)
         self.services.set_rag(self.rag)
         self.preprocessor = ProjectPreprocessor(self.config, self.services, self.rag, self.scheduler, self.runtime, self.repo_tools, self.code_index, self.learner, self.deterministic, telemetry=self.telemetry, background_gpu=self.background_gpu, external_tools=self.external_tools)
@@ -165,6 +172,12 @@ class LocalAIApp:
         self.services.set_pipeline(self.pipeline)
         self.projector = AgentProjector(self.config)
         self.vram_balancer = VRAMBalancer(self.config)
+        self.benchmark_runner = HardwareBenchmarkRunner(
+            state_dir / "benchmarks.json",
+            runtime=self.runtime,
+            vram_balancer=self.vram_balancer,
+            config=self.config,
+        )
         self.recovery = RecoveryJournal(state_dir, stale_seconds=int(self.config.get("resilience", {}).get("journal_stale_seconds", 900)))
         self._start_resilience_watchdog()
         prewarm = self.config.get("prewarm", {})
@@ -370,6 +383,7 @@ class LocalAIApp:
                 "headless": headless,
                 "background_gpu": self.background_gpu.status(),
                 "vram_balancer": self.vram_balancer.status() if getattr(self, "vram_balancer", None) else {},
+                "benchmark": self.benchmark_runner.get_latest_summary() if getattr(self, "benchmark_runner", None) else {"available": False},
                 "debug_traces": self.debug_traces.stats(),
                 "observability": observability,
                 "preprocessing": {

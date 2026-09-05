@@ -1,10 +1,10 @@
 # Local AI Hub
 
-Local AI Hub **1.5.0** is a local, deterministic-first tool and inference layer for coding agents such as Codex, Claude Code, Gemini CLI, Cursor, Windsurf, VS Code/Copilot and other MCP clients. Its purpose is to keep repetitive repository discovery, code-relationship analysis, validation, retrieval and bounded local reasoning off the cloud agent's context while sharing the resulting work across agents.
+Local AI Hub **1.6.0** is a local, deterministic-first tool and inference layer for coding agents such as Codex, Claude Code, Gemini CLI, Cursor, Windsurf, VS Code/Copilot and other MCP clients. Its purpose is to keep repetitive repository discovery, code-relationship analysis, validation, retrieval and bounded local reasoning off the cloud agent's context while sharing the resulting work across agents.
 
 The public interface is intentionally small: **7 MCP tools**. Serena and CodeGraphContext are managed behind that surface by default, so agents gain language-aware symbols and graph relationships without paying for two additional MCP schemas on every turn.
 
-Version 1.5 hardens the hub under contention: HTTP admission, model scheduling, Git probing, SQLite stores, external MCP processes and repeatable commands all have bounded concurrency/deadlines or fast retryable fallbacks. Overload is shed instead of turning into restart, thread or duplicate-work storms.
+Version 1.6 introduces the Autonomous Agent Operating System: AST call-graph semantic diff, multi-agent swarm orchestrator, hardware-adaptive benchmarks, real-time command streaming, self-healing repair loops, and verification receipts.
 
 ## What it does
 

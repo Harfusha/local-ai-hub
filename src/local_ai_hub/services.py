@@ -84,6 +84,7 @@ class LocalAIServices:
     preprocessor: Any = None
     tool_agent: Any = None
     blackboard: Any = None
+    agent_state: Any = None
 
     def __init__(
         self,
@@ -131,6 +132,8 @@ class LocalAIServices:
         self.pipeline: Any | None = None
         self.preprocessor: Any | None = None
         self.tool_agent: Any | None = None
+        self.swarm: Any | None = None
+        self.agent_state: Any | None = None
         self.flight_group = SingleFlightGroup(shards=32, default_timeout_seconds=60.0)
 
         cache_cfg = config.get("cache", {})
@@ -213,6 +216,12 @@ class LocalAIServices:
 
     def set_blackboard(self, blackboard: Any) -> None:
         self.blackboard = blackboard
+
+    def set_swarm(self, swarm: Any) -> None:
+        self.swarm = swarm
+
+    def set_agent_state(self, store: Any) -> None:
+        self.agent_state = store
 
     def _touch_project(self, root: str) -> None:
         # Local AI: repository reads refresh only explicitly registered projects.
@@ -1902,6 +1911,23 @@ class LocalAIServices:
         if self.commands is None:
             return {"success": False, "error": "command broker unavailable"}
         action = str(args.get("action", "run")).strip().lower().replace("-", "_")
+
+        stream_id = str(args.get("stream_id") or (f"cmd:{args.get('task_id')}" if args.get("task_id") else "") or (f"cmd:{tenant}" if args.get("stream") else ""))
+        log_callback = None
+        if stream_id and self.agent_state is not None and getattr(self.agent_state, "enabled", False):
+            def _log_cb(st: str, line: str) -> None:
+                try:
+                    from .agent_events import AgentEvent
+                    self.agent_state.append(AgentEvent.create(
+                        stream_id=stream_id,
+                        kind="command.log",
+                        payload={"stream": st, "chunk": line},
+                        actor=tenant,
+                    ))
+                except Exception:
+                    pass
+            log_callback = _log_cb
+
         if action in {"repair_loop", "auto_fix"}:
             return self.commands.repair_loop(
                 str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))), tenant,
@@ -1909,6 +1935,7 @@ class LocalAIServices:
                 task_id=str(args.get("task_id", "")), criterion=str(args.get("criterion", "")),
                 max_attempts=int(args.get("max_attempts", 3)),
                 fix_generator=self._synthesize_repair_patch,
+                log_callback=log_callback,
             )
         if action == "run":
             return self.commands.run(
@@ -1917,6 +1944,7 @@ class LocalAIServices:
                 task_id=str(args.get("task_id", "")), criterion=str(args.get("criterion", "")),
                 auto_fix=bool(args.get("auto_fix", False)),
                 fix_generator=self._synthesize_repair_patch if bool(args.get("auto_fix", False)) else None,
+                log_callback=log_callback,
             )
         if action == "cancel":
             return self.commands.cancel(

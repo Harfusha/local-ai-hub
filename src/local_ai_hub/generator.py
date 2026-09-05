@@ -597,12 +597,14 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "type": "object",
                 "required": ["action"],
                 "properties": {
-                    "action": {"type": "string", "enum": ["run", "cancel", "classify", "discover", "stats"]},
+                    "action": {"type": "string", "enum": ["run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix"]},
                     "command": {"type": "string", "default": ""},
                     "root": {"type": "string", "default": "."},
                     "task_id": {"type": "string", "default": ""},
                     "criterion": {"type": "string", "default": ""},
                     "timeout": {"type": "integer", "default": 0},
+                    "stream": {"type": "boolean", "default": False},
+                    "stream_id": {"type": "string", "default": ""},
                 },
             },
         }

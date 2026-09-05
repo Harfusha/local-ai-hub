@@ -351,7 +351,53 @@ class Handler(BaseHTTPRequestHandler):
             supplied = auth[7:].strip()
         return hmac.compare_digest(supplied, expected)
 
+    def _validate_host_and_origin(self) -> bool:
+        """Validate Host and Origin headers to protect against DNS rebinding and cross-origin attacks."""
+        if APP is None:
+            return True
+        host_header = self.headers.get("Host", "").strip()
+        if host_header:
+            host_name = host_header.split(":", 1)[0].strip("[]").lower()
+            allowed_hosts = {"127.0.0.1", "localhost", "::1", "testserver"}
+            server_cfg = APP.config.get("server", {})
+            bind = str(server_cfg.get("bind", "")).strip("[]").lower()
+            if bind and bind not in {"0.0.0.0", "::"}:
+                allowed_hosts.add(bind)
+            client_host = str(server_cfg.get("client_host", "")).strip("[]").lower()
+            if client_host:
+                allowed_hosts.add(client_host)
+            for extra in APP.config.get("security", {}).get("allowed_hosts", []):
+                allowed_hosts.add(str(extra).strip("[]").lower())
+
+            if not APP.config.get("security", {}).get("allow_remote", False):
+                if host_name not in allowed_hosts:
+                    self._send(403, {"success": False, "error": "forbidden: invalid Host header"})
+                    return False
+
+        origin_header = self.headers.get("Origin", "").strip()
+        if origin_header:
+            parsed_origin = urlparse(origin_header)
+            origin_host = str(parsed_origin.hostname or "").lower()
+            allowed_origins = {"127.0.0.1", "localhost", "::1", "testserver"}
+            server_cfg = APP.config.get("server", {})
+            bind = str(server_cfg.get("bind", "")).strip("[]").lower()
+            if bind and bind not in {"0.0.0.0", "::"}:
+                allowed_origins.add(bind)
+            client_host = str(server_cfg.get("client_host", "")).strip("[]").lower()
+            if client_host:
+                allowed_origins.add(client_host)
+            for extra in APP.config.get("security", {}).get("allowed_origins", []):
+                allowed_origins.add(str(extra).strip("[]").lower())
+
+            if not APP.config.get("security", {}).get("allow_remote", False):
+                if origin_host not in allowed_origins:
+                    self._send(403, {"success": False, "error": "forbidden: cross-origin requests are not allowed"})
+                    return False
+        return True
+
     def _require_authorized(self) -> bool:
+        if not self._validate_host_and_origin():
+            return False
         if self._authorized():
             return True
         self._send(401, {"success": False, "error": "unauthorized"})
@@ -829,6 +875,11 @@ class Handler(BaseHTTPRequestHandler):
                 board_id = (query.get("board_id") or ["default"])[0]
                 section = (query.get("section") or [None])[0]
                 self._send(200, APP.agent_blackboard.get(board_id, section=section)); return
+            if path.startswith("/v1/agent-state/swarm/"):
+                swarm_id = path.split("/v1/agent-state/swarm/", 1)[1].strip()
+                if not getattr(APP, "swarm", None):
+                    self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
+                self._send(200, APP.swarm.get_status(swarm_id)); return
             if path == "/v1/agent-state/events/stream":
                 if not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
@@ -840,6 +891,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/v1/capabilities":
                 self._send(200, APP.capabilities()); return
+            if path == "/v1/benchmark/summary":
+                if not getattr(APP, "benchmark_runner", None):
+                    self._send(200, {"available": False}); return
+                self._send(200, APP.benchmark_runner.get_latest_summary()); return
             if path == "/v1/metrics":
                 days = int((query.get("days") or [30])[0])
                 scope = str((query.get("scope") or ["window"])[0])
@@ -1638,6 +1693,35 @@ class Handler(BaseHTTPRequestHandler):
                     res = APP.agent_blackboard.merge(board_id, remote)
                     self._send(200, res); return
                 self._send(400, {"success": False, "error": f"unknown blackboard action '{action}'"}); return
+            if path == "/v1/agent-state/swarm/dispatch":
+                if not getattr(APP, "swarm", None):
+                    self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
+                goal = str(payload.get("goal", payload.get("task", "")))
+                target_paths = payload.get("target_paths", payload.get("paths", []))
+                if not isinstance(target_paths, list):
+                    target_paths = [str(target_paths)] if target_paths else []
+                test_command = str(payload.get("test_command", payload.get("command", "")))
+                author = str(payload.get("author", tenant or "agent"))
+                root = str(payload.get("root", "."))
+                res = APP.swarm.dispatch(goal=goal, target_paths=target_paths, test_command=test_command, author=author, root=root)
+                self._send(200, res); return
+            if path == "/v1/agent-state/swarm/step":
+                if not getattr(APP, "swarm", None):
+                    self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
+                swarm_id = str(payload.get("swarm_id", payload.get("task_id", "")))
+                role = str(payload.get("role", "Coder"))
+                action = str(payload.get("action", "submit_patch"))
+                step_payload = payload.get("payload", payload.get("content", {}))
+                res = APP.swarm.step(swarm_id=swarm_id, role=role, action=action, payload=step_payload)
+                self._send(200, res); return
+            if path == "/v1/benchmark/run":
+                if not getattr(APP, "benchmark_runner", None):
+                    self._send(503, {"success": False, "error": "benchmark runner unavailable"}); return
+                model = str(payload.get("model", ""))
+                prompt = str(payload.get("prompt", payload.get("task", "")))
+                num_tokens = int(payload.get("num_tokens", payload.get("max_tokens", 40)))
+                res = APP.benchmark_runner.run(model=model, prompt=prompt or "def test(): pass\n", num_tokens=num_tokens)
+                self._send(200, res); return
             if path == "/v1/delegate/repo":
                 self._send(200, APP.services.delegate_repo(payload, tenant)); return
             if path == "/v1/solve/repo":
@@ -1847,6 +1931,14 @@ class Handler(BaseHTTPRequestHandler):
                 origin_root = payload.get("origin_root")
                 if APP.deterministic is not None:
                     self._send(200, APP.deterministic.cross_project_impact(symbol, [str(r) for r in roots], str(origin_root) if origin_root else None))
+                else:
+                    self._send(200, {"success": False, "error": "deterministic engine disabled"})
+                return
+            if path == "/v1/repo/call_graph_diff":
+                root = str(payload.get("root", "."))
+                diff = payload.get("diff")
+                if APP.deterministic is not None:
+                    self._send(200, APP.deterministic.call_graph_diff(root, diff=diff))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return

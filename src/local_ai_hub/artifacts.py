@@ -19,6 +19,8 @@ class ArtifactStore:
         self.path = state_dir / "artifacts.sqlite3"
         self.ttl_seconds = max(3600, int(ttl_hours) * 3600)
         self.max_inline_chars = max(1000, int(max_inline_chars))
+        self._last_purge = 0.0
+        self._purge_interval = 1800.0
         state_dir.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
@@ -43,8 +45,12 @@ class ArtifactStore:
             con.execute("CREATE INDEX IF NOT EXISTS idx_artifacts_created ON artifacts(created_at)")
             con.commit()
 
-    def _purge(self, con: sqlite3.Connection) -> None:
-        con.execute("DELETE FROM artifacts WHERE created_at < ?", (time.time() - self.ttl_seconds,))
+    def _purge(self, con: sqlite3.Connection, force: bool = False) -> None:
+        now = time.time()
+        if not force and (now - self._last_purge) < self._purge_interval:
+            return
+        self._last_purge = now
+        con.execute("DELETE FROM artifacts WHERE created_at < ?", (now - self.ttl_seconds,))
 
     def put(self, text: str, tenant: str, kind: str) -> str:
         digest = hashlib.sha256((kind + "\0" + text).encode("utf-8")).hexdigest()[:24]

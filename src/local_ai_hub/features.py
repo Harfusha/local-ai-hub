@@ -140,7 +140,7 @@ class FeatureSet:
                 "preprocess_unregister",
             ])
         if self.agent_os:
-            actions.extend(["context_compile", "verify_receipt", "verify_completion"])
+            actions.extend(["context_compile", "verify_receipt", "verify_completion", "call_graph_diff", "semantic_diff"])
         return actions
 
     def supported_task_actions(self) -> list[str]:
@@ -149,7 +149,7 @@ class FeatureSet:
             return []
         return [
             "delegate", "reason", "continue", "review", "second_opinion", "compress",
-            "route", "batch", "benchmark", "evaluation_record", "evaluation_report",
+            "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report",
             "submit", "status", "wait", "result", "cancel", "candidate_create",
             "candidate_promote",
         ]
@@ -168,8 +168,15 @@ class FeatureSet:
                 "memory_record", "memory_get", "memory_find", "memory_promote",
                 "context_compile", "verify_receipt", "verify_completion",
                 "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
+                "swarm_dispatch", "swarm_step", "swarm_status",
             ])
         return actions
+
+    def supported_command_actions(self) -> list[str]:
+        """Return list of valid local_ai_command actions supported by active broker."""
+        if not self.commands:
+            return []
+        return ["run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix"]
 
     def semantic_hint(self) -> str:
         """Short label for the semantic action(s) available."""

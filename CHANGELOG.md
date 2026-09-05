@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.6.0 — 2026-09-05
+
+### Agent Operating System & Intelligence
+- **Autonomous Multi-Agent Swarm Orchestrator**: `SwarmCoordinator` managing complex multi-step workflows (`CODING`, `TESTING`, `REVIEWING`, `COMPLETED`, `FAILED`) with atomic scope leases, CRDT blackboard task state, and evidence-backed verification receipts. Exposed via `swarm_dispatch`, `swarm_step`, and `swarm_status` in `local_ai_coord`.
+- **AST Call-Graph Semantic Diff**: Detects breaking signature changes in Python code (added required parameters, removed/renamed arguments) and performs AST call-site analysis across the codebase to identify broken callers. Exposed via `call_graph_diff` and `semantic_diff` in `local_ai_repo`.
+- **Hardware-Adaptive Benchmark Suite**: `HardwareBenchmarkRunner` measuring real TTFT (time-to-first-token), token throughput (TPS), VRAM footprint delta, and composite hardware capability score (0–100). Exposed via `hardware_benchmark` in `local_ai_task` and `/v1/benchmark/summary`.
+- **Real-Time Command Output Streaming**: Dual-thread non-blocking stdout/stderr stream readers with real-time SSE event dispatch (`command.log`) over `/v1/agent-state/events/stream`.
+- **Autonomous Self-Healing Repair Loops**: Automated fix synthesis, speculative patch application with in-memory backups, re-testing, and automatic verification receipt minting on success or clean rollback on failure.
+
 ## 1.5.0 — 2026-08-29
 
 ### Contention and hang hardening

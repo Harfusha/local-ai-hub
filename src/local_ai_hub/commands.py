@@ -29,9 +29,12 @@ class CommandBroker:
     }
     DANGEROUS_EXES = {"rm", "del", "erase", "rmdir", "shutdown", "reboot", "poweroff", "mkfs", "diskpart", "format"}
 
-    def __init__(self, config: dict[str, Any], artifacts: Any, repo_state: RepoStateTracker):
+    def __init__(self, config: dict[str, Any], artifacts: Any = None, repo_state: Any = None):
         self.config = config
         self.artifacts = artifacts
+        if repo_state is None:
+            from .repo_state import RepoStateTracker
+            repo_state = RepoStateTracker(config)
         self.repo_state = repo_state
         cfg = config.get("commands", {})
         self.enabled = bool(cfg.get("enabled", True))
@@ -41,7 +44,7 @@ class CommandBroker:
         self.coalesce_wait_seconds = max(1.0, float(cfg.get("coalesced_wait_seconds", 90.0)))
         self.terminate_grace_seconds = max(0.1, float(cfg.get("terminate_grace_seconds", 2.0)))
         self.post_kill_drain_seconds = max(0.1, float(cfg.get("post_kill_drain_seconds", 2.0)))
-        state_dir = Path(config["server"]["state_dir"])
+        state_dir = Path(config.get("server", {}).get("state_dir", "."))
         l1_entries = int(cfg.get("l1_entries", 128))
         self.success_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite3", "command:success", int(cfg.get("success_ttl_seconds", 43200)), int(cfg.get("max_entries", 5000))), l1_entries, int(cfg.get("l1_ttl_seconds", 900)))
         self.failure_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite3", "command:failure", int(cfg.get("failure_ttl_seconds", 180)), int(cfg.get("max_failure_entries", 1000))), max(32, l1_entries // 2), min(300, int(cfg.get("l1_ttl_seconds", 900))))
@@ -127,6 +130,16 @@ class CommandBroker:
                 return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": f"python -m {dash_m} packaging"}
             if dash_m in {"local_ai_hub", "local_ai_hub.generator"}:
                 return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": f"python -m {dash_m} dynamic artifacts generator"}
+            dash_c = None
+            for idx, arg in enumerate(tokens[1:], 1):
+                if arg == "-c" and idx < len(tokens) - 1:
+                    dash_c = tokens[idx + 1]
+                    break
+            if dash_c is not None:
+                if any(kw in dash_c.lower() for kw in ("test", "validate", "check", "audit", "doctor", "selftest", "report", "assert")):
+                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "python inline validation"}
+                if not any(mw in dash_c.lower() for mw in self.MUTATING_WORDS):
+                    return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": "python inline read"}
             non_flag_args = [t for t in tokens[1:] if not t.startswith("-")]
             if non_flag_args:
                 script_name = Path(non_flag_args[0].replace("\\", "/")).name.lower()
@@ -310,7 +323,14 @@ class CommandBroker:
             "failed to spawn process", "command not found", "is not recognized as an internal", "no such file or directory",
         ))
 
-    def _execute(self, command: str, cwd: str, timeout: int, cancel_event: threading.Event | None = None) -> dict[str, Any]:
+    def _execute(
+        self,
+        command: str,
+        cwd: str,
+        timeout: int,
+        cancel_event: threading.Event | None = None,
+        log_callback: Any | None = None,
+    ) -> dict[str, Any]:
         tokens = self._tokens(command)
         started = time.perf_counter()
         if os.name == "nt":
@@ -343,37 +363,130 @@ class CommandBroker:
                 "stdout": "", "stderr": str(exc), "duration_ms": round((time.perf_counter() - started) * 1000, 1),
                 "error": f"failed to spawn process: {exc}",
             }
-        timed_out = False
-        cancelled = False
-        deadline = time.monotonic() + max(1, timeout)
-        while True:
-            remaining = deadline - time.monotonic()
-            if cancel_event is not None and cancel_event.is_set():
-                cancelled = True
-                break
-            if remaining <= 0:
-                timed_out = True
-                break
-            try:
-                stdout, stderr = process.communicate(timeout=min(0.25, remaining))
-                break
-            except subprocess.TimeoutExpired:
-                continue
-        if timed_out or cancelled:
-            # Kill the complete child tree/session, not just the wrapper process.
-            try:
-                terminate_tree(process.pid, grace_seconds=self.terminate_grace_seconds)
-            except Exception:
+
+        if not log_callback:
+            timed_out = False
+            cancelled = False
+            deadline = time.monotonic() + max(1, timeout)
+            stdout = ""
+            stderr = ""
+            while True:
+                remaining = deadline - time.monotonic()
+                if cancel_event is not None and cancel_event.is_set():
+                    cancelled = True
+                    break
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                try:
+                    stdout, stderr = process.communicate(timeout=min(0.25, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+
+            if timed_out or cancelled:
+                try:
+                    terminate_tree(process.pid, grace_seconds=self.terminate_grace_seconds)
+                except Exception:
+                    pass
                 try:
                     process.kill()
                 except Exception:
                     pass
+                try:
+                    stdout, stderr = process.communicate(timeout=self.post_kill_drain_seconds)
+                except Exception:
+                    stdout, stderr = "", ""
+                try:
+                    process.wait(timeout=max(2.0, self.terminate_grace_seconds))
+                except Exception:
+                    pass
+                if process.poll() is None:
+                    try:
+                        process.kill()
+                        process.wait(timeout=1.0)
+                    except Exception:
+                        pass
+                try:
+                    if process.stdout and not process.stdout.closed:
+                        process.stdout.close()
+                except Exception:
+                    pass
+                try:
+                    if process.stderr and not process.stderr.closed:
+                        process.stderr.close()
+                except Exception:
+                    pass
+
+            stdout = (stdout or "")[-self.max_output_chars:]
+            stderr = (stderr or "")[-self.max_output_chars:]
+        else:
+            stdout_chunks: list[str] = []
+            stderr_chunks: list[str] = []
+
+            def _reader(stream: Any, chunk_list: list[str], stream_name: str) -> None:
+                try:
+                    for line in iter(stream.readline, ""):
+                        if not line:
+                            break
+                        chunk_list.append(line)
+                        try:
+                            log_callback(stream_name, line)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+
+            t_out = threading.Thread(target=_reader, args=(process.stdout, stdout_chunks, "stdout"), daemon=True)
+            t_err = threading.Thread(target=_reader, args=(process.stderr, stderr_chunks, "stderr"), daemon=True)
+            t_out.start()
+            t_err.start()
+
+            timed_out = False
+            cancelled = False
+            deadline = time.monotonic() + max(1, timeout)
+            while process.poll() is None:
+                if cancel_event is not None and cancel_event.is_set():
+                    cancelled = True
+                    break
+                if time.monotonic() > deadline:
+                    timed_out = True
+                    break
+                time.sleep(0.02)
+
+            if timed_out or cancelled:
+                try:
+                    terminate_tree(process.pid, grace_seconds=self.terminate_grace_seconds)
+                except Exception:
+                    try:
+                        process.kill()
+                    except Exception:
+                        pass
+
+            t_out.join(timeout=self.post_kill_drain_seconds)
+            t_err.join(timeout=self.post_kill_drain_seconds)
             try:
-                stdout, stderr = process.communicate(timeout=self.post_kill_drain_seconds)
+                if process.stdout and not process.stdout.closed:
+                    process.stdout.close()
             except Exception:
-                stdout, stderr = "", ""
-        stdout = (stdout or "")[-self.max_output_chars:]
-        stderr = (stderr or "")[-self.max_output_chars:]
+                pass
+            try:
+                if process.stderr and not process.stderr.closed:
+                    process.stderr.close()
+            except Exception:
+                pass
+            try:
+                process.wait(timeout=1.0)
+            except Exception:
+                pass
+
+            stdout = "".join(stdout_chunks)[-self.max_output_chars:]
+            stderr = "".join(stderr_chunks)[-self.max_output_chars:]
         self.executed += 1
         return {
             "success": (not timed_out) and (not cancelled) and process.returncode == 0,
@@ -453,7 +566,7 @@ class CommandBroker:
         self,
         command: str,
         cwd: str,
-        tenant: str,
+        tenant: str = "agent",
         *,
         timeout: int | None = None,
         force: bool = False,
@@ -462,6 +575,7 @@ class CommandBroker:
         auto_fix: bool = False,
         fix_generator: Any | None = None,
         max_repair_attempts: int = 3,
+        log_callback: Any | None = None,
     ) -> dict[str, Any]:
         if not self.enabled:
             return {"success": False, "error": "command broker disabled"}
@@ -569,7 +683,7 @@ class CommandBroker:
             self._cancel_events[key] = cancel_event
             self._active_cancel_keys[key] = (self._cancel_key(command, cwd), str(tenant)[:80])
         try:
-            result = self._execute(command, cwd, int(timeout or self.timeout), cancel_event)
+            result = self._execute(command, cwd, int(timeout or self.timeout), cancel_event, log_callback=log_callback)
             diag_paths = [d["path"] for d in result.get("diagnostics", []) if d.get("path")]
             if not result.get("success") and not result.get("cancelled") and self.incident_store is not None:
                 try:
@@ -666,6 +780,7 @@ class CommandBroker:
         timeout: int | None = None,
         fix_generator: Any | None = None,
         initial_result: dict[str, Any] | None = None,
+        log_callback: Any | None = None,
     ) -> dict[str, Any]:
         """Execute autonomous self-healing test loop on command failure.
 
@@ -676,7 +791,7 @@ class CommandBroker:
         cwd_path = Path(cwd).expanduser().resolve(strict=False)
         initial = initial_result or self.run(
             command, str(cwd_path), tenant, timeout=timeout, force=True,
-            task_id=task_id, criterion=criterion, auto_fix=False,
+            task_id=task_id, criterion=criterion, auto_fix=False, log_callback=log_callback,
         )
         if initial.get("success"):
             return {
@@ -733,7 +848,7 @@ class CommandBroker:
                                     pass
                     applied_paths.append(target)
 
-                re_result = self.run(command, str(cwd_path), tenant, timeout=timeout, force=True, auto_fix=False)
+                re_result = self.run(command, str(cwd_path), tenant, timeout=timeout, force=True, auto_fix=False, log_callback=log_callback)
                 last_result = re_result
                 attempt_history.append({
                     "attempt": attempt,

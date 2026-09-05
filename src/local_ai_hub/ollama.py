@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -74,12 +75,15 @@ class OllamaRuntime:
                     return {"error": last_error, "_lah_retry_count": max(0, attempt - 1)}
             except URLError as exc:
                 last_error = f"Ollama unavailable: {exc.reason}"
-                if attempt >= attempts:
-                    return {"error": last_error, "_lah_retry_count": max(0, attempt - 1)}
+                if isinstance(getattr(exc, "reason", None), (socket.timeout, TimeoutError)) or attempt >= attempts:
+                    break
+            except (socket.timeout, TimeoutError) as exc:
+                last_error = f"Ollama request timed out: {exc}"
+                break
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
-                if attempt >= attempts:
-                    return {"error": last_error, "_lah_retry_count": max(0, attempt - 1)}
+                if "timeout" in str(exc).lower() or "timed out" in str(exc).lower() or attempt >= attempts:
+                    break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
@@ -152,8 +156,15 @@ class OllamaRuntime:
                     break
             except URLError as exc:
                 last_error = f"Ollama unavailable: {exc.reason}"
+                if isinstance(getattr(exc, "reason", None), (socket.timeout, TimeoutError)):
+                    break
+            except (socket.timeout, TimeoutError) as exc:
+                last_error = f"Ollama request timed out: {exc}"
+                break
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
+                if "timeout" in str(exc).lower() or "timed out" in str(exc).lower():
+                    break
             remaining = deadline - time.monotonic()
             if attempt < attempts and remaining > 0 and retry_delay:
                 time.sleep(min(retry_delay, remaining))

@@ -190,7 +190,7 @@ def _desc_artifact() -> str:
 
 TaskAction: TypeAlias = Literal[
     "delegate", "reason", "continue", "review", "second_opinion", "compress", "route", "batch",
-    "benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait",
+    "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait",
     "result", "cancel", "candidate_create", "candidate_promote",
 ]
 RepoAction: TypeAlias = Literal[
@@ -203,6 +203,7 @@ RepoAction: TypeAlias = Literal[
     "context_compile", "verify_receipt", "verify_completion",
     "cross_project_graph", "cross_project_symbols", "cross_project_impact",
     "cross_repo_graph", "cross_repo_symbols", "cross_repo_impact",
+    "call_graph_diff", "semantic_diff",
 ]
 RagAction: TypeAlias = Literal["index", "search", "list"]
 CommandAction: TypeAlias = Literal["run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix"]
@@ -213,6 +214,7 @@ CoordAction: TypeAlias = Literal[
     "context_compile", "verify_receipt", "verify_completion",
     "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
     "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_merge",
+    "swarm_dispatch", "swarm_step", "swarm_status",
 ]
 StatusDetail: TypeAlias = Literal["brief", "cache", "telemetry", "full", "agent_state"]
 StatusScope: TypeAlias = Literal["process", "window"]
@@ -296,6 +298,8 @@ def local_ai_status(detail: StatusDetail = "brief", scope: str = "process") -> d
 def local_ai_task(
     action: TaskAction,
     task: str = "",
+    prompt: str = "",
+    model: str = "",
     context: str = "",
     candidate: str = "",
     complexity: str = "auto",
@@ -404,6 +408,8 @@ def local_ai_task(
         return _compact(CLIENT.post("/v1/delegate/batch", {"tasks": tasks or [], "delivery": delivery, "latency_budget_ms": latency_budget_ms}, timeout=_timeout("long")), "delegate")
     if action == "benchmark":
         return _compact(CLIENT.post("/v1/benchmark", {}, timeout=_timeout("long")), "status")
+    if action == "hardware_benchmark":
+        return _compact(CLIENT.post("/v1/benchmark/run", {"model": model or "", "prompt": prompt or task, "num_tokens": max_tokens or 40}, timeout=_timeout("long")), "status")
     if action == "evaluation_record":
         return _compact(CLIENT.post("/v1/evaluation", {
             "action": "record", "task_id": evaluation_task_id, "cohort": evaluation_cohort,
@@ -428,6 +434,7 @@ def local_ai_repo(
     action: RepoAction,
     root: str = ".",
     query: str = "",
+    diff: str = "",
     task: str = "",
     workspace: str = "",
     path: str = "",
@@ -553,6 +560,8 @@ def local_ai_repo(
         return _compact(CLIENT.post("/v1/cross_project_symbols", {"roots": [root] if root else [], "query": query or task, "limit": 50}, timeout=_timeout("quick")), "architecture")
     if action in {"cross_project_impact", "cross_repo_impact"}:
         return _compact(CLIENT.post("/v1/cross_project_impact", {"roots": [root] if root else [], "symbol": query or task}, timeout=_timeout("quick")), "impact")
+    if action in {"call_graph_diff", "semantic_diff"}:
+        return _compact(CLIENT.post("/v1/repo/call_graph_diff", {"root": root or ".", "diff": diff or "" if diff else None}, timeout=_timeout("quick")), "impact")
     return _invalid_action("local_ai_repo", action, tuple(RepoAction.__args__), "Keep work bounded in Local AI Hub; use Codex-owned orchestration for peer subagents.")
 
 
@@ -592,8 +601,10 @@ def local_ai_command(
     criterion: str = "",
     auto_fix: bool = False,
     max_attempts: int = 3,
+    stream: bool = False,
+    stream_id: str = "",
 ) -> dict[str, Any]:
-    """Bounded command broker for the main agent. MANDATORY for repeatable test/lint/typecheck/static-analysis/build/read-only commands whenever possible. Shared safe CLI broker. Actions: run, cancel, classify, discover, stats, repair_loop, auto_fix. Optional auto_fix=true or action=repair_loop runs autonomous self-healing test loop with safe rollback on failure. Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts. Results are keyed by command + bounded repo state and duplicate runs coalesce across agents. Reuse fresh results. If run returns in_progress=true, DO NOT start the command natively or with force; continue independent work and retry later so the owner can populate the cache. cancel only stops an active matching command. force=true is exceptional recovery/admin behavior, never a retry button. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
+    """Bounded command broker for the main agent. MANDATORY for repeatable test/lint/typecheck/static-analysis/build/read-only commands whenever possible. Shared safe CLI broker. Actions: run, cancel, classify, discover, stats, repair_loop, auto_fix. Optional auto_fix=true or action=repair_loop runs autonomous self-healing test loop with safe rollback on failure. Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts. Optional stream=true or stream_id streams real-time stdout/stderr lines as command.log SSE events. Results are keyed by command + bounded repo state and duplicate runs coalesce across agents. Reuse fresh results. If run returns in_progress=true, DO NOT start the command natively or with force; continue independent work and retry later so the owner can populate the cache. cancel only stops an active matching command. force=true is exceptional recovery/admin behavior, never a retry button. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
     if not FEATURES.commands:
         return {"success": False, "unsupported": True, "error": "local_ai_command is disabled in configuration"}
     action = action.strip().lower().replace("-", "_")
@@ -611,6 +622,7 @@ def local_ai_command(
         "timeout": effective_command_timeout, "force": force,
         "task_id": task_id, "criterion": criterion,
         "auto_fix": auto_fix, "max_attempts": max_attempts,
+        "stream": stream, "stream_id": stream_id,
     }, timeout=host_timeout), "command")
 
 
@@ -623,7 +635,9 @@ def local_ai_coord(
     key: str = "",
     value: str = "",
     query: str = "",
+    command: str = "",
     ttl_seconds: int = 0,
+    task: str = "",
     task_id: str = "",
     contract: dict[str, Any] | None = None,
     checkpoint: dict[str, Any] | None = None,
@@ -712,6 +726,24 @@ def local_ai_coord(
             "content": content, "author": author,
             "remote_sections": record or {},
         }, timeout=_timeout("quick")), "status")
+    if action == "swarm_dispatch":
+        return _compact(CLIENT.post("/v1/agent-state/swarm/dispatch", {
+            "goal": task or value or query,
+            "target_paths": paths or [],
+            "test_command": command or target_scope or "",
+            "author": approver or "agent",
+            "root": root or ".",
+        }, timeout=_timeout("quick")), "status")
+    if action == "swarm_step":
+        return _compact(CLIENT.post("/v1/agent-state/swarm/step", {
+            "swarm_id": task_id or key or "",
+            "role": target_scope or "Coder",
+            "action": query or "submit_patch",
+            "payload": record or ({"value": value} if value else {}),
+        }, timeout=_timeout("quick")), "status")
+    if action == "swarm_status":
+        sid = task_id or key or ""
+        return _compact(CLIENT.get(f"/v1/agent-state/swarm/{quote(sid)}", timeout=_timeout("quick")), "status")
     return _invalid_action("local_ai_coord", action, tuple(CoordAction.__args__), "Use coordination for bounded shared state; the main agent remains the owner of final integration.")
 
 

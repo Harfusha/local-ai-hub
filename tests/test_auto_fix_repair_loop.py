@@ -125,3 +125,27 @@ def test_command_run_auto_fix_flag(temp_dir: Path):
     assert res["success"] is True
     assert res.get("repaired") is True
     assert "self.assertEqual(20, 20)" in test_file.read_text(encoding="utf-8")
+
+
+def test_classify_quoted_semicolons(temp_dir: Path):
+    broker = make_broker(temp_dir)
+    # Quoted semicolon must be allowed
+    res1 = broker.classify('python -c "import sys; print(1)"')
+    assert res1["allowed"] is True
+    assert res1["class"] == "read"
+
+    res_val = broker.classify('python -c "assert 1 == 1; print(\'ok\')"')
+    assert res_val["allowed"] is True
+    assert res_val["class"] == "validation"
+
+    # Unquoted semicolon must be blocked
+    res2 = broker.classify('python test.py ; rm -rf /')
+    assert res2["allowed"] is False
+    assert res2["class"] == "unknown"
+    assert "shell operators are not accepted" in res2["reason"]
+
+    # Unquoted && must be blocked
+    res3 = broker.classify('pytest && rm -rf /')
+    assert res3["allowed"] is False
+    assert res3["class"] == "unknown"
+

@@ -1105,12 +1105,12 @@ class RAGStore:
             if scope_path:
                 norm_scope = scope_path.replace("\\", "/").rstrip("/")
                 rows = con.execute(
-                    "SELECT path, chunk_no, text, embedding, content_hash FROM chunks WHERE tenant=? AND workspace=? AND (path=? OR path LIKE ? || '/%')",
+                    "SELECT path, chunk_no, embedding, content_hash FROM chunks WHERE tenant=? AND workspace=? AND (path=? OR path LIKE ? || '/%')",
                     (scope_key, workspace, norm_scope, norm_scope),
                 ).fetchall()
             else:
                 rows = con.execute(
-                    "SELECT path, chunk_no, text, embedding, content_hash FROM chunks WHERE tenant=? AND workspace=?",
+                    "SELECT path, chunk_no, embedding, content_hash FROM chunks WHERE tenant=? AND workspace=?",
                     (scope_key, workspace),
                 ).fetchall()
 
@@ -1127,7 +1127,7 @@ class RAGStore:
 
             vec_list = []
             for r in rows:
-                raw_v = r[3]
+                raw_v = r[2]
                 if isinstance(raw_v, (bytes, memoryview)):
                     vec_list.append(np.frombuffer(raw_v, dtype=np.float32))
                 elif isinstance(raw_v, str):
@@ -1152,8 +1152,7 @@ class RAGStore:
                 {
                     "path": rows[idx][0],
                     "chunk_no": rows[idx][1],
-                    "text": rows[idx][2],
-                    "content_hash": rows[idx][4],
+                    "content_hash": rows[idx][3],
                     "embedding_score": float(scores[idx]),
                 }
                 for idx in top_indices
@@ -1176,8 +1175,8 @@ class RAGStore:
 
             scored = [
                 {
-                    "path": row[0], "chunk_no": row[1], "text": row[2], "content_hash": row[4],
-                    "embedding_score": self._cosine(query_vec, _parse_vec(row[3])),
+                    "path": row[0], "chunk_no": row[1], "content_hash": row[3],
+                    "embedding_score": self._cosine(query_vec, _parse_vec(row[2])),
                 }
                 for row in rows
             ]
@@ -1246,6 +1245,20 @@ class RAGStore:
 
             candidates = sorted(combined.values(), key=lambda x: x.get("rrf_score", 0.0), reverse=True)
             candidates = candidates[:max(16, int(self.config.get("rag", {}).get("rerank_candidates", 16)))]
+
+        # Hydrate text for winning candidates from DB
+        needed_keys = [(c["path"], c["chunk_no"]) for c in candidates if "text" not in c or not c.get("text")]
+        if needed_keys:
+            with closing(self._connect()) as con:
+                for chunk_path, chunk_no in needed_keys:
+                    txt_row = con.execute(
+                        "SELECT text FROM chunks WHERE tenant=? AND workspace=? AND path=? AND chunk_no=?",
+                        (scope_key, workspace, chunk_path, chunk_no),
+                    ).fetchone()
+                    chunk_text = str(txt_row[0]) if txt_row else ""
+                    for c in candidates:
+                        if c["path"] == chunk_path and c["chunk_no"] == chunk_no:
+                            c["text"] = chunk_text
 
         reranked = False
         if use_reranker and self.config.get("features", {}).get("reranker", True) and candidates:
