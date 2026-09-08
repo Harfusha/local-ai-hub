@@ -10,7 +10,7 @@ from local_ai_hub.http_server import _is_client_disconnect
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_compact_mcp_surface_is_exactly_seven_tools():
+def test_compact_mcp_surface_is_exactly_eight_tools():
     source = (ROOT / "src" / "local_ai_hub" / "mcp_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     tools = []
@@ -20,8 +20,8 @@ def test_compact_mcp_surface_is_exactly_seven_tools():
         for deco in node.decorator_list:
             if isinstance(deco, ast.Call) and isinstance(deco.func, ast.Attribute) and deco.func.attr == "tool":
                 tools.append(node.name)
-    assert len(tools) == 7
-    assert set(tools) == {"local_ai_status", "local_ai_task", "local_ai_repo", "local_ai_rag", "local_ai_command", "local_ai_coord", "local_ai_artifact"}
+    assert len(tools) == 8
+    assert set(tools) == {"local_ai_status", "local_ai_task", "local_ai_repo", "local_ai_rag", "local_ai_command", "local_ai_coord", "local_ai_artifact", "local_ai_work"}
     assert not (ROOT / "mcp" / "local_ai_mcp_full.py").exists()
 
 
@@ -29,8 +29,16 @@ def test_packaged_defaults_match_source_defaults():
     assert (ROOT / "defaults.toml").read_bytes() == (ROOT / "src" / "local_ai_hub" / "defaults.toml").read_bytes()
 
 
+def test_shipping_agent_policy_advertises_v23_compact_workflow():
+    policy = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    assert "local_ai_work" in policy
+    assert "eight existing tools" in policy
+    assert "seven existing tools" not in policy
+    assert "qwen2.5-coder:1.5b" in policy
+
+
 def test_version_and_disconnect_regressions(tmp_path: Path):
-    assert __version__ == "1.6.0"
+    assert __version__ == "2.4.0"
     assert _is_client_disconnect(BrokenPipeError()) is True
     assert _is_client_disconnect(ConnectionResetError()) is True
     assert _is_client_disconnect(ConnectionAbortedError()) is True

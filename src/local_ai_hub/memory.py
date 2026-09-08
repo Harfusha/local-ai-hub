@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 import time
 from contextlib import closing
 from pathlib import Path
 from typing import Any
 
 from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
+from .process_utils import canonical_root
 
 
 class WorkspaceMemoryStore:
@@ -22,6 +24,8 @@ class WorkspaceMemoryStore:
         self.path = state_dir / "workspace_memory.sqlite3"
         self.default_ttl = max(3600, int(default_ttl_hours) * 3600)
         self.max_value_chars = max(512, int(max_value_chars))
+        self._lock = threading.RLock()
+        self._initialized = False
         state_dir.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
@@ -29,26 +33,34 @@ class WorkspaceMemoryStore:
         return connect_sqlite(self.path, timeout_seconds=0.75)
 
     def _init_db(self) -> None:
-        with closing(self._connect()) as con:
-            initialize_wal(con)
-            con.execute(
-                """CREATE TABLE IF NOT EXISTS memos (
-                    workspace TEXT NOT NULL,
-                    memo_key TEXT NOT NULL,
-                    value TEXT NOT NULL,
-                    tenant TEXT NOT NULL,
-                    metadata TEXT NOT NULL,
-                    updated_at REAL NOT NULL,
-                    expires_at REAL NOT NULL,
-                    PRIMARY KEY(workspace, memo_key)
-                )"""
-            )
-            con.execute("CREATE INDEX IF NOT EXISTS idx_memos_expiry ON memos(expires_at)")
-            con.commit()
+        if self._initialized:
+            return
+        with self._lock:
+            if self._initialized:
+                return
+            def _setup() -> None:
+                with closing(self._connect()) as con:
+                    initialize_wal(con)
+                    con.execute(
+                        """CREATE TABLE IF NOT EXISTS memos (
+                            workspace TEXT NOT NULL,
+                            memo_key TEXT NOT NULL,
+                            value TEXT NOT NULL,
+                            tenant TEXT NOT NULL,
+                            metadata TEXT NOT NULL,
+                            updated_at REAL NOT NULL,
+                            expires_at REAL NOT NULL,
+                            PRIMARY KEY(workspace, memo_key)
+                        )"""
+                    )
+                    con.execute("CREATE INDEX IF NOT EXISTS idx_memos_expiry ON memos(expires_at)")
+                    con.commit()
+            retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+            self._initialized = True
 
     @staticmethod
     def workspace_id(root: str) -> str:
-        resolved = str(Path(root).expanduser().resolve())
+        resolved = canonical_root(root)
         digest = hashlib.sha1(resolved.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
         return f"{Path(resolved).name}-{digest}"
 

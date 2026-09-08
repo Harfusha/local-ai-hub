@@ -11,7 +11,7 @@ while [ "$#" -gt 0 ]; do
     --skip-model-pull|--skip-tools|--skip-agent-config|--skip-service|--skip-ollama-install|--skip-local-nlp-preload)
       EXTRA="$EXTRA $1"; shift ;;
     -h|--help)
-      echo "Usage: ./install.sh [--profile auto|cpu|low|balanced|high|max] [setup skip flags]"; exit 0 ;;
+      echo "Usage: ./install.sh [--profile auto|cpu|integrated|low|balanced|high|max] [setup skip flags]"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
 done

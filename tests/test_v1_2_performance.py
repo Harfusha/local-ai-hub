@@ -52,7 +52,7 @@ def test_search_successful_empty_accelerator_never_scans_repo(tmp_path: Path):
     for i in range(150):
         (repo / f"f{i}.py").write_text(f"value_{i} = {i}\n", encoding="utf-8")
     tools = RepositoryTools(config)
-    tools._ripgrep_candidates = lambda *a, **k: []  # successful accelerator miss
+    tools._ripgrep_candidates = lambda *a, **k: ([], False)  # successful accelerator miss
     tools._git_grep_candidates = lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not run fallback"))
     result = tools.search(str(repo), "definitely_missing_symbol", 5)
     assert result["success"] is True

@@ -107,3 +107,23 @@ def test_blackboard_store_persistence_and_multiagent_merge(tmp_path: Path):
     # 6. List boards
     boards = store.list_boards()
     assert "board-1" in boards
+
+
+def test_merge_sections_idempotency():
+    sec_a = BlackboardSection(
+        section="arch", content="v1", author="codex",
+        clock={"codex": 1}, timestamp=100.0, version=1,
+    )
+    sec_b = BlackboardSection(
+        section="arch", content="v2", author="claude",
+        clock={"claude": 1}, timestamp=110.0, version=1,
+    )
+    m1 = merge_sections(sec_a, sec_b)
+    m2 = merge_sections(m1, sec_b)
+    m3 = merge_sections(m1, sec_a)
+    assert m1.version == 2
+    assert m2.version == 2
+    assert m3.version == 2
+    assert m1.content == m2.content == m3.content == "v2"
+    assert m1.clock == m2.clock == m3.clock == {"codex": 1, "claude": 1}
+

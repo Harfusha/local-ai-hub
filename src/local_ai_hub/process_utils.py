@@ -1,11 +1,70 @@
 from __future__ import annotations
 
 import os
+import threading
+from pathlib import Path, PureWindowsPath
 import signal
 import shutil
 import subprocess
 import time
 from typing import Any, Sequence
+
+
+_LOW_PRIORITY_VALUES = {"idle", "below_normal", "normal"}
+
+
+def _normalise_priority(priority: str | None) -> str | None:
+    value = str(priority or "").strip().lower().replace("-", "_")
+    return value if value in _LOW_PRIORITY_VALUES else None
+
+
+def set_current_thread_priority(priority: str | None) -> bool:
+    """Best-effort priority for background worker thread, never raises."""
+    value = _normalise_priority(priority)
+    if value in {None, "normal"}:
+        return True
+    try:
+        if os.name == "nt":
+            import ctypes
+            thread = ctypes.windll.kernel32.OpenThread(0x0020 | 0x0040, False, threading.get_native_id())
+            if not thread:
+                return False
+            try:
+                level = -15 if value == "idle" else -2
+                return bool(ctypes.windll.kernel32.SetThreadPriority(thread, level))
+            finally:
+                ctypes.windll.kernel32.CloseHandle(thread)
+        nice = 19 if value == "idle" else 10
+        # On Linux (NPTL), PRIO_PROCESS with a thread ID sets per-thread priority.
+        # On other POSIX systems this may silently affect the whole process instead.
+        # The broad except below handles any failure gracefully.
+        os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), nice)
+        return True
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+
+
+def set_process_priority(pid: int, priority: str | None) -> bool:
+    """Best-effort priority for a background child process, never raises."""
+    value = _normalise_priority(priority)
+    if value in {None, "normal"}:
+        return True
+    try:
+        if os.name == "nt":
+            import ctypes
+            handle = ctypes.windll.kernel32.OpenProcess(0x0200, False, int(pid))
+            if not handle:
+                return False
+            try:
+                process_class = 0x40 if value == "idle" else 0x4000
+                return bool(ctypes.windll.kernel32.SetPriorityClass(handle, process_class))
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
+        nice = 19 if value == "idle" else 10
+        os.setpriority(os.PRIO_PROCESS, int(pid), nice)
+        return True
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
 
 
 def windows_creationflags(*, detached: bool = False, new_group: bool = False) -> int:
@@ -43,14 +102,34 @@ def pid_alive(pid: int) -> bool:
     if os.name == "nt":
         try:
             import ctypes
-            # SYNCHRONIZE is enough to query whether the process object still exists.
-            handle = ctypes.windll.kernel32.OpenProcess(0x00100000, False, int(pid))
+            # SYNCHRONIZE is sufficient for a non-blocking wait on the process object.
+            # Merely opening a handle is not enough: exited processes can remain
+            # handleable until their final handle is closed.
+            synchronize = 0x00100000
+            wait_timeout = 0x00000102
+            handle = ctypes.windll.kernel32.OpenProcess(synchronize, False, int(pid))
             if not handle:
                 return False
-            ctypes.windll.kernel32.CloseHandle(handle)
-            return True
+            try:
+                return int(ctypes.windll.kernel32.WaitForSingleObject(handle, 0)) == wait_timeout
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
         except Exception:
             return False
+
+    # On Linux, kill(pid, 0) succeeds for zombies even though they can no longer
+    # execute work. Treat Z/X states as dead so shutdown loops do not burn their
+    # entire grace interval waiting for a process that only needs to be reaped.
+    if sys_platform_linux():
+        try:
+            stat_text = Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8", errors="replace")
+            close_paren = stat_text.rfind(")")
+            if close_paren >= 0:
+                rest = stat_text[close_paren + 1 :].strip().split()
+                if rest and rest[0] in {"Z", "X"}:
+                    return False
+        except OSError:
+            pass
     try:
         os.kill(pid, 0)
         return True
@@ -59,6 +138,13 @@ def pid_alive(pid: int) -> bool:
         return True
     except OSError:
         return False
+
+
+def sys_platform_linux() -> bool:
+    # Kept tiny and dependency-free so process liveness remains safe during
+    # interpreter shutdown and in minimal bootstrap environments.
+    import sys
+    return sys.platform.startswith("linux")
 
 
 def process_executable(pid: int) -> str | None:
@@ -93,6 +179,18 @@ def terminate_tree(pid: int, *, grace_seconds: float = 5.0) -> bool:
         return True
     if os.name == "nt":
         try:
+            # Send CTRL_BREAK_EVENT first so process groups can run cleanup handlers.
+            # Only send to a process group (positive pid); fall through on any error.
+            try:
+                os.kill(pid, signal.CTRL_BREAK_EVENT)
+                deadline = time.monotonic() + max(0.5, min(grace_seconds, 5.0))
+                while time.monotonic() < deadline:
+                    if not pid_alive(pid):
+                        return True
+                    time.sleep(0.05)
+            except (OSError, NotImplementedError):
+                pass
+            # Fall back to force-kill the whole process tree.
             cp = subprocess.run(
                 ["taskkill", "/PID", str(pid), "/T", "/F"],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -190,3 +288,34 @@ def find_listening_pid(port: int) -> int | None:
                 pass
     return None
 
+
+def canonical_root(path: str | Path) -> str:
+    """Return a fully resolved, canonical repository root path string.
+
+    Resolves symlinks, relative segments, and user home directory.
+    On Windows, Path.resolve() normalizes drive letter casing to the disk filesystem.
+    """
+    try:
+        resolved = Path(path).expanduser().resolve()
+    except Exception:
+        resolved = Path(path).expanduser().absolute()
+    return str(resolved)
+
+
+def is_rooted_path(path: str | Path) -> bool:
+    """Recognize absolute/rooted paths independent of the host platform.
+
+    ``pathlib.Path`` intentionally follows host semantics, which means a Windows
+    drive path looks relative on Linux/macOS. Protocol-facing validation needs to
+    recognize both forms so cross-platform client payloads are never joined onto
+    the current workspace by accident.
+    """
+    raw = str(path or "").strip()
+    if not raw:
+        return False
+    if raw.startswith(("/", "\\")):
+        return True
+    if Path(raw).is_absolute():
+        return True
+    win = PureWindowsPath(raw)
+    return bool(win.drive) or win.is_absolute()

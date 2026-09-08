@@ -229,10 +229,10 @@ tbody tr.click:hover{background:#162338}
   </div>
 
   <div class="dash-group">
-    <div class="group-title"><span>Performance &amp; Cloud Avoidance</span><span class="tiny muted">Avoided tokens, estimated USD savings and tail latency</span></div>
+    <div class="group-title"><span>Performance &amp; Token Efficiency</span><span class="tiny muted">Net cloud avoidance after agent tool-call/read overhead, local compute reuse and tail latency</span></div>
     <div class="grid grid-6">
       <div class="card"><div class="label" id="handledRequestsLabel">Requests handled · since restart</div><div class="value primary-metric" id="handledRequests">…</div><div class="sub" id="handledRequestsSub"></div><canvas id="throughputSpark" class="spark-canvas" width="160" height="30"></canvas></div>
-      <div class="card"><div class="label" id="tokensSavedLabel">Tokens saved · since restart</div><div class="value primary-metric" id="tokensSaved">…</div><div class="sub" id="tokensSavedSub"></div></div>
+      <div class="card"><div class="label" id="tokensSavedLabel">Net cloud token delta · since restart</div><div class="value primary-metric" id="tokensSaved">…</div><div class="sub" id="tokensSavedSub"></div></div>
       <div class="card"><div class="label" id="dollarsSavedLabel">Estimated savings · since restart</div><div class="value primary-metric" id="dollarsSaved">…</div><div class="sub" id="dollarsSavedSub"></div></div>
       <div class="card"><div class="label" id="cacheLabel">Cache hit rate · since restart</div><div class="value primary-metric" id="cache">…</div><div class="sub" id="cacheSub"></div></div>
       <div class="card"><div class="label">Latency p50 / p95 / p99</div><div class="value" id="latency">…</div><div class="sub" id="queueWait"></div><canvas id="latencySpark" class="spark-canvas" width="160" height="30"></canvas></div>
@@ -512,7 +512,7 @@ tbody tr.click:hover{background:#162338}
   <section class="section">
     <h2>Runtime configuration <span class="tiny">safe override sidecar · restart required after save</span></h2>
     <div style="padding:14px">
-      <div class="dash-group"><div class="group-title">Hardware &amp; Engine</div><div class="kv" style="padding:0;margin-bottom:12px"><div>Hardware profile</div><div><select id="cfgProfile" style="background:#172233;color:var(--fg);border:1px solid #2e405a;border-radius:6px;padding:6px 10px"><option>auto</option><option>cpu</option><option>low</option><option>balanced</option><option>high</option><option>max</option></select></div></div></div>
+      <div class="dash-group"><div class="group-title">Hardware &amp; Engine</div><div class="kv" style="padding:0;margin-bottom:12px"><div>Hardware profile</div><div><select id="cfgProfile" style="background:#172233;color:var(--fg);border:1px solid #2e405a;border-radius:6px;padding:6px 10px"><option>auto</option><option>cpu</option><option>integrated</option><option>low</option><option>balanced</option><option>high</option><option>max</option></select></div></div></div>
       <div class="dash-group"><div class="group-title">Core MCP Tools</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgFeatStatus"> status (local_ai_status)</label><label><input type="checkbox" id="cfgFeatRepo"> repo (local_ai_repo)</label><label><input type="checkbox" id="cfgFeatTasks"> tasks (local_ai_task &amp; Ollama)</label><label><input type="checkbox" id="cfgFeatRag"> rag (local_ai_rag)</label><label><input type="checkbox" id="cfgFeatCommands"> commands (local_ai_command)</label><label><input type="checkbox" id="cfgFeatCoord"> coord (local_ai_coord)</label><label><input type="checkbox" id="cfgFeatArtifacts"> artifacts (local_ai_artifact)</label></div></div>
       <div class="dash-group"><div class="group-title">Code Intelligence &amp; Indexing</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgPreprocess"> Preprocessing enabled</label><label><input type="checkbox" id="cfgIntel"> Managed code intelligence</label><label><input type="checkbox" id="cfgSerena"> Serena backend</label><label><input type="checkbox" id="cfgCodegraph"> CodeGraphContext backend</label></div></div>
       <div class="dash-group"><div class="group-title">Advanced Subsystems</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgFeatSubagents"> Subagents (Ollama workers)</label><label><input type="checkbox" id="cfgFeatAgentOs"> Agent OS (durable memory/receipts)</label><label><input type="checkbox" id="cfgFeatDashboard"> Web Dashboard</label></div></div>
@@ -1193,7 +1193,7 @@ function render(s){
 
   const scopeLabel=sloScope==='process'?'since restart':'30d';
   $('handledRequestsLabel').textContent='Requests handled · '+scopeLabel;
-  $('tokensSavedLabel').textContent='Tokens saved · '+scopeLabel;
+  $('tokensSavedLabel').textContent='Net cloud token delta · '+scopeLabel;
   $('dollarsSavedLabel').textContent='Estimated savings · '+scopeLabel;
   $('cacheLabel').textContent='Cache hit rate · '+scopeLabel;
   $('reliabilityLabel').textContent='Reliability · '+scopeLabel;
@@ -1211,15 +1211,15 @@ function render(s){
   $('fgQueue').textContent=n(q.foreground_queued)+' queued / '+n(q.foreground_inflight)+' running';
   $('bgQueue').textContent='background '+n(q.background_queued)+' queued / '+n(q.inflight_background)+' running · '+(q.background_allowed?'idle work allowed':'yielding');
 
-  const http=o.http||{},cohorts=o.cohorts||{},agentHttp=cohorts.agent_http||{},inference=cohorts.inference||{},policy=cohorts.policy_rejection||{},savedTokens=Math.max(0,Number(o.cloud_tokens_avoided_est||0)),savedUsd=Number(o.estimated_savings_usd||0),rate=Number(o.cloud_token_cost_usd_per_million||0);
+  const http=o.http||{},cohorts=o.cohorts||{},agentHttp=cohorts.agent_http||{},inference=cohorts.inference||{},policy=cohorts.policy_rejection||{},netDelta=Number(o.net_cloud_token_delta_est??0),savedTokens=Math.max(0,netDelta),tokenOverhead=Math.max(0,Number(o.cloud_token_overhead_est||0)),grossSaved=Math.max(0,Number(o.gross_cloud_tokens_avoided_est||0)),protocolTokens=Math.max(0,Number(o.agent_protocol_tokens_est||0)),toolCallTokens=Math.max(0,Number(o.agent_tool_request_tokens_est||0)),toolReadTokens=Math.max(0,Number(o.agent_tool_response_tokens_est||0)),schemaTokens=Math.max(0,Number(o.tool_schema_tokens_exposure_est||0)),schemaDelta=Number(o.net_after_schema_token_delta_est??0),localComputeSaved=Math.max(0,Number(o.local_compute_tokens_avoided_est||0)),savedUsd=Number(o.estimated_savings_usd||0),rate=Number(o.cloud_token_cost_usd_per_million||0);
   $('handledRequests').textContent=n(agentHttp.events);
   $('handledRequestsSub').textContent=n(agentHttp.failures)+' operational failures · '+n(policy.events)+' policy rejections';
-  $('tokensSaved').textContent=n(savedTokens);
-  $('tokensSavedSub').textContent='avoided cloud tokens · '+n(o.cache_hits)+' cache hits';
+  $('tokensSaved').textContent=n(netDelta);
+  $('tokensSavedSub').textContent='baseline '+n(grossSaved)+' − protocol '+n(protocolTokens)+' (call '+n(toolCallTokens)+' + read '+n(toolReadTokens)+')'+(tokenOverhead?' · overhead '+n(tokenOverhead):'')+' · schema-adjusted '+n(schemaDelta)+' (catalog ≈'+n(schemaTokens)+')';
   $('dollarsSaved').textContent='≈ $'+savedUsd.toFixed(2);
   $('dollarsSavedSub').textContent='estimate · $'+rate.toFixed(2)+' / 1M avoided tokens';
   $('cache').textContent=((o.cache_hit_rate||0)*100).toFixed(1)+'%';
-  $('cacheSub').textContent=n(o.cache_hits)+' hits · '+n(o.inference_events)+' local inference events';
+  $('cacheSub').textContent=n(o.cache_hits)+' hits · '+n(o.inference_events)+' local inference events · '+n(localComputeSaved)+' local tokens avoided';
   $('latency').textContent=ms(agentHttp.p50_duration_ms)+' / '+ms(agentHttp.p95_duration_ms)+' / '+ms(agentHttp.p99_duration_ms);
   $('queueWait').textContent='local inference p95 '+ms(inference.p95_duration_ms)+' · avg queue wait '+ms(o.avg_queue_wait_ms);
   $('reliabilityValue').innerHTML=`<span class="${agentHttp.failures?'warn-t':'ok'}">${n(agentHttp.failures)} failures</span>`;
@@ -1315,7 +1315,7 @@ function render(s){
 
   rows('executionProfiles',ep,x=>clickableRow(x,`<td>${esc(x.model)}</td><td>${esc(x.tier)}</td><td>${n(x.num_ctx)}</td><td>${n(x.max_ctx)}</td><td>${n(x.parallel_limit)}</td><td>${x.think?'on':'role-gated/off'}</td><td>${n(x.prompt_budget_tokens)}</td>`),7);
   rows('models',o.by_model||[],x=>clickableRow(x,`<td>${esc(x.model)}</td><td>${n(x.calls)}</td><td>${ms(x.avg_ms)}</td><td>${ms(x.avg_load_ms)}</td><td>${n(x.failures)}</td>`),5);
-  rows('cacheLayers',o.cache_layers||[],x=>clickableRow(x,`<td>${esc(x.layer)}</td><td>${n(x.calls)}</td><td>${ms(x.avg_ms)}</td><td>${n(x.cloud_tokens_avoided_est)}</td>`),4);
+  rows('cacheLayers',o.cache_layers||[],x=>clickableRow(x,`<td>${esc(x.layer)}</td><td>${n(x.calls)}</td><td>${ms(x.avg_ms)}</td><td>${n(x.net_cloud_token_delta_est)}</td>`),4);
   rows('agents',o.by_agent||[],x=>clickableRow(x,`<td>${esc(x.agent)}</td><td>${n(x.requests)}</td><td>${n(x.local_inference_calls)}</td><td>${ms(x.avg_ms)}</td><td>${n(x.failures)}</td>`),5);
   rows('routes',o.execution_routes||[],x=>clickableRow(x,`<td>${esc(x.route)}</td><td>${esc(x.task_type)}</td><td>${esc(x.complexity)}</td><td>${n(x.calls)}</td><td>${ms(x.avg_ms)}</td><td>${n(x.failures)}</td>`),6);
 
@@ -1364,8 +1364,10 @@ async function pollStatus(){
         const cpuUtil=Number(sys.cpu_utilization_pct||0), ramPct=Number(ram.used_pct||0);
         const gpuHtml=g.available?(()=>{const gUtil=Number(g.gpu_utilization_pct||0);return `<div style="display:flex;justify-content:space-between;align-items:center"><span>CPU ${cpuUtil}% · GPU ${gUtil}%</span><span class="tiny muted">${sys.cpu_count||1} threads</span></div><div class="bar"><i style="width:${Math.max(cpuUtil,gUtil)}%;background:${gUtil>80||cpuUtil>80?'var(--bad)':gUtil>50||cpuUtil>50?'var(--warn)':'var(--ok)'}"></i></div>`})():`<div style="display:flex;justify-content:space-between;align-items:center"><span>CPU ${cpuUtil}%</span><span class="tiny muted">${sys.cpu_count||1} threads</span></div><div class="bar"><i style="width:${cpuUtil}%;background:${cpuUtil>80?'var(--bad)':cpuUtil>50?'var(--warn)':'var(--ok)'}"></i></div>`;
         $('sysUtil').innerHTML=gpuHtml;
-        const vram=g.available?(g.vram_total_mb?` · VRAM ${Math.round(g.vram_used_mb||0)} / ${Math.round(g.vram_total_mb)} MB`:g.unified_memory_mb?` · Unified memory ${Math.round(g.unified_memory_mb)} MB`:''):'';
-        $('sysSub').textContent=`RAM ${ram.used_gb||0} / ${ram.total_gb||0} GB (${ramPct}%)${vram}`;
+        const vram=g.available?(g.vram_total_mb&&!g.integrated?` · VRAM ${Math.round(g.vram_used_mb||0)} / ${Math.round(g.vram_total_mb)} MB`:g.unified_memory_mb?` · Unified memory ${Math.round(g.unified_memory_mb)} MB`:g.integrated?' · shared-memory iGPU':''):'';
+        const npus=Array.isArray(sys.npus)?sys.npus:[], ov=Array.isArray(sys.openvino_devices)?sys.openvino_devices:[];
+        const accel=npus.length?` · NPU ${npus[0].runtime_available?'ready':'detected'}`:(ov.some(x=>x.kind==='gpu')?' · OpenVINO GPU ready':'');
+        $('sysSub').textContent=`RAM ${ram.used_gb||0} / ${ram.total_gb||0} GB (${ramPct}%)${vram}${accel}`;
       }
     }catch{}
   }catch(e){console.error('dashboard status refresh failed',e);$('conn').textContent=hasLiveStatus?'stale':'offline';$('conn').className=hasLiveStatus?'pill warn-t':'pill bad-t'}
@@ -1375,7 +1377,7 @@ function renderEvents(events){if(paused||!events.length)return;const box=$('even
 async function pollEvents(){try{const r=await apiFetch('/v1/live?after='+cursor+'&limit=200',{cache:'no-store'}),d=await r.json();cursor=Number(d.cursor||cursor);renderEvents(d.events||[])}catch{}}
 
 probeHealth();pollStatus();pollEvents();pollTraces();
-setInterval(probeHealth,5000);setInterval(pollStatus,3000);setInterval(pollEvents,1000);setInterval(pollTraces,2000);
+setInterval(probeHealth,5000);setInterval(pollStatus,1000);setInterval(pollEvents,1000);setInterval(pollTraces,2000);
 
 // ── Architecture Graph ────────────────────────────────────────────────────────
 let archData=null,archNodes=[],archEdges=[],archDragging=null;

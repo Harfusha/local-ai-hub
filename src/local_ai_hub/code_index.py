@@ -13,6 +13,7 @@ from typing import Any
 
 from .cache import MemoryLRUCache, stable_hash
 from .normalizer import normalize_query, tokenize_query_terms
+from .process_utils import canonical_root
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
 
 IDENT = re.compile(r"\b[A-Za-z_$][A-Za-z0-9_$]{2,}\b")
@@ -44,10 +45,14 @@ class CodeIndex:
 
     def _connect(self) -> sqlite3.Connection:
         con = connect_sqlite(self.db_path, timeout_seconds=0.75, row_factory=sqlite3.Row)
-        con.execute("PRAGMA cache_size=-65536")
-        con.execute("PRAGMA mmap_size=536870912")
-        con.execute("PRAGMA synchronous=NORMAL")
-        return con
+        try:
+            con.execute("PRAGMA cache_size=-65536")
+            con.execute("PRAGMA mmap_size=536870912")
+            con.execute("PRAGMA synchronous=NORMAL")
+            return con
+        except Exception:
+            con.close()
+            raise
 
     def _schema(self, con: sqlite3.Connection) -> None:
         con.executescript("""
@@ -127,8 +132,14 @@ class CodeIndex:
         except sqlite3.DatabaseError as exc:
             if is_busy_error(exc):
                 return
+            stamp = int(time.time())
             try:
-                self.db_path.replace(self.db_path.with_suffix(f".corrupt-{int(time.time())}.sqlite3"))
+                if self.db_path.exists():
+                    self.db_path.replace(self.db_path.with_name(self.db_path.name + f".corrupt-{stamp}"))
+                for suffix in ("-wal", "-shm"):
+                    side = Path(str(self.db_path) + suffix)
+                    if side.exists():
+                        side.unlink(missing_ok=True)
             except OSError:
                 pass
             with self._lock, closing(self._connect()) as con:
@@ -512,7 +523,7 @@ class CodeIndex:
             pass
 
     def update_file(self, root: str, path: str, content_hash: str | None = None) -> dict[str, Any]:
-        base = Path(root).expanduser().resolve()
+        base = Path(canonical_root(root))
         target = (base / path).resolve(strict=False)
         try:
             target.relative_to(base)
@@ -558,7 +569,7 @@ class CodeIndex:
 
     def update_files_batch(self, root: str, items: list[str] | list[tuple[str, str]]) -> dict[str, Any]:
         """Batch-process files with one read phase and one SQLite write transaction."""
-        base = Path(root).expanduser().resolve()
+        base = Path(canonical_root(root))
         normalized: list[tuple[str, str | None]] = []
         for item in items:
             if isinstance(item, (tuple, list)) and len(item) >= 2:
@@ -645,8 +656,10 @@ class CodeIndex:
                 con.execute("BEGIN IMMEDIATE")
                 if parse_blob_rows:
                     con.executemany("INSERT OR REPLACE INTO parse_blobs(content_hash,analyzer_version,language,payload_json,updated_at) VALUES(?,?,?,?,?)", parse_blob_rows)
+                _IDX_TABLES = frozenset({"symbols", "refs", "edges"})
                 for table in ("symbols", "refs", "edges"):
-                    con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", paths_to_clean)
+                    assert table in _IDX_TABLES  # defence-in-depth whitelist
+                    con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", paths_to_clean)  # noqa: S608
                 con.executemany("INSERT OR REPLACE INTO files(root,path,content_hash,language,updated_at) VALUES(?,?,?,?,?)", files_to_insert)
                 con.executemany("INSERT OR REPLACE INTO symbols(root,path,name,kind,line,end_line,container,name_path,signature,access,docstring) VALUES(?,?,?,?,?,?,?,?,?,?,?)", syms_to_insert)
                 con.executemany("INSERT INTO refs(root,path,name,line,kind) VALUES(?,?,?,?,?)", refs_to_insert)
@@ -665,7 +678,7 @@ class CodeIndex:
         The endpoint intentionally returns compact symbol metadata. Agents can follow
         with ``find_symbol``/``inspect_symbol`` when source bodies are actually needed.
         """
-        resolved_root = str(Path(root).expanduser().resolve())
+        resolved_root = canonical_root(root)
         if not Path(resolved_root).is_dir():
             return {"success": False, "root": resolved_root, "error": "root directory does not exist", "stale_root": True}
         terms = self._query_terms(query)
@@ -747,7 +760,7 @@ class CodeIndex:
         relative_path: str | None = None,
         limit: int = 30,
     ) -> dict[str, Any]:
-        resolved_root = str(Path(root).expanduser().resolve())
+        resolved_root = canonical_root(root)
         pat = name_path_pattern.strip()
         if not pat:
             return {"success": False, "error": "name_path_pattern required"}
@@ -861,7 +874,7 @@ class CodeIndex:
         return {"success": True, "declaration": symbols[0]}
 
     def find_implementations(self, root: str, symbol_name: str, path: str | None = None) -> dict[str, Any]:
-        resolved_root = str(Path(root).expanduser().resolve())
+        resolved_root = canonical_root(root)
         with self._lock, closing(self._connect()) as con:
             edges = con.execute(
                 "SELECT src, dst, kind, path, line FROM edges WHERE root=? AND (lower(dst)=lower(?) OR dst LIKE ?) AND kind IN ('inherits', 'implements') LIMIT 50",
@@ -889,7 +902,7 @@ class CodeIndex:
         }
 
     def find_referencing_symbols(self, root: str, symbol_name: str, path: str | None = None) -> dict[str, Any]:
-        resolved_root = str(Path(root).expanduser().resolve())
+        resolved_root = canonical_root(root)
         with self._lock, closing(self._connect()) as con:
             rows = con.execute(
                 "SELECT path, name, line, kind FROM refs WHERE root=? AND (lower(name)=lower(?) OR name LIKE ?) ORDER BY path, line LIMIT 100",
@@ -909,7 +922,7 @@ class CodeIndex:
         }
 
     def get_symbols_overview(self, root: str, path: str, depth: int = 1) -> dict[str, Any]:
-        resolved_root = str(Path(root).expanduser().resolve())
+        resolved_root = canonical_root(root)
         norm_path = path.replace("\\", "/").strip("/")
 
         with self._lock, closing(self._connect()) as con:
@@ -939,7 +952,7 @@ class CodeIndex:
         }
 
     def get_diagnostics_for_file(self, root: str, path: str) -> dict[str, Any]:
-        resolved_root = Path(root).expanduser().resolve()
+        resolved_root = Path(canonical_root(root))
         target = (resolved_root / path).resolve()
         if not target.is_file():
             return {"success": False, "error": f"file not found: {path}"}
@@ -996,7 +1009,7 @@ class CodeIndex:
 
     def file_summary(self, root: str, path: str, limit: int = 80) -> dict[str, Any]:
         """Return compact pre-indexed facts for one file without reopening source text."""
-        resolved_root = str(Path(root).expanduser().resolve())
+        resolved_root = canonical_root(root)
         norm_path = self._norm_rel(path)
         limit = max(1, min(int(limit), 250))
         try:
@@ -1041,7 +1054,7 @@ class CodeIndex:
         This is intentionally bounded and does not read repository files. It is used as
         a cheap candidate generator before lexical/RAG fallbacks.
         """
-        resolved_root = str(Path(root).expanduser().resolve())
+        resolved_root = canonical_root(root)
         terms = self._query_terms(query)
         if not terms:
             return []
@@ -1092,7 +1105,7 @@ class CodeIndex:
 
     def prune(self, root: str, current_paths: list[str]) -> dict[str, Any]:
         """Remove stale per-workspace index rows in one short transaction."""
-        resolved_root = str(Path(root).expanduser().resolve())
+        resolved_root = canonical_root(root)
         current = {self._norm_rel(p) for p in current_paths if self._norm_rel(p)}
         try:
             with self._lock, closing(self._connect()) as con:
@@ -1112,7 +1125,7 @@ class CodeIndex:
 
     def impact(self, root: str, changed_paths: list[str], max_symbols: int = 48, max_dependents: int = 30) -> dict[str, Any]:
         """Resolve changed symbols, dependents and likely tests from SQLite only."""
-        resolved_root = str(Path(root).expanduser().resolve())
+        resolved_root = canonical_root(root)
         changed = list(dict.fromkeys(self._norm_rel(p) for p in changed_paths if self._norm_rel(p)))
         max_symbols = max(1, min(int(max_symbols), 200))
         max_dependents = max(1, min(int(max_dependents), 100))
@@ -1214,7 +1227,7 @@ class CodeIndex:
             d = decl["declaration"]
             return {
                 "success": True,
-                "root": str(Path(root).expanduser().resolve()),
+                "root": canonical_root(root),
                 "name": d["name"],
                 "kind": d["kind"],
                 "path": d["path"],
@@ -1229,18 +1242,22 @@ class CodeIndex:
     def status(self, root: str | None = None) -> dict[str, Any]:
         now = time.monotonic()
         key = str(root or "__all__")
-        if not hasattr(self, "_status_cache"):
-            self._status_cache = {}
-        cached = self._status_cache.get(key)
-        if cached and now - cached["time"] < 5.0:
-            return dict(cached["data"])
+        with self._lock:
+            cached = self._status_cache.get(key)
+            if cached and now - cached["time"] < 5.0:
+                return dict(cached["data"])
         try:
+            # Table names are compile-time constants; validate against explicit whitelist
+            # before f-string interpolation as defence-in-depth.
+            _ALLOWED_TABLES = {"files", "symbols", "refs", "edges"}
             with self._lock, closing(self._connect()) as con:
                 where = " WHERE root=?" if root else ""
-                args = (str(Path(root).expanduser().resolve()),) if root else ()
-                vals = {t: int(con.execute(f"SELECT COUNT(*) FROM {t}{where}", args).fetchone()[0]) for t in ("files", "symbols", "refs", "edges")}
+                args = (canonical_root(root),) if root else ()
+                vals = {t: int(con.execute(f"SELECT COUNT(*) FROM {t}{where}", args).fetchone()[0])  # noqa: S608
+                        for t in _ALLOWED_TABLES}
             res = {"success": True, "healthy": True, **vals}
-            self._status_cache[key] = {"time": now, "data": res}
+            with self._lock:
+                self._status_cache[key] = {"time": now, "data": res}
             return res
         except sqlite3.DatabaseError as exc:
             return {"success": False, "healthy": False, "error": str(exc)}

@@ -21,6 +21,7 @@ from local_ai_hub.config import load_config
 from local_ai_hub.http_server import validate_network_security
 from local_ai_hub.process_utils import hidden_run_kwargs
 from local_ai_hub.repo_tools import RepositoryTools
+from local_ai_hub import __version__
 
 
 def _free_port() -> int:
@@ -118,7 +119,7 @@ def main() -> int:
             if health is None:
                 out, err = proc.communicate(timeout=1)
                 raise RuntimeError(f"hub failed to become healthy: rc={proc.returncode} stdout={out[-2000:]} stderr={err[-4000:]}")
-            checks.append({"name": "http-health", "ok": health.get("success") is True and health.get("version") == "1.6.0", "health": health})
+            checks.append({"name": "http-health", "ok": health.get("success") is True and health.get("version") == __version__, "health": health})
             capabilities = _get_json(f"http://127.0.0.1:{port}/v1/capabilities", timeout=3.0)
             checks.append({"name": "http-capabilities", "ok": capabilities.get("success") is True})
             from local_ai_hub.agent_events import AgentStateStore, AgentEvent

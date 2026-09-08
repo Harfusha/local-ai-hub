@@ -3,6 +3,8 @@ from __future__ import annotations
 from contextlib import closing
 import json
 from pathlib import Path
+import sqlite3
+import threading
 import time
 
 from local_ai_hub.code_index import CodeIndex
@@ -93,6 +95,138 @@ class _SuccessfulExternalTools:
     def index(self, backend, root):
         self.calls += 1
         return {"success": True}
+
+    def backend_available(self, backend):
+        return True
+
+
+def test_cached_external_unavailability_is_retried_when_backend_is_available(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tools = RepositoryTools(cfg)
+    external = _SuccessfulExternalTools()
+    pre = ProjectPreprocessor(
+        cfg,
+        _Noop(),
+        _Rag(),
+        _IdleScheduler(),
+        _Noop(),
+        tools,
+        external_tools=external,
+    )
+    try:
+        revision = pre._external_revision(str(repo))
+        with closing(pre._connect()) as con:
+            con.execute(
+                "INSERT INTO external_index_state(root,backend,revision_hash,status,updated_at,error) VALUES(?,?,?,?,?,?)",
+                (str(repo), "codegraph", revision, "unavailable", 0.0, "codegraph indexing exceeded 120s"),
+            )
+            con.commit()
+        row = {"root": str(repo), "workspace": "test", "generation": 0}
+
+        assert pre._step_external_index(row, "codegraph", "lexical") is True
+        assert external.calls == 1
+        with closing(pre._connect()) as con:
+            state = con.execute(
+                "SELECT status FROM external_index_state WHERE root=? AND backend=?",
+                (str(repo), "codegraph"),
+            ).fetchone()
+        assert state[0] == "ready"
+    finally:
+        pre.close()
+
+
+def test_startup_requeues_complete_project_with_available_external_backend(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    cfg["preprocessing"]["reject_temp_projects"] = False
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tools = RepositoryTools(cfg)
+    external = _SuccessfulExternalTools()
+    now = time.time()
+    pre = ProjectPreprocessor(cfg, _Noop(), _Rag(), _IdleScheduler(), _Noop(), tools, external_tools=external)
+    try:
+        with closing(pre._connect()) as con:
+            con.execute(
+                "INSERT INTO projects(root,workspace,status,phase,registered_at,updated_at,next_check_at,retry_after,paused,last_requested_at,registration_source) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (str(repo), "test", "complete", "complete", now, now, now + 1000, 0, 0, now, "test"),
+            )
+            con.execute(
+                "INSERT INTO external_index_state(root,backend,revision_hash,status,updated_at,error) VALUES(?,?,?,?,?,?)",
+                (str(repo), "codegraph", "same", "skipped", now, "codegraph indexing exceeded 120s"),
+            )
+            con.commit()
+    finally:
+        pre.close()
+
+    reopened = ProjectPreprocessor(cfg, _Noop(), _Rag(), _IdleScheduler(), _Noop(), tools, external_tools=external)
+    try:
+        with closing(reopened._connect()) as con:
+            state = con.execute("SELECT status,phase FROM projects WHERE root=?", (str(repo),)).fetchone()
+        assert tuple(state) == ("waiting", "codegraph")
+    finally:
+        reopened.close()
+
+
+def test_worktree_discovery_does_not_recurse_from_linked_worktree(tmp_path: Path, monkeypatch):
+    root = tmp_path / "worktree"
+    root.mkdir()
+    (root / ".git").write_text("gitdir: C:/repo/.git/worktrees/sample\n", encoding="utf-8")
+    prep = ProjectPreprocessor(
+        _cfg(tmp_path),
+        services=_Noop(),
+        rag=_Rag(),
+        scheduler=_IdleScheduler(),
+        runtime=_Noop(),
+        repo_tools=RepositoryTools(_cfg(tmp_path)),
+    )
+    try:
+        monkeypatch.setattr(prep, "_related_worktrees", lambda *_args: (_ for _ in ()).throw(AssertionError("recursive discovery")))
+        prep._register_discovered_worktrees(str(root))
+    finally:
+        prep.close()
+
+
+def test_cleanup_orphaned_index_roots_removes_derived_rows_only(tmp_path: Path):
+    class _IndexDb:
+        def __init__(self, path: Path):
+            self._lock = threading.RLock()
+            self.path = path
+            with closing(sqlite3.connect(path)) as con:
+                con.executescript("CREATE TABLE files(root TEXT, path TEXT); CREATE TABLE symbols(root TEXT, path TEXT);")
+                con.executemany("INSERT INTO files VALUES(?,?)", [("active", "a.py"), ("orphan", "o.py")])
+                con.executemany("INSERT INTO symbols VALUES(?,?)", [("active", "a.py"), ("orphan", "o.py")])
+                con.commit()
+
+        def _connect(self):
+            return sqlite3.connect(self.path)
+
+    prep = ProjectPreprocessor(
+        _cfg(tmp_path),
+        services=_Noop(),
+        rag=_Rag(),
+        scheduler=_IdleScheduler(),
+        runtime=_Noop(),
+        repo_tools=RepositoryTools(_cfg(tmp_path)),
+        code_index=_IndexDb(tmp_path / "code.sqlite3"),
+    )
+    try:
+        with prep._db_lock, closing(prep._connect()) as con:
+            con.execute(
+                "INSERT INTO projects(root,workspace,status,phase,registered_at,updated_at,next_check_at) VALUES(?,?,?,?,?,?,?)",
+                ("active", "ws", "complete", "complete", time.time(), time.time(), 0),
+            )
+            con.commit()
+
+        result = prep.cleanup_orphaned_indexes(max_roots=4)
+
+        assert result["success"] is True
+        with closing(sqlite3.connect(tmp_path / "code.sqlite3")) as con:
+            assert con.execute("SELECT count(*) FROM files WHERE root='active'").fetchone()[0] == 1
+            assert con.execute("SELECT count(*) FROM files WHERE root='orphan'").fetchone()[0] == 0
+    finally:
+        prep.close()
 
 
 def test_preprocessor_pause_resume_status_regressions(tmp_path: Path):
@@ -230,7 +364,7 @@ def test_stale_external_project_configuration_is_skipped_once_per_revision(tmp_p
                 (str(repo), "serena"),
             ).fetchone()
         assert external.calls == 1
-        assert state[0] == "skipped"
+        assert state[0] == "unavailable"
         assert "Project configuration" in state[1]
     finally:
         pre.close()
@@ -261,7 +395,7 @@ def test_time_bounded_external_index_is_skipped_once_per_revision(tmp_path: Path
                 (str(repo), "codegraph"),
             ).fetchone()
         assert external.calls == 1
-        assert state[0] == "skipped"
+        assert state[0] == "unavailable"
         assert state[1] == "codegraph indexing exceeded 30s"
     finally:
         pre.close()
@@ -287,7 +421,7 @@ def test_force_refresh_retries_cached_external_index(tmp_path: Path):
         with closing(pre._connect()) as con:
             con.execute(
                 "INSERT INTO external_index_state(root,backend,revision_hash,status,updated_at,error) VALUES(?,?,?,?,?,?)",
-                (str(repo), "codegraph", revision, "skipped", 0.0, "codegraph indexing exceeded 30s"),
+                (str(repo), "codegraph", revision, "unavailable", 0.0, "codegraph indexing exceeded 30s"),
             )
             con.commit()
         row = {"root": str(repo), "workspace": "test", "generation": 0, "force_refresh": 1}
@@ -334,7 +468,7 @@ def test_force_refresh_requeues_complete_project_from_inventory(tmp_path: Path):
                 "SELECT 1 FROM external_index_state WHERE root=?",
                 (str(repo),),
             ).fetchone()
-        assert tuple(state) in (("queued", "inventory", 1), ("running", "hash", 1), ("running", "inventory", 1))
+        assert tuple(state) in (("queued", "inventory", 1), ("running", "hash", 1), ("running", "inventory", 1), ("running", "code_index", 1))
         assert external_state is None
     finally:
         pre.close()
@@ -371,7 +505,7 @@ def test_existing_timed_out_external_index_is_promoted_to_revision_scoped_skip(t
                 (str(repo), "serena"),
             ).fetchone()
         assert external.calls == 0
-        assert state[0] == "skipped"
+        assert state[0] == "unavailable"
     finally:
         pre.close()
 
@@ -400,7 +534,7 @@ def test_startup_reclassifies_persisted_revision_scoped_external_failure(tmp_pat
                 "SELECT status FROM external_index_state WHERE root=? AND backend=?",
                 (str(repo), "codegraph"),
             ).fetchone()
-        assert state[0] == "skipped"
+        assert state[0] == "unavailable"
     finally:
         reopened.close()
 

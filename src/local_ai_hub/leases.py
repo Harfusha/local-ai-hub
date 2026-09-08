@@ -3,17 +3,25 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import closing
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
+from .process_utils import canonical_root
 
 
 def _norm_rel(value: str) -> str:
-    normalized = value.replace("\\", "/").strip("/")
+    raw = str(value or "").strip()
+    if raw.startswith(("/", "\\")):
+        raise ValueError(f"lease path must be repository-relative: {value}")
+    wp = PureWindowsPath(raw)
+    if wp.is_absolute() or bool(wp.drive):
+        raise ValueError(f"lease path must be repository-relative: {value}")
+    normalized = raw.replace("\\", "/").strip("/")
     path = PurePosixPath(normalized or ".")
     if path.is_absolute() or ".." in path.parts:
         raise ValueError(f"lease path must be repository-relative: {value}")
@@ -37,44 +45,54 @@ class ScopeLeaseStore:
     def __init__(self, state_dir: Path):
         self.path = state_dir / "leases.sqlite3"
         state_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        self._initialized = False
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
         return connect_sqlite(self.path, timeout_seconds=0.75, isolation_level=None)
 
     def _init_db(self) -> None:
-        with closing(self._connect()) as con:
-            initialize_wal(con)
-            con.execute(
-                """CREATE TABLE IF NOT EXISTS leases (
-                    lease_id TEXT NOT NULL,
-                    tenant TEXT NOT NULL,
-                    root_id TEXT NOT NULL,
-                    root_path TEXT NOT NULL,
-                    path TEXT NOT NULL,
-                    purpose TEXT NOT NULL,
-                    created_at REAL NOT NULL,
-                    expires_at REAL NOT NULL,
-                    PRIMARY KEY(lease_id, path)
-                )"""
-            )
-            con.execute("CREATE INDEX IF NOT EXISTS idx_leases_root ON leases(root_id, expires_at)")
-            con.execute(
-                """CREATE TABLE IF NOT EXISTS lease_waits (
-                    tenant TEXT NOT NULL,
-                    blocked_by TEXT NOT NULL,
-                    root_id TEXT NOT NULL,
-                    requested_path TEXT NOT NULL,
-                    updated_at REAL NOT NULL,
-                    PRIMARY KEY(tenant, blocked_by, requested_path)
-                )"""
-            )
-            con.execute("CREATE INDEX IF NOT EXISTS idx_lease_waits_tenant ON lease_waits(tenant)")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_lease_waits_blocked ON lease_waits(blocked_by)")
+        if self._initialized:
+            return
+        with self._lock:
+            if self._initialized:
+                return
+            def _setup() -> None:
+                with closing(self._connect()) as con:
+                    initialize_wal(con)
+                    con.execute(
+                        """CREATE TABLE IF NOT EXISTS leases (
+                            lease_id TEXT NOT NULL,
+                            tenant TEXT NOT NULL,
+                            root_id TEXT NOT NULL,
+                            root_path TEXT NOT NULL,
+                            path TEXT NOT NULL,
+                            purpose TEXT NOT NULL,
+                            created_at REAL NOT NULL,
+                            expires_at REAL NOT NULL,
+                            PRIMARY KEY(lease_id, path)
+                        )"""
+                    )
+                    con.execute("CREATE INDEX IF NOT EXISTS idx_leases_root ON leases(root_id, expires_at)")
+                    con.execute(
+                        """CREATE TABLE IF NOT EXISTS lease_waits (
+                            tenant TEXT NOT NULL,
+                            blocked_by TEXT NOT NULL,
+                            root_id TEXT NOT NULL,
+                            requested_path TEXT NOT NULL,
+                            updated_at REAL NOT NULL,
+                            PRIMARY KEY(tenant, blocked_by, requested_path)
+                        )"""
+                    )
+                    con.execute("CREATE INDEX IF NOT EXISTS idx_lease_waits_tenant ON lease_waits(tenant)")
+                    con.execute("CREATE INDEX IF NOT EXISTS idx_lease_waits_blocked ON lease_waits(blocked_by)")
+            retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+            self._initialized = True
 
     @staticmethod
     def _root(root: str) -> tuple[str, str]:
-        resolved = str(Path(root).expanduser().resolve())
+        resolved = canonical_root(root)
         root_id = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:20]
         return resolved, root_id
 
@@ -184,15 +202,61 @@ class ScopeLeaseStore:
             with closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
                 if lease_id:
-                    cur = con.execute("DELETE FROM leases WHERE tenant=? AND lease_id=?", (tenant, lease_id))
+                    if tenant in {"http-default", "system", "admin", "*"}:
+                        cur = con.execute("DELETE FROM leases WHERE lease_id=?", (lease_id,))
+                    else:
+                        cur = con.execute("DELETE FROM leases WHERE lease_id=? AND (tenant=? OR tenant='http-default')", (lease_id, tenant))
+                        if (cur.rowcount or 0) == 0 and not tenant:
+                            cur = con.execute("DELETE FROM leases WHERE lease_id=?", (lease_id,))
                 else:
                     cur = con.execute("DELETE FROM leases WHERE tenant=?", (tenant,))
                 count = int(cur.rowcount or 0)
                 # Clear wait dependencies involving this tenant when releasing leases
-                con.execute("DELETE FROM lease_waits WHERE tenant=? OR blocked_by=?", (tenant, tenant))
+                if tenant:
+                    con.execute("DELETE FROM lease_waits WHERE tenant=? OR blocked_by=?", (tenant, tenant))
                 con.execute("COMMIT")
                 return count
         return {"success": True, "released_rows": retry_busy(write, retries=4)}
+
+    def renew(self, tenant: str, lease_id: str, ttl_seconds: int = 900) -> dict[str, Any]:
+        """Atomically extend the expiration TTL of an existing held lease."""
+        if not lease_id:
+            return {"success": False, "error": "lease_id is required"}
+        now = time.time()
+        new_expires = now + max(30, min(int(ttl_seconds), 7200))
+
+        def write() -> dict[str, Any]:
+            with closing(self._connect()) as con:
+                con.execute("BEGIN IMMEDIATE")
+                if tenant in {"http-default", "system", "admin", "*"}:
+                    rows = con.execute(
+                        "SELECT path FROM leases WHERE lease_id=? AND expires_at>?",
+                        (lease_id, now),
+                    ).fetchall()
+                    if not rows:
+                        con.execute("ROLLBACK")
+                        return {"success": False, "error": "lease not found or expired"}
+                    con.execute(
+                        "UPDATE leases SET expires_at=? WHERE lease_id=?",
+                        (new_expires, lease_id),
+                    )
+                else:
+                    rows = con.execute(
+                        "SELECT path FROM leases WHERE lease_id=? AND (tenant=? OR tenant='http-default') AND expires_at>?",
+                        (lease_id, tenant, now),
+                    ).fetchall()
+                    if not rows:
+                        con.execute("ROLLBACK")
+                        return {"success": False, "error": "lease not found, expired, or belongs to another tenant"}
+                    con.execute(
+                        "UPDATE leases SET expires_at=? WHERE lease_id=? AND (tenant=? OR tenant='http-default')",
+                        (new_expires, lease_id, tenant),
+                    )
+                con.execute("COMMIT")
+                paths = [r[0] for r in rows]
+                return {"success": True, "lease_id": lease_id, "expires_at": new_expires, "paths": paths}
+
+        return retry_busy(write, retries=4)
 
     def list(self, root: str = "") -> list[dict[str, Any]]:
         now = time.time()

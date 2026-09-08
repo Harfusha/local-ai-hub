@@ -1,6 +1,11 @@
 # MCP and coding-agent integration
 
-Local AI Hub exposes seven compact MCP tools instead of mirroring every internal endpoint. The same hub process, deterministic indexes, preprocess artifacts, command cache and local-model caches are shared by Codex, Claude Code, Gemini CLI, Cursor, Windsurf, VS Code/Copilot and generic MCP clients.
+Local AI Hub exposes eight compact MCP tools instead of mirroring every internal endpoint. The same hub process, deterministic indexes, preprocess artifacts, command cache and local-model caches are shared by Codex, Claude Code, Gemini CLI, Cursor, Windsurf, VS Code/Copilot and generic MCP clients.
+
+## Whole-task orchestration
+
+`local_ai_work` is the one high-level orchestration boundary. Use `submit` for a closed repository task that the Hub can plan, edit, validate and verify end-to-end. Use `status`/`wait` for bounded progress checks, `get` with `response_profile`/`return_fields` for projected handoff data, `cancel` to stop work, and `continue` only after a `needs_agent` decision. Detailed plans, step evidence and logs remain artifact-backed by default.
+
 
 ## Mandatory local-first gate
 
@@ -54,7 +59,7 @@ Conversation history is process-memory only: it expires after inactivity and dis
 
 ## Agent Operating System projection
  
-When `[agent_state].enabled` is active, the compact seven-tool MCP surface projects durable agent operating system state without adding new tools:
+When `[agent_state].enabled` is active, the compact MCP surface projects durable agent operating system state without adding new tools:
 - `local_ai_coord`: `task_create`, `task_get`, `task_checkpoint`, `task_transition`, `task_resume`, `task_list`, `task_complete`, `task_fail`, `memory_record`, `memory_get`, `memory_find`, `memory_promote`, `context_compile`, `verify_receipt`, `verify_completion`, `negative_knowledge_record`, `negative_knowledge_find`, `incident_decision`.
 - `local_ai_repo`: `context_compile`, `verify_receipt`, `verify_completion`.
 - `local_ai_task`: `candidate_create`, `candidate_promote`.

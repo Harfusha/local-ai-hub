@@ -32,7 +32,7 @@ All commands must pass with no errors.
 
 ## Design principles
 
-- Keep the **seven-tool MCP surface compact** — new repository capabilities should go through local_ai_repo or local_ai_command, not a new top-level MCP schema.
+- Keep the **eight-tool MCP surface compact**. `local_ai_work` is the deliberate high-level whole-task boundary; do not expose planner/executor internals as additional top-level tools. New lower-level repository capabilities should normally extend existing actions.
 - Keep **all waits bounded** — every subprocess, network call and model call must have a finite deadline. No `time.sleep` in hot paths without a bounded loop.
 - Preserve **loopback-first security** — the server must bind to 127.0.0.1 by default. Remote exposure is opt-in and requires an API token.
 - **Optional external tooling must fail soft** — Serena, CodeGraphContext and Ollama absence, crash or timeout must degrade cleanly to built-in indexes, never block a request handler.
@@ -56,7 +56,7 @@ Keep the subject line under 72 characters. Optionally add a body after a blank l
 - [ ] python -m pytest -q passes
 - [ ] python tools/selftest.py passes
 - [ ] python tools/hubctl.py generate passes
-- [ ] No new MCP tool schemas added without discussion
+- [ ] No new top-level MCP tool schemas added without a documented surface/agent-token justification
 - [ ] All subprocess/network calls have timeouts
 - [ ] Optional backends degrade gracefully (no hard failures for missing Serena/CodeGraph)
 - [ ] Updated CHANGELOG.md with a brief entry if user-visible

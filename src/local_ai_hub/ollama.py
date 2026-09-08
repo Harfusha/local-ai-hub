@@ -24,7 +24,7 @@ def _normalise_keep_alive(payload: dict[str, Any] | None) -> dict[str, Any] | No
         clean["keep_alive"] = "-1m"
     return clean
 
-from .process_utils import hidden_run_kwargs, terminate_tree, pid_alive, process_executable
+from .process_utils import hidden_run_kwargs, set_process_priority, terminate_tree, pid_alive, process_executable
 from .model_policy import ModelExecutionPolicy
 
 
@@ -271,6 +271,13 @@ class OllamaRuntime:
         num_parallel = int(cfg.get("num_parallel", sched.get("max_parallel", 1)))
         env["OLLAMA_NUM_PARALLEL"] = str(num_parallel)
         env["OLLAMA_MAX_LOADED_MODELS"] = str(int(sched.get("max_loaded_models", 1)))
+        if bool(cfg.get("allow_integrated_gpu", False)):
+            env["OLLAMA_IGPU_ENABLE"] = "1"
+        # Vulkan is the portable Intel/AMD GPU path on Windows/Linux in Ollama.
+        # It stays opt-in globally and is enabled by the conservative integrated
+        # profile only; Ollama may still fall back to CPU when discovery fails.
+        if bool(cfg.get("enable_vulkan", False)):
+            env["OLLAMA_VULKAN"] = "1"
         if bool(cfg.get("flash_attention", True)):
             env["OLLAMA_FLASH_ATTENTION"] = "1"
         kv_cache = str(cfg.get("kv_cache_type", "q8_0")).strip()
@@ -334,6 +341,10 @@ class OllamaRuntime:
                     args, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL, **popen_kwargs,
                 )
+                priority = str(self.config.get("ollama", {}).get("process_priority", "") or "")
+                if not priority and self.managed_name.startswith("ollama-background"):
+                    priority = str(self.config.get("background_gpu", {}).get("process_priority", "") or "")
+                set_process_priority(proc.pid, priority)
                 self.managed_pid_path.write_text(str(proc.pid), encoding="utf-8")
             except Exception:
                 return False
@@ -367,6 +378,8 @@ class OllamaRuntime:
             "expected": {
                 "num_parallel": int(cfg.get("num_parallel", sched.get("max_parallel", 1))),
                 "max_loaded_models": int(sched.get("max_loaded_models", 1)),
+                "allow_integrated_gpu": bool(cfg.get("allow_integrated_gpu", False)),
+                "enable_vulkan": bool(cfg.get("enable_vulkan", False)),
                 "flash_attention": bool(cfg.get("flash_attention", True)),
                 "kv_cache_type": str(cfg.get("kv_cache_type", "q8_0")),
                 "gpu_overhead_bytes": int(cfg.get("gpu_overhead_bytes", 0) or 0),

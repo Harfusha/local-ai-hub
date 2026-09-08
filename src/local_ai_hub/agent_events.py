@@ -166,6 +166,7 @@ class AgentStateStore:
         self.db_path = Path(db_path)
         self.enabled = bool(enabled)
         self.max_payload_bytes = int(max_payload_bytes)
+        self._lock = threading.RLock()
         self._initialized = False
         self._subscribers: list[queue.Queue[AgentEvent]] = []
         self._subscribers_lock = threading.Lock()
@@ -173,34 +174,71 @@ class AgentStateStore:
     def _ensure_schema(self) -> None:
         if self._initialized or not self.enabled:
             return
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        con = connect_sqlite(self.db_path)
-        try:
-            initialize_wal(con)
-            con.execute("BEGIN IMMEDIATE")
-            for version, description, ddl in MIGRATIONS:
-                applied = con.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_schema_migrations'"
-                ).fetchone()
-                if applied:
-                    row = con.execute(
-                        "SELECT version FROM agent_schema_migrations WHERE version = ?",
-                        (version,),
-                    ).fetchone()
-                    if row:
-                        continue
-                con.executescript(ddl)
-                con.execute(
-                    "INSERT INTO agent_schema_migrations (version, applied_at, description) VALUES (?, ?, ?)",
-                    (version, time.time(), description),
-                )
-            con.commit()
+        with self._lock:
+            if self._initialized or not self.enabled:
+                return
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            def _setup() -> None:
+                con = connect_sqlite(self.db_path)
+                try:
+                    initialize_wal(con)
+                    with con:
+                        con.execute("""
+                        CREATE TABLE IF NOT EXISTS agent_schema_migrations (
+                            version INTEGER PRIMARY KEY,
+                            applied_at REAL NOT NULL,
+                            description TEXT NOT NULL
+                        );
+                        """)
+                        con.execute("""
+                        CREATE TABLE IF NOT EXISTS agent_events (
+                            stream_id TEXT NOT NULL,
+                            seq INTEGER NOT NULL,
+                            event_id TEXT NOT NULL,
+                            kind TEXT NOT NULL,
+                            payload TEXT NOT NULL,
+                            idempotency_key TEXT NOT NULL,
+                            correlation_id TEXT NOT NULL,
+                            actor TEXT NOT NULL,
+                            schema_version INTEGER NOT NULL,
+                            created_at REAL NOT NULL,
+                            PRIMARY KEY (stream_id, seq),
+                            UNIQUE (stream_id, idempotency_key)
+                        );
+                        """)
+                        con.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_agent_events_created
+                            ON agent_events (created_at);
+                        """)
+                        con.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_agent_events_kind
+                            ON agent_events (kind);
+                        """)
+                        con.execute("""
+                        CREATE TABLE IF NOT EXISTS agent_snapshots (
+                            snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            stream_id TEXT NOT NULL,
+                            seq INTEGER NOT NULL,
+                            state TEXT NOT NULL,
+                            created_at REAL NOT NULL
+                        );
+                        """)
+                        con.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_agent_snapshots_stream
+                            ON agent_snapshots (stream_id, seq DESC);
+                        """)
+                        row = con.execute(
+                            "SELECT version FROM agent_schema_migrations WHERE version = 1"
+                        ).fetchone()
+                        if not row:
+                            con.execute(
+                                "INSERT INTO agent_schema_migrations (version, applied_at, description) VALUES (?, ?, ?)",
+                                (1, time.time(), "initial agent events, snapshots, and migrations schema"),
+                            )
+                finally:
+                    con.close()
+            retry_busy(_setup, retries=5, base_delay_seconds=0.02)
             self._initialized = True
-        except Exception:
-            con.rollback()
-            raise
-        finally:
-            con.close()
 
     def append(self, event: AgentEvent) -> AppendResult:
         if not self.enabled:
@@ -295,11 +333,26 @@ class AgentStateStore:
     def _publish(self, event: AgentEvent) -> None:
         with self._subscribers_lock:
             subscribers = list(self._subscribers)
+        dead_queues: list[queue.Queue[AgentEvent]] = []
         for q in subscribers:
             try:
                 q.put_nowait(event)
+            except queue.Full:
+                try:
+                    q.get_nowait()
+                except Exception:
+                    pass
+                try:
+                    q.put_nowait(event)
+                except Exception:
+                    dead_queues.append(q)
             except Exception:
-                pass
+                dead_queues.append(q)
+        if dead_queues:
+            with self._subscribers_lock:
+                for q in dead_queues:
+                    if q in self._subscribers:
+                        self._subscribers.remove(q)
 
     def events(self, stream_id: str, after_seq: int = 0, limit: int = 1000) -> list[AgentEvent]:
         if not self.enabled or not self.db_path.exists():

@@ -2,7 +2,7 @@
 
 | Area | Behavior | Benefit |
 |---|---|---|
-| Agent surface | 7 compact MCP tools with strong tool-first descriptions and agent-specific projection | Low schema/context overhead across coding agents |
+| Agent surface | 8 compact MCP tools with strong tool-first descriptions and agent-specific projection | Low schema/context overhead across coding agents |
 | Execution order | cache → deterministic facts/code index → Serena/CodeGraph → semantic retrieval → minimum local-LLM work | Lower latency and cloud-token use |
 | Built-in code intelligence | Incremental symbols, references, calls, imports, manifests, routes, tests, config and risk facts | Common repository questions without a model |
 | Serena | Managed project index + MCP symbol lookup/reference queries | Language-aware semantic navigation |
@@ -14,11 +14,12 @@
 | Commands | Safe classified validation/read/build broker, repo-state cache and single-flight | Avoid repeated test/lint/build runs |
 | Caching | RAM L1 + persistent SQLite L2 + generation/repo/RAG/command/snapshot caches | Cross-agent reuse |
 | Scheduling | Fair queue, model affinity, bounded fallback, foreground/background separation | Fewer model swaps and stalls |
-| Hardware | OS/architecture/RAM plus NVIDIA/AMD/Intel/Apple GPU detection and auto profiles | Portable defaults across CPU, iGPU and discrete GPU hosts |
+| Hardware | OS/architecture/RAM plus NVIDIA/AMD/Intel/Apple GPU detection, shared-memory `integrated` profile, and optional Intel OpenVINO NPU/iGPU retrieval acceleration | Portable conservative defaults across CPU, iGPU/NPU and discrete GPU hosts |
 | Reliability | Timeouts, circuit breakers, stale-root guards, process-tree cleanup, watchdog and disposable derived state | Failure containment |
 | Dashboard / operations | Realtime telemetry plus preprocessing, code intelligence, safe commands, bundles, source/dependency audits, maintenance, service controls and validated runtime overrides | Operate the hub without hand-editing derived state |
-| Observability | Async metadata-only telemetry and realtime status | Diagnose latency/adoption without storing source/prompts |
+| Observability | Async metadata-only telemetry, realtime status and v2.4 end-to-end token accounting (gross avoidance, tool call/read cost, signed net delta, schema scenario and local-compute reuse) | Diagnose latency/adoption/token efficiency without storing source/prompts/tool output |
 | Security | Loopback default; remote exposure requires explicit enablement and API token | Safe local default |
+| Work orchestration | Durable closed-task plan/DAG execution, transactional leased edits, bounded replanning, validation, whole-task verification and compact artifact-backed handoff | Delegate complete local work without flooding the calling agent context |
 | Agent Operating System | Event-sourced journal, tasks, scoped memory, incidents, verification, context compiler, policy & learning | Governed durable agent execution (feature-flagged) |
 
 Hardware profiles are starting points, not hardware allow-lists. Explicit `config.toml` values always override automatic tuning.

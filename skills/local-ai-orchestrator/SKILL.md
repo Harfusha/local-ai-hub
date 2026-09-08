@@ -12,6 +12,7 @@ Trigger map:
 - shared findings or overlapping edits: `local_ai_coord`
 - semantic retrieval after indexed paths are insufficient: `local_ai_rag`
 - bounded local generation or second opinion: `local_ai_task`
+- closed whole-task delegation with verified handoff: `local_ai_work`
 
 Recipes (guidance, not gates):
 - Recipe — Explore: preprocess once, use the cheapest repository action, fetch only required evidence slices.
@@ -22,6 +23,7 @@ Recipes (guidance, not gates):
 
 Delegation is the default for any task with useful bounded independent work.
 - Use `local_ai_task` for bounded local-model work when local inference is the right fit. `qwen2.5-coder:7b` is the default fast tier.
+- **Closed whole task:** prefer `local_ai_work(action="submit")` when the Hub can own planning, bounded edits, validation and handoff end-to-end. Use `response_profile="compact"` and request only decision-grade fields; fetch the artifact only when details are needed.
 - Use the native Codex `multi_agent_v1__spawn_agent` path only for useful independent bounded work or an explicit Codex-subagent request.
 - Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
 - Do not duplicate the same scope across agents. Keep final decisions, edits, and integration in Codex.
@@ -29,7 +31,7 @@ Delegation is the default for any task with useful bounded independent work.
 
 ## Ownership and tiering
 
-The main agent owns planning, sequencing, edits, integration, decisions and the final answer.
+The main agent owns task boundaries, permissions, unresolved decisions and the final user answer. A submitted `local_ai_work` order may own its bounded internal planning, edits, validation and integration until handoff.
 
 - **Local AI Hub first:** its own precise bounded microtasks, repository facts, indexed search, preprocess, impact, diff/security review, safe commands, compression, local-model synthesis and second opinions.
 - **Native Codex subagents:** use only for useful independent bounded work; Codex assigns scope, write permission, workspace/worktree, timeout, sandbox, cancellation and integration.
@@ -65,11 +67,12 @@ Stop escalating when evidence is sufficient; reuse cached results and bounded ev
 4. `local_ai_repo(action="semantic/graph")` — language-aware relationships via Serena/CodeGraphContext, callers/callees and impact.
 5. `local_ai_repo(action="context"|"solve")` — compact mixed evidence or bounded repository reasoning.
 6. `local_ai_repo(action="review_diff"|"security_audit"|"impact")` — targeted checks after or around edits.
-7. `local_ai_rag` — semantic fallback only when indexed evidence is insufficient.
-8. `local_ai_task(action="delegate"|"reason"|"review"|"second_opinion"|"compress")` — default local worker: `qwen2.5-coder:7b`; smart escalation only for complex routes.
-9. `local_ai_command(action="run")` — tests, lint, typecheck, builds and repeatable read-only commands before native execution.
-10. `local_ai_artifact` — exact evidence/artifact slices only.
-11. `local_ai_coord` — leases before overlapping edits; memos before repeating investigation.
+7. `local_ai_work(action="submit")` — delegate one complete bounded repository task; Hub plans a DAG, edits transactionally, validates, verifies, and returns a compact handoff.
+8. `local_ai_rag` — semantic fallback only when indexed evidence is insufficient.
+9. `local_ai_task(action="delegate"|"reason"|"review"|"second_opinion"|"compress")` — default local worker: `qwen2.5-coder:7b`; smart escalation only for complex routes.
+10. `local_ai_command(action="run")` — tests, lint, typecheck, builds and repeatable read-only commands before native execution.
+11. `local_ai_artifact` — exact evidence/artifact slices only.
+12. `local_ai_coord` — leases before overlapping edits; memos before repeating investigation.
 
 ## Reuse and failure protocol
 
@@ -105,22 +108,22 @@ When working on non-trivial tasks, use Local AI Hub's Agent Operating System act
 
 ### 1. Goal Contracts & Resumption
 - **Create task contract:**
-  `local_ai_coord(action="task_create", task_id="task-1", goal="Implement feature", acceptance_criteria=["All tests pass"])`
+  `local_ai_coord(action="task_create", task_id="task-1", contract={"goal": "Implement feature", "acceptance_criteria": ["All tests pass"]})`
 - **Checkpoint progress before context truncation:**
-  `local_ai_coord(action="task_checkpoint", task_id="task-1", phase="testing", next_action="run integration tests", affected_paths=["src/main.py"])`
+  `local_ai_coord(action="task_checkpoint", task_id="task-1", checkpoint={"phase": "testing", "next_action": "run integration tests", "affected_paths": ["src/main.py"]})`
 - **Resume after session restart or interruption:**
   `local_ai_coord(action="task_resume", task_id="task-1")`
 - **Complete or fail task:**
-  `local_ai_coord(action="task_complete", task_id="task-1")` or `local_ai_coord(action="task_fail", task_id="task-1", error="reason")`
+  `local_ai_coord(action="task_complete", task_id="task-1")` or `local_ai_coord(action="task_fail", task_id="task-1", reason="reason")`
 
 ### 2. Scoped Memory & Learnings
 - **Store durable findings and decisions:**
-  `local_ai_coord(action="memory_record", key="convention", value="Token format must follow HMAC-SHA256", kind="decision", scope="repository")`
+  `local_ai_coord(action="memory_record", record={"kind": "decision", "scope": "repository", "key": "convention", "value": "Token format must follow HMAC-SHA256"})`
 - **Retrieve memories across turns:**
   `local_ai_coord(action="memory_find", query="convention")`
 
 ### 3. Exact Context Compilation
-- **Compile active task state, relevant memories, and negative knowledge into minimal tokens:**
+- **Compile active task state, relevant memories, negative knowledge, and active edit leases into minimal tokens:**
   `local_ai_coord(action="context_compile", task_id="task-1", max_tokens=4000)`
 
 ### 4. Verification Receipts & Completion Gates
@@ -128,12 +131,12 @@ When working on non-trivial tasks, use Local AI Hub's Agent Operating System act
   `local_ai_command(action="run", command="pytest -q", task_id="task-1", criterion="All tests pass")`
 - **Check if all acceptance criteria are verified before completing:**
   `local_ai_coord(action="verify_completion", task_id="task-1")`
-- **Verify single receipt:**
-  `local_ai_coord(action="verify_receipt", receipt_id="rec-1")`
+- **Record a direct receipt when command auto-capture is not used:**
+  `local_ai_coord(action="verify_receipt", checkpoint={"task_id": "task-1", "criterion": "All tests pass", "passed": True})`
 
 ### 5. Negative Knowledge & Incident Avoidance
 - **Record failed approach or incident:**
-  `local_ai_coord(action="negative_knowledge_record", incident={"error_class": "timeout", "operation_class": "build", "symptoms": "timeout", "root_cause": "unindexed lock", "fix": "add index"})`
+  `local_ai_coord(action="negative_knowledge_record", key="timeout", value="build timed out", reason="unindexed lock", status="add index")`
 - **Check before repeating a failed operation:**
   `local_ai_coord(action="negative_knowledge_find", query="timeout")`
 

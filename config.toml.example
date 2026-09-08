@@ -4,7 +4,7 @@
 
 [hardware]
 # "auto" detects OS/CPU/RAM/GPU and selects a profile automatically.
-# Profiles: cpu | low | balanced | high | max
+# Profiles: cpu | integrated | low | balanced | high | max
 profile = "auto"
 auto_tune = true
 
@@ -20,6 +20,8 @@ auto_tune = true
 enabled = true
 serena_enabled = true
 codegraph_enabled = true
+# Increase timeout for large projects (default 120s may not be enough for big Unity repos)
+index_timeout_seconds = 300
 # direct_agent_mcp = false
 
 [agents]
@@ -30,6 +32,18 @@ gemini = true
 # cursor = true
 # windsurf = true
 # vscode = true
+
+[work_orchestrator]
+# Closed-task delegation is intentionally serial by default; the integrated auto-profile
+# further bounds queues/background work for shared-memory notebooks.
+enabled = true
+default_response_profile = "compact"
+default_max_output_tokens = 350
+# max_pending_work_orders = 32
+# worker_idle_seconds = 120
+# max_steps = 32
+# max_llm_steps = 16
+# max_replans = 2
 
 [security]
 # Keep the hub bound to loopback unless you explicitly need remote access.
@@ -42,18 +56,17 @@ allow_mutating = false
 allow_unknown = false
 
 [features]
-# Granular toggles: disable components you do not need.
-# When disabled, tools are omitted from the MCP server, agent skills, instructions, and schemas.
-# tasks = true              # local model inference worker (local_ai_task)
-# rag = true                # semantic retrieval fallback (local_ai_rag)
-# commands = true           # safe command execution broker (local_ai_command)
-# coord = true              # coordination leases, memos, task contracts (local_ai_coord)
-# artifacts = true          # compact responses & evidence slicing (local_ai_artifact)
-# code_intelligence = true  # Serena / CodeGraphContext backends
-# preprocessing = true      # background idle project warmup
-# subagents = true          # advisory local profiles
-# agent_os = true           # durable execution: tasks, verification receipts, memory
-# dashboard = true          # realtime web dashboard at /dashboard
+tasks = true              # local model inference worker (local_ai_task)
+rag = true                # semantic retrieval fallback (local_ai_rag)
+commands = true           # safe command execution broker (local_ai_command)
+coord = true              # coordination leases, memos, task contracts (local_ai_coord)
+artifacts = true          # compact responses & evidence slicing (local_ai_artifact)
+code_intelligence = true  # Serena / CodeGraphContext backends
+preprocessing = true      # background idle project warmup
+subagents = true          # advisory local profiles
+agent_os = true           # durable execution: tasks, verification receipts, memory
+dashboard = true          # realtime web dashboard at /dashboard
+work_orchestrator = true  # whole-task plan/edit/verify/handoff (local_ai_work)
 
 # After changing configuration, regenerate dynamic agent skills, instructions, and MCP schemas:
 #   python tools/hubctl.py generate

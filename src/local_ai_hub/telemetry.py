@@ -87,6 +87,12 @@ class TelemetryStore:
         "load_duration_ms", "success", "status_code", "degraded", "retry_count",
         "fallback_used", "error_type", "error_fingerprint", "tool_calls",
         "evidence_count", "response_bytes",
+        "gross_avoided_cloud_tokens", "gross_input_tokens_avoided", "gross_output_tokens_avoided",
+        "agent_protocol_tokens", "tool_request_tokens", "tool_response_tokens", "tool_schema_tokens",
+        "net_after_schema_tokens", "local_compute_tokens_avoided",
+        "net_cloud_token_delta", "cloud_token_overhead",
+        "net_after_schema_token_delta", "schema_adjusted_overhead",
+        "savings_source", "input_savings_source", "output_savings_source", "savings_breakdown_json",
     )
 
     def __init__(
@@ -187,7 +193,24 @@ class TelemetryStore:
                     error_fingerprint TEXT NOT NULL DEFAULT '',
                     tool_calls INTEGER NOT NULL DEFAULT 0,
                     evidence_count INTEGER NOT NULL DEFAULT 0,
-                    response_bytes INTEGER NOT NULL DEFAULT 0
+                    response_bytes INTEGER NOT NULL DEFAULT 0,
+                    gross_avoided_cloud_tokens INTEGER NOT NULL DEFAULT 0,
+                    gross_input_tokens_avoided INTEGER NOT NULL DEFAULT 0,
+                    gross_output_tokens_avoided INTEGER NOT NULL DEFAULT 0,
+                    agent_protocol_tokens INTEGER NOT NULL DEFAULT 0,
+                    tool_request_tokens INTEGER NOT NULL DEFAULT 0,
+                    tool_response_tokens INTEGER NOT NULL DEFAULT 0,
+                    tool_schema_tokens INTEGER NOT NULL DEFAULT 0,
+                    net_after_schema_tokens INTEGER NOT NULL DEFAULT 0,
+                    local_compute_tokens_avoided INTEGER NOT NULL DEFAULT 0,
+                    net_cloud_token_delta INTEGER NOT NULL DEFAULT 0,
+                    cloud_token_overhead INTEGER NOT NULL DEFAULT 0,
+                    net_after_schema_token_delta INTEGER NOT NULL DEFAULT 0,
+                    schema_adjusted_overhead INTEGER NOT NULL DEFAULT 0,
+                    savings_source TEXT NOT NULL DEFAULT '',
+                    input_savings_source TEXT NOT NULL DEFAULT '',
+                    output_savings_source TEXT NOT NULL DEFAULT '',
+                    savings_breakdown_json TEXT NOT NULL DEFAULT ''
                 )"""
             )
             con.executescript(
@@ -236,10 +259,56 @@ class TelemetryStore:
                     cache_hits INTEGER NOT NULL DEFAULT 0,
                     fallback_count INTEGER NOT NULL DEFAULT 0,
                     degraded_count INTEGER NOT NULL DEFAULT 0,
+                    gross_avoided_cloud_tokens INTEGER NOT NULL DEFAULT 0,
+                    gross_input_tokens_avoided INTEGER NOT NULL DEFAULT 0,
+                    gross_output_tokens_avoided INTEGER NOT NULL DEFAULT 0,
+                    agent_protocol_tokens INTEGER NOT NULL DEFAULT 0,
+                    tool_schema_tokens INTEGER NOT NULL DEFAULT 0,
+                    net_after_schema_tokens INTEGER NOT NULL DEFAULT 0,
+                    local_compute_tokens_avoided INTEGER NOT NULL DEFAULT 0,
+                    tool_request_tokens INTEGER NOT NULL DEFAULT 0,
+                    tool_response_tokens INTEGER NOT NULL DEFAULT 0,
+                    net_cloud_token_delta INTEGER NOT NULL DEFAULT 0,
+                    cloud_token_overhead INTEGER NOT NULL DEFAULT 0,
+                    net_after_schema_token_delta INTEGER NOT NULL DEFAULT 0,
+                    schema_adjusted_overhead INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY(day,event_type,action,agent,model,cache_layer,success)
                 );
                 """
             )
+            # Online additive migration for telemetry DBs created by <=2.3.
+            event_columns = {str(row[1]) for row in con.execute("PRAGMA table_info(events)")}
+            for name, ddl in {
+                "gross_avoided_cloud_tokens": "INTEGER NOT NULL DEFAULT 0",
+                "gross_input_tokens_avoided": "INTEGER NOT NULL DEFAULT 0",
+                "gross_output_tokens_avoided": "INTEGER NOT NULL DEFAULT 0",
+                "agent_protocol_tokens": "INTEGER NOT NULL DEFAULT 0",
+                "tool_request_tokens": "INTEGER NOT NULL DEFAULT 0",
+                "tool_response_tokens": "INTEGER NOT NULL DEFAULT 0",
+                "tool_schema_tokens": "INTEGER NOT NULL DEFAULT 0",
+                "net_after_schema_tokens": "INTEGER NOT NULL DEFAULT 0",
+                "local_compute_tokens_avoided": "INTEGER NOT NULL DEFAULT 0",
+                "net_cloud_token_delta": "INTEGER NOT NULL DEFAULT 0",
+                "cloud_token_overhead": "INTEGER NOT NULL DEFAULT 0",
+                "net_after_schema_token_delta": "INTEGER NOT NULL DEFAULT 0",
+                "schema_adjusted_overhead": "INTEGER NOT NULL DEFAULT 0",
+                "savings_source": "TEXT NOT NULL DEFAULT ''",
+                "input_savings_source": "TEXT NOT NULL DEFAULT ''",
+                "output_savings_source": "TEXT NOT NULL DEFAULT ''",
+                "savings_breakdown_json": "TEXT NOT NULL DEFAULT ''",
+            }.items():
+                if name not in event_columns:
+                    con.execute(f"ALTER TABLE events ADD COLUMN {name} {ddl}")
+            rollup_columns = {str(row[1]) for row in con.execute("PRAGMA table_info(daily_rollups)")}
+            for name in (
+                "gross_avoided_cloud_tokens", "gross_input_tokens_avoided", "gross_output_tokens_avoided",
+                "agent_protocol_tokens", "tool_schema_tokens", "net_after_schema_tokens", "local_compute_tokens_avoided",
+                "tool_request_tokens", "tool_response_tokens", "net_cloud_token_delta", "cloud_token_overhead",
+                "net_after_schema_token_delta", "schema_adjusted_overhead",
+            ):
+                if name not in rollup_columns:
+                    con.execute(f"ALTER TABLE daily_rollups ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_events_savings_created ON events(event_type, savings_source, created_at)")
             con.commit()
 
     @staticmethod
@@ -283,6 +352,23 @@ class TelemetryStore:
             "tool_calls": max(0, int(event.get("tool_calls", 0) or 0)),
             "evidence_count": max(0, int(event.get("evidence_count", 0) or 0)),
             "response_bytes": max(0, int(event.get("response_bytes", 0) or 0)),
+            "gross_avoided_cloud_tokens": max(0, int(event.get("gross_avoided_cloud_tokens", 0) or 0)),
+            "gross_input_tokens_avoided": max(0, int(event.get("gross_input_tokens_avoided", 0) or 0)),
+            "gross_output_tokens_avoided": max(0, int(event.get("gross_output_tokens_avoided", 0) or 0)),
+            "agent_protocol_tokens": max(0, int(event.get("agent_protocol_tokens", 0) or 0)),
+            "tool_request_tokens": max(0, int(event.get("tool_request_tokens", 0) or 0)),
+            "tool_response_tokens": max(0, int(event.get("tool_response_tokens", 0) or 0)),
+            "tool_schema_tokens": max(0, int(event.get("tool_schema_tokens", 0) or 0)),
+            "net_after_schema_tokens": max(0, int(event.get("net_after_schema_tokens", 0) or 0)),
+            "local_compute_tokens_avoided": max(0, int(event.get("local_compute_tokens_avoided", 0) or 0)),
+            "net_cloud_token_delta": int(event.get("net_cloud_token_delta", 0) or 0),
+            "cloud_token_overhead": max(0, int(event.get("cloud_token_overhead", 0) or 0)),
+            "net_after_schema_token_delta": int(event.get("net_after_schema_token_delta", 0) or 0),
+            "schema_adjusted_overhead": max(0, int(event.get("schema_adjusted_overhead", 0) or 0)),
+            "savings_source": str(event.get("savings_source", ""))[:80],
+            "input_savings_source": str(event.get("input_savings_source", ""))[:80],
+            "output_savings_source": str(event.get("output_savings_source", ""))[:80],
+            "savings_breakdown_json": str(event.get("savings_breakdown_json", ""))[:2000],
         }
 
     def _publish_live(self, kind: str, payload: dict[str, Any]) -> None:
@@ -350,8 +436,8 @@ class TelemetryStore:
             if cached and now - cached_at < max(1.0, float(ttl_seconds)):
                 return dict(cached)
             try:
-                report = self.report(days, recent_errors=12, scope=scope)
-                report["recent_http"] = self.recent_http(50)
+                report = self.report(days, recent_errors=12, scope=scope, _flush=False)
+                report["recent_http"] = self.recent_http(50, _flush=False)
             except Exception:
                 report = dict(cached) if cached else {"summary": {"enabled": self.enabled}}
             self._dashboard_cache[key] = report
@@ -397,7 +483,21 @@ class TelemetryStore:
             "inference_events": int(history.get("events", len(inference)) or 0),
             "cache_hits": int(history.get("cache_hits", 0) or 0),
             "cache_hit_rate": float(history.get("cache_hit_rate", 0.0) or 0.0),
-            "cloud_tokens_avoided_est": int(history.get("cloud_tokens_avoided_est", 0) or 0),
+            "net_cloud_token_delta_est": int(history.get("net_cloud_token_delta_est", 0) or 0),
+            "cloud_token_overhead_est": int(history.get("cloud_token_overhead_est", 0) or 0),
+            "gross_cloud_tokens_avoided_est": int(history.get("gross_cloud_tokens_avoided_est", 0) or 0),
+            "gross_input_cloud_tokens_avoided_est": int(history.get("gross_input_cloud_tokens_avoided_est", 0) or 0),
+            "gross_output_cloud_tokens_avoided_est": int(history.get("gross_output_cloud_tokens_avoided_est", 0) or 0),
+            "agent_protocol_tokens_est": int(history.get("agent_protocol_tokens_est", 0) or 0),
+            "agent_tool_request_tokens_est": int(history.get("agent_tool_request_tokens_est", 0) or 0),
+            "agent_tool_response_tokens_est": int(history.get("agent_tool_response_tokens_est", 0) or 0),
+            "tool_schema_tokens_exposure_est": int(history.get("tool_schema_tokens_exposure_est", 0) or 0),
+            "net_after_schema_tokens_avoided_est": int(history.get("net_after_schema_tokens_avoided_est", 0) or 0),
+            "net_after_schema_token_delta_est": int(history.get("net_after_schema_token_delta_est", 0) or 0),
+            "schema_adjusted_overhead_est": int(history.get("schema_adjusted_overhead_est", 0) or 0),
+            "local_compute_tokens_avoided_est": int(history.get("local_compute_tokens_avoided_est", 0) or 0),
+            "token_savings_breakdown": history.get("token_savings_breakdown", {}),
+            "tool_accounting_events": int(history.get("tool_accounting_events", 0) or 0),
             "cloud_token_cost_usd_per_million": float(history.get("cloud_token_cost_usd_per_million", self.cloud_token_cost_usd_per_million) or 0.0),
             "estimated_savings_usd": float(history.get("estimated_savings_usd", 0.0) or 0.0),
             "fallback_count": int(history.get("fallback_count", 0) or 0),
@@ -441,6 +541,59 @@ class TelemetryStore:
     def record_stage(self, **event: Any) -> None:
         event["event_type"] = "stage"
         self.record(**event)
+
+    def record_tool_accounting(self, event: dict[str, Any]) -> None:
+        """Record one agent-visible MCP call without storing arguments or output.
+
+        ``avoided_cloud_tokens`` is the *net* value after measured tool request and
+        response tokens. Gross savings and schema exposure remain separate so the
+        dashboard can explain the accounting without double counting.
+        """
+        if not isinstance(event, dict):
+            return
+        breakdown = event.get("savings_breakdown") if isinstance(event.get("savings_breakdown"), dict) else {}
+        clean_breakdown: dict[str, int] = {}
+        for source, tokens in list(breakdown.items())[:16]:
+            try:
+                bounded = max(0, int(tokens or 0))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if bounded:
+                clean_breakdown[str(source)[:64]] = bounded
+        primary = max(clean_breakdown.items(), key=lambda kv: kv[1], default=("", 0))[0]
+        gross = max(0, int(event.get("gross_cloud_tokens_avoided_est", 0) or 0))
+        input_source = str(event.get("input_savings_source", ""))[:80]
+        output_source = str(event.get("output_savings_source", ""))[:80]
+        gross_input = max(0, int(event.get("gross_input_tokens_avoided_est", 0) or 0))
+        gross_output = max(0, int(event.get("gross_output_tokens_avoided_est", 0) or 0))
+        self.record(
+            event_type="tool_accounting",
+            tenant=str(event.get("tenant", ""))[:160],
+            agent=str(event.get("agent", ""))[:80],
+            action=str(event.get("tool", "unknown"))[:160],
+            success=True,
+            tool_calls=1,
+            input_tokens=max(0, int(event.get("agent_tool_request_tokens_est", 0) or 0)),
+            output_tokens=max(0, int(event.get("agent_tool_response_tokens_est", 0) or 0)),
+            avoided_cloud_tokens=max(0, int(event.get("net_cloud_token_delta_est", 0) or 0)),
+            gross_avoided_cloud_tokens=gross,
+            gross_input_tokens_avoided=gross_input,
+            gross_output_tokens_avoided=gross_output,
+            agent_protocol_tokens=max(0, int(event.get("agent_protocol_tokens_est", 0) or 0)),
+            tool_request_tokens=max(0, int(event.get("agent_tool_request_tokens_est", 0) or 0)),
+            tool_response_tokens=max(0, int(event.get("agent_tool_response_tokens_est", 0) or 0)),
+            tool_schema_tokens=max(0, int(event.get("tool_schema_tokens_est", 0) or 0)),
+            net_after_schema_tokens=max(0, int(event.get("net_after_schema_token_delta_est", 0) or 0)),
+            local_compute_tokens_avoided=max(0, int(event.get("local_compute_tokens_avoided_est", 0) or 0)),
+            net_cloud_token_delta=int(event.get("net_cloud_token_delta_est", 0) or 0),
+            cloud_token_overhead=max(0, int(event.get("cloud_token_overhead_est", 0) or 0)),
+            net_after_schema_token_delta=int(event.get("net_after_schema_token_delta_est", 0) or 0),
+            schema_adjusted_overhead=max(0, int(event.get("schema_adjusted_overhead_est", 0) or 0)),
+            savings_source=primary,
+            input_savings_source=input_source,
+            output_savings_source=output_source,
+            savings_breakdown_json=json.dumps(clean_breakdown, separators=(",", ":"), sort_keys=True),
+        )
 
     def record_system(self, action: str, *, success: bool = True, duration_ms: float = 0.0, **event: Any) -> None:
         event.update({"event_type": "system", "action": action, "success": success, "duration_ms": duration_ms})
@@ -606,19 +759,39 @@ class TelemetryStore:
         for e in events:
             day = datetime.fromtimestamp(e["created_at"], tz=timezone.utc).strftime("%Y-%m-%d")
             key = (day, e["event_type"], e["action"], e["agent"], e["model"], e["cache_layer"], e["success"])
-            agg = grouped.setdefault(key, [0, 0.0, 0.0, 0, 0, 0, 0, 0, 0])
+            agg = grouped.setdefault(key, [0, 0.0, 0.0] + [0] * 19)
             agg[0] += 1; agg[1] += e["duration_ms"]; agg[2] += e["queue_wait_ms"]
             agg[3] += e["input_tokens"]; agg[4] += e["output_tokens"]; agg[5] += e["avoided_cloud_tokens"]
             agg[6] += e["cache_hit"]; agg[7] += e["fallback_used"]; agg[8] += e["degraded"]
+            agg[9] += e["gross_avoided_cloud_tokens"]
+            agg[10] += e["gross_input_tokens_avoided"]; agg[11] += e["gross_output_tokens_avoided"]
+            agg[12] += e["agent_protocol_tokens"]; agg[13] += e["tool_schema_tokens"]
+            agg[14] += e["net_after_schema_tokens"]; agg[15] += e["local_compute_tokens_avoided"]
+            agg[16] += e["tool_request_tokens"]; agg[17] += e["tool_response_tokens"]
+            agg[18] += e["net_cloud_token_delta"]; agg[19] += e["cloud_token_overhead"]
+            agg[20] += e["net_after_schema_token_delta"]; agg[21] += e["schema_adjusted_overhead"]
         con.executemany(
-            """INSERT INTO daily_rollups(day,event_type,action,agent,model,cache_layer,success,events,duration_ms,queue_wait_ms,input_tokens,output_tokens,avoided_cloud_tokens,cache_hits,fallback_count,degraded_count)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """INSERT INTO daily_rollups(day,event_type,action,agent,model,cache_layer,success,events,duration_ms,queue_wait_ms,input_tokens,output_tokens,avoided_cloud_tokens,cache_hits,fallback_count,degraded_count,gross_avoided_cloud_tokens,gross_input_tokens_avoided,gross_output_tokens_avoided,agent_protocol_tokens,tool_schema_tokens,net_after_schema_tokens,local_compute_tokens_avoided,tool_request_tokens,tool_response_tokens,net_cloud_token_delta,cloud_token_overhead,net_after_schema_token_delta,schema_adjusted_overhead)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(day,event_type,action,agent,model,cache_layer,success) DO UPDATE SET
                  events=events+excluded.events, duration_ms=duration_ms+excluded.duration_ms,
                  queue_wait_ms=queue_wait_ms+excluded.queue_wait_ms, input_tokens=input_tokens+excluded.input_tokens,
                  output_tokens=output_tokens+excluded.output_tokens, avoided_cloud_tokens=avoided_cloud_tokens+excluded.avoided_cloud_tokens,
                  cache_hits=cache_hits+excluded.cache_hits, fallback_count=fallback_count+excluded.fallback_count,
-                 degraded_count=degraded_count+excluded.degraded_count""",
+                 degraded_count=degraded_count+excluded.degraded_count,
+                 gross_avoided_cloud_tokens=gross_avoided_cloud_tokens+excluded.gross_avoided_cloud_tokens,
+                 gross_input_tokens_avoided=gross_input_tokens_avoided+excluded.gross_input_tokens_avoided,
+                 gross_output_tokens_avoided=gross_output_tokens_avoided+excluded.gross_output_tokens_avoided,
+                 agent_protocol_tokens=agent_protocol_tokens+excluded.agent_protocol_tokens,
+                 tool_schema_tokens=tool_schema_tokens+excluded.tool_schema_tokens,
+                 net_after_schema_tokens=net_after_schema_tokens+excluded.net_after_schema_tokens,
+                 local_compute_tokens_avoided=local_compute_tokens_avoided+excluded.local_compute_tokens_avoided,
+                 tool_request_tokens=tool_request_tokens+excluded.tool_request_tokens,
+                 tool_response_tokens=tool_response_tokens+excluded.tool_response_tokens,
+                 net_cloud_token_delta=net_cloud_token_delta+excluded.net_cloud_token_delta,
+                 cloud_token_overhead=cloud_token_overhead+excluded.cloud_token_overhead,
+                 net_after_schema_token_delta=net_after_schema_token_delta+excluded.net_after_schema_token_delta,
+                 schema_adjusted_overhead=schema_adjusted_overhead+excluded.schema_adjusted_overhead""",
             [key + tuple(vals) for key, vals in grouped.items()],
         )
 
@@ -748,7 +921,7 @@ class TelemetryStore:
             }
         return result
 
-    def summary(self, days: int = 30, *, scope: str = "window") -> dict[str, Any]:
+    def summary(self, days: int = 30, *, scope: str = "window", _flush: bool = True) -> dict[str, Any]:
         if not self.enabled:
             return {"enabled": False}
         now = time.monotonic()
@@ -761,7 +934,8 @@ class TelemetryStore:
         cached = self._summary_cache.get(key)
         if cached and now - cached["time"] < 3.0:
             return dict(cached["data"])
-        self.flush(0.5)
+        if _flush:
+            self.flush(0.5)
         with closing(self._connect()) as con:
             row = con.execute(
                 """SELECT COUNT(*), COALESCE(SUM(cache_hit),0), COALESCE(SUM(coalesced),0),
@@ -809,8 +983,50 @@ class TelemetryStore:
                      AND action NOT IN ('/v1/live','/v1/live/status','/v1/status','/v1/control')""",
                 (cutoff,),
             ).fetchone()
+            tool_accounting = con.execute(
+                """SELECT COUNT(*), COALESCE(SUM(gross_avoided_cloud_tokens),0),
+                          COALESCE(SUM(gross_input_tokens_avoided),0), COALESCE(SUM(gross_output_tokens_avoided),0),
+                          COALESCE(SUM(agent_protocol_tokens),0), COALESCE(SUM(tool_request_tokens),0),
+                          COALESCE(SUM(tool_response_tokens),0), COALESCE(SUM(tool_schema_tokens),0),
+                          COALESCE(SUM(avoided_cloud_tokens),0), COALESCE(SUM(net_after_schema_tokens),0),
+                          COALESCE(SUM(local_compute_tokens_avoided),0), COALESCE(SUM(net_cloud_token_delta),0),
+                          COALESCE(SUM(cloud_token_overhead),0), COALESCE(SUM(net_after_schema_token_delta),0),
+                          COALESCE(SUM(schema_adjusted_overhead),0)
+                   FROM events WHERE created_at>=? AND event_type='tool_accounting'""",
+                (cutoff,),
+            ).fetchone()
+            # Realtime summaries must stay cheap even at max raw-event retention.
+            # Attribute each call to its dominant savings source in SQL; the full
+            # multi-source breakdown is parsed only by the explicit diagnostic report.
+            tool_breakdown_rows = con.execute(
+                """SELECT source,COALESCE(SUM(tokens),0) FROM (
+                       SELECT input_savings_source AS source,gross_input_tokens_avoided AS tokens
+                         FROM events WHERE created_at>=? AND event_type='tool_accounting' AND input_savings_source<>''
+                       UNION ALL
+                       SELECT output_savings_source AS source,gross_output_tokens_avoided AS tokens
+                         FROM events WHERE created_at>=? AND event_type='tool_accounting' AND output_savings_source<>''
+                   ) GROUP BY source ORDER BY 2 DESC""",
+                (cutoff, cutoff),
+            ).fetchall()
         total = int(row[0]); cached = int(row[1]); http_total = int(http[0])
-        avoided_cloud_tokens = int(row[5])
+        legacy_avoided_cloud_tokens = int(row[5])
+        tool_accounting_events = int(tool_accounting[0])
+        gross_avoided_cloud_tokens = int(tool_accounting[1])
+        gross_input_tokens_avoided = int(tool_accounting[2])
+        gross_output_tokens_avoided = int(tool_accounting[3])
+        agent_protocol_tokens = int(tool_accounting[4])
+        tool_request_tokens = int(tool_accounting[5])
+        tool_response_tokens = int(tool_accounting[6])
+        tool_schema_tokens = int(tool_accounting[7])
+        net_avoided_cloud_tokens = int(tool_accounting[8]) if tool_accounting_events else legacy_avoided_cloud_tokens
+        net_after_schema_tokens = int(tool_accounting[9]) if tool_accounting_events else legacy_avoided_cloud_tokens
+        local_compute_tokens_avoided = int(tool_accounting[10])
+        net_cloud_token_delta = int(tool_accounting[11]) if tool_accounting_events else legacy_avoided_cloud_tokens
+        cloud_token_overhead = int(tool_accounting[12]) if tool_accounting_events else 0
+        net_after_schema_token_delta = int(tool_accounting[13]) if tool_accounting_events else legacy_avoided_cloud_tokens
+        schema_adjusted_overhead = int(tool_accounting[14]) if tool_accounting_events else 0
+        savings_breakdown = {str(source)[:64]: max(0, int(tokens or 0)) for source, tokens in tool_breakdown_rows}
+
         cohorts = self._cohort_summary(cohort_rows)
         with self._stats_lock:
             writer = dict(self._stats)
@@ -820,9 +1036,31 @@ class TelemetryStore:
             "process_started_at": self.process_started_at if scope == "process" else None, "events": total,
             "cache_hits": cached, "cache_hit_rate": round(cached / total, 4) if total else 0.0,
             "coalesced_waiters": int(row[2]), "local_input_tokens_est": int(row[3]),
-            "local_output_tokens_est": int(row[4]), "cloud_tokens_avoided_est": avoided_cloud_tokens,
+            "local_output_tokens_est": int(row[4]),
+            # v2.4 end-to-end accounting. cloud_tokens_avoided_est is now NET of
+            # the exact MCP tool request + agent-visible response estimate. Legacy
+            # inference-only accounting remains exposed for comparison/migration.
+            "token_accounting_version": 2 if tool_accounting_events else 1,
+            "cloud_tokens_avoided_est": max(0, net_cloud_token_delta),
+            "net_cloud_tokens_avoided_est": max(0, net_cloud_token_delta),
+            "net_cloud_token_delta_est": net_cloud_token_delta,
+            "cloud_token_overhead_est": cloud_token_overhead,
+            "gross_cloud_tokens_avoided_est": gross_avoided_cloud_tokens if tool_accounting_events else legacy_avoided_cloud_tokens,
+            "gross_input_cloud_tokens_avoided_est": gross_input_tokens_avoided if tool_accounting_events else legacy_avoided_cloud_tokens,
+            "gross_output_cloud_tokens_avoided_est": gross_output_tokens_avoided if tool_accounting_events else 0,
+            "legacy_inference_cloud_tokens_avoided_est": legacy_avoided_cloud_tokens,
+            "agent_protocol_tokens_est": agent_protocol_tokens,
+            "agent_tool_request_tokens_est": tool_request_tokens,
+            "agent_tool_response_tokens_est": tool_response_tokens,
+            "tool_schema_tokens_exposure_est": tool_schema_tokens,
+            "net_after_schema_tokens_avoided_est": max(0, net_after_schema_token_delta),
+            "net_after_schema_token_delta_est": net_after_schema_token_delta,
+            "schema_adjusted_overhead_est": schema_adjusted_overhead,
+            "local_compute_tokens_avoided_est": local_compute_tokens_avoided,
+            "token_savings_breakdown": dict(sorted(savings_breakdown.items(), key=lambda kv: (-kv[1], kv[0]))),
+            "tool_accounting_events": tool_accounting_events,
             "cloud_token_cost_usd_per_million": self.cloud_token_cost_usd_per_million,
-            "estimated_savings_usd": round(avoided_cloud_tokens * self.cloud_token_cost_usd_per_million / 1_000_000, 4),
+            "estimated_savings_usd": round(net_cloud_token_delta * self.cloud_token_cost_usd_per_million / 1_000_000, 4),
             "avg_duration_ms": round(float(row[6]), 1), "p50_duration_ms": _percentile(durations, 0.50),
             "p95_duration_ms": _percentile(durations, 0.95), "p99_duration_ms": _percentile(durations, 0.99),
             "aggregate_duration_scope": "inference_only", "cohorts": cohorts,
@@ -850,11 +1088,12 @@ class TelemetryStore:
         self._summary_cache[key] = {"time": now, "data": res}
         return res
 
-    def report(self, days: int = 30, *, recent_errors: int = 25, scope: str = "window") -> dict[str, Any]:
+    def report(self, days: int = 30, *, recent_errors: int = 25, scope: str = "window", _flush: bool = True) -> dict[str, Any]:
         """Produce a prompt/source-free diagnostic report suitable for sharing."""
         if not self.enabled:
             return {"enabled": False}
-        self.flush(1.0)
+        if _flush:
+            self.flush(1.0)
         days = max(1, min(int(days), self.rollup_retention_days))
         cutoff, scope = self._scope_cutoff(days, scope)
         with closing(self._connect()) as con:
@@ -864,7 +1103,11 @@ class TelemetryStore:
                           COALESCE(AVG(CASE WHEN event_type='http' THEN duration_ms END),0),
                           COALESCE(SUM(CASE WHEN event_type='http' AND success=0 THEN 1 ELSE 0 END),0),
                           COALESCE(SUM(CASE WHEN event_type='inference' THEN avoided_cloud_tokens ELSE 0 END),0),
-                          COALESCE(SUM(CASE WHEN event_type='inference' THEN 1 ELSE 0 END),0)
+                          COALESCE(SUM(CASE WHEN event_type='inference' THEN 1 ELSE 0 END),0),
+                          COALESCE(SUM(CASE WHEN event_type='tool_accounting' THEN avoided_cloud_tokens ELSE 0 END),0),
+                          COALESCE(SUM(CASE WHEN event_type='tool_accounting' THEN gross_avoided_cloud_tokens ELSE 0 END),0),
+                          COALESCE(SUM(CASE WHEN event_type='tool_accounting' THEN agent_protocol_tokens ELSE 0 END),0),
+                          COALESCE(SUM(CASE WHEN event_type='tool_accounting' THEN 1 ELSE 0 END),0)
                    FROM events WHERE created_at>=? GROUP BY agent ORDER BY COUNT(*) DESC""", (cutoff,)
             ).fetchall()
             by_model = con.execute(
@@ -888,8 +1131,14 @@ class TelemetryStore:
                 (cutoff, max(1, min(int(recent_errors), 100))),
             ).fetchall()
             daily = con.execute(
-                """SELECT day,SUM(events),SUM(duration_ms),SUM(queue_wait_ms),SUM(avoided_cloud_tokens),SUM(cache_hits),SUM(fallback_count),SUM(degraded_count),SUM(CASE WHEN success=0 THEN events ELSE 0 END)
-                   FROM daily_rollups WHERE day>=? GROUP BY day ORDER BY day""",
+                """SELECT day,event_type,SUM(events),SUM(duration_ms),SUM(queue_wait_ms),SUM(avoided_cloud_tokens),
+                          SUM(cache_hits),SUM(fallback_count),SUM(degraded_count),SUM(CASE WHEN success=0 THEN events ELSE 0 END),
+                          SUM(gross_avoided_cloud_tokens),SUM(gross_input_tokens_avoided),SUM(gross_output_tokens_avoided),
+                          SUM(agent_protocol_tokens),SUM(tool_schema_tokens),SUM(net_after_schema_tokens),SUM(local_compute_tokens_avoided),
+                          SUM(tool_request_tokens),SUM(tool_response_tokens),SUM(net_cloud_token_delta),SUM(cloud_token_overhead),
+                          SUM(net_after_schema_token_delta),SUM(schema_adjusted_overhead)
+                   FROM daily_rollups WHERE day>=? AND event_type IN ('inference','tool_accounting')
+                   GROUP BY day,event_type ORDER BY day,event_type""",
                 (datetime.fromtimestamp(cutoff, tz=timezone.utc).strftime("%Y-%m-%d"),),
             ).fetchall()
             cache = con.execute(
@@ -902,23 +1151,20 @@ class TelemetryStore:
                    GROUP BY error_type ORDER BY COUNT(*) DESC""",
                 (cutoff,),
             ).fetchall()
-            http_tail_rows = con.execute(
-                """SELECT action, duration_ms, queue_wait_ms, service_ms, success
-                   FROM events WHERE created_at>=? AND event_type='http'""",
-                (cutoff,),
-            ).fetchall()
-            http_cache_tail_rows = con.execute(
-                """SELECT CASE WHEN cache_layer='' THEN 'uncategorized' ELSE cache_layer END,
+            # Tail diagnostics are a recent distribution, not an accounting total.
+            # Read one bounded sample once instead of scanning the same raw HTTP
+            # population three times on every dashboard refresh.
+            http_tail_sample = con.execute(
+                """SELECT action, CASE WHEN cache_layer='' THEN 'uncategorized' ELSE cache_layer END,
+                          CASE WHEN agent='' THEN 'unknown' ELSE agent END,
                           duration_ms, queue_wait_ms, service_ms, success
-                   FROM events WHERE created_at>=? AND event_type='http'""",
+                   FROM events WHERE created_at>=? AND event_type='http'
+                   ORDER BY id DESC LIMIT 10000""",
                 (cutoff,),
             ).fetchall()
-            agent_tail_rows = con.execute(
-                """SELECT CASE WHEN agent='' THEN 'unknown' ELSE agent END,
-                          duration_ms, queue_wait_ms, service_ms, success
-                   FROM events WHERE created_at>=? AND event_type='http'""",
-                (cutoff,),
-            ).fetchall()
+            http_tail_rows = [(r[0], r[3], r[4], r[5], r[6]) for r in http_tail_sample]
+            http_cache_tail_rows = [(r[1], r[3], r[4], r[5], r[6]) for r in http_tail_sample]
+            agent_tail_rows = [(r[2], r[3], r[4], r[5], r[6]) for r in http_tail_sample]
             snapshots = con.execute(
                 "SELECT created_at,name,metrics_json FROM snapshots WHERE created_at>=? ORDER BY created_at DESC LIMIT 20", (cutoff,)
             ).fetchall()
@@ -926,7 +1172,18 @@ class TelemetryStore:
                 "SELECT created_at,metrics_json FROM snapshots WHERE created_at>=? AND name='agent_evaluation' ORDER BY created_at",
                 (cutoff,),
             ).fetchall()
-        summary = self.summary(days, scope=scope)
+        summary = self.summary(days, scope=scope, _flush=False)
+        use_v2_accounting = int(summary.get("token_accounting_version", 1) or 1) >= 2
+        daily_selected: list[tuple[Any, ...]] = []
+        daily_by_day: dict[str, list[tuple[Any, ...]]] = {}
+        for row_daily in daily:
+            daily_by_day.setdefault(str(row_daily[0]), []).append(row_daily)
+        for day in sorted(daily_by_day):
+            candidates = daily_by_day[day]
+            wanted = "tool_accounting" if use_v2_accounting else "inference"
+            selected = next((row_daily for row_daily in candidates if str(row_daily[1]) == wanted), None)
+            if selected is not None:
+                daily_selected.append(selected)
         evaluation = self._evaluation_summary(evaluations)
         hotspots: list[dict[str, Any]] = []
         if summary.get("failure_rate", 0) >= 0.02:
@@ -942,7 +1199,7 @@ class TelemetryStore:
         if summary.get("writer", {}).get("dropped", 0):
             hotspots.append({"type": "observability", "signal": "telemetry_queue_drops", "count": summary["writer"]["dropped"]})
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "window_days": days,
             "scope": scope,
@@ -952,8 +1209,26 @@ class TelemetryStore:
                 "error_messages": "sanitized paths/tokens; max 500 chars",
             },
             "summary": summary,
+            "token_efficiency": {
+                key: summary.get(key, 0) for key in (
+                    "gross_cloud_tokens_avoided_est", "gross_input_cloud_tokens_avoided_est",
+                    "gross_output_cloud_tokens_avoided_est", "agent_protocol_tokens_est",
+                    "agent_tool_request_tokens_est", "agent_tool_response_tokens_est",
+                    "tool_schema_tokens_exposure_est", "net_cloud_tokens_avoided_est",
+                    "net_cloud_token_delta_est", "cloud_token_overhead_est",
+                    "net_after_schema_tokens_avoided_est", "net_after_schema_token_delta_est",
+                    "schema_adjusted_overhead_est", "local_compute_tokens_avoided_est",
+                    "token_savings_breakdown", "tool_accounting_events",
+                )
+            },
             "by_agent": [
-                {"agent": r[0], "requests": int(r[1]), "avg_ms": round(float(r[2]), 1), "failures": int(r[3]), "cloud_tokens_avoided_est": int(r[4]), "local_inference_calls": int(r[5])}
+                {
+                    "agent": r[0], "requests": int(r[1]), "avg_ms": round(float(r[2]), 1), "failures": int(r[3]),
+                    "cloud_tokens_avoided_est": int(r[6]) if use_v2_accounting else int(r[4]),
+                    "gross_cloud_tokens_avoided_est": int(r[7]) if use_v2_accounting else int(r[4]),
+                    "agent_protocol_tokens_est": int(r[8]) if use_v2_accounting else 0,
+                    "local_inference_calls": int(r[5]), "tool_accounting_calls": int(r[9]),
+                }
                 for r in by_agent
             ],
             "by_model": [
@@ -969,7 +1244,9 @@ class TelemetryStore:
                 for r in routes
             ],
             "cache_layers": [
-                {"layer": r[0], "calls": int(r[1]), "avg_ms": round(float(r[2]), 1), "cloud_tokens_avoided_est": int(r[3])}
+                {"layer": r[0], "calls": int(r[1]), "avg_ms": round(float(r[2]), 1),
+                 "cloud_tokens_avoided_est": int(r[3]),
+                 "legacy_cloud_tokens_avoided_est": int(r[3])}
                 for r in cache
             ],
             "cache_decisions": {str(r[0]): int(r[1]) for r in cache_decisions},
@@ -984,9 +1261,20 @@ class TelemetryStore:
                 for r in errors
             ],
             "daily": [
-                {"day": r[0], "events": int(r[1]), "duration_ms": round(float(r[2]), 1), "queue_wait_ms": round(float(r[3]), 1),
-                 "cloud_tokens_avoided_est": int(r[4]), "cache_hits": int(r[5]), "fallbacks": int(r[6]), "degraded": int(r[7]), "failures": int(r[8])}
-                for r in daily
+                {
+                    "day": r[0], "accounting": r[1], "events": int(r[2]),
+                    "duration_ms": round(float(r[3]), 1), "queue_wait_ms": round(float(r[4]), 1),
+                    "cloud_tokens_avoided_est": int(r[5]), "cache_hits": int(r[6]),
+                    "fallbacks": int(r[7]), "degraded": int(r[8]), "failures": int(r[9]),
+                    "gross_cloud_tokens_avoided_est": int(r[10]),
+                    "gross_input_cloud_tokens_avoided_est": int(r[11]), "gross_output_cloud_tokens_avoided_est": int(r[12]),
+                    "agent_protocol_tokens_est": int(r[13]), "tool_schema_tokens_exposure_est": int(r[14]),
+                    "net_after_schema_tokens_avoided_est": int(r[15]), "local_compute_tokens_avoided_est": int(r[16]),
+                    "agent_tool_request_tokens_est": int(r[17]), "agent_tool_response_tokens_est": int(r[18]),
+                    "net_cloud_token_delta_est": int(r[19]), "cloud_token_overhead_est": int(r[20]),
+                    "net_after_schema_token_delta_est": int(r[21]), "schema_adjusted_overhead_est": int(r[22]),
+                }
+                for r in daily_selected
             ],
             "runtime_snapshots": [
                 {"created_at": float(r[0]), "name": r[1], "metrics": json.loads(r[2]) if r[2] else {}} for r in snapshots
@@ -1017,11 +1305,12 @@ class TelemetryStore:
             for r in rows
         ]
 
-    def recent_http(self, limit: int = 50) -> list[dict[str, Any]]:
+    def recent_http(self, limit: int = 50, *, _flush: bool = True) -> list[dict[str, Any]]:
         """Return recent persisted API requests for the dashboard request history."""
         if not self.enabled:
             return []
-        self.flush(0.5)
+        if _flush:
+            self.flush(0.5)
         limit = max(1, min(int(limit), 200))
         with closing(self._connect()) as con:
             rows = con.execute(

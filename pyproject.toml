@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-ai-hub"
-version = "1.6.0"
+version = "3.0.0"
 description = "Deterministic-first local tooling and inference hub for coding agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,6 +28,7 @@ classifiers = [
 
 [project.optional-dependencies]
 local-nlp = ["sentence-transformers>=5.4,<6"]
+intel-accelerators = ["sentence-transformers[openvino]>=5.4,<6", "openvino>=2026.1,<2027"]
 dev = ["pytest>=8,<10", "pyflakes>=3.2,<4", "coverage[toml]>=7,<8"]
 
 [project.scripts]

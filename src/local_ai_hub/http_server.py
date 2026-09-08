@@ -42,7 +42,7 @@ APP: LocalAIApp | None = None
 # independent of user config so a dashboard refresh cannot create immortal active jobs.
 MONITOR_PATHS = {
     "/health", "/dashboard", "/favicon.ico", "/v1/live", "/v1/live/status",
-    "/v1/status", "/v1/capabilities", "/v1/metrics", "/v1/telemetry/report", "/v1/audit/tail", "/v1/control",
+    "/v1/status", "/v1/capabilities", "/v1/metrics", "/v1/telemetry/report", "/v1/telemetry/tool-accounting", "/v1/audit/tail", "/v1/control",
     "/v1/config", "/v1/logs/tail", "/v1/hardware/system", "/v1/hardware/gpu",
     "/v1/debug-traces",
 }
@@ -92,8 +92,14 @@ def _is_client_disconnect(exc: BaseException) -> bool:
     #   32     – ERROR_BROKEN_PIPE  (mapped from POSIX EPIPE)
     #   10053  – WSAECONNABORTED    – software caused connection abort
     #   10054  – WSAECONNRESET      – connection reset by peer
+    #   10057  – WSAENOTCONN        – transport is already connected, but not connected anymore
     #   10038  – WSAENOTSOCK        – socket closed/invalidated before send
-    return isinstance(exc, OSError) and getattr(exc, "winerror", None) in {32, 10038, 10053, 10054}
+    #   10040  – WSAEMSGSIZE        – used by some intermediaries on broken pipes in older stacks
+    if not isinstance(exc, OSError):
+        return False
+    win_error = getattr(exc, "winerror", None)
+    errno = getattr(exc, "errno", None)
+    return win_error in {32, 10038, 10053, 10054, 10057, 10040} or errno in {32, 10038, 10053, 10054, 10057, 10040}
 
 
 class RequestBodyError(ValueError):
@@ -103,7 +109,7 @@ class RequestBodyError(ValueError):
 
 
 class LocalAIHTTPServer(ThreadingHTTPServer):
-    """Threaded HTTP server with a hard cap on live handler threads.
+    """Threaded HTTP server with a hard cap on live handler threads and per-tenant rate limiting.
 
     ``ThreadingHTTPServer`` is otherwise unbounded: a burst of local agents or a
     misbehaving remote client can create hundreds of handler threads before the model
@@ -130,7 +136,38 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
         self._active_handlers = 0
         self._rejected_handlers = 0
         self._handler_stats_lock = threading.Lock()
+        # Per-tenant sliding window rate limiter
+        self._rate_limit_requests: int = 600   # overridden after config load
+        self._rate_limit_window: float = 60.0  # seconds
+        self._rate_windows: dict[str, list[float]] = {}
+        self._rate_lock = threading.Lock()
         super().__init__(server_address, handler)
+
+    def configure_rate_limit(self, requests: int, window_seconds: float) -> None:
+        """Apply config-driven rate limit values after server creation."""
+        with self._rate_lock:
+            self._rate_limit_requests = max(1, int(requests))
+            self._rate_limit_window = max(1.0, float(window_seconds))
+
+    def check_rate_limit(self, tenant: str) -> bool:
+        """Return True if tenant is within the rate limit, False if exceeded."""
+        if self._rate_limit_requests <= 0:
+            return True  # rate limiting disabled
+        now = time.monotonic()
+        with self._rate_lock:
+            window = self._rate_windows.setdefault(tenant, [])
+            cutoff = now - self._rate_limit_window
+            # Prune old entries; keep list bounded to avoid unbounded growth
+            while window and window[0] < cutoff:
+                window.pop(0)
+            if len(window) >= self._rate_limit_requests:
+                return False
+            window.append(now)
+            # Evict stale tenants to prevent memory growth (keep at most 4096 entries)
+            if len(self._rate_windows) > 4096:
+                oldest_tenant = next(iter(self._rate_windows))
+                del self._rate_windows[oldest_tenant]
+            return True
 
     def process_request(self, request: Any, client_address: Any) -> None:
         acquired = self._handler_slots.acquire(timeout=self.overload_wait_seconds)
@@ -398,10 +435,17 @@ class Handler(BaseHTTPRequestHandler):
     def _require_authorized(self) -> bool:
         if not self._validate_host_and_origin():
             return False
-        if self._authorized():
-            return True
-        self._send(401, {"success": False, "error": "unauthorized"})
-        return False
+        if not self._authorized():
+            self._send(401, {"success": False, "error": "unauthorized"})
+            return False
+        # Rate limit is checked after auth to avoid leaking tenant existence to unauthenticated callers.
+        srv = self.server
+        if hasattr(srv, "check_rate_limit"):
+            tenant = self._tenant()
+            if not srv.check_rate_limit(tenant):
+                self._send(429, {"success": False, "error": "rate limit exceeded; slow down", "retryable": True, "retry_after_seconds": 10})
+                return False
+        return True
 
     def _content_length(self, *, limit: int) -> int:
         raw = self.headers.get("Content-Length")
@@ -503,6 +547,46 @@ class Handler(BaseHTTPRequestHandler):
                 text(value, "embedding text", 200000)
         elif path == "/v1/command":
             text(payload.get("command", ""), "command", 8000)
+        elif path == "/v1/telemetry/tool-accounting":
+            events = payload.get("events", [])
+            if not isinstance(events, list) or len(events) > 64:
+                raise RequestBodyError("events must be a list of at most 64 entries")
+            for event in events:
+                if not isinstance(event, dict) or len(event) > 24:
+                    raise RequestBodyError("each accounting event must be a small object")
+                if "tool" in event:
+                    text(event["tool"], "tool", 80)
+                if "tenant" in event:
+                    text(event["tenant"], "tenant", 160)
+                if "agent" in event:
+                    text(event["agent"], "agent", 80)
+                breakdown = event.get("savings_breakdown", {})
+                if not isinstance(breakdown, dict) or len(breakdown) > 16:
+                    raise RequestBodyError("savings_breakdown must be an object with at most 16 entries")
+        elif path == "/v1/work-orders":
+            action = text(payload.get("action", "submit"), "action", 32).strip().lower().replace("-", "_")
+            if action not in {"submit", "status", "wait", "get", "cancel", "continue"}:
+                raise RequestBodyError("unsupported work-order action")
+            if action == "submit":
+                required_text("root", maximum=4096)
+                required_text("task", maximum=24000)
+            if action in {"status", "wait", "get", "cancel", "continue"}:
+                required_text("work_id", maximum=128)
+            if action == "continue":
+                required_text("answer", maximum=8000)
+            for name, max_items, max_chars in (("acceptance_criteria", 24, 2000), ("constraints", 24, 2000), ("return_fields", 32, 80)):
+                if name not in payload:
+                    continue
+                values = payload[name]
+                if not isinstance(values, list) or len(values) > max_items:
+                    raise RequestBodyError(f"{name} must be a list of at most {max_items} entries")
+                for item in values:
+                    text(item, f"{name} item", max_chars)
+            for name in ("permissions", "budget"):
+                if name in payload and not isinstance(payload[name], dict):
+                    raise RequestBodyError(f"{name} must be an object")
+            if "response_profile" in payload:
+                text(payload["response_profile"], "response_profile", 16)
         elif path in {"/v1/preprocess", "/v1/repo/profile", "/v1/repo/map", "/v1/repo/code-index", "/v1/repo/deterministic", "/v1/search"}:
             if "root" in payload:
                 text(payload["root"], "root", 4096)
@@ -698,6 +782,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False})
             return
 
+        # Bound maximum stream duration to prevent holding worker threads indefinitely
+        app_cfg = getattr(APP, "config", {}) or {}
+        max_duration = float(app_cfg.get("server", {}).get("max_stream_duration_seconds", 300.0) if isinstance(app_cfg, dict) else 300.0)
+        if timeout <= 0.0 or timeout > max_duration:
+            timeout = max_duration
+
         try:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -730,7 +820,13 @@ class Handler(BaseHTTPRequestHandler):
         start_time = time.time()
         try:
             while True:
-                if timeout > 0 and (time.time() - start_time) >= timeout:
+                if (time.time() - start_time) >= timeout:
+                    try:
+                        timeout_msg = f"event: stream_timeout\ndata: {{\"reconnect\":true,\"last_seq\":{last_seq}}}\n\n".encode("utf-8")
+                        self.wfile.write(timeout_msg)
+                        self.wfile.flush()
+                    except OSError:
+                        pass
                     break
                 try:
                     ev = q.get(timeout=1.0)
@@ -755,6 +851,7 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, Exception):
             pass
         finally:
+            self.close_connection = True
             APP.agent_state.unsubscribe(q)
             self._finish_stream_request(True)
 
@@ -1104,7 +1201,7 @@ class Handler(BaseHTTPRequestHandler):
                 models = APP.runtime.installed_models()
                 self._send(200, {"object": "list", "data": [{"id": m, "object": "model", "owned_by": "ollama"} for m in models]}); return
             self._send(404, {"error": "not found"})
-        except (ValueError, RequestBodyError) as exc:
+        except (ValueError, TypeError, RequestBodyError) as exc:
             self._send(400, {"success": False, "error": str(exc), "status_code": 400, "terminal": True, "retryable": False})
         except KeyError as exc:
             self._send(404, {"success": False, "error": str(exc), "status_code": 404, "terminal": True, "retryable": False})
@@ -1145,6 +1242,18 @@ class Handler(BaseHTTPRequestHandler):
             self._validate_payload(path, payload)
         except RequestBodyError as exc:
             self._send(exc.status, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+        if path == "/v1/telemetry/tool-accounting":
+            # Internal MCP reporter path: do not journal or recursively count this
+            # metadata transport as an agent workload/tool call.
+            self._telemetry_finished = True
+            accepted = 0
+            for event in payload.get("events", []):
+                try:
+                    APP.telemetry.record_tool_accounting(event)
+                    accepted += 1
+                except Exception:
+                    continue
+            self._send(200, {"success": True, "accepted": accepted}); return
         self._request_evaluation = payload.get("evaluation")
         if path == "/v1/conversations/continue" or (
             path in {"/v1/delegate", "/v1/reason"} and bool(payload.get("conversation", False))
@@ -1178,6 +1287,24 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
         try:
+            if path == "/v1/work-orders":
+                if not getattr(APP, "work_orchestrator", None) or not APP.work_orchestrator.enabled:
+                    self._send(403, {"success": False, "unsupported": True, "error": "work orchestrator is disabled", "terminal": True}); return
+                action = str(payload.get("action", "submit")).strip().lower().replace("-", "_")
+                work_id = str(payload.get("work_id", "")).strip()
+                if action == "submit":
+                    self._send(200, APP.work_orchestrator.submit(tenant, payload)); return
+                if action == "status":
+                    self._send(200, APP.work_orchestrator.status(tenant, work_id)); return
+                if action == "wait":
+                    self._send(200, APP.work_orchestrator.wait(tenant, work_id, float(payload.get("timeout_seconds", 90)))); return
+                if action == "get":
+                    self._send(200, APP.work_orchestrator.get(tenant, work_id, profile=str(payload.get("response_profile", "")), return_fields=payload.get("return_fields") if isinstance(payload.get("return_fields"), list) else None, max_output_tokens=int(payload.get("max_output_tokens", 0) or 0))); return
+                if action == "cancel":
+                    self._send(200, APP.work_orchestrator.cancel(tenant, work_id)); return
+                if action == "continue":
+                    self._send(200, APP.work_orchestrator.continue_work(tenant, work_id, str(payload.get("answer", "")))); return
+                self._send(400, {"success": False, "error": "unknown work-order action", "terminal": True}); return
             if path == "/v1/config/update":
                 action = str(payload.get("action", "update")).strip().lower()
                 config_path = str(APP.config.get("_config_path", ""))
@@ -1190,7 +1317,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(requested, dict):
                     self._send(400, {"success": False, "error": "settings must be an object"}); return
                 allowed = {
-                    "hardware.profile": {"auto", "cpu", "low", "balanced", "high", "max"},
+                    "hardware.profile": {"auto", "cpu", "integrated", "low", "balanced", "high", "max"},
                     "preprocessing.enabled": {True, False},
                     "code_intelligence.enabled": {True, False},
                     "code_intelligence.serena_enabled": {True, False},
@@ -1199,7 +1326,7 @@ class Handler(BaseHTTPRequestHandler):
                     **{f"features.{feat_name}": {True, False} for feat_name in (
                         "status", "repo", "tasks", "rag", "commands", "coord",
                         "artifacts", "code_intelligence", "preprocessing",
-                        "subagents", "agent_os", "dashboard",
+                        "subagents", "agent_os", "dashboard", "work_orchestrator",
                     )},
                 }
                 patch: dict[str, Any] = {}
@@ -1375,6 +1502,20 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(200, {"success": True, "task": task.to_dict()}); return
                     except KeyError as exc:
                         self._send(404, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                if action == "heartbeat":
+                    t_id = str(payload.get("task_id", "")).strip()
+                    ttl_val = payload.get("ttl_seconds", payload.get("ttl"))
+                    ttl_sec = float(ttl_val) if ttl_val is not None and float(ttl_val) > 0 else None
+                    try:
+                        task = APP.agent_tasks.heartbeat(
+                            t_id,
+                            ttl_seconds=ttl_sec,
+                            actor=actor,
+                            idempotency_key=idempotency_key,
+                        )
+                        self._send(200, {"success": True, "task": task.to_dict()}); return
+                    except KeyError as exc:
+                        self._send(404, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "list":
                     status_filter = None
                     if payload.get("status"):
@@ -1497,6 +1638,9 @@ class Handler(BaseHTTPRequestHandler):
                         actor=actor,
                     )
                     self._send(200, res); return
+                if action == "reap":
+                    count = APP.agent_memory.reap_expired()
+                    self._send(200, {"success": True, "reaped_count": count}); return
                 self._send(400, {"success": False, "error": f"unknown memory action '{action}'", "terminal": True, "retryable": False}); return
             if path == "/v1/agent-state/incidents":
                 if not getattr(APP, "agent_incidents", None) or not APP.agent_incidents.state_store.enabled:
@@ -1609,6 +1753,8 @@ class Handler(BaseHTTPRequestHandler):
                         token_budget=int(payload.get("token_budget", 4000)),
                         include_kinds=tuple(payload.get("include_kinds") or ()),
                         changed_paths=tuple(payload.get("changed_paths") or ()),
+                        root=str(payload.get("root", "")),
+                        tenant=tenant,
                     )
                     compiled = APP.agent_context.compile(req)
                     self._send(200, {"success": True, "context": compiled.to_dict(), "text": compiled.text()}); return
@@ -1691,6 +1837,10 @@ class Handler(BaseHTTPRequestHandler):
                 if action in {"merge", "blackboard_merge"}:
                     remote = payload.get("remote_sections", payload.get("sections", payload.get("record", {})))
                     res = APP.agent_blackboard.merge(board_id, remote)
+                    self._send(200, res); return
+                if action in {"delete", "remove", "blackboard_delete"}:
+                    section = payload.get("section")
+                    res = APP.agent_blackboard.delete(board_id, section=str(section) if section else None)
                     self._send(200, res); return
                 self._send(400, {"success": False, "error": f"unknown blackboard action '{action}'"}); return
             if path == "/v1/agent-state/swarm/dispatch":
@@ -1954,7 +2104,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write(data)
                 except Exception as exc:
-                    self._send(500, {"success": False, "error": str(exc)})
+                    if not _is_client_disconnect(exc):
+                        self._send(500, {"success": False, "error": str(exc)})
                 return
             if path == "/v1/bundle/import":
                 data_b64 = payload.get("bundle_base64")
@@ -2014,6 +2165,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, APP.leases.claim_batch(tenant, str(payload.get("root", ".")), [str(x) for x in paths] if isinstance(paths, list) else [], int(payload.get("ttl_seconds", 900)), str(payload.get("purpose", "agent edit")))); return
             if path == "/v1/leases/release":
                 self._send(200, APP.leases.release(tenant, str(payload.get("lease_id", "")))); return
+            if path == "/v1/leases/renew":
+                self._send(200, APP.leases.renew(tenant, str(payload.get("lease_id", "")), int(payload.get("ttl_seconds", 900)))); return
             if path == "/v1/memory/put":
                 self._send(200, APP.memory.put(
                     str(payload.get("root", ".")), str(payload.get("key", "")), str(payload.get("value", "")), tenant,
@@ -2058,7 +2211,7 @@ class Handler(BaseHTTPRequestHandler):
         except ModelUnavailableError as exc:
             APP.logger.warning("model unavailable path=%s tenant=%s error=%s", path, tenant, exc)
             self._send(503, {"success": False, "error": str(exc), "status_code": 503, "retryable": True})
-        except (ValueError, RequestBodyError) as exc:
+        except (ValueError, TypeError, RequestBodyError) as exc:
             if APP is not None:
                 APP.logger.warning("invalid request payload path=%s tenant=%s error=%s", path, tenant, exc)
             self._send(400, {"success": False, "error": str(exc), "status_code": 400, "terminal": True, "retryable": False})
@@ -2118,6 +2271,12 @@ def serve(config_path: str | None = None) -> None:
     state_dir.mkdir(parents=True, exist_ok=True)
     pid_path = state_dir / "hub.pid"
     pid_path.write_text(str(os.getpid()), encoding="utf-8")
+    # Configure rate limiting from security config
+    sec_cfg = APP.config.get("security", {})
+    server.configure_rate_limit(
+        requests=int(sec_cfg.get("rate_limit_requests", 600)),
+        window_seconds=float(sec_cfg.get("rate_limit_window_seconds", 60.0)),
+    )
     APP.logger.info("hub started version=%s bind=%s port=%s", __version__, cfg.get("bind", "127.0.0.1"), int(cfg.get("port", 11435)))
     APP.telemetry.record_system("hub_start", success=True)
     try:

@@ -69,9 +69,30 @@ def validate_config(data: dict[str, Any]) -> None:
     Local AI Hub deliberately leaves most feature-specific keys extensible. Validation
     focuses on transport, resource limits, and code-intelligence lifecycle settings.
     """
-    for name in ("server", "security", "hardware", "scheduler", "commands", "client", "mcp", "code_intelligence", "bundles", "resilience", "ollama", "ollama_subagents", "agent_state"):
+    for name in ("server", "security", "hardware", "openvino", "scheduler", "commands", "client", "mcp", "code_intelligence", "bundles", "resilience", "ollama", "ollama_subagents", "agent_state", "work_orchestrator"):
         if name in data and not isinstance(data[name], dict):
             raise ConfigError(f"[{name}] must be a TOML table")
+
+
+    work = data.get("work_orchestrator", {})
+    if isinstance(work, dict):
+        _number(work, "max_active_work_orders", minimum=1, maximum=16)
+        _number(work, "max_pending_work_orders", minimum=1, maximum=256)
+        _number(work, "worker_idle_seconds", minimum=5, maximum=3600)
+        _number(work, "max_steps", minimum=1, maximum=64)
+        _number(work, "max_llm_steps", minimum=1, maximum=32)
+        _number(work, "max_replans", minimum=0, maximum=4)
+        _number(work, "max_seconds", minimum=30, maximum=7200)
+        _number(work, "parallel_llm_steps", minimum=1, maximum=8)
+        _number(work, "parallel_deterministic_steps", minimum=1, maximum=16)
+        _number(work, "step_retry_limit", minimum=0, maximum=4)
+        _number(work, "validation_commands", minimum=1, maximum=8)
+        _number(work, "max_patch_files", minimum=1, maximum=128)
+        _number(work, "max_patch_bytes", minimum=4096, maximum=4 * 1024 * 1024)
+        _number(work, "default_max_output_tokens", minimum=64, maximum=4096)
+        profile = str(work.get("default_response_profile", "compact")).strip().lower()
+        if profile not in {"minimal", "compact", "standard", "debug"}:
+            raise ConfigError("work_orchestrator.default_response_profile must be minimal, compact, standard, or debug")
 
     agent_state = data.get("agent_state", {})
     if isinstance(agent_state, dict):
@@ -89,6 +110,17 @@ def validate_config(data: dict[str, Any]) -> None:
     _number(server, "max_concurrent_requests", minimum=4, maximum=4096)
     _number(server, "overload_wait_seconds", minimum=0, maximum=10)
     _number(server, "max_request_body_bytes", minimum=1024, maximum=512 * 1024 * 1024)
+
+    hardware = data.get("hardware", {})
+    profile = str(hardware.get("profile", "auto") or "auto").lower()
+    if profile not in {"auto", "cpu", "integrated", "low", "balanced", "high", "max"}:
+        raise ConfigError("hardware.profile must be one of auto, cpu, integrated, low, balanced, high, max")
+
+    openvino = data.get("openvino", {})
+    if isinstance(openvino, dict):
+        priority = openvino.get("device_priority", ["NPU", "GPU", "CPU"])
+        if not isinstance(priority, list) or not priority or not all(isinstance(item, str) and item.strip() for item in priority):
+            raise ConfigError("openvino.device_priority must be a non-empty list of device names")
 
     scheduler = data.get("scheduler", {})
     _number(scheduler, "model_switch_failure_cooldown_seconds", minimum=1, maximum=3600)
@@ -140,6 +172,21 @@ def validate_config(data: dict[str, Any]) -> None:
     _number(bundles, "max_bundle_bytes", minimum=1024, maximum=512 * 1024 * 1024)
     _number(bundles, "max_json_bytes", minimum=1024, maximum=1024 * 1024 * 1024)
     _number(bundles, "max_rows_per_table", minimum=1, maximum=10_000_000)
+
+    security = data.get("security", {})
+    if security is not None:
+        if not isinstance(security, dict):
+            raise ConfigError("security must be a TOML table")
+        allow_remote = security.get("allow_remote")
+        if allow_remote is not None and not isinstance(allow_remote, bool):
+            raise ConfigError("security.allow_remote must be a boolean")
+        bind = str(server.get("bind", "127.0.0.1")).strip().lower()
+        if bind not in {"127.0.0.1", "localhost", "::1"}:
+            if not bool(allow_remote):
+                raise ConfigError("Refusing non-loopback Local AI Hub bind: set [security].allow_remote=true explicitly")
+            token = str(security.get("api_token", "") or "")
+            if len(token) < 16:
+                raise ConfigError("Remote Local AI Hub bind requires [security].api_token with at least 16 characters")
 
 
 
@@ -238,7 +285,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
         from .hardware import detect_hardware, profile_overrides
         detected = detect_hardware(str(hardware_cfg.get("profile", "auto")))
         if bool(hardware_cfg.get("auto_tune", True)):
-            defaults = deep_merge(defaults, profile_overrides(str(detected.get("profile", "balanced"))))
+            defaults = deep_merge(defaults, profile_overrides(str(detected.get("profile", "balanced")), detected))
     except Exception as exc:
         detected = {"profile": str(hardware_cfg.get("profile", "auto")), "detection_error": type(exc).__name__}
 

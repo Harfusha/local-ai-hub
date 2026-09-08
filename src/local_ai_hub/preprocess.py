@@ -8,13 +8,14 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import closing
+from contextlib import closing, nullcontext
 from pathlib import Path
 from typing import Any
 
 from .cache import stable_hash
-from .sqlite_support import is_busy_error
+from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
 from .worktrees import discover_worktree_roots
+from .process_utils import canonical_root, set_current_thread_priority
 
 
 CARD_SCHEMA = {
@@ -92,6 +93,7 @@ class ProjectPreprocessor:
         self.external_tools = external_tools
         self.cfg = config.get("preprocessing", {})
         self.enabled = bool(self.cfg.get("enabled", True))
+        self.cpu_priority = str(self.cfg.get("cpu_priority", "idle"))
         self.cpu_runs_during_foreground = bool(self.cfg.get("cpu_runs_during_foreground", True))
         self.state_dir = Path(config["server"]["state_dir"])
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -125,7 +127,12 @@ class ProjectPreprocessor:
         self._watch_revisions: dict[str, int] = {}
         # CPU hashing/lexical work reuses one bounded pool instead of creating and
         # destroying worker threads on every preprocessing micro-step.
-        self._cpu_pool = ThreadPoolExecutor(max_workers=self.cpu_workers, thread_name_prefix="local-ai-pre-cpu")
+        self._cpu_pool = ThreadPoolExecutor(
+            max_workers=self.cpu_workers,
+            thread_name_prefix="local-ai-pre-cpu",
+            initializer=set_current_thread_priority,
+            initargs=(self.cpu_priority,),
+        )
         # One Git blob map serves every bounded hash batch for a root/generation.
         # Without this, long hash phases can relaunch `git ls-files` + `git diff`
         # once per batch after the short RepositoryTools TTL expires.
@@ -166,6 +173,7 @@ class ProjectPreprocessor:
         if bool(getattr(self.rag, "index_reset", False)):
             self._invalidate_rag_sync_state()
         self._repair_registry()
+        self._requeue_available_external_indexes()
         self._cpu_thread: threading.Thread | None = None
         self._gpu_thread: threading.Thread | None = None
         self._fs_watcher_thread: threading.Thread | None = None
@@ -179,39 +187,34 @@ class ProjectPreprocessor:
                 self._fs_watcher_thread.start()
 
     def _connect(self) -> sqlite3.Connection:
-        con = sqlite3.connect(self.db_path, timeout=self._sqlite_busy_seconds)
-        con.row_factory = sqlite3.Row
-        con.execute("PRAGMA synchronous=NORMAL")
-        con.execute(f"PRAGMA busy_timeout={int(self._sqlite_busy_seconds * 1000)}")
-        con.execute("PRAGMA temp_store=MEMORY")
+        con = connect_sqlite(
+            self.db_path,
+            timeout_seconds=self._sqlite_busy_seconds,
+            row_factory=sqlite3.Row,
+        )
+        # Preprocessing has larger bounded scans than the small coordination stores.
+        # Keep its larger cache/mmap hints while sharing all common SQLite tuning.
         con.execute("PRAGMA cache_size=-65536")
         con.execute("PRAGMA mmap_size=536870912")
         return con
 
     @staticmethod
     def _is_locked_error(exc: BaseException) -> bool:
-        text = str(exc).lower()
-        return isinstance(exc, sqlite3.OperationalError) and ("locked" in text or "busy" in text)
+        return is_busy_error(exc)
 
     def _write_retry(self, operation: Any) -> Any:
-        delay = 0.015
-        last: BaseException | None = None
-        for attempt in range(self._sqlite_write_retries):
-            try:
-                with self._db_lock, closing(self._connect()) as con:
-                    con.execute("BEGIN IMMEDIATE")
-                    value = operation(con)
-                    con.commit()
-                    return value
-            except sqlite3.OperationalError as exc:
-                last = exc
-                if not self._is_locked_error(exc) or attempt + 1 >= self._sqlite_write_retries:
-                    raise
-                time.sleep(delay)
-                delay = min(0.25, delay * 2)
-        if last is not None:
-            raise last
-        return None
+        def attempt() -> Any:
+            with self._db_lock, closing(self._connect()) as con:
+                con.execute("BEGIN IMMEDIATE")
+                value = operation(con)
+                con.commit()
+                return value
+
+        return retry_busy(
+            attempt,
+            retries=self._sqlite_write_retries,
+            base_delay_seconds=0.015,
+        )
 
     def _wake_all(self) -> None:
         self._cpu_wakeup.set()
@@ -263,7 +266,7 @@ class ProjectPreprocessor:
         with self._db_lock, closing(self._connect()) as con:
             # Set WAL once. The mode is persisted in the database header.
             try:
-                con.execute("PRAGMA journal_mode=WAL")
+                initialize_wal(con)
             except sqlite3.OperationalError as exc:
                 if not self._is_locked_error(exc):
                     raise
@@ -380,7 +383,7 @@ class ProjectPreprocessor:
             for root, backend, revision_hash, error in external_rows:
                 if self._external_error_is_revision_scoped(str(error or "")):
                     con.execute(
-                        "UPDATE external_index_state SET status='skipped' WHERE root=? AND backend=? AND revision_hash=?",
+                        "UPDATE external_index_state SET status='unavailable' WHERE root=? AND backend=? AND revision_hash=?",
                         (str(root), str(backend), str(revision_hash)),
                     )
             con.commit()
@@ -419,6 +422,45 @@ class ProjectPreprocessor:
         except Exception:
             # Registry repair is an optimization only; a failure must not block startup.
             pass
+
+    def _requeue_available_external_indexes(self) -> None:
+        """Wake completed projects whose cached optional index can now run."""
+        checker = getattr(self.external_tools, "backend_available", None)
+        if not callable(checker):
+            return
+        try:
+            with self._db_lock, closing(self._connect()) as con:
+                rows = con.execute(
+                    """SELECT root,backend FROM external_index_state
+                       WHERE status IN ('skipped','unavailable','degraded')"""
+                ).fetchall()
+                desired: dict[str, str] = {}
+                for row in rows:
+                    root = str(row["root"])
+                    backend = str(row["backend"])
+                    try:
+                        available = bool(checker(backend))
+                    except Exception:
+                        available = False
+                    if not available:
+                        continue
+                    # Serena is the earlier phase, so it wins when both cached
+                    # backend states need to be retried for the same project.
+                    if backend == "serena" or root not in desired:
+                        desired[root] = "serena" if backend == "serena" else "codegraph"
+                now = time.time()
+                for root, phase in desired.items():
+                    con.execute(
+                        """UPDATE projects SET phase=?,status='waiting',retry_after=0,
+                           next_check_at=0,updated_at=?
+                           WHERE root=? AND phase='complete'""",
+                        (phase, now, root),
+                    )
+                con.commit()
+        except Exception:
+            # Requeue is a recovery optimization; normal registration remains the
+            # correctness path if a derived state read is temporarily unavailable.
+            return
 
     def _rebalance_processing_slots(self, con: sqlite3.Connection, preferred_root: str | None = None) -> None:
         """Keep all registered projects active; cap only runnable preprocessing work."""
@@ -462,7 +504,7 @@ class ProjectPreprocessor:
 
     @staticmethod
     def _root(root: str) -> str:
-        return str(Path(root).expanduser().resolve())
+        return canonical_root(root)
 
     def _is_internal_root(self, resolved: str) -> bool:
         if not bool(self.cfg.get("ignore_internal_install", True)):
@@ -651,10 +693,21 @@ class ProjectPreprocessor:
             return {
                 "success": True, "root": resolved, "kind": "preprocessed-watcher",
                 "fingerprint": fp, "dirty": dirty_count > 0, "changed_files": dirty_count,
-                "changed_paths": dirty_paths, "created_at": time.time(),
+                "changed_paths": dirty_paths, "status": str(row["status"]),
+                "phase": str(row["phase"]), "created_at": time.time(),
             }
         except Exception:
             return None
+
+    def indexed_paths(self, root: str) -> list[str]:
+        """Return watcher-owned file paths without walking the working tree."""
+        resolved = self._root(root)
+        with self._db_lock, closing(self._connect()) as con:
+            rows = con.execute(
+                "SELECT path FROM file_refs WHERE root=? ORDER BY path",
+                (resolved,),
+            ).fetchall()
+        return [str(row[0]) for row in rows]
 
     def context_revision(self, root: str) -> str:
         """Cheap revision for local-model answer caching and preprocessed context."""
@@ -686,6 +739,12 @@ class ProjectPreprocessor:
         return related
 
     def _register_discovered_worktrees(self, root: str) -> None:
+        # A linked Git worktree can discover the same sibling set as its parent.
+        # Never recurse from it; otherwise one explicit registration fans out into
+        # every worktree and bloats all derived indexes.
+        git_marker = Path(root) / ".git"
+        if git_marker.is_file():
+            return
         siblings = self._related_worktrees(root)
         if not siblings:
             return
@@ -890,6 +949,37 @@ class ProjectPreprocessor:
             "message": f"Successfully cleaned up {len(pruned)} missing worktree(s)/project(s)" if pruned else "No missing projects found (all active directories exist on disk)",
         }
 
+    def cleanup_orphaned_indexes(self, max_roots: int | None = None) -> dict[str, Any]:
+        """Bounded idle cleanup for derived index roots no longer registered."""
+        with self._db_lock, closing(self._connect()) as con:
+            active = {str(row[0]) for row in con.execute("SELECT root FROM projects").fetchall()}
+        limit = max(1, int(max_roots or self.cfg.get("orphan_cleanup_roots_per_run", 4)))
+        removed: dict[str, int] = {}
+        stores = (
+            (self.code_index, frozenset({"files", "symbols", "refs", "edges"})),
+            (self.deterministic, frozenset({"files", "facts", "fact_fts", "dependencies", "scripts", "project_state", "query_cache"})),
+        )
+        for component, allowed_tables in stores:
+            if component is None or not hasattr(component, "_connect"):
+                continue
+            try:
+                lock = getattr(component, "_lock", nullcontext())
+                with lock, closing(component._connect()) as con:
+                    roots = [str(row[0]) for row in con.execute("SELECT DISTINCT root FROM files").fetchall()]
+                    orphans = [root for root in roots if root not in active][:limit]
+                    existing = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+                    for root in orphans:
+                        for table in allowed_tables:
+                            if table in existing:
+                                # table is validated against frozenset — safe for f-string interpolation
+                                con.execute(f"DELETE FROM {table} WHERE root=?", (root,))  # noqa: S608
+                        removed[root] = removed.get(root, 0) + 1
+                    if orphans:
+                        con.commit()
+            except (sqlite3.DatabaseError, OSError):
+                continue
+        return {"success": True, "removed_roots": sorted(removed), "removed_count": len(removed)}
+
     def _project_row(self, root: str) -> sqlite3.Row | None:
         with self._db_lock, closing(self._connect()) as con:
             return con.execute("SELECT * FROM projects WHERE root=?", (self._root(root),)).fetchone()
@@ -908,7 +998,7 @@ class ProjectPreprocessor:
         if not hasattr(self, "_status_cache"):
             self._status_cache = {}
         cached = self._status_cache.get(key)
-        if cached and now_mono - cached["time"] < 2.5:
+        if cached and now_mono - cached["time"] < 0.5:
             return dict(cached["data"])
         with closing(self._connect()) as con:
             if root is not None:
@@ -945,7 +1035,14 @@ class ProjectPreprocessor:
                 module_count = 0
                 project_card_count = 0
                 external_rows = con.execute("SELECT backend,status,error,updated_at FROM external_index_state WHERE root=?", (row["root"],)).fetchall()
-                external_indexes = {str(x[0]): {"status": str(x[1]), "error": str(x[2] or ""), "updated_at": float(x[3] or 0)} for x in external_rows}
+                external_indexes = {
+                    str(x[0]): {
+                        "status": "unavailable" if str(x[1]) == "skipped" else str(x[1]),
+                        "error": str(x[2] or ""),
+                        "updated_at": float(x[3] or 0),
+                    }
+                    for x in external_rows
+                }
                 if status_str != "complete" and phase_str != "complete":
                     source_count = int(con.execute("SELECT COUNT(*) FROM source_index WHERE root=?", (row["root"],)).fetchone()[0] or 0)
                     module_count = int(con.execute("SELECT COUNT(*) FROM module_cards WHERE root=?", (row["root"],)).fetchone()[0] or 0)
@@ -996,7 +1093,7 @@ class ProjectPreprocessor:
                     overall_progress = round(min(100.0, max(0.0, ((phase_index - 1 + frac) / total_phases) * 100)), 1)
                 elif phase_str in {"serena", "codegraph"}:
                     ext_state = external_indexes.get(phase_str, {}).get("status", "")
-                    phase_pct = 100.0 if ext_state in {"ready", "skipped", "degraded"} else 25.0
+                    phase_pct = 100.0 if ext_state in {"ready", "unavailable", "skipped", "degraded"} else 25.0
                     frac = phase_pct / 100.0
                     overall_progress = round(min(100.0, max(0.0, ((phase_index - 1 + frac) / total_phases) * 100)), 1)
                 elif phase_str == "lexical" and total_files:
@@ -1062,7 +1159,7 @@ class ProjectPreprocessor:
                         remaining = max(0, total_files - (hashed_files if phase_str == "hash" else (ci_count if phase_str == "code_index" else (det_count if phase_str == "deterministic" else source_count))))
                     elif phase_str in {"serena", "codegraph"}:
                         unit = "index"
-                        remaining = 0 if external_indexes.get(phase_str, {}).get("status") in {"ready", "skipped", "degraded"} else 1
+                        remaining = 0 if external_indexes.get(phase_str, {}).get("status") in {"ready", "unavailable", "skipped", "degraded"} else 1
                     else:
                         unit = "ops/s"
                         remaining = max(0, total_files)
@@ -1129,11 +1226,15 @@ class ProjectPreprocessor:
                 elif phase_str == "deterministic":
                     active_detail = f"Facts & routes extraction: {det_count}/{total_files} files ({phase_pct}%)"
                 elif phase_str == "serena":
-                    s_st = external_indexes.get("serena", {}).get("status", "running")
-                    active_detail = f"Serena LSP project indexing ({s_st})"
+                    ext = external_indexes.get("serena", {})
+                    s_st = ext.get("status", "running")
+                    reason = f": {ext.get('error')}" if s_st in {"unavailable", "skipped", "degraded"} and ext.get("error") else ""
+                    active_detail = f"Serena LSP project indexing ({s_st}{reason})"
                 elif phase_str == "codegraph":
-                    cg_st = external_indexes.get("codegraph", {}).get("status", "running")
-                    active_detail = f"CodeGraph relationship graph ({cg_st})"
+                    ext = external_indexes.get("codegraph", {})
+                    cg_st = ext.get("status", "running")
+                    reason = f": {ext.get('error')}" if cg_st in {"unavailable", "skipped", "degraded"} and ext.get("error") else ""
+                    active_detail = f"CodeGraph relationship graph ({cg_st}{reason})"
                 elif phase_str == "lexical":
                     active_detail = f"FTS5 full-text indexing: {source_count}/{total_files} files ({phase_pct}%)"
                 elif phase_str == "rag":
@@ -1189,20 +1290,25 @@ class ProjectPreprocessor:
         else:
             global_diagnostic = "Background preprocessing is actively running."
 
-        return {
+        res = {
             "success": True, "enabled": self.enabled, "paused": self._paused.is_set(),
             "phases": list(self.PHASES), "projects": projects,
             "scheduler_background_allowed": bg_allowed,
             "global_diagnostic": global_diagnostic,
         }
+        self._status_cache[key] = {"time": now_mono, "data": dict(res)}
+        return res
 
     def _set_project(self, root: str, **values: Any) -> None:
         if not values:
             return
+        root = self._root(root)
         values["updated_at"] = time.time()
         columns = ",".join(f"{key}=?" for key in values)
         params = [*values.values(), root]
         self._write_retry(lambda con: con.execute(f"UPDATE projects SET {columns} WHERE root=?", params))
+        if hasattr(self, "_status_cache"):
+            self._status_cache.clear()
 
     def _mark_step_recovered(self, root: str) -> None:
         """Clear transient failure state after a preprocessing step succeeds or yields."""
@@ -1273,6 +1379,7 @@ class ProjectPreprocessor:
             ).fetchone()
 
     def _cpu_loop(self) -> None:
+        set_current_thread_priority(self.cpu_priority)
         poll = max(0.2, float(self.cfg.get("poll_seconds", 1.0)))
         while not self._stop.is_set():
             with self._stats_lock:
@@ -2204,16 +2311,22 @@ class ProjectPreprocessor:
         if not force_refresh and state is not None and str(state[0]) == revision:
             prior_status = str(state[1])
             prior_error = str(state[2] or "")
-            if prior_status in {"ready", "skipped"} or self._external_error_is_revision_scoped(prior_error):
-                if prior_status != "skipped":
-                    with self._db_lock, closing(self._connect()) as con:
-                        con.execute(
-                            "UPDATE external_index_state SET status='skipped' WHERE root=? AND backend=? AND revision_hash=?",
-                            (root, backend, revision),
-                        )
-                        con.commit()
-                self._set_project(root, phase=next_phase)
-                return True
+            if prior_status in {"ready", "unavailable", "skipped"} or self._external_error_is_revision_scoped(prior_error):
+                if prior_status != "ready" and self._external_backend_available(backend):
+                    # A previous process may have timed out before the optional
+                    # backend was installed/discovered. Retry it now instead of
+                    # treating the old derived state as a permanent skip.
+                    pass
+                else:
+                    if prior_status not in {"unavailable"}:
+                        with self._db_lock, closing(self._connect()) as con:
+                            con.execute(
+                                "UPDATE external_index_state SET status='unavailable' WHERE root=? AND backend=? AND revision_hash=?",
+                                (root, backend, revision),
+                            )
+                            con.commit()
+                    self._set_project(root, phase=next_phase)
+                    return True
         if not Path(root).is_dir():
             result = {"success": False, "skipped": True, "error": "project root is missing"}
         else:
@@ -2226,11 +2339,11 @@ class ProjectPreprocessor:
         if not isinstance(result, dict):
             result = {"success": False, "error": f"invalid {backend} index response"}
         success = bool(result.get("success"))
-        skipped = bool(result.get("skipped"))
+        unavailable = bool(result.get("skipped"))
         error = "" if success else str(result.get("error") or result.get("reason") or "index failed")[:1000]
-        if not success and not skipped and self._external_error_is_revision_scoped(error):
-            skipped = True
-        status = "ready" if success else "skipped" if skipped else "degraded"
+        if not success and not unavailable and self._external_error_is_revision_scoped(error):
+            unavailable = True
+        status = "ready" if success else "unavailable" if unavailable else "degraded"
         with self._db_lock, closing(self._connect()) as con:
             con.execute(
                 "INSERT OR REPLACE INTO external_index_state(root,backend,revision_hash,status,updated_at,error) VALUES(?,?,?,?,?,?)",
@@ -2240,7 +2353,7 @@ class ProjectPreprocessor:
         with self._stats_lock:
             if success:
                 self._stats["external_indexes"] += 1
-            elif not skipped:
+            elif not unavailable:
                 self._stats["external_index_failures"] += 1
         # A missing/broken optional backend must never strand preprocessing. Its
         # circuit/status remains visible and the built-in indexes stay authoritative.
@@ -2248,12 +2361,22 @@ class ProjectPreprocessor:
         self._record_progress(root, 1)
         return True
 
+    def _external_backend_available(self, backend: str) -> bool:
+        checker = getattr(self.external_tools, "backend_available", None)
+        if not callable(checker):
+            return False
+        try:
+            return bool(checker(backend))
+        except Exception:
+            return False
+
     @staticmethod
     def _external_error_is_revision_scoped(error: str) -> bool:
         """Errors a retry cannot fix until project revision or tool setup changes."""
         normalized = str(error).lower()
         return (
             "no associated project configuration" in normalized
+            or "no configuration file found" in normalized
             or "project configuration auto-generation failed" in normalized
             or "project root is missing" in normalized
             or "indexing exceeded" in normalized
@@ -2808,6 +2931,7 @@ class ProjectPreprocessor:
                         component.optimize()
                 except Exception:
                     pass
+            self.cleanup_orphaned_indexes()
             self._last_db_maintenance = now
             with self._stats_lock:
                 self._stats["db_maintenance_runs"] = self._stats.get("db_maintenance_runs", 0) + 1

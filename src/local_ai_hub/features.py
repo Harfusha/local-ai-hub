@@ -29,6 +29,7 @@ class FeatureSet:
         tok = cfg.get("token_saving", {})
         art = cfg.get("artifacts", {})
         prep = cfg.get("preprocessing", {})
+        work = cfg.get("work_orchestrator", {})
 
         # Primary tool toggles
         self.status: bool = bool(feat.get("status", True))
@@ -58,6 +59,7 @@ class FeatureSet:
         self.subagents: bool = self.tasks and bool(feat.get("subagents", True)) and bool(sub.get("enabled", True))
         self.agent_os: bool = self.coord and bool(feat.get("agent_os", True))
         self.dashboard: bool = bool(feat.get("dashboard", True)) and bool(cfg.get("monitoring", {}).get("dashboard_enabled", True))
+        self.work_orchestrator: bool = self.tasks and self.commands and self.coord and bool(feat.get("work_orchestrator", True)) and bool(work.get("enabled", True))
 
         # Model names — used in descriptions and routing
         self.fast_model: str = str(mdl.get("fast_code", "qwen2.5-coder:7b"))
@@ -104,6 +106,8 @@ class FeatureSet:
             tools.append("local_ai_coord")
         if self.artifacts:
             tools.append("local_ai_artifact")
+        if self.work_orchestrator:
+            tools.append("local_ai_work")
         return tools
 
     @property
@@ -111,7 +115,7 @@ class FeatureSet:
         """List of standard MCP tools that are disabled in this configuration."""
         all_tools = [
             "local_ai_status", "local_ai_repo", "local_ai_task", "local_ai_rag",
-            "local_ai_command", "local_ai_coord", "local_ai_artifact",
+            "local_ai_command", "local_ai_coord", "local_ai_artifact", "local_ai_work",
         ]
         active = set(self.enabled_tools)
         return [t for t in all_tools if t not in active]
@@ -159,7 +163,7 @@ class FeatureSet:
         if not self.coord:
             return []
         actions = [
-            "claim", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete",
+            "claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete",
         ]
         if self.agent_os:
             actions.extend([
@@ -215,6 +219,8 @@ class FeatureSet:
             lines.append("- semantic retrieval after indexed paths are insufficient: `local_ai_rag`")
         if self.tasks and self.has_any_model():
             lines.append("- bounded local generation or second opinion: `local_ai_task`")
+        if self.work_orchestrator:
+            lines.append("- closed whole-task delegation with verified handoff: `local_ai_work`")
         return lines
 
     def recipe_lines(self) -> list[str]:
@@ -243,6 +249,8 @@ class FeatureSet:
             parts.append("`local_ai_command` for bounded repeatable commands")
         if self.tasks and self.has_any_model():
             parts.append(f"`local_ai_task` for small local-model work and second opinions")
+        if self.work_orchestrator:
+            parts.append("`local_ai_work` for a complete bounded repository task with planning, edits, validation and handoff")
         if self.rag:
             parts.append("`local_ai_rag` only after cheaper indexed evidence")
         if self.artifacts:

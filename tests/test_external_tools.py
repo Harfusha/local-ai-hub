@@ -109,6 +109,7 @@ def test_serena_index_supplies_noninteractive_dominant_language(monkeypatch, tmp
 
     root = tmp_path / "repo"
     root.mkdir()
+    (root / ".gitignore").write_text("Woodbound/Library/\nWoodbound/Temp/\n", encoding="utf-8")
     for index in range(3):
         (root / f"module_{index}.py").write_text("value = 1\n", encoding="utf-8")
     (root / "README.md").write_text("docs\n", encoding="utf-8")
@@ -132,6 +133,58 @@ def test_serena_index_supplies_noninteractive_dominant_language(monkeypatch, tmp
     assert result["success"] is True
     assert captured[0][0] == "serena"
     assert captured[0][1][captured[0][1].index("--language") + 1] == "python"
+
+
+def test_codegraph_index_rediscoveries_command_before_reporting_unavailable(monkeypatch, tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    cfg = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "code_intelligence": {"enabled": True, "serena_enabled": False, "codegraph_enabled": True},
+    }
+    ext = ExternalCodeIntelligence(cfg, telemetry=None)
+    captured = []
+    monkeypatch.setattr(ext, "_resolve_command", lambda backend: "cgc.exe" if backend == "codegraph" else None)
+    monkeypatch.setattr(ext, "_run_index", lambda backend, argv, project, env=None: captured.append((backend, argv, env)) or {"success": True})
+    try:
+        ext._codegraph = None
+        result = ext.index("codegraph", str(root))
+    finally:
+        ext.close()
+
+    assert result["success"] is True
+    assert captured and captured[0][0] == "codegraph"
+
+
+def test_codegraph_env_adds_git_ignored_directories(monkeypatch, tmp_path: Path):
+    import local_ai_hub.external_tools as mod
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / ".gitignore").write_text("Woodbound/Library/\nWoodbound/Temp/\n", encoding="utf-8")
+    cfg = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "code_intelligence": {"enabled": True, "serena_enabled": False, "codegraph_enabled": True, "codegraph_command": sys.executable},
+    }
+    ext = ExternalCodeIntelligence(cfg, telemetry=None)
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if "rev-parse" in argv:
+            return type("Completed", (), {"returncode": 0, "stdout": str(root), "stderr": ""})()
+        return type("Completed", (), {"returncode": 0, "stdout": b"Woodbound/Library/\x00Woodbound/Temp/\x00", "stderr": b""})()
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    try:
+        env = ext._codegraph_env(str(root))
+    finally:
+        ext.close()
+
+    assert "Library" in env["IGNORE_DIRS"]
+    assert "Temp" in env["IGNORE_DIRS"]
+    assert env["MAX_FILE_SIZE_MB"] == "5"
+    assert any("ls-files" in call for call in calls)
 
 
 def test_broken_codegraph_installation_degrades_once_without_future_retries(tmp_path: Path):

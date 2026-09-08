@@ -9,6 +9,8 @@ from typing import Any
 
 from .cache import SQLiteCache, SingleFlightGroup, TieredCache, stable_hash
 from .priority_gate import CooperativePriorityGate
+from .accelerators import openvino_cache_dir, openvino_device_candidates
+from .state_paths import configured_state_dir
 
 
 class EmbeddingModel:
@@ -18,8 +20,12 @@ class EmbeddingModel:
         self.config = config
         models = config.get("models", {})
         self.model_name = models.get("embedding", "qwen3-embedding:0.6b")
-        self.device = models.get("embedding_device", "cpu")
-        self.backend = models.get("embedding_backend", "auto")
+        self.device = str(models.get("embedding_device", "cpu")).strip() or "cpu"
+        self.backend = str(models.get("embedding_backend", "auto")).strip().lower()
+        self.active_backend: str | None = None
+        self.active_device: str | None = None
+        self._st_candidates: list[tuple[str, str]] | None = None
+        self._st_candidate_index = -1
         self.ollama_url = str(config.get("server", {}).get("ollama_url", "http://127.0.0.1:11434")).rstrip("/")
         self.enabled = bool(config.get("features", {}).get("rag", True))
         cpu_cfg = config.get("cpu_retrieval", {})
@@ -33,7 +39,7 @@ class EmbeddingModel:
         self._load_error_time: float = 0.0
         self.flight_group = SingleFlightGroup(shards=16, default_timeout_seconds=90.0)
         cache_cfg = config.get("cache", {})
-        state_dir = Path(config.get("server", {}).get("state_dir", "."))
+        state_dir = configured_state_dir(config)
         self.cache = TieredCache(
             SQLiteCache(
                 state_dir / "cache.sqlite3",
@@ -55,47 +61,176 @@ class EmbeddingModel:
         self._active_cache_identity: str | None = None
         self._active_embedding_dimension: int | None = None
 
+    def _legacy_cpu_cache_identity(self) -> str | None:
+        """Return the v2.1 cache identity only when reuse is numerically safe.
+
+        v2.1 SentenceTransformers entries did not encode the execution device.
+        They were produced by the CPU path, so they may be reused by the new
+        CPU SentenceTransformers path but never by OpenVINO NPU/GPU execution.
+        Keeping the existing ``embed:v2`` namespace lets upgrades reuse those
+        durable entries without copying the whole cache database.
+        """
+        active_backend = self.active_backend or self.backend
+        active_device = str(self.active_device or self.device or "cpu").strip().lower()
+        if active_backend == "sentence-transformers" and active_device in {"cpu", "cpu.0"}:
+            return f"sentence-transformers:{self._loaded_model_name}"
+        return None
+
+    @staticmethod
+    def _valid_cached_vector(cached: Any, identity: str, expected_dimension: int | None) -> list[float] | None:
+        if not isinstance(cached, dict) or cached.get("identity") != identity:
+            return None
+        vector = cached.get("vector")
+        dimension = cached.get("dimension")
+        if not isinstance(vector, list) or not isinstance(dimension, int) or dimension != len(vector):
+            return None
+        if expected_dimension is not None and dimension != expected_dimension:
+            return None
+        try:
+            return [float(value) for value in vector]
+        except (TypeError, ValueError):
+            return None
+
+    def _candidate_specs(self, *, ollama_fallback: bool = False) -> list[tuple[str, str]]:
+        if ollama_fallback:
+            return [("sentence-transformers", "cpu")]
+        if self.backend == "openvino":
+            candidates = [("openvino", device) for device in openvino_device_candidates(self.config, self.device)]
+            if bool(self.config.get("openvino", {}).get("cpu_fallback", True)):
+                candidates.append(("sentence-transformers", "cpu"))
+            # Keep order stable while removing duplicate logical devices.
+            deduped: list[tuple[str, str]] = []
+            seen: set[tuple[str, str]] = set()
+            for backend, device in candidates:
+                key = (backend, str(device).upper())
+                if key not in seen:
+                    seen.add(key)
+                    deduped.append((backend, device))
+            return deduped
+        return [("sentence-transformers", self.device)]
+
+    def _load_candidate(self, index: int, *, ollama_fallback: bool = False) -> bool:
+        candidates = self._candidate_specs(ollama_fallback=ollama_fallback)
+        if index < 0 or index >= len(candidates):
+            return False
+        backend, device = candidates[index]
+        # Record the attempted generation even if model construction fails. Without
+        # this, a missing/broken optional accelerator was retried on every request
+        # instead of respecting the cooldown after all fallbacks were exhausted.
+        self._st_candidates = candidates
+        self._st_candidate_index = index
+        try:
+            from sentence_transformers import SentenceTransformer
+            loaded_model_name = self.model_name
+            kwargs: dict[str, Any] = {
+                "device": str(device).lower(),
+                "trust_remote_code": self.trust_remote_code,
+            }
+            if backend == "openvino":
+                # SentenceTransformers is still an nn.Module and calls .to(device) on
+                # its pooling/output modules.  Passing "npu" there can make PyTorch
+                # try to resolve a torch NPU backend before OpenVINO ever sees the
+                # model.  Keep the wrapper on CPU and pass the real accelerator to
+                # Optimum/OpenVINO through model_kwargs instead.
+                kwargs["device"] = "cpu"
+                kwargs["backend"] = "openvino"
+                ov_model_kwargs: dict[str, Any] = {"device": str(device).lower()}
+                cache_dir = openvino_cache_dir(self.config)
+                if cache_dir is not None:
+                    ov_model_kwargs["ov_config"] = {"CACHE_DIR": str(cache_dir)}
+                kwargs["model_kwargs"] = ov_model_kwargs
+            try:
+                model = SentenceTransformer(self.model_name, **kwargs)
+            except Exception:
+                if self.model_name == "BAAI/bge-small-en-v1.5":
+                    raise
+                fallback_kwargs = dict(kwargs)
+                fallback_kwargs["trust_remote_code"] = False
+                model = SentenceTransformer("BAAI/bge-small-en-v1.5", **fallback_kwargs)
+                loaded_model_name = "BAAI/bge-small-en-v1.5"
+            if hasattr(model, "max_seq_length"):
+                max_pos = getattr(model, "max_seq_length", 512) or 512
+                try:
+                    max_pos = int(getattr(model[0].auto_model.config, "max_position_embeddings", max_pos) or max_pos)
+                except Exception:
+                    pass
+                model.max_seq_length = min(self.max_seq_length, max_pos)
+            self._model = model
+            self._loaded_model_name = loaded_model_name
+            self.active_backend = backend
+            self.active_device = str(device)
+            self._load_error = None
+            return True
+        except Exception as exc:
+            import time
+            self._load_error = f"{backend}/{device}: {exc}"
+            self._load_error_time = time.time()
+            self._model = None
+            self.active_backend = None
+            self.active_device = None
+            return False
+
+    def _ensure_st_model(self, *, ollama_fallback: bool = False) -> bool:
+        if self._model is not None:
+            return True
+        with self._load_lock:
+            if self._model is not None:
+                return True
+            candidates = self._candidate_specs(ollama_fallback=ollama_fallback)
+            start = max(0, self._st_candidate_index + 1) if self._st_candidates == candidates else 0
+            for index in range(start, len(candidates)):
+                if self._load_candidate(index, ollama_fallback=ollama_fallback):
+                    return True
+            return False
+
     def _ensure_model(self) -> bool:
         if not self.enabled:
             return False
         if self.backend == "ollama":
+            self.active_backend = "ollama"
+            self.active_device = "ollama"
             return True
         if self._model is not None:
             return True
-        if self._load_error is not None and self.backend == "sentence-transformers":
+        if self._load_error is not None:
             import time
-            if time.time() - self._load_error_time < 60.0:
+            if time.time() - self._load_error_time < 15.0 and self._st_candidates is not None and self._st_candidate_index >= len(self._st_candidates) - 1:
                 return False
-            self._load_error = None
-        with self._load_lock:
-            if self._model is not None:
-                return True
+        return self._ensure_st_model()
+
+    def _encode_st_batch(self, batch_texts: list[str], *, query: bool, priority: int) -> tuple[list[list[float]] | None, str]:
+        while True:
+            if self._model is None and not self._ensure_st_model(ollama_fallback=self.backend == "ollama"):
+                return None, self.active_backend or "sentence-transformers"
+            model = self._model
+            if model is None:
+                return None, self.active_backend or "sentence-transformers"
+            prompts = getattr(model, "prompts", {}) or {}
+            kwargs: dict[str, Any] = {
+                "normalize_embeddings": True, "show_progress_bar": False, "batch_size": self.batch_size
+            }
+            if query and isinstance(prompts, dict) and "query" in prompts:
+                kwargs["prompt_name"] = "query"
             try:
-                from sentence_transformers import SentenceTransformer
-                loaded_model_name = self.model_name
-                try:
-                    self._model = SentenceTransformer(self.model_name, device=self.device, trust_remote_code=self.trust_remote_code)
-                except Exception:
-                    # Fallback to standard BAAI/bge-small-en-v1.5 if custom model fails
-                    if self.model_name != "BAAI/bge-small-en-v1.5":
-                        self._model = SentenceTransformer("BAAI/bge-small-en-v1.5", device=self.device)
-                        loaded_model_name = "BAAI/bge-small-en-v1.5"
-                    else:
-                        raise
-                if hasattr(self._model, "max_seq_length"):
-                    max_pos = getattr(self._model, "max_seq_length", 512) or 512
-                    try:
-                        max_pos = int(getattr(self._model[0].auto_model.config, "max_position_embeddings", max_pos) or max_pos)
-                    except Exception:
-                        pass
-                    self._model.max_seq_length = min(self.max_seq_length, max_pos)
-                self._loaded_model_name = loaded_model_name
-                return True
+                with self._cpu_gate.slot(priority):
+                    encoded = model.encode(batch_texts, **kwargs)
+                vectors: list[list[float]] = []
+                for vector in encoded:
+                    as_list = vector.tolist() if hasattr(vector, "tolist") else list(vector)
+                    vectors.append([float(v) for v in as_list])
+                return vectors, self.active_backend or "sentence-transformers"
             except Exception as exc:
-                import time
-                self._load_error = str(exc)
-                self._load_error_time = time.time()
-                return False
+                # OpenVINO may discover an NPU but reject a particular model/shape
+                # at first inference. Advance to iGPU/CPU instead of poisoning RAG.
+                if self.backend == "openvino" and self.active_backend == "openvino":
+                    failed = self.active_device or "openvino"
+                    self._load_error = f"openvino/{failed} inference failed: {exc}"
+                    self._model = None
+                    self.active_backend = None
+                    self.active_device = None
+                    if self._ensure_st_model():
+                        continue
+                return None, self.active_backend or "sentence-transformers"
 
     def _encode_ollama(self, texts: list[str]) -> list[list[float]] | None:
         """Call Ollama /api/embed on GPU."""
@@ -128,26 +263,40 @@ class EmbeddingModel:
         # was assigned only after computing a miss, making every fresh process
         # ignore its persistent cross-worktree embedding cache for its first batch.
         if cache_identity is None and self.cache_enabled:
-            if self.backend == "sentence-transformers" and self._ensure_model():
-                self._active_cache_identity = f"sentence-transformers:{self._loaded_model_name}"
+            if self.backend in {"sentence-transformers", "openvino"} and self._ensure_model():
+                active = self.active_backend or "sentence-transformers"
+                device = self.active_device or self.device
+                self._active_cache_identity = f"{active}:{device}:{self._loaded_model_name}"
             elif self.backend == "ollama":
                 self._active_cache_identity = f"ollama:{self._ollama_model_name}"
             cache_identity = self._active_cache_identity
-        used_backend = self.backend
+        used_backend = self.active_backend or self.backend
         for i, text in enumerate(texts):
             clean_text = str(text).replace("\r\n", "\n")
             key = stable_hash({"v": 2, "identity": cache_identity, "query": query, "text": clean_text}) if cache_identity else ""
             cached = self.cache.get(key) if self.cache_enabled and key else None
-            if isinstance(cached, dict):
-                cached_vector = cached.get("vector")
-                cached_dimension = cached.get("dimension")
-                if (cached.get("identity") == cache_identity and isinstance(cached_vector, list)
-                        and isinstance(cached_dimension, int) and cached_dimension == len(cached_vector)
-                        and (self._active_embedding_dimension is None or cached_dimension == self._active_embedding_dimension)):
-                    vectors[i] = [float(v) for v in cached_vector]
-                    self._memory_hits += 1
-                    cache_hits += 1
-                    continue
+            cached_vector = self._valid_cached_vector(cached, cache_identity, self._active_embedding_dimension) if cache_identity else None
+            if cached_vector is None and self.cache_enabled and cache_identity:
+                # Backward-compatible, read-through migration from v2.1 CPU
+                # SentenceTransformers identities. Accelerator-produced entries
+                # always stay device-qualified and never consume this fallback.
+                legacy_identity = self._legacy_cpu_cache_identity()
+                if legacy_identity and legacy_identity != cache_identity:
+                    legacy_key = stable_hash({"v": 2, "identity": legacy_identity, "query": query, "text": clean_text})
+                    legacy = self.cache.get(legacy_key)
+                    cached_vector = self._valid_cached_vector(legacy, legacy_identity, self._active_embedding_dimension)
+                    if cached_vector is not None:
+                        self.cache.set(
+                            key,
+                            {"identity": cache_identity, "dimension": len(cached_vector), "vector": cached_vector},
+                        )
+            if cached_vector is not None:
+                vectors[i] = cached_vector
+                if self._active_embedding_dimension is None:
+                    self._active_embedding_dimension = len(cached_vector)
+                self._memory_hits += 1
+                cache_hits += 1
+                continue
             # The same content is common across worktrees and generated/copied
             # files. Cache keys are content-addressed, so collapse duplicate misses
             # before invoking a model and fan one vector back out to every position.
@@ -182,42 +331,49 @@ class EmbeddingModel:
                     computed_vectors = all_ollama_vectors
                     used_backend = "ollama"
 
-            # 2. Fallback to SentenceTransformers CPU
+            # 2. Local SentenceTransformers/OpenVINO path. OpenVINO uses NPU ->
+            # Intel GPU -> CPU device fallback; Ollama failure falls back to torch CPU.
             if computed_vectors is None:
-                # When backend is "ollama" but Ollama failed, we need to force-load SentenceTransformer
-                if self.backend == "ollama" and self._model is None:
-                    with self._load_lock:
-                        if self._model is None:
-                            try:
-                                from sentence_transformers import SentenceTransformer
-                                self._model = SentenceTransformer(self.model_name, device=self.device, trust_remote_code=self.trust_remote_code)
-                                if hasattr(self._model, "max_seq_length"):
-                                    self._model.max_seq_length = self.max_seq_length
-                            except Exception as exc:
-                                self._load_error = str(exc)
-                if not self._ensure_model() or self._model is None:
-                    return {"success": False, "error": self._load_error or "embedding model disabled", "model": self.model_name}
-                prompts = getattr(self._model, "prompts", {}) or {}
-                all_st_vectors: list[list[float]] = []
-                for start in range(0, len(missing_texts), self.batch_size):
-                    stop = min(len(missing_texts), start + self.batch_size)
-                    batch_texts = missing_texts[start:stop]
-                    kwargs: dict[str, Any] = {
-                        "normalize_embeddings": True, "show_progress_bar": False, "batch_size": self.batch_size
-                    }
-                    if query and isinstance(prompts, dict) and "query" in prompts:
-                        kwargs["prompt_name"] = "query"
-                    with self._cpu_gate.slot(priority):
-                        encoded = self._model.encode(batch_texts, **kwargs)
-                    for vector in encoded:
-                        as_list = vector.tolist() if hasattr(vector, "tolist") else list(vector)
-                        all_st_vectors.append([float(v) for v in as_list])
-                computed_vectors = all_st_vectors
-                used_backend = "sentence-transformers"
+                # If NPU inference succeeds for one batch but rejects a later shape,
+                # _encode_st_batch advances to GPU/CPU. Restart the whole logical
+                # request on that new device so one embedding set never mixes
+                # accelerator precision while being cached under a single identity.
+                max_restarts = max(1, len(self._candidate_specs()) + 1)
+                for _restart in range(max_restarts):
+                    all_st_vectors: list[list[float]] = []
+                    failed = False
+                    execution_identity: tuple[str, str] | None = None
+                    switched = False
+                    for start in range(0, len(missing_texts), self.batch_size):
+                        stop = min(len(missing_texts), start + self.batch_size)
+                        batch_texts = missing_texts[start:stop]
+                        encoded, active = self._encode_st_batch(batch_texts, query=query, priority=priority)
+                        if encoded is None:
+                            failed = True
+                            break
+                        current_identity = (active, str(self.active_device or self.device))
+                        if execution_identity is None:
+                            execution_identity = current_identity
+                        elif current_identity != execution_identity:
+                            switched = True
+                            break
+                        all_st_vectors.extend(encoded)
+                        used_backend = active
+                    if switched:
+                        continue
+                    if failed or len(all_st_vectors) != len(missing_texts):
+                        return {"success": False, "error": self._load_error or "embedding model disabled", "model": self.model_name}
+                    computed_vectors = all_st_vectors
+                    break
+                if computed_vectors is None:
+                    return {"success": False, "error": self._load_error or "embedding accelerator repeatedly changed", "model": self.model_name}
 
             # 3. Store in vectors and persist to cache
             model_identity = self._ollama_model_name if used_backend == "ollama" else self._loaded_model_name
-            self._active_cache_identity = f"{used_backend}:{model_identity}"
+            if used_backend == "ollama":
+                self._active_cache_identity = f"ollama:{model_identity}"
+            else:
+                self._active_cache_identity = f"{used_backend}:{self.active_device or self.device}:{model_identity}"
             dimensions = {len(vector) for vector in computed_vectors if isinstance(vector, list)}
             if len(dimensions) != 1 or 0 in dimensions:
                 return {"success": False, "error": "embedding backend returned inconsistent vector dimensions", "model": self.model_name}
@@ -236,7 +392,7 @@ class EmbeddingModel:
             "success": True,
             "model": self.model_name,
             "backend": used_backend,
-            "device": self.device,
+            "device": self.active_device or self.device,
             "embeddings": vectors,
             "cache_hits": cache_hits,
             "computed": len(missing_texts),
@@ -249,7 +405,9 @@ class EmbeddingModel:
             "enabled": self.enabled,
             "model": self.model_name,
             "backend": self.backend,
+            "active_backend": self.active_backend,
             "device": self.device,
+            "active_device": self.active_device,
             "loaded": self._model is not None or self.backend == "ollama",
             "load_error": self._load_error,
             "cache_enabled": self.cache_enabled,

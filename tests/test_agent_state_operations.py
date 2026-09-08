@@ -72,54 +72,56 @@ def global_unapproved_record(app: LocalAIApp) -> MemoryRecord:
 
 
 def test_cleanup_removes_expired_terminal_records_but_never_active_task(tmp_path: Path):
-    app = app_with_agent_state(tmp_path)
-    created = app.agent_tasks.create(active_contract(), task_context())
-    active = app.agent_tasks.transition(created.task_id, TaskStatus.ACTIVE, reason="start", actor="operator", idempotency_key="tx-1")
-    expired = create_expired_incident(app)
-    assert app.agent_state_cleanup(now=expired.expires_at + 1) == 1
-    assert app.agent_tasks.get(active.task_id).status is TaskStatus.ACTIVE
+    with app_with_agent_state(tmp_path) as app:
+        created = app.agent_tasks.create(active_contract(), task_context())
+        active = app.agent_tasks.transition(created.task_id, TaskStatus.ACTIVE, reason="start", actor="operator", idempotency_key="tx-1")
+        expired = create_expired_incident(app)
+        assert app.agent_state_cleanup(now=expired.expires_at + 1) == 1
+        assert app.agent_tasks.get(active.task_id).status is TaskStatus.ACTIVE
 
 
 def test_selective_export_rejects_record_with_disallowed_scope(tmp_path: Path):
-    app = app_with_agent_state(tmp_path)
-    with pytest.raises(BundleValidationError):
-        app.export_bundle(agent_state_record_ids=[global_unapproved_record(app).record_id])
+    with app_with_agent_state(tmp_path) as app:
+        with pytest.raises(BundleValidationError):
+            app.export_bundle(agent_state_record_ids=[global_unapproved_record(app).record_id])
 
 
 def test_selective_export_and_import_valid_records(tmp_path: Path):
-    app1 = app_with_agent_state(tmp_path / "app1")
-    rec = MemoryRecord.create(
-        kind=MemoryKind.FACT,
-        scope=AgentScope.REPOSITORY,
-        key="repo_fact",
-        value={"architecture": "modular"},
-        scope_id="repo1",
-        status=MemoryStatus.CONFIRMED,
-    )
-    saved = app1.agent_memory.record(rec, actor="user")
+    with app_with_agent_state(tmp_path / "app1") as app1:
+        rec = MemoryRecord.create(
+            kind=MemoryKind.FACT,
+            scope=AgentScope.REPOSITORY,
+            key="repo_fact",
+            value={"architecture": "modular"},
+            scope_id="repo1",
+            status=MemoryStatus.CONFIRMED,
+        )
+        saved = app1.agent_memory.record(rec, actor="user")
+        bundle_bytes = app1.export_bundle(agent_state_record_ids=[saved.record_id])
+        assert isinstance(bundle_bytes, bytes)
+        assert len(bundle_bytes) > 0
 
-    bundle_bytes = app1.export_bundle(agent_state_record_ids=[saved.record_id])
-    assert isinstance(bundle_bytes, bytes)
-    assert len(bundle_bytes) > 0
-
-    app2 = app_with_agent_state(tmp_path / "app2")
-    res = app2.import_bundle(bundle_bytes)
-    assert res["success"] is True
-    assert res["restored_records"] == 1
-    found = app2.agent_memory.find(key="repo_fact")
-    assert len(found) == 1
-    assert found[0].value == {"architecture": "modular"}
+    with app_with_agent_state(tmp_path / "app2") as app2:
+        res = app2.import_bundle(bundle_bytes)
+        assert res["success"] is True
+        assert res["restored_records"] == 1
+        found = app2.agent_memory.find(key="repo_fact")
+        assert len(found) == 1
+        assert found[0].value == {"architecture": "modular"}
 
 
 def test_app_status_includes_agent_state_summary(tmp_path: Path):
-    app = app_with_agent_state(tmp_path)
-    created = app.agent_tasks.create(active_contract(), task_context())
-    app.agent_tasks.transition(created.task_id, TaskStatus.ACTIVE, reason="start", actor="operator", idempotency_key="tx-status")
-    status = app.status()
-    assert "agent_state" in status
-    ag_stat = status["agent_state"]
-    assert ag_stat["enabled"] is True
-    assert ag_stat["status"] == "healthy"
-    assert ag_stat["active_tasks_count"] == 1
-    assert ag_stat["tasks_count"] == 1
-    assert ag_stat["retention_days"] == 14
+    with app_with_agent_state(tmp_path) as app:
+        status = app.status()
+        assert status["success"] is True
+        assert status["agent_state"]["enabled"] is True
+        created = app.agent_tasks.create(active_contract(), task_context())
+        app.agent_tasks.transition(created.task_id, TaskStatus.ACTIVE, reason="start", actor="operator", idempotency_key="tx-status")
+        status = app.status()
+        assert "agent_state" in status
+        ag_stat = status["agent_state"]
+        assert ag_stat["enabled"] is True
+        assert ag_stat["status"] == "healthy"
+        assert ag_stat["active_tasks_count"] == 1
+        assert ag_stat["tasks_count"] == 1
+        assert ag_stat["retention_days"] == 14

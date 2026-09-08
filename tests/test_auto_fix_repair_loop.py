@@ -149,3 +149,59 @@ def test_classify_quoted_semicolons(temp_dir: Path):
     assert res3["allowed"] is False
     assert res3["class"] == "unknown"
 
+
+def test_classify_python_c_dangerous_patterns(temp_dir: Path):
+    """Security: python -c inline code with dangerous calls must be classified
+    as 'unknown' and blocked when allow_unknown=False (the secure default).
+    This prevents bypass via validation keywords like 'test' or 'check' as comments."""
+    # Use restricted broker with allow_unknown=False (the secure production default)
+    state_dir = temp_dir / "state2"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    restricted_config = {
+        "commands": {
+            "allowed": True,
+            "allow_unknown": False,   # key: deny unknown classifications
+            "allow_validation": True,
+            "allow_read": True,
+            "timeout_seconds": 10,
+            "inline_chars": 4000,
+            "cache_ttl_seconds": 60,
+        },
+        "server": {"state_dir": str(state_dir)},
+    }
+    artifacts2 = ArtifactStore(state_dir / "artifacts")
+    broker = CommandBroker(restricted_config, artifacts2, _RepoState())
+
+    # Bypass attempt: os.system with 'test' keyword as comment — must be blocked
+    cmd1 = "python -c \"import os; os.system('rm -rf /'); # test\""
+    res = broker.classify(cmd1)
+    assert res["class"] == "unknown", f"os.system() should be unknown: {res}"
+    assert res["allowed"] is False, f"os.system() must be denied with allow_unknown=False: {res}"
+
+    # exec() disguised as validation
+    cmd2 = 'python -c "exec(\'print(42)\')  # validate"'
+    res2 = broker.classify(cmd2)
+    assert res2["class"] == "unknown", f"exec() should be unknown: {res2}"
+    assert res2["allowed"] is False, f"exec() must be denied: {res2}"
+
+    # subprocess with 'check' keyword
+    cmd3 = 'python -c "import subprocess; subprocess.run([\'id\']); # check"'
+    res3 = broker.classify(cmd3)
+    assert res3["class"] == "unknown"
+    assert res3["allowed"] is False
+
+    # eval() with 'assert' keyword
+    cmd4 = 'python -c "eval(\'1+1\')  # assert"'
+    res4 = broker.classify(cmd4)
+    assert res4["class"] == "unknown"
+    assert res4["allowed"] is False
+
+    # Safe: legitimate use without dangerous patterns — must be allowed
+    res5 = broker.classify("python -c \"import sys; print(sys.version)\"")
+    assert res5["class"] == "read", f"safe inline should be read: {res5}"
+    assert res5["allowed"] is True
+
+    res6 = broker.classify("python -c \"assert True, 'sanity check'\"")
+    assert res6["class"] == "validation"
+    assert res6["allowed"] is True
+

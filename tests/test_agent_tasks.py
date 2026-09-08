@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import pytest
 
@@ -94,3 +95,43 @@ def test_illegal_transition_raises_error(store: TaskStore):
     task = store.create(contract_with_criteria("tests"), task_context())
     with pytest.raises(InvalidTransitionError):
         store.transition(task.task_id, TaskStatus.COMPLETED, reason="skip to end", actor="agent", idempotency_key="bad")
+
+
+def test_add_verification_receipt_emits_event(tmp_path: Path):
+    from local_ai_hub.agent_events import AgentStateStore
+
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    task_store = TaskStore(state_store)
+    task = task_store.create(contract_with_criteria("tests"), task_context(), task_id="t-evt")
+
+    events_before = state_store.events(stream_id=f"task:{task.task_id}")
+    assert len(events_before) == 1  # task.created
+
+    task_store.add_verification_receipt(task.task_id, "tests", "rcpt-123")
+
+    events_after = state_store.events(stream_id=f"task:{task.task_id}")
+    assert len(events_after) == 2
+    assert events_after[-1].kind == "task.verified"
+    assert events_after[-1].payload == {"criterion": "tests", "receipt_id": "rcpt-123"}
+
+
+def test_stores_schema_initialized_flag(tmp_path: Path):
+    from local_ai_hub.agent_events import AgentStateStore
+    from local_ai_hub.agent_verification import VerificationStore
+    from local_ai_hub.agent_memory import MemoryStore
+    from local_ai_hub.agent_incidents import IncidentStore
+    from local_ai_hub.agent_learning import LearningStore
+
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    ts = TaskStore(state_store)
+    vs = VerificationStore(state_store)
+    ms = MemoryStore(state_store)
+    inc = IncidentStore(state_store)
+    ls = LearningStore(state_store)
+
+    assert ts._initialized is True
+    assert vs._initialized is True
+    assert ms._initialized is True
+    assert inc._initialized is True
+    assert ls._initialized is True
+

@@ -9,10 +9,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_release_metadata_and_documentation_are_1_5():
-    assert __version__ == "1.6.0"
-    assert 'version = "1.6.0"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert __version__ == "2.4.0"
+    assert 'version = "2.4.0"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     release = json.loads((ROOT / "RELEASE.json").read_text(encoding="utf-8"))
-    assert release["version"] == "1.6.0" and release["status"] == "production-ready"
+    assert release["version"] == "2.4.0" and release["status"] == "production-ready"
     required = {
         "ARCHITECTURE.md", "INSTALLATION.md", "CONFIGURATION.md", "MCP_AND_AGENTS.md",
         "HTTP_API.md", "DASHBOARD.md", "OPERATIONS.md", "SECURITY_MODEL.md",
@@ -23,7 +23,7 @@ def test_release_metadata_and_documentation_are_1_5():
 
 def test_release_has_compact_mcp_surface_and_tool_first_policy():
     source = (ROOT / "src" / "local_ai_hub" / "mcp_server.py").read_text(encoding="utf-8")
-    assert source.count("@mcp.tool()") == 7
+    assert source.count("@mcp.tool()") == 8
     assert "CALL THIS BEFORE broad repository reads" in source
     skill = (ROOT / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
     assert "before broad repository exploration" in skill

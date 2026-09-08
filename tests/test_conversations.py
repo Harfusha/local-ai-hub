@@ -152,3 +152,92 @@ def test_conversation_debug_trace_redacts_transcript(monkeypatch) -> None:
         "response": {"success": True, "conversation_redacted": True},
         "error": "",
     }
+
+
+def test_conversation_store_purges_abandoned_active_turns() -> None:
+    from local_ai_hub.conversations import ConversationStore
+
+    now = [100.0]
+    store = ConversationStore(idle_ttl_seconds=10, active_ttl_seconds=30, clock=lambda: now[0])
+    conversation = store.start("tenant-a", {"model": "fast"})
+
+    reserved, error = store.reserve(conversation.conversation_id, "tenant-a")
+    assert error == ""
+    assert reserved.active is True
+
+    # After idle_ttl_seconds (15s elapsed), it should NOT be purged yet because active is True
+    now[0] += 15
+    with store._lock:
+        store._purge_locked(now[0])
+    assert conversation.conversation_id in store._items
+
+    # After active_ttl_seconds (35s elapsed total), it SHOULD be purged as abandoned
+    now[0] += 20
+    with store._lock:
+        store._purge_locked(now[0])
+    assert conversation.conversation_id not in store._items
+
+
+def test_conversation_store_evicts_oldest_inactive_at_capacity() -> None:
+    from local_ai_hub.conversations import ConversationStore
+
+    now = [100.0]
+    store = ConversationStore(idle_ttl_seconds=1000, max_conversations=3, clock=lambda: now[0])
+    c1 = store.start("t", {"model": "m"})
+    now[0] += 1
+    c2 = store.start("t", {"model": "m"})
+    now[0] += 1
+    c3 = store.start("t", {"model": "m"})
+    assert len(store._items) == 3
+
+    # Adding a 4th conversation should evict c1 (oldest inactive)
+    now[0] += 1
+    c4 = store.start("t", {"model": "m"})
+    assert len(store._items) == 3
+    assert c1.conversation_id not in store._items
+    assert c4.conversation_id in store._items
+
+
+def test_services_aborts_active_conversation_on_exception() -> None:
+    import pytest
+    from local_ai_hub.conversations import ConversationStore
+    from local_ai_hub.router import ModelRouter
+    from local_ai_hub.services import LocalAIServices
+
+    services = object.__new__(LocalAIServices)
+    services.config = {
+        "models": {"fast_code": "fast", "heavy_code": "heavy", "general": "general"},
+        "routing": {"prefer_resident_model": False},
+        "token_saving": {"max_local_input_tokens": 4000},
+    }
+    services.router = ModelRouter(services.config)
+    services.conversations = ConversationStore(idle_ttl_seconds=60, max_turns=2)
+
+    def crashing_generate(*args, **kwargs):
+        raise RuntimeError("simulated model crash")
+
+    services._generate = crashing_generate
+
+    with pytest.raises(RuntimeError, match="simulated model crash"):
+        services.delegate({"task": "hello", "conversation": True}, "tenant-a")
+
+    # Conversation should have been discarded on start exception
+    assert len(services.conversations._items) == 0
+
+    # Test continue_conversation exception
+    services._generate = lambda *args, **kwargs: {"success": True, "text": "init"}
+    res = services.delegate({"task": "hello", "conversation": True}, "tenant-a")
+    cid = res["conversation_id"]
+
+    # Now make it crash on continue
+    services._generate = crashing_generate
+    with pytest.raises(RuntimeError, match="simulated model crash"):
+        services.continue_conversation({"conversation_id": cid, "task": "next"}, "tenant-a")
+
+    # The conversation should NOT be locked in active state
+    conv, err = services.conversations.reserve(cid, "tenant-a")
+    assert err == ""
+    assert conv is not None
+    assert conv.active is True
+
+

@@ -159,8 +159,8 @@ def test_git_grep_timeout_enters_cooldown(tmp_path: Path, monkeypatch: pytest.Mo
         calls["n"] += 1
         raise subprocess.TimeoutExpired(args[0], 0.1)
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert tools._git_grep_candidates(repo, ["needle"], 10) is None
-    assert tools._git_grep_candidates(repo, ["needle"], 10) is None
+    assert tools._git_grep_candidates(repo, ["needle"], 10) == (None, True)
+    assert tools._git_grep_candidates(repo, ["needle"], 10) == (None, False)
     assert calls["n"] == 1
     stats = tools.snapshot_stats()["git_files"]
     assert stats["grep_timeouts"] == 1

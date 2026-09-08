@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .cache import MemoryLRUCache, stable_hash
-from .process_utils import hidden_run_kwargs
+from .process_utils import canonical_root, hidden_run_kwargs
 
 
 class RepoStateTracker:
@@ -28,6 +28,10 @@ class RepoStateTracker:
         self.ttl = max(0.1, float(cfg.get("fingerprint_ttl_seconds", 2.0)))
         self.git_probe_timeout = max(0.2, float(cfg.get("git_probe_timeout_seconds", 1.0)))
         self.git_status_timeout = max(0.5, float(cfg.get("git_status_timeout_seconds", 5.0)))
+        # Waiting behind another fingerprint owner is bounded independently from Git
+        # itself. If an owner stalls in a pathological filesystem call, a waiter may
+        # do one bounded duplicate probe rather than inheriting an unbounded lock wait.
+        self.fingerprint_flight_timeout = max(0.05, float(cfg.get("fingerprint_flight_timeout_seconds", 8.0)))
         self.slow_git_cooldown = max(1.0, float(cfg.get("slow_git_cooldown_seconds", 12.0)))
         self.max_changed_paths = max(32, int(cfg.get("max_changed_paths", 512)))
         self.max_untracked_walk_files = max(32, int(cfg.get("max_untracked_walk_files", 2048)))
@@ -40,20 +44,28 @@ class RepoStateTracker:
         self._flights: dict[str, tuple[threading.Lock, int]] = {}
         self._last_good: dict[str, dict[str, Any]] = {}
         self._slow_until: dict[str, float] = {}
-        self._stats = {"git": 0, "filesystem": 0, "degraded": 0, "git_timeouts": 0, "cache_hits": 0}
+        self._stats = {"git": 0, "filesystem": 0, "degraded": 0, "git_timeouts": 0, "cache_hits": 0, "flight_timeouts": 0}
 
     @contextmanager
-    def _root_flight(self, cache_key: str) -> Iterator[None]:
-        """Serialize one root and drop the flight lock after the last waiter exits."""
+    def _root_flight(self, cache_key: str) -> Iterator[bool]:
+        """Serialize one root with a bounded wait and release per-root lock metadata.
+
+        ``False`` means this caller timed out waiting for the owner and should proceed
+        with its own already-bounded fingerprint computation. This intentionally trades
+        rare duplicate work for a hard upper bound on foreground lock latency.
+        """
         with self._flight_lock:
             current = self._flights.get(cache_key)
             lock, refs = current if current is not None else (threading.Lock(), 0)
             self._flights[cache_key] = (lock, refs + 1)
-        lock.acquire()
+        acquired = lock.acquire(timeout=self.fingerprint_flight_timeout)
+        if not acquired:
+            self._bump("flight_timeouts")
         try:
-            yield
+            yield acquired
         finally:
-            lock.release()
+            if acquired:
+                lock.release()
             with self._flight_lock:
                 current = self._flights.get(cache_key)
                 if current is not None and current[0] is lock:
@@ -198,10 +210,11 @@ class RepoStateTracker:
         return dict(result)
 
     def fingerprint(self, root: str, force: bool = False) -> dict[str, Any]:
-        root_path = Path(root).expanduser().resolve()
+        canon = canonical_root(root)
+        root_path = Path(canon)
         if not root_path.is_dir():
             raise ValueError(f"root directory does not exist: {root_path}")
-        cache_key = str(root_path)
+        cache_key = canon
         if not force:
             cached = self.cache.get(cache_key)
             if isinstance(cached, dict):
@@ -219,7 +232,8 @@ class RepoStateTracker:
         # Coalesce only callers for the same repository. Independent worktrees must
         # never queue behind another root's slow Git/filesystem probe.
         with self._root_flight(cache_key):
-            # Re-check after waiting for an in-flight fingerprint owner.
+            # Re-check after waiting for an in-flight fingerprint owner. A timed-out
+            # waiter can still observe a just-completed result before doing duplicate work.
             if not force:
                 cached = self.cache.get(cache_key)
                 if isinstance(cached, dict):

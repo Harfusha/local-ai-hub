@@ -6,7 +6,6 @@ import os
 import re
 import sqlite3
 import subprocess
-import tempfile
 import threading
 import time
 import tomllib
@@ -20,6 +19,8 @@ from typing import Any
 from .cache import MemoryLRUCache, SQLiteCache, stable_hash
 from .normalizer import normalize_query, tokenize_query_terms
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
+from .process_utils import canonical_root
+from .state_paths import configured_state_dir
 
 
 _WORD = re.compile(r"[A-Za-z_$][A-Za-z0-9_.$:/-]{1,100}")
@@ -63,7 +64,7 @@ class DeterministicEngine:
     VERSION = 1
 
     def __init__(self, config: dict[str, Any] | None = None, repo_tools: Any = None, code_index: Any = None, evidence: Any | None = None):
-        config = config or {"server": {"state_dir": tempfile.gettempdir()}}
+        config = config or {}
         self.config = config
         self.repo_tools = repo_tools
         self.code_index = code_index
@@ -74,7 +75,7 @@ class DeterministicEngine:
         self.max_query_results = int(cfg.get("max_query_results", 24))
         self.max_evidence = int(cfg.get("max_evidence", 12))
         self.max_manifest_bytes = int(cfg.get("max_manifest_bytes", 1_500_000))
-        self.db_path = Path(config.get("server", {}).get("state_dir", tempfile.gettempdir())) / "deterministic.sqlite3"
+        self.db_path = configured_state_dir(config) / "deterministic.sqlite3"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._stats = Counter()
@@ -85,7 +86,7 @@ class DeterministicEngine:
         self._query_l2_max_per_root = int(cfg.get("query_cache_l2_max_entries_per_root", 4000))
         audit_cfg = config.get("dependency_audit", {})
         self._osv_cache = SQLiteCache(
-            Path(config["server"]["state_dir"]) / "cache.sqlite3", "dependency-audit:osv",
+            configured_state_dir(config) / "cache.sqlite3", "dependency-audit:osv",
             ttl_seconds=max(60, int(audit_cfg.get("osv_cache_ttl_seconds", 6 * 3600))), max_entries=20000,
         )
         self._fact_blob_max = int(cfg.get("fact_blob_max_entries", 100000))
@@ -172,7 +173,7 @@ class DeterministicEngine:
 
     @staticmethod
     def _root(root: str) -> str:
-        return str(Path(root).expanduser().resolve())
+        return canonical_root(root)
 
     def _generation(self, root: str, con: sqlite3.Connection | None = None) -> int:
         root_s = self._root(root)
@@ -3569,7 +3570,8 @@ class DeterministicEngine:
             rel = str(f.relative_to(resolved_root)).replace("\\", "/")
             try:
                 txt = f.read_text(encoding="utf-8", errors="replace")
-                for i, line in enumerate(txt.splitlines(), 1):
+                lines = txt.splitlines()
+                for i, line in enumerate(lines, 1):
                     stripped = line.strip()
                     if stripped.startswith(("#", "//", "/*", "*")):
                         continue
@@ -3586,16 +3588,22 @@ class DeterministicEngine:
                             })
                             break
 
-                    for name, pat in code_smell_patterns:
-                        if pat.search(line):
+                for name, pat in code_smell_patterns:
+                    for m in pat.finditer(txt):
+                        line_no = txt[:m.start()].count("\n") + 1
+                        matched_line = lines[line_no - 1].strip() if line_no <= len(lines) else ""
+                        if matched_line.startswith(("#", "//", "/*", "*")):
+                            continue
+                        if not any(fd["path"] == rel and fd["line"] == line_no and fd["title"] == name for fd in findings):
                             findings.append({
                                 "severity": "MEDIUM",
                                 "type": "code_vulnerability",
                                 "title": name,
                                 "path": rel,
-                                "line": i,
-                                "snippet": stripped[:120],
+                                "line": line_no,
+                                "snippet": matched_line[:120] or m.group(0)[:120],
                             })
+                        if len(findings) >= limit:
                             break
             except Exception:
                 pass

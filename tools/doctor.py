@@ -98,6 +98,10 @@ codegraph_candidates = [
 ]
 
 warnings: list[str] = []
+openvino_requested = str(models.get("embedding_backend", "")).lower() == "openvino" or str(models.get("reranker_backend", "")).lower() == "openvino"
+openvino_installed = runtime_module_available("openvino")
+if openvino_requested and not openvino_installed:
+    warnings.append("OpenVINO acceleration is configured but the runtime is not installed in the hub environment; embeddings/reranking will fall back to CPU where allowed")
 try:
     validate_network_security(cfg)
     network_security = "ok"
@@ -132,8 +136,15 @@ if (
     and isinstance(ollama_profile, dict)
     and not bool(ollama_profile.get("profile_verifiable", False))
 ):
+    expected = ollama_profile.get("expected", {}) if isinstance(ollama_profile, dict) else {}
     warnings.append(
-        "Ollama is already running outside the hub-managed process; Local AI Hub cannot verify that foreground NUM_PARALLEL=2, Flash Attention and q8_0 KV cache were applied at server startup. Restart Ollama under the hub/service or set those environment variables before starting Ollama."
+        "Ollama is already running outside the hub-managed process; Local AI Hub cannot verify the configured "
+        f"foreground profile (NUM_PARALLEL={expected.get('num_parallel', cfg.get('ollama', {}).get('num_parallel', 1))}, "
+        f"integrated-GPU admission={expected.get('allow_integrated_gpu', cfg.get('ollama', {}).get('allow_integrated_gpu', False))}, "
+        f"Vulkan={expected.get('enable_vulkan', cfg.get('ollama', {}).get('enable_vulkan', False))}, "
+        f"Flash Attention={expected.get('flash_attention', cfg.get('ollama', {}).get('flash_attention', True))}, "
+        f"KV cache={expected.get('kv_cache_type', cfg.get('ollama', {}).get('kv_cache_type', 'q8_0'))}). "
+        "Restart Ollama under the hub/service or apply the equivalent environment before starting Ollama."
     )
 fast_model = str(models.get("fast_code", ""))
 smart_models = {str(models.get("heavy_code", "")), str(models.get("reasoning", ""))}
@@ -191,6 +202,7 @@ report = {
         "ollama_profile": ollama_profile,
         "background_gpu": background_gpu,
         "sentence_transformers": runtime_module_available("sentence_transformers"),
+        "openvino": {"requested": openvino_requested, "installed": openvino_installed, "status": status.get("accelerators") if isinstance(status, dict) else None},
         "codegraph_executable": next((str(p) for p in codegraph_candidates if p.exists()), None),
         "hardware": cfg.get("_hardware", {}),
         "code_intelligence": status.get("code_intelligence") if isinstance(status, dict) else None,

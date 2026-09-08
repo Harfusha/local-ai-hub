@@ -185,6 +185,7 @@ class LocalAIServices:
         self.conversations = ConversationStore(
             idle_ttl_seconds=float(conversation_cfg.get("idle_ttl_seconds", 900)),
             max_turns=int(conversation_cfg.get("max_turns", 12)),
+            max_conversations=int(conversation_cfg.get("max_conversations", 1000)),
         )
 
     def set_rag(self, rag: Any) -> None:
@@ -557,9 +558,14 @@ class LocalAIServices:
         }
         inline_tokens = estimate_tokens(str(result.get("text", "")))
         compact_saved = max(0, full_output_tokens - inline_tokens)
+        cached_compute_tokens = (prepared.estimated_tokens + full_output_tokens) if cache_layer in {"exact", "semantic", "single-flight", "stale-on-error"} else 0
         result["token_saving"] = {
             "compact_output_tokens_avoided_est": compact_saved,
             "delegated_cloud_context_tokens_avoided_est": max(0, int(avoided_cloud_tokens)),
+            # Separate from cloud-context savings: these are tokens the local model
+            # did not need to process/generate because a cache/single-flight result
+            # was reused. Keeping the metric separate prevents double counting.
+            "local_compute_tokens_avoided_est": max(0, int(cached_compute_tokens)),
         }
 
         if self.tuner is not None and cache_layer == "ollama":
@@ -634,10 +640,14 @@ class LocalAIServices:
             "route": dict(route),
         })
         self.conversations.reserve(conversation.conversation_id, tenant)
-        result = self._generate(
-            route["model"], prompt, system, max_tokens, temperature, tenant, source, priority,
-            internal=True, use_cache=False,
-        )
+        try:
+            result = self._generate(
+                route["model"], prompt, system, max_tokens, temperature, tenant, source, priority,
+                internal=True, use_cache=False,
+            )
+        except Exception:
+            self.conversations.discard(conversation.conversation_id, tenant)
+            raise
         if not result.get("success", "error" not in result):
             self.conversations.discard(conversation.conversation_id, tenant)
             return result
@@ -663,11 +673,15 @@ class LocalAIServices:
         if estimate_tokens(prompt) + estimate_tokens(str(settings["system"])) > self._conversation_prompt_limit():
             self.conversations.abort(conversation_id, tenant)
             return self._conversation_error(conversation_id, "conversation prompt limit exceeded")
-        result = self._generate(
-            str(settings["model"]), prompt, str(settings["system"]), int(settings["max_tokens"]),
-            float(settings["temperature"]), tenant, str(settings["source"]), int(settings["priority"]),
-            internal=True, use_cache=False,
-        )
+        try:
+            result = self._generate(
+                str(settings["model"]), prompt, str(settings["system"]), int(settings["max_tokens"]),
+                float(settings["temperature"]), tenant, str(settings["source"]), int(settings["priority"]),
+                internal=True, use_cache=False,
+            )
+        except Exception:
+            self.conversations.abort(conversation_id, tenant)
+            raise
         if not result.get("success", "error" not in result):
             self.conversations.abort(conversation_id, tenant)
             return result
@@ -875,7 +889,7 @@ class LocalAIServices:
             return {"success": True, "evaluation": self.telemetry.report(days).get("evaluation", {})}
         return {"success": False, "error": "unknown evaluation action", "terminal": True}
 
-    def embed(self, texts: list[str], tenant: str, priority: int = 3, query: bool = False) -> dict[str, Any]:
+    def embed(self, texts: list[str], tenant: str, priority: int = 3, query: bool = False, background: bool | None = None, wait_timeout: float | None = None) -> dict[str, Any]:
         backend = self.config["models"].get("embedding_backend", "sentence-transformers")
         model = str(self.config.get("models", {}).get("embedding", "qwen3-embedding:0.6b"))
         if backend == "sentence-transformers":
@@ -894,7 +908,8 @@ class LocalAIServices:
                 all_vectors.extend(response.get("embeddings", []))
             return {"success": True, "model": model, "backend": "ollama", "embeddings": all_vectors}
 
-        return self.scheduler.submit(model, tenant, "embed", run, priority=priority)
+        is_bg = background if background is not None else (priority <= 1)
+        return self.scheduler.submit(model, tenant, "embed", run, priority=priority, background=is_bg, wait_timeout=wait_timeout)
 
     def _repo_cached(self, operation: str, root: str, params: dict[str, Any], compute: Any) -> dict[str, Any]:
         # Worktrees/temp repositories can disappear between an agent request and a
@@ -976,6 +991,11 @@ class LocalAIServices:
         """
         try:
             state = self._repo_cache_state(root)
+            # Background preprocessing owns incremental index updates while active.
+            # Do not duplicate that work synchronously inside a foreground query;
+            # the durable index is safer than making the feature wait on a large batch.
+            if state.get("kind") == "preprocessed-watcher":
+                return
             fp = str(state.get("fingerprint") or "")
             base = Path(root).expanduser().resolve()
             root_key = str(base)
@@ -1060,7 +1080,18 @@ class LocalAIServices:
         return self._repo_cached("code-index", root, canonical, compute)
 
     def repo_map(self, root: str, max_symbols: int = 120) -> dict[str, Any]:
-        return self._repo_cached("map", root, {"max_symbols": max_symbols}, lambda: self.repo_tools.repo_map(root, max_symbols))
+        def compute() -> dict[str, Any]:
+            indexed_paths = None
+            if self.preprocessor is not None:
+                try:
+                    indexed_paths = self.preprocessor.indexed_paths(root)
+                except Exception:
+                    indexed_paths = None
+            if indexed_paths:
+                return self.repo_tools.repo_map(root, max_symbols, paths=indexed_paths)
+            return self.repo_tools.repo_map(root, max_symbols)
+
+        return self._repo_cached("map", root, {"max_symbols": max_symbols}, compute)
 
     def deterministic_operation(self, operation: str, root: str, params: dict[str, Any], compute: Any) -> dict[str, Any]:
         """Cache expensive deterministic analyses by repository fingerprint.
@@ -1901,6 +1932,8 @@ class LocalAIServices:
             return self.preprocessor.unregister(root, purge_data=bool(args.get("purge_data", False)))
         if action in {"prune", "cleanup_deleted", "cleanup"}:
             return self.preprocessor.cleanup_deleted_projects()
+        if action in {"cleanup_orphans", "cleanup_orphaned_indexes"}:
+            return self.preprocessor.cleanup_orphaned_indexes()
         if action in {"status", "get"}:
             return self.preprocessor.status(root if args.get("root") else None)
         if action in {"lookup", "context"}:

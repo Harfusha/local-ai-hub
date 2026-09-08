@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 import uuid
+from contextlib import closing
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -142,33 +144,38 @@ class ImprovementCandidate:
 class LearningStore:
     def __init__(self, state_store: AgentStateStore) -> None:
         self.state_store = state_store
+        self._lock = threading.RLock()
+        self._initialized = False
         self._init_table()
 
     def _init_table(self) -> None:
-        if not self.state_store.enabled:
+        if self._initialized or not self.state_store.enabled:
             return
-        self.state_store._ensure_schema()
-        con = connect_sqlite(self.state_store.db_path)
-        try:
-            con.execute(
-                """
-                CREATE TABLE IF NOT EXISTS agent_learning_candidates (
-                    candidate_id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    baseline_version TEXT NOT NULL,
-                    candidate_version TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    slo_thresholds TEXT NOT NULL,
-                    metrics TEXT NOT NULL,
-                    approver TEXT NOT NULL,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
-                );
-                """
-            )
-            con.commit()
-        finally:
-            con.close()
+        with self._lock:
+            if self._initialized or not self.state_store.enabled:
+                return
+            self.state_store._ensure_schema()
+            def _setup() -> None:
+                with closing(connect_sqlite(self.state_store.db_path)) as con:
+                    con.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS agent_learning_candidates (
+                            candidate_id TEXT PRIMARY KEY,
+                            name TEXT NOT NULL,
+                            baseline_version TEXT NOT NULL,
+                            candidate_version TEXT NOT NULL,
+                            status TEXT NOT NULL,
+                            slo_thresholds TEXT NOT NULL,
+                            metrics TEXT NOT NULL,
+                            approver TEXT NOT NULL,
+                            created_at REAL NOT NULL,
+                            updated_at REAL NOT NULL
+                        );
+                        """
+                    )
+                    con.commit()
+            retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+            self._initialized = True
 
     def create_candidate(self, candidate: ImprovementCandidate) -> ImprovementCandidate:
         self._init_table()
@@ -187,6 +194,8 @@ class LearningStore:
         current = self.get(candidate_id)
         if not current:
             raise KeyError(f"Candidate {candidate_id} not found")
+        if current.status in (CandidateStatus.ROLLED_BACK, CandidateStatus.REJECTED):
+            raise ValueError(f"Cannot advance candidate in terminal status '{current.status.value}'")
 
         updated = ImprovementCandidate(
             candidate_id=current.candidate_id,
@@ -215,6 +224,8 @@ class LearningStore:
         current = self.get(candidate_id)
         if not current:
             raise KeyError(f"Candidate {candidate_id} not found")
+        if current.status in (CandidateStatus.ROLLED_BACK, CandidateStatus.REJECTED):
+            raise ValueError(f"Cannot promote candidate in terminal status '{current.status.value}'")
 
         if approver != "user":
             raise ApprovalRequiredError(
@@ -304,42 +315,41 @@ class LearningStore:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return None
         self._init_table()
-        con = connect_sqlite(self.state_store.db_path)
-        try:
-            row = con.execute(
-                """
-                SELECT candidate_id, name, baseline_version, candidate_version, status,
-                       slo_thresholds, metrics, approver, created_at, updated_at
-                FROM agent_learning_candidates
-                WHERE candidate_id = ?
-                """,
-                (candidate_id,),
-            ).fetchone()
-            if not row:
-                return None
-            return self._row_to_candidate(row)
-        finally:
-            con.close()
+        def _do_get() -> Any:
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                return con.execute(
+                    """
+                    SELECT candidate_id, name, baseline_version, candidate_version, status,
+                           slo_thresholds, metrics, approver, created_at, updated_at
+                    FROM agent_learning_candidates
+                    WHERE candidate_id = ?
+                    """,
+                    (candidate_id,),
+                ).fetchone()
+        row = retry_busy(_do_get, retries=5, base_delay_seconds=0.02)
+        if not row:
+            return None
+        return self._row_to_candidate(row)
 
     def list_candidates(self, limit: int = 100) -> list[ImprovementCandidate]:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return []
         self._init_table()
-        con = connect_sqlite(self.state_store.db_path)
-        try:
-            cur = con.execute(
-                """
-                SELECT candidate_id, name, baseline_version, candidate_version, status,
-                       slo_thresholds, metrics, approver, created_at, updated_at
-                FROM agent_learning_candidates
-                ORDER BY updated_at DESC
-                LIMIT ?
-                """,
-                (max(1, int(limit)),),
-            )
-            return [self._row_to_candidate(r) for r in cur.fetchall()]
-        finally:
-            con.close()
+        def _do_list() -> list[Any]:
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                cur = con.execute(
+                    """
+                    SELECT candidate_id, name, baseline_version, candidate_version, status,
+                           slo_thresholds, metrics, approver, created_at, updated_at
+                    FROM agent_learning_candidates
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                    """,
+                    (max(1, int(limit)),),
+                )
+                return cur.fetchall()
+        rows = retry_busy(_do_list, retries=5, base_delay_seconds=0.02)
+        return [self._row_to_candidate(r) for r in rows]
 
     def _save(self, candidate: ImprovementCandidate) -> None:
         if not self.state_store.enabled:

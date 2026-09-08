@@ -17,9 +17,17 @@ from local_ai_hub.client import HubClient
 from local_ai_hub.config import load_config
 from local_ai_hub.process_utils import hidden_run_kwargs, terminate_tree
 
+ROOT_CONFIG = ROOT / "config.toml"
+
+
+def _config_arg(explicit: Path | None = None) -> str | None:
+    if explicit is not None:
+        return str(explicit.expanduser())
+    return str(ROOT_CONFIG) if ROOT_CONFIG.is_file() else None
+
 
 def client() -> HubClient:
-    return HubClient(tenant="hubctl", config_path=str(ROOT / "config.toml"))
+    return HubClient(tenant="hubctl", config_path=_config_arg())
 
 
 def status() -> dict:
@@ -39,7 +47,7 @@ def _service(action: str) -> bool:
     if not service.exists():
         return False
     try:
-        completed = subprocess.run([sys.executable, str(service), action], check=False, timeout=20, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **hidden_run_kwargs())
+        completed = subprocess.run([sys.executable, str(service), action], check=False, timeout=35, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **hidden_run_kwargs())
         return completed.returncode == 0
     except Exception:
         return False
@@ -48,7 +56,7 @@ def _service(action: str) -> bool:
 def _startup_wait_seconds() -> float:
     """Match the supervisor's cold-start contract, with a bounded probe margin."""
     try:
-        grace = float(load_config(str(ROOT / "config.toml")).get("headless", {}).get("startup_grace_seconds", 60.0))
+        grace = float(load_config(_config_arg()).get("headless", {}).get("startup_grace_seconds", 60.0))
     except Exception:
         grace = 60.0
     return min(120.0, max(12.0, grace + 5.0))
@@ -109,8 +117,7 @@ def main() -> int:
     parser.add_argument("--json", dest="raw_json", action="store_true", help="Output raw JSON")
     args = parser.parse_args()
     if args.action == "generate":
-        cfg_path = args.config or (ROOT / "config.toml")
-        cfg = load_config(str(cfg_path))
+        cfg = load_config(_config_arg(args.config))
         from local_ai_hub.generator import write_all_generated
         from tools import setup as setup_mod
         python_bin = setup_mod.venv_python(ROOT / ".venv")
@@ -129,7 +136,7 @@ def main() -> int:
     if args.action == "dashboard":
         c = client(); print(c.base_url + "/dashboard"); return 0
     if args.action == "service-status":
-        path = Path(load_config(str(ROOT / "config.toml"))["server"]["state_dir"]) / "supervisor.status.json"
+        path = Path(load_config(_config_arg())["server"]["state_dir"]) / "supervisor.status.json"
         print(path.read_text(encoding="utf-8") if path.exists() else json.dumps({"running": False}, indent=2)); return 0
     if args.action == "agent-state":
         c = client()
@@ -158,7 +165,7 @@ def main() -> int:
         vacuum_results: list[dict[str, Any]] = []
         if args.vacuum:
             from local_ai_hub.sqlite_support import optimize_db
-            cfg = load_config(str(args.config or (ROOT / "config.toml")))
+            cfg = load_config(_config_arg(args.config))
             state_dir = Path(cfg.get("server", {}).get("state_dir", "~/.local-ai-hub/state")).expanduser().resolve()
             if state_dir.exists():
                 for db_file in state_dir.rglob("*.sqlite3"):

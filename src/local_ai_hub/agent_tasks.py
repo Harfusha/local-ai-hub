@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 import uuid
+from contextlib import closing
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -51,6 +53,7 @@ VALID_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.ACTIVE,
         TaskStatus.FAILED,
         TaskStatus.CANCELLED,
+        TaskStatus.ABANDONED,
     },
     TaskStatus.WAITING: {TaskStatus.ACTIVE, TaskStatus.CANCELLED, TaskStatus.ABANDONED, TaskStatus.FAILED},
     TaskStatus.BLOCKED: {TaskStatus.ACTIVE, TaskStatus.CANCELLED, TaskStatus.ABANDONED, TaskStatus.FAILED},
@@ -172,40 +175,74 @@ class TaskStore:
     ) -> None:
         self.state_store = state_store
         self.default_heartbeat_ttl = float(default_heartbeat_ttl)
+        self._lock = threading.RLock()
+        self._initialized = False
         self._init_projection_table()
 
-    def _init_projection_table(self) -> None:
+    def _db_path_available(self) -> bool:
+        """Return whether the projection database path is usable.
+
+        AgentStateStore intentionally creates its database lazily in _ensure_schema().
+        Requiring the file to exist here creates a bootstrap cycle on clean installs:
+        the projection refuses to initialize because the file is absent, while the
+        state store is never asked to create it.  Validate the path object instead
+        and let _ensure_schema() create the parent/database atomically.
+        """
         if not self.state_store.enabled:
-            return
-        self.state_store._ensure_schema()
-        con = connect_sqlite(self.state_store.db_path)
+            return False
         try:
-            con.execute(
-                """
-                CREATE TABLE IF NOT EXISTS agent_tasks_projection (
-                    task_id TEXT PRIMARY KEY,
-                    status TEXT NOT NULL,
-                    owner TEXT NOT NULL,
-                    lease_id TEXT NOT NULL,
-                    contract TEXT NOT NULL,
-                    context TEXT NOT NULL,
-                    checkpoint TEXT NOT NULL,
-                    receipts TEXT NOT NULL,
-                    heartbeat_expires_at REAL NOT NULL,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
-                );
-                """
-            )
-            con.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_agent_tasks_status
-                ON agent_tasks_projection (status, heartbeat_expires_at);
-                """
-            )
-            con.commit()
-        finally:
-            con.close()
+            path = Path(self.state_store.db_path)
+            return bool(path.name)
+        except (RecursionError, OSError, ValueError, TypeError):
+            return False
+
+    def _init_projection_table(self) -> None:
+        if self._initialized or not self._db_path_available():
+            return
+        with self._lock:
+            if self._initialized or not self._db_path_available():
+                return
+            self.state_store._ensure_schema()
+            def _setup() -> None:
+                with closing(connect_sqlite(self.state_store.db_path)) as con:
+                    con.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS agent_tasks_projection (
+                            task_id TEXT PRIMARY KEY,
+                            status TEXT NOT NULL,
+                            owner TEXT NOT NULL,
+                            lease_id TEXT NOT NULL,
+                            contract TEXT NOT NULL,
+                            context TEXT NOT NULL,
+                            checkpoint TEXT NOT NULL,
+                            receipts TEXT NOT NULL,
+                            heartbeat_expires_at REAL NOT NULL,
+                            created_at REAL NOT NULL,
+                            updated_at REAL NOT NULL
+                        );
+                        """
+                    )
+                    con.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS idx_agent_tasks_status
+                        ON agent_tasks_projection (status, heartbeat_expires_at);
+                        """
+                    )
+                    con.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS idx_agent_tasks_updated
+                        ON agent_tasks_projection (updated_at DESC);
+                        """
+                    )
+                    con.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS idx_agent_tasks_status_updated
+                        ON agent_tasks_projection (status, updated_at DESC);
+                        """
+                    )
+                    con.commit()
+            retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+            self._initialized = True
 
     def create(
         self,
@@ -245,72 +282,73 @@ class TaskStore:
         return initial_state
 
     def get(self, task_id: str) -> TaskState | None:
-        if not self.state_store.enabled or not self.state_store.db_path.exists():
+        if not self._db_path_available():
             return None
         self._init_projection_table()
-        con = connect_sqlite(self.state_store.db_path)
-        try:
-            row = con.execute(
-                """
-                SELECT task_id, status, owner, lease_id, contract, context, checkpoint, receipts,
-                       heartbeat_expires_at, created_at, updated_at
-                FROM agent_tasks_projection
-                WHERE task_id = ?
-                """,
-                (task_id,),
-            ).fetchone()
-            if not row:
-                return None
-            return self._row_to_state(row)
-        finally:
-            con.close()
+        def _fetch_task() -> Any:
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                return con.execute(
+                    """
+                    SELECT task_id, status, owner, lease_id, contract, context, checkpoint, receipts,
+                           heartbeat_expires_at, created_at, updated_at
+                    FROM agent_tasks_projection
+                    WHERE task_id = ?
+                    """,
+                    (task_id,),
+                ).fetchone()
+
+        row = retry_busy(_fetch_task, retries=5, base_delay_seconds=0.02)
+        if not row:
+            return None
+        return self._row_to_state(row)
 
     def list_tasks(self, status: TaskStatus | None = None, limit: int = 100) -> list[TaskState]:
-        if not self.state_store.enabled or not self.state_store.db_path.exists():
+        if not self._db_path_available():
             return []
         self._init_projection_table()
-        con = connect_sqlite(self.state_store.db_path)
-        try:
-            if status is not None:
-                cur = con.execute(
-                    """
-                    SELECT task_id, status, owner, lease_id, contract, context, checkpoint, receipts,
-                           heartbeat_expires_at, created_at, updated_at
-                    FROM agent_tasks_projection
-                    WHERE status = ?
-                    ORDER BY updated_at DESC
-                    LIMIT ?
-                    """,
-                    (status.value, max(1, int(limit))),
-                )
-            else:
-                cur = con.execute(
-                    """
-                    SELECT task_id, status, owner, lease_id, contract, context, checkpoint, receipts,
-                           heartbeat_expires_at, created_at, updated_at
-                    FROM agent_tasks_projection
-                    ORDER BY updated_at DESC
-                    LIMIT ?
-                    """,
-                    (max(1, int(limit)),),
-                )
-            return [self._row_to_state(row) for row in cur.fetchall()]
-        finally:
-            con.close()
+        def _fetch_tasks() -> list[Any]:
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                if status is not None:
+                    cur = con.execute(
+                        """
+                        SELECT task_id, status, owner, lease_id, contract, context, checkpoint, receipts,
+                               heartbeat_expires_at, created_at, updated_at
+                        FROM agent_tasks_projection
+                        WHERE status = ?
+                        ORDER BY updated_at DESC
+                        LIMIT ?
+                        """,
+                        (status.value, max(1, int(limit))),
+                    )
+                else:
+                    cur = con.execute(
+                        """
+                        SELECT task_id, status, owner, lease_id, contract, context, checkpoint, receipts,
+                               heartbeat_expires_at, created_at, updated_at
+                        FROM agent_tasks_projection
+                        ORDER BY updated_at DESC
+                        LIMIT ?
+                        """,
+                        (max(1, int(limit)),),
+                    )
+                return cur.fetchall()
+
+        rows = retry_busy(_fetch_tasks, retries=5, base_delay_seconds=0.02)
+        return [self._row_to_state(row) for row in rows]
 
     def count(self, status: TaskStatus | None = None) -> int:
-        if not self.state_store.enabled or not self.state_store.db_path.exists():
+        if not self._db_path_available():
             return 0
         self._init_projection_table()
-        con = connect_sqlite(self.state_store.db_path)
-        try:
-            if status is not None:
-                row = con.execute("SELECT COUNT(1) FROM agent_tasks_projection WHERE status = ?", (status.value,)).fetchone()
-            else:
-                row = con.execute("SELECT COUNT(1) FROM agent_tasks_projection").fetchone()
-            return int(row[0]) if row else 0
-        finally:
-            con.close()
+        def _fetch_count() -> int:
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                if status is not None:
+                    row = con.execute("SELECT COUNT(1) FROM agent_tasks_projection WHERE status = ?", (status.value,)).fetchone()
+                else:
+                    row = con.execute("SELECT COUNT(1) FROM agent_tasks_projection").fetchone()
+                return int(row[0]) if row else 0
+
+        return retry_busy(_fetch_count, retries=5, base_delay_seconds=0.02)
 
     def add_verification_receipt(self, task_id: str, criterion: str, receipt_id: str) -> TaskState:
         current = self.get(task_id)
@@ -318,6 +356,7 @@ class TaskStore:
             raise KeyError(f"Task {task_id} not found")
         new_receipts = dict(current.verification_receipts)
         new_receipts[criterion] = receipt_id
+        now = time.time()
         updated = TaskState(
             task_id=current.task_id,
             status=current.status,
@@ -326,11 +365,19 @@ class TaskStore:
             owner=current.owner,
             lease_id=current.lease_id,
             created_at=current.created_at,
-            updated_at=time.time(),
+            updated_at=now,
             heartbeat_expires_at=current.heartbeat_expires_at,
             checkpoint=current.checkpoint,
             verification_receipts=new_receipts,
         )
+        event = AgentEvent.create(
+            stream_id=f"task:{task_id}",
+            kind="task.verified",
+            payload={"criterion": criterion, "receipt_id": receipt_id},
+            idempotency_key=f"ver_{task_id}_{criterion}_{receipt_id}",
+            actor="verifier",
+        )
+        self.state_store.append(event)
         self._save_projection(updated)
         return updated
 
@@ -415,6 +462,14 @@ class TaskStore:
                 reason="auto-activated before completion",
                 actor=actor,
                 idempotency_key=f"{idempotency_key}_act" if idempotency_key else "",
+            )
+        if current.status in (TaskStatus.WAITING, TaskStatus.BLOCKED):
+            current = self.transition(
+                task_id,
+                TaskStatus.ACTIVE,
+                reason="auto-resumed before completion",
+                actor=actor,
+                idempotency_key=f"{idempotency_key}_res" if idempotency_key else "",
             )
         if current.status == TaskStatus.ACTIVE:
             current = self.transition(
@@ -534,23 +589,65 @@ class TaskStore:
             idempotency_key=idempotency_key or f"resume_{task_id}_{int(time.time())}",
         )
 
+    def heartbeat(
+        self,
+        task_id: str,
+        ttl_seconds: float | None = None,
+        *,
+        actor: str = "agent",
+        idempotency_key: str = "",
+    ) -> TaskState:
+        current = self.get(task_id)
+        if not current:
+            raise KeyError(f"Task {task_id} not found")
+
+        now = time.time()
+        ttl = float(ttl_seconds) if ttl_seconds is not None and float(ttl_seconds) > 0 else self.default_heartbeat_ttl
+        new_expiry = now + ttl
+
+        updated = TaskState(
+            task_id=current.task_id,
+            status=current.status,
+            contract=current.contract,
+            context=current.context,
+            owner=current.owner,
+            lease_id=current.lease_id,
+            created_at=current.created_at,
+            updated_at=now,
+            heartbeat_expires_at=new_expiry,
+            checkpoint=current.checkpoint,
+            verification_receipts=current.verification_receipts,
+        )
+
+        event = AgentEvent.create(
+            stream_id=f"task:{task_id}",
+            kind="task.heartbeat",
+            payload={"heartbeat_expires_at": new_expiry, "ttl_seconds": ttl},
+            idempotency_key=idempotency_key or f"hb_{task_id}_{int(now)}",
+            actor=actor,
+        )
+        self.state_store.append(event)
+        self._save_projection(updated)
+        return updated
+
     def reap_expired_heartbeats(self, now: float | None = None) -> list[str]:
-        if not self.state_store.enabled or not self.state_store.db_path.exists():
+        if not self._db_path_available():
             return []
         self._init_projection_table()
         current_time = float(time.time() if now is None else now)
-        con = connect_sqlite(self.state_store.db_path)
-        try:
-            cur = con.execute(
-                """
-                SELECT task_id FROM agent_tasks_projection
-                WHERE status = 'active' AND heartbeat_expires_at > 0 AND heartbeat_expires_at < ?
-                """,
-                (current_time,),
-            )
-            expired_ids = [row[0] for row in cur.fetchall()]
-        finally:
-            con.close()
+        def _fetch_expired() -> list[str]:
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                cur = con.execute(
+                    """
+                    SELECT task_id FROM agent_tasks_projection
+                    WHERE status IN ('active', 'verifying', 'waiting', 'blocked')
+                      AND heartbeat_expires_at > 0 AND heartbeat_expires_at < ?
+                    """,
+                    (current_time,),
+                )
+                return [row[0] for row in cur.fetchall()]
+
+        expired_ids = retry_busy(_fetch_expired, retries=5, base_delay_seconds=0.02)
 
         reaped: list[str] = []
         for t_id in expired_ids:
@@ -568,7 +665,7 @@ class TaskStore:
         return reaped
 
     def _save_projection(self, state: TaskState) -> None:
-        if not self.state_store.enabled:
+        if not self._db_path_available():
             return
         self._init_projection_table()
 

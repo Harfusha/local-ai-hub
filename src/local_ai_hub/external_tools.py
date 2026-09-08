@@ -38,8 +38,12 @@ class MCPStdioClient:
         self.startup_timeout = max(2.0, float(startup_timeout))
         self.call_timeout = max(1.0, float(call_timeout))
         self._proc: subprocess.Popen[str] | None = None
+        # Queues/buffers are process-generation scoped. Reader threads capture these
+        # exact objects so a late reader from an old process can never consume from or
+        # inject into a freshly restarted JSON-RPC session.
         self._responses: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=128)
         self._stderr: deque[str] = deque(maxlen=80)
+        self._reader_threads: tuple[threading.Thread, ...] = ()
         self._dropped_responses = 0
         self._stale_responses = 0
         self._lock = threading.RLock()
@@ -62,8 +66,10 @@ class MCPStdioClient:
         # Managed Python MCP tools must emit Unicode diagnostics even when the
         # Windows process code page is a legacy charmap (for example cp1252).
         merged_env.update({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
+        responses: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=128)
+        stderr_lines: deque[str] = deque(maxlen=80)
         try:
-            self._proc = subprocess.Popen(
+            proc = subprocess.Popen(
                 self.command,
                 cwd=self.cwd,
                 env=merged_env,
@@ -76,8 +82,18 @@ class MCPStdioClient:
         except Exception as exc:
             self._proc = None
             raise MCPStdioError(f"cannot start MCP server: {type(exc).__name__}: {exc}") from exc
-        threading.Thread(target=self._read_stdout, name="local-ai-mcp-stdout", daemon=True).start()
-        threading.Thread(target=self._read_stderr, name="local-ai-mcp-stderr", daemon=True).start()
+        self._proc = proc
+        self._responses = responses
+        self._stderr = stderr_lines
+        stdout_thread = threading.Thread(
+            target=self._read_stdout, args=(proc, responses), name="local-ai-mcp-stdout", daemon=True
+        )
+        stderr_thread = threading.Thread(
+            target=self._read_stderr, args=(proc, stderr_lines), name="local-ai-mcp-stderr", daemon=True
+        )
+        self._reader_threads = (stdout_thread, stderr_thread)
+        stdout_thread.start()
+        stderr_thread.start()
         try:
             init = self._request(
                 "initialize",
@@ -97,9 +113,8 @@ class MCPStdioClient:
             self._stop_process()
             raise
 
-    def _read_stdout(self) -> None:
-        proc = self._proc
-        if not proc or not proc.stdout:
+    def _read_stdout(self, proc: subprocess.Popen[str], responses: queue.Queue[dict[str, Any]]) -> None:
+        if not proc.stdout:
             return
         try:
             for line in proc.stdout:
@@ -112,32 +127,31 @@ class MCPStdioClient:
                     continue
                 if isinstance(item, dict) and ("id" in item or "error" in item):
                     try:
-                        self._responses.put_nowait(item)
+                        responses.put_nowait(item)
                     except queue.Full:
                         # A broken MCP peer must not grow hub memory without bound.
                         # Drop the oldest unmatched response and keep the newest one,
                         # which is most likely to belong to the current serialized call.
                         try:
-                            self._responses.get_nowait()
+                            responses.get_nowait()
                         except queue.Empty:
                             pass
                         self._dropped_responses += 1
                         try:
-                            self._responses.put_nowait(item)
+                            responses.put_nowait(item)
                         except queue.Full:
                             self._dropped_responses += 1
         except Exception:
             return
 
-    def _read_stderr(self) -> None:
-        proc = self._proc
-        if not proc or not proc.stderr:
+    def _read_stderr(self, proc: subprocess.Popen[str], stderr_lines: deque[str]) -> None:
+        if not proc.stderr:
             return
         try:
             for line in proc.stderr:
                 value = line.rstrip()
                 if value:
-                    self._stderr.append(value[-1000:])
+                    stderr_lines.append(value[-1000:])
         except Exception:
             return
 
@@ -160,7 +174,7 @@ class MCPStdioClient:
         request_id = self._next_id
         self._next_id += 1
         self._send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
-        deadline = time.monotonic() + (self.call_timeout if timeout is None else max(0.5, timeout))
+        deadline = time.monotonic() + (self.call_timeout if timeout is None else max(0.05, float(timeout)))
         while time.monotonic() < deadline:
             proc = self._proc
             if proc is None or proc.poll() is not None:
@@ -248,8 +262,16 @@ class MCPStdioClient:
 
     def _stop_process(self) -> None:
         proc = self._proc
+        responses = self._responses
+        stderr_lines = self._stderr
+        reader_threads = self._reader_threads
         self._proc = None
         self._tools = {}
+        self._reader_threads = ()
+        # Detach the public/current buffers before reaping. Any late old-generation
+        # reader still owns only the captured objects above.
+        self._responses = queue.Queue(maxsize=128)
+        self._stderr = deque(maxlen=80)
         if not proc:
             return
         try:
@@ -264,19 +286,25 @@ class MCPStdioClient:
         except Exception:
             pass
         # Popen does not guarantee pipe file objects are closed merely because
-        # the child exited. Explicitly close stdout/stderr so repeated MCP
-        # restarts cannot leak file descriptors on long-running hubs.
+        # the child exited. Closing them also unblocks line-reader threads.
         for stream in (proc.stdout, proc.stderr):
             try:
                 if stream:
                     stream.close()
             except Exception:
                 pass
+        for thread in reader_threads:
+            try:
+                if thread is not threading.current_thread():
+                    thread.join(timeout=0.5)
+            except Exception:
+                pass
         while True:
             try:
-                self._responses.get_nowait()
+                responses.get_nowait()
             except queue.Empty:
                 break
+        stderr_lines.clear()
 
     def reset(self) -> None:
         with self._lock:
@@ -287,9 +315,27 @@ class MCPStdioClient:
             self._closed = True
             self._stop_process()
 
+    def __enter__(self) -> "MCPStdioClient":
+        if self._closed:
+            raise MCPStdioError("MCP client is closed")
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.close()
+
 
 class ExternalCodeIntelligence:
     """Managed Serena + CodeGraphContext integration for preprocessing and local agents."""
+
+    _CGC_BASE_IGNORE_DIRS = {
+        ".git", ".idea", ".serena", ".venv", ".vscode", "__pycache__", ".pytest_cache",
+        ".tox", ".mypy_cache", "build", "dist", "env", "node_modules", "obj", "out",
+        "target", "tmp", "venv",
+    }
+    _CGC_SAFE_GIT_IGNORE_DIR_NAMES = {
+        ".tmp", ".vs", ".woodbound", "Builds", "Library", "Logs", "Temp", "UserSettings",
+        "artifacts", "coverage", "htmlcov",
+    }
 
     def __init__(self, config: dict[str, Any], telemetry: Any | None = None):
         self.config = config
@@ -359,6 +405,55 @@ class ExternalCodeIntelligence:
             self._serena = self._resolve_command("serena") if self.serena_enabled else None
             self._codegraph = self._resolve_command("codegraph") if self.codegraph_enabled else None
 
+    @staticmethod
+    def _git_ignored_directory_names(root: str) -> set[str]:
+        """Return literal directory names Git already excludes from this worktree."""
+        try:
+            probe = subprocess.run(
+                ["git", "-C", root, "rev-parse", "--show-toplevel"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=2,
+            )
+            if probe.returncode != 0:
+                return set()
+            raw_root = probe.stdout.decode("utf-8", "replace") if isinstance(probe.stdout, bytes) else str(probe.stdout or "")
+            git_root = Path(raw_root.strip()).resolve()
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return set()
+
+        ignore_files = [git_root / ".gitignore", git_root / ".git" / "info" / "exclude"]
+        try:
+            listed = subprocess.run(
+                ["git", "-C", root, "ls-files", "-z", "--", ".gitignore", "**/.gitignore"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=3,
+            )
+            raw_listed = listed.stdout.decode("utf-8", "replace") if isinstance(listed.stdout, bytes) else str(listed.stdout or "")
+            ignore_files.extend(git_root / item for item in raw_listed.split("\0") if item)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+
+        names: set[str] = set()
+        for ignore_file in dict.fromkeys(ignore_files):
+            try:
+                lines = ignore_file.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeError):
+                continue
+            for line in lines:
+                pattern = line.strip()
+                if not pattern or pattern.startswith("#") or pattern.startswith("!") or not pattern.endswith("/"):
+                    continue
+                normalized = pattern.rstrip("/").replace("\\", "/")
+                name = normalized.rsplit("/", 1)[-1]
+                is_global = "/" not in normalized.lstrip("/")
+                if name and (is_global or name in ExternalCodeIntelligence._CGC_SAFE_GIT_IGNORE_DIR_NAMES) and not any(char in name for char in "*?["):
+                    names.add(name)
+        return names
+
     def _prune_sessions_locked(self, backend: str) -> list[MCPStdioClient]:
         """Remove idle/LRU project MCP processes while holding ``self._lock``."""
         sessions = self._serena_sessions if backend == "serena" else self._codegraph_sessions
@@ -413,6 +508,7 @@ class ExternalCodeIntelligence:
         return any(marker in lowered for marker in (
             "indexing exceeded",
             "no associated project configuration",
+            "no configuration file found",
             "project configuration auto-generation failed",
             "project root is missing",
         ))
@@ -458,17 +554,23 @@ class ExternalCodeIntelligence:
         root_key = hashlib.sha256(root.encode("utf-8")).hexdigest()[:16]
         db_path = state_dir / "codegraph" / f"{root_key}-kuzudb"
         db_path.parent.mkdir(parents=True, exist_ok=True)
+        ignored_dirs = set(self._CGC_BASE_IGNORE_DIRS)
+        ignored_dirs.update(self._git_ignored_directory_names(root))
         return {
             "CGC_OUTPUT_FORMAT": str(self.cfg.get("codegraph_output_format", "gcf")),
             "CGC_ALLOWED_ROOTS": root,
             "CGC_RUNTIME_DB_TYPE": "kuzudb",
             "CGC_RUNTIME_DB_PATH": str(db_path),
+            "IGNORE_DIRS": ",".join(sorted(ignored_dirs)),
+            # Large tracked evidence/export files are not useful graph source and
+            # can make the first worktree index hit CGC's process timeout.
+            "MAX_FILE_SIZE_MB": str(self.cfg.get("codegraph_max_file_size_mb", 5)),
             "PYTHONIOENCODING": "utf-8",
             "PYTHONUTF8": "1",
         }
 
     @staticmethod
-    def _serena_language_args(root: str) -> list[str]:
+    def _serena_language_args(root: str, git_ignored_dirs: set[str] | None = None) -> list[str]:
         suffixes = {
             ".cs": "csharp", ".csx": "csharp", ".py": "python", ".pyi": "python",
             ".rs": "rust", ".java": "java", ".kt": "kotlin", ".kts": "kotlin",
@@ -480,6 +582,7 @@ class ExternalCodeIntelligence:
             ".lua": "lua", ".zig": "zig", ".scala": "scala", ".jl": "julia",
         }
         ignored = {".git", ".serena", ".venv", "venv", "node_modules", "bin", "obj", "target"}
+        ignored.update(name.lower() for name in (git_ignored_dirs or set()))
         counts: Counter[str] = Counter()
         try:
             for directory, dirnames, filenames in os.walk(root):
@@ -526,6 +629,12 @@ class ExternalCodeIntelligence:
             self._record_success(backend, root=root)
             return {"success": True, "backend": backend, "elapsed_ms": round((time.perf_counter() - started) * 1000, 1), "output": (stdout or "").strip()[-self.max_output_chars:]}
         except Exception as exc:
+            if proc is not None and proc.poll() is None:
+                try:
+                    terminate_tree(proc.pid, grace_seconds=1.0)
+                    proc.wait(timeout=1.0)
+                except Exception:
+                    pass
             msg = str(exc)
             if not self._is_revision_scoped_index_error("index", msg) and not (backend == "codegraph" and any(m in msg.lower() for m in ("no module named", "cannot import"))):
                 self.index_failures += 1
@@ -537,12 +646,16 @@ class ExternalCodeIntelligence:
         root = self._root(root)
         if not self.enabled:
             return {"success": False, "skipped": True, "backend": backend, "reason": "code intelligence disabled"}
+        if backend == "serena" and self.serena_enabled and not self._serena:
+            self.refresh_discovery()
+        elif backend == "codegraph" and self.codegraph_enabled and not self._codegraph:
+            self.refresh_discovery()
         if not self._allowed(backend, root):
             return {"success": False, "skipped": True, "backend": backend, "reason": "circuit cooldown"}
         if backend == "serena":
             if not self.serena_enabled or not self._serena:
                 return {"success": False, "skipped": True, "backend": backend, "reason": "Serena not installed"}
-            result = self._run_index("serena", [self._serena, "project", "index", root, *self._serena_language_args(root), "--log-level", "WARNING", "--timeout", "5"], root)
+            result = self._run_index("serena", [self._serena, "project", "index", root, *self._serena_language_args(root, self._git_ignored_directory_names(root)), "--log-level", "WARNING", "--timeout", "5"], root)
             # Indexing can invalidate server-side project state. Restart the project session lazily.
             with self._lock:
                 session = self._serena_sessions.pop(root, None)
@@ -553,15 +666,34 @@ class ExternalCodeIntelligence:
         if backend == "codegraph":
             if not self.codegraph_enabled or not self._codegraph:
                 return {"success": False, "skipped": True, "backend": backend, "reason": "CodeGraphContext not installed"}
-            result = self._run_index("codegraph", [self._codegraph, "index", root], root, env=self._codegraph_env(root))
+            result = self._run_index("codegraph", [self._codegraph, "index", "--no-progress", root], root, env=self._codegraph_env(root))
             # Re-open the graph lazily after indexing so a long-lived MCP process
             # cannot retain a stale embedded database/context.
             with self._lock:
                 session = self._codegraph_sessions.pop(root, None)
+                self._session_access["codegraph"].pop(root, None)
             if session:
                 session.close()
             return result
         return {"success": False, "error": f"unknown code-intelligence backend: {backend}"}
+
+    def backend_available(self, backend: str) -> bool:
+        """Check whether an enabled backend can be launched, refreshing discovery once."""
+        backend = backend.strip().lower()
+        if backend == "serena":
+            enabled = self.serena_enabled
+            command = self._serena
+        elif backend == "codegraph":
+            enabled = self.codegraph_enabled
+            command = self._codegraph
+        else:
+            return False
+        if not enabled:
+            return False
+        if not command:
+            self.refresh_discovery()
+            command = self._serena if backend == "serena" else self._codegraph
+        return bool(command)
 
     def _serena_session(self, root: str) -> MCPStdioClient:
         root = self._root(root)
@@ -743,6 +875,12 @@ class ExternalCodeIntelligence:
             "stats": {"index_runs": self.index_runs, "index_failures": self.index_failures, "queries": self.queries, "query_failures": self.query_failures},
         }
 
+    def __enter__(self) -> "ExternalCodeIntelligence":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.close()
+
     def close(self) -> None:
         with self._lock:
             sessions = list(self._serena_sessions.values())
@@ -751,7 +889,4 @@ class ExternalCodeIntelligence:
             self._codegraph_sessions.clear()
             self._session_access["serena"].clear()
             self._session_access["codegraph"].clear()
-        for session in sessions:
-            session.close()
-        for session in graph_sessions:
-            session.close()
+        self._close_clients(sessions + graph_sessions)

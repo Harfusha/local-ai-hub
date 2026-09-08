@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from .process_utils import find_listening_pid, pid_alive
 from typing import Any
@@ -288,18 +288,34 @@ class HubClient:
             return json.loads(self._pooled_open("POST", path, body, headers, timeout).decode("utf-8"))
 
         def execute() -> dict[str, Any]:
+            duplicate_deadline = time.monotonic() + timeout
             try:
-                return once()
+                while True:
+                    try:
+                        return once()
+                    except HTTPError as exc:
+                        result = self._error_response(exc, request_id)
+                        if not (result.get("in_progress") and result.get("retryable")):
+                            return result
+                        remaining = duplicate_deadline - time.monotonic()
+                        if remaining <= 0:
+                            result["retry_timeout"] = True
+                            return result
+                        retry_after = max(0.01, float(result.get("retry_after_seconds", 0.1) or 0.1))
+                        time.sleep(min(retry_after, remaining))
             except HTTPError as exc:
                 return self._error_response(exc, request_id)
             except (URLError, OSError, http.client.HTTPException) as exc:
                 self._drop_connection()
-                # A local hub can disappear between ensure_server() and the response.
-                # Replay-safe work retries once with the same request id for journal reuse.
-                if replay_safe and self.auto_start and self.ensure_server():
-                    try: return once()
-                    except HTTPError as retry_http: return self._error_response(retry_http, request_id)
-                    except Exception as retry_exc: return {"success": False, "error": str(retry_exc), "request_id": request_id, "retried": True}
+                # A local hub can disappear between ensure_server() and the response,
+                # or a pooled keep-alive socket may be closed by the server idle timeout.
+                # Replay-safe work retries once with a fresh connection for journal reuse.
+                if replay_safe:
+                    server_ready = self.ensure_server() if self.auto_start else True
+                    if server_ready:
+                        try: return once()
+                        except HTTPError as retry_http: return self._error_response(retry_http, request_id)
+                        except Exception as retry_exc: return {"success": False, "error": str(retry_exc), "request_id": request_id, "retried": True}
                 return {"success": False, "error": str(exc), "request_id": request_id}
             except Exception as exc:
                 return {"success": False, "error": str(exc), "request_id": request_id}
@@ -329,7 +345,8 @@ class HubClient:
                 return self._error_response(exc, request_id)
             except (URLError, OSError, http.client.HTTPException) as exc:
                 self._drop_connection()
-                if self.auto_start and self.ensure_server():
+                server_ready = self.ensure_server() if self.auto_start else True
+                if server_ready:
                     try: return once()
                     except HTTPError as retry_http: return self._error_response(retry_http, request_id)
                     except Exception as retry_exc: return {"success": False, "error": str(retry_exc), "request_id": request_id, "retried": True}
@@ -341,9 +358,25 @@ class HubClient:
         return self._singleflight(key, timeout, execute)
 
     def post(self, path: str, payload: dict[str, Any] | None = None, timeout: float = 360.0) -> dict[str, Any]:
-        replay_safe = path not in {
-            "/v1/leases/claim", "/v1/leases/release", "/v1/memory/put", "/v1/memory/delete"
-        }
+        p = path.lower()
+        is_mutating = (
+            p == "/v1/command"
+            or p.startswith("/v1/leases/")
+            or p in {"/v1/memory/put", "/v1/memory/delete"}
+            or p.startswith("/v1/maintenance/")
+            or (
+                p.startswith("/v1/agent-state/")
+                and not (
+                    p == "/v1/agent-state/context"
+                    or (p == "/v1/agent-state/tasks" and isinstance(payload, dict) and payload.get("action") in {"get", "list", "count"})
+                    or (p == "/v1/agent-state/memory" and isinstance(payload, dict) and payload.get("action") in {"get", "find"})
+                    or (p == "/v1/agent-state/blackboard" and isinstance(payload, dict) and payload.get("action") in {"get", "list"})
+                    or (p == "/v1/agent-state/incidents" and isinstance(payload, dict) and payload.get("action") in {"find", "decision"})
+                    or (p == "/v1/agent-state/verification" and isinstance(payload, dict) and payload.get("action") in {"completion"})
+                )
+            )
+        )
+        replay_safe = not is_mutating
         return self.request(path, payload, timeout=timeout, replay_safe=replay_safe)
 
     def status(self, detail: str = "brief", scope: str = "process") -> dict[str, Any]:
@@ -418,10 +451,23 @@ class HubClient:
                 "ttl_seconds": kwargs.get("ttl_seconds", 900),
                 "purpose": kwargs.get("value", "agent edit"),
             })
+        if act.startswith("blackboard_"):
+            bb_action = act.replace("blackboard_", "")
+            board_id = kwargs.get("board_id") or kwargs.get("task_id") or "default"
+            payload = {
+                "action": bb_action,
+                "board_id": board_id,
+                "section": kwargs.get("section") or kwargs.get("key"),
+                "content": kwargs.get("content") or kwargs.get("value"),
+                "author": kwargs.get("author", "agent"),
+                "remote_sections": kwargs.get("remote_sections") or kwargs.get("sections") or {},
+                "clock": kwargs.get("clock"),
+            }
+            return self.post("/v1/agent-state/blackboard", payload)
         if act == "release":
             return self.post("/v1/leases/release", {"lease_id": kwargs.get("lease_id", "")})
         if act == "leases":
-            return self.get(f"/v1/leases?root={kwargs.get('root', '')}")
+            return self.get(f"/v1/leases?root={quote(str(kwargs.get('root', '')))}")
         return {"success": False, "error": f"unknown coord action '{action}'"}
 
     def context_compile(self, task_id: str, token_budget: int = 4000, changed_paths: list[str] | None = None) -> dict[str, Any]:

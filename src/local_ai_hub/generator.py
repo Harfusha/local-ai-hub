@@ -34,6 +34,14 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
             "Use cloud/native agent reasoning; Local AI Hub operates in deterministic/indexed mode only."
         )
 
+    work_delegation = ""
+    if fs.work_orchestrator:
+        work_delegation = (
+            '- **Closed whole task:** prefer `local_ai_work(action="submit")` when the Hub can own planning, bounded edits, '
+            'validation and handoff end-to-end. Use `response_profile="compact"` and request only decision-grade fields; '
+            'fetch the artifact only when details are needed.'
+        )
+
     # Ownership & tiering bullets
     tiering_bullets: list[str] = [
         "- **Local AI Hub first:** its own precise bounded microtasks, repository facts, indexed search,"
@@ -114,6 +122,9 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         r_idx += 1
         routing_lines.append(f'{r_idx}. `local_ai_repo(action="review_diff"|"security_audit"|"impact")` — targeted checks after or around edits.')
         r_idx += 1
+    if fs.work_orchestrator:
+        routing_lines.append(f'{r_idx}. `local_ai_work(action="submit")` — delegate one complete bounded repository task; Hub plans a DAG, edits transactionally, validates, verifies, and returns a compact handoff.')
+        r_idx += 1
     if fs.rag:
         routing_lines.append(f'{r_idx}. `local_ai_rag` — semantic fallback only when indexed evidence is insufficient.')
         r_idx += 1
@@ -171,34 +182,34 @@ When working on non-trivial tasks, use Local AI Hub's Agent Operating System act
 
 ### 1. Goal Contracts & Resumption
 - **Create task contract:**
-  `local_ai_coord(action="task_create", task_id="task-1", goal="Implement feature", acceptance_criteria=["All tests pass"])`
+  `local_ai_coord(action="task_create", task_id="task-1", contract={{"goal": "Implement feature", "acceptance_criteria": ["All tests pass"]}})`
 - **Checkpoint progress before context truncation:**
-  `local_ai_coord(action="task_checkpoint", task_id="task-1", phase="testing", next_action="run integration tests", affected_paths=["src/main.py"])`
+  `local_ai_coord(action="task_checkpoint", task_id="task-1", checkpoint={{"phase": "testing", "next_action": "run integration tests", "affected_paths": ["src/main.py"]}})`
 - **Resume after session restart or interruption:**
   `local_ai_coord(action="task_resume", task_id="task-1")`
 - **Complete or fail task:**
-  `local_ai_coord(action="task_complete", task_id="task-1")` or `local_ai_coord(action="task_fail", task_id="task-1", error="reason")`
+  `local_ai_coord(action="task_complete", task_id="task-1")` or `local_ai_coord(action="task_fail", task_id="task-1", reason="reason")`
 
 ### 2. Scoped Memory & Learnings
 - **Store durable findings and decisions:**
-  `local_ai_coord(action="memory_record", key="convention", value="Token format must follow HMAC-SHA256", kind="decision", scope="repository")`
+  `local_ai_coord(action="memory_record", record={{"kind": "decision", "scope": "repository", "key": "convention", "value": "Token format must follow HMAC-SHA256"}})`
 - **Retrieve memories across turns:**
   `local_ai_coord(action="memory_find", query="convention")`
 
 ### 3. Exact Context Compilation
-- **Compile active task state, relevant memories, and negative knowledge into minimal tokens:**
+- **Compile active task state, relevant memories, negative knowledge, and active edit leases into minimal tokens:**
   `local_ai_coord(action="context_compile", task_id="task-1", max_tokens=4000)`
 
 ### 4. Verification Receipts & Completion Gates
 {verification_receipt_item}
 - **Check if all acceptance criteria are verified before completing:**
   `local_ai_coord(action="verify_completion", task_id="task-1")`
-- **Verify single receipt:**
-  `local_ai_coord(action="verify_receipt", receipt_id="rec-1")`
+- **Record a direct receipt when command auto-capture is not used:**
+  `local_ai_coord(action="verify_receipt", checkpoint={{"task_id": "task-1", "criterion": "All tests pass", "passed": True}})`
 
 ### 5. Negative Knowledge & Incident Avoidance
 - **Record failed approach or incident:**
-  `local_ai_coord(action="negative_knowledge_record", incident={{"error_class": "timeout", "operation_class": "build", "symptoms": "timeout", "root_cause": "unindexed lock", "fix": "add index"}})`
+  `local_ai_coord(action="negative_knowledge_record", key="timeout", value="build timed out", reason="unindexed lock", status="add index")`
 - **Check before repeating a failed operation:**
   `local_ai_coord(action="negative_knowledge_find", query="timeout")`
 """
@@ -219,6 +230,7 @@ Recipes (guidance, not gates):
 
 Delegation is the default for any task with useful bounded independent work.
 {delegation_task}
+{work_delegation}
 - Use the native Codex `multi_agent_v1__spawn_agent` path only for useful independent bounded work or an explicit Codex-subagent request.
 - Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
 - Do not duplicate the same scope across agents. Keep final decisions, edits, and integration in Codex.
@@ -226,7 +238,7 @@ Delegation is the default for any task with useful bounded independent work.
 
 ## Ownership and tiering
 
-The main agent owns planning, sequencing, edits, integration, decisions and the final answer.
+The main agent owns task boundaries, permissions, unresolved decisions and the final user answer. A submitted `local_ai_work` order may own its bounded internal planning, edits, validation and integration until handoff.
 
 {tiering_section}
 
@@ -277,6 +289,8 @@ def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
         tool_bullets.append(f"- `local_ai_repo`: deterministic, code index/search{semantic_note}, context/solve" + (", preprocess" if fs.preprocessing else "") + ", impact, `review_diff`, `security_audit`, patch validation and repository checks.")
     if fs.commands:
         tool_bullets.append("- `local_ai_command`: cached/single-flight safe command broker for tests, lint, typecheck, builds and read-only checks; never the only Hub action for a repository task.")
+    if fs.work_orchestrator:
+        tool_bullets.append("- `local_ai_work`: durable whole-task orchestration with dependency planning, transactional edits, validation, whole-task verification and compact/lazy handoff.")
     if fs.tasks and fs.has_any_model():
         tool_bullets.append(f"- `local_ai_task`: local-model microtasks (`{fs.fast_model}`), review, compression and second opinions after evidence exists.")
     if fs.rag:
@@ -295,7 +309,7 @@ The active tool surface reflects your configuration:
 
 {tool_lines}
 
-Keep assignments bounded and retain planning and final integration in the main agent.
+Keep assignments bounded. The main agent retains final acceptance; a `local_ai_work` order may own planning and integration only inside its declared repository task and permissions.
 """
 
     # workflows.md
@@ -328,8 +342,16 @@ Use `local_ai_task(action="second_opinion")` for a bounded candidate decision. I
 
 Use `local_ai_task(action="compress")` for semantic condensation and `local_ai_artifact` for exact lines. Reuse cache/coalesced results, do not duplicate `in_progress` work, and make one bounded fallback when the hub is unavailable.
 """
-    refs["workflows.md"] = f"""# Routing workflows
+    whole_task = ""
+    if fs.work_orchestrator:
+        whole_task = """
+## Whole-task handoff
 
+Use `local_ai_work(action="submit", root=ABS_ROOT, task="...", response_profile="compact")` when the task is closed, bounded and independently verifiable. The Hub collects deterministic context, plans dependency-ordered steps, leases edited paths, journals mutations, validates each relevant phase, performs whole-task verification against the original request and returns only a compact handoff. Use `work_get` fields/artifacts lazily for details.
+
+"""
+    refs["workflows.md"] = f"""# Routing workflows
+{whole_task}
 ## Bounded repository change
 
 {wf_lines}
@@ -356,7 +378,7 @@ Use `local_ai_task(action="compress")` for semantic condensation and `local_ai_a
 Rules:
 - Never duplicate the same scope across agents.
 - {"Use `local_ai_coord` leases to guard overlapping files before editing." if fs.coord else "Avoid concurrent edits on the same files across sessions."}
-- Main agent owns final integration, validation, and user response.
+- Main agent owns final acceptance and user response. A bounded `local_ai_work` order owns only its declared transactional workspace task through verified handoff.
 """
 
     # preprocessing.md
@@ -628,6 +650,33 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "query": {"type": "string", "default": ""},
                     "status": {"type": "string", "default": ""},
                     "reason": {"type": "string", "default": ""},
+                },
+            },
+        }
+
+    if fs.work_orchestrator:
+        schemas["local_ai_work"] = {
+            "name": "local_ai_work",
+            "description": "Delegate, resume, inspect or cancel a complete bounded repository work order with compact verified handoff.",
+            "parameters": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {"type": "string", "enum": ["submit", "status", "wait", "get", "cancel", "continue"]},
+                    "root": {"type": "string", "default": ""},
+                    "task": {"type": "string", "default": ""},
+                    "work_id": {"type": "string", "default": ""},
+                    "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
+                    "constraints": {"type": "array", "items": {"type": "string"}},
+                    "mode": {"type": "string", "enum": ["execute", "plan", "plan_only", "dry_run"], "default": "execute"},
+                    "permissions": {"type": "object"},
+                    "budget": {"type": "object"},
+                    "timeout_seconds": {"type": "number", "default": 90},
+                    "answer": {"type": "string", "default": ""},
+                    "response_profile": {"type": "string", "enum": ["minimal", "compact", "standard", "debug"], "default": "compact"},
+                    "return_fields": {"type": "array", "items": {"type": "string"}},
+                    "max_output_tokens": {"type": "integer", "default": 0},
+                    "keep_failed_workspace": {"type": "boolean", "default": False},
                 },
             },
         }

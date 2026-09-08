@@ -17,7 +17,10 @@ from local_ai_hub.config import load_config
 from local_ai_hub.process_utils import find_listening_pid, hidden_run_kwargs, pid_alive, terminate_tree
 from local_ai_hub.ollama import OllamaRuntime
 
-CFG = load_config(str(ROOT / "config.toml"))
+ROOT_CONFIG = ROOT / "config.toml"
+CFG = load_config(str(ROOT_CONFIG) if ROOT_CONFIG.is_file() else None)
+_ACTIVE_CONFIG = Path(str(CFG.get("_config_path", ""))).expanduser()
+_ACTIVE_CONFIG_ARG = str(_ACTIVE_CONFIG) if _ACTIVE_CONFIG.is_file() else None
 STATE = Path(CFG["server"]["state_dir"])
 STATE.mkdir(parents=True, exist_ok=True)
 DISABLED = STATE / "service.disabled"
@@ -29,7 +32,7 @@ if os.name == "nt" and not PYWIN.exists():
     PYWIN = PY
 
 
-def run(cmd: list[object], timeout: float = 30.0) -> subprocess.CompletedProcess[bytes]:
+def run(cmd: list[object], timeout: float = 12.0) -> subprocess.CompletedProcess[bytes]:
     argv = [str(x) for x in cmd]
     try:
         return subprocess.run(argv, check=False, timeout=max(1.0, timeout), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **hidden_run_kwargs())
@@ -50,7 +53,8 @@ def mark_managed() -> None:
 
 def spawn_detached() -> None:
     env = os.environ.copy()
-    env["LOCAL_AI_CONFIG"] = str(ROOT / "config.toml")
+    if _ACTIVE_CONFIG_ARG:
+        env["LOCAL_AI_CONFIG"] = _ACTIVE_CONFIG_ARG
     env["PYTHONPATH"] = str(ROOT / "src") + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     kwargs = {"env": env, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, **hidden_run_kwargs(detached=True)}
     if os.name != "nt":
@@ -183,11 +187,14 @@ def install_windows() -> str:
 def install_macos() -> str:
     dest = Path.home() / "Library/LaunchAgents/com.localai.hub.plist"
     dest.parent.mkdir(parents=True, exist_ok=True)
+    service_env = {"PYTHONPATH": str(ROOT / "src")}
+    if _ACTIVE_CONFIG_ARG:
+        service_env["LOCAL_AI_CONFIG"] = _ACTIVE_CONFIG_ARG
     payload = {
         "Label": "com.localai.hub",
         "ProgramArguments": [str(PY), "-m", "local_ai_hub.supervisor"],
         "RunAtLoad": True, "KeepAlive": True, "WorkingDirectory": str(ROOT), "ProcessType": "Background",
-        "EnvironmentVariables": {"LOCAL_AI_CONFIG": str(ROOT / "config.toml"), "PYTHONPATH": str(ROOT / "src")},
+        "EnvironmentVariables": service_env,
     }
     with dest.open("wb") as fh:
         plistlib.dump(payload, fh)
@@ -206,10 +213,13 @@ def install_linux() -> str:
     dest.parent.mkdir(parents=True, exist_ok=True)
     def sdq(value: object) -> str:
         return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"') + '"'
+    environment_lines = [f"Environment={sdq('PYTHONPATH=' + str(ROOT / 'src'))}"]
+    if _ACTIVE_CONFIG_ARG:
+        environment_lines.append(f"Environment={sdq('LOCAL_AI_CONFIG=' + _ACTIVE_CONFIG_ARG)}")
     unit = "\n".join([
         "[Unit]", "Description=Local AI Hub headless supervisor", "After=network.target", "",
-        "[Service]", "Type=simple", f"WorkingDirectory={sdq(ROOT)}", f"Environment={sdq('LOCAL_AI_CONFIG=' + str(ROOT / 'config.toml'))}",
-        f"Environment={sdq('PYTHONPATH=' + str(ROOT / 'src'))}", f"ExecStart={sdq(PY)} -m local_ai_hub.supervisor", "Restart=always", "RestartSec=2", "TimeoutStopSec=15", "",
+        "[Service]", "Type=simple", f"WorkingDirectory={sdq(ROOT)}", *environment_lines,
+        f"ExecStart={sdq(PY)} -m local_ai_hub.supervisor", "Restart=always", "RestartSec=2", "TimeoutStopSec=15", "",
         "[Install]", "WantedBy=default.target", "",
     ])
     dest.write_text(unit, encoding="utf-8")
@@ -256,7 +266,7 @@ def main() -> int:
     if action == "stop": native_stop(); print("stopped"); return 0
     if action == "start": native_start(); time.sleep(0.5); print("started"); return 0
     if action == "restart": native_stop(); time.sleep(0.5); native_start(); print("restarted"); return 0
-    client = HubClient(tenant="service-control", config_path=str(ROOT / "config.toml"))
+    client = HubClient(tenant="service-control", config_path=_ACTIVE_CONFIG_ARG)
     status_path = STATE / "supervisor.status.json"
     print(status_path.read_text(encoding="utf-8") if status_path.exists() else '{"state":"stopped"}')
     return 0 if client._online() else 1

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 import uuid
 from collections import defaultdict
@@ -239,53 +240,68 @@ class MemoryRecord:
 class MemoryStore:
     def __init__(self, state_store: AgentStateStore) -> None:
         self.state_store = state_store
+        self._lock = threading.RLock()
+        self._initialized = False
         self._init_table()
 
     def _init_table(self) -> None:
-        if not self.state_store.enabled:
+        if self._initialized or not self.state_store.enabled:
             return
-        self.state_store._ensure_schema()
-        con = connect_sqlite(self.state_store.db_path)
-        try:
-            con.execute(
-                """
-                CREATE TABLE IF NOT EXISTS agent_memory_records (
-                    record_id TEXT PRIMARY KEY,
-                    kind TEXT NOT NULL,
-                    scope TEXT NOT NULL,
-                    scope_id TEXT NOT NULL,
-                    key TEXT NOT NULL,
-                    value TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    confidence REAL NOT NULL,
-                    source TEXT NOT NULL,
-                    evidence_ids TEXT NOT NULL,
-                    sensitivity TEXT NOT NULL,
-                    contradicts_record_id TEXT,
-                    supersedes_record_id TEXT,
-                    quarantine_reason TEXT,
-                    provenance TEXT NOT NULL,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL,
-                    expires_at REAL
-                );
-                """
-            )
-            con.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_agent_memory_scope_key
-                ON agent_memory_records (scope, key, status);
-                """
-            )
-            con.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_agent_memory_updated
-                ON agent_memory_records (updated_at DESC);
-                """
-            )
-            con.commit()
-        finally:
-            con.close()
+        with self._lock:
+            if self._initialized or not self.state_store.enabled:
+                return
+            self.state_store._ensure_schema()
+            def _setup() -> None:
+                con = connect_sqlite(self.state_store.db_path)
+                try:
+                    with con:
+                        con.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS agent_memory_records (
+                                record_id TEXT PRIMARY KEY,
+                                kind TEXT NOT NULL,
+                                scope TEXT NOT NULL,
+                                scope_id TEXT NOT NULL,
+                                key TEXT NOT NULL,
+                                value TEXT NOT NULL,
+                                status TEXT NOT NULL,
+                                confidence REAL NOT NULL,
+                                source TEXT NOT NULL,
+                                evidence_ids TEXT NOT NULL,
+                                sensitivity TEXT NOT NULL,
+                                contradicts_record_id TEXT,
+                                supersedes_record_id TEXT,
+                                quarantine_reason TEXT,
+                                provenance TEXT NOT NULL,
+                                created_at REAL NOT NULL,
+                                updated_at REAL NOT NULL,
+                                expires_at REAL
+                            );
+                            """
+                        )
+                        con.execute(
+                            """
+                            CREATE INDEX IF NOT EXISTS idx_agent_memory_scope_key
+                            ON agent_memory_records (scope, key, status);
+                            """
+                        )
+                        con.execute(
+                            """
+                            CREATE INDEX IF NOT EXISTS idx_agent_memory_updated
+                            ON agent_memory_records (updated_at DESC);
+                            """
+                        )
+                        con.execute(
+                            """
+                            CREATE INDEX IF NOT EXISTS idx_agent_memory_expires
+                            ON agent_memory_records (expires_at)
+                            WHERE expires_at IS NOT NULL;
+                            """
+                        )
+                finally:
+                    con.close()
+            retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+            self._initialized = True
 
     def record(
         self,
@@ -372,22 +388,23 @@ class MemoryStore:
         self._save_record(quarantined)
         return quarantined
 
-    def get(self, record_id: str) -> MemoryRecord | None:
+    def get(self, record_id: str, *, include_expired: bool = False) -> MemoryRecord | None:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return None
         self._init_table()
         con = connect_sqlite(self.state_store.db_path)
         try:
-            row = con.execute(
-                """
-                SELECT record_id, kind, scope, scope_id, key, value, status, confidence, source,
-                       evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id,
-                       quarantine_reason, provenance, created_at, updated_at, expires_at
-                FROM agent_memory_records
-                WHERE record_id = ?
-                """,
-                (record_id,),
-            ).fetchone()
+            sql = (
+                "SELECT record_id, kind, scope, scope_id, key, value, status, confidence, source, "
+                "evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id, "
+                "quarantine_reason, provenance, created_at, updated_at, expires_at "
+                "FROM agent_memory_records WHERE record_id = ?"
+            )
+            params: list[Any] = [record_id]
+            if not include_expired:
+                sql += " AND (expires_at IS NULL OR expires_at > ?)"
+                params.append(time.time())
+            row = con.execute(sql, tuple(params)).fetchone()
             if not row:
                 return None
             return self._row_to_record(row)
@@ -401,6 +418,8 @@ class MemoryStore:
         query: str | None = None,
         status: MemoryStatus | None = None,
         limit: int = 100,
+        *,
+        include_expired: bool = False,
     ) -> list[MemoryRecord]:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return []
@@ -412,6 +431,9 @@ class MemoryStore:
             "FROM agent_memory_records WHERE 1=1"
         )
         params: list[Any] = []
+        if not include_expired:
+            sql += " AND (expires_at IS NULL OR expires_at > ?)"
+            params.append(time.time())
         if scope is not None:
             scope_val = scope.value if hasattr(scope, "value") else str(scope)
             if scope_val.lower() == "repo":
@@ -437,6 +459,25 @@ class MemoryStore:
             return [self._row_to_record(row) for row in cur.fetchall()]
         finally:
             con.close()
+
+    def reap_expired(self, now: float | None = None) -> int:
+        if not self.state_store.enabled or not self.state_store.db_path.exists():
+            return 0
+        self._init_table()
+        cutoff = float(time.time() if now is None else now)
+        with self._lock:
+            def _do_reap() -> int:
+                con = connect_sqlite(self.state_store.db_path)
+                try:
+                    with con:
+                        cur = con.execute(
+                            "DELETE FROM agent_memory_records WHERE expires_at IS NOT NULL AND expires_at <= ?",
+                            (cutoff,),
+                        )
+                        return int(cur.rowcount)
+                finally:
+                    con.close()
+            return retry_busy(_do_reap, retries=5, base_delay_seconds=0.02)
 
     def count(self) -> int:
         if not self.state_store.enabled or not self.state_store.db_path.exists():

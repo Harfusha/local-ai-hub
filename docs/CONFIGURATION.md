@@ -4,7 +4,15 @@
 
 ## Hardware
 
-`[hardware].profile = "auto"` detects OS, architecture, RAM and NVIDIA/AMD/Intel/Apple graphics. Profiles are `cpu`, `low`, `balanced`, `high`, and `max`. They tune model choices, context, concurrency and batching; they are presets rather than hardware locks.
+`[hardware].profile = "auto"` detects OS, architecture, RAM and NVIDIA/AMD/Intel/Apple graphics. Profiles are `cpu`, `integrated`, `low`, `balanced`, `high`, and `max`. They tune model choices, context, concurrency and batching; they are presets rather than hardware locks.
+
+### Shared-memory iGPU and Intel NPU
+
+The `integrated` profile is intentionally conservative. It is designed for iGPUs that borrow system RAM and therefore must not be scheduled from a nominal/dedicated VRAM value. The default integrated profile keeps one foreground LLM/model resident, disables the independent background Ollama runtime, uses smaller 0.5B/1.5B routine models and a 3B ceiling for explicit heavy/reasoning tasks, and reduces context and preprocessing concurrency.
+
+For Intel integrated graphics, `[openvino]` controls optional retrieval acceleration. With `embedding_device = "auto"` / `reranker_device = "auto"`, Local AI Hub probes actual OpenVINO devices and uses `device_priority = ["NPU", "GPU", "CPU"]`. The SentenceTransformers wrapper remains on CPU while the underlying Optimum/OpenVINO model is compiled for the selected accelerator, so the path does not require a torch-native NPU device. `cpu_fallback = true` keeps RAG functional if the NPU/GPU driver or a particular model shape is unsupported.
+
+`[ollama].allow_integrated_gpu` and `enable_vulkan` are enabled only by the integrated hardware profile. They affect hub-managed Ollama processes; a separately started Ollama process must be configured independently.
 
 ## Code intelligence
 

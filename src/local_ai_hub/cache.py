@@ -160,7 +160,12 @@ class SingleFlightGroup:
         return sum(self._timeouts)
 
     def do(self, key: str, fn: Callable[[], Any], timeout_seconds: float | None = None) -> tuple[Any, bool]:
-        """Execute fn or wait for active flight with the same key. Returns (result, coalesced: bool)."""
+        """Execute fn or wait for active flight with the same key. Returns (result, coalesced: bool).
+
+        Thread safety: holder list is written by the owner thread and read by waiters only
+        after event.wait() returns (which happens-after event.set() in the owner's finally block).
+        The GIL plus threading.Event guarantee the required memory visibility.
+        """
         idx = self._shard(key)
         timeout = timeout_seconds if timeout_seconds is not None else self.default_timeout
         with self._locks[idx]:
@@ -181,8 +186,11 @@ class SingleFlightGroup:
                 with self._locks[idx]:
                     self._timeouts[idx] += 1
                 raise TimeoutError(f"singleflight wait timed out for key: {key[:64]}")
-            if holder[1] is not None:
-                raise holder[1]
+            exc = holder[1]
+            if exc is not None:
+                # Re-raise with chained context so the waiter's traceback is distinct
+                # from the owner's traceback and does not confuse cross-thread diagnostics.
+                raise RuntimeError(f"singleflight coalesced call failed: {type(exc).__name__}: {exc}") from exc
             return holder[0], True
 
         try:
@@ -193,6 +201,8 @@ class SingleFlightGroup:
             holder[1] = exc
             raise
         finally:
+            # event.set() is called under the shard lock after holder is fully written.
+            # Waiters that return from event.wait() will always see a consistent holder.
             with self._locks[idx]:
                 self._inflight[idx].pop(key, None)
                 event.set()
@@ -261,6 +271,11 @@ class SQLiteCache:
             con.commit()
 
     def _recover(self) -> None:
+        # LIMITATION: _SQLITE_RECOVERY_LOCK is process-local. If two hub processes
+        # concurrently detect a corrupted DB, both may rename it and recreate the schema.
+        # This is safe because SQLiteCache stores only derived, disposable data (command
+        # results, query results) that can be rebuilt on the next cache miss. No
+        # cross-process file lock is needed — worst case is two fresh empty caches.
         with _SQLITE_RECOVERY_LOCK:
             # Another cache instance may already have recovered the shared DB.
             try:
@@ -434,7 +449,12 @@ class SQLiteCache:
 
 
 class TieredCache:
-    """Fast L1 RAM cache backed by persistent SQLite L2."""
+    """Fast L1 RAM cache backed by persistent SQLite L2.
+
+    Counter fields (l1_hits, l2_hits, misses) are best-effort metrics.
+    On CPython the GIL makes plain int += atomic; on other implementations
+    they may be approximate. Use them for monitoring only, not for correctness.
+    """
 
     def __init__(self, l2: SQLiteCache, l1_entries: int = 256, l1_ttl_seconds: int = 900):
         self.l2 = l2

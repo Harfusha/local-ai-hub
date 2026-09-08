@@ -13,7 +13,9 @@ from typing import Any, Iterable
 
 from .cache import SQLiteCache, TieredCache, SingleFlightCache, stable_hash
 from .normalizer import normalize_query
-from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
+from .scheduler import QueueFullError
+from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
+from .process_utils import canonical_root
 
 
 import re
@@ -63,7 +65,7 @@ class RAGStore:
     the previous committed snapshot until the new one is ready.
     """
 
-    def __init__(self, config: dict[str, Any], services: Any, reranker: Any):
+    def __init__(self, config: dict[str, Any], services: Any = None, reranker: Any = None):
         self.config = config
         self.services = services
         self.reranker = reranker
@@ -71,7 +73,7 @@ class RAGStore:
         state_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = state_dir / "rag.sqlite3"
         self.scope = str(config.get("rag", {}).get("scope", "shared")).lower()
-        self._index_lock = threading.Lock()
+        self._index_lock = threading.RLock()
         self._index_flights_lock = threading.Lock()
         self._index_flights: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._index_wait_timeout_seconds = float(
@@ -103,7 +105,7 @@ class RAGStore:
             wait_timeout_seconds=float(config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 240)),
         )
         try:
-            self._init_db()
+            retry_busy(self._init_db, retries=5, base_delay_seconds=0.02)
         except sqlite3.DatabaseError as exc:
             if not is_busy_error(exc):
                 self._recover_db()
@@ -119,7 +121,7 @@ class RAGStore:
                 if side.exists(): side.unlink()
         except OSError:
             pass
-        self._init_db()
+        retry_busy(self._init_db, retries=5, base_delay_seconds=0.02)
 
     def _connect(self) -> sqlite3.Connection:
         con = connect_sqlite(self.db_path, timeout_seconds=0.75)
@@ -195,7 +197,7 @@ class RAGStore:
 
     @staticmethod
     def workspace_id(root: str) -> str:
-        resolved = str(Path(root).resolve())
+        resolved = canonical_root(root)
         digest = hashlib.sha1(resolved.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
         return f"{Path(resolved).name}-{digest}"
 
@@ -547,9 +549,14 @@ class RAGStore:
                 changed_texts = [str(changed_records[idx]["text"]) for idx in changed_indices]
 
         if changed_texts:
-            vectors_result = self.services.embed(changed_texts, tenant, priority=2, query=False)
-            if not vectors_result.get("success"):
-                return vectors_result
+            try:
+                vectors_result = self.services.embed(changed_texts, tenant, priority=2, query=False)
+            except (TimeoutError, QueueFullError) as exc:
+                return {"success": False, "retryable": True, "error": f"embedder busy or timed out: {exc}"}
+            except Exception as exc:
+                return {"success": False, "retryable": False, "error": f"embedder failed: {exc}"}
+            if not isinstance(vectors_result, dict) or not vectors_result.get("success"):
+                return vectors_result if isinstance(vectors_result, dict) else {"success": False, "error": "embed failed"}
             vectors = vectors_result.get("embeddings", [])
             if len(vectors) != len(changed_indices):
                 return {"success": False, "error": f"embedding count mismatch: {len(vectors)} != {len(changed_indices)}"}
@@ -563,10 +570,16 @@ class RAGStore:
                     changed_records[duplicate_idx]["embedding"] = embedding
 
         # One transaction publishes all changed/deleted file state atomically.
-        with closing(self._connect()) as con:
-            for rel in deleted_paths + changed_paths:
-                con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
-                con.execute("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
+        with self._index_lock, closing(self._connect()) as con:
+            con.execute("BEGIN IMMEDIATE")
+            del_paths = [(scope_key, workspace, rel) for rel in (deleted_paths + changed_paths)]
+            if del_paths:
+                con.executemany("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", del_paths)
+                con.executemany("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", del_paths)
+                try:
+                    con.executemany("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", del_paths)
+                except Exception:
+                    pass
             con.executemany(
                 "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) VALUES(?,?,?,?,?,?,?)",
                 [
@@ -783,7 +796,14 @@ class RAGStore:
                         "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
                         "reused_chunks": reused_chunks,
                     }
-                vectors_result = self.services.embed(all_missing_texts, tenant, priority=0, query=False)
+                try:
+                    vectors_result = self.services.embed(all_missing_texts, tenant, priority=0, query=False, background=True)
+                except (TimeoutError, QueueFullError) as exc:
+                    return {
+                        "success": True, "workspace": workspace, "preempted": True,
+                        "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
+                        "reused_chunks": reused_chunks, "note": f"embedder busy or timed out: {exc}",
+                    }
                 if not vectors_result.get("success"):
                     return vectors_result
                 vectors = vectors_result.get("embeddings", [])
@@ -971,7 +991,15 @@ class RAGStore:
                             "processed_files": processed, "remaining_changed_files": len(changed_all) - processed,
                             "deleted_files": len(deleted), "embedded_chunks": embedded_chunks, "reused_chunks": reused_chunks,
                         }
-                    vectors_result = self.services.embed(missing_texts, tenant, priority=0, query=False)
+                    try:
+                        vectors_result = self.services.embed(missing_texts, tenant, priority=0, query=False, background=True)
+                    except (TimeoutError, QueueFullError) as exc:
+                        return {
+                            "success": True, "workspace": workspace, "preempted": True, "done": False,
+                            "processed_files": processed, "remaining_changed_files": len(changed_all) - processed,
+                            "deleted_files": len(deleted), "embedded_chunks": embedded_chunks, "reused_chunks": reused_chunks,
+                            "note": f"embedder busy or timed out: {exc}",
+                        }
                     if not vectors_result.get("success"):
                         return vectors_result
                     vectors = vectors_result.get("embeddings", [])

@@ -122,6 +122,38 @@ def test_git_snapshot_reuses_cached_index_probe(tmp_path: Path, monkeypatch):
     assert sum("ls-files" in command for command in calls) == 1
 
 
+def test_same_size_index_replacement_changes_signature(tmp_path: Path):
+    repo = tmp_path / "repo"
+    alternate = tmp_path / "alternate"
+    repo.mkdir()
+    alternate.mkdir()
+    run_git(repo, "init")
+    run_git(repo, "config", "user.name", "Snapshot Test")
+    run_git(repo, "config", "user.email", "snapshot@example.test")
+    write_and_commit(repo, "clean.py", "value = 'clean.py'\n")
+    run_git(alternate, "init")
+    run_git(alternate, "config", "user.name", "Snapshot Test")
+    run_git(alternate, "config", "user.email", "snapshot@example.test")
+    write_and_commit(alternate, "clean.py", "value = 'other.py'\n")
+    tools = make_tools()
+
+    first = tools.git_snapshot(str(repo))
+    first_size = Path(first.index_path).stat().st_size
+
+    alternate_snapshot = tools.git_snapshot(str(alternate))
+    replacement = Path(alternate_snapshot.index_path).read_bytes()
+    assert len(replacement) == first_size
+    Path(first.index_path).write_bytes(replacement)
+
+    second = tools.git_snapshot(str(repo))
+    second_size = Path(second.index_path).stat().st_size
+
+    assert first_size == second_size
+    assert first.index_signature != second.index_signature
+    assert tools._git_index_cache_identity(first.index_signature) != tools._git_index_cache_identity(second.index_signature)
+    assert first.blobs["clean.py"].oid != second.blobs["clean.py"].oid
+
+
 def test_git_snapshot_degrades_on_timeout_and_malformed_output(tmp_path: Path, monkeypatch):
     repo = make_git_repo(tmp_path)
     tools = make_tools()

@@ -69,4 +69,5 @@ def test_async_job_updates_agent_task_and_mints_receipt(tmp_path: Path):
     receipts = verification_store.completion(task.task_id).receipts
     assert len(receipts) >= 1
     assert receipts[0].criterion == "async_job:reason"
+    manager.close()
     assert receipts[0].passed is True

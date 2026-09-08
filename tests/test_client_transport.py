@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import threading
 import time
+from urllib.error import HTTPError
+from io import BytesIO
 
 from local_ai_hub import client as client_module
 from local_ai_hub.client import HubClient
@@ -73,3 +75,55 @@ def test_client_coalesces_simultaneous_identical_requests(tmp_path, monkeypatch)
 
     assert Connection.calls == 1
     assert sorted(bool(item.get("coalesced")) for item in results) == [False, True]
+
+
+def test_client_reconnects_on_idle_disconnect(tmp_path, monkeypatch):
+    class Response:
+        status = 200
+        reason = "OK"
+        will_close = False
+        headers = {}
+        def read(self): return b'{"success":true}'
+
+    class FailingThenWorkingConnection:
+        instances = []
+        call_count = 0
+        def __init__(self, *_args, **_kwargs):
+            self.__class__.instances.append(self)
+        def request(self, *_args, **_kwargs): pass
+        def getresponse(self):
+            self.__class__.call_count += 1
+            if self.__class__.call_count == 1:
+                raise client_module.http.client.RemoteDisconnected("Remote end closed connection")
+            return Response()
+        def close(self): pass
+
+    monkeypatch.setattr(client_module.http.client, "HTTPConnection", FailingThenWorkingConnection)
+    client = _client(tmp_path)
+    res = client.get("/health")
+    assert res["success"] is True
+    assert len(FailingThenWorkingConnection.instances) == 2
+
+
+def test_client_replays_duplicate_request_until_owner_finishes(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    calls = 0
+
+    def pooled_open(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise HTTPError(
+                "http://127.0.0.1/v1/search",
+                409,
+                "Conflict",
+                {},
+                BytesIO(b'{"success":false,"retryable":true,"in_progress":true,"retry_after_seconds":0.01}'),
+            )
+        return b'{"success":true,"value":"owner-result"}'
+
+    monkeypatch.setattr(client, "_pooled_open", pooled_open)
+    result = client.request("/v1/search", {"root": "repo"}, timeout=1)
+
+    assert result == {"success": True, "value": "owner-result"}
+    assert calls == 2

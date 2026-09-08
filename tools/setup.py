@@ -104,7 +104,7 @@ def copy_install_tree(install_dir: Path, config_source: Path) -> None:
             shutil.rmtree(dst)
         shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache"))
     for name in [
-        "requirements-core.txt", "requirements-local-nlp.txt", "defaults.toml", "config.toml.example", "pyproject.toml",
+        "requirements-core.txt", "requirements-local-nlp.txt", "requirements-openvino.txt", "defaults.toml", "config.toml.example", "pyproject.toml",
         "README.md", "FEATURES.md", "AGENTS.md", "LICENSE", "CHANGELOG.md", "THIRD_PARTY.md",
         "RELEASE.json", "CONTRIBUTING.md", "SECURITY.md", "install.ps1", "install.sh",
     ]:
@@ -314,6 +314,15 @@ def pull_ollama_models(cfg: dict[str, Any]) -> None:
         model = str(model_cfg.get(key, "") or "")
         if model and model not in models:
             models.append(model)
+    if bool(cfg.get("ollama_subagents", {}).get("enabled", True)):
+        profiles = cfg.get("ollama_subagents", {}).get("profiles", {})
+        if isinstance(profiles, dict):
+            for profile in profiles.values():
+                if not isinstance(profile, dict):
+                    continue
+                model = str(profile.get("model", "") or "")
+                if model and model not in models:
+                    models.append(model)
     if model_cfg.get("embedding_backend") == "ollama":
         model = str(model_cfg.get("embedding", "") or "")
         if model and model not in models:
@@ -390,7 +399,12 @@ def select_config_source(explicit: Path | None) -> tuple[Path, dict[str, Any], P
     A normal rerun preserves the config already living in the install directory.
     Passing --config is explicit replacement/import intent and therefore wins.
     """
-    source = (explicit or (SOURCE_ROOT / "config.toml")).expanduser().resolve()
+    if explicit is not None:
+        source = explicit.expanduser().resolve()
+    else:
+        local_config = SOURCE_ROOT / "config.toml"
+        example_config = SOURCE_ROOT / "config.toml.example"
+        source = (local_config if local_config.is_file() else example_config).expanduser().resolve()
     cfg = load_hub_config(str(source))
     install_dir = expand(cfg.get("setup", {}).get("install_dir", "~/.local-ai-hub"))
     installed = (install_dir / "config.toml").resolve()
@@ -404,7 +418,7 @@ def main() -> int:
         raise SystemExit("Python 3.11+ is required. Use install.ps1/install.sh to bootstrap a compatible Python automatically.")
     parser = argparse.ArgumentParser(description="Install Local AI Hub")
     parser.add_argument("--config", type=Path, default=None, help="Import/replace config from this path. Without it, reruns preserve the installed config.")
-    parser.add_argument("--profile", choices=["auto", "cpu", "low", "balanced", "high", "max"])
+    parser.add_argument("--profile", choices=["auto", "cpu", "integrated", "low", "balanced", "high", "max"])
     parser.add_argument("--skip-model-pull", action="store_true")
     parser.add_argument("--skip-local-nlp-preload", action="store_true")
     parser.add_argument("--skip-tools", action="store_true", help="Do not install Serena/CodeGraphContext")
@@ -472,7 +486,12 @@ def main() -> int:
 
     features = cfg.get("features", {})
     model_cfg = cfg.get("models", {})
-    needs_local_nlp = bool(features.get("reranker", True)) or (bool(features.get("rag", True)) and model_cfg.get("embedding_backend", "sentence-transformers") in {"sentence-transformers", "auto"})
+    embedding_backend = str(model_cfg.get("embedding_backend", "sentence-transformers")).lower()
+    reranker_backend = str(model_cfg.get("reranker_backend", "torch")).lower()
+    needs_local_nlp = (
+        (bool(features.get("reranker", True)) and reranker_backend != "openvino")
+        or (bool(features.get("rag", True)) and embedding_backend in {"sentence-transformers", "auto"})
+    )
     if needs_local_nlp and features.get("install_local_nlp_dependencies", True):
         local_nlp_ok = install_requirements(hub_python, install_dir / "requirements-local-nlp.txt", optional=True)
         if local_nlp_ok and not args.skip_local_nlp_preload:
@@ -480,6 +499,30 @@ def main() -> int:
                 run([str(hub_python), str(install_dir / "tools" / "prefetch_local_nlp.py")], check=False, timeout=1800)
             except Exception:
                 pass
+
+    needs_openvino = embedding_backend == "openvino" or reranker_backend == "openvino"
+    ov_cfg = cfg.get("openvino", {})
+    install_openvino = (
+        needs_openvino
+        and features.get("install_openvino_dependencies", True)
+        and bool(ov_cfg.get("enabled", True))
+        and bool(ov_cfg.get("auto_install", True))
+    )
+    openvino_ok = False
+    if install_openvino:
+        openvino_ok = install_requirements(hub_python, install_dir / "requirements-openvino.txt", optional=True)
+        if openvino_ok and not args.skip_local_nlp_preload:
+            try:
+                run([str(hub_python), str(install_dir / "tools" / "prefetch_openvino.py")], check=False, timeout=1800)
+            except Exception:
+                pass
+
+    if needs_openvino and not openvino_ok and features.get("install_local_nlp_dependencies", True):
+        # CPU fallback is part of the OpenVINO reliability contract. Install its
+        # lightweight SentenceTransformers dependency even when Intel acceleration
+        # was explicitly disabled, auto-install was disabled, or the optional
+        # OpenVINO install failed. Users can still disable both dependency installers.
+        install_requirements(hub_python, install_dir / "requirements-local-nlp.txt", optional=True)
 
     if not args.skip_agent_config and bool(setup_cfg.get("install_agent_configs", True)):
         configure_agents(install_dir, hub_python, serena, codegraph, cfg)

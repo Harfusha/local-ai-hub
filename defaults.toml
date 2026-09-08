@@ -20,7 +20,9 @@ api_token = "" # required (>=16 chars) when allow_remote=true and bind is non-lo
 
 [hardware]
 # auto detects OS/architecture, RAM and NVIDIA/AMD/Intel/Apple graphics.
-# Explicit values: cpu, low, balanced, high, max. User overrides always win.
+# Shared-memory iGPU systems use the conservative integrated profile instead of
+# being sized from misleading Windows AdapterRAM values.
+# Explicit values: cpu, integrated, low, balanced, high, max. User overrides always win.
 profile = "auto"
 auto_tune = true
 
@@ -35,7 +37,18 @@ embedding = "BAAI/bge-small-en-v1.5"
 embedding_backend = "sentence-transformers"
 embedding_device = "cpu"
 reranker = "BAAI/bge-reranker-v2-m3"
+reranker_backend = "torch"
 reranker_device = "cpu"
+
+[openvino]
+# Optional Intel NPU/iGPU acceleration for retrieval. The integrated hardware
+# profile selects this automatically on Intel shared-memory graphics systems.
+# Device order is explicit because OpenVINO AUTO does not select NPU by default.
+enabled = true
+device_priority = ["NPU", "GPU", "CPU"]
+cpu_fallback = true
+auto_install = true
+cache_dir = "~/.local-ai-hub/state/openvino-cache"
 
 
 [model_execution.background]
@@ -99,6 +112,7 @@ reasoning_resident_fallback = false
 # intentionally not the foreground scheduler's server because NUM_PARALLEL is
 # process-global in Ollama. The foreground runner is unloaded before lease.
 enabled = true
+process_priority = "idle"
 ollama_url = "http://127.0.0.1:11436"
 # Optional serial CPU lane used while the GPU worker is not eligible. It is a
 # separate Ollama process, so it cannot alter the foreground GPU profile.
@@ -142,6 +156,30 @@ lease_seconds = 900
 result_ttl_seconds = 259200
 max_attempts = 2
 
+[work_orchestrator]
+# Whole-task delegation: plan -> bounded DAG -> transactional edits -> validation -> final handoff.
+enabled = true
+max_active_work_orders = 1
+max_pending_work_orders = 32
+# Work workers are lazy and retire after this idle period; a new submit restarts them.
+worker_idle_seconds = 120
+max_steps = 32
+max_llm_steps = 16
+max_replans = 2
+max_seconds = 900
+parallel_llm_steps = 1
+parallel_deterministic_steps = 2
+step_retry_limit = 2
+validation_commands = 3
+max_patch_files = 24
+max_patch_bytes = 524288
+allow_edits = true
+allow_create = true
+allow_delete = true
+rollback_on_failure = true
+default_response_profile = "compact"
+default_max_output_tokens = 350
+
 [debug_traces]
 enabled = true
 terminal_ttl_seconds = 259200
@@ -155,6 +193,11 @@ max_list_limit = 100
 
 [ollama]
 num_parallel = 2
+# Auto hardware profiles set these true only for shared-memory iGPU machines.
+# They map to OLLAMA_IGPU_ENABLE=1 and OLLAMA_VULKAN=1 for hub-managed Ollama
+# processes. Vulkan is experimental upstream, so dGPU profiles do not force it.
+allow_integrated_gpu = false
+enable_vulkan = false
 flash_attention = true
 kv_cache_type = "q8_0"
 gpu_overhead_bytes = 268435456 # reserve 256 MiB so desktop VRAM pressure does not turn into an OOM
@@ -271,6 +314,8 @@ fingerprint_l1_entries = 256
 # Foreground Git probes are deliberately bounded. Slow Git degrades to a short stale/metadata fingerprint instead of blocking requests.
 git_probe_timeout_seconds = 1.0
 git_status_timeout_seconds = 2.5
+# Same-root single-flight wait is bounded independently from Git subprocess deadlines.
+fingerprint_flight_timeout_seconds = 8.0
 slow_git_cooldown_seconds = 12.0
 max_changed_paths = 512
 max_untracked_walk_files = 2048
@@ -365,9 +410,11 @@ serena_command = ""
 codegraph_command = ""
 serena_context = "ide-assistant"
 codegraph_output_format = "gcf"
+# Skip oversized tracked exports during CodeGraph indexing; source files remain indexed.
+codegraph_max_file_size_mb = 5
 startup_timeout_seconds = 45
 query_timeout_seconds = 20
-index_timeout_seconds = 900
+index_timeout_seconds = 120
 max_output_chars = 9000
 failure_threshold = 2
 cooldown_seconds = 60
@@ -398,8 +445,10 @@ preprocessing = true # background idle project warmup
 subagents = true # advisory local profiles (qwen-explorer, etc.)
 agent_os = true # durable execution: tasks, verification receipts, memory
 dashboard = true # realtime web dashboard at /dashboard
+work_orchestrator = true # whole-task DAG execution and verified handoff (local_ai_work)
 reranker = true
 install_local_nlp_dependencies = true
+install_openvino_dependencies = true
 pull_models_during_setup = true
 
 [rag]
@@ -592,6 +641,7 @@ max_bytes = 268435456
 # Opportunistic whole-project warmup. Every expensive unit is a low-priority,
 # checkpointed micro-job and yields as soon as foreground work appears.
 enabled = true
+cpu_priority = "idle"
 idle_grace_seconds = 0.0
 model_switch_idle_seconds = 60.0
 cpu_runs_during_foreground = false
@@ -619,6 +669,7 @@ skip_rag_for_deterministic_declarative = true
 compact_lexical_for_deterministic_declarative = true
 deterministic_lexical_max_chars = 12000
 db_maintenance_interval_seconds = 1800
+orphan_cleanup_roots_per_run = 4
 lexical_files_per_step = 128
 code_index_files_per_step = 256
 deterministic_files_per_step = 256

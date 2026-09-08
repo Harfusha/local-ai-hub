@@ -34,6 +34,7 @@ class TestSkillGeneration:
         assert "local_ai_rag" in skill
         assert "local_ai_coord" in skill
         assert "local_ai_artifact" in skill
+        assert "local_ai_work" in skill
         assert "Agent Operating System & Durable Execution" in skill
         assert "Ollama advisory subagents" in skill
 
@@ -128,7 +129,7 @@ class TestMcpSchemasGeneration:
         schemas = generate_mcp_tool_schemas({})
         assert set(schemas.keys()) == {
             "local_ai_status", "local_ai_repo", "local_ai_task", "local_ai_rag",
-            "local_ai_command", "local_ai_coord", "local_ai_artifact",
+            "local_ai_command", "local_ai_coord", "local_ai_artifact", "local_ai_work",
         }
 
     def test_schemas_omit_disabled_tools(self):

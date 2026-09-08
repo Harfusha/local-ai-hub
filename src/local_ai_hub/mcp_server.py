@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import atexit
+import functools
 import hashlib
+import inspect
 import os
+import queue
+import threading
+import time
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
 from urllib.parse import quote
@@ -12,6 +18,8 @@ from local_ai_hub.projection import AgentProjector
 from local_ai_hub.config import load_config
 from local_ai_hub.features import FeatureSet
 from local_ai_hub.ollama_subagents import OllamaSubagentCatalog
+from local_ai_hub.process_utils import canonical_root, is_rooted_path
+from local_ai_hub.token_accounting import account_projection, attach_accounting, finalize_tool_accounting, json_tokens, pop_accounting
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -23,18 +31,50 @@ try:
 except ImportError:
     MCPServer = None  # type: ignore[assignment,misc]
 
+
+class _MissingMCP:
+    """Import-safe stand-in used only when the optional MCP SDK is unavailable.
+
+    Keeping module import side-effect free lets diagnostics, tests, and packaging
+    tooling inspect the MCP surface without requiring the transport dependency.
+    Actual server execution still fails fast with an actionable dependency error.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.tools: list[Any] = []
+
+    def tool(self):
+        def decorator(fn: Any) -> Any:
+            self.tools.append(fn)
+            return fn
+
+        return decorator
+
+    def run(self) -> None:
+        raise SystemExit("Missing MCP dependency. Re-run setup or install requirements-core.txt")
+
+# Module-level initialisation: FastMCP requires tool decorators at import
+# time, so HubClient, config and projectors must be created here. Any failure
+# produces a clear SystemExit instead of a confusing AttributeError later.
 AGENT_NAME = os.environ.get("LOCAL_AI_AGENT", "agent")
-_workspace = str(Path.cwd().resolve())
+_workspace = canonical_root(Path.cwd())
 _workspace_hash = hashlib.sha1(_workspace.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
-TENANT = os.environ.get("LOCAL_AI_TENANT") or f"{AGENT_NAME}:{_workspace_hash}:{os.getpid()}"
-CLIENT = HubClient(tenant=TENANT)
-CFG = load_config(os.environ.get("LOCAL_AI_CONFIG"))
-FEATURES = FeatureSet.from_config(CFG)
-MCP_CFG = CFG.get("mcp", {})
-PROJECTOR = AgentProjector(CFG)
-PROFILE_CATALOG = OllamaSubagentCatalog(CFG)
-MAX_TEXT = int(MCP_CFG.get("compact_max_text_chars", 1800))
-MAX_EVIDENCE = int(MCP_CFG.get("compact_max_evidence", 10))
+TENANT = os.environ.get("LOCAL_AI_TENANT") or f"{AGENT_NAME}:{_workspace_hash}"
+
+try:
+    CLIENT = HubClient(tenant=TENANT)
+    CFG = load_config(os.environ.get("LOCAL_AI_CONFIG"))
+    FEATURES = FeatureSet.from_config(CFG)
+    MCP_CFG = CFG.get("mcp", {})
+    PROJECTOR = AgentProjector(CFG)
+    PROFILE_CATALOG = OllamaSubagentCatalog(CFG)
+    MAX_TEXT = int(MCP_CFG.get("compact_max_text_chars", 1800))
+    MAX_EVIDENCE = int(MCP_CFG.get("compact_max_evidence", 10))
+except Exception as _init_exc:  # pragma: no cover
+    import sys
+    print(f"[local-ai-hub] MCP server init failed: {_init_exc}", file=sys.stderr)
+    raise SystemExit(1) from _init_exc
 
 
 def _timeout(kind: str) -> float:
@@ -42,12 +82,29 @@ def _timeout(kind: str) -> float:
     return max(1.0, float(MCP_CFG.get(f"{kind}_timeout_seconds", defaults[kind])))
 
 
+def _client_root(r: str = "") -> str:
+    cleaned = str(r or "").strip()
+    if not cleaned or cleaned == ".":
+        return _workspace
+    try:
+        p = Path(cleaned)
+        if not is_rooted_path(cleaned):
+            return canonical_root(Path(_workspace) / p)
+        # Preserve foreign-platform rooted paths. Calling Path.resolve() on a
+        # Windows drive path while running on POSIX would incorrectly prefix cwd.
+        if not p.is_absolute():
+            return cleaned.replace("\\", "/")
+        return canonical_root(p)
+    except Exception:
+        return _workspace
+
+
 if FastMCP is not None:
     mcp = FastMCP("Local AI Hub (compact)")
 elif MCPServer is not None:  # compatibility with the original MCP v2 API
     mcp = MCPServer("Local AI Hub (compact)")
 else:
-    raise SystemExit("Missing MCP dependency. Re-run setup or install requirements-core.txt")
+    mcp = _MissingMCP("Local AI Hub (compact)")
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +237,16 @@ def _desc_coord() -> str:
     )
 
 
+def _desc_work() -> str:
+    return (
+        "Delegate one closed repository task to Local AI Hub: plan a bounded dependency DAG, execute the smallest independently verifiable steps, "
+        "apply transactional leased edits, run safe validation, verify the integrated result against the original request, and return a compact handoff. "
+        "Actions: submit, status, wait, get, cancel, continue. response_profile=minimal|compact|standard|debug; return_fields selects only needed top-level fields; "
+        "max_output_tokens bounds the handoff while full details remain artifact-backed. Use when: the task can be delegated as a self-contained repository outcome. "
+        "Skip when: the agent must make an unresolved product decision, credentials/network are required, or only one tiny lookup is needed."
+    )
+
+
 def _desc_artifact() -> str:
     return (
         "Fetch one needed artifact section or exact evidence slice. Evidence IDs start with E."
@@ -208,16 +275,17 @@ RepoAction: TypeAlias = Literal[
 RagAction: TypeAlias = Literal["index", "search", "list"]
 CommandAction: TypeAlias = Literal["run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix"]
 CoordAction: TypeAlias = Literal[
-    "claim", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete",
-    "task_create", "task_get", "task_checkpoint", "task_transition", "task_resume", "task_list", "task_complete", "task_fail",
-    "memory_record", "memory_get", "memory_find", "memory_promote",
+    "claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete",
+    "task_create", "task_get", "task_checkpoint", "task_transition", "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat",
+    "memory_record", "memory_get", "memory_find", "memory_promote", "memory_reap",
     "context_compile", "verify_receipt", "verify_completion",
     "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
-    "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_merge",
+    "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_merge", "blackboard_delete",
     "swarm_dispatch", "swarm_step", "swarm_status",
 ]
 StatusDetail: TypeAlias = Literal["brief", "cache", "telemetry", "full", "agent_state"]
 StatusScope: TypeAlias = Literal["process", "window"]
+WorkAction: TypeAlias = Literal["submit", "status", "wait", "get", "cancel", "continue"]
 
 
 def _invalid_action(tool: str, action: str, valid: tuple[str, ...], guidance: str) -> dict[str, Any]:
@@ -229,12 +297,182 @@ def _invalid_action(tool: str, action: str, valid: tuple[str, ...], guidance: st
 
 
 def _compact(value: Any, task_kind: str = "general") -> Any:
-    # Agent-specific projection is applied before the generic safety bound.
+    # Capture measured savings before the projector intentionally removes internal
+    # token_saving/runtime fields. Private accounting metadata is stripped by the
+    # instrumented MCP boundary and never enters agent context.
+    raw_value = value
+    value = attach_accounting(value)
     projected = PROJECTOR.project(value, AGENT_NAME, task_kind)
-    return compact_result(projected, max_text_chars=MAX_TEXT, max_evidence=MAX_EVIDENCE)
+    compacted = compact_result(projected, max_text_chars=MAX_TEXT, max_evidence=MAX_EVIDENCE)
+    return account_projection(raw_value, compacted)
+
+
+class _ProtocolAccountingReporter:
+    """Non-blocking MCP-boundary telemetry reporter.
+
+    Tool accounting must never add foreground latency, so calls enqueue a tiny
+    metadata-only event. A lazy daemon batches events to the hub. If the hub is
+    unavailable, accounting is dropped rather than delaying the agent.
+    """
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=2048)
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._client: HubClient | None = None
+
+    def _ensure_worker(self) -> None:
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._stop.clear()
+            self._thread = threading.Thread(target=self._run, name="local-ai-token-accounting", daemon=True)
+            self._thread.start()
+
+    def record(self, event: dict[str, Any]) -> None:
+        try:
+            self._queue.put_nowait(event)
+        except queue.Full:
+            return
+        self._ensure_worker()
+
+    def _send(self, events: list[dict[str, Any]]) -> None:
+        if not events:
+            return
+        try:
+            if self._client is None:
+                self._client = HubClient(tenant=TENANT, auto_start=False)
+            # batch_id prevents HubClient single-flight from coalescing two
+            # numerically identical accounting batches from concurrent MCP clients.
+            self._client.post(
+                "/v1/telemetry/tool-accounting",
+                {"batch_id": f"{os.getpid()}-{time.time_ns()}", "events": events},
+                timeout=0.25,
+            )
+        except Exception:
+            # Observability is best effort and must never become a retry/backpressure
+            # path for the MCP foreground request.
+            return
+
+    def _run(self) -> None:
+        batch: list[dict[str, Any]] = []
+        idle_since = time.monotonic()
+        while not self._stop.is_set():
+            try:
+                batch.append(self._queue.get(timeout=0.35))
+                idle_since = time.monotonic()
+            except queue.Empty:
+                pass
+            while len(batch) < 32:
+                try:
+                    batch.append(self._queue.get_nowait())
+                except queue.Empty:
+                    break
+            if batch:
+                self._send(batch)
+                batch.clear()
+            if time.monotonic() - idle_since > 15.0:
+                # Retire atomically with submit/start. A record that races with
+                # retirement either makes the queue non-empty here or observes
+                # _thread=None in _ensure_worker and starts a replacement.
+                with self._lock:
+                    if self._queue.empty() and self._thread is threading.current_thread():
+                        self._thread = None
+                        return
+        if batch:
+            self._send(batch)
+        with self._lock:
+            if self._thread is threading.current_thread():
+                self._thread = None
+
+    def close(self) -> None:
+        self._stop.set()
+        thread = self._thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=0.35)
+        remaining: list[dict[str, Any]] = []
+        while len(remaining) < 64:
+            try:
+                remaining.append(self._queue.get_nowait())
+            except queue.Empty:
+                break
+        if remaining:
+            self._send(remaining)
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+
+
+_ACCOUNTING_REPORTER = _ProtocolAccountingReporter()
+atexit.register(_ACCOUNTING_REPORTER.close)
+
+
+@functools.lru_cache(maxsize=32)
+def _schema_descriptor(tool_name: str) -> dict[str, Any]:
+    """Return one stable public-tool descriptor for token-cost estimation."""
+    try:
+        fn = globals().get(tool_name)
+        desc_map = globals().get("_all_desc_map", {})
+        builder = desc_map.get(tool_name) if isinstance(desc_map, dict) else None
+        description = builder() if callable(builder) else (getattr(fn, "__doc__", "") or "")
+        signature = str(inspect.signature(fn)) if callable(fn) else ""
+        return {"name": tool_name, "description": description, "signature": signature}
+    except Exception:
+        return {"name": tool_name}
+
+
+@functools.lru_cache(maxsize=1)
+def _tool_catalog_schema_tokens() -> int:
+    """Estimate enabled MCP schema exposure once per process.
+
+    Hosts differ in how often the catalog is re-injected, so this value is kept as
+    a separate conservative/upper-bound adjustment rather than folded into the
+    default protocol cost.  Caching avoids repeated inspect/description work on
+    every foreground tool call.
+    """
+    try:
+        desc_map = globals().get("_all_desc_map", {})
+        names = [name for name in desc_map if name not in set(getattr(FEATURES, "disabled_tools", []) or [])]
+        return json_tokens({"tools": [_schema_descriptor(name) for name in names]})
+    except Exception:
+        return 0
+
+
+def _instrumented_tool():
+    def decorator(fn: Any) -> Any:
+        signature = inspect.signature(fn)
+
+        @functools.wraps(fn)
+        def wrapped(*args: Any, **kwargs: Any) -> Any:
+            try:
+                bound = signature.bind_partial(*args, **kwargs)
+                # Do not apply Python defaults: omitted optional arguments are not
+                # emitted by the model and therefore must not inflate tool-call cost.
+                arguments = dict(bound.arguments)
+            except Exception:
+                arguments = dict(kwargs)
+            result = fn(*args, **kwargs)
+            clean, measured = pop_accounting(result)
+            try:
+                event = finalize_tool_accounting(
+                    tool_name=fn.__name__, arguments=arguments, response=clean, measured=measured,
+                    schema_tokens_est=_tool_catalog_schema_tokens(),
+                )
+                event.update({"tenant": TENANT, "agent": AGENT_NAME, "created_at": time.time()})
+                _ACCOUNTING_REPORTER.record(event)
+            except Exception:
+                pass
+            return clean
+
+        return wrapped
+    return decorator
 
 
 @mcp.tool()
+@_instrumented_tool()
 def local_ai_status(detail: StatusDetail = "brief", scope: str = "process") -> dict[str, Any]:
     """Health/queue/token-saving status. detail: brief, cache, telemetry, full, agent_state. scope: process (default) or window. Telemetry is metadata-only. Do not poll status during normal repository work or while preprocessing/model startup is in progress; one bounded health check is enough before native fallback. Use when: make one bounded health, cache, or telemetry check. Skip when: repository evidence or task work is needed."""
     if not FEATURES.status:
@@ -295,6 +533,7 @@ def local_ai_status(detail: StatusDetail = "brief", scope: str = "process") -> d
 
 
 @mcp.tool()
+@_instrumented_tool()
 def local_ai_task(
     action: TaskAction,
     task: str = "",
@@ -343,7 +582,7 @@ def local_ai_task(
             PROFILE_CATALOG.resolve(profile)
         except ValueError as exc:
             return {"success": False, "unsupported": True, "error": str(exc)}
-        if not root or not Path(root).expanduser().is_absolute():
+        if not root or not is_rooted_path(root):
             return {
                 "success": False,
                 "unsupported": True,
@@ -430,6 +669,7 @@ def local_ai_task(
 
 
 @mcp.tool()
+@_instrumented_tool()
 def local_ai_repo(
     action: RepoAction,
     root: str = ".",
@@ -457,6 +697,8 @@ def local_ai_repo(
         candidate = Path(root).expanduser()
         if not candidate.is_absolute():
             return {"success": False, "error": "Preprocessing requires an explicit absolute stable project root; do not use MCP process cwd"}
+    else:
+        root = _client_root(root)
     if action == "profile":
         return _compact(CLIENT.post("/v1/repo/profile", {"root": root}, timeout=_timeout("quick")), "profile")
     if action == "search":
@@ -566,6 +808,7 @@ def local_ai_repo(
 
 
 @mcp.tool()
+@_instrumented_tool()
 def local_ai_rag(
     action: RagAction,
     root: str = ".",
@@ -577,6 +820,7 @@ def local_ai_rag(
     if not FEATURES.rag:
         return {"success": False, "unsupported": True, "error": "RAG backend is disabled (features.rag=false in config.toml)"}
     action = action.strip().lower().replace("-", "_")
+    root = _client_root(root)
     if action == "index":
         return _compact(CLIENT.post("/v1/rag/index", {"root": root, "workspace": workspace or None}, timeout=_timeout("long")))
     if action == "search":
@@ -591,6 +835,7 @@ def local_ai_rag(
 
 
 @mcp.tool()
+@_instrumented_tool()
 def local_ai_command(
     action: CommandAction,
     command: str = "",
@@ -608,6 +853,7 @@ def local_ai_command(
     if not FEATURES.commands:
         return {"success": False, "unsupported": True, "error": "local_ai_command is disabled in configuration"}
     action = action.strip().lower().replace("-", "_")
+    eff_cwd = _client_root(cwd)
     host_timeout = _timeout("long")
     configured_command_timeout = int(CFG.get("commands", {}).get("timeout_seconds", 900))
     requested_timeout = int(timeout or configured_command_timeout)
@@ -618,7 +864,7 @@ def local_ai_command(
     if action not in CommandAction.__args__:
         return _invalid_action("local_ai_command", action, tuple(CommandAction.__args__), "Use this broker for bounded commands; keep peer-agent orchestration in Codex.")
     return _compact(CLIENT.post("/v1/command", {
-        "action": action, "command": command, "cwd": cwd, "root": cwd,
+        "action": action, "command": command, "cwd": eff_cwd, "root": eff_cwd,
         "timeout": effective_command_timeout, "force": force,
         "task_id": task_id, "criterion": criterion,
         "auto_fix": auto_fix, "max_attempts": max_attempts,
@@ -627,6 +873,7 @@ def local_ai_command(
 
 
 @mcp.tool()
+@_instrumented_tool()
 def local_ai_coord(
     action: CoordAction,
     root: str = ".",
@@ -637,6 +884,7 @@ def local_ai_coord(
     query: str = "",
     command: str = "",
     ttl_seconds: int = 0,
+    max_tokens: int = 0,
     task: str = "",
     task_id: str = "",
     contract: dict[str, Any] | None = None,
@@ -650,15 +898,16 @@ def local_ai_coord(
     fingerprint: dict[str, Any] | None = None,
     tool_outcome: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Cross-agent coordination for the main agent and bounded Hub workers. Actions: claim, release, leases, memo_put, memo_get, memo_search, memo_delete, task_create, task_get, task_checkpoint, task_transition, task_resume, task_list, task_complete, task_fail, memory_record, memory_get, memory_find, memory_promote, context_compile, verify_receipt, verify_completion, negative_knowledge_record, negative_knowledge_find, incident_decision. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool. Use when: Hub workers share edit paths, leases, or reusable findings. Skip when: work is isolated and no shared Hub state or memo is involved."""
+    """Cross-agent coordination for the main agent and bounded Hub workers. Actions: claim, release, leases, memo_put, memo_get, memo_search, memo_delete, task_create, task_get, task_checkpoint, task_transition, task_resume, task_list, task_complete, task_fail, task_heartbeat, memory_record, memory_get, memory_find, memory_promote, memory_reap, context_compile, verify_receipt, verify_completion, negative_knowledge_record, negative_knowledge_find, incident_decision, blackboard_update, blackboard_get, blackboard_list, blackboard_merge, blackboard_delete. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool. Use when: Hub workers share edit paths, leases, or reusable findings. Skip when: work is isolated and no shared Hub state or memo is involved."""
     if not FEATURES.coord:
         return {"success": False, "unsupported": True, "error": "local_ai_coord is disabled in configuration"}
     action = action.strip().lower().replace("-", "_")
+    root = _client_root(root)
     if action.startswith("task_"):
         return _compact(CLIENT.coord(
             action=action, task_id=task_id, contract=contract,
             checkpoint=checkpoint, status=status, reason=reason,
-            root=root,
+            root=root, ttl_seconds=ttl_seconds,
         ), "status")
     if action.startswith("memory_"):
         return _compact(CLIENT.coord(
@@ -669,7 +918,7 @@ def local_ai_coord(
     if action == "context_compile":
         return _compact(CLIENT.post("/v1/agent-state/context", {
             "action": "compile", "task_id": task_id or query or value or key,
-            "token_budget": ttl_seconds or 4000, "root": root,
+            "token_budget": max_tokens or ttl_seconds or 4000, "root": root,
             "changed_paths": paths or [],
         }, timeout=_timeout("context")), "context")
     if action == "verify_receipt":
@@ -703,6 +952,8 @@ def local_ai_coord(
         }))
     if action == "release":
         return _compact(CLIENT.post("/v1/leases/release", {"lease_id": lease_id}))
+    if action in ("renew", "lease_renew"):
+        return _compact(CLIENT.post("/v1/leases/renew", {"lease_id": lease_id, "ttl_seconds": ttl_seconds or 900}))
     if action == "leases":
         return _compact(CLIENT.get(f"/v1/leases?root={quote(root)}"))
     if action == "memo_put":
@@ -717,12 +968,12 @@ def local_ai_coord(
         return _compact(CLIENT.post("/v1/memory/delete", {"root": root, "key": key}))
     if action.startswith("blackboard_"):
         sub = action[len("blackboard_"):]
-        board = task_id or (key if sub in {"get", "list", "merge"} and not value else "") or "default"
-        sec = key or target_scope or "main"
+        board = task_id or (key if sub in {"get", "list", "merge", "delete"} and not value else "") or "default"
+        sec = key if (value and sub == "delete") else (key or target_scope or ("" if sub in {"get", "delete"} else "main"))
         content = record if record is not None else (value or query)
         author = approver or "agent"
         return _compact(CLIENT.post("/v1/agent-state/blackboard", {
-            "action": sub, "board_id": board, "section": sec,
+            "action": sub, "board_id": board, "section": sec or None,
             "content": content, "author": author,
             "remote_sections": record or {},
         }, timeout=_timeout("quick")), "status")
@@ -748,6 +999,42 @@ def local_ai_coord(
 
 
 @mcp.tool()
+@_instrumented_tool()
+def local_ai_work(
+    action: WorkAction,
+    root: str = ".",
+    task: str = "",
+    work_id: str = "",
+    acceptance_criteria: list[str] | None = None,
+    constraints: list[str] | None = None,
+    mode: str = "execute",
+    permissions: dict[str, Any] | None = None,
+    budget: dict[str, Any] | None = None,
+    timeout_seconds: float = 90.0,
+    answer: str = "",
+    response_profile: str = "compact",
+    return_fields: list[str] | None = None,
+    max_output_tokens: int = 0,
+    keep_failed_workspace: bool = False,
+) -> dict[str, Any]:
+    """Whole-task local execution with durable verified handoff. See dynamic description for policy and response projection."""
+    if not getattr(FEATURES, "work_orchestrator", False):
+        return {"success": False, "unsupported": True, "error": "local_ai_work is disabled in configuration"}
+    action = action.strip().lower().replace("-", "_")
+    if action not in WorkAction.__args__:
+        return _invalid_action("local_ai_work", action, tuple(WorkAction.__args__), "Use submit for a closed task and one bounded wait/get for handoff.")
+    payload: dict[str, Any] = {
+        "action": action, "root": _client_root(root), "task": task, "work_id": work_id,
+        "acceptance_criteria": acceptance_criteria or [], "constraints": constraints or [], "mode": mode,
+        "permissions": permissions or {}, "budget": budget or {}, "timeout_seconds": timeout_seconds, "answer": answer,
+        "response_profile": response_profile, "return_fields": return_fields or [], "max_output_tokens": max_output_tokens,
+        "keep_failed_workspace": keep_failed_workspace,
+    }
+    return _compact(CLIENT.post("/v1/work-orders", payload, timeout=_timeout("long") if action in {"wait"} else _timeout("quick")), "status")
+
+
+@mcp.tool()
+@_instrumented_tool()
 def local_ai_artifact(artifact_id: str, offset: int = 0, max_chars: int = 4000, section: str = "") -> dict[str, Any]:
     """Fetch one needed artifact section or exact evidence slice. Evidence IDs start with E. Use when: exact source or evidence text is required after indexed discovery. Skip when: no source slice is needed or the existing compact result is sufficient."""
     if not FEATURES.artifacts:
@@ -775,6 +1062,7 @@ _all_desc_map = {
     "local_ai_command": _desc_command,
     "local_ai_coord": _desc_coord,
     "local_ai_artifact": _desc_artifact,
+    "local_ai_work": _desc_work,
 }
 if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools"):
     for _tool_name, _desc_fn in _all_desc_map.items():

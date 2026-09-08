@@ -37,6 +37,21 @@ def test_path_escape_is_rejected(tmp_path: Path):
     assert result["success"] is False
 
 
+def test_repo_map_can_use_preindexed_paths_without_inventory(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    source = repo / "src" / "main.py"
+    source.write_text("class Main:\n    pass\n", encoding="utf-8")
+    tools = RepositoryTools(_cfg(tmp_path))
+
+    monkeypatch.setattr(tools, "_git_files", lambda *_args: (_ for _ in ()).throw(AssertionError("inventory")))
+    result = tools.repo_map(str(repo), paths=["src/main.py"])
+
+    assert result["success"] is True
+    assert result["files"] == 1
+    assert result["symbols_sample"][0]["name"] == "Main"
+
+
 def test_git_diff_on_non_git_root_is_a_terminal_client_result(tmp_path: Path):
     root = tmp_path / "plain-files"
     root.mkdir()
@@ -47,3 +62,26 @@ def test_git_diff_on_non_git_root_is_a_terminal_client_result(tmp_path: Path):
     assert result["terminal"] is True
     assert result["retryable"] is False
     assert result["error"] == "git diff requires a Git repository"
+
+
+def test_search_returns_bounded_retryable_result_after_accelerator_timeouts(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    tools = RepositoryTools(_cfg(tmp_path))
+    tools._rg = "rg"
+
+    calls = {"n": 0}
+    def fake_run(*args, **kwargs):
+        calls["n"] += 1
+        raise subprocess.TimeoutExpired(args[0], 0.1)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(tools, "iter_files", lambda *_args: (_ for _ in ()).throw(AssertionError("unbounded scan")))
+
+    result = tools.search(str(repo), "needle")
+
+    assert result["success"] is False
+    assert result["retryable"] is True
+    assert result["error"] == "bounded search accelerators timed out or failed"
+    assert calls["n"] == 2

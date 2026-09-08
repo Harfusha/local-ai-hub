@@ -10,12 +10,38 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
 from .cache import SQLiteCache, TieredCache, stable_hash
 from .repo_state import RepoStateTracker
-from .process_utils import hidden_run_kwargs, terminate_tree
+from .process_utils import canonical_root, hidden_run_kwargs, terminate_tree
+from .state_paths import configured_state_dir
+
+
+class _BoundedStreamBuffer:
+    """Bounded rolling buffer that retains the most recent output characters without OOM."""
+
+    def __init__(self, max_chars: int):
+        self.max_chars = max(1024, int(max_chars))
+        self.chunks: deque[str] = deque()
+        self.total_chars = 0
+        self.lock = threading.Lock()
+
+    def append(self, chunk: str) -> None:
+        if not chunk:
+            return
+        with self.lock:
+            self.chunks.append(chunk)
+            self.total_chars += len(chunk)
+            while self.chunks and (self.total_chars - len(self.chunks[0])) >= self.max_chars:
+                discarded = self.chunks.popleft()
+                self.total_chars -= len(discarded)
+
+    def getvalue(self) -> str:
+        with self.lock:
+            return "".join(self.chunks)[-self.max_chars:]
 
 
 class CommandBroker:
@@ -44,7 +70,7 @@ class CommandBroker:
         self.coalesce_wait_seconds = max(1.0, float(cfg.get("coalesced_wait_seconds", 90.0)))
         self.terminate_grace_seconds = max(0.1, float(cfg.get("terminate_grace_seconds", 2.0)))
         self.post_kill_drain_seconds = max(0.1, float(cfg.get("post_kill_drain_seconds", 2.0)))
-        state_dir = Path(config.get("server", {}).get("state_dir", "."))
+        state_dir = configured_state_dir(config)
         l1_entries = int(cfg.get("l1_entries", 128))
         self.success_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite3", "command:success", int(cfg.get("success_ttl_seconds", 43200)), int(cfg.get("max_entries", 5000))), l1_entries, int(cfg.get("l1_ttl_seconds", 900)))
         self.failure_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite3", "command:failure", int(cfg.get("failure_ttl_seconds", 180)), int(cfg.get("max_failure_entries", 1000))), max(32, l1_entries // 2), min(300, int(cfg.get("l1_ttl_seconds", 900))))
@@ -136,9 +162,19 @@ class CommandBroker:
                     dash_c = tokens[idx + 1]
                     break
             if dash_c is not None:
-                if any(kw in dash_c.lower() for kw in ("test", "validate", "check", "audit", "doctor", "selftest", "report", "assert")):
+                # Detect genuinely dangerous patterns that indicate arbitrary code execution.
+                # Simple keyword matching ('test', 'check') is insufficient alone because an attacker
+                # can embed a validation keyword as a comment: `os.system('rm -rf /'); # test`.
+                _DANGEROUS_INLINE = (
+                    "os.system(", "os.popen(", "subprocess.", "exec(", "eval(", "__import__(",
+                    "importlib.", "ctypes.", "socket.", "urllib.", "http.client", "ftplib.",
+                )
+                dash_c_lower = dash_c.lower()
+                if any(pat in dash_c_lower for pat in _DANGEROUS_INLINE):
+                    return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code contains potentially dangerous call"}
+                if any(kw in dash_c_lower for kw in ("test", "validate", "check", "audit", "doctor", "selftest", "report", "assert")):
                     return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "python inline validation"}
-                if not any(mw in dash_c.lower() for mw in self.MUTATING_WORDS):
+                if not any(mw in dash_c_lower for mw in self.MUTATING_WORDS):
                     return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": "python inline read"}
             non_flag_args = [t for t in tokens[1:] if not t.startswith("-")]
             if non_flag_args:
@@ -338,7 +374,8 @@ class CommandBroker:
             suffix = Path(raw0).suffix.lower()
             resolved = shutil.which(raw0) or shutil.which(raw0, path=cwd)
             if (resolved and Path(resolved).suffix.lower() in {".bat", ".cmd"}) or suffix in {".bat", ".cmd"}:
-                argv = command
+                comspec = os.environ.get("COMSPEC", "cmd.exe")
+                argv = [comspec, "/d", "/c"] + tokens
             else:
                 argv = tokens
         else:
@@ -364,129 +401,84 @@ class CommandBroker:
                 "error": f"failed to spawn process: {exc}",
             }
 
-        if not log_callback:
-            timed_out = False
-            cancelled = False
-            deadline = time.monotonic() + max(1, timeout)
-            stdout = ""
-            stderr = ""
-            while True:
-                remaining = deadline - time.monotonic()
-                if cancel_event is not None and cancel_event.is_set():
-                    cancelled = True
-                    break
-                if remaining <= 0:
-                    timed_out = True
-                    break
-                try:
-                    stdout, stderr = process.communicate(timeout=min(0.25, remaining))
-                    break
-                except subprocess.TimeoutExpired:
-                    continue
+        out_buf = _BoundedStreamBuffer(self.max_output_chars)
+        err_buf = _BoundedStreamBuffer(self.max_output_chars)
 
-            if timed_out or cancelled:
-                try:
-                    terminate_tree(process.pid, grace_seconds=self.terminate_grace_seconds)
-                except Exception:
-                    pass
-                try:
-                    process.kill()
-                except Exception:
-                    pass
-                try:
-                    stdout, stderr = process.communicate(timeout=self.post_kill_drain_seconds)
-                except Exception:
-                    stdout, stderr = "", ""
-                try:
-                    process.wait(timeout=max(2.0, self.terminate_grace_seconds))
-                except Exception:
-                    pass
-                if process.poll() is None:
-                    try:
-                        process.kill()
-                        process.wait(timeout=1.0)
-                    except Exception:
-                        pass
-                try:
-                    if process.stdout and not process.stdout.closed:
-                        process.stdout.close()
-                except Exception:
-                    pass
-                try:
-                    if process.stderr and not process.stderr.closed:
-                        process.stderr.close()
-                except Exception:
-                    pass
-
-            stdout = (stdout or "")[-self.max_output_chars:]
-            stderr = (stderr or "")[-self.max_output_chars:]
-        else:
-            stdout_chunks: list[str] = []
-            stderr_chunks: list[str] = []
-
-            def _reader(stream: Any, chunk_list: list[str], stream_name: str) -> None:
-                try:
-                    for line in iter(stream.readline, ""):
-                        if not line:
-                            break
-                        chunk_list.append(line)
+        def _reader(stream: Any, buf: _BoundedStreamBuffer, stream_name: str) -> None:
+            try:
+                for line in iter(lambda: stream.readline(65536), ""):
+                    if not line:
+                        break
+                    buf.append(line)
+                    if log_callback:
                         try:
                             log_callback(stream_name, line)
                         except Exception:
                             pass
+            except Exception:
+                pass
+            finally:
+                try:
+                    stream.close()
                 except Exception:
                     pass
-                finally:
-                    try:
-                        stream.close()
-                    except Exception:
-                        pass
 
-            t_out = threading.Thread(target=_reader, args=(process.stdout, stdout_chunks, "stdout"), daemon=True)
-            t_err = threading.Thread(target=_reader, args=(process.stderr, stderr_chunks, "stderr"), daemon=True)
-            t_out.start()
-            t_err.start()
+        t_out = threading.Thread(target=_reader, args=(process.stdout, out_buf, "stdout"), daemon=True)
+        t_err = threading.Thread(target=_reader, args=(process.stderr, err_buf, "stderr"), daemon=True)
+        t_out.start()
+        t_err.start()
 
-            timed_out = False
-            cancelled = False
-            deadline = time.monotonic() + max(1, timeout)
-            while process.poll() is None:
-                if cancel_event is not None and cancel_event.is_set():
-                    cancelled = True
-                    break
-                if time.monotonic() > deadline:
-                    timed_out = True
-                    break
-                time.sleep(0.02)
+        timed_out = False
+        cancelled = False
+        deadline = time.monotonic() + max(1, timeout)
+        while process.poll() is None:
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                break
+            if time.monotonic() > deadline:
+                timed_out = True
+                break
+            time.sleep(0.02)
 
-            if timed_out or cancelled:
+        if timed_out or cancelled:
+            try:
+                terminate_tree(process.pid, grace_seconds=self.terminate_grace_seconds)
+            except Exception:
+                pass
+            try:
+                process.kill()
+            except Exception:
+                pass
+            try:
+                process.wait(timeout=max(2.0, self.terminate_grace_seconds))
+            except Exception:
+                pass
+            if process.poll() is None:
                 try:
-                    terminate_tree(process.pid, grace_seconds=self.terminate_grace_seconds)
+                    process.kill()
+                    process.wait(timeout=1.0)
                 except Exception:
-                    try:
-                        process.kill()
-                    except Exception:
-                        pass
+                    pass
 
-            t_out.join(timeout=self.post_kill_drain_seconds)
-            t_err.join(timeout=self.post_kill_drain_seconds)
-            try:
-                if process.stdout and not process.stdout.closed:
-                    process.stdout.close()
-            except Exception:
-                pass
-            try:
-                if process.stderr and not process.stderr.closed:
-                    process.stderr.close()
-            except Exception:
-                pass
-            try:
-                process.wait(timeout=1.0)
-            except Exception:
-                pass
+        t_out.join(timeout=self.post_kill_drain_seconds)
+        t_err.join(timeout=self.post_kill_drain_seconds)
+        try:
+            if process.stdout and not process.stdout.closed:
+                process.stdout.close()
+        except Exception:
+            pass
+        try:
+            if process.stderr and not process.stderr.closed:
+                process.stderr.close()
+        except Exception:
+            pass
+        try:
+            process.wait(timeout=1.0)
+        except Exception:
+            pass
 
-            stdout = "".join(stdout_chunks)[-self.max_output_chars:]
-            stderr = "".join(stderr_chunks)[-self.max_output_chars:]
+        stdout = out_buf.getvalue()
+        stderr = err_buf.getvalue()
         self.executed += 1
         return {
             "success": (not timed_out) and (not cancelled) and process.returncode == 0,
@@ -621,7 +613,28 @@ class CommandBroker:
             if not force:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
-        key, state = self._key(command, cwd, classification)
+        if not Path(cwd).is_dir():
+            result = {
+                "success": False, "error": f"working directory does not exist: {cwd}",
+                "exit_code": 1, "classification": classification, "preflight": True, "terminal": True, "retryable": False,
+            }
+            if not force:
+                self.suppression_cache.set(attempt_key, result)
+            return self._compact(result, tenant, command)
+        try:
+            key, state = self._key(command, cwd, classification)
+        except ValueError as exc:
+            result = {
+                "success": False,
+                "error": str(exc),
+                "classification": classification,
+                "preflight": True,
+                "terminal": True,
+                "retryable": False,
+            }
+            if not force:
+                self.suppression_cache.set(attempt_key, result)
+            return self._compact(result, tenant, command)
         if classification["cacheable"] and not force:
             cached = self.success_cache.get(key) or self.failure_cache.get(key)
             if isinstance(cached, dict):
@@ -684,6 +697,7 @@ class CommandBroker:
             self._active_cancel_keys[key] = (self._cancel_key(command, cwd), str(tenant)[:80])
         try:
             result = self._execute(command, cwd, int(timeout or self.timeout), cancel_event, log_callback=log_callback)
+            result["diagnostics"] = self._extract_diagnostics(result)
             diag_paths = [d["path"] for d in result.get("diagnostics", []) if d.get("path")]
             if not result.get("success") and not result.get("cancelled") and self.incident_store is not None:
                 try:
@@ -788,7 +802,7 @@ class CommandBroker:
         re-tests, and if successful, mints a VerificationReceipt and keeps the fix.
         If all attempts fail, cleanly rolls back all modified files to pristine state.
         """
-        cwd_path = Path(cwd).expanduser().resolve(strict=False)
+        cwd_path = Path(canonical_root(cwd))
         initial = initial_result or self.run(
             command, str(cwd_path), tenant, timeout=timeout, force=True,
             task_id=task_id, criterion=criterion, auto_fix=False, log_callback=log_callback,
@@ -833,7 +847,12 @@ class CommandBroker:
                     try:
                         target.relative_to(cwd_path)
                     except ValueError:
-                        continue
+                        try:
+                            target_canon = Path(canonical_root(target))
+                            target_canon.relative_to(cwd_path)
+                            target = target_canon
+                        except ValueError:
+                            continue
                     if target not in original_files:
                         original_files[target] = target.read_text(encoding="utf-8") if target.is_file() else None
                     target.parent.mkdir(parents=True, exist_ok=True)
@@ -930,7 +949,7 @@ class CommandBroker:
         stdout = str(result.get("stdout", "")); stderr = str(result.get("stderr", ""))
         combined_chars = len(stdout) + len(stderr)
         result["summary"] = self._deterministic_summary(result)
-        diagnostics = self._extract_diagnostics(result)
+        diagnostics = list(result.get("diagnostics") or self._extract_diagnostics(result))
         if result.get("remediation"):
             rem = result["remediation"]
             fix_msg = rem.get("verified_fix") or rem.get("root_cause")

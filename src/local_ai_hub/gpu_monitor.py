@@ -72,10 +72,18 @@ def get_gpu_telemetry() -> dict[str, Any]:
             result = {"available": False, "reason": "no supported GPU telemetry provider detected"}
         else:
             gpu = dict(gpus[0])
+            integrated = bool(gpu.get("integrated", False))
+            reported_vram = int(gpu.get("vram_mb", 0) or 0)
             result = {
                 "available": True, "vendor": gpu.get("vendor", "unknown"), "backend": gpu.get("backend", "unknown"),
-                "gpu_name": gpu.get("name", "GPU"), "vram_total_mb": int(gpu.get("vram_mb", 0) or 0),
-                "unified_memory_mb": int(gpu.get("unified_memory_mb", 0) or 0), "live_metrics": False,
+                "gpu_name": gpu.get("name", "GPU"),
+                # Windows AdapterRAM on an iGPU is aperture metadata, not a safe
+                # dedicated-memory budget. Keep it diagnostic-only.
+                "vram_total_mb": 0 if integrated else reported_vram,
+                "reported_adapter_memory_mb": reported_vram if integrated else 0,
+                "unified_memory_mb": int(gpu.get("unified_memory_mb", 0) or 0),
+                "integrated": integrated, "shared_memory": bool(gpu.get("shared_memory", integrated)),
+                "live_metrics": False,
             }
         _GPU_CACHE, _GPU_CACHE_TIME = result, now
         return dict(result)
@@ -89,7 +97,7 @@ def get_dynamic_token_budget(base_tokens: int = 32768, min_tokens: int = 8192, m
     available_mb = max(0.0, total_mb - used_mb) if total_mb else 0.0
     if total_mb <= 0:
         profile = detect_hardware().get("profile", "balanced")
-        return min(base_tokens, 16384) if profile in {"cpu", "low"} else base_tokens
+        return min(base_tokens, 12288) if profile == "integrated" else min(base_tokens, 16384) if profile in {"cpu", "low"} else base_tokens
     if available_mb >= 14000:
         return min(max_tokens, 65536)
     if available_mb >= 7000:
@@ -111,4 +119,5 @@ def get_system_telemetry() -> dict[str, Any]:
         "cpu": cpu_info, "platform": hw.get("platform"), "arch": hw.get("arch"), "profile": hw.get("profile"),
         "ram": {"total_gb": total_gb, "available_gb": available_gb, "used_gb": round(used_gb, 1), "used_pct": round(100.0 * used_gb / max(0.1, total_gb), 1)},
         "gpu": get_gpu_telemetry(), "gpus": hw.get("gpus") or [],
+        "npus": hw.get("npus") or [], "openvino_devices": hw.get("openvino_devices") or [],
     }

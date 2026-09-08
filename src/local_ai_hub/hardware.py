@@ -4,6 +4,7 @@ import ctypes
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 from functools import lru_cache
@@ -136,6 +137,63 @@ def _amd() -> list[dict[str, Any]]:
     return []
 
 
+def _is_integrated_gpu(vendor: str, name: str, vram_mb: int = 0) -> bool:
+    low = str(name or "").lower()
+    vendor = str(vendor or "").lower()
+    if vendor == "intel":
+        # Intel Arc A/B-series names are discrete; plain "Arc Graphics", Iris and
+        # UHD branding are integrated/shared-memory adapters. Tiny AdapterRAM
+        # values reported by Windows are not usable as dedicated-VRAM capacity.
+        if re.search(r"\barc(?:\(tm\))?\s+(?:pro\s+)?[ab]\d{2,4}m?\b", low) or "arc pro" in low:
+            return False
+        return any(token in low for token in ("arc graphics", "iris", "uhd", "integrated")) or int(vram_mb or 0) < 1024
+    if vendor == "amd":
+        return bool(re.search(r"\bradeon\s+\d{3,4}m\b", low)) or "integrated" in low
+    return False
+
+
+def _openvino_devices() -> list[dict[str, Any]]:
+    try:
+        from .accelerators import openvino_runtime
+        runtime = openvino_runtime()
+    except Exception:
+        return []
+    names = runtime.get("device_names", {}) if isinstance(runtime, dict) else {}
+    out: list[dict[str, Any]] = []
+    for device in runtime.get("devices", []) if isinstance(runtime, dict) else []:
+        name = str(names.get(device, device)) if isinstance(names, dict) else str(device)
+        family = str(device).split(".", 1)[0].upper()
+        if family in {"NPU", "GPU"}:
+            out.append({"vendor": "intel", "device": str(device), "kind": family.lower(), "name": name, "backend": "openvino", "runtime_available": True})
+    return out
+
+
+def _windows_npus() -> list[dict[str, Any]]:
+    if os.name != "nt" or not shutil.which("powershell"):
+        return []
+    script = (
+        "Get-CimInstance Win32_PnPEntity | "
+        "Where-Object { $_.Name -match 'NPU|AI Boost|Neural Processing' } | "
+        "Select-Object Name,Manufacturer,Status | ConvertTo-Json -Compress"
+    )
+    cp = _run(["powershell", "-NoProfile", "-Command", script], timeout=4.0)
+    if not cp or cp.returncode != 0 or not cp.stdout.strip():
+        return []
+    try:
+        data = json.loads(cp.stdout)
+    except Exception:
+        return []
+    items = data if isinstance(data, list) else [data]
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict) or not item.get("Name"):
+            continue
+        name = str(item.get("Name"))
+        vendor = "intel" if "intel" in (name + " " + str(item.get("Manufacturer", ""))).lower() else "unknown"
+        out.append({"vendor": vendor, "name": name, "backend": "openvino", "device": "NPU", "runtime_available": False, "status": str(item.get("Status", ""))})
+    return out
+
+
 def _intel() -> list[dict[str, Any]]:
     xpu = shutil.which("xpu-smi")
     if not xpu:
@@ -153,7 +211,8 @@ def _intel() -> list[dict[str, Any]]:
         for item in devices:
             if isinstance(item, dict):
                 name = str(item.get("device_name") or item.get("name") or "Intel GPU")
-                out.append({"vendor": "intel", "name": name, "vram_mb": int(item.get("memory_physical_size_byte", 0) or 0) // (1024 * 1024), "backend": "oneapi"})
+                vram_mb = int(item.get("memory_physical_size_byte", 0) or 0) // (1024 * 1024)
+                out.append({"vendor": "intel", "name": name, "vram_mb": vram_mb, "backend": "oneapi", "integrated": _is_integrated_gpu("intel", name, vram_mb), "shared_memory": _is_integrated_gpu("intel", name, vram_mb)})
     return out
 
 
@@ -186,13 +245,15 @@ def _generic_windows() -> list[dict[str, Any]]:
         low = name.lower()
         vendor = "intel" if "intel" in low else "amd" if ("amd" in low or "radeon" in low) else "nvidia" if "nvidia" in low else "unknown"
         ram = int(item.get("AdapterRAM") or 0)
-        out.append({"vendor": vendor, "name": name, "vram_mb": ram // (1024 * 1024) if ram else 0, "backend": "windows", "integrated": vendor == "intel"})
+        vram_mb = ram // (1024 * 1024) if ram else 0
+        integrated = _is_integrated_gpu(vendor, name, vram_mb)
+        out.append({"vendor": vendor, "name": name, "vram_mb": vram_mb, "backend": "windows", "integrated": integrated, "shared_memory": integrated})
     return out
 
 
 def choose_profile(gpus: list[dict[str, Any]], ram_gb: float, requested: str = "auto") -> str:
     requested = str(requested or "auto").strip().lower()
-    if requested in {"cpu", "low", "balanced", "high", "max"}:
+    if requested in {"cpu", "integrated", "low", "balanced", "high", "max"}:
         return requested
     apple = next((g for g in gpus if g.get("vendor") == "apple"), None)
     if apple:
@@ -204,7 +265,8 @@ def choose_profile(gpus: list[dict[str, Any]], ram_gb: float, requested: str = "
         if unified >= 16:
             return "balanced"
         return "low"
-    dedicated = max((int(g.get("vram_mb", 0) or 0) for g in gpus), default=0)
+    integrated = [g for g in gpus if bool(g.get("integrated"))]
+    dedicated = max((int(g.get("vram_mb", 0) or 0) for g in gpus if not bool(g.get("integrated"))), default=0)
     if dedicated >= 20 * 1024:
         return "max"
     if dedicated >= 12 * 1024:
@@ -213,11 +275,15 @@ def choose_profile(gpus: list[dict[str, Any]], ram_gb: float, requested: str = "
         return "balanced"
     if dedicated > 0:
         return "low"
-    # iGPU/CPU-only hosts are intentionally conservative.
+    # Shared-memory iGPUs must not be sized from Windows AdapterRAM.  A 32 GB
+    # Core Ultra notebook is useful, but running 7B models plus a second Ollama
+    # worker is too aggressive for an iGPU that competes with system memory.
+    if integrated:
+        return "integrated" if ram_gb >= 16 else "cpu"
     return "low" if ram_gb >= 16 else "cpu"
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=4)
 def detect_hardware(requested_profile: str = "auto") -> dict[str, Any]:
     total, available = _memory_bytes()
     gpus = _nvidia() or _amd() or _intel()
@@ -225,6 +291,26 @@ def detect_hardware(requested_profile: str = "auto") -> dict[str, Any]:
         gpus = _apple(total) or _generic_windows()
     total_gb = round(total / (1024 ** 3), 1) if total else 0.0
     profile_name = choose_profile(gpus, total_gb, requested_profile)
+
+    ov_devices = _openvino_devices()
+    runtime_npus = [dict(item) for item in ov_devices if item.get("kind") == "npu"]
+    physical_npus = _windows_npus()
+    npus = runtime_npus or physical_npus
+    if runtime_npus and physical_npus:
+        for item in npus:
+            item["hardware_detected"] = True
+    openvino_gpu_devices = [dict(item) for item in ov_devices if item.get("kind") == "gpu"]
+
+    # Some Windows builds expose incomplete VideoController memory/type metadata
+    # while the Meteor/Arrow/Lunar Lake NPU is still discoverable.  An Intel NPU
+    # plus no dedicated GPU is a strong signal for the shared-memory notebook
+    # profile, but never overrides an explicit user-selected profile.
+    requested_norm = str(requested_profile or "auto").strip().lower()
+    dedicated_vram = max((int(g.get("vram_mb", 0) or 0) for g in gpus if not bool(g.get("integrated"))), default=0)
+    intel_npu = any(str(item.get("vendor", "")).lower() == "intel" for item in npus if isinstance(item, dict))
+    if requested_norm == "auto" and intel_npu and dedicated_vram <= 0 and total_gb >= 16:
+        profile_name = "integrated"
+
     return {
         "platform": sys_platform(),
         "os": platform.system().lower(),
@@ -232,6 +318,9 @@ def detect_hardware(requested_profile: str = "auto") -> dict[str, Any]:
         "cpu": {"name": platform.processor() or platform.machine(), "logical_cores": os.cpu_count() or 1},
         "ram": {"total_gb": total_gb, "available_gb": round(available / (1024 ** 3), 1) if available else 0.0},
         "gpus": gpus,
+        "npus": npus,
+        "openvino_devices": ov_devices,
+        "openvino_gpu_devices": openvino_gpu_devices,
         "profile": profile_name,
     }
 
@@ -249,13 +338,64 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "scheduler": {"max_parallel": 1, "max_inflight_per_tenant": 1},
         "ollama": {"num_parallel": 1},
         "background_gpu": {"enabled": False, "parallel": 1},
-        "cpu_retrieval": {"embedding_batch_size": 4, "reranker_batch_size": 2},
+        "cpu_retrieval": {"embedding_batch_size": 4, "reranker_batch_size": 2, "reranker_max_length": 512, "embedding_trust_remote_code": False},
         "model_execution": {
             "background": {"parallel": 1, "context_tokens": 8192, "max_context_tokens": 16384, "max_prompt_tokens": 7000},
             "fast": {"parallel": 1, "context_tokens": 16384, "max_context_tokens": 24576, "max_prompt_tokens": 14000},
             "smart": {"parallel": 1, "context_tokens": 16384, "max_context_tokens": 24576, "max_prompt_tokens": 14000},
         },
         "preprocessing": {"cpu_worker_sleep_seconds": 0.08},
+        "ollama_subagents": {"profiles": {
+            "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
+            "qwen-drafter": {"model": "qwen2.5-coder:1.5b"},
+            "qwen-critic": {"model": "qwen2.5-coder:1.5b"},
+        }},
+    },
+    "integrated": {
+        "models": {
+            "background_code": "qwen2.5-coder:0.5b",
+            "fast_code": "qwen2.5-coder:1.5b",
+            "heavy_code": "qwen2.5-coder:3b",
+            "reasoning": "qwen2.5-coder:3b",
+            "general": "qwen2.5-coder:1.5b",
+        },
+        "scheduler": {"max_parallel": 1, "max_loaded_models": 1, "max_queue": 32, "max_queued_per_tenant": 12, "max_inflight_per_tenant": 1},
+        # Ollama currently requires explicit admission for integrated GPUs. Keep
+        # this lane serial and let Ollama fall back to CPU if Vulkan/iGPU support
+        # is unavailable rather than forcing an accelerator backend.
+        "ollama": {"num_parallel": 1, "allow_integrated_gpu": True, "enable_vulkan": True, "gpu_overhead_bytes": 1073741824},
+        "background_gpu": {"enabled": False, "parallel": 1, "file_batch_size": 1, "module_batch_size": 1},
+        "cpu_retrieval": {"embedding_batch_size": 4, "reranker_batch_size": 2, "reranker_max_length": 512, "embedding_trust_remote_code": False},
+        "model_execution": {
+            "background": {"parallel": 1, "context_tokens": 4096, "max_context_tokens": 8192, "max_prompt_tokens": 3500},
+            "fast": {"parallel": 1, "context_tokens": 8192, "max_context_tokens": 12288, "max_prompt_tokens": 7000},
+            "smart": {"parallel": 1, "context_tokens": 8192, "max_context_tokens": 12288, "max_prompt_tokens": 7000},
+            "generic": {"parallel": 1, "context_tokens": 8192, "max_context_tokens": 12288, "max_prompt_tokens": 7000},
+        },
+        "ollama_subagents": {
+            "profiles": {
+                "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
+                "qwen-drafter": {"model": "qwen2.5-coder:1.5b"},
+                "qwen-critic": {"model": "qwen2.5-coder:1.5b"},
+            }
+        },
+        "preprocessing": {
+            "idle_grace_seconds": 15.0,
+            "max_preprocessing_projects": 1,
+            "cpu_workers": 2,
+            "rag_files_per_step": 8,
+            "cpu_worker_sleep_seconds": 0.10,
+        },
+        "prewarm": {"enabled": False},
+        "async_jobs": {"max_pending": 16},
+        "code_intelligence": {"max_sessions_per_backend": 2},
+        "headless": {"max_sessions_per_backend": 2},
+        "debug_traces": {"max_bytes": 134217728, "max_sessions": 300},
+        "work_orchestrator": {
+            "max_active_work_orders": 1, "max_steps": 32, "max_llm_steps": 16,
+            "max_pending_work_orders": 8, "worker_idle_seconds": 30,
+            "parallel_llm_steps": 1, "parallel_deterministic_steps": 2, "step_retry_limit": 2,
+        },
     },
     "low": {
         "models": {
@@ -274,6 +414,11 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "fast": {"parallel": 1, "context_tokens": 24576, "max_context_tokens": 32768, "max_prompt_tokens": 22000},
             "smart": {"parallel": 1, "context_tokens": 24576, "max_context_tokens": 32768, "max_prompt_tokens": 22000},
         },
+        "ollama_subagents": {"profiles": {
+            "qwen-explorer": {"model": "qwen2.5-coder:3b"},
+            "qwen-drafter": {"model": "qwen2.5-coder:3b"},
+            "qwen-critic": {"model": "qwen2.5-coder:3b"},
+        }},
     },
     "balanced": {
         "models": {
@@ -317,6 +462,36 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
 }
 
 
-def profile_overrides(profile_name: str) -> dict[str, Any]:
+def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None) -> dict[str, Any]:
     import copy
-    return copy.deepcopy(PROFILE_OVERRIDES.get(profile_name, PROFILE_OVERRIDES["balanced"]))
+    result = copy.deepcopy(PROFILE_OVERRIDES.get(profile_name, PROFILE_OVERRIDES["balanced"]))
+    detected = detected or {}
+    intel_integrated = any(
+        str(gpu.get("vendor", "")).lower() == "intel" and bool(gpu.get("integrated"))
+        for gpu in detected.get("gpus", []) if isinstance(gpu, dict)
+    )
+    if profile_name == "integrated" and intel_integrated:
+        # Retrieval models are small enough to be useful on Intel NPU/iGPU while
+        # leaving the shared-memory LLM lane serial and conservative. Runtime
+        # failures fall back to the next OpenVINO device and finally CPU.
+        result = _deep_merge_dict(result, {
+            "models": {
+                "embedding": "BAAI/bge-small-en-v1.5",
+                "embedding_backend": "openvino", "embedding_device": "auto",
+                "reranker": "cross-encoder/ms-marco-MiniLM-L6-v2",
+                "reranker_backend": "openvino", "reranker_device": "auto",
+            },
+            "openvino": {"enabled": True},
+        })
+    return result
+
+
+def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    import copy
+    result = copy.deepcopy(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge_dict(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result

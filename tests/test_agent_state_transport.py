@@ -41,7 +41,11 @@ enabled = true
     # We mock or run directly via app or client
     # For transport test without network server, we can mock client request/get/post through app handlers or test client directly
     client._app_direct = app
-    return client, app
+    try:
+        yield client, app
+    finally:
+        client.close()
+        app.close()
 
 
 def test_coord_task_checkpoint_action_preserves_existing_memo_actions(running_app_client):

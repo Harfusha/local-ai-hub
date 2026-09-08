@@ -1,5 +1,110 @@
 # Changelog
 
+## 3.0.0 — 2026-09-08
+
+### Unified single-version surface — no legacy, no versioned branching
+
+- **Removed all backward-compatible token accounting fallbacks.** `cloud_tokens_avoided_est`, `net_cloud_tokens_avoided_est`, `legacy_inference_cloud_tokens_avoided_est`, and `token_accounting_version` fields are gone from the telemetry surface. The canonical field is `net_cloud_token_delta_est`.
+- **Dashboard labels are now consistent between HTML skeleton and JS.** JS no longer rewrites card labels based on `token_accounting_version` — the HTML renders the correct label (`Net cloud token delta`) from the start and JS only sets content values after load.
+- **Removed legacy `tokensSavedSub` branch** (`legacy inference estimate · N cache hits`). The v3.0 subtext always renders the full breakdown: `baseline X − protocol Y (call Z + read W) · schema-adjusted N`.
+- **Simplified `netDelta` and `schemaDelta`** JS expressions — removed `?? cloud_tokens_avoided_est` and `?? net_after_schema_tokens_avoided_est` fallback chains.
+- **Cache layers table** now shows `net_cloud_token_delta_est` instead of the legacy `cloud_tokens_avoided_est` column.
+- **Removed backward-compat attribution block** in `record_tool_accounting` that inferred `gross_input`/`gross_output` from early v2.4 reporters that only sent `savings_breakdown`. Callers must now supply explicit gross input/output fields.
+- **Simplified `record_tool_accounting` field references** — all `event.get(field, event.get(old_alias, 0))` chains replaced with direct `event.get(field, 0)`.
+
+## 2.4.0 — 2026-09-08
+
+### End-to-end token-efficiency accounting
+- Added MCP-boundary accounting that measures the agent-visible tool name/arguments and projected tool response, subtracting both from gross cloud-context/output avoidance. A signed net token delta exposes calls that cost more context than they save instead of hiding the overhead behind a zero clamp.
+- Added separate gross input/output avoidance, tool-call tokens, tool-read tokens, protocol overhead, local-compute reuse and a conservative schema-adjusted scenario. Enabled-tool schema exposure stays separate from the default net metric because MCP hosts differ in schema injection/caching behavior.
+- Added no-double-count savings attribution: overlapping deterministic/index/context transformations compete for the strongest counterfactual source baseline. The visible projected response is charged once; response compaction remains diagnostic and becomes the selected baseline only when no stronger upstream source baseline exists. Deterministic outline, bounded lexical-search candidate selection, diff/context packing, routed context and artifact-backed last-mile compaction now contribute to the same accounting model.
+- Added local inference tokens avoided by exact/semantic/single-flight/stale cache reuse as a separate compute-efficiency metric rather than inflating cloud-context savings.
+- Added additive telemetry/daily-rollup schema migration, per-source savings breakdown, dashboard/monitor fields and metadata-only batched reporting. Accounting never persists prompts, source, tool arguments or tool output.
+
+### Latency, blocker and release hardening
+- Removed synchronous telemetry flushes from live status/dashboard hot paths and moved MCP accounting delivery onto a lazy bounded daemon batcher with short best-effort deadlines, so observability cannot back-pressure foreground agent calls.
+- Added bounded validation for the internal accounting endpoint and excluded that endpoint from normal workload journaling/accounting to prevent recursive telemetry.
+- Fixed clean-checkout TaskStore bootstrap: the task projection no longer requires the AgentState SQLite file to pre-exist before the state store is allowed to create its schema.
+- Streamlined token serialization/accounting and kept private accounting metadata out of agent-visible projections.
+- Removed local runtime/internal artifacts from the release tree and aligned package/release/documentation metadata to 2.4.0.
+
+## 2.3.0 — 2026-09-07
+
+- Added durable **whole-task Work Orchestrator** (`local_ai_work`): closed repository tasks are decomposed into bounded dependency-ordered steps, executed serially for local-LLM safety, validated, integrated and verified against the original request before a handoff is returned.
+- Added transactional edit journals outside Git, bounded path leases, crash-safe rollback/recovery, patch traversal/symlink/binary protections, create/delete permissions and bounded patch size/file limits.
+- Added compact agent response profiles (`minimal`, `compact`, `standard`, `debug`), explicit field projection and output-token budgets with lazy artifact-backed details.
+- Tightened the shared-memory `integrated` notebook profile: one inference/model, queue 32, per-tenant queue 12, async pending 16, 15 s preprocessing idle grace, prewarm off, two code-intelligence/headless sessions and bounded debug retention.
+- Added bounded deterministic inspection parallelism while keeping LLM/edit work serial on integrated hosts. Planner dependencies are now normalized into a stable topological execution order, including forward references; cyclic plans fail closed instead of silently discarding edges.
+- Hardened work-order admission with serialized queue-capacity checks and bounded printable work IDs, preventing concurrent submitters from exceeding configured queue limits or storing unbounded identifiers.
+- Final verification is fail-closed: mutating work requires successful validation evidence and explicit acceptance criteria must be positively covered.
+- Preserved v2.2 Intel NPU → iGPU → CPU OpenVINO retrieval fallback and conservative 0.5B/1.5B/3B local-model sizing.
+- Expanded the compact public MCP surface from seven to eight tools with one deliberate high-level orchestration tool rather than exposing internal planner/executor primitives. The `/v1/work-orders` transport is routed through the authenticated POST pipeline with bounded endpoint schema validation, matching the MCP client contract.
+- Final orchestration hardening treats cross-path patches as create+delete for permission enforcement, sanitizes duplicate/malformed planner step metadata, closes the idle-worker retirement race, and refreshes the shipping `AGENTS.md` policy so agents actually prefer `local_ai_work` and compact projected handoffs where appropriate.
+
+## 2.2.0 — 2026-09-07
+
+### Conservative integrated-GPU profile
+- Added the `integrated` hardware profile for shared-memory iGPU notebooks and stopped treating Windows `AdapterRAM` aperture values as dedicated VRAM budgets. Intel Arc A/B-series discrete adapters remain classified as dGPUs.
+- The integrated profile keeps one foreground request/model resident, disables the separate background Ollama process, uses 0.5B/1.5B routine coding models with a 3B heavy/reasoning ceiling, reduces context/batch/preprocessing budgets, and reserves additional shared-memory headroom.
+- Hub-managed Ollama can explicitly admit integrated GPUs and Vulkan for this profile while preserving serial scheduling and CPU fallback behavior. Dashboard/system telemetry labels shared-memory iGPUs without presenting aperture memory as VRAM.
+
+### Intel NPU / iGPU retrieval acceleration
+- Added optional OpenVINO detection, status reporting, setup/prefetch support and `requirements-openvino.txt`. Intel integrated profiles use small export-friendly embedding/reranker models and device priority `NPU -> GPU -> CPU`.
+- OpenVINO placement is passed to the underlying Optimum model while the SentenceTransformers wrapper stays on CPU, avoiding accidental dependency on a torch-native NPU backend. Model-load and first-inference failures advance to the next accelerator and finally the CPU SentenceTransformers backend.
+- Added NPU discovery on Windows (including Intel AI Boost naming), OpenVINO device discovery, accelerator diagnostics in `doctor`, application status and dashboard summaries, plus cache identities that include the backend/device actually producing embeddings.
+- Embedding and reranker caches now preserve v2.1 CPU entries through read-through migration while keeping NPU/GPU/CPU results device-qualified. Reranker requests restart atomically when first-inference fallback changes devices, preventing mixed-device score sets or cache writes under a stale accelerator identity.
+
+### Packaging and compatibility
+- Added the `intel-accelerators` optional dependency, ships the OpenVINO requirements/prefetch helper, accepts `integrated` across setup/runtime dashboard configuration, and keeps OpenVINO optional so non-Intel/CPU-only installations retain the 2.1 dependency surface.
+- Updated release tests/documentation for 2.2 and added regression coverage for iGPU classification, conservative profile limits, OpenVINO NPU-to-GPU fallback, accelerator placement, cooldown behavior and managed Ollama iGPU admission.
+
+## 2.1.0 — 2026-09-07
+
+### MCP process lifecycle and concurrency
+- Bound each managed stdio MCP reader to the exact subprocess generation and per-generation response/diagnostic buffers, preventing late readers from an old Serena/CodeGraph process from consuming or injecting JSON-RPC traffic after a fast reset/restart.
+- Added bounded reader-thread joins and stale diagnostic cleanup during MCP resets/close, plus context-manager support for managed MCP clients and external code-intelligence sessions.
+- Hardened external index execution so unexpected pipe/runtime failures still terminate and reap the indexer process, and made multi-session shutdown best-effort so one failing close cannot strand later sessions.
+- Cleared CodeGraph session-access metadata immediately when indexing invalidates a project session.
+- Bounded per-root repository fingerprint single-flight waits with `fingerprint_flight_timeout_seconds`; a pathological/network filesystem can no longer make every request for that root wait indefinitely behind one owner.
+- Short explicit MCP call deadlines are now honored down to a small safety floor instead of being silently inflated to 500 ms, reducing fallback-chain tail latency.
+- Process liveness now distinguishes exited-but-still-handleable Windows processes as well as Linux zombies, avoiding unnecessary termination grace waits on both platforms.
+- Partial programmatic configurations without `server.state_dir` use a process-scoped private temporary state directory instead of writing `cache.sqlite3` into the current checkout; forked children derive their own fallback path.
+
+### Release integrity
+- Added an optional expected-version gate to `tools/release_check.py`; tagged releases now fail before build when the Git tag and package/release metadata disagree.
+- Tagged release builds now smoke-install the generated wheel and verify its runtime `__version__` against the tag.
+- CI/package and tagged-release jobs now require no tracked test/setup mutations, clean ignored runtime/build side effects, and rerun the release hygiene gate immediately before packaging.
+- GitHub release assets now include `SHA256SUMS.txt` covering the built wheel and source distribution.
+- Post-test release validation now runs before ignored-file cleanup and permits only known test/build caches, so newly created runtime SQLite/config/generated payloads cannot be silently erased and masked.
+- `ORIGINAL_REQUEST.md` is treated as an internal-only workspace artifact and is explicitly rejected/removed from release checkouts.
+
+## 2.0.0 — 2026-09-06
+
+### Release hardening
+- Added `tools/release_check.py` and wired it into CI and tagged releases so local configuration, runtime SQLite files, coverage/cache data, generated payloads, egg-info and internal agent workspaces fail the release gate instead of leaking into a package/repository snapshot.
+- Stopped including user-owned `config.toml` in source distributions; `config.toml.example` remains the portable template.
+- Made `tools/selftest.py` use the package version dynamically so future releases cannot silently drift from the live health contract.
+
+### Cross-platform reliability
+- MCP modules can now be imported without the optional MCP SDK; only actual server execution fails with the dependency guidance. This keeps diagnostics, static inspection and offline tests usable.
+- Added host-independent rooted-path detection so Windows drive/UNC paths are not treated as relative on POSIX hosts, and hardened lease paths against drive-qualified traversal forms on every OS.
+- Preserved foreign-platform absolute client roots instead of accidentally prefixing them with the current workspace.
+
+### Storage and preprocessing performance
+- Unified preprocessing connections/retries/WAL initialization with the shared SQLite support layer while retaining its larger bounded cache/mmap hints.
+- Enabled SQLite foreign-key enforcement on all shared connections.
+- Added query-aligned indexes for task recency/status, memory expiry cleanup, incident fingerprint lookup/recent retry decisions and verification receipt recency.
+- Kept preprocessing incremental/watch-driven behavior and cached generation-level pruning while removing duplicated lock/busy retry logic.
+
+### Agent context and coordination
+- Context compilation now invalidates knowledge links only for explicitly changed paths, honors `include_kinds`, and can include active repository write leases so workers avoid planning conflicting edits.
+- Lease-aware context is wired through the application and HTTP agent-state transport with the current tenant identity.
+
+### Lifecycle and live-state correctness
+- `LocalAIApp` is an idempotent context manager and now shuts down prewarm/watchdog, preprocessing, external-tool, async-job, background GPU, scheduler, telemetry and logging workers in a bounded order.
+- Async-job scheduler watchers are explicitly owned, stop on manager shutdown or durable job completion/cancellation, and reject submissions after close instead of leaving orphan helper threads.
+- Agent-state counts are refreshed even when the expensive system status snapshot is cached, preventing stale task/memory/incident summaries immediately after state mutations; `status()` now also returns the standard `success: true` marker.
+
 ## 1.6.0 — 2026-09-05
 
 ### Agent Operating System & Intelligence

@@ -276,7 +276,7 @@ def compact_whitespace(text: str) -> str:
 
 def shrink_signatures(text: str, language: str = "csharp") -> str:
     """Replace method/function bodies with concise summaries for reference context."""
-    if not text or len(text) < 100:
+    if not text:
         return text
     
     lang = language.lower()
@@ -290,15 +290,41 @@ def shrink_signatures(text: str, language: str = "csharp") -> str:
                 depth = 1
                 j = i + 1
                 in_str: str | None = None
+                in_line_comment = False
+                in_block_comment = False
                 while j < n and depth > 0:
                     ch = text[j]
+                    if in_line_comment:
+                        if ch == '\n':
+                            in_line_comment = False
+                        j += 1
+                        continue
+                    if in_block_comment:
+                        if ch == '*' and j + 1 < n and text[j + 1] == '/':
+                            in_block_comment = False
+                            j += 2
+                            continue
+                        j += 1
+                        continue
                     if in_str:
                         if ch == '\\' and j + 1 < n:
                             j += 2
                             continue
                         if ch == in_str:
                             in_str = None
-                    elif ch in ('"', "'", '`'):
+                        j += 1
+                        continue
+                    if ch == '/' and j + 1 < n:
+                        next_ch = text[j + 1]
+                        if next_ch == '/':
+                            in_line_comment = True
+                            j += 2
+                            continue
+                        if next_ch == '*':
+                            in_block_comment = True
+                            j += 2
+                            continue
+                    if ch in ('"', "'", '`'):
                         in_str = ch
                     elif ch == '{':
                         depth += 1
@@ -316,8 +342,46 @@ def shrink_signatures(text: str, language: str = "csharp") -> str:
         return "".join(out)
     
     if lang in ("py", "python"):
-        pattern = re.compile(r"(def\s+[A-Za-z0-9_]+\s*\([^)]*\)\s*(?:->\s*[^:]+)?:\s*\n)(?:[ \t]*[^\n]*\n){3,}")
-        return pattern.sub(r"\1    ...\n", text)
+        lines = text.splitlines(keepends=True)
+        out_lines: list[str] = []
+        idx = 0
+        num_lines = len(lines)
+        def_re = re.compile(r"^([ \t]*)def\s+[A-Za-z0-9_]+\s*\([^)]*\)\s*(?:->\s*[^:]+)?:\s*$")
+        while idx < num_lines:
+            line = lines[idx]
+            m = def_re.match(line.rstrip("\r\n"))
+            if m:
+                base_indent = len(m.group(1).expandtabs(4))
+                out_lines.append(line)
+                idx += 1
+                body_lines: list[str] = []
+                while idx < num_lines:
+                    next_line = lines[idx]
+                    stripped = next_line.strip()
+                    if not stripped:
+                        body_lines.append(next_line)
+                        idx += 1
+                        continue
+                    line_indent = len(next_line[: len(next_line) - len(next_line.lstrip())].expandtabs(4))
+                    if line_indent > base_indent:
+                        body_lines.append(next_line)
+                        idx += 1
+                    else:
+                        break
+                content_count = sum(1 for b in body_lines if b.strip())
+                if content_count >= 3:
+                    indent_str = m.group(1) + "    "
+                    out_lines.append(f"{indent_str}...\n")
+                    trailing_blanks: list[str] = []
+                    while body_lines and not body_lines[-1].strip():
+                        trailing_blanks.append(body_lines.pop())
+                    out_lines.extend(reversed(trailing_blanks))
+                else:
+                    out_lines.extend(body_lines)
+                continue
+            out_lines.append(line)
+            idx += 1
+        return "".join(out_lines)
         
     return text
 

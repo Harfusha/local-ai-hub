@@ -5,4 +5,4 @@ Local AI Hub provides bounded microtasks via `qwen2.5-coder:7b` (local_ai_task).
 Rules:
 - Never duplicate the same scope across agents.
 - Use `local_ai_coord` leases to guard overlapping files before editing.
-- Main agent owns final integration, validation, and user response.
+- Main agent owns final acceptance and user response. A bounded `local_ai_work` order owns only its declared transactional workspace task through verified handoff.

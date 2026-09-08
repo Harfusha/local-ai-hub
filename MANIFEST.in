@@ -7,11 +7,11 @@ include RELEASE.json
 include SECURITY.md
 include THIRD_PARTY.md
 include LICENSE
-include config.toml
 include config.toml.example
 include defaults.toml
 include requirements-core.txt
 include requirements-local-nlp.txt
+include requirements-openvino.txt
 include install.ps1
 include install.sh
 recursive-include tools *.py

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -18,6 +19,8 @@ class ContextRequest:
     token_budget: int = 4000
     include_kinds: tuple[str, ...] = ()
     changed_paths: tuple[str, ...] = ()
+    root: str = ""
+    tenant: str = ""
 
 
 @dataclass(frozen=True)
@@ -102,43 +105,53 @@ class ContextCompiler:
         verification_store: Any | None = None,
         memory_store: Any | None = None,
         incident_store: Any | None = None,
+        lease_store: Any | None = None,
     ) -> None:
         self.state_store = state_store
         self.task_store = task_store
         self.verification_store = verification_store
         self.memory_store = memory_store
         self.incident_store = incident_store
+        self.lease_store = lease_store
+        self._lock = threading.RLock()
+        self._initialized = False
         self._init_table()
 
     def _init_table(self) -> None:
-        if not self.state_store.enabled:
+        if self._initialized or not self.state_store.enabled:
             return
-        self.state_store._ensure_schema()
-        con = connect_sqlite(self.state_store.db_path)
-        try:
-            con.execute(
-                """
-                CREATE TABLE IF NOT EXISTS agent_knowledge_links (
-                    link_id TEXT PRIMARY KEY,
-                    source_id TEXT NOT NULL,
-                    target_id TEXT NOT NULL,
-                    relationship TEXT NOT NULL,
-                    path TEXT NOT NULL,
-                    revision TEXT NOT NULL,
-                    valid INTEGER NOT NULL,
-                    created_at REAL NOT NULL
-                );
-                """
-            )
-            con.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_agent_klinks_path
-                ON agent_knowledge_links (path, valid);
-                """
-            )
-            con.commit()
-        finally:
-            con.close()
+        with self._lock:
+            if self._initialized or not self.state_store.enabled:
+                return
+            self.state_store._ensure_schema()
+            def _setup() -> None:
+                con = connect_sqlite(self.state_store.db_path)
+                try:
+                    with con:
+                        con.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS agent_knowledge_links (
+                                link_id TEXT PRIMARY KEY,
+                                source_id TEXT NOT NULL,
+                                target_id TEXT NOT NULL,
+                                relationship TEXT NOT NULL,
+                                path TEXT NOT NULL,
+                                revision TEXT NOT NULL,
+                                valid INTEGER NOT NULL,
+                                created_at REAL NOT NULL
+                            );
+                            """
+                        )
+                        con.execute(
+                            """
+                            CREATE INDEX IF NOT EXISTS idx_agent_klinks_path
+                            ON agent_knowledge_links (path, valid);
+                            """
+                        )
+                finally:
+                    con.close()
+            retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+            self._initialized = True
 
     def link(
         self,
@@ -234,33 +247,43 @@ class ContextCompiler:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return []
         self._init_table()
-        con = connect_sqlite(self.state_store.db_path)
-        try:
-            cur = con.execute(
-                """
-                SELECT link_id, source_id, target_id, relationship, path, revision, valid, created_at
-                FROM agent_knowledge_links
-                WHERE path = ? AND valid = 1
-                """,
-                (path,),
-            )
-            return [
-                KnowledgeLink(
-                    link_id=row[0],
-                    source_id=row[1],
-                    target_id=row[2],
-                    relationship=row[3],
-                    path=row[4],
-                    revision=row[5],
-                    valid=bool(row[6]),
-                    created_at=row[7],
+
+        def _do_get() -> list[KnowledgeLink]:
+            con = connect_sqlite(self.state_store.db_path)
+            try:
+                cur = con.execute(
+                    """
+                    SELECT link_id, source_id, target_id, relationship, path, revision, valid, created_at
+                    FROM agent_knowledge_links
+                    WHERE path = ? AND valid = 1
+                    """,
+                    (path,),
                 )
-                for row in cur.fetchall()
-            ]
-        finally:
-            con.close()
+                return [
+                    KnowledgeLink(
+                        link_id=row[0],
+                        source_id=row[1],
+                        target_id=row[2],
+                        relationship=row[3],
+                        path=row[4],
+                        revision=row[5],
+                        valid=bool(row[6]),
+                        created_at=row[7],
+                    )
+                    for row in cur.fetchall()
+                ]
+            finally:
+                con.close()
+
+        return retry_busy(_do_get, retries=5, base_delay_seconds=0.02)
 
     def compile(self, request: ContextRequest) -> CompiledContext:
+        # Changed source paths make stored relationship links stale immediately.
+        # Invalidation is idempotent and bounded to the explicit paths supplied by
+        # the caller, avoiding broad repository-wide link churn.
+        if request.changed_paths:
+            self.invalidate(request.changed_paths)
+
         candidates: list[tuple[int, ContextElement]] = []
         pinned_goal: ContextElement | None = None
 
@@ -364,6 +387,37 @@ class ContextCompiler:
                             freshness=inc.updated_at,
                         ),
                     ))
+
+        # 5. Active write leases (priority: 85). Exposing these in compiled
+        # context prevents workers from planning edits into scopes already owned
+        # by another agent and aligns context compilation with the coordination
+        # contract documented for Local AI Hub.
+        if self.lease_store is not None and request.root:
+            for lease in self.lease_store.list(request.root)[:20]:
+                owner = str(lease.get("tenant", ""))
+                path = str(lease.get("path", ""))
+                purpose = str(lease.get("purpose", ""))
+                expires_at = float(lease.get("expires_at", 0.0) or 0.0)
+                ownership = "current agent" if request.tenant and owner == request.tenant else owner or "another agent"
+                lease_content = f"Active write lease: {path} held by {ownership} for {purpose}"
+                candidates.append((
+                    85,
+                    ContextElement(
+                        element_id=str(lease.get("lease_id", "lease")) + ":" + path,
+                        source_kind="active_lease",
+                        content=lease_content,
+                        estimated_tokens=_estimate_tokens(lease_content),
+                        reason="active coordination lease for repository edit scope",
+                        confidence=1.0,
+                        freshness=expires_at,
+                    ),
+                ))
+
+        if request.include_kinds:
+            allowed_kinds = {str(kind).strip().lower() for kind in request.include_kinds if str(kind).strip()}
+            candidates = [(prio, el) for prio, el in candidates if el.source_kind.lower() in allowed_kinds]
+            if pinned_goal is not None and pinned_goal.source_kind.lower() not in allowed_kinds:
+                pinned_goal = None
 
         selected: list[tuple[int, ContextElement]] = []
         spent_tokens = 0

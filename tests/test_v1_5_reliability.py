@@ -754,10 +754,10 @@ def test_hub_policy_excludes_removed_external_agent_route():
     assert "allow_write=false" not in policy
 
 
-def test_mcp_surface_preserves_seven_tools_with_agent_state_actions():
+def test_mcp_surface_preserves_eight_tools_with_agent_state_actions():
     source = (ROOT / "src" / "local_ai_hub" / "mcp_server.py").read_text(encoding="utf-8")
     tool_defs = [line for line in source.splitlines() if line.startswith("def local_ai_")]
-    assert len(tool_defs) == 7
+    assert len(tool_defs) == 8
     assert "task_create" in source
     assert "context_compile" in source
     assert "candidate_create" in source

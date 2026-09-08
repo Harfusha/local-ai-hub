@@ -25,11 +25,15 @@ class ConversationStore:
         self,
         *,
         idle_ttl_seconds: float = 900.0,
+        active_ttl_seconds: float = 1800.0,
         max_turns: int = 12,
+        max_conversations: int = 1000,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.idle_ttl_seconds = max(1.0, float(idle_ttl_seconds))
+        self.active_ttl_seconds = max(self.idle_ttl_seconds, float(active_ttl_seconds))
         self.max_turns = max(1, int(max_turns))
+        self.max_conversations = max(1, int(max_conversations))
         self._clock = clock
         self._items: dict[str, Conversation] = {}
         self._lock = threading.Lock()
@@ -44,6 +48,9 @@ class ConversationStore:
         )
         with self._lock:
             self._purge_locked(now)
+            if len(self._items) >= self.max_conversations:
+                oldest_cid = min(self._items.keys(), key=lambda k: self._items[k].updated_at)
+                self._items.pop(oldest_cid, None)
             self._items[conversation.conversation_id] = conversation
         return conversation
 
@@ -100,7 +107,19 @@ class ConversationStore:
         stale = [
             conversation_id
             for conversation_id, conversation in self._items.items()
-            if not conversation.active and now - conversation.updated_at > self.idle_ttl_seconds
+            if (not conversation.active and now - conversation.updated_at > self.idle_ttl_seconds)
+            or (conversation.active and now - conversation.updated_at > self.active_ttl_seconds)
         ]
         for conversation_id in stale:
             self._items.pop(conversation_id, None)
+
+        if len(self._items) >= self.max_conversations:
+            inactive = sorted(
+                (c.updated_at, cid)
+                for cid, c in self._items.items()
+                if not c.active
+            )
+            for _, cid in inactive:
+                self._items.pop(cid, None)
+                if len(self._items) < self.max_conversations:
+                    break

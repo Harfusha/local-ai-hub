@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 import uuid
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -304,66 +306,98 @@ class VerificationStore:
     ) -> None:
         self.state_store = state_store
         self.task_store = task_store
+        self._lock = threading.RLock()
+        self._initialized = False
         self._init_tables()
 
     def _init_tables(self) -> None:
-        if not self.state_store.enabled:
+        if self._initialized or not self.state_store.enabled:
             return
-        self.state_store._ensure_schema()
-        con = connect_sqlite(self.state_store.db_path)
-        try:
-            con.execute(
-                """
-                CREATE TABLE IF NOT EXISTS agent_verification_receipts (
-                    receipt_id TEXT PRIMARY KEY,
-                    task_id TEXT NOT NULL,
-                    criterion TEXT NOT NULL,
-                    change_intent_id TEXT NOT NULL,
-                    evidence_id TEXT NOT NULL,
-                    command_id TEXT NOT NULL,
-                    repository_revision TEXT NOT NULL,
-                    observed_at REAL NOT NULL,
-                    expires_at REAL,
-                    passed INTEGER NOT NULL,
-                    details TEXT NOT NULL
-                );
-                """
-            )
-            con.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_agent_verif_task
-                ON agent_verification_receipts (task_id, criterion, observed_at DESC);
-                """
-            )
-            con.execute(
-                """
-                CREATE TABLE IF NOT EXISTS agent_change_intents (
-                    change_id TEXT PRIMARY KEY,
-                    task_id TEXT NOT NULL,
-                    affected_paths TEXT NOT NULL,
-                    affected_symbols TEXT NOT NULL,
-                    expected_impact TEXT NOT NULL,
-                    rollback_description TEXT NOT NULL,
-                    created_at REAL NOT NULL
-                );
-                """
-            )
-            con.execute(
-                """
-                CREATE TABLE IF NOT EXISTS agent_outcomes (
-                    outcome_id TEXT PRIMARY KEY,
-                    change_id TEXT NOT NULL,
-                    task_id TEXT NOT NULL,
-                    kind TEXT NOT NULL,
-                    actor TEXT NOT NULL,
-                    details TEXT NOT NULL,
-                    created_at REAL NOT NULL
-                );
-                """
-            )
-            con.commit()
-        finally:
-            con.close()
+        with self._lock:
+            if self._initialized or not self.state_store.enabled:
+                return
+            self.state_store._ensure_schema()
+            def _setup() -> None:
+                con = connect_sqlite(self.state_store.db_path)
+                try:
+                    with con:
+                        con.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS agent_verification_receipts (
+                                receipt_id TEXT PRIMARY KEY,
+                                task_id TEXT NOT NULL,
+                                criterion TEXT NOT NULL,
+                                change_intent_id TEXT NOT NULL,
+                                evidence_id TEXT NOT NULL,
+                                command_id TEXT NOT NULL,
+                                repository_revision TEXT NOT NULL,
+                                observed_at REAL NOT NULL,
+                                expires_at REAL,
+                                passed INTEGER NOT NULL,
+                                details TEXT NOT NULL
+                            );
+                            """
+                        )
+                        con.execute(
+                            """
+                            CREATE INDEX IF NOT EXISTS idx_agent_verif_task
+                            ON agent_verification_receipts (task_id, criterion, observed_at DESC);
+                            """
+                        )
+                        con.execute(
+                            """
+                            CREATE INDEX IF NOT EXISTS idx_agent_verif_task_observed
+                            ON agent_verification_receipts (task_id, observed_at DESC);
+                            """
+                        )
+                        con.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS agent_change_intents (
+                                change_id TEXT PRIMARY KEY,
+                                task_id TEXT NOT NULL,
+                                affected_paths TEXT NOT NULL,
+                                affected_symbols TEXT NOT NULL,
+                                expected_impact TEXT NOT NULL,
+                                rollback_description TEXT NOT NULL,
+                                created_at REAL NOT NULL
+                            );
+                            """
+                        )
+                        con.execute(
+                            """
+                            CREATE INDEX IF NOT EXISTS idx_agent_change_task
+                            ON agent_change_intents (task_id);
+                            """
+                        )
+                        con.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS agent_outcomes (
+                                outcome_id TEXT PRIMARY KEY,
+                                change_id TEXT NOT NULL,
+                                task_id TEXT NOT NULL,
+                                kind TEXT NOT NULL,
+                                actor TEXT NOT NULL,
+                                details TEXT NOT NULL,
+                                created_at REAL NOT NULL
+                            );
+                            """
+                        )
+                        con.execute(
+                            """
+                            CREATE INDEX IF NOT EXISTS idx_agent_outcomes_task
+                            ON agent_outcomes (task_id);
+                            """
+                        )
+                        con.execute(
+                            """
+                            CREATE INDEX IF NOT EXISTS idx_agent_outcomes_change
+                            ON agent_outcomes (change_id);
+                            """
+                        )
+                finally:
+                    con.close()
+            retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+            self._initialized = True
 
     def record(self, receipt: VerificationReceipt) -> VerificationReceipt:
         self._init_tables()
@@ -538,22 +572,22 @@ class VerificationStore:
             if t:
                 required_criteria = list(t.contract.acceptance_criteria)
 
-        con = connect_sqlite(self.state_store.db_path)
-        try:
-            cur = con.execute(
-                """
-                SELECT receipt_id, task_id, criterion, change_intent_id, evidence_id,
-                       command_id, repository_revision, observed_at, expires_at,
-                       passed, details
-                FROM agent_verification_receipts
-                WHERE task_id = ?
-                ORDER BY observed_at DESC
-                """,
-                (task_id,),
-            )
-            rows = cur.fetchall()
-        finally:
-            con.close()
+        def _fetch_receipts() -> list[Any]:
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                cur = con.execute(
+                    """
+                    SELECT receipt_id, task_id, criterion, change_intent_id, evidence_id,
+                           command_id, repository_revision, observed_at, expires_at,
+                           passed, details
+                    FROM agent_verification_receipts
+                    WHERE task_id = ?
+                    ORDER BY observed_at DESC
+                    """,
+                    (task_id,),
+                )
+                return cur.fetchall()
+
+        rows = retry_busy(_fetch_receipts, retries=5, base_delay_seconds=0.02)
 
         latest_by_criterion: dict[str, VerificationReceipt] = {}
         for row in rows:

@@ -4,8 +4,10 @@ import hashlib
 import json
 import re
 import sqlite3
+import threading
 import time
 import uuid
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -187,49 +189,69 @@ def _extract_root_cause_and_fix(error_msg: str, tool_name: str = "", timed_out: 
 class IncidentStore:
     def __init__(self, state_store: AgentStateStore) -> None:
         self.state_store = state_store
+        self._lock = threading.RLock()
+        self._initialized = False
         self._init_table()
 
     def _init_table(self) -> None:
-        if not self.state_store.enabled:
+        if self._initialized or not self.state_store.enabled:
             return
-        self.state_store._ensure_schema()
-        con = connect_sqlite(self.state_store.db_path)
-        try:
-            con.execute(
-                """
-                CREATE TABLE IF NOT EXISTS agent_incidents (
-                    incident_id TEXT PRIMARY KEY,
-                    operation_class TEXT NOT NULL,
-                    error_class TEXT NOT NULL,
-                    signature_hash TEXT NOT NULL,
-                    redacted_message TEXT NOT NULL,
-                    state_revision TEXT NOT NULL,
-                    attempts INTEGER NOT NULL,
-                    evidence_ids TEXT NOT NULL,
-                    root_cause TEXT,
-                    verified_fix TEXT,
-                    confidence REAL NOT NULL,
-                    resolved INTEGER NOT NULL,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL,
-                    expires_at REAL,
-                    affected_paths TEXT NOT NULL DEFAULT '[]'
-                );
-                """
-            )
-            try:
-                con.execute("ALTER TABLE agent_incidents ADD COLUMN affected_paths TEXT NOT NULL DEFAULT '[]'")
-            except Exception:
-                pass
-            con.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_agent_incidents_fp
-                ON agent_incidents (error_class, operation_class, signature_hash, state_revision);
-                """
-            )
-            con.commit()
-        finally:
-            con.close()
+        with self._lock:
+            if self._initialized or not self.state_store.enabled:
+                return
+            self.state_store._ensure_schema()
+            def _setup() -> None:
+                con = connect_sqlite(self.state_store.db_path)
+                try:
+                    with con:
+                        con.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS agent_incidents (
+                                incident_id TEXT PRIMARY KEY,
+                                operation_class TEXT NOT NULL,
+                                error_class TEXT NOT NULL,
+                                signature_hash TEXT NOT NULL,
+                                redacted_message TEXT NOT NULL,
+                                state_revision TEXT NOT NULL,
+                                attempts INTEGER NOT NULL,
+                                evidence_ids TEXT NOT NULL,
+                                root_cause TEXT,
+                                verified_fix TEXT,
+                                confidence REAL NOT NULL,
+                                resolved INTEGER NOT NULL,
+                                created_at REAL NOT NULL,
+                                updated_at REAL NOT NULL,
+                                expires_at REAL,
+                                affected_paths TEXT NOT NULL DEFAULT '[]'
+                            );
+                            """
+                        )
+                        try:
+                            con.execute("ALTER TABLE agent_incidents ADD COLUMN affected_paths TEXT NOT NULL DEFAULT '[]'")
+                        except Exception:
+                            pass
+                        con.execute(
+                            """
+                            CREATE INDEX IF NOT EXISTS idx_agent_incidents_fp
+                            ON agent_incidents (error_class, operation_class, signature_hash, state_revision);
+                            """
+                        )
+                        con.execute(
+                            """
+                            CREATE INDEX IF NOT EXISTS idx_agent_incidents_lookup
+                            ON agent_incidents (operation_class, signature_hash, state_revision, updated_at DESC);
+                            """
+                        )
+                        con.execute(
+                            """
+                            CREATE INDEX IF NOT EXISTS idx_agent_incidents_recent
+                            ON agent_incidents (operation_class, signature_hash, updated_at DESC);
+                            """
+                        )
+                finally:
+                    con.close()
+            retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+            self._initialized = True
 
     def capture(self, outcome: ToolOutcome) -> IncidentRecord | None:
         if outcome.policy_blocked or outcome.cancelled:
@@ -269,17 +291,17 @@ class IncidentStore:
 
         now = time.time()
         self._init_table()
-        con = connect_sqlite(self.state_store.db_path)
-        try:
-            row = con.execute(
-                """
-                SELECT incident_id, attempts, root_cause, verified_fix, confidence, affected_paths FROM agent_incidents
-                WHERE operation_class = ? AND signature_hash = ? AND state_revision = ?
-                """,
-                (op_class, sig_hash, outcome.state_revision),
-            ).fetchone()
-        finally:
-            con.close()
+        def _fetch_existing() -> Any:
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                return con.execute(
+                    """
+                    SELECT incident_id, attempts, root_cause, verified_fix, confidence, affected_paths FROM agent_incidents
+                    WHERE error_class = ? AND operation_class = ? AND signature_hash = ? AND state_revision = ?
+                    """,
+                    (err_class, op_class, sig_hash, outcome.state_revision),
+                ).fetchone()
+
+        row = retry_busy(_fetch_existing, retries=5, base_delay_seconds=0.02)
 
         if row:
             inc_id, attempts, old_rc, old_fix, old_conf = row[0], row[1], row[2], row[3], row[4]
@@ -301,6 +323,14 @@ class IncidentStore:
                 updated_at=now,
                 affected_paths=affected or old_aff,
             )
+            event = AgentEvent.create(
+                stream_id=f"incident:{inc_id}",
+                kind="incident.repeated",
+                payload={"attempts": new_attempts, "updated_at": now},
+                idempotency_key=f"inc_rep_{inc_id}_{new_attempts}",
+                actor="system",
+            )
+            self.state_store.append(event)
             self._save_record(updated)
             return updated
 
@@ -383,20 +413,20 @@ class IncidentStore:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return RetryDecision(action="proceed", reason="incident store disabled")
         self._init_table()
-        con = connect_sqlite(self.state_store.db_path)
-        try:
-            cur = con.execute(
-                """
-                SELECT incident_id, state_revision, verified_fix, confidence, resolved
-                FROM agent_incidents
-                WHERE operation_class = ? AND signature_hash = ?
-                ORDER BY updated_at DESC
-                """,
-                (fingerprint.operation_class, fingerprint.signature_hash),
-            )
-            rows = cur.fetchall()
-        finally:
-            con.close()
+        def _fetch_decision() -> list[Any]:
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                cur = con.execute(
+                    """
+                    SELECT incident_id, state_revision, verified_fix, confidence, resolved
+                    FROM agent_incidents
+                    WHERE operation_class = ? AND signature_hash = ?
+                    ORDER BY updated_at DESC
+                    """,
+                    (fingerprint.operation_class, fingerprint.signature_hash),
+                )
+                return cur.fetchall()
+
+        rows = retry_busy(_fetch_decision, retries=5, base_delay_seconds=0.02)
 
         if not rows:
             return RetryDecision(action="proceed", reason="no prior incidents found")
@@ -431,41 +461,42 @@ class IncidentStore:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return None
         self._init_table()
-        con = connect_sqlite(self.state_store.db_path)
-        try:
-            row = con.execute(
-                """
-                SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
-                       state_revision, attempts, evidence_ids, root_cause, verified_fix,
-                       confidence, resolved, created_at, updated_at, expires_at, affected_paths
-                FROM agent_incidents
-                WHERE incident_id = ?
-                """,
-                (incident_id,),
-            ).fetchone()
-            if not row:
-                return None
-            return self._row_to_record(row)
-        finally:
-            con.close()
+        def _fetch_record() -> Any:
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                return con.execute(
+                    """
+                    SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
+                           state_revision, attempts, evidence_ids, root_cause, verified_fix,
+                           confidence, resolved, created_at, updated_at, expires_at, affected_paths
+                    FROM agent_incidents
+                    WHERE incident_id = ?
+                    """,
+                    (incident_id,),
+                ).fetchone()
+
+        row = retry_busy(_fetch_record, retries=5, base_delay_seconds=0.02)
+        if not row:
+            return None
+        return self._row_to_record(row)
 
     def list_incidents(self, resolved: bool | None = None, limit: int = 100) -> list[IncidentRecord]:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return []
         self._init_table()
-        con = connect_sqlite(self.state_store.db_path)
-        try:
-            query = "SELECT incident_id, operation_class, error_class, signature_hash, redacted_message, state_revision, attempts, evidence_ids, root_cause, verified_fix, confidence, resolved, created_at, updated_at, expires_at, affected_paths FROM agent_incidents"
-            params: list[Any] = []
-            if resolved is not None:
-                query += " WHERE resolved = ?"
-                params.append(1 if resolved else 0)
-            query += " ORDER BY updated_at DESC LIMIT ?"
-            params.append(max(1, int(limit)))
-            cur = con.execute(query, tuple(params))
-            return [self._row_to_record(r) for r in cur.fetchall()]
-        finally:
-            con.close()
+        def _fetch_list() -> list[Any]:
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                query = "SELECT incident_id, operation_class, error_class, signature_hash, redacted_message, state_revision, attempts, evidence_ids, root_cause, verified_fix, confidence, resolved, created_at, updated_at, expires_at, affected_paths FROM agent_incidents"
+                params: list[Any] = []
+                if resolved is not None:
+                    query += " WHERE resolved = ?"
+                    params.append(1 if resolved else 0)
+                query += " ORDER BY updated_at DESC LIMIT ?"
+                params.append(max(1, int(limit)))
+                cur = con.execute(query, tuple(params))
+                return cur.fetchall()
+
+        rows = retry_busy(_fetch_list, retries=5, base_delay_seconds=0.02)
+        return [self._row_to_record(r) for r in rows]
 
     def _save_record(self, record: IncidentRecord) -> None:
         if not self.state_store.enabled:

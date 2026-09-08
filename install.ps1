@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('auto','cpu','low','balanced','high','max')]
+    [ValidateSet('auto','cpu','integrated','low','balanced','high','max')]
     [string]$Profile = 'auto',
     [switch]$SkipModelPull,
     [switch]$SkipTools,

@@ -4,12 +4,13 @@ import hashlib
 import json
 import re
 import sqlite3
+import threading
 import time
 from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from .sqlite_support import connect_sqlite, initialize_wal
+from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
 
 
 class ArtifactStore:
@@ -22,6 +23,8 @@ class ArtifactStore:
         self._last_purge = 0.0
         self._purge_interval = 1800.0
         state_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        self._initialized = False
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -31,19 +34,27 @@ class ArtifactStore:
         return con
 
     def _init_db(self) -> None:
-        with closing(self._connect()) as con:
-            initialize_wal(con)
-            con.execute(
-                """CREATE TABLE IF NOT EXISTS artifacts (
-                    artifact_id TEXT PRIMARY KEY,
-                    created_at REAL NOT NULL,
-                    tenant TEXT NOT NULL,
-                    kind TEXT NOT NULL,
-                    text TEXT NOT NULL
-                )"""
-            )
-            con.execute("CREATE INDEX IF NOT EXISTS idx_artifacts_created ON artifacts(created_at)")
-            con.commit()
+        if self._initialized:
+            return
+        with self._lock:
+            if self._initialized:
+                return
+            def _setup() -> None:
+                with closing(self._connect()) as con:
+                    initialize_wal(con)
+                    con.execute(
+                        """CREATE TABLE IF NOT EXISTS artifacts (
+                            artifact_id TEXT PRIMARY KEY,
+                            created_at REAL NOT NULL,
+                            tenant TEXT NOT NULL,
+                            kind TEXT NOT NULL,
+                            text TEXT NOT NULL
+                        )"""
+                    )
+                    con.execute("CREATE INDEX IF NOT EXISTS idx_artifacts_created ON artifacts(created_at)")
+                    con.commit()
+            retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+            self._initialized = True
 
     def _purge(self, con: sqlite3.Connection, force: bool = False) -> None:
         now = time.time()
@@ -55,13 +66,15 @@ class ArtifactStore:
     def put(self, text: str, tenant: str, kind: str) -> str:
         digest = hashlib.sha256((kind + "\0" + text).encode("utf-8")).hexdigest()[:24]
         artifact_id = f"art_{digest}"
-        with closing(self._connect()) as con:
-            self._purge(con)
-            con.execute(
-                "INSERT OR REPLACE INTO artifacts(artifact_id, created_at, tenant, kind, text) VALUES(?,?,?,?,?)",
-                (artifact_id, time.time(), tenant, kind, text),
-            )
-            con.commit()
+        def _do_put() -> None:
+            with closing(self._connect()) as con:
+                self._purge(con)
+                con.execute(
+                    "INSERT OR REPLACE INTO artifacts(artifact_id, created_at, tenant, kind, text) VALUES(?,?,?,?,?)",
+                    (artifact_id, time.time(), tenant, kind, text),
+                )
+                con.commit()
+        retry_busy(_do_put, retries=4)
         return artifact_id
 
     @staticmethod
@@ -118,13 +131,15 @@ class ArtifactStore:
         offset = max(0, int(offset))
         max_chars = max(256, min(int(max_chars), 50_000))
         cutoff = time.time() - self.ttl_seconds
-        with closing(self._connect()) as con:
-            # Reads stay read-only; expiry cleanup happens on writes. This avoids
-            # turning every artifact slice fetch into a WAL writer.
-            row = con.execute(
-                "SELECT kind, text, created_at FROM artifacts WHERE artifact_id=? AND created_at>=?",
-                (artifact_id, cutoff),
-            ).fetchone()
+        def _do_get() -> tuple[str, str, float] | None:
+            with closing(self._connect()) as con:
+                # Reads stay read-only; expiry cleanup happens on writes. This avoids
+                # turning every artifact slice fetch into a WAL writer.
+                return con.execute(
+                    "SELECT kind, text, created_at FROM artifacts WHERE artifact_id=? AND created_at>=?",
+                    (artifact_id, cutoff),
+                ).fetchone()
+        row = retry_busy(_do_get, retries=3)
         if not row:
             return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
         text = row[1]

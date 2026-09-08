@@ -105,6 +105,25 @@ def test_setup_explicit_config_wins_over_installed_config(tmp_path: Path, monkey
     assert selected_install == install.resolve()
     assert cfg["hardware"]["profile"] == "low"
 
+
+def test_setup_clean_checkout_bootstraps_from_example_config(tmp_path: Path, monkeypatch):
+    source = tmp_path / "source"
+    install = tmp_path / "installed"
+    source.mkdir()
+    example = source / "config.toml.example"
+    example.write_text(
+        f'[setup]\ninstall_dir="{install.as_posix()}"\n[hardware]\nprofile="cpu"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(setup, "SOURCE_ROOT", source)
+
+    selected, cfg, selected_install = setup.select_config_source(None)
+
+    assert selected == example.resolve()
+    assert selected_install == install.resolve()
+    assert cfg["hardware"]["profile"] == "cpu"
+
+
 def test_copy_install_tree_uses_package_native_mcp(tmp_path: Path, monkeypatch):
     source = tmp_path / "source"
     for name in ("src", "skills", "tools"):

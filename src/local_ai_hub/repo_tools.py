@@ -11,11 +11,12 @@ import time
 from collections import Counter, OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from types import MappingProxyType
+from typing import Any, Iterable, Mapping
 
 from .budget import chars_for_tokens, estimate_tokens
 from .normalizer import tokenize_query_terms
-from .process_utils import hidden_run_kwargs
+from .process_utils import canonical_root, hidden_run_kwargs
 
 
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_./:-]{1,80}")
@@ -39,7 +40,7 @@ class GitSnapshot:
     worktree_root: str
     git_dir: str | None
     index_path: str | None
-    index_signature: tuple[int, int, int, int] | None
+    index_signature: tuple[int, int, int, int, int, str] | None
     head_oid: str | None
     tree_oid: str | None
     status: Mapping[str, str]
@@ -103,7 +104,8 @@ class RepositoryTools:
 
     @staticmethod
     def _root(root: str) -> Path:
-        path = Path(root).expanduser().resolve()
+        canon = canonical_root(root)
+        path = Path(canon)
         if not path.is_dir():
             raise ValueError(f"root directory does not exist: {path}")
         return path
@@ -195,7 +197,10 @@ class RepositoryTools:
             for dirpath, dirnames, filenames in os.walk(base):
                 dirnames[:] = [d for d in dirnames if d not in self.ignore_dirs]
                 for name in filenames:
-                    candidates.append(Path(dirpath) / name)
+                    p = Path(dirpath) / name
+                    if self.extensions and p.suffix.lower() not in self.extensions and p.name.lower() not in self.special_filenames:
+                        continue
+                    candidates.append(p)
                     if len(candidates) >= self.max_files:
                         break
                 if len(candidates) >= self.max_files:
@@ -433,21 +438,39 @@ class RepositoryTools:
             return "modified"
         return "clean"
 
-    @staticmethod
-    def _git_index_signature(index_path: str) -> tuple[int, int, int, int] | None:
+    def _git_index_signature(self, base: Path, index_path: str) -> tuple[int, int, int, int, int, str] | None:
         try:
             stat = Path(index_path).stat()
         except OSError:
             return None
-        # Git refreshes index stat-cache fields while answering ``status``. Keep
-        # signature stable across that metadata-only rewrite; status identity and
-        # indexed blob records detect logical index changes.
-        return (
-            int(stat.st_size),
-            0,
-            0,
-            0,
+
+        completed = subprocess.run(
+            ["git", "-C", str(base), "hash-object", "--", index_path],
+            capture_output=True,
+            timeout=self.git_files_timeout,
+            check=False,
+            **hidden_run_kwargs(),
         )
+        if completed.returncode != 0 or not isinstance(completed.stdout, (bytes, bytearray)):
+            raise ValueError("git index digest failed")
+        digest = self._git_oid(bytes(completed.stdout).strip())
+        return (
+            int(stat.st_mtime_ns),
+            int(stat.st_size),
+            int(getattr(stat, "st_ctime_ns", 0)),
+            int(getattr(stat, "st_dev", 0)),
+            int(getattr(stat, "st_ino", 0)),
+            digest,
+        )
+
+    @staticmethod
+    def _git_index_cache_identity(signature: tuple[int, int, int, int, int, str] | None) -> tuple[int, int, int, str] | None:
+        if signature is None:
+            return None
+        # Git may refresh index stat-cache timestamps during ``status``. Keep
+        # stable file identity plus content digest so same-size replacements
+        # cannot reuse a stale snapshot.
+        return (signature[1], signature[3], signature[4], signature[5])
 
     def git_snapshot(self, root: str) -> GitSnapshot:
         try:
@@ -477,8 +500,9 @@ class RepositoryTools:
 
             status_output = self._git_snapshot_run(base, "status", "--porcelain=v2", "--untracked-files=all", "-z")
             status_entries = self._git_parse_status(status_output)
-            status_identity = hashlib.sha256(status_output).hexdigest()
-            index_signature = self._git_index_signature(index_path)
+            staged_output = self._git_snapshot_run(base, "diff", "--cached", "--raw", "-z")
+            status_identity = hashlib.sha256(status_output + b"\0" + staged_output).hexdigest()
+            index_signature = self._git_index_signature(base, index_path)
             if cached_entry is not None:
                 cached_at, cached = cached_entry
                 same_identity = (
@@ -486,7 +510,7 @@ class RepositoryTools:
                     and cached.worktree_root == worktree_root
                     and cached.git_dir == git_dir
                     and cached.index_path == index_path
-                    and cached.index_signature == index_signature
+                    and self._git_index_cache_identity(cached.index_signature) == self._git_index_cache_identity(index_signature)
                     and cached.head_oid == head_oid
                     and cached.status_identity == status_identity
                 )
@@ -573,16 +597,23 @@ class RepositoryTools:
             snapshot = {"entries": len(self._snapshots), "bytes": self._snapshot_bytes, "hits": self.snapshot_hits, "misses": self.snapshot_misses}
         with self._git_files_lock:
             now = time.monotonic()
-            snapshot["git_files"] = {**self._git_stats, "cached_roots": len(self._git_files_cache), "cooldown_roots": sum(1 for until in self._git_files_slow_until.values() if until > now), "grep_cooldown_roots": sum(1 for until in self._git_grep_slow_until.values() if until > now)}
+            snapshot["git_files"] = {
+                **self._git_stats,
+                "cached_roots": len(self._git_files_cache),
+                "cooldown_roots": sum(1 for until in self._git_files_slow_until.values() if until > now),
+                "grep_cooldown_roots": sum(1 for until in self._git_grep_slow_until.values() if until > now),
+                "snapshot_cached_roots": len(self._git_snapshot_cache),
+                "snapshot_cooldown_roots": sum(1 for until in self._git_snapshot_slow_until.values() if until > now),
+            }
         return snapshot
 
     @staticmethod
     def _terms(query: str) -> list[str]:
         return [t.lower() for t in tokenize_query_terms(query, min_len=2, max_terms=20)]
 
-    def _ripgrep_candidates(self, base: Path, terms: list[str], max_matches: int) -> list[tuple[str, int]] | None:
+    def _ripgrep_candidates(self, base: Path, terms: list[str], max_matches: int) -> tuple[list[tuple[str, int]] | None, bool]:
         if not self._rg or not terms:
-            return None
+            return None, False
         cmd = [self._rg, "--json", "--ignore-case", "--max-count", str(max(2, self.max_snippets_per_file * 3))]
         for term in terms[:12]:
             cmd.extend(["-e", term])
@@ -590,12 +621,12 @@ class RepositoryTools:
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=self.ripgrep_timeout, check=False, encoding="utf-8", errors="replace", **hidden_run_kwargs())
         except Exception:
-            return None
+            return None, True
         # rg returns 1 when there are no matches; both 0/1 are successful searches.
         # Preserve the distinction between an empty successful result and an engine
         # failure so a miss never falls back to an O(repository) Python scan.
         if proc.returncode not in {0, 1}:
-            return None
+            return None, True
         out: list[tuple[str, int]] = []
         seen: set[tuple[str, int]] = set()
         for raw in proc.stdout.splitlines():
@@ -622,9 +653,9 @@ class RepositoryTools:
             seen.add(match_key); out.append(match_key)
             if len(out) >= max_matches:
                 break
-        return out
+        return out, False
 
-    def _git_grep_candidates(self, base: Path, terms: list[str], max_matches: int) -> list[tuple[str, int]] | None:
+    def _git_grep_candidates(self, base: Path, terms: list[str], max_matches: int) -> tuple[list[tuple[str, int]] | None, bool]:
         """Fast portable fallback when ripgrep is unavailable.
 
         `git grep` covers tracked files and is used only as a bounded accelerator. A
@@ -632,12 +663,12 @@ class RepositoryTools:
         candidates and the normal file inventory cover untracked-file discovery.
         """
         if not self.use_git_grep or not terms or not (base / ".git").exists():
-            return None
+            return None, False
         key = str(base)
         with self._git_files_lock:
             if time.monotonic() < self._git_grep_slow_until.get(key, 0.0):
                 self._git_stats["grep_cooldown_skips"] += 1
-                return None
+                return None, False
         cmd = ["git", "-C", str(base), "grep", "-n", "-I", "-i", "--no-color", "--full-name"]
         for term in terms[:12]:
             cmd.extend(["-e", term])
@@ -652,11 +683,11 @@ class RepositoryTools:
             with self._git_files_lock:
                 self._git_stats["grep_timeouts"] += 1
                 self._git_grep_slow_until[key] = time.monotonic() + self.git_files_slow_cooldown
-            return None
+            return None, True
         except OSError:
-            return None
+            return None, True
         if proc.returncode not in {0, 1}:
-            return None
+            return None, True
         with self._git_files_lock:
             self._git_grep_slow_until.pop(key, None)
         out: list[tuple[str, int]] = []
@@ -678,7 +709,7 @@ class RepositoryTools:
             seen.add(match_key); out.append(match_key)
             if len(out) >= max_matches:
                 break
-        return out
+        return out, False
 
     def search(self, root: str, query: str, top_k: int = 12) -> dict[str, Any]:
         base = self._root(root)
@@ -689,12 +720,13 @@ class RepositoryTools:
         hits: list[dict[str, Any]] = []
         scanned = 0
         candidate_engine = "python"
-        candidates = self._ripgrep_candidates(base, terms, self.max_hits * 4)
+        candidates, accelerator_failed = self._ripgrep_candidates(base, terms, self.max_hits * 4)
         accelerated = candidates is not None
         if accelerated:
             candidate_engine = "ripgrep"
         else:
-            candidates = self._git_grep_candidates(base, terms, self.max_hits * 4)
+            candidates, git_grep_failed = self._git_grep_candidates(base, terms, self.max_hits * 4)
+            accelerator_failed = accelerator_failed or git_grep_failed
             accelerated = candidates is not None
             if accelerated:
                 candidate_engine = "git-grep"
@@ -721,8 +753,19 @@ class RepositoryTools:
                     start = max(0, idx - self.snippet_lines); end = min(len(lines), idx + self.snippet_lines + 1)
                     snippet = "\n".join(f"{n + 1}: {lines[n]}" for n in range(start, end))
                     hits.append({"path": rel, "start_line": start + 1, "end_line": end, "score": round(score, 3), "text": snippet, "file_sha256": file_hash})
-        # Only use the Python scanner when no accelerator was available or the
-        # accelerator failed. A valid accelerated search with zero hits is final.
+        # A timeout/error from both bounded accelerators must not trigger an
+        # unbounded O(repository) Python scan. A valid accelerated zero result is
+        # still final; Python remains the fallback only when no accelerator exists.
+        if not accelerated and accelerator_failed:
+            return {
+                "success": False,
+                "root": str(base),
+                "terms": terms,
+                "results": [],
+                "engine": "bounded-accelerator-failure",
+                "error": "bounded search accelerators timed out or failed",
+                "retryable": True,
+            }
         if not hits and not accelerated:
             for path in self.iter_files(str(base)):
                 scanned += 1
@@ -764,15 +807,44 @@ class RepositoryTools:
             dedup.append(hit)
             if len(dedup) >= max(1, int(top_k)):
                 break
-        return {"success": True, "root": str(base), "scanned_files": scanned, "terms": terms, "results": dedup, "engine": candidate_engine}
+        candidate_pool = hits[: max(len(dedup), max(1, int(top_k)) * 4)]
+        candidate_tokens = sum(estimate_tokens(str(item.get("text", ""))) for item in candidate_pool)
+        result = {"success": True, "root": str(base), "scanned_files": scanned, "terms": terms, "results": dedup, "engine": candidate_engine}
+        if candidate_tokens:
+            # This is a conservative bounded counterfactual: only the candidate
+            # snippets already found by the local search engine, never the whole repo.
+            # Agent-facing projection removes token_saving metadata.
+            result["token_saving"] = {"delegated_cloud_context_tokens_avoided_est": candidate_tokens}
+        return result
 
-    def repo_map(self, root: str, max_symbols: int = 120) -> dict[str, Any]:
+    def repo_map(self, root: str, max_symbols: int = 120, paths: Iterable[str] | None = None) -> dict[str, Any]:
         base = self._root(root)
         extensions: Counter[str] = Counter()
         top_dirs: Counter[str] = Counter()
         symbols: list[dict[str, Any]] = []
         files = 0
-        for path in self.iter_files(str(base)):
+        if paths is None:
+            candidates: Iterable[Path] = self.iter_files(str(base))
+        else:
+            bounded: list[Path] = []
+            for raw in paths:
+                candidate = (base / str(raw)).resolve(strict=False)
+                try:
+                    candidate.relative_to(base)
+                except ValueError:
+                    continue
+                bounded.append(candidate)
+            candidates = bounded
+        for path in candidates:
+            if not path.is_file():
+                continue
+            if self.extensions and path.suffix.lower() not in self.extensions and path.name.lower() not in self.special_filenames:
+                continue
+            try:
+                if path.stat().st_size > self.max_file_bytes:
+                    continue
+            except OSError:
+                continue
             files += 1
             rel = str(path.relative_to(base)).replace("\\", "/")
             extensions[path.suffix.lower() or "<none>"] += 1
@@ -804,19 +876,6 @@ class RepositoryTools:
         this method never executes project code.
         """
         base = self._root(root)
-        raw_files = self._git_files(base)
-        if raw_files is None:
-            raw_files = []
-            for dirpath, dirnames, filenames in os.walk(base):
-                dirnames[:] = [d for d in dirnames if d not in self.ignore_dirs]
-                for name in filenames:
-                    raw_files.append(Path(dirpath) / name)
-                    if len(raw_files) >= self.max_files:
-                        break
-                if len(raw_files) >= self.max_files:
-                    break
-        raw_files = raw_files[:self.max_files]
-
         language_by_ext = {
             ".py": "Python", ".php": "PHP", ".js": "JavaScript", ".jsx": "JavaScript",
             ".ts": "TypeScript", ".tsx": "TypeScript", ".cs": "C#", ".java": "Java",
@@ -832,6 +891,22 @@ class RepositoryTools:
             "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb",
         }
         project_suffixes = {".sln", ".csproj", ".fsproj", ".vbproj"}
+        raw_files = self._git_files(base)
+        if raw_files is None:
+            raw_files = []
+            for dirpath, dirnames, filenames in os.walk(base):
+                dirnames[:] = [d for d in dirnames if d not in self.ignore_dirs]
+                for name in filenames:
+                    p = Path(dirpath) / name
+                    ext = p.suffix.lower()
+                    if ext not in language_by_ext and name.lower() not in manifest_names and ext not in project_suffixes:
+                        continue
+                    raw_files.append(p)
+                    if len(raw_files) >= self.max_files:
+                        break
+                if len(raw_files) >= self.max_files:
+                    break
+        raw_files = raw_files[:self.max_files]
         languages: Counter[str] = Counter()
         manifests: list[str] = []
         by_name: dict[str, list[Path]] = {}
@@ -1248,7 +1323,12 @@ class RepositoryTools:
             dedup.append(hit)
             if len(dedup) >= max(1, int(top_k)):
                 break
-        return {"success": True, "root": str(base), "scanned_files": scanned, "terms": terms, "results": dedup, "targeted": True}
+        candidate_pool = hits[: max(len(dedup), max(1, int(top_k)) * 4)]
+        candidate_tokens = sum(estimate_tokens(str(item.get("text", ""))) for item in candidate_pool)
+        result = {"success": True, "root": str(base), "scanned_files": scanned, "terms": terms, "results": dedup, "targeted": True}
+        if candidate_tokens:
+            result["token_saving"] = {"delegated_cloud_context_tokens_avoided_est": candidate_tokens}
+        return result
 
     def context_pack_paths(self, root: str, query: str, paths: list[str], max_tokens: int = 2600, top_k: int = 10) -> dict[str, Any]:
         search = self.search_paths(root, query, paths, top_k=top_k)
@@ -1258,9 +1338,11 @@ class RepositoryTools:
         pieces: list[str] = []
         evidence: list[dict[str, Any]] = []
         used = 0
+        candidate_tokens = 0
         for item in search.get("results", []):
             header = f"--- {item['path']}:{item['start_line']}-{item['end_line']} score={item['score']} ---\n"
             piece = header + item["text"] + "\n"
+            candidate_tokens += estimate_tokens(piece)
             if used + len(piece) > budget_chars:
                 remaining = budget_chars - used
                 if remaining <= 500:
@@ -1275,7 +1357,9 @@ class RepositoryTools:
         packed = "\n".join(pieces)
         return {
             "success": True, "root": search["root"], "query": query, "context": packed,
-            "evidence": evidence, "estimated_tokens": estimate_tokens(packed), "scanned_files": search.get("scanned_files", 0), "targeted": True,
+            "evidence": evidence, "estimated_tokens": estimate_tokens(packed),
+            "original_estimated_tokens": max(candidate_tokens, estimate_tokens(packed)),
+            "scanned_files": search.get("scanned_files", 0), "targeted": True,
         }
 
     def file_inventory(self, root: str, include_hashes: bool = True) -> dict[str, Any]:
@@ -1346,9 +1430,11 @@ class RepositoryTools:
         pieces: list[str] = []
         evidence: list[dict[str, Any]] = []
         used = 0
+        candidate_tokens = 0
         for item in search.get("results", []):
             header = f"--- {item['path']}:{item['start_line']}-{item['end_line']} score={item['score']} ---\n"
             piece = header + item["text"] + "\n"
+            candidate_tokens += estimate_tokens(piece)
             if used + len(piece) > budget_chars:
                 remaining = budget_chars - used
                 if remaining > 500:
@@ -1365,5 +1451,7 @@ class RepositoryTools:
         packed = "\n".join(pieces)
         return {
             "success": True, "root": search["root"], "query": query, "context": packed,
-            "evidence": evidence, "estimated_tokens": estimate_tokens(packed), "scanned_files": search.get("scanned_files", 0),
+            "evidence": evidence, "estimated_tokens": estimate_tokens(packed),
+            "original_estimated_tokens": max(candidate_tokens, estimate_tokens(packed)),
+            "scanned_files": search.get("scanned_files", 0),
         }

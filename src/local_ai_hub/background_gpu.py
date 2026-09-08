@@ -137,6 +137,14 @@ class IdleGPUWorker:
             return True
         return False
 
+    def reset_circuit(self) -> None:
+        """Reset the startup failure circuit breaker and retry counters."""
+        with self._lock:
+            self._startup_circuit_open = False
+            self._consecutive_start_failures = 0
+            self._retry_after = 0.0
+            self._last_error = None
+
     def _acquire_session(self) -> bool:
         if self._closed or not self.enabled or not self.model or self._startup_circuit_open:
             return False
@@ -148,7 +156,7 @@ class IdleGPUWorker:
 
         with self._setup_lock:
             with self._lock:
-                if time.monotonic() < self._retry_after:
+                if self._startup_circuit_open or time.monotonic() < self._retry_after:
                     return False
                 if self._lease and self.runtime.is_online():
                     return not self._foreground_requested()
@@ -170,8 +178,8 @@ class IdleGPUWorker:
                     listening_pid = find_listening_pid(parsed_port)
                     exe_name = (process_executable(listening_pid) or "").lower() if listening_pid else ""
                     if listening_pid and ("ollama" in exe_name or not exe_name):
-                        terminate_tree(listening_pid, grace_seconds=2.5)
-                        deadline = time.monotonic() + 2.5
+                        terminate_tree(listening_pid, grace_seconds=5.0)
+                        deadline = time.monotonic() + 5.0
                         while time.monotonic() < deadline and self.runtime.is_online():
                             time.sleep(0.15)
                     if self.runtime.is_online() and not self.runtime.managed_profile_status().get("managed"):
@@ -248,8 +256,11 @@ class IdleGPUWorker:
             if self.cpu_runtime.is_online() and not self.cpu_runtime.managed_profile_status().get("managed"):
                 with self._lock:
                     self._last_error = f"background CPU endpoint is unmanaged: {self.cpu_endpoint}"
+                    self._cpu_lease = False
                 return False
             if not self.cpu_runtime.is_online() and not self.cpu_runtime.ensure_running():
+                with self._lock:
+                    self._cpu_lease = False
                 return False
             try:
                 self.cpu_runtime.prepare_model(self.model, unload_others=True)
@@ -257,11 +268,13 @@ class IdleGPUWorker:
             except Exception as exc:
                 with self._lock:
                     self._last_error = f"background CPU fallback unavailable: {exc}"
+                    self._cpu_lease = False
                 return False
             row = next((x for x in details if str(x.get("name", "")) == self.model), None)
             if row is None or int(row.get("vram_bytes", 0) or 0) > 0:
                 with self._lock:
                     self._last_error = "background CPU fallback unexpectedly used VRAM"
+                    self._cpu_lease = False
                 self.cpu_runtime.stop_managed_server()
                 return False
             with self._lock:
@@ -462,4 +475,5 @@ class IdleGPUWorker:
         self._executor.shutdown(wait=False, cancel_futures=True)
         with self._lock:
             self._lease = False
+            self._cpu_lease = False
         self.scheduler.release_background_gpu()

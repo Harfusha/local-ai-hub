@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_v1_6_metadata_and_tool_contract():
-    assert __version__ == "1.6.0"
+    assert __version__ == "2.4.0"
     source = (ROOT / "src" / "local_ai_hub" / "mcp_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     tools = [
@@ -30,13 +30,14 @@ def test_v1_6_metadata_and_tool_contract():
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and any(isinstance(d, ast.Call) and getattr(d.func, "attr", "") == "tool" for d in node.decorator_list)
     ]
-    assert len(tools) == 7
+    assert len(tools) == 8
     assert set(tools) == {
         "local_ai_status", "local_ai_task", "local_ai_repo",
         "local_ai_rag", "local_ai_command", "local_ai_coord", "local_ai_artifact",
+        "local_ai_work",
     }
     release = json.loads((ROOT / "RELEASE.json").read_text(encoding="utf-8"))
-    assert release["version"] == "1.6.0"
+    assert release["version"] == "2.4.0"
     assert release["status"] == "production-ready"
 
 

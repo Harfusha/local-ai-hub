@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 from typing import Any
 
 
@@ -14,7 +13,10 @@ def compact_result(value: Any, *, max_text_chars: int = 1800, max_evidence: int 
     if not isinstance(value, dict):
         return value
 
-    data = copy.deepcopy(value)
+    # Copy only containers we actually mutate. A full deepcopy of large repository
+    # evidence/diff/artifact payloads was a measurable foreground hot-path cost even
+    # though most nested values are only read or replaced below.
+    data = dict(value)
     # Low-level Ollama timing/counter fields belong in telemetry, not every tool result.
     for key in (
         "load_duration_ns", "eval_count", "prompt_eval_count", "total_duration_ns",
@@ -37,6 +39,8 @@ def compact_result(value: Any, *, max_text_chars: int = 1800, max_evidence: int 
 
     repo_context = data.get("repo_context")
     if isinstance(repo_context, dict) and isinstance(repo_context.get("evidence"), list):
+        repo_context = dict(repo_context)
+        data["repo_context"] = repo_context
         total = len(repo_context["evidence"])
         repo_context["evidence"] = repo_context["evidence"][:max_evidence]
         if total > max_evidence:

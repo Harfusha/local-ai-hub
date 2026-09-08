@@ -25,6 +25,7 @@ from .repo_tools import RepositoryTools
 from .reranker import Reranker
 from .scheduler import AffinityScheduler
 from .background_gpu import IdleGPUWorker
+from .accelerators import accelerator_status
 from .services import LocalAIServices
 from .telemetry import TelemetryStore
 from .token_router import LosslessTokenRouter
@@ -56,6 +57,7 @@ from .agent_blackboard import BlackboardStore
 from .vram_balancer import VRAMBalancer
 from .swarm import SwarmCoordinator
 from .benchmark import HardwareBenchmarkRunner
+from .work_orchestrator import WorkOrchestrator
 
 
 class BundleValidationError(ValueError):
@@ -73,10 +75,14 @@ class LocalAIApp:
         saving = self.config.get("token_saving", {})
         self.started_at = time.time()
         self._shutdown = threading.Event()
+        self._close_lock = threading.Lock()
+        self._closed = False
         self._prewarm_thread: threading.Thread | None = None
         self._watchdog_thread: threading.Thread | None = None
         self._live_status_lock = threading.Lock()
         self._live_status_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._status_full_cache: dict[str, dict[str, Any]] = {}
+        self._status_full_cache_lock = threading.Lock()
 
         self.logger = configure_logging(state_dir, self.config)
         fast_runtime = OllamaRuntime(self.config)
@@ -133,6 +139,7 @@ class LocalAIApp:
             verification_store=self.agent_verification,
             memory_store=self.agent_memory,
             incident_store=self.agent_incidents,
+            lease_store=self.leases,
         )
         self.agent_routing = RoutingEngine(cfg=self.config, state_store=self.agent_state)
         self.agent_learning = LearningStore(self.agent_state)
@@ -170,6 +177,7 @@ class LocalAIApp:
         self.services.set_tool_agent(self.tool_agent)
         self.pipeline = LocalAgentPipeline(self.config, self.services, self.token_router, self.tool_agent)
         self.services.set_pipeline(self.pipeline)
+        self.work_orchestrator = WorkOrchestrator(self.config, state_dir, self.services, self.commands, self.leases, self.artifacts)
         self.projector = AgentProjector(self.config)
         self.vram_balancer = VRAMBalancer(self.config)
         self.benchmark_runner = HardwareBenchmarkRunner(
@@ -189,9 +197,15 @@ class LocalAIApp:
                 model = self.config.get("models", {}).get(model_ref, model_ref)
                 # Prewarm is opportunistic but persistent: if startup is busy, retry
                 # during later idle windows instead of silently giving up forever.
+                # Cap attempts to avoid indefinite CPU spin when model doesn't exist.
+                max_attempts = max(1, int(prewarm.get("max_attempts", 120)))
                 attempts = 0
                 while model and not self._shutdown.is_set():
                     attempts += 1
+                    if attempts > max_attempts:
+                        self.logger.warning("prewarm giving up after %d attempts for model %s", attempts - 1, model)
+                        self.telemetry.record_system("prewarm_abandoned", model=str(model), attempts=attempts - 1)
+                        return
                     try:
                         if self.scheduler.prewarm(str(model)):
                             self.telemetry.record_system("prewarm_ready", model=str(model), attempts=attempts)
@@ -208,6 +222,8 @@ class LocalAIApp:
         interval = max(1.0, float(cfg.get("watchdog_interval_seconds", 5.0)))
         snapshot_interval = max(interval, float(self.config.get("observability", {}).get("snapshot_interval_seconds", 60.0)))
         last_snapshot = 0.0
+        last_maintenance = 0.0
+        maintenance_interval = max(60.0, float(cfg.get("maintenance_interval_seconds", 1800.0)))
         while not self._shutdown.wait(interval):
             try:
                 self.recovery.mark_abandoned()
@@ -215,10 +231,43 @@ class LocalAIApp:
                 self.debug_traces.cleanup()
                 self.scheduler.ensure_dispatcher()
                 self.preprocessor.ensure_running()
+                if getattr(self, "agent_state", None) is not None and getattr(self.agent_state, "enabled", False):
+                    try:
+                        self.agent_state.tasks.reap_expired_heartbeats()
+                    except Exception as exc:
+                        self.logger.debug("watchdog: reap_expired_heartbeats failed: %s", type(exc).__name__)
                 sched = self.scheduler.status()
                 if (sched.get("queued", 0) or sched.get("inflight", 0)) and not self.runtime.is_online():
                     self.runtime.ensure_running()
                 now = time.monotonic()
+                if now - last_maintenance >= maintenance_interval:
+                    if getattr(self, "agent_state", None) is not None and getattr(self.agent_state, "enabled", False):
+                        try:
+                            self.agent_state.cleanup(retention_days=30)
+                            if hasattr(self.agent_state, "memory") and hasattr(self.agent_state.memory, "reap_expired"):
+                                self.agent_state.memory.reap_expired()
+                        except Exception as exc:
+                            self.logger.debug("watchdog: agent_state maintenance failed: %s", type(exc).__name__)
+                    try:
+                        from .sqlite_support import optimize_db
+                        state_dir = Path(self.config["server"]["state_dir"])
+                        for db_name in (
+                            "agent_state.sqlite3",
+                            "async_jobs.sqlite3",
+                            "code-index.sqlite3",
+                            "cache.sqlite3",
+                            "rag.sqlite3",
+                            "preprocess.sqlite3",
+                            "agent_blackboard.sqlite3",
+                            "leases.sqlite3",
+                            "artifacts.sqlite3",
+                        ):
+                            db_file = state_dir / db_name
+                            if db_file.exists():
+                                optimize_db(db_file, wal_checkpoint=True, vacuum=False, timeout_seconds=1.5)
+                    except Exception:
+                        pass
+                    last_maintenance = now
                 if now - last_snapshot >= snapshot_interval:
                     stats = sched.get("stats", {}) if isinstance(sched, dict) else {}
                     prep = self.preprocessor.stats()
@@ -280,9 +329,11 @@ class LocalAIApp:
                 "subagents": fs.subagents,
                 "agent_os": fs.agent_os,
                 "dashboard": fs.dashboard,
+                "work_orchestrator": fs.work_orchestrator,
             },
             "token_saving": [
-                "compact seven-tool MCP surface with agent-specific final projection",
+                "compact MCP surface with agent-specific final projection and field-selectable work handoffs",
+                "durable whole-task work orders with DAG planning, transactional edits, validation and final handoff",
                 "deterministic-first execution DAG that resolves common repo questions without Ollama",
                 "content-addressed manifest/config/route/test/dependency fact engine before semantic retrieval",
                 "deterministic symbol/reference/call/import index before semantic retrieval",
@@ -323,17 +374,37 @@ class LocalAIApp:
             "hardware": dict(self.config.get("_hardware", {})),
         }
 
+    def _agent_state_summary(self) -> dict[str, Any]:
+        if not getattr(self, "agent_state", None) or not self.agent_state.enabled:
+            return {"enabled": False}
+        tasks = self.agent_tasks.list_tasks() if getattr(self, "agent_tasks", None) else []
+        incidents = self.agent_incidents.list_incidents() if getattr(self, "agent_incidents", None) else []
+        candidates = self.agent_learning.list_candidates() if getattr(self, "agent_learning", None) else []
+        mem_count = self.agent_memory.count() if getattr(self, "agent_memory", None) else 0
+        return {
+            "enabled": True,
+            "status": "healthy",
+            "active_tasks_count": len([task for task in tasks if task.status == TaskStatus.ACTIVE]),
+            "tasks_count": len(tasks),
+            "incidents_count": len(incidents),
+            "candidates_count": len(candidates),
+            "memory_records_count": mem_count,
+            "retention_days": int(self.config.get("agent_state", {}).get("retention_days", 30)),
+        }
+
     def realtime_status(self, *, light: bool = False, scope: str = "process") -> dict[str, Any]:
         scope = str(scope).strip().lower()
         if scope not in {"process", "window"}:
             scope = "process"
         now = time.monotonic()
         cache_key = f"{'light' if light else 'full'}:{scope}"
-        cache_ttl = 3.0 if light else 1.5
+        cache_ttl = 0.5 if light else 1.5
         with self._live_status_lock:
             cached = self._live_status_cache.get(cache_key)
             if cached and now - cached[0] < cache_ttl:
-                return dict(cached[1])
+                result = dict(cached[1])
+                result["agent_state"] = self._agent_state_summary()
+                return result
             headless = self._headless_status()
             ollama = headless.get("ollama_online") if headless.get("supervisor") else None
             scheduler = self.scheduler.status()
@@ -367,9 +438,11 @@ class LocalAIApp:
                     "subagents": fs.subagents,
                     "agent_os": fs.agent_os,
                     "dashboard": fs.dashboard,
+                "work_orchestrator": fs.work_orchestrator,
                 },
                 "models": dict(self.config.get("models", {})),
                 "hardware": dict(self.config.get("_hardware", {})),
+                "accelerators": accelerator_status(self.config),
                 "code_intelligence": self.external_tools.status(),
                 "runtime_profile": {
                     "tiered_models": self.config.get("models", {}).get("heavy_code") != self.config.get("models", {}).get("fast_code"),
@@ -407,17 +480,7 @@ class LocalAIApp:
                     "code_index": self.code_index.status() if not light and self.code_index is not None else {},
                 },
             }
-            if getattr(self, "agent_state", None) and self.agent_state.enabled:
-                active_tasks = self.agent_tasks.count(status=TaskStatus.ACTIVE) if getattr(self, "agent_tasks", None) else 0
-                mem_count = self.agent_memory.count() if getattr(self, "agent_memory", None) else 0
-                result["agent_state"] = {
-                    "enabled": True,
-                    "status": "healthy",
-                    "active_tasks_count": active_tasks,
-                    "memory_records_count": mem_count,
-                }
-            else:
-                result["agent_state"] = {"enabled": False}
+            result["agent_state"] = self._agent_state_summary()
             self._live_status_cache[cache_key] = (now, result)
             return dict(result)
 
@@ -427,11 +490,12 @@ class LocalAIApp:
             scope = "process"
         import os
         now = time.monotonic()
-        if not hasattr(self, "_status_full_cache"):
-            self._status_full_cache = {}
-        cached = self._status_full_cache.get(scope)
-        if cached and now - cached["time"] < 2.0:
-            return dict(cached["data"])
+        with self._status_full_cache_lock:
+            cached = self._status_full_cache.get(scope)
+            if cached and now - cached["time"] < 2.0:
+                result = dict(cached["data"])
+                result["agent_state"] = self._agent_state_summary()
+                return result
         online = self.runtime.is_online()
         version = None
         installed: list[str] = []
@@ -445,9 +509,9 @@ class LocalAIApp:
                 loaded = [str(row.get("name", "")) for row in loaded_details if row.get("name")]
             except Exception:
                 pass
-        telemetry_summary = self.telemetry.summary(scope=scope)
+        telemetry_summary = self.telemetry.summary(scope=scope, _flush=False)
         res = {
-            "hub_pid": os.getpid(), "hub_online": True, "version": __version__,
+            "success": True, "hub_pid": os.getpid(), "hub_online": True, "version": __version__,
             "ollama_online": online, "online": online, "ollama_version": version,
             "installed_models": installed, "loaded_models": loaded, "loaded_model_details": loaded_details, "models": dict(self.config["models"]),
             "model_execution": self.services.model_policy.summary(), "ollama_profile": self.runtime.managed_profile_status(),
@@ -462,27 +526,13 @@ class LocalAIApp:
             "circuit_breakers": self.services.breakers.status(), "recovery": self.recovery.status(limit=8),
             "fallback_count": self.services.fallback_count, "embeddings": self.embeddings.status(),
             "reranker": self.reranker.status(), "features": dict(self.config.get("features", {})),
-            "hardware": dict(self.config.get("_hardware", {})), "code_intelligence": self.external_tools.status(),
+            "hardware": dict(self.config.get("_hardware", {})), "accelerators": accelerator_status(self.config),
+            "code_intelligence": self.external_tools.status(),
             "observability": telemetry_summary, "token_saving": telemetry_summary, "debug_traces": self.debug_traces.stats(),
         }
-        if getattr(self, "agent_state", None) and self.agent_state.enabled:
-            tasks = self.agent_tasks.list_tasks() if getattr(self, "agent_tasks", None) else []
-            incidents = self.agent_incidents.list_incidents() if getattr(self, "agent_incidents", None) else []
-            candidates = self.agent_learning.list_candidates() if getattr(self, "agent_learning", None) else []
-            mem_count = self.agent_memory.count() if getattr(self, "agent_memory", None) else 0
-            res["agent_state"] = {
-                "enabled": True,
-                "status": "healthy",
-                "active_tasks_count": len([t for t in tasks if t.status == TaskStatus.ACTIVE]),
-                "tasks_count": len(tasks),
-                "incidents_count": len(incidents),
-                "candidates_count": len(candidates),
-                "memory_records_count": mem_count,
-                "retention_days": int(self.config.get("agent_state", {}).get("retention_days", 30)),
-            }
-        else:
-            res["agent_state"] = {"enabled": False}
-        self._status_full_cache[scope] = {"time": now, "data": res}
+        res["agent_state"] = self._agent_state_summary()
+        with self._status_full_cache_lock:
+            self._status_full_cache[scope] = {"time": now, "data": res}
         return res
 
 
@@ -770,10 +820,10 @@ class LocalAIApp:
             "projects", "file_refs", "content_cards", "module_cards", "project_cards", "external_index_state",
             "deterministic_files", "deterministic_facts", "dependencies", "scripts", "rag_files", "rag_chunks",
         }
-        for name, rows in tables.items():
+        for name, tbl_rows in tables.items():
             if name not in allowed_tables:
                 continue
-            if not isinstance(rows, list) or len(rows) > max_rows or any(not isinstance(row, dict) for row in rows):
+            if not isinstance(tbl_rows, list) or len(tbl_rows) > max_rows or any(not isinstance(row, dict) for row in tbl_rows):
                 return {"success": False, "error": f"invalid or oversized bundle table: {name}"}
 
         orig_root = str(data.get("root", ""))
@@ -789,12 +839,26 @@ class LocalAIApp:
             value = tables.get(name, [])
             return value if isinstance(value, list) else []
 
+        def _str(d: dict[str, Any], key: str, default: str = "") -> str:
+            """Type-safe string extraction — prevents empty-path bugs from malformed bundles."""
+            v = d.get(key, default)
+            return str(v) if v is not None else default
+
+        def _int(d: dict[str, Any], key: str, default: int = 0) -> int:
+            """Type-safe int extraction with graceful fallback."""
+            try:
+                return int(d.get(key) or default)
+            except (TypeError, ValueError):
+                return default
+
         # Restore root-scoped preprocessor state transactionally. Derived content
         # cards are content-addressed and therefore safe to upsert globally.
+        _PREPROCESS_TABLES = frozenset({"file_refs", "module_cards", "project_cards", "external_index_state"})
         with self.preprocessor._db_lock, closing(self.preprocessor._connect()) as con:
             con.execute("BEGIN IMMEDIATE")
             for table in ("file_refs", "module_cards", "project_cards", "external_index_state"):
-                con.execute(f"DELETE FROM {table} WHERE root=?", (root_path,))
+                assert table in _PREPROCESS_TABLES, f"unexpected table name: {table}"  # defence-in-depth
+                con.execute(f"DELETE FROM {table} WHERE root=?", (root_path,))  # noqa: S608
             con.execute("DELETE FROM projects WHERE root=?", (root_path,))
             project = rows("projects")[0] if rows("projects") else {}
             con.execute(
@@ -830,10 +894,12 @@ class LocalAIApp:
             con.commit()
 
         if self.deterministic is not None:
+            _DET_TABLES = frozenset({"files", "facts", "dependencies", "scripts", "project_state", "query_cache"})
             with self.deterministic._lock, closing(self.deterministic._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
                 for table in ("files", "facts", "dependencies", "scripts", "project_state", "query_cache"):
-                    con.execute(f"DELETE FROM {table} WHERE root=?", (root_path,))
+                    assert table in _DET_TABLES, f"unexpected table name: {table}"  # defence-in-depth
+                    con.execute(f"DELETE FROM {table} WHERE root=?", (root_path,))  # noqa: S608
                 for f in rows("deterministic_files"):
                     con.execute(
                         "INSERT INTO files(root,path,content_hash,language,is_test,updated_at) VALUES(?,?,?,?,?,?)",
@@ -881,7 +947,19 @@ class LocalAIApp:
             "rag_chunks_imported": len(rows("rag_chunks")),
         }
 
+    def __enter__(self) -> "LocalAIApp":
+        return self
+
+    def __exit__(self, _exc_type: Any, _exc: Any, _tb: Any) -> None:
+        self.close()
+
     def close(self) -> None:
+        # ``close`` is intentionally idempotent: HTTP shutdown, service control and
+        # embedded callers can race during teardown without double-closing workers.
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
         self._shutdown.set()
         # Stop helper loops before tearing down the services they periodically touch.
         # They are daemon threads as a final safety net, but bounded joins make normal
@@ -896,6 +974,14 @@ class LocalAIApp:
             pass
         try:
             self.external_tools.close()
+        except Exception:
+            pass
+        try:
+            self.work_orchestrator.close()
+        except Exception:
+            pass
+        try:
+            self.async_jobs.close()
         except Exception:
             pass
         try:

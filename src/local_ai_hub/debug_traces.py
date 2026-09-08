@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
+from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
 
 
 class DebugTraceStore:
@@ -18,7 +19,7 @@ class DebugTraceStore:
     JSON_FIELDS = {"request", "effective_payload", "response"}
 
     def __init__(self, config: dict[str, Any]):
-        cfg = config.get("debug_traces", {})
+        cfg = config.get("debug_traces") or config.get("observability", {}).get("debug_traces", {})
         self.enabled = bool(cfg.get("enabled", True))
         self.terminal_ttl_seconds = max(1.0, float(cfg.get("terminal_ttl_seconds", config.get("async_jobs", {}).get("result_ttl_seconds", 259200))))
         self.max_bytes = max(1024, int(cfg.get("max_bytes", 268435456)))
@@ -30,37 +31,47 @@ class DebugTraceStore:
         self.max_list_limit = max(1, int(cfg.get("max_list_limit", 100)))
         self.path = Path(config["server"]["state_dir"]) / "debug_traces.sqlite3"
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        self._initialized = False
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
         return connect_sqlite(self.path, timeout_seconds=0.25)
 
     def _init_db(self) -> None:
-        with closing(self._connect()) as con:
-            initialize_wal(con)
-            con.execute("PRAGMA foreign_keys=ON")
-            con.execute("""CREATE TABLE IF NOT EXISTS traces (
-                trace_id TEXT PRIMARY KEY, kind TEXT NOT NULL, tenant TEXT NOT NULL,
-                agent TEXT NOT NULL DEFAULT '', action TEXT NOT NULL DEFAULT '',
-                source TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',
-                request_id TEXT NOT NULL DEFAULT '', async_job_id TEXT NOT NULL DEFAULT '',
-                scheduler_job_id TEXT NOT NULL DEFAULT '', state TEXT NOT NULL,
-                request_json TEXT NOT NULL DEFAULT '', effective_payload_json TEXT NOT NULL DEFAULT '',
-                output_text TEXT NOT NULL DEFAULT '', response_json TEXT NOT NULL DEFAULT '',
-                error TEXT NOT NULL DEFAULT '', text_bytes INTEGER NOT NULL DEFAULT 0,
-                created_at REAL NOT NULL, updated_at REAL NOT NULL, finished_at REAL NOT NULL DEFAULT 0,
-                expires_at REAL NOT NULL
-            )""")
-            con.execute("""CREATE TABLE IF NOT EXISTS trace_events (
-                trace_id TEXT NOT NULL REFERENCES traces(trace_id) ON DELETE CASCADE,
-                seq INTEGER NOT NULL, created_at REAL NOT NULL, event_type TEXT NOT NULL,
-                payload_json TEXT NOT NULL DEFAULT '',
-                PRIMARY KEY(trace_id, seq)
-            )""")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_traces_state_updated ON traces(state, updated_at)")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_traces_kind_created ON traces(kind, created_at)")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_trace_events_created ON trace_events(created_at)")
-            con.commit()
+        if self._initialized:
+            return
+        with self._lock:
+            if self._initialized:
+                return
+            def _setup() -> None:
+                with closing(self._connect()) as con:
+                    initialize_wal(con)
+                    con.execute("PRAGMA foreign_keys=ON")
+                    con.execute("""CREATE TABLE IF NOT EXISTS traces (
+                        trace_id TEXT PRIMARY KEY, kind TEXT NOT NULL, tenant TEXT NOT NULL,
+                        agent TEXT NOT NULL DEFAULT '', action TEXT NOT NULL DEFAULT '',
+                        source TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',
+                        request_id TEXT NOT NULL DEFAULT '', async_job_id TEXT NOT NULL DEFAULT '',
+                        scheduler_job_id TEXT NOT NULL DEFAULT '', state TEXT NOT NULL,
+                        request_json TEXT NOT NULL DEFAULT '', effective_payload_json TEXT NOT NULL DEFAULT '',
+                        output_text TEXT NOT NULL DEFAULT '', response_json TEXT NOT NULL DEFAULT '',
+                        error TEXT NOT NULL DEFAULT '', text_bytes INTEGER NOT NULL DEFAULT 0,
+                        created_at REAL NOT NULL, updated_at REAL NOT NULL, finished_at REAL NOT NULL DEFAULT 0,
+                        expires_at REAL NOT NULL
+                    )""")
+                    con.execute("""CREATE TABLE IF NOT EXISTS trace_events (
+                        trace_id TEXT NOT NULL REFERENCES traces(trace_id) ON DELETE CASCADE,
+                        seq INTEGER NOT NULL, created_at REAL NOT NULL, event_type TEXT NOT NULL,
+                        payload_json TEXT NOT NULL DEFAULT '',
+                        PRIMARY KEY(trace_id, seq)
+                    )""")
+                    con.execute("CREATE INDEX IF NOT EXISTS idx_traces_state_updated ON traces(state, updated_at)")
+                    con.execute("CREATE INDEX IF NOT EXISTS idx_traces_kind_created ON traces(kind, created_at)")
+                    con.execute("CREATE INDEX IF NOT EXISTS idx_trace_events_created ON trace_events(created_at)")
+                    con.commit()
+            retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+            self._initialized = True
 
     @staticmethod
     def _encode(value: Any) -> str:
@@ -93,11 +104,16 @@ class DebugTraceStore:
             return ""
         trace_id = trace_id or uuid.uuid4().hex
         now = time.time()
-        with closing(self._connect()) as con:
-            con.execute("""INSERT INTO traces(trace_id,kind,tenant,agent,action,source,model,request_id,state,created_at,updated_at,expires_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", (trace_id, str(kind), str(tenant), str(agent), str(action), str(source), str(model), str(request_id), "queued", now, now, now + self.terminal_ttl_seconds))
-            con.commit()
-        return trace_id
+        def _do_start() -> str:
+            with closing(self._connect()) as con:
+                con.execute("""INSERT INTO traces(trace_id,kind,tenant,agent,action,source,model,request_id,state,created_at,updated_at,expires_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", (trace_id, str(kind), str(tenant), str(agent), str(action), str(source), str(model), str(request_id), "queued", now, now, now + self.terminal_ttl_seconds))
+                con.commit()
+            return trace_id
+        try:
+            return retry_busy(_do_start, retries=3)
+        except sqlite3.Error:
+            return ""
 
     def link(self, trace_id: str, *, request_id: str = "", async_job_id: str = "", scheduler_job_id: str = "") -> bool:
         if not trace_id:

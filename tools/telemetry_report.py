@@ -17,6 +17,12 @@ sys.path.insert(0, str(ROOT / "src"))
 from local_ai_hub.client import HubClient
 from local_ai_hub.config import load_config
 
+ROOT_CONFIG = ROOT / "config.toml"
+
+
+def _config_arg() -> str | None:
+    return str(ROOT_CONFIG) if ROOT_CONFIG.is_file() else None
+
 
 
 def _command_version(name: str) -> str | None:
@@ -83,8 +89,8 @@ def main() -> int:
     parser.add_argument("--output", default="", help="output JSON path")
     args = parser.parse_args()
 
-    cfg = load_config(str(ROOT / "config.toml"))
-    client = HubClient(tenant="telemetry-report", config_path=str(ROOT / "config.toml"))
+    cfg = load_config(_config_arg())
+    client = HubClient(tenant="telemetry-report", config_path=_config_arg())
     try:
         telemetry = client.get(f"/v1/telemetry/report?days={max(1, args.days)}")
     except Exception:
