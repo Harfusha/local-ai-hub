@@ -21,7 +21,7 @@ def test_auto_delivery_stays_sync_without_enough_history():
     assert decision["reason"] == "insufficient_latency_history"
 
 
-def test_sync_is_the_compatibility_default_even_when_tail_is_high():
+def test_sync_is_default_even_when_tail_is_high():
     decision = decide_delivery("sync", latency_budget_ms=1, observed_p95_ms=9_000, samples=100)
 
     assert decision["mode"] == "sync"
@@ -31,10 +31,10 @@ def test_sync_is_the_compatibility_default_even_when_tail_is_high():
 def test_http_latency_estimate_uses_bounded_endpoint_history(tmp_path):
     store = TelemetryStore(tmp_path / "telemetry", enabled=True, flush_interval_seconds=0.01)
     try:
-        store.record_http(action="/v1/reason", duration_ms=100)
-        store.record_http(action="/v1/reason", duration_ms=200)
+        store.record_http(action="/api/reason", duration_ms=100)
+        store.record_http(action="/api/reason", duration_ms=200)
         store.flush(1)
-        assert store.http_latency_estimate("/v1/reason") == {"samples": 2, "p95_duration_ms": 200.0}
+        assert store.http_latency_estimate("/api/reason") == {"samples": 2, "p95_duration_ms": 200.0}
     finally:
         store.close()
 
@@ -58,7 +58,7 @@ def test_async_delivery_maps_reason_payload_to_the_existing_job_contract(monkeyp
     monkeypatch.setattr(http_server, "APP", _App())
     handler = object.__new__(http_server.Handler)
     status, response = handler._async_delivery(
-        "/v1/reason", {"delivery": "auto", "latency_budget_ms": 5_000, "problem": "find cause", "context": "facts"}, "tenant-a"
+        "/api/reason", {"delivery": "auto", "latency_budget_ms": 5_000, "problem": "find cause", "context": "facts"}, "tenant-a"
     )
 
     assert status == 200

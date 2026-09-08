@@ -10,7 +10,7 @@ def probe_hub_status(client: Any, *, timeout: float = 15.0) -> dict[str, Any]:
     except Exception:
         reachable = False
     try:
-        response = client.get("/v1/live/status?light=1", timeout=timeout)
+        response = client.get("/api/live/status?light=1", timeout=timeout)
     except Exception:
         response = {}
     status = dict(response) if isinstance(response, dict) else {}

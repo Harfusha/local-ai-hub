@@ -51,11 +51,6 @@ class Reranker:
         device = str(self.active_device or self.device or "cpu").strip().lower()
         return f"{backend}:{device}:{self.model_name}"
 
-    def _legacy_cpu_cache_allowed(self) -> bool:
-        backend = self.active_backend or self.backend
-        device = str(self.active_device or self.device or "cpu").strip().lower()
-        return backend == "torch" and device in {"cpu", "cpu.0"}
-
     def _candidate_specs(self) -> list[tuple[str, str]]:
         if self.backend == "openvino":
             candidates = [("openvino", device) for device in openvino_device_candidates(self.config, self.device)]
@@ -167,17 +162,8 @@ class Reranker:
             local_cache_hits = 0
 
             for i, doc in enumerate(documents):
-                key = stable_hash({"v": 2, "identity": execution_identity, "q": query, "d": doc})
+                key = stable_hash({"identity": execution_identity, "q": query, "d": doc})
                 cached = self.cache.get(key) if self.cache_enabled else None
-                if not isinstance(cached, (int, float)) and self.cache_enabled and self._legacy_cpu_cache_allowed():
-                    # v2.1 used backend-agnostic keys and the default torch/CPU
-                    # path. Reuse only that safe legacy case, then promote it to
-                    # the device-qualified v2.2 key.
-                    legacy_key = stable_hash({"q": query, "d": doc})
-                    legacy = self.cache.get(legacy_key)
-                    if isinstance(legacy, (int, float)):
-                        cached = float(legacy)
-                        self.cache.set(key, cached)
                 if isinstance(cached, (int, float)):
                     scores[i] = float(cached)
                     local_cache_hits += 1

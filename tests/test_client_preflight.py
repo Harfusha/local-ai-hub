@@ -16,7 +16,7 @@ def test_client_rejects_non_git_diff_without_transport(tmp_path, monkeypatch):
     client = _client(tmp_path)
     monkeypatch.setattr(client, "_pooled_open", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("transport must not run")))
 
-    result = client.post("/v1/review/diff", {"root": str(tmp_path)})
+    result = client.post("/api/review/diff", {"root": str(tmp_path)})
 
     assert result["terminal"] is True
     assert result["retryable"] is False
@@ -27,7 +27,7 @@ def test_client_rejects_empty_symbol_without_transport(tmp_path, monkeypatch):
     client = _client(tmp_path)
     monkeypatch.setattr(client, "_pooled_open", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("transport must not run")))
 
-    result = client.post("/v1/code/symbol", {"root": str(tmp_path), "symbol": "  "})
+    result = client.post("/api/code/symbol", {"root": str(tmp_path), "symbol": "  "})
 
     assert result["terminal"] is True
     assert result["preflight"] is True

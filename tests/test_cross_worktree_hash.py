@@ -3,6 +3,7 @@ from contextlib import closing
 from pathlib import Path
 import subprocess
 
+from local_ai_hub import __version__
 from local_ai_hub.config import load_config
 from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.deterministic import DeterministicEngine
@@ -108,7 +109,7 @@ def test_new_worktree_links_existing_content_card(tmp_path: Path):
         with closing(pre._connect()) as con:
             con.execute(
                 "INSERT INTO content_cards(card_key,content_hash,model,analyzer_version,card_json,created_at,accessed_at,hits) VALUES(?,?,?,?,?,?,?,?)",
-                ("card-existing", "git:blob-app", "test", "1", "{}", now, now, 0),
+                ("card-existing", "git:blob-app", "test", __version__, "{}", now, now, 0),
             )
             con.commit()
         tools.git_blob_map = lambda _root: {"app.py": "git:blob-app"}

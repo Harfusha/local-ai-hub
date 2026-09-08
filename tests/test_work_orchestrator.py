@@ -302,8 +302,8 @@ class BlockingReviewServices(FakeServices):
         if self.block_once:
             self.block_once = False
             return {"success": True, "text": json.dumps({
-                "passed": False, "summary": "need compatibility decision", "criteria": [], "risks": [],
-                "needs_agent": True, "question": "Preserve compatibility?",
+                "passed": False, "summary": "need API-shape decision", "criteria": [], "risks": [],
+                "needs_agent": True, "question": "Preserve API shape?",
             })}
         return super().second_opinion(args, tenant)
 
@@ -319,12 +319,12 @@ def test_needs_agent_rolls_back_then_continue_replans_with_answer(tmp_path):
         assert blocked["status"] == "needs_agent"
         assert blocked["rolled_back"] is True
         assert (root / "a.txt").read_text(encoding="utf-8") == "old\n"
-        resumed = wo.continue_work("tenant", sub["work_id"], "Yes, preserve compatibility")
+        resumed = wo.continue_work("tenant", sub["work_id"], "Yes, preserve API shape")
         assert resumed["success"] is True
         final = wait_terminal(wo, sub["work_id"])
         assert final["status"] == "complete", final
         assert (root / "a.txt").read_text(encoding="utf-8") == "new\n"
-        assert any("AGENT ANSWER TO PRIOR BLOCKER" in prompt and "preserve compatibility" in prompt for prompt in services.prompts)
+        assert any("AGENT ANSWER TO PRIOR BLOCKER" in prompt and "preserve API shape" in prompt for prompt in services.prompts)
     finally:
         wo.close()
 
@@ -424,7 +424,7 @@ enabled = true
     thread.start()
     try:
         request = urllib.request.Request(
-            f"http://127.0.0.1:{server.server_address[1]}/v1/work-orders",
+            f"http://127.0.0.1:{server.server_address[1]}/api/work-orders",
             data=json.dumps({"action": "status", "work_id": "missing"}).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -446,4 +446,4 @@ def test_work_order_http_schema_rejects_oversized_identifier():
     from local_ai_hub.http_server import Handler, RequestBodyError
 
     with pytest.raises(RequestBodyError, match="work_id"):
-        Handler._validate_payload("/v1/work-orders", {"action": "status", "work_id": "x" * 129})
+        Handler._validate_payload("/api/work-orders", {"action": "status", "work_id": "x" * 129})

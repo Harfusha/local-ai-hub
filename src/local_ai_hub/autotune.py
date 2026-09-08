@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from . import __version__
 import json
 import math
 import threading
@@ -12,7 +13,7 @@ class RuntimeTuner:
     """Low-overhead EMA latency/load profile for residency decisions.
 
     It never changes semantic model roles by itself. It only helps decide between
-    explicitly compatible resident candidates, preserving requested quality gates.
+    explicitly quality-equivalent resident candidates, preserving requested quality gates.
     """
 
     def __init__(self, config: dict[str, Any]):
@@ -50,7 +51,9 @@ class RuntimeTuner:
             return
         try:
             raw = json.loads(self._state_path.read_text(encoding="utf-8"))
-            rows = raw.get("models", {}) if isinstance(raw, dict) else {}
+            if not isinstance(raw, dict) or str(raw.get("version", "")) != __version__:
+                return
+            rows = raw.get("models", {})
         except (OSError, ValueError, TypeError):
             return
         if not isinstance(rows, dict):
@@ -70,7 +73,7 @@ class RuntimeTuner:
         now = time.monotonic()
         if not force and now - self._last_persist_seconds < self._persist_interval_seconds:
             return
-        payload = {"version": 1, "models": self._models}
+        payload = {"version": __version__, "models": self._models}
         temporary = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)

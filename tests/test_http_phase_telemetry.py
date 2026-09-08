@@ -22,9 +22,9 @@ def test_terminal_client_result_is_not_stored_as_recovery_failure():
 
 
 @pytest.mark.parametrize(("path", "payload", "field"), [
-    ("/v1/code/symbol", {"root": ".", "symbol": ""}, "symbol"),
-    ("/v1/code-intelligence/query", {"root": ".", "action": "callers", "query": ""}, "query"),
-    ("/v1/code/diagnostics", {"root": ".", "path": ""}, "path"),
+    ("/api/code/symbol", {"root": ".", "symbol": ""}, "symbol"),
+    ("/api/code-intelligence/query", {"root": ".", "action": "callers", "query": ""}, "query"),
+    ("/api/code/diagnostics", {"root": ".", "path": ""}, "path"),
 ])
 def test_code_requests_reject_empty_required_inputs(path, payload, field):
     with pytest.raises(RequestBodyError, match=field):

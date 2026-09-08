@@ -75,7 +75,7 @@ status = hub_probe["status"]
 hub_online = bool(hub_probe["hub_online"])
 status_available = bool(hub_probe["status_available"])
 try:
-    telemetry_report = client.get("/v1/telemetry/report?days=30")
+    telemetry_report = client.get("/api/telemetry/report?days=30")
 except Exception:
     telemetry_report = {}
 models = cfg.get("models", {})

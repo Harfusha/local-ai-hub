@@ -8,7 +8,7 @@ DEFAULT_COMPLEX_TERMS = {
     "architecture", "architect", "concurrency", "race condition", "deadlock", "security",
     "migration", "refactor", "performance", "distributed", "transaction", "rollback",
     "multi-thread", "multithread", "async", "root cause", "cross-file", "multi-file",
-    "breaking change", "backward compatibility", "database schema", "protocol",
+    "breaking change", "public API contract", "database schema", "protocol",
 }
 DEFAULT_REASON_TERMS = {
     "why", "reason", "analyze", "analyse", "tradeoff", "trade-off", "root cause",

@@ -48,7 +48,7 @@ Loopback is the default. Remote binding requires explicit remote access and a co
 
 ## Agent integration
 
-`[agents]` enables per-host setup for Codex, Claude, Gemini, Cursor, Windsurf and VS Code/Copilot. `extra_mcp_json_paths` and `extra_vscode_mcp_paths` can target additional MCP-compatible hosts without hardcoding vendor directories. Setup preserves unrelated configuration and writes portable manifests under `generated/`. `[agent_output.*]` controls compact host-specific projections after canonical local work, so expensive caches remain shared rather than fragmented by client.
+`[agents]` enables per-host setup for Codex, Claude, Gemini, Cursor, Windsurf and VS Code/Copilot. `extra_mcp_json_paths` and `extra_vscode_mcp_paths` can target additional MCP hosts without hardcoding vendor directories. Setup preserves unrelated configuration and writes portable manifests under `generated/`. `[agent_output.*]` controls compact host-specific projections after canonical local work, so expensive caches remain shared rather than fragmented by client.
 
 ## Headless supervisor
 

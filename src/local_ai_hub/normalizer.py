@@ -56,7 +56,7 @@ def normalize_query(
     text = str(query).strip()
 
     if normalize_unicode:
-        # NFKC replaces compatibility characters and canonicalizes equivalents universally
+        # NFKC canonicalizes equivalent Unicode forms universally
         text = unicodedata.normalize("NFKC", text)
 
     if normalize_paths:

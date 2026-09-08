@@ -53,14 +53,14 @@ def test_coord_task_checkpoint_action_preserves_existing_memo_actions(running_ap
     # Directly test client coord dispatch logic
     # Set up client mock to dispatch to app methods directly
     def mock_post(path, payload, **kwargs):
-        if path == "/v1/agent-state/tasks":
+        if path == "/api/agent-state/tasks":
             act = payload.get("action")
             if act == "checkpoint":
                 from local_ai_hub.agent_tasks import TaskCheckpoint
                 chk = TaskCheckpoint.from_dict(payload.get("checkpoint", {}))
                 t = app.agent_tasks.checkpoint(payload.get("task_id"), chk)
                 return {"success": True, "task": t.to_dict()}
-        if path == "/v1/memory/search":
+        if path == "/api/memory/search":
             results = app.memory.search(payload.get("root"), payload.get("query"))
             return {"success": True, "results": results}
         return {"success": False}
@@ -137,11 +137,11 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
     # local_ai_repo actions
     r_res1 = mcp_mod.local_ai_repo(action="context_compile", task_id="t1")
     assert r_res1["success"] is True
-    assert any(c[0] == "POST" and c[1] == "/v1/agent-state/context" for c in calls)
+    assert any(c[0] == "POST" and c[1] == "/api/agent-state/context" for c in calls)
 
     r_res2 = mcp_mod.local_ai_repo(action="verify_receipt", receipt={"task_id": "t1", "criterion": "c1"})
     assert r_res2["success"] is True
-    assert any(c[0] == "POST" and c[1] == "/v1/agent-state/verification" for c in calls)
+    assert any(c[0] == "POST" and c[1] == "/api/agent-state/verification" for c in calls)
 
     r_res3 = mcp_mod.local_ai_repo(action="verify_completion", task_id="t1")
     assert r_res3["success"] is True
@@ -149,7 +149,7 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
     # local_ai_task actions
     t_res1 = mcp_mod.local_ai_task(action="candidate_create", task="improve_eval")
     assert t_res1["success"] is True
-    assert any(c[0] == "POST" and c[1] == "/v1/agent-state/learning" for c in calls)
+    assert any(c[0] == "POST" and c[1] == "/api/agent-state/learning" for c in calls)
 
     t_res2 = mcp_mod.local_ai_task(action="candidate_promote", candidate="c1", approver="user")
     assert t_res2["success"] is True
@@ -177,11 +177,11 @@ def test_client_convenience_methods(running_app_client):
 
     def mock_post(path, payload, **kwargs):
         calls.append((path, payload))
-        if path == "/v1/agent-state/tasks":
+        if path == "/api/agent-state/tasks":
             return {"success": True, "action": payload.get("action")}
-        if path == "/v1/agent-state/memory":
+        if path == "/api/agent-state/memory":
             return {"success": True, "action": payload.get("action")}
-        if path == "/v1/conversations/continue":
+        if path == "/api/conversations/continue":
             return {"success": True, "conversation_id": payload.get("conversation_id")}
         return {"success": False}
 
@@ -215,9 +215,9 @@ def test_client_convenience_methods(running_app_client):
     assert res9["success"] is True and res9["conversation_id"] == "conv-123"
 
     def mock_get(path, **kwargs):
-        if path == "/v1/doctor":
+        if path == "/api/doctor":
             return {"success": True, "doctor": True}
-        if "/v1/logs/tail" in path:
+        if "/api/logs/tail" in path:
             return {"success": True, "lines": ["log line 1", "log line 2"]}
         return {"success": False}
 
@@ -248,7 +248,7 @@ def test_hubctl_tasks_and_memory(monkeypatch, capsys):
             return {"success": True, "tasks": [{"task_id": "t-1", "status": "active", "contract": {"goal": "Test Task 1"}}]}
 
         def find_memory(self, scope=None, key=None, query=None, limit=50):
-            return {"success": True, "records": [{"scope": "task", "kind": "fact", "key": "k1", "value": "v1"}]}
+            return {"success": True, "records": [{"scope": "task", "kind": "fact", "key": "k1", "value": "first"}]}
 
     monkeypatch.setattr(hubctl, "client", lambda: DummyClient())
 

@@ -77,7 +77,7 @@ def test_local_ai_task_forwards_continue_with_opaque_conversation_id(monkeypatch
 
     assert result["success"] is True
     assert captured == {
-        "path": "/v1/conversations/continue",
+        "path": "/api/conversations/continue",
         "conversation_id": "opaque-id",
         "task": "Doplň detaily.",
         "context": "",
@@ -108,7 +108,7 @@ def test_named_profile_forwards_repo_root_to_existing_delegate_endpoint(monkeypa
     )
 
     assert result["success"] is True
-    assert captured["path"] == "/v1/delegate/repo"
+    assert captured["path"] == "/api/delegate/repo"
     assert captured["profile"] == "qwen-explorer"
     assert captured["root"] == "C:\\repo"
 

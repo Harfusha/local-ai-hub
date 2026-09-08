@@ -11,7 +11,7 @@ def main()->int:
     ap.add_argument('--interval',type=float,default=.75); ap.add_argument('--json-lines',action='store_true'); ap.add_argument('--once',action='store_true')
     a=ap.parse_args(); c=HubClient(tenant='human-monitor',config_path=str(ROOT/'config.toml')); cursor=0
     while True:
-        status=c.get('/v1/live/status'); live=c.get(f'/v1/live?after={cursor}&limit=200'); cursor=int(live.get('cursor',cursor) or cursor)
+        status=c.get('/api/live/status'); live=c.get(f'/api/live?after={cursor}&limit=200'); cursor=int(live.get('cursor',cursor) or cursor)
         if a.json_lines:
             for e in live.get('events',[]): print(json.dumps(e,ensure_ascii=False),flush=True)
         else:
@@ -19,9 +19,8 @@ def main()->int:
             print('LOCAL AI HUB — REALTIME  (Ctrl+C to exit)')
             print(f"Hub: {'UP' if status.get('hub_online') else 'DOWN'}  Ollama: {'UP' if status.get('ollama_online') else 'DOWN'}  Supervisor: {h.get('state','unknown')}  Restarts: {h.get('restarts',0)}")
             print(f"Model: {q.get('active_model') or 'idle'}  Queue: {q.get('queued',0)}  Inflight: {q.get('inflight',0)}  Active requests: {o.get('active_request_count',0)}  Background: {q.get('background_queued',0)}")
-            print(f"Cache hit: {100*float(o.get('cache_hit_rate',0)):.1f}%  p95: {float(o.get('p95_duration_ms',0)):.0f} ms  Net cloud delta: {int(o.get('net_cloud_token_delta_est',o.get('cloud_tokens_avoided_est',0))):,}  Fallbacks: {o.get('fallback_count',0)}")
-            if int(o.get('token_accounting_version',1) or 1) >= 2:
-                print(f"Token accounting: gross={int(o.get('gross_cloud_tokens_avoided_est',0)):,}  protocol={int(o.get('agent_protocol_tokens_est',0)):,} (call={int(o.get('agent_tool_request_tokens_est',0)):,}, read={int(o.get('agent_tool_response_tokens_est',0)):,})  schema≈{int(o.get('tool_schema_tokens_exposure_est',0)):,}  local-compute={int(o.get('local_compute_tokens_avoided_est',0)):,}")
+            print(f"Cache hit: {100*float(o.get('cache_hit_rate',0)):.1f}%  p95: {float(o.get('p95_duration_ms',0)):.0f} ms  Net cloud delta: {int(o.get('net_cloud_token_delta_est',0)):,}  Fallbacks: {o.get('fallback_count',0)}")
+            print(f"Token accounting: gross={int(o.get('gross_cloud_tokens_avoided_est',0)):,}  protocol={int(o.get('agent_protocol_tokens_est',0)):,} (call={int(o.get('agent_tool_request_tokens_est',0)):,}, read={int(o.get('agent_tool_response_tokens_est',0)):,})  schema≈{int(o.get('tool_schema_tokens_exposure_est',0)):,}  local-compute={int(o.get('local_compute_tokens_avoided_est',0)):,}")
             print(f"Preprocess: {'paused' if p.get('paused') else 'active'} · steps={p.get('steps',0)} errors={p.get('errors',0)} yields={p.get('yields',0)}")
             for pr in p.get('projects', []):
                 tot = max(1, int(pr.get('files', 0)))

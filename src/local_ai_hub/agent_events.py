@@ -22,7 +22,6 @@ class AgentEvent:
     idempotency_key: str
     correlation_id: str
     actor: str
-    schema_version: int
     created_at: float
     seq: int | None = None
 
@@ -35,7 +34,6 @@ class AgentEvent:
         idempotency_key: str = "",
         actor: str = "agent",
         correlation_id: str = "",
-        schema_version: int = 1,
         created_at: float | None = None,
     ) -> AgentEvent:
         return cls(
@@ -46,7 +44,6 @@ class AgentEvent:
             idempotency_key=idempotency_key or f"idemp_{uuid.uuid4().hex[:12]}",
             correlation_id=correlation_id,
             actor=actor,
-            schema_version=schema_version,
             created_at=time.time() if created_at is None else float(created_at),
             seq=None,
         )
@@ -60,7 +57,6 @@ class AgentEvent:
             idempotency_key=self.idempotency_key,
             correlation_id=self.correlation_id,
             actor=self.actor,
-            schema_version=self.schema_version,
             created_at=self.created_at,
             seq=int(seq),
         )
@@ -74,14 +70,13 @@ class AgentEvent:
             "idempotency_key": self.idempotency_key,
             "correlation_id": self.correlation_id,
             "actor": self.actor,
-            "schema_version": self.schema_version,
             "created_at": self.created_at,
             "seq": self.seq,
         }
 
     @classmethod
     def from_row(cls, row: tuple[Any, ...]) -> AgentEvent:
-        stream_id, seq, event_id, kind, payload_raw, idempotency_key, correlation_id, actor, schema_version, created_at = row
+        stream_id, seq, event_id, kind, payload_raw, idempotency_key, correlation_id, actor, created_at = row
         payload = json.loads(payload_raw) if isinstance(payload_raw, str) else dict(payload_raw)
         return cls(
             event_id=event_id,
@@ -91,7 +86,6 @@ class AgentEvent:
             idempotency_key=idempotency_key,
             correlation_id=correlation_id,
             actor=actor,
-            schema_version=schema_version,
             created_at=created_at,
             seq=seq,
         )
@@ -105,54 +99,6 @@ class AppendResult:
     retryable: bool = False
     error: str | None = None
 
-
-SCHEMA_VERSION = 1
-
-MIGRATIONS = [
-    (
-        1,
-        "initial agent events, snapshots, and migrations schema",
-        """
-        CREATE TABLE IF NOT EXISTS agent_schema_migrations (
-            version INTEGER PRIMARY KEY,
-            applied_at REAL NOT NULL,
-            description TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS agent_events (
-            stream_id TEXT NOT NULL,
-            seq INTEGER NOT NULL,
-            event_id TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            payload TEXT NOT NULL,
-            idempotency_key TEXT NOT NULL,
-            correlation_id TEXT NOT NULL,
-            actor TEXT NOT NULL,
-            schema_version INTEGER NOT NULL,
-            created_at REAL NOT NULL,
-            PRIMARY KEY (stream_id, seq),
-            UNIQUE (stream_id, idempotency_key)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_agent_events_created
-            ON agent_events (created_at);
-
-        CREATE INDEX IF NOT EXISTS idx_agent_events_kind
-            ON agent_events (kind);
-
-        CREATE TABLE IF NOT EXISTS agent_snapshots (
-            snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            stream_id TEXT NOT NULL,
-            seq INTEGER NOT NULL,
-            state TEXT NOT NULL,
-            created_at REAL NOT NULL
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_agent_snapshots_stream
-            ON agent_snapshots (stream_id, seq DESC);
-        """,
-    )
-]
 
 
 class AgentStateStore:
@@ -178,18 +124,36 @@ class AgentStateStore:
             if self._initialized or not self.enabled:
                 return
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+            expected_events = [
+                "stream_id", "seq", "event_id", "kind", "payload", "idempotency_key",
+                "correlation_id", "actor", "created_at",
+            ]
+            expected_snapshots = ["snapshot_id", "stream_id", "seq", "state", "created_at"]
+
+            def _remove_state_files() -> None:
+                for suffix in ("", "-wal", "-shm"):
+                    try:
+                        Path(str(self.db_path) + suffix).unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
             def _setup() -> None:
                 con = connect_sqlite(self.db_path)
                 try:
                     initialize_wal(con)
+                    existing = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    current = True
+                    if "agent_events" in existing:
+                        current = [str(row[1]) for row in con.execute("PRAGMA table_info(agent_events)")] == expected_events
+                    if current and "agent_snapshots" in existing:
+                        current = [str(row[1]) for row in con.execute("PRAGMA table_info(agent_snapshots)")] == expected_snapshots
+                    if not current:
+                        con.close()
+                        _remove_state_files()
+                        con = connect_sqlite(self.db_path)
+                        initialize_wal(con)
                     with con:
-                        con.execute("""
-                        CREATE TABLE IF NOT EXISTS agent_schema_migrations (
-                            version INTEGER PRIMARY KEY,
-                            applied_at REAL NOT NULL,
-                            description TEXT NOT NULL
-                        );
-                        """)
                         con.execute("""
                         CREATE TABLE IF NOT EXISTS agent_events (
                             stream_id TEXT NOT NULL,
@@ -200,20 +164,13 @@ class AgentStateStore:
                             idempotency_key TEXT NOT NULL,
                             correlation_id TEXT NOT NULL,
                             actor TEXT NOT NULL,
-                            schema_version INTEGER NOT NULL,
                             created_at REAL NOT NULL,
                             PRIMARY KEY (stream_id, seq),
                             UNIQUE (stream_id, idempotency_key)
                         );
                         """)
-                        con.execute("""
-                        CREATE INDEX IF NOT EXISTS idx_agent_events_created
-                            ON agent_events (created_at);
-                        """)
-                        con.execute("""
-                        CREATE INDEX IF NOT EXISTS idx_agent_events_kind
-                            ON agent_events (kind);
-                        """)
+                        con.execute("CREATE INDEX IF NOT EXISTS idx_agent_events_created ON agent_events (created_at)")
+                        con.execute("CREATE INDEX IF NOT EXISTS idx_agent_events_kind ON agent_events (kind)")
                         con.execute("""
                         CREATE TABLE IF NOT EXISTS agent_snapshots (
                             snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -223,20 +180,10 @@ class AgentStateStore:
                             created_at REAL NOT NULL
                         );
                         """)
-                        con.execute("""
-                        CREATE INDEX IF NOT EXISTS idx_agent_snapshots_stream
-                            ON agent_snapshots (stream_id, seq DESC);
-                        """)
-                        row = con.execute(
-                            "SELECT version FROM agent_schema_migrations WHERE version = 1"
-                        ).fetchone()
-                        if not row:
-                            con.execute(
-                                "INSERT INTO agent_schema_migrations (version, applied_at, description) VALUES (?, ?, ?)",
-                                (1, time.time(), "initial agent events, snapshots, and migrations schema"),
-                            )
+                        con.execute("CREATE INDEX IF NOT EXISTS idx_agent_snapshots_stream ON agent_snapshots (stream_id, seq DESC)")
                 finally:
                     con.close()
+
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
             self._initialized = True
 
@@ -258,7 +205,7 @@ class AgentStateStore:
                 con.execute("BEGIN IMMEDIATE")
                 existing = con.execute(
                     """
-                    SELECT stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, schema_version, created_at
+                    SELECT stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at
                     FROM agent_events
                     WHERE stream_id = ? AND idempotency_key = ?
                     """,
@@ -279,8 +226,8 @@ class AgentStateStore:
                     """
                     INSERT INTO agent_events (
                         stream_id, seq, event_id, kind, payload, idempotency_key,
-                        correlation_id, actor, schema_version, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        correlation_id, actor, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         event.stream_id,
@@ -291,7 +238,6 @@ class AgentStateStore:
                         event.idempotency_key,
                         event.correlation_id,
                         event.actor,
-                        event.schema_version,
                         event.created_at,
                     ),
                 )
@@ -362,7 +308,7 @@ class AgentStateStore:
         try:
             cur = con.execute(
                 """
-                SELECT stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, schema_version, created_at
+                SELECT stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at
                 FROM agent_events
                 WHERE stream_id = ? AND seq > ?
                 ORDER BY seq ASC

@@ -101,7 +101,7 @@ heavy_min_score = 3
 # Reviews need stronger evidence before spending smart-tier latency.
 review_heavy_min_score = 5
 max_fast_context_chars = 90000
-# Reuse a compatible resident Qwen instead of swapping fast <-> smart unnecessarily.
+# Reuse a quality-equivalent resident Qwen instead of swapping fast <-> smart unnecessarily.
 prefer_resident_model = true
 resident_fast_margin = 0
 # Keep the configured reasoning role authoritative. Resident fallback is opt-in.
@@ -385,7 +385,7 @@ flush_interval_seconds = 0.5
 queue_size = 10000
 snapshot_interval_seconds = 60
 # Avoid self-observation noise from cheap health/status/report polling.
-exclude_http_paths = ["/health", "/dashboard", "/favicon.ico", "/v1/status", "/v1/live", "/v1/live/status", "/v1/metrics", "/v1/telemetry/report", "/v1/audit/tail", "/v1/control"]
+exclude_http_paths = ["/health", "/dashboard", "/favicon.ico", "/api/status", "/api/live", "/api/live/status", "/api/metrics", "/api/telemetry/report", "/api/audit/tail", "/api/control"]
 
 [logging]
 # Operational rotating logs. Do not log prompts/source/model output.
@@ -502,7 +502,7 @@ cursor = true
 windsurf = true
 copilot = true
 # Additional MCP hosts can be wired explicitly without changing setup.py.
-# mcpServers-style JSON (Claude/Cursor/Gemini-compatible container):
+# mcpServers-style JSON (Claude/Cursor/Gemini container):
 extra_mcp_json_paths = []
 # VS Code/Copilot `servers`-style JSON:
 extra_vscode_mcp_paths = []

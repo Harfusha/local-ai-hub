@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from local_ai_hub import __version__
 from local_ai_hub.app import LocalAIApp
 from local_ai_hub.cache import SQLiteCache
 from local_ai_hub.commands import CommandBroker
@@ -78,12 +79,12 @@ def test_mcp_resolve_imports_defaults_to_auto():
 
 def test_sqlite_cache_updates_lru_metadata_and_drops_bad_json(tmp_path: Path):
     cache = SQLiteCache(tmp_path / "cache.sqlite3", "x", ttl_seconds=60, max_entries=10)
-    cache.set("a", {"v": 1})
-    assert cache.get("a") == {"v": 1}
+    cache.set("a", {"value": 1})
+    assert cache.get("a") == {"value": 1}
     with closing(sqlite3.connect(cache.path)) as con:
-        row = con.execute("SELECT hits,accessed_at,created_at FROM cache_entries WHERE namespace='x' AND cache_key='a'").fetchone()
+        row = con.execute("SELECT hits,accessed_at,created_at FROM cache_entries WHERE namespace=? AND cache_key='a'", (cache.namespace,)).fetchone()
         assert row and row[0] == 1 and row[1] >= row[2]
-        con.execute("INSERT OR REPLACE INTO cache_entries(namespace,cache_key,value_json,created_at,accessed_at,hits) VALUES('x','bad','{',1,1,0)")
+        con.execute("INSERT OR REPLACE INTO cache_entries(namespace,cache_key,value_json,created_at,accessed_at,hits) VALUES(?, 'bad', '{', 1, 1, 0)", (cache.namespace,))
         con.commit()
     assert cache.get("bad") is None
     with closing(sqlite3.connect(cache.path)) as con:
@@ -210,7 +211,7 @@ def test_bundle_roundtrip_current_schema_and_binary_embedding(tmp_path: Path):
         archive = app.export_bundle(root)
         with zipfile.ZipFile(io.BytesIO(archive)) as zf:
             payload = json.loads(zf.read("bundle.json"))
-        assert payload["version"] == 2 and payload["tables_sha256"]
+        assert payload["version"] == __version__ and payload["tables_sha256"]
         with closing(app.deterministic._connect()) as con:
             for table in ("files","facts","dependencies","scripts"):
                 con.execute(f"DELETE FROM {table} WHERE root=?", (root,))
@@ -218,7 +219,7 @@ def test_bundle_roundtrip_current_schema_and_binary_embedding(tmp_path: Path):
         with closing(app.rag._connect()) as con:
             con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=?", (scope,workspace)); con.commit()
         restored = app.import_bundle(archive, root)
-        assert restored["success"] is True and restored["bundle_version"] == 2
+        assert restored["success"] is True and restored["version"] == __version__
         with closing(app.deterministic._connect()) as con:
             assert con.execute("SELECT COUNT(*) FROM facts WHERE root=?", (root,)).fetchone()[0] == 1
         with closing(app.rag._connect()) as con:
@@ -238,7 +239,7 @@ def test_bundle_rejects_extra_members_and_bad_integrity(tmp_path: Path):
             zf.writestr("../evil", "x")
         assert app.import_bundle(buf.getvalue(), str(repo))["success"] is False
         tables = {}
-        payload = {"format":"local-ai-hub-project-bundle","version":2,"root":str(repo),"tables":tables,"tables_sha256":"bad"}
+        payload = {"format":"local-ai-hub-project-bundle","version":__version__,"root":str(repo),"tables":tables,"tables_sha256":"bad"}
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf: zf.writestr("bundle.json", json.dumps(payload))
         assert "integrity" in app.import_bundle(buf.getvalue(), str(repo))["error"]
@@ -275,7 +276,7 @@ def test_dashboard_has_unique_ids_and_valid_javascript(tmp_path: Path):
     assert "Since restart" in DASHBOARD_HTML
     assert "probeHealth" in DASHBOARD_HTML
     assert "Agent debug traces" in DASHBOARD_HTML
-    assert "/v1/debug-traces" in DASHBOARD_HTML
+    assert "/api/debug-traces" in DASHBOARD_HTML
     assert "main_agent_prompt" in DASHBOARD_HTML
     assert "renderHumanModal" in DASHBOARD_HTML
     assert "Raw JSON" in DASHBOARD_HTML
@@ -307,7 +308,11 @@ def test_dashboard_has_unique_ids_and_valid_javascript(tmp_path: Path):
     assert "Graphics accelerator" not in DASHBOARD_HTML
     assert "<th>Pipeline Phase &amp; Stepper</th>" not in DASHBOARD_HTML
     assert "<th>Index Readiness</th>" not in DASHBOARD_HTML
-    assert '/v1/config/update' in DASHBOARD_HTML
+    assert '/api/config/update' in DASHBOARD_HTML
+    assert 'id="agentOsState">0 active · 0 total tasks · 0 memories</span>' in DASHBOARD_HTML
+    assert 'id="prepState">0 registered projects · global running</span>' in DASHBOARD_HTML
+    assert 'id="projectSummary">0 of 0 projects</span>' in DASHBOARD_HTML
+    assert 'id="commandState">0 running</span>' in DASHBOARD_HTML
     js = DASHBOARD_HTML.split("<script>",1)[1].split("</script>",1)[0]
     js_file = tmp_path / "dashboard.js"; js_file.write_text(js, encoding="utf-8")
     if subprocess.run(["node", "--version"], capture_output=True).returncode == 0:
@@ -356,7 +361,7 @@ enabled=false
         raise AssertionError("ensure_server must not be called for non-starting probes")
 
     client.ensure_server = forbidden  # type: ignore[method-assign]
-    result = client.get("/v1/status", timeout=0.2)
+    result = client.get("/api/status", timeout=0.2)
     assert result.get("success") is False
 
 def test_http_auth_json_limits_security_headers_and_binary_bundle(tmp_path: Path):
@@ -376,37 +381,37 @@ def test_http_auth_json_limits_security_headers_and_binary_bundle(tmp_path: Path
         status,headers,html=_request(base+"/dashboard")
         assert status==200 and b"Local AI Hub" in html
         assert headers.get("X-Content-Type-Options") == "nosniff"
-        assert _request(base+"/v1/status")[0] == 401
-        assert _request(base+"/v1/status", headers=auth)[0] == 200
-        status, _, live_body = _request(base+"/v1/live/status", headers=auth)
+        assert _request(base+"/api/status")[0] == 401
+        assert _request(base+"/api/status", headers=auth)[0] == 200
+        status, _, live_body = _request(base+"/api/live/status", headers=auth)
         live_status = json.loads(live_body)
         assert status == 200 and isinstance(live_status.get("observability"), dict)
         assert "active_requests" in live_status["observability"]
         assert "recent_http" in live_status["observability"]
-        status, _, _ = _request(base+"/v1/command", method="POST", body=json.dumps({"action":"classify","command":"pytest -q"}).encode(), headers={**auth,"Content-Type":"application/json"})
+        status, _, _ = _request(base+"/api/command", method="POST", body=json.dumps({"action":"classify","command":"pytest -q"}).encode(), headers={**auth,"Content-Type":"application/json"})
         assert status == 200
-        status, _, body = _request(base+"/v1/debug-traces?limit=10", headers=auth)
+        status, _, body = _request(base+"/api/debug-traces?limit=10", headers=auth)
         traces = json.loads(body)
         assert status == 200 and traces["success"] is True and traces["items"]
         trace_id = traces["items"][0]["trace_id"]
-        status, _, body = _request(base+"/v1/debug-traces/"+trace_id, headers=auth)
+        status, _, body = _request(base+"/api/debug-traces/"+trace_id, headers=auth)
         detail = json.loads(body)
         assert status == 200 and detail["success"] is True
         assert "request" in detail["session"] and "events" in detail
         cfg_body=json.dumps({"action":"update","settings":{"hardware.profile":"low","preprocessing.enabled":False}}).encode()
-        status,_,body=_request(base+"/v1/config/update",method="POST",body=cfg_body,headers={**auth,"Content-Type":"application/json"})
+        status,_,body=_request(base+"/api/config/update",method="POST",body=cfg_body,headers={**auth,"Content-Type":"application/json"})
         assert status==200 and json.loads(body)["restart_required"] is True
         assert (tmp_path / "config.runtime.toml").is_file()
-        status,_,body=_request(base+"/v1/command",method="POST",body=b"{",headers={**auth,"Content-Type":"application/json"})
+        status,_,body=_request(base+"/api/command",method="POST",body=b"{",headers={**auth,"Content-Type":"application/json"})
         assert status==400 and b"invalid JSON" in body
-        status,_,_= _request(base+"/v1/command",method="POST",body=b"x"*2048,headers={**auth,"Content-Type":"application/json"})
+        status,_,_= _request(base+"/api/command",method="POST",body=b"x"*2048,headers={**auth,"Content-Type":"application/json"})
         assert status==413
         import hashlib
         tables={}; canonical=json.dumps(tables,sort_keys=True,separators=(",",":")).encode()
-        payload={"format":"local-ai-hub-project-bundle","version":2,"root":str(repo),"tables":tables,"tables_sha256":hashlib.sha256(canonical).hexdigest()}
+        payload={"format":"local-ai-hub-project-bundle","version":__version__,"root":str(repo),"tables":tables,"tables_sha256":hashlib.sha256(canonical).hexdigest()}
         buf=io.BytesIO()
         with zipfile.ZipFile(buf,"w",zipfile.ZIP_DEFLATED) as zf: zf.writestr("bundle.json",json.dumps(payload,separators=(",",":")))
-        url=base+"/v1/bundle/import?target_root="+urllib.parse.quote(str(repo))
+        url=base+"/api/bundle/import?target_root="+urllib.parse.quote(str(repo))
         status,_,body=_request(url,method="POST",body=buf.getvalue(),headers={**auth,"Content-Type":"application/zip"})
         assert status==200, body
         assert json.loads(body)["success"] is True
@@ -419,24 +424,24 @@ def test_http_auth_json_limits_security_headers_and_binary_bundle(tmp_path: Path
             raw=json.dumps(payload).encode()
             return _request(base+path,method="POST",body=raw,headers={**auth,"Content-Type":"application/json"})
         calls=[
-            ("/v1/repo/profile", {"root":str(repo)}),
-            ("/v1/repo/map", {"root":str(repo),"max_symbols":20}),
-            ("/v1/repo/code-index", {"root":str(repo),"query":"SampleService","limit":10}),
-            ("/v1/repo/deterministic", {"root":str(repo),"query":"project dependencies","limit":10}),
-            ("/v1/search", {"root":str(repo),"query":"SampleService","top_k":5}),
-            ("/v1/context/pack", {"root":str(repo),"query":"SampleService","max_tokens":512}),
-            ("/v1/code/ast_outline", {"root":str(repo),"path":"main.py"}),
-            ("/v1/test_matrix", {"root":str(repo)}),
-            ("/v1/security_audit", {"root":str(repo),"limit":10}),
-            ("/v1/resolve_imports", {"root":str(repo),"symbols":["SampleService"],"language":"auto"}),
-            ("/v1/command", {"action":"classify","command":"pytest -q"}),
-            ("/v1/preprocess", {"action":"status","root":str(repo)}),
+            ("/api/repo/profile", {"root":str(repo)}),
+            ("/api/repo/map", {"root":str(repo),"max_symbols":20}),
+            ("/api/repo/code-index", {"root":str(repo),"query":"SampleService","limit":10}),
+            ("/api/repo/deterministic", {"root":str(repo),"query":"project dependencies","limit":10}),
+            ("/api/search", {"root":str(repo),"query":"SampleService","top_k":5}),
+            ("/api/context/pack", {"root":str(repo),"query":"SampleService","max_tokens":512}),
+            ("/api/code/ast_outline", {"root":str(repo),"path":"main.py"}),
+            ("/api/test_matrix", {"root":str(repo)}),
+            ("/api/security_audit", {"root":str(repo),"limit":10}),
+            ("/api/resolve_imports", {"root":str(repo),"symbols":["SampleService"],"language":"auto"}),
+            ("/api/command", {"action":"classify","command":"pytest -q"}),
+            ("/api/preprocess", {"action":"status","root":str(repo)}),
         ]
         for path,payload in calls:
             st,_,response=jpost(path,payload)
             assert st < 500, (path, st, response[:500])
             assert response, path
-        for path in ("/v1/capabilities", "/v1/hardware/system", "/v1/config", "/v1/logs/tail?lines=5"):
+        for path in ("/api/capabilities", "/api/hardware/system", "/api/config", "/api/logs/tail?lines=5"):
             st,_,response=_request(base+path,headers=auth)
             assert st < 500 and response, (path,st,response[:500])
     finally:

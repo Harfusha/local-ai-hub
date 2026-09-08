@@ -85,7 +85,7 @@ def test_dashboard_csp_uses_nonce_not_unsafe_inline_script():
 def test_api_schema_rejects_excessive_embedding_items():
     assert hasattr(Handler, "_validate_payload")
     with pytest.raises(RequestBodyError):
-        Handler._validate_payload("/v1/embed", {"texts": ["x"] * 257})
+        Handler._validate_payload("/api/embed", {"texts": ["x"] * 257})
 
 
 def test_rag_cosine_rejects_mismatched_dimensions():
@@ -93,7 +93,7 @@ def test_rag_cosine_rejects_mismatched_dimensions():
 
 
 def test_telemetry_removes_secret_values(tmp_path):
-    event = TelemetryStore._clean_event({"tenant": "Bearer secret-token", "action": "POST /v1?api_key=secret-token"})
+    event = TelemetryStore._clean_event({"tenant": "Bearer secret-token", "action": "POST /sensitive?api_key=secret-token"})
 
     assert "secret-token" not in json.dumps(event)
 
@@ -101,13 +101,13 @@ def test_telemetry_removes_secret_values(tmp_path):
 def test_telemetry_recent_http_history_is_persistent(tmp_path):
     store = TelemetryStore(tmp_path / "telemetry-state", enabled=True, flush_interval_seconds=0.01)
     try:
-        store.record_http(action="/v1/delegate", request_id="req-1", agent="test", tenant="tenant", status_code=200, duration_ms=12.5)
+        store.record_http(action="/api/delegate", request_id="req-1", agent="test", tenant="tenant", status_code=200, duration_ms=12.5)
         store.flush(1.0)
         recent = store.recent_http(10)
     finally:
         store.close()
 
-    assert recent[0]["action"] == "/v1/delegate"
+    assert recent[0]["action"] == "/api/delegate"
     assert recent[0]["request_id"] == "req-1"
     assert recent[0]["status_code"] == 200
 

@@ -665,8 +665,7 @@ class LocalAIApp:
                 canonical = json.dumps(exported_agent_records, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
                 bundle_data: dict[str, Any] = {
                     "format": "local-ai-hub-agent-state-bundle",
-                    "version": 1,
-                    "hub_version": __version__,
+                    "version": __version__,
                     "exported_at": time.time(),
                     "records_sha256": hashlib.sha256(canonical).hexdigest(),
                     "records": exported_agent_records,
@@ -725,8 +724,7 @@ class LocalAIApp:
         canonical = json.dumps(encoded_tables, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         bundle_data: dict[str, Any] = {
             "format": "local-ai-hub-project-bundle",
-            "version": 2,
-            "hub_version": __version__,
+            "version": __version__,
             "root": root_path,
             "workspace": workspace,
             "exported_at": time.time(),
@@ -778,12 +776,27 @@ class LocalAIApp:
         if not isinstance(data, dict):
             return {"success": False, "error": "bundle root must be an object"}
 
-        if data.get("format") == "local-ai-hub-agent-state-bundle":
+        version = str(data.get("version", ""))
+        if version != __version__:
+            return {"success": False, "error": f"bundle version must match Local AI Hub {__version__}"}
+
+        bundle_format = str(data.get("format", ""))
+        if bundle_format == "local-ai-hub-agent-state-bundle":
             records = data.get("records", [])
+            if not isinstance(records, list):
+                return {"success": False, "error": "bundle records are missing"}
+            canonical = json.dumps(records, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            expected = str(data.get("records_sha256", ""))
+            if not expected or not hmac.compare_digest(hashlib.sha256(canonical).hexdigest(), expected):
+                return {"success": False, "error": "bundle integrity check failed"}
             restored = 0
             for item in records:
+                if not isinstance(item, dict):
+                    return {"success": False, "error": "invalid agent-state bundle record"}
                 rtype = item.get("type")
                 rdata = item.get("data", {})
+                if not isinstance(rdata, dict):
+                    return {"success": False, "error": "invalid agent-state bundle payload"}
                 if rtype == "memory" and getattr(self, "agent_memory", None):
                     rec = MemoryRecord.create(
                         kind=MemoryKind(rdata.get("kind", "fact")),
@@ -795,22 +808,18 @@ class LocalAIApp:
                     )
                     self.agent_memory.record(rec, actor="bundle_import")
                     restored += 1
-            return {"success": True, "restored_records": restored}
+            return {"success": True, "version": __version__, "restored_records": restored}
 
-        version = int(data.get("version", 0) or 0)
-        if version not in {1, 2}:
-            return {"success": False, "error": f"unsupported bundle format version: {version}"}
-        if version == 2 and data.get("format") != "local-ai-hub-project-bundle":
+        if bundle_format != "local-ai-hub-project-bundle":
             return {"success": False, "error": "invalid Local AI Hub bundle marker"}
 
-        encoded_tables: Any = data.get("tables") if version == 2 else {k: v for k, v in data.items() if isinstance(v, list)}
+        encoded_tables: Any = data.get("tables")
         if not isinstance(encoded_tables, dict):
             return {"success": False, "error": "bundle tables are missing"}
-        if version == 2:
-            canonical = json.dumps(encoded_tables, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            expected = str(data.get("tables_sha256", ""))
-            if not expected or not hmac.compare_digest(hashlib.sha256(canonical).hexdigest(), expected):
-                return {"success": False, "error": "bundle integrity check failed"}
+        canonical = json.dumps(encoded_tables, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        expected = str(data.get("tables_sha256", ""))
+        if not expected or not hmac.compare_digest(hashlib.sha256(canonical).hexdigest(), expected):
+            return {"success": False, "error": "bundle integrity check failed"}
         try:
             tables = self._bundle_decode(encoded_tables)
         except Exception as exc:
@@ -939,7 +948,7 @@ class LocalAIApp:
 
         return {
             "success": True,
-            "bundle_version": version,
+            "version": __version__,
             "root": root_path,
             "workspace": workspace,
             "files_imported": len(rows("file_refs")),

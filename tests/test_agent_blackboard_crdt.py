@@ -8,15 +8,15 @@ from local_ai_hub.agent_blackboard import BlackboardStore, merge_sections, Black
 def test_vector_clock_domination():
     # A dominates B
     sec_a = BlackboardSection(
-        section="arch", content="v2", author="codex",
+        section="arch", content="newer", author="codex",
         clock={"codex": 2, "claude": 1}, timestamp=100.0, version=2,
     )
     sec_b = BlackboardSection(
-        section="arch", content="v1", author="claude",
+        section="arch", content="older", author="claude",
         clock={"codex": 1, "claude": 1}, timestamp=90.0, version=1,
     )
     merged = merge_sections(sec_a, sec_b)
-    assert merged.content == "v2"
+    assert merged.content == "newer"
     assert merged.author == "codex"
     assert merged.clock == {"codex": 2, "claude": 1}
 
@@ -99,7 +99,7 @@ def test_blackboard_store_persistence_and_multiagent_merge(tmp_path: Path):
     assert merge_res["success"] is True
     
     final_board = store.get(board_id="board-1")
-    # Architecture should still be Codex's v2 because clock codex:2 dominates codex:1
+    # Architecture should still be Codex's newer value because clock codex:2 dominates codex:1
     assert final_board["sections"]["architecture"]["content"]["pattern"] == "cqrs+event-driven"
     # Security notes added
     assert final_board["sections"]["security_notes"]["content"] == "use hmac tokens"
@@ -111,11 +111,11 @@ def test_blackboard_store_persistence_and_multiagent_merge(tmp_path: Path):
 
 def test_merge_sections_idempotency():
     sec_a = BlackboardSection(
-        section="arch", content="v1", author="codex",
+        section="arch", content="older", author="codex",
         clock={"codex": 1}, timestamp=100.0, version=1,
     )
     sec_b = BlackboardSection(
-        section="arch", content="v2", author="claude",
+        section="arch", content="newer", author="claude",
         clock={"claude": 1}, timestamp=110.0, version=1,
     )
     m1 = merge_sections(sec_a, sec_b)
@@ -124,6 +124,6 @@ def test_merge_sections_idempotency():
     assert m1.version == 2
     assert m2.version == 2
     assert m3.version == 2
-    assert m1.content == m2.content == m3.content == "v2"
+    assert m1.content == m2.content == m3.content == "newer"
     assert m1.clock == m2.clock == m3.clock == {"codex": 1, "claude": 1}
 

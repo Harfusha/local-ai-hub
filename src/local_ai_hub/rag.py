@@ -11,6 +11,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, Iterable
 
+from . import __version__
 from .cache import SQLiteCache, TieredCache, SingleFlightCache, stable_hash
 from .normalizer import normalize_query
 from .scheduler import QueueFullError
@@ -83,7 +84,7 @@ class RAGStore:
         cpu_cfg = config.get("cpu_retrieval", {})
         model_cfg = config.get("models", {})
         self.index_fingerprint = stable_hash({
-            "v": 1,
+            "app_version": __version__,
             "embedding": model_cfg.get("embedding"),
             "backend": model_cfg.get("embedding_backend"),
             "max_seq": cpu_cfg.get("embedding_max_seq_length", 8192),

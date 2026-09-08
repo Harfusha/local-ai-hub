@@ -92,10 +92,6 @@ def install_requirements(python: Path, requirement: Path, *, optional: bool = Fa
 
 def copy_install_tree(install_dir: Path, config_source: Path) -> None:
     install_dir.mkdir(parents=True, exist_ok=True)
-    # Package-native MCP supersedes the legacy source-wrapper directory; remove it on upgrade.
-    legacy_mcp = install_dir / "mcp"
-    if legacy_mcp.exists() and install_dir.resolve() != SOURCE_ROOT.resolve():
-        shutil.rmtree(legacy_mcp)
     for name in ["src", "skills", "tools"]:
         src, dst = SOURCE_ROOT / name, install_dir / name
         if src.resolve() == dst.resolve():
@@ -351,9 +347,6 @@ def configure_agents(install_dir: Path, hub_python: Path, serena: Path | None, c
         install_skill(source_skill, codex_home / "skills" / "local-ai-orchestrator")
         if cfg.get("tool_policy", {}).get("install_global_instructions", True):
             merge_global_policy(codex_home / ("AGENTS.override.md" if (codex_home / "AGENTS.override.md").exists() else "AGENTS.md"), backup_enabled, cfg=cfg)
-            # Keep the legacy Codex instruction file aligned too; otherwise it can
-            # shadow the newer routing contract and steer the agent to commands only.
-            merge_global_policy(codex_home / "instructions.md", backup_enabled, cfg=cfg)
         codex_mcp_merge(
             codex_home / "config.toml", build_mcp_entries(install_dir, hub_python, serena, codegraph, "codex", cfg), backup_enabled,
             startup_timeout=int(cfg.get("client", {}).get("startup_wait_seconds", 15)) + 15,
@@ -371,7 +364,7 @@ def configure_agents(install_dir: Path, hub_python: Path, serena: Path | None, c
             merge_global_policy(Path.home() / ".gemini" / "GEMINI.md", backup_enabled, cfg=cfg)
         json_mcp_merge(Path.home() / ".gemini" / "settings.json", build_mcp_entries(install_dir, hub_python, serena, codegraph, "gemini", cfg), backup_enabled)
     # Additional major MCP hosts. Their tool descriptions always carry the same
-    # tool-first policy even when the host has no compatible global skill format.
+    # tool-first policy even when the host has no global skill format.
     if agents_cfg.get("cursor", True):
         json_mcp_merge(Path.home() / ".cursor" / "mcp.json", build_mcp_entries(install_dir, hub_python, serena, codegraph, "cursor", cfg), backup_enabled)
     if agents_cfg.get("windsurf", True):
@@ -379,7 +372,7 @@ def configure_agents(install_dir: Path, hub_python: Path, serena: Path | None, c
     if agents_cfg.get("copilot", True):
         vscode_mcp_merge(Path.home() / ".copilot" / "mcp-config.json", build_mcp_entries(install_dir, hub_python, serena, codegraph, "copilot", cfg), backup_enabled)
 
-    # Escape hatch for any MCP-compatible host/build whose config path differs from
+    # Escape hatch for any MCP host/build whose config path differs from
     # the common defaults above. Users provide explicit paths, so setup never guesses
     # at vendor-specific locations or overwrites unrelated files.
     generic_entries = build_mcp_entries(install_dir, hub_python, serena, codegraph, "generic", cfg)
@@ -415,7 +408,7 @@ def select_config_source(explicit: Path | None) -> tuple[Path, dict[str, Any], P
 
 def main() -> int:
     if sys.version_info < (3, 11):
-        raise SystemExit("Python 3.11+ is required. Use install.ps1/install.sh to bootstrap a compatible Python automatically.")
+        raise SystemExit("Python 3.11+ is required. Use install.ps1/install.sh to bootstrap a supported Python automatically.")
     parser = argparse.ArgumentParser(description="Install Local AI Hub")
     parser.add_argument("--config", type=Path, default=None, help="Import/replace config from this path. Without it, reruns preserve the installed config.")
     parser.add_argument("--profile", choices=["auto", "cpu", "integrated", "low", "balanced", "high", "max"])

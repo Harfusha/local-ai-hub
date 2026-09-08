@@ -16,8 +16,8 @@ from local_ai_hub.sqlite_support import connect_sqlite
 from tools.release_check import _iter_release_hygiene_violations
 
 
-def test_v2_version() -> None:
-    assert __version__ == "2.4.0"
+def test_release_version() -> None:
+    assert __version__ == "3.0.0"
 
 
 def test_rooted_path_detection_is_host_independent() -> None:
@@ -66,7 +66,7 @@ def test_context_compile_includes_leases_and_invalidates_changed_links(tmp_path:
     compiler.link("source", "target", "implements", path="src/core.py")
     compiled = compiler.compile(
         ContextRequest(
-            task_id="task-v2",
+            task_id="task-current",
             token_budget=512,
             include_kinds=("active_lease",),
             changed_paths=("src/core.py",),

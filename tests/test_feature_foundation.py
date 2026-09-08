@@ -127,7 +127,7 @@ def test_http_server_handles_type_error_as_400(monkeypatch) -> None:
     handler = object.__new__(http_server.Handler)
     handler.server = type("Server", (), {"server_name": "127.0.0.1", "server_port": 11435})()
     handler.headers = {"Host": "127.0.0.1:11435"}
-    handler.path = "/v1/test"
+    handler.path = "/api/test"
 
     sent: list[tuple[int, dict]] = []
     handler._send = lambda status, data: sent.append((status, data))

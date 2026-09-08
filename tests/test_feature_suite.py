@@ -21,8 +21,8 @@ from local_ai_hub.swarm import SwarmCoordinator, SwarmState
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_v1_6_metadata_and_tool_contract():
-    assert __version__ == "2.4.0"
+def test_release_metadata_and_tool_contract():
+    assert __version__ == "3.0.0"
     source = (ROOT / "src" / "local_ai_hub" / "mcp_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     tools = [
@@ -37,7 +37,7 @@ def test_v1_6_metadata_and_tool_contract():
         "local_ai_work",
     }
     release = json.loads((ROOT / "RELEASE.json").read_text(encoding="utf-8"))
-    assert release["version"] == "2.4.0"
+    assert release["version"] == "3.0.0"
     assert release["status"] == "production-ready"
 
 

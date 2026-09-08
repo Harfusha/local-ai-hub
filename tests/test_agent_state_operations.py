@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import io
+import json
 import time
+import zipfile
 from pathlib import Path
 import pytest
 
@@ -109,6 +112,33 @@ def test_selective_export_and_import_valid_records(tmp_path: Path):
         assert len(found) == 1
         assert found[0].value == {"architecture": "modular"}
 
+
+
+def test_bundle_requires_exact_current_application_version(tmp_path: Path):
+    with app_with_agent_state(tmp_path / "source") as app:
+        rec = MemoryRecord.create(
+            kind=MemoryKind.FACT,
+            scope=AgentScope.REPOSITORY,
+            key="version_contract",
+            value="current-only",
+            scope_id="repo1",
+            status=MemoryStatus.CONFIRMED,
+        )
+        saved = app.agent_memory.record(rec, actor="user")
+        raw = app.export_bundle(agent_state_record_ids=[saved.record_id])
+
+    source = io.BytesIO(raw)
+    with zipfile.ZipFile(source, "r") as zf:
+        payload = json.loads(zf.read("bundle.json"))
+    payload["version"] = "not-current"
+    modified = io.BytesIO()
+    with zipfile.ZipFile(modified, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("bundle.json", json.dumps(payload, separators=(",", ":")))
+
+    with app_with_agent_state(tmp_path / "target") as app:
+        result = app.import_bundle(modified.getvalue())
+        assert result["success"] is False
+        assert "must match Local AI Hub" in result["error"]
 
 def test_app_status_includes_agent_state_summary(tmp_path: Path):
     with app_with_agent_state(tmp_path) as app:

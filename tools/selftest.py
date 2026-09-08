@@ -120,7 +120,7 @@ def main() -> int:
                 out, err = proc.communicate(timeout=1)
                 raise RuntimeError(f"hub failed to become healthy: rc={proc.returncode} stdout={out[-2000:]} stderr={err[-4000:]}")
             checks.append({"name": "http-health", "ok": health.get("success") is True and health.get("version") == __version__, "health": health})
-            capabilities = _get_json(f"http://127.0.0.1:{port}/v1/capabilities", timeout=3.0)
+            capabilities = _get_json(f"http://127.0.0.1:{port}/api/capabilities", timeout=3.0)
             checks.append({"name": "http-capabilities", "ok": capabilities.get("success") is True})
             from local_ai_hub.agent_events import AgentStateStore, AgentEvent
             agent_store = AgentStateStore(state / "agent_state.sqlite3")

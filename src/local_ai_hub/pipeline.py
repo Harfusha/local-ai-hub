@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .budget import estimate_tokens
+from . import __version__
 from .cache import SQLiteCache, SingleFlightCache, TieredCache, stable_hash
 from .planner import AdaptivePlanner
 
@@ -202,7 +203,7 @@ class LocalAgentPipeline:
 
         if bool(plan.get("explorer")):
             explorer = self._stage(
-                {"v": 1, "execution": self.execution_policy_fp, "role": "explorer", "task": task, "context": context_fp, "model": fast_model},
+                {"app_version": __version__, "execution": self.execution_policy_fp, "role": "explorer", "task": task, "context": context_fp, "model": fast_model},
                 lambda: (
                     self.tool_agent.run(
                         fast_model, "explorer", task, root, tenant,
@@ -289,7 +290,7 @@ class LocalAgentPipeline:
                 )
 
             worker = self._stage(
-                {"v": 1, "execution": self.execution_policy_fp, "role": "worker", "task": task, "context": context_fp, "explorer": stable_hash(explorer.get("structured") or explorer.get("text", "")), "model": worker_model},
+                {"app_version": __version__, "execution": self.execution_policy_fp, "role": "worker", "task": task, "context": context_fp, "explorer": stable_hash(explorer.get("structured") or explorer.get("text", "")), "model": worker_model},
                 compute_worker,
             )
             if not worker.get("success"):
@@ -325,7 +326,7 @@ class LocalAgentPipeline:
                         semantic_query=task, semantic_context_fingerprint=semantic_context_fp, internal=True,
                     )
                 refined = self._stage(
-                    {"v": 1, "execution": self.execution_policy_fp, "role": "worker-refine", "task": task, "context": context_fp, "first": stable_hash(first_state), "model": worker_model},
+                    {"app_version": __version__, "execution": self.execution_policy_fp, "role": "worker-refine", "task": task, "context": context_fp, "first": stable_hash(first_state), "model": worker_model},
                     compute_refine,
                 )
                 if refined.get("success"):
@@ -368,7 +369,7 @@ class LocalAgentPipeline:
                 )
 
             critic = self._stage(
-                {"v": 1, "execution": self.execution_policy_fp, "role": "critic", "task": task, "context": context_fp, "candidate": stable_hash(worker.get("structured") or worker.get("text", "")), "model": critic_model},
+                {"app_version": __version__, "execution": self.execution_policy_fp, "role": "critic", "task": task, "context": context_fp, "candidate": stable_hash(worker.get("structured") or worker.get("text", "")), "model": critic_model},
                 compute_critic,
             )
 

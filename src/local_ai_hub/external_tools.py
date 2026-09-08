@@ -64,7 +64,7 @@ class MCPStdioClient:
         if self.env:
             merged_env.update({str(k): str(v) for k, v in self.env.items()})
         # Managed Python MCP tools must emit Unicode diagnostics even when the
-        # Windows process code page is a legacy charmap (for example cp1252).
+        # Windows process code page may use a locale-specific charmap (for example cp1252).
         merged_env.update({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
         responses: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=128)
         stderr_lines: deque[str] = deque(maxlen=80)
@@ -353,7 +353,7 @@ class ExternalCodeIntelligence:
         self._serena_sessions: dict[str, MCPStdioClient] = {}
         # CodeGraphContext sandboxes project paths to the MCP server cwd (plus
         # CGC_ALLOWED_ROOTS). Keep one process per project so every query is both
-        # security-compatible and isolated from another repository's graph context.
+        # security-safe and isolated from another repository's graph context.
         self._codegraph_sessions: dict[str, MCPStdioClient] = {}
         self.max_sessions = max(1, int(self.cfg.get("max_sessions_per_backend", 8)))
         self.session_idle_ttl = max(1.0, float(self.cfg.get("session_idle_ttl_seconds", 900.0)))

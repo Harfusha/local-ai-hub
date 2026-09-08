@@ -220,13 +220,13 @@ def test_post_test_hygiene_allows_tooling_caches_but_not_runtime_db(tmp_path: Pa
 
 
 def test_release_gate_can_bind_expected_tag_version() -> None:
-    ok = run_checks(ROOT, expected_version="v2.4.0", post_test=True)
+    ok = run_checks(ROOT, expected_version="3.0.0", post_test=True)
     assert not [e for e in ok["errors"] if "expected release version" in e]
     bad = run_checks(ROOT, expected_version="v9.9.9", post_test=True)
     assert any("expected release version '9.9.9'" in e for e in bad["errors"])
 
 
-def test_v21_release_workflow_contracts() -> None:
+def test_release_workflow_contracts() -> None:
     defaults = (ROOT / "defaults.toml").read_text(encoding="utf-8")
     assert "fingerprint_flight_timeout_seconds = 8.0" in defaults
     release_workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")

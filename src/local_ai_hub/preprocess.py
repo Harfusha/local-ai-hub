@@ -12,6 +12,7 @@ from contextlib import closing, nullcontext
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .cache import stable_hash
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
 from .worktrees import discover_worktree_roots
@@ -72,7 +73,6 @@ class ProjectPreprocessor:
     content-addressed cards and RAG commits remain reusable.
     """
 
-    ANALYZER_VERSION = "card-1"
     # Local AI keeps deterministic parsing first, then performs CPU-only semantic
     # indexing before any idle-GPU card generation. This lets embeddings run even
     # while foreground model work is active instead of waiting behind GPU-idle work.
@@ -368,24 +368,6 @@ class ProjectPreprocessor:
                 CREATE VIRTUAL TABLE IF NOT EXISTS source_fts USING fts5(root UNINDEXED, path UNINDEXED, content);
                 """
             )
-            # v1.5 used the project pause bit for both manual pauses and the
-            # preprocessing capacity limit. Convert those derived capacity states
-            # to the new non-blocking waiting state; future manual pauses keep the
-            # pause bit exclusively.
-            con.execute("UPDATE projects SET paused=0,status='waiting' WHERE paused=1 AND status='paused'")
-            # External indexes are optional. Older versions persisted budget/configuration
-            # failures as degraded, then retried the same immutable project revision on
-            # every preprocessing pass. Reclassify only known revision-scoped outcomes so
-            # built-in indexes remain available without repeated expensive failures.
-            external_rows = con.execute(
-                "SELECT root,backend,revision_hash,error FROM external_index_state WHERE status='degraded'"
-            ).fetchall()
-            for root, backend, revision_hash, error in external_rows:
-                if self._external_error_is_revision_scoped(str(error or "")):
-                    con.execute(
-                        "UPDATE external_index_state SET status='unavailable' WHERE root=? AND backend=? AND revision_hash=?",
-                        (str(root), str(backend), str(revision_hash)),
-                    )
             con.commit()
 
     def _invalidate_rag_sync_state(self) -> None:
@@ -1253,7 +1235,7 @@ class ProjectPreprocessor:
                 project_stats = json.loads(row["stats_json"] or "{}")
                 if isinstance(project_stats, dict):
                     # changed_paths is useful for recovery, but shipping thousands
-                    # of paths on every dashboard poll made /v1/live/status huge.
+                    # of paths on every dashboard poll made /api/live/status huge.
                     changed_paths = project_stats.pop("changed_paths", None)
                     if isinstance(changed_paths, list):
                         project_stats["changed_paths_count"] = len(changed_paths)
@@ -1675,7 +1657,7 @@ class ProjectPreprocessor:
             structural_hash = stable_hash({
                 "structure": [(path, Path(path).suffix.lower()) for path in all_paths],
                 "models": {k: self.config.get("models", {}).get(k) for k in ("fast_code", "heavy_code", "reasoning")},
-                "analyzer": self.ANALYZER_VERSION,
+                "analyzer": __version__,
             })
         inventory_hash = stable_hash({"previous": row.get("inventory_hash"), "dirty": changed_meta})
         self._set_project(
@@ -1741,7 +1723,7 @@ class ProjectPreprocessor:
         structural_hash = stable_hash({
             "structure": structure,
             "models": {k: self.config.get("models", {}).get(k) for k in ("fast_code", "heavy_code", "reasoning")},
-            "analyzer": self.ANALYZER_VERSION,
+            "analyzer": __version__,
         })
         force = bool(row.get("force_refresh"))
         now = time.time()
@@ -1817,12 +1799,12 @@ class ProjectPreprocessor:
                 """UPDATE file_refs
                    SET card_key = (
                        SELECT card_key FROM content_cards
-                       WHERE content_cards.content_hash = file_refs.content_hash
+                       WHERE content_cards.content_hash = file_refs.content_hash AND analyzer_version=?
                        LIMIT 1
                    )
                    WHERE root=? AND card_key IS NULL AND content_hash<>''
-                     AND EXISTS (SELECT 1 FROM content_cards WHERE content_cards.content_hash = file_refs.content_hash)""",
-                (root,),
+                     AND EXISTS (SELECT 1 FROM content_cards WHERE content_cards.content_hash = file_refs.content_hash AND analyzer_version=?)""",
+                (__version__, root, __version__),
             )
             con.execute(
                 """INSERT OR IGNORE INTO source_index(root, path, content_hash, text, updated_at)
@@ -1891,12 +1873,12 @@ class ProjectPreprocessor:
                 """UPDATE file_refs
                    SET card_key = (
                        SELECT card_key FROM content_cards
-                       WHERE content_cards.content_hash = file_refs.content_hash
+                       WHERE content_cards.content_hash = file_refs.content_hash AND analyzer_version=?
                        LIMIT 1
                    )
                    WHERE root=? AND card_key IS NULL AND content_hash<>''
-                     AND EXISTS (SELECT 1 FROM content_cards WHERE content_cards.content_hash = file_refs.content_hash)""",
-                (root,),
+                     AND EXISTS (SELECT 1 FROM content_cards WHERE content_cards.content_hash = file_refs.content_hash AND analyzer_version=?)""",
+                (__version__, root, __version__),
             )
             # Instantly link matching lexical source index across branches/worktrees
             con.execute(
@@ -2416,7 +2398,7 @@ class ProjectPreprocessor:
 
     def _content_card_key(self, content_hash: str) -> str:
         return stable_hash({
-            "v": self.ANALYZER_VERSION, "sha": content_hash,
+            "app_version": __version__, "sha": content_hash,
             "model": self.config.get("models", {}).get("background_code", self.config.get("models", {}).get("fast_code")),
         })
 
@@ -2456,7 +2438,7 @@ class ProjectPreprocessor:
         with self._db_lock, closing(self._connect()) as con:
             con.execute(
                 "INSERT OR REPLACE INTO content_cards(card_key,content_hash,model,analyzer_version,card_json,created_at,accessed_at,hits) VALUES(?,?,?,?,?,?,?,COALESCE((SELECT hits FROM content_cards WHERE card_key=?),0))",
-                (card_key, str(item["content_hash"]), model, self.ANALYZER_VERSION, json.dumps(data, ensure_ascii=False), now, now, card_key),
+                (card_key, str(item["content_hash"]), model, __version__, json.dumps(data, ensure_ascii=False), now, now, card_key),
             )
             con.execute("UPDATE file_refs SET card_key=?,updated_at=? WHERE root=? AND path=?", (card_key, now, root, item["path"]))
             con.commit()
@@ -2520,11 +2502,11 @@ class ProjectPreprocessor:
                 oversized = con.execute("SELECT * FROM file_refs WHERE root=? AND card_key IS NULL", (root,)).fetchall()
                 for item in oversized:
                     content_hash = str(item["content_hash"])
-                    card_key = stable_hash({"v": self.ANALYZER_VERSION, "sha": content_hash, "source": "deterministic-oversized"})
+                    card_key = stable_hash({"app_version": __version__, "sha": content_hash, "source": "deterministic-oversized"})
                     data = {"purpose": "oversized source file", "symbols": [], "dependencies": [], "side_effects": [], "risks": [], "tests": [], "keywords": []}
                     con.execute(
                         "INSERT OR REPLACE INTO content_cards(card_key,content_hash,model,analyzer_version,card_json,created_at,accessed_at,hits) VALUES(?,?,?,?,?,?,?,0)",
-                        (card_key, content_hash, "deterministic-oversized", self.ANALYZER_VERSION, json.dumps(data), time.time(), time.time()),
+                        (card_key, content_hash, "deterministic-oversized", __version__, json.dumps(data), time.time(), time.time()),
                     )
                     con.execute("UPDATE file_refs SET card_key=?,updated_at=? WHERE root=? AND path=?", (card_key, time.time(), root, item["path"]))
                 con.commit()
@@ -2543,8 +2525,8 @@ class ProjectPreprocessor:
             # 1. Instant global content-addressed cache hit across all branches & worktrees
             with self._db_lock, closing(self._connect()) as con:
                 cached = con.execute(
-                    "SELECT card_key, card_json FROM content_cards WHERE content_hash=? ORDER BY hits DESC LIMIT 1",
-                    (content_hash,),
+                    "SELECT card_key, card_json FROM content_cards WHERE content_hash=? AND analyzer_version=? ORDER BY hits DESC LIMIT 1",
+                    (content_hash, __version__),
                 ).fetchone()
                 if cached and not bool(row.get("force_refresh")):
                     cached_key = str(cached["card_key"])
@@ -2563,7 +2545,7 @@ class ProjectPreprocessor:
                 except Exception:
                     det = {"success": False}
                 if det.get("success"):
-                    card_key = stable_hash({"v": self.ANALYZER_VERSION, "sha": content_hash, "source": "deterministic"})
+                    card_key = stable_hash({"app_version": __version__, "sha": content_hash, "source": "deterministic"})
                     self._store_file_card(root, item, card_key, det.get("card", {}), "deterministic")
                     with self._stats_lock:
                         self._stats["deterministic_card_hits"] = self._stats.get("deterministic_card_hits", 0) + 1
@@ -2598,9 +2580,9 @@ class ProjectPreprocessor:
             old_card_text: str | None = None
             with self._db_lock, closing(self._connect()) as con:
                 prev = con.execute(
-                    "SELECT card_key, card_json FROM content_cards WHERE content_hash<>? AND card_key IN "
+                    "SELECT card_key, card_json FROM content_cards WHERE content_hash<>? AND analyzer_version=? AND card_key IN "
                     "(SELECT card_key FROM file_refs WHERE root=? AND path=?)",
-                    (content_hash, root, str(item["path"])),
+                    (content_hash, __version__, root, str(item["path"])),
                 ).fetchone()
                 if prev:
                     old_card_text = str(prev[1])

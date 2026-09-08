@@ -3,5 +3,5 @@
   "version": "3.0.0",
   "release_date": "2026-09-08",
   "status": "production-ready",
-  "focus": "Unified single-version surface: removed all legacy token accounting fallbacks and versioned branching. Dashboard HTML and JS are now consistent — JS sets content only, never rewrites labels."
+  "focus": "Single current application contract across HTTP, MCP, telemetry, derived state, caches and dashboard rendering."
 }

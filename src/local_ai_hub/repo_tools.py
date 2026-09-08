@@ -464,13 +464,12 @@ class RepositoryTools:
         )
 
     @staticmethod
-    def _git_index_cache_identity(signature: tuple[int, int, int, int, int, str] | None) -> tuple[int, int, int, str] | None:
+    def _git_index_cache_identity(signature: tuple[int, int, int, int, int, str] | None) -> tuple[int, str] | None:
         if signature is None:
             return None
-        # Git may refresh index stat-cache timestamps during ``status``. Keep
-        # stable file identity plus content digest so same-size replacements
-        # cannot reuse a stale snapshot.
-        return (signature[1], signature[3], signature[4], signature[5])
+        # `git status` may atomically replace the index file while preserving its
+        # logical contents. Size + content digest stay stable across that rewrite.
+        return (signature[1], signature[5])
 
     def git_snapshot(self, root: str) -> GitSnapshot:
         try:

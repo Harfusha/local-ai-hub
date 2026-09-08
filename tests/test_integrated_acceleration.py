@@ -190,30 +190,34 @@ def test_openvino_load_failures_advance_and_then_cool_down(monkeypatch: pytest.M
     assert attempts == before
 
 
-def test_reranker_legacy_cpu_cache_is_promoted_without_recompute(tmp_path: Path) -> None:
+def test_reranker_uses_only_current_device_qualified_cache_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     reranker = Reranker({
         "server": {"state_dir": str(tmp_path)},
-        "models": {"reranker": "legacy-test", "reranker_backend": "torch", "reranker_device": "cpu"},
+        "models": {"reranker": "cache-test", "reranker_backend": "torch", "reranker_device": "cpu"},
         "features": {"reranker": True},
         "cache": {"reranker": True},
     })
-    reranker._model = object()
+
+    class Model:
+        def predict(self, pairs, **_kwargs):
+            return [0.42 for _ in pairs]
+
+    reranker._model = Model()
     reranker.active_backend = "torch"
     reranker.active_device = "cpu"
-    legacy_key = __import__("local_ai_hub.cache", fromlist=["stable_hash"]).stable_hash({"q": "q", "d": "doc"})
-    reranker.cache.set(legacy_key, 0.75)
+    unrelated_key = __import__("local_ai_hub.cache", fromlist=["stable_hash"]).stable_hash({"q": "q", "d": "doc"})
+    reranker.cache.set(unrelated_key, 0.75)
 
     result = reranker.rerank("q", ["doc"])
 
     assert result["success"] is True
-    assert result["cache_hits"] == 1
-    assert result["computed"] == 0
-    assert result["results"][0]["score"] == pytest.approx(0.75)
-    promoted_key = __import__("local_ai_hub.cache", fromlist=["stable_hash"]).stable_hash(
-        {"v": 2, "identity": "torch:cpu:legacy-test", "q": "q", "d": "doc"}
+    assert result["cache_hits"] == 0
+    assert result["computed"] == 1
+    assert result["results"][0]["score"] == pytest.approx(0.42)
+    current_key = __import__("local_ai_hub.cache", fromlist=["stable_hash"]).stable_hash(
+        {"identity": "torch:cpu:cache-test", "q": "q", "d": "doc"}
     )
-    assert reranker.cache.get(promoted_key) == pytest.approx(0.75)
-
+    assert reranker.cache.get(current_key) == pytest.approx(0.42)
 
 def test_reranker_device_switch_restarts_before_cache_write(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     class SwitchingModel:
@@ -255,10 +259,10 @@ def test_reranker_device_switch_restarts_before_cache_write(monkeypatch: pytest.
     assert result["device"] == "GPU.0"
     assert result["computed"] == 1
     npu_key = __import__("local_ai_hub.cache", fromlist=["stable_hash"]).stable_hash(
-        {"v": 2, "identity": "openvino:npu:switch-test", "q": "q", "d": "doc"}
+        {"identity": "openvino:npu:switch-test", "q": "q", "d": "doc"}
     )
     gpu_key = __import__("local_ai_hub.cache", fromlist=["stable_hash"]).stable_hash(
-        {"v": 2, "identity": "openvino:gpu.0:switch-test", "q": "q", "d": "doc"}
+        {"identity": "openvino:gpu.0:switch-test", "q": "q", "d": "doc"}
     )
     assert reranker.cache.get(npu_key) is None
     assert reranker.cache.get(gpu_key) == pytest.approx(2.0)

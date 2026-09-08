@@ -39,24 +39,24 @@ def test_call_graph_diff_detects_removed_symbol_call(tmp_path: Path) -> None:
     lib_py = tmp_path / "lib.py"
     caller_py = tmp_path / "caller.py"
 
-    lib_py.write_text("def legacy_api():\n    return 42\n", encoding="utf-8")
-    caller_py.write_text("from lib import legacy_api\n\ndef do_work():\n    return legacy_api()\n", encoding="utf-8")
+    lib_py.write_text("def retired_api():\n    return 42\n", encoding="utf-8")
+    caller_py.write_text("from lib import retired_api\n\ndef do_work():\n    return retired_api()\n", encoding="utf-8")
 
     extractor = DeterministicEngine()
 
     diff = """--- a/lib.py
 +++ b/lib.py
 @@ -1,2 +0,0 @@
--def legacy_api():
+-def retired_api():
 -    return 42
 """
 
     result = extractor.call_graph_diff(tmp_path, diff=diff)
     assert result["success"] is True
-    assert any(s["type"] == "removed_symbol" and s["symbol"] == "legacy_api" for s in result["modified_symbols"])
+    assert any(s["type"] == "removed_symbol" and s["symbol"] == "retired_api" for s in result["modified_symbols"])
     breaking = result["breaking_callers"]
     assert len(breaking) == 1
-    assert breaking[0]["callee"] == "legacy_api"
+    assert breaking[0]["callee"] == "retired_api"
     assert "removed" in breaking[0]["reason"].lower()
 
 
@@ -64,15 +64,15 @@ def test_call_graph_diff_detects_removed_keyword_param(tmp_path: Path) -> None:
     lib_py = tmp_path / "lib.py"
     caller_py = tmp_path / "caller.py"
 
-    lib_py.write_text("def render(title: str, legacy_flag: bool = False):\n    pass\n", encoding="utf-8")
-    caller_py.write_text("from lib import render\n\ndef view():\n    render('test', legacy_flag=True)\n", encoding="utf-8")
+    lib_py.write_text("def render(title: str, unused_flag: bool = False):\n    pass\n", encoding="utf-8")
+    caller_py.write_text("from lib import render\n\ndef view():\n    render('test', unused_flag=True)\n", encoding="utf-8")
 
     extractor = DeterministicEngine()
 
     diff = """--- a/lib.py
 +++ b/lib.py
 @@ -1,2 +1,2 @@
--def render(title: str, legacy_flag: bool = False):
+-def render(title: str, unused_flag: bool = False):
 +def render(title: str, modern_flag: bool = False):
      pass
 """
@@ -82,4 +82,4 @@ def test_call_graph_diff_detects_removed_keyword_param(tmp_path: Path) -> None:
     breaking = result["breaking_callers"]
     assert len(breaking) == 1
     assert breaking[0]["callee"] == "render"
-    assert "legacy_flag" in breaking[0]["reason"]
+    assert "unused_flag" in breaking[0]["reason"]

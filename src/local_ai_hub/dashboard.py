@@ -231,12 +231,12 @@ tbody tr.click:hover{background:#162338}
   <div class="dash-group">
     <div class="group-title"><span>Performance &amp; Token Efficiency</span><span class="tiny muted">Net cloud avoidance after agent tool-call/read overhead, local compute reuse and tail latency</span></div>
     <div class="grid grid-6">
-      <div class="card"><div class="label" id="handledRequestsLabel">Requests handled · since restart</div><div class="value primary-metric" id="handledRequests">…</div><div class="sub" id="handledRequestsSub"></div><canvas id="throughputSpark" class="spark-canvas" width="160" height="30"></canvas></div>
-      <div class="card"><div class="label" id="tokensSavedLabel">Net cloud token delta · since restart</div><div class="value primary-metric" id="tokensSaved">…</div><div class="sub" id="tokensSavedSub"></div></div>
-      <div class="card"><div class="label" id="dollarsSavedLabel">Estimated savings · since restart</div><div class="value primary-metric" id="dollarsSaved">…</div><div class="sub" id="dollarsSavedSub"></div></div>
-      <div class="card"><div class="label" id="cacheLabel">Cache hit rate · since restart</div><div class="value primary-metric" id="cache">…</div><div class="sub" id="cacheSub"></div></div>
+      <div class="card"><div class="label">Requests handled</div><div class="value primary-metric" id="handledRequests">…</div><div class="sub" id="handledRequestsSub"></div><canvas id="throughputSpark" class="spark-canvas" width="160" height="30"></canvas></div>
+      <div class="card"><div class="label">Net cloud token delta</div><div class="value primary-metric" id="tokensSaved">…</div><div class="sub" id="tokensSavedSub"></div></div>
+      <div class="card"><div class="label">Estimated savings</div><div class="value primary-metric" id="dollarsSaved">…</div><div class="sub" id="dollarsSavedSub"></div></div>
+      <div class="card"><div class="label">Cache hit rate</div><div class="value primary-metric" id="cache">…</div><div class="sub" id="cacheSub"></div></div>
       <div class="card"><div class="label">Latency p50 / p95 / p99</div><div class="value" id="latency">…</div><div class="sub" id="queueWait"></div><canvas id="latencySpark" class="spark-canvas" width="160" height="30"></canvas></div>
-      <div class="card"><div class="label" id="reliabilityLabel">Reliability · since restart</div><div class="value primary-metric" id="reliabilityValue">…</div><div class="sub" id="reliabilitySub"></div></div>
+      <div class="card"><div class="label">Reliability</div><div class="value primary-metric" id="reliabilityValue">…</div><div class="sub" id="reliabilitySub"></div></div>
     </div>
   </div>
 
@@ -272,7 +272,7 @@ tbody tr.click:hover{background:#162338}
 <div id="agentos" class="page">
   <div id="agentOsDisabledBanner" class="diag-banner bad" style="display:none">⚠️ <b>Agent OS feature is disabled in configuration</b> (<code>features.agent_os = false</code>). Durable task tracking and memory are inactive.</div>
   <section class="section">
-    <h2><span style="display:flex;align-items:center;gap:8px">Agent Operating System <span class="tiny" id="agentOsState"></span></span><div style="display:flex;gap:6px;align-items:center"><button class="btn ok" id="agentOsRefresh" style="padding:4px 10px;font-size:11px">↻ Refresh</button><button class="btn warn" id="agentOsCleanup" style="padding:4px 10px;font-size:11px">🧹 Cleanup stale state</button></div></h2>
+    <h2><span style="display:flex;align-items:center;gap:8px">Agent Operating System <span class="tiny" id="agentOsState">0 active · 0 total tasks · 0 memories</span></span><div style="display:flex;gap:6px;align-items:center"><button class="btn ok" id="agentOsRefresh" style="padding:4px 10px;font-size:11px">↻ Refresh</button><button class="btn warn" id="agentOsCleanup" style="padding:4px 10px;font-size:11px">🧹 Cleanup stale state</button></div></h2>
     <div class="subtabs">
       <button class="subtab-btn active" id="subtabTasks" data-agentos-tab="tasks">Tasks &amp; Contracts</button>
       <button class="subtab-btn" id="subtabMemory" data-agentos-tab="memory">Memory &amp; Facts</button>
@@ -375,8 +375,8 @@ tbody tr.click:hover{background:#162338}
 <div id="projects" class="page">
   <div id="prepDiagnosticBar" class="diag-banner info" style="display:none"></div>
   <section class="section">
-    <h2><span style="display:flex;align-items:center;gap:8px">Projects <span class="tiny" id="prepState"></span></span><div style="display:flex;gap:6px;align-items:center"><button class="btn warn" id="prepAllToggle" style="padding:4px 10px;font-size:11px">Pause all</button><button class="btn ok" id="regProjectBtn" style="padding:4px 10px;font-size:11px">+ Register</button><button class="btn warn" id="cleanMissingBtn" style="padding:4px 10px;font-size:11px">🧹 Clean missing</button></div></h2>
-    <div class="project-toolbar"><input id="projectSearch" type="search" placeholder="Search projects…" autocomplete="off"><select id="projectFilter" aria-label="Project status"><option value="all">All states</option><option value="running">Running</option><option value="waiting">Waiting</option><option value="error">Error</option><option value="paused">Paused</option><option value="ready">Ready</option></select><select id="projectSort" aria-label="Project sort"><option value="priority">Operational priority</option><option value="name">Name</option><option value="progress">Progress</option><option value="recent">Recent activity</option></select><span class="tiny project-summary" id="projectSummary"></span></div>
+    <h2><span style="display:flex;align-items:center;gap:8px">Projects <span class="tiny" id="prepState">0 registered projects · global running</span></span><div style="display:flex;gap:6px;align-items:center"><button class="btn warn" id="prepAllToggle" style="padding:4px 10px;font-size:11px">Pause all projects</button><button class="btn ok" id="regProjectBtn" style="padding:4px 10px;font-size:11px">+ Register</button><button class="btn warn" id="cleanMissingBtn" style="padding:4px 10px;font-size:11px">🧹 Clean missing</button></div></h2>
+    <div class="project-toolbar"><input id="projectSearch" type="search" placeholder="Search projects…" autocomplete="off"><select id="projectFilter" aria-label="Project status"><option value="all">All states</option><option value="running">Running</option><option value="waiting">Waiting</option><option value="error">Error</option><option value="paused">Paused</option><option value="ready">Ready</option></select><select id="projectSort" aria-label="Project sort"><option value="priority">Operational priority</option><option value="name">Name</option><option value="progress">Progress</option><option value="recent">Recent activity</option></select><span class="tiny project-summary" id="projectSummary">0 of 0 projects</span></div>
     <div class="table-wrap"><table class="project-table"><thead><tr><th>Project</th><th>State &amp; activity</th><th>Phase &amp; progress</th><th>Indexes</th><th>Actions</th></tr></thead><tbody id="projectsBody"></tbody></table></div>
   </section>
 </div>
@@ -434,7 +434,7 @@ tbody tr.click:hover{background:#162338}
     </div>
     <pre id="cmdOutput" style="margin:0;padding:12px;white-space:pre-wrap;max-height:360px;overflow:auto;background:#0d1219;color:#c9d6e4;font-size:11px"></pre>
   </section>
-  <section class="section"><h2>Running commands <span class="tiny" id="commandState"></span></h2><div class="table-wrap"><table><thead><tr><th>Command</th><th>CWD</th><th>Tenant</th><th>Class</th><th>Age</th><th>Timeout</th></tr></thead><tbody id="activeCommands"></tbody></table></div></section>
+  <section class="section"><h2>Running commands <span class="tiny" id="commandState">0 running</span></h2><div class="table-wrap"><table><thead><tr><th>Command</th><th>CWD</th><th>Tenant</th><th>Class</th><th>Age</th><th>Timeout</th></tr></thead><tbody id="activeCommands"></tbody></table></div></section>
   <div class="split"><section class="section"><h2>Command broker statistics</h2><div id="commandStats" class="kv"></div></section><section class="section"><h2>Blocked by policy</h2><div class="table-wrap"><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody id="blockedReasons"></tbody></table></div></section></div>
 </div>
 
@@ -490,7 +490,7 @@ tbody tr.click:hover{background:#162338}
   </section>
 
   <section class="section" style="margin-top:12px"><h2>Execution profiles <span class="tiny">configured capacity; context packing remains adaptive</span></h2><div class="table-wrap"><table><thead><tr><th>Model</th><th>Tier</th><th>Context</th><th>Max</th><th>Parallel</th><th>Thinking</th><th>Prompt cap</th></tr></thead><tbody id="executionProfiles"></tbody></table></div></section>
-  <div class="split"><section class="section"><h2>Model statistics</h2><div class="table-wrap"><table><thead><tr><th>Model</th><th>Calls</th><th>Avg</th><th>Load</th><th>Fails</th></tr></thead><tbody id="models"></tbody></table></div></section><section class="section"><h2>Cache layers</h2><div class="table-wrap"><table><thead><tr><th>Layer</th><th>Calls</th><th>Avg</th><th>Tokens saved</th></tr></thead><tbody id="cacheLayers"></tbody></table></div></section></div>
+  <div class="split"><section class="section"><h2>Model statistics</h2><div class="table-wrap"><table><thead><tr><th>Model</th><th>Calls</th><th>Avg</th><th>Load</th><th>Fails</th></tr></thead><tbody id="models"></tbody></table></div></section><section class="section"><h2>Cache layers</h2><div class="table-wrap"><table><thead><tr><th>Layer</th><th>Calls</th><th>Avg</th><th>Context tokens avoided</th></tr></thead><tbody id="cacheLayers"></tbody></table></div></section></div>
   <div class="split"><section class="section"><h2>Agents</h2><div class="table-wrap"><table><thead><tr><th>Agent</th><th>Requests</th><th>Local AI</th><th>Avg</th><th>Fails</th></tr></thead><tbody id="agents"></tbody></table></div></section><section class="section"><h2>Execution routes</h2><div class="table-wrap"><table><thead><tr><th>Route</th><th>Task</th><th>Complexity</th><th>Calls</th><th>Avg</th><th>Fails</th></tr></thead><tbody id="routes"></tbody></table></div></section></div>
   <section class="section"><h2>HTTP tail latency <span class="tiny">per action · excludes policy rejections</span></h2><div class="table-wrap"><table><thead><tr><th>Action</th><th>Calls</th><th>p50</th><th>p95</th><th>p99</th><th>Fails</th></tr></thead><tbody id="httpTail"></tbody></table></div></section>
   <section class="section"><h2>Active Multi-Agent File Leases <span class="tiny">Prevents conflicting agent edits</span></h2><div class="table-wrap"><table><thead><tr><th>Lease ID</th><th>Paths</th><th>Tenant</th><th>Purpose</th><th>Expires</th><th>Actions</th></tr></thead><tbody id="activeLeasesBody"></tbody></table></div></section>
@@ -768,7 +768,7 @@ async function openTrace(id){
   const poll=async()=>{
     if(!activeTraceId)return;
     try{
-      const r=await apiFetch('/v1/debug-traces/'+encodeURIComponent(activeTraceId)+'?since_seq='+traceSeq,{cache:'no-store'}),d=await r.json();
+      const r=await apiFetch('/api/debug-traces/'+encodeURIComponent(activeTraceId)+'?since_seq='+traceSeq,{cache:'no-store'}),d=await r.json();
       if(d.success){
         traceSeq=Number(d.next_seq||traceSeq);traceEvents=traceEvents.concat(d.events||[]);renderTraceDetail({...d,events:traceEvents});
         if(d.terminal){clearInterval(traceTimer);traceTimer=null}
@@ -809,7 +809,7 @@ async function post(path,payload){const r=await apiFetch(path,{method:'POST',hea
 
 async function loadConfigView(){
   try{
-    const r=await apiFetch('/v1/config',{cache:'no-store'}),d=await r.json();
+    const r=await apiFetch('/api/config',{cache:'no-store'}),d=await r.json();
     if(!d.success){$('cfgStatus').textContent=d.error||'failed';return}
     const c=d.config||{},feat=c.features||{};
     $('cfgProfile').value=c.hardware?.profile||'auto';
@@ -853,37 +853,37 @@ $('cfgSave').onclick=async()=>{
     'features.agent_os':$('cfgFeatAgentOs')?$('cfgFeatAgentOs').checked:true,
     'features.dashboard':$('cfgFeatDashboard')?$('cfgFeatDashboard').checked:true
   };
-  const r=await post('/v1/config/update',{action:'update',settings});
+  const r=await post('/api/config/update',{action:'update',settings});
   $('cfgStatus').textContent=r.success?'saved · restart hub to apply':('error: '+(r.error||'failed'));
   if(r.success)loadConfigView();
 };
 $('cfgReset').onclick=async()=>{
   if(!confirm('Reset dashboard-managed configuration overrides?'))return;
-  const r=await post('/v1/config/update',{action:'reset'});
+  const r=await post('/api/config/update',{action:'reset'});
   $('cfgStatus').textContent=r.success?'overrides reset · restart hub to apply':('error: '+(r.error||'failed'));
   if(r.success)loadConfigView();
 };
 
-$('cmdClassify').onclick=async()=>{const command=$('cmdInput').value.trim();if(!command)return;$('cmdOutput').textContent=JSON.stringify(await post('/v1/command',{action:'classify',command}),null,2)};
+$('cmdClassify').onclick=async()=>{const command=$('cmdInput').value.trim();if(!command)return;$('cmdOutput').textContent=JSON.stringify(await post('/api/command',{action:'classify',command}),null,2)};
 $('cmdRun').onclick=async()=>{
   const command=$('cmdInput').value.trim(),cwd=$('cmdRoot').value.trim();
   if(!command||!cwd){$('cmdOutput').textContent='Repository root and command are required.';return}
-  const c=await post('/v1/command',{action:'classify',command});
+  const c=await post('/api/command',{action:'classify',command});
   if(!c?.classification?.allowed){$('cmdOutput').textContent=JSON.stringify(c,null,2);return}
   if(!confirm('Run this '+c.classification.class+' command?\n\n'+command))return;
   $('cmdRun').disabled=true;
-  try{$('cmdOutput').textContent=JSON.stringify(await post('/v1/command',{action:'run',command,cwd,force:true}),null,2)}
+  try{$('cmdOutput').textContent=JSON.stringify(await post('/api/command',{action:'run',command,cwd,force:true}),null,2)}
   finally{$('cmdRun').disabled=false;pollStatus()}
 };
 
-$('intelRediscover').onclick=async()=>{$('intelControlStatus').textContent='working…';const r=await post('/v1/code-intelligence/control',{action:'rediscover'});$('intelControlStatus').textContent=r.success?'rediscovery complete':'error: '+(r.error||'failed');pollStatus()};
-$('intelReset').onclick=async()=>{if(!confirm('Reset all managed Serena/CodeGraph MCP sessions?'))return;$('intelControlStatus').textContent='working…';const r=await post('/v1/code-intelligence/control',{action:'reset',backend:'all'});$('intelControlStatus').textContent=r.success?'sessions reset':'error: '+(r.error||'failed');pollStatus()};
+$('intelRediscover').onclick=async()=>{$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'rediscover'});$('intelControlStatus').textContent=r.success?'rediscovery complete':'error: '+(r.error||'failed');pollStatus()};
+$('intelReset').onclick=async()=>{if(!confirm('Reset all managed Serena/CodeGraph MCP sessions?'))return;$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'reset',backend:'all'});$('intelControlStatus').textContent=r.success?'sessions reset':'error: '+(r.error||'failed');pollStatus()};
 
 let logLines=['Click Refresh to load logs.'];
 async function loadLogsTail(){
   try{
     const lines=$('logLinesSelect')?.value||'250';
-    const r=await apiFetch('/v1/logs/tail?lines='+lines,{cache:'no-store'}),d=await r.json();
+    const r=await apiFetch('/api/logs/tail?lines='+lines,{cache:'no-store'}),d=await r.json();
     logLines=d.success?(d.lines||[]):[JSON.stringify(d,null,2)];
     renderFilteredLogs();
   }catch(e){$('logTail').textContent=String(e)}
@@ -909,7 +909,7 @@ async function setPreprocessing(action){
   const buttons=[$('prepToggle'),$('prepAllToggle')].filter(Boolean);
   buttons.forEach(b=>b.disabled=true);
   try{
-    const result=await post('/v1/preprocess',{action});
+    const result=await post('/api/preprocess',{action});
     if(result?.success){last={...last,preprocessing:result};render(last)}
     await pollStatus();
   }catch(e){alert('Preprocessing action failed: '+(e.message||e));await pollStatus()}
@@ -989,7 +989,7 @@ function renderProjects(items){
   },5);
 }
 async function projectAction(root, action) {
-  try { await post('/v1/preprocess', { root, action }); await pollStatus(); } catch(e) { alert('Action error: ' + e); }
+  try { await post('/api/preprocess', { root, action }); await pollStatus(); } catch(e) { alert('Action error: ' + e); }
 }
 $('regProjectBtn').onclick = () => {
   const path = prompt('Enter absolute path of project or repository to register:');
@@ -999,7 +999,7 @@ $('regProjectBtn').onclick = () => {
 };
 async function projectRegister(root, force) {
   try {
-    const r = await post('/v1/preprocess', { root, action: force ? 'refresh' : 'register' });
+    const r = await post('/api/preprocess', { root, action: force ? 'refresh' : 'register' });
     openModal(r, 'Project Registration: ' + root);
     await pollStatus();
   } catch(e) {
@@ -1009,7 +1009,7 @@ async function projectRegister(root, force) {
 $('cleanMissingBtn').onclick = async () => {
   if (!confirm('Scan registered projects and prune deleted/missing worktree directories from database? (Reusable content caches remain preserved)')) return;
   try {
-    const r = await post('/v1/preprocess', { action: 'cleanup_deleted' });
+    const r = await post('/api/preprocess', { action: 'cleanup_deleted' });
     openModal(r, 'Missing Worktrees Cleanup Results');
     await pollStatus();
   } catch(e) {
@@ -1027,7 +1027,7 @@ async function deleteProjectDialog(root, name) {
   if (!choice) return;
   const purge = choice.trim() === "2";
   try {
-    const r = await post('/v1/preprocess', { root, action: 'unregister', purge_data: purge });
+    const r = await post('/api/preprocess', { root, action: 'unregister', purge_data: purge });
     openModal(r, (purge ? 'Purged & Unregistered: ' : 'Unregistered: ') + name);
     await pollStatus();
   } catch(e) {
@@ -1035,17 +1035,17 @@ async function deleteProjectDialog(root, name) {
   }
 }
 
-$('restartHub').onclick=async()=>{if(!confirm('Restart Local AI Hub now? Running requests will be interrupted and may retry from cache/recovery journal.'))return;try{await post('/v1/control',{action:'restart_hub'})}catch{} };
-$('stopService').onclick=async()=>{if(!confirm('Stop Local AI Hub and disable automatic restart? Start it later with hubctl/service start.'))return;try{await post('/v1/control',{action:'stop_service'});$('conn').textContent='stopping';$('conn').className='pill warn-t'}catch{} };
-$('optDbBtn').onclick=async()=>{try{const r=await post('/v1/maintenance/optimize_db',{});openModal(r,'Database Optimization & WAL Checkpoint Results')}catch(e){openModal({error:String(e)},'Error')}};
-$('purgeCacheBtn').onclick=async()=>{if(!confirm('Purge cache entries older than 7 days?'))return;try{const r=await post('/v1/maintenance/purge_cache',{days:7});openModal(r,'Cache Purge Results')}catch(e){openModal({error:String(e)},'Error')}};
-$('doctorBtn').onclick=async()=>{try{const r=await post('/v1/doctor',{});openModal(r,'Local AI Hub Doctor Health Diagnostics')}catch(e){openModal({error:String(e)},'Error')}};
+$('restartHub').onclick=async()=>{if(!confirm('Restart Local AI Hub now? Running requests will be interrupted and may retry from cache/recovery journal.'))return;try{await post('/api/control',{action:'restart_hub'})}catch{} };
+$('stopService').onclick=async()=>{if(!confirm('Stop Local AI Hub and disable automatic restart? Start it later with hubctl/service start.'))return;try{await post('/api/control',{action:'stop_service'});$('conn').textContent='stopping';$('conn').className='pill warn-t'}catch{} };
+$('optDbBtn').onclick=async()=>{try{const r=await post('/api/maintenance/optimize_db',{});openModal(r,'Database Optimization & WAL Checkpoint Results')}catch(e){openModal({error:String(e)},'Error')}};
+$('purgeCacheBtn').onclick=async()=>{if(!confirm('Purge cache entries older than 7 days?'))return;try{const r=await post('/api/maintenance/purge_cache',{days:7});openModal(r,'Cache Purge Results')}catch(e){openModal({error:String(e)},'Error')}};
+$('doctorBtn').onclick=async()=>{try{const r=await post('/api/doctor',{});openModal(r,'Local AI Hub Doctor Health Diagnostics')}catch(e){openModal({error:String(e)},'Error')}};
 
 // Symbol Search & Inspector
 $('codeSearchBtn').onclick=async()=>{
   const sym=$('codeSearchInput').value.trim();if(!sym)return;
   try{
-    const r=await(await apiFetch('/v1/code/symbol?symbol='+encodeURIComponent(sym))).json();
+    const r=await(await apiFetch('/api/code/symbol?symbol='+encodeURIComponent(sym))).json();
     if(r.success){
       $('symbolDetails').style.display='block';
       $('symName').textContent=r.name||sym;
@@ -1057,18 +1057,18 @@ $('codeSearchBtn').onclick=async()=>{
   }catch(e){openModal({error:String(e)},'Error')}
 };
 $('codeSearchInput').onkeydown=e=>{if(e.key==='Enter')$('codeSearchBtn').click()};
-$('genTestsBtn').onclick=async()=>{const path=$('symPath').textContent,sym=$('symName').textContent;if(!path)return;try{const r=await post('/v1/generate_tests',{file:path,symbol:sym});openModal(r,'Generated Automated Unit Tests')}catch(e){openModal({error:String(e)},'Error')}};
-$('impactCheckBtn').onclick=async()=>{const path=$('symPath').textContent,sym=$('symName').textContent;if(!path)return;try{const r=await post('/v1/refactor_impact',{file:path,symbol:sym});openModal(r,'Refactoring Impact & Risk Analysis')}catch(e){openModal({error:String(e)},'Error')}};
-$('resolveImpBtn').onclick=async()=>{const sym=$('symName').textContent;if(!sym)return;try{const r=await post('/v1/resolve_imports',{symbols:[sym],language:'csharp'});openModal(r,'Missing Imports & Namespace Resolver')}catch(e){openModal({error:String(e)},'Error')}};
-$('findDeclBtn')?.addEventListener('click',async()=>{const sym=$('symName').textContent;if(!sym)return;try{const r=await(await apiFetch('/v1/code/find_declaration?symbol='+encodeURIComponent(sym))).json();openModal(r,'Declaration: '+sym)}catch(e){openModal({error:String(e)},'Error')}});
-$('findRefsBtn')?.addEventListener('click',async()=>{const sym=$('symName').textContent;if(!sym)return;try{const r=await(await apiFetch('/v1/code/find_referencing_symbols?symbol='+encodeURIComponent(sym))).json();openModal(r,'Referencing Symbols: '+sym)}catch(e){openModal({error:String(e)},'Error')}});
-$('findImplBtn')?.addEventListener('click',async()=>{const sym=$('symName').textContent;if(!sym)return;try{const r=await(await apiFetch('/v1/code/find_implementations?symbol='+encodeURIComponent(sym))).json();openModal(r,'Implementations: '+sym)}catch(e){openModal({error:String(e)},'Error')}});
+$('genTestsBtn').onclick=async()=>{const path=$('symPath').textContent,sym=$('symName').textContent;if(!path)return;try{const r=await post('/api/generate_tests',{file:path,symbol:sym});openModal(r,'Generated Automated Unit Tests')}catch(e){openModal({error:String(e)},'Error')}};
+$('impactCheckBtn').onclick=async()=>{const path=$('symPath').textContent,sym=$('symName').textContent;if(!path)return;try{const r=await post('/api/refactor_impact',{file:path,symbol:sym});openModal(r,'Refactoring Impact & Risk Analysis')}catch(e){openModal({error:String(e)},'Error')}};
+$('resolveImpBtn').onclick=async()=>{const sym=$('symName').textContent;if(!sym)return;try{const r=await post('/api/resolve_imports',{symbols:[sym],language:'csharp'});openModal(r,'Missing Imports & Namespace Resolver')}catch(e){openModal({error:String(e)},'Error')}};
+$('findDeclBtn')?.addEventListener('click',async()=>{const sym=$('symName').textContent;if(!sym)return;try{const r=await(await apiFetch('/api/code/find_declaration?symbol='+encodeURIComponent(sym))).json();openModal(r,'Declaration: '+sym)}catch(e){openModal({error:String(e)},'Error')}});
+$('findRefsBtn')?.addEventListener('click',async()=>{const sym=$('symName').textContent;if(!sym)return;try{const r=await(await apiFetch('/api/code/find_referencing_symbols?symbol='+encodeURIComponent(sym))).json();openModal(r,'Referencing Symbols: '+sym)}catch(e){openModal({error:String(e)},'Error')}});
+$('findImplBtn')?.addEventListener('click',async()=>{const sym=$('symName').textContent;if(!sym)return;try{const r=await(await apiFetch('/api/code/find_implementations?symbol='+encodeURIComponent(sym))).json();openModal(r,'Implementations: '+sym)}catch(e){openModal({error:String(e)},'Error')}});
 
 // File AST Outline & Diagnostics
 $('codeOutlineBtn')?.addEventListener('click',async()=>{
   const path=$('codeFileInput')?.value?.trim();if(!path)return;
   try{
-    const r=await(await apiFetch('/v1/code/ast_outline?path='+encodeURIComponent(path))).json();
+    const r=await(await apiFetch('/api/code/ast_outline?path='+encodeURIComponent(path))).json();
     $('fileAnalysisDetails').style.display='block';
     $('fileAnalysisTitle').textContent='AST Structure: '+path;
     if(r.classes||r.functions||r.imports){
@@ -1086,7 +1086,7 @@ $('codeOutlineBtn')?.addEventListener('click',async()=>{
 $('codeDiagBtn')?.addEventListener('click',async()=>{
   const path=$('codeFileInput')?.value?.trim();if(!path)return;
   try{
-    const r=await(await apiFetch('/v1/code/diagnostics?path='+encodeURIComponent(path))).json();
+    const r=await(await apiFetch('/api/code/diagnostics?path='+encodeURIComponent(path))).json();
     $('fileAnalysisDetails').style.display='block';
     $('fileAnalysisTitle').textContent='Diagnostics: '+path;
     const diags=r.diagnostics||[];
@@ -1190,13 +1190,6 @@ function render(s){
       if($('agentStateSub'))$('agentStateSub').textContent='features.agent_os = false';
     }
   })();
-
-  const scopeLabel=sloScope==='process'?'since restart':'30d';
-  $('handledRequestsLabel').textContent='Requests handled · '+scopeLabel;
-  $('tokensSavedLabel').textContent='Net cloud token delta · '+scopeLabel;
-  $('dollarsSavedLabel').textContent='Estimated savings · '+scopeLabel;
-  $('cacheLabel').textContent='Cache hit rate · '+scopeLabel;
-  $('reliabilityLabel').textContent='Reliability · '+scopeLabel;
 
   const firstProject=(p.projects||[]).find(x=>x.root);
   if(firstProject&&!$('cmdRoot').value)$('cmdRoot').value=firstProject.root;
@@ -1315,7 +1308,7 @@ function render(s){
 
   rows('executionProfiles',ep,x=>clickableRow(x,`<td>${esc(x.model)}</td><td>${esc(x.tier)}</td><td>${n(x.num_ctx)}</td><td>${n(x.max_ctx)}</td><td>${n(x.parallel_limit)}</td><td>${x.think?'on':'role-gated/off'}</td><td>${n(x.prompt_budget_tokens)}</td>`),7);
   rows('models',o.by_model||[],x=>clickableRow(x,`<td>${esc(x.model)}</td><td>${n(x.calls)}</td><td>${ms(x.avg_ms)}</td><td>${ms(x.avg_load_ms)}</td><td>${n(x.failures)}</td>`),5);
-  rows('cacheLayers',o.cache_layers||[],x=>clickableRow(x,`<td>${esc(x.layer)}</td><td>${n(x.calls)}</td><td>${ms(x.avg_ms)}</td><td>${n(x.net_cloud_token_delta_est)}</td>`),4);
+  rows('cacheLayers',o.cache_layers||[],x=>clickableRow(x,`<td>${esc(x.layer)}</td><td>${n(x.calls)}</td><td>${ms(x.avg_ms)}</td><td>${n(x.context_tokens_avoided_est)}</td>`),4);
   rows('agents',o.by_agent||[],x=>clickableRow(x,`<td>${esc(x.agent)}</td><td>${n(x.requests)}</td><td>${n(x.local_inference_calls)}</td><td>${ms(x.avg_ms)}</td><td>${n(x.failures)}</td>`),5);
   rows('routes',o.execution_routes||[],x=>clickableRow(x,`<td>${esc(x.route)}</td><td>${esc(x.task_type)}</td><td>${esc(x.complexity)}</td><td>${n(x.calls)}</td><td>${ms(x.avg_ms)}</td><td>${n(x.failures)}</td>`),6);
 
@@ -1340,7 +1333,7 @@ function renderTraceList(items){
   $('traceSideSummary').textContent=`${visible.length} trace${visible.length===1?'':'s'} · click to inspect`;
   $('traceSidebarList').innerHTML=visible.length?visible.map(x=>{const state=traceStatus(x),label=state==='interrupted'?'Interrupted':state,cls=state==='interrupted'?'interrupted':(state==='failed'||state==='error'?'failed':(x.terminal||state==='completed'||state==='succeeded'?'done':'')),kindLabel=x.kind==='api_request'?'API request':humanLabel(x.kind||'trace');return `<button class="trace-side-item ${String(x.trace_id)===activeTraceId?'active':''}" data-trace-page-id="${esc(x.trace_id)}"><span class="trace-side-top"><span class="trace-side-state ${cls}"></span><span class="trace-side-action">${esc(x.action||x.kind||'Trace')}</span><span class="tiny spacer">${esc(label)}</span></span><span class="trace-side-meta">${esc(x.agent||'unknown agent')} · ${esc(kindLabel)}</span><span class="trace-side-meta">${x.updated_at?new Date(x.updated_at*1000).toLocaleTimeString():'—'} · ${esc(x.tenant||'no tenant')}</span></button>`}).join(''):'<div class="empty-human">No retained traces</div>';
 }
-async function pollTraces(){try{const kind=$('traceKind')?.value||'',suffix=kind?'&kind='+encodeURIComponent(kind):'',r=await apiFetch('/v1/debug-traces?limit=100'+suffix,{cache:'no-store'}),d=await r.json();if(d.success){lastTraces=d.items||[];renderTraceList(lastTraces)}}catch(e){console.warn('trace refresh failed',e)}}
+async function pollTraces(){try{const kind=$('traceKind')?.value||'',suffix=kind?'&kind='+encodeURIComponent(kind):'',r=await apiFetch('/api/debug-traces?limit=100'+suffix,{cache:'no-store'}),d=await r.json();if(d.success){lastTraces=d.items||[];renderTraceList(lastTraces)}}catch(e){console.warn('trace refresh failed',e)}}
 $('traceRefresh')?.addEventListener('click',pollTraces);$('traceKind')?.addEventListener('change',()=>renderTraceList(lastTraces));
 $('traceHistorySearch')?.addEventListener('input',()=>renderTraceList(lastTraces));$('traceHistoryState')?.addEventListener('change',()=>renderTraceList(lastTraces));
 
@@ -1355,10 +1348,10 @@ async function pollStatus(){
   if(statusPollInFlight)return;
   statusPollInFlight=true;
   try{
-    const r=await apiFetch('/v1/live/status?light=1&scope='+sloScope,{cache:'no-store'}),s=await r.json();
+    const r=await apiFetch('/api/live/status?light=1&scope='+sloScope,{cache:'no-store'}),s=await r.json();
     render(s);hasLiveStatus=true;$('conn').textContent='live';$('conn').className='pill ok';$('updated').textContent='updated '+new Date().toLocaleTimeString();
     try{
-      const gr=await apiFetch('/v1/hardware/system',{cache:'no-store'});
+      const gr=await apiFetch('/api/hardware/system',{cache:'no-store'});
       if(gr.ok){
         const sys=await gr.json(), g=sys.gpu||{}, ram=sys.ram||{};
         const cpuUtil=Number(sys.cpu_utilization_pct||0), ramPct=Number(ram.used_pct||0);
@@ -1374,7 +1367,7 @@ async function pollStatus(){
   finally{statusPollInFlight=false}
 }
 function renderEvents(events){if(paused||!events.length)return;const box=$('eventList');const html=events.slice(-120).reverse().map(e=>{const id='d'+(++seq);dataStore.set(id,e);return `<div class="event click" data-detail="${id}"><span>${new Date((e.created_at||0)*1000).toLocaleTimeString()}</span><span>${esc(e.agent||e.kind||'')}</span><span>${esc(e.event_type||'')}</span><span>${esc(e.action||e.stage||'')}</span><span class="hide-sm">${esc(e.model||e.tenant||'')}</span><span>${e.duration_ms?ms(e.duration_ms):''}</span><span class="${e.success===false?'bad-t':''}">${e.success===false?'FAIL':''}</span></div>`}).join('');box.innerHTML=html||'<div class="empty">no events</div>'}
-async function pollEvents(){try{const r=await apiFetch('/v1/live?after='+cursor+'&limit=200',{cache:'no-store'}),d=await r.json();cursor=Number(d.cursor||cursor);renderEvents(d.events||[])}catch{}}
+async function pollEvents(){try{const r=await apiFetch('/api/live?after='+cursor+'&limit=200',{cache:'no-store'}),d=await r.json();cursor=Number(d.cursor||cursor);renderEvents(d.events||[])}catch{}}
 
 probeHealth();pollStatus();pollEvents();pollTraces();
 setInterval(probeHealth,5000);setInterval(pollStatus,1000);setInterval(pollEvents,1000);setInterval(pollTraces,2000);
@@ -1383,7 +1376,7 @@ setInterval(probeHealth,5000);setInterval(pollStatus,1000);setInterval(pollEvent
 let archData=null,archNodes=[],archEdges=[],archDragging=null;
 async function loadArchGraph(){
   try{
-    const r=await apiFetch('/v1/cross_project_graph',{cache:'no-store'});
+    const r=await apiFetch('/api/cross_project_graph',{cache:'no-store'});
     if(!r.ok)return;
     archData=await r.json();
     renderArchGraph();
@@ -1452,7 +1445,7 @@ $('archRefresh')?.addEventListener('click',loadArchGraph);
 $('symbolGraphBtn')?.addEventListener('click',async()=>{
   const sym=$('symbolInput')?.value?.trim();
   try{
-    const r=await apiFetch('/v1/symbol_callgraph?symbol='+encodeURIComponent(sym||''),{cache:'no-store'});
+    const r=await apiFetch('/api/symbol_callgraph?symbol='+encodeURIComponent(sym||''),{cache:'no-store'});
     if(!r.ok)return;
     const d=await r.json();
     if(d.nodes&&d.nodes.length){
@@ -1464,7 +1457,7 @@ $('symbolGraphBtn')?.addEventListener('click',async()=>{
 $('deadCodeBtn')?.addEventListener('click',async()=>{
   $('deadCodeBtn').disabled=true;$('deadCodeBtn').textContent='Scanning…';
   try{
-    const r=await apiFetch('/v1/dead_code',{cache:'no-store'});
+    const r=await apiFetch('/api/dead_code',{cache:'no-store'});
     const d=await r.json();
     $('deadCodeSec').style.display='block';
     $('deadCodeSummary').textContent=n(d.dead_symbols_count||0)+' potentially unused symbols';
@@ -1475,7 +1468,7 @@ $('deadCodeBtn')?.addEventListener('click',async()=>{
 $('auditDepsBtn')?.addEventListener('click',async()=>{
   $('auditDepsBtn').disabled=true;$('auditDepsBtn').textContent='Auditing…';
   try{
-    const r=await apiFetch('/v1/audit_dependencies',{cache:'no-store'});
+    const r=await apiFetch('/api/audit_dependencies',{cache:'no-store'});
     const d=await r.json();
     $('auditSec').style.display='block';
     $('auditSummary').textContent=`Score ${d.security_score||'A'} · ${n(d.total_dependencies||0)} packages · ${n(d.vulnerability_count||0)} advisories`;
@@ -1499,7 +1492,7 @@ document.addEventListener('click',event=>{
   else projectAction(root,button.dataset.projectAction);
 });
 async function exportBundle(root){
-  const r=await apiFetch('/v1/bundle/export',{method:'POST',headers:{'Content-Type':'application/zip'},body:JSON.stringify({root})});
+  const r=await apiFetch('/api/bundle/export',{method:'POST',headers:{'Content-Type':'application/zip'},body:JSON.stringify({root})});
   if(!r.ok){alert('Export failed: '+(await r.text()));return;}
   const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='bundle.zip';a.click();URL.revokeObjectURL(url);
 }
@@ -1508,7 +1501,7 @@ $('bundleImport')?.addEventListener('click',async()=>{
   $('bundleImportStatus').textContent='Uploading…';
   const target=$('bundleTargetRoot')?.value?.trim()||'';const suffix=target?'?target_root='+encodeURIComponent(target):'';
   try{
-    const r=await apiFetch('/v1/bundle/import'+suffix,{method:'POST',headers:{'Content-Type':'application/zip'},body:await file.arrayBuffer()});
+    const r=await apiFetch('/api/bundle/import'+suffix,{method:'POST',headers:{'Content-Type':'application/zip'},body:await file.arrayBuffer()});
     const d=await r.json();
     $('bundleImportStatus').textContent=d.success?'Import successful: '+String(d.root||''):'Error: '+String(d.error||'failed');
   }catch(e){$('bundleImportStatus').textContent='Upload error: '+e.message}
@@ -1519,9 +1512,9 @@ let agentOsTasks=[], agentOsMemories=[], agentOsIncidents=[];
 async function loadAgentOsView(){
   try{
     const [tasksRes, memRes, incRes] = await Promise.all([
-      apiFetch('/v1/agent-state/tasks', {cache:'no-store'}).then(r=>r.json()).catch(()=>({tasks:[]})),
-      apiFetch('/v1/agent-state/memory', {cache:'no-store'}).then(r=>r.json()).catch(()=>({records:[]})),
-      post('/v1/agent-state/incidents', {action:'list', limit:100}).catch(()=>({incidents:[]})),
+      apiFetch('/api/agent-state/tasks', {cache:'no-store'}).then(r=>r.json()).catch(()=>({tasks:[]})),
+      apiFetch('/api/agent-state/memory', {cache:'no-store'}).then(r=>r.json()).catch(()=>({records:[]})),
+      post('/api/agent-state/incidents', {action:'list', limit:100}).catch(()=>({incidents:[]})),
     ]);
     agentOsTasks=tasksRes.tasks||[];
     agentOsMemories=memRes.records||[];
@@ -1540,7 +1533,7 @@ function connectAgentOsStream(){
   const badge=$('sseStreamBadge');
   if(badge){ badge.className='badge-status badge-waiting'; badge.textContent='Connecting…'; }
   const token=localStorage.getItem('apiToken')||'';
-  const url='/v1/agent-state/events/stream'+(token?'?token='+encodeURIComponent(token):'');
+  const url='/api/agent-state/events/stream'+(token?'?token='+encodeURIComponent(token):'');
   try{
     sseSource=new EventSource(url);
     sseSource.onopen=()=>{
@@ -1652,9 +1645,6 @@ function renderAgentOsView(){
     const act=agentOsTasks.filter(t=>String(t.status).toLowerCase()==='active').length;
     $('agentOsState').textContent=`${act} active · ${agentOsTasks.length} total tasks · ${agentOsMemories.length} memories`;
   }
-  if($('subtabTasks'))$('subtabTasks').textContent=`Tasks (${agentOsTasks.length})`;
-  if($('subtabMemory'))$('subtabMemory').textContent=`Memory (${agentOsMemories.length})`;
-  if($('subtabIncidents'))$('subtabIncidents').textContent=`Negative Knowledge (${agentOsIncidents.length})`;
 
   rows('agentOsTasksBody',filteredTasks,t=>{
     const st=String(t.status||'planned').toLowerCase();
@@ -1695,7 +1685,7 @@ $('agentOsRefresh')?.addEventListener('click',loadAgentOsView);
 $('agentOsCleanup')?.addEventListener('click',async()=>{
   if(!confirm('Run bounded Agent OS cleanup to purge expired events and stale snapshots?'))return;
   try{
-    const res=await post('/v1/agent-state/cleanup',{});
+    const res=await post('/api/agent-state/cleanup',{});
     openModal(res,'Agent OS Cleanup Result');
     await loadAgentOsView();
   }catch(e){openModal({error:String(e)},'Cleanup Error')}
@@ -1715,7 +1705,7 @@ $('agentOsCreateTaskBtn')?.addEventListener('click',async()=>{
   const criteriaRaw=prompt('Enter acceptance criteria (comma-separated):','');
   const criteria=criteriaRaw?criteriaRaw.split(',').map(s=>s.trim()).filter(Boolean):[];
   try{
-    const res=await post('/v1/agent-state/tasks',{
+    const res=await post('/api/agent-state/tasks',{
       action:'create',
       goal:goal.trim(),
       acceptance_criteria:criteria,
@@ -1735,7 +1725,7 @@ $('agentOsRecordMemBtn')?.addEventListener('click',async()=>{
   const scope=prompt('Enter scope (task, session, repository, user, system):','task')||'task';
   const kind=prompt('Enter kind (fact, decision, preference, pattern, negative_knowledge):','fact')||'fact';
   try{
-    const res=await post('/v1/agent-state/memory',{
+    const res=await post('/api/agent-state/memory',{
       action:'record',
       key:key.trim(),
       value:value.trim(),
@@ -1756,7 +1746,7 @@ $('agentOsRecordIncBtn')?.addEventListener('click',async()=>{
   const rootCause=prompt('Enter identified root cause:','');
   const verifiedFix=prompt('Enter verified fix or rule to prevent recurrence:','');
   try{
-    const res=await post('/v1/agent-state/incidents',{
+    const res=await post('/api/agent-state/incidents',{
       action:'record',
       error_class:errorClass.trim(),
       message:message||'',
@@ -1773,7 +1763,7 @@ $('agentOsVerifyBtn')?.addEventListener('click',async()=>{
   const taskId=$('agentOsVerifyTaskId')?.value?.trim();
   if(!taskId){alert('Enter a Task ID to check completion');return;}
   try{
-    const res=await post('/v1/agent-state/verification',{action:'completion',task_id:taskId});
+    const res=await post('/api/agent-state/verification',{action:'completion',task_id:taskId});
     const c=res.completion||{};
     const canComplete=c.can_complete;
     $('agentOsVerifyOut').innerHTML=`<div class="diag-banner ${canComplete?'ok':'bad'}"><b>Status:</b> ${canComplete?'All acceptance criteria verified with valid receipts! Ready to complete.':'Task cannot complete yet. Outstanding criteria or missing evidence receipts.'}</div><div class="kv"><div>Complete Allowed</div><div class="${canComplete?'ok':'bad-t'}">${canComplete?'TRUE':'FALSE'}</div><div>Pending Criteria</div><div>${esc((c.pending_criteria||[]).join(', ')||'none')}</div><div>Passed Criteria</div><div>${esc((c.passed_criteria||[]).join(', ')||'none')}</div></div>`;
@@ -1785,7 +1775,7 @@ $('agentOsCtxCompileBtn')?.addEventListener('click',async()=>{
   const taskId=$('agentOsCtxTaskId')?.value?.trim();
   const budget=Number($('agentOsCtxBudget')?.value||4000);
   try{
-    const res=await post('/v1/agent-state/context',{action:'compile',task_id:taskId||'',token_budget:budget});
+    const res=await post('/api/agent-state/context',{action:'compile',task_id:taskId||'',token_budget:budget});
     const pre=$('agentOsCtxOut');
     pre.style.display='block';
     pre.textContent=res.text||JSON.stringify(res,null,2);
@@ -1795,7 +1785,7 @@ $('agentOsCtxCompileBtn')?.addEventListener('click',async()=>{
 // ── Models, RAG & Leases ──────────────────────────────────────────────────────
 async function loadInstalledModels(){
   try{
-    const r=await apiFetch('/v1/models',{cache:'no-store'}),d=await r.json();
+    const r=await apiFetch('/api/models',{cache:'no-store'}),d=await r.json();
     const models=d.data||[];
     const list=$('installedModelsList');
     if(list){
@@ -1806,7 +1796,7 @@ async function loadInstalledModels(){
 
 async function loadRagWorkspaces(){
   try{
-    const r=await apiFetch('/v1/rag/workspaces',{cache:'no-store'}),d=await r.json();
+    const r=await apiFetch('/api/rag/workspaces',{cache:'no-store'}),d=await r.json();
     const wss=d.workspaces||[];
     const list=$('ragWorkspacesList');
     const sel=$('ragSearchWsSelect');
@@ -1823,7 +1813,7 @@ async function loadRagWorkspaces(){
 
 async function loadActiveLeases(){
   try{
-    const r=await apiFetch('/v1/leases',{cache:'no-store'}),d=await r.json();
+    const r=await apiFetch('/api/leases',{cache:'no-store'}),d=await r.json();
     const leases=d.leases||[];
     rows('activeLeasesBody',leases,l=>{
       const id=esc(l.lease_id||'—');
@@ -1841,7 +1831,7 @@ document.addEventListener('click',async e=>{
   if(!btn)return;
   const leaseId=btn.dataset.releaseLease;
   try{
-    await post('/v1/leases/release',{lease_id:leaseId});
+    await post('/api/leases/release',{lease_id:leaseId});
     await loadActiveLeases();
   }catch(err){alert('Release lease error: '+err)}
 });
@@ -1852,7 +1842,7 @@ $('ragSearchBtn')?.addEventListener('click',async()=>{
   if(!q||!ws){alert('Enter query and select workspace');return;}
   $('ragSearchBtn').disabled=true;$('ragSearchBtn').textContent='Searching…';
   try{
-    const res=await post('/v1/rag/search',{workspace:ws,query:q,top_k:6});
+    const res=await post('/api/rag/search',{workspace:ws,query:q,top_k:6});
     const results=res.results||[];
     const out=$('ragSearchResults');
     out.style.display='block';

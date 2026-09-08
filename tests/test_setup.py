@@ -124,37 +124,21 @@ def test_setup_clean_checkout_bootstraps_from_example_config(tmp_path: Path, mon
     assert cfg["hardware"]["profile"] == "cpu"
 
 
-def test_copy_install_tree_uses_package_native_mcp(tmp_path: Path, monkeypatch):
+def test_copy_install_tree_copies_only_current_package_roots(tmp_path: Path, monkeypatch):
     source = tmp_path / "source"
     for name in ("src", "skills", "tools"):
         (source / name).mkdir(parents=True)
-    (source / "src" / "marker.txt").write_text("src", encoding="utf-8")
-    (source / "skills" / "marker.txt").write_text("skill", encoding="utf-8")
-    (source / "tools" / "marker.txt").write_text("tool", encoding="utf-8")
+        (source / name / "marker.txt").write_text(name, encoding="utf-8")
     for name in ("requirements-core.txt", "defaults.toml", "pyproject.toml", "README.md"):
         (source / name).write_text("x", encoding="utf-8")
     config = source / "config.toml"
     config.write_text("[hardware]\nprofile='cpu'\n", encoding="utf-8")
     monkeypatch.setattr(setup, "SOURCE_ROOT", source)
     target = tmp_path / "install"
-    (target / "mcp").mkdir(parents=True)
-    (target / "mcp" / "legacy.py").write_text("legacy", encoding="utf-8")
+
     setup.copy_install_tree(target, config)
+
     assert (target / "src" / "marker.txt").read_text(encoding="utf-8") == "src"
+    assert (target / "skills" / "marker.txt").read_text(encoding="utf-8") == "skills"
+    assert (target / "tools" / "marker.txt").read_text(encoding="utf-8") == "tools"
     assert not (target / "mcp").exists()
-
-
-def test_copy_install_tree_preserves_source_mcp_wrapper(tmp_path: Path, monkeypatch):
-    source = tmp_path / "source"
-    for name in ("src", "skills", "tools", "mcp"):
-        (source / name).mkdir(parents=True)
-    (source / "mcp" / "local_ai_mcp.py").write_text("wrapper", encoding="utf-8")
-    for name in ("requirements-core.txt", "defaults.toml", "pyproject.toml", "README.md"):
-        (source / name).write_text("x", encoding="utf-8")
-    config = source / "config.toml"
-    config.write_text("[hardware]\nprofile='cpu'\n", encoding="utf-8")
-    monkeypatch.setattr(setup, "SOURCE_ROOT", source)
-
-    setup.copy_install_tree(source, config)
-
-    assert (source / "mcp" / "local_ai_mcp.py").read_text(encoding="utf-8") == "wrapper"

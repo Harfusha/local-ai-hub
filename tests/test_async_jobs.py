@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import sqlite3
 import threading
+from contextlib import closing
 
 from local_ai_hub.async_jobs import AsyncJobManager
 from local_ai_hub.debug_traces import DebugTraceStore
@@ -39,6 +41,30 @@ def _manager(tmp_path):
     )
     return manager, scheduler
 
+
+
+def test_async_jobs_rebuilds_non_current_schema(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    db_path = state_dir / "async_jobs.sqlite3"
+    with closing(sqlite3.connect(db_path)) as con:
+        con.execute("CREATE TABLE async_jobs (job_id TEXT PRIMARY KEY, tenant TEXT NOT NULL)")
+        con.execute("INSERT INTO async_jobs(job_id, tenant) VALUES('stale', 'tenant-a')")
+        con.commit()
+
+    manager, _scheduler = _manager(tmp_path)
+    try:
+        with closing(sqlite3.connect(db_path)) as con:
+            columns = [str(row[1]) for row in con.execute("PRAGMA table_info(async_jobs)")]
+            rows = con.execute("SELECT COUNT(*) FROM async_jobs").fetchone()[0]
+        assert columns == [
+            "job_id", "tenant", "action", "request_hash", "payload_json", "state", "result_json",
+            "artifact_id", "error", "lease_until", "attempts", "cancel_requested", "created_at",
+            "updated_at", "expires_at", "trace_id", "task_id",
+        ]
+        assert rows == 0
+    finally:
+        manager.close()
 
 def test_submit_coalesces_active_job_and_uses_background_enqueue(tmp_path):
     manager, scheduler = _manager(tmp_path)

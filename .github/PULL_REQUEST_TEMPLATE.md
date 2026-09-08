@@ -12,7 +12,7 @@
 
 ## Checklist
 
-- [ ] python -m compileall -q src mcp tools tests passes
+- [ ] python -m compileall -q src tools tests passes
 - [ ] python -m pytest -q passes
 - [ ] python tools/selftest.py passes
 - [ ] All subprocess / network calls have finite timeouts

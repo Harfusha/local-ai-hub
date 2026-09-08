@@ -62,6 +62,16 @@ class AsyncJobManager:
             def _setup() -> None:
                 with closing(self._connect()) as con:
                     initialize_wal(con)
+                    expected_columns = [
+                        "job_id", "tenant", "action", "request_hash", "payload_json", "state", "result_json",
+                        "artifact_id", "error", "lease_until", "attempts", "cancel_requested", "created_at",
+                        "updated_at", "expires_at", "trace_id", "task_id",
+                    ]
+                    existing = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    if "async_jobs" in existing:
+                        actual_columns = [str(row[1]) for row in con.execute("PRAGMA table_info(async_jobs)")]
+                        if actual_columns != expected_columns:
+                            con.execute("DROP TABLE async_jobs")
                     con.execute("""CREATE TABLE IF NOT EXISTS async_jobs (
                         job_id TEXT PRIMARY KEY, tenant TEXT NOT NULL, action TEXT NOT NULL, request_hash TEXT NOT NULL,
                         payload_json TEXT NOT NULL, state TEXT NOT NULL, result_json TEXT NOT NULL DEFAULT '',
@@ -70,11 +80,6 @@ class AsyncJobManager:
                         created_at REAL NOT NULL, updated_at REAL NOT NULL, expires_at REAL NOT NULL,
                         trace_id TEXT NOT NULL DEFAULT '', task_id TEXT NOT NULL DEFAULT ''
                     )""")
-                    columns = {str(row[1]) for row in con.execute("PRAGMA table_info(async_jobs)")}
-                    if "trace_id" not in columns:
-                        con.execute("ALTER TABLE async_jobs ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''")
-                    if "task_id" not in columns:
-                        con.execute("ALTER TABLE async_jobs ADD COLUMN task_id TEXT NOT NULL DEFAULT ''")
                     con.execute("CREATE INDEX IF NOT EXISTS idx_async_jobs_state ON async_jobs(state, lease_until, expires_at)")
                     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_async_jobs_active_dedupe ON async_jobs(tenant, request_hash) WHERE state IN ('queued','running')")
                     con.commit()

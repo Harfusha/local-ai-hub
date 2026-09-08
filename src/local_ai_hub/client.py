@@ -253,9 +253,9 @@ class HubClient:
     @staticmethod
     def _terminal_preflight(path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         """Reject deterministic client mistakes before opening a loopback socket."""
-        if path == "/v1/code/symbol" and not str(payload.get("symbol", payload.get("query", ""))).strip():
+        if path == "/api/code/symbol" and not str(payload.get("symbol", payload.get("query", ""))).strip():
             return {"success": False, "terminal": True, "retryable": False, "preflight": True, "error": "symbol is required"}
-        if path in {"/v1/review/diff", "/v1/repo/impact"}:
+        if path in {"/api/review/diff", "/api/repo/impact"}:
             root = str(payload.get("root", "")).strip()
             if root:
                 try:
@@ -360,19 +360,19 @@ class HubClient:
     def post(self, path: str, payload: dict[str, Any] | None = None, timeout: float = 360.0) -> dict[str, Any]:
         p = path.lower()
         is_mutating = (
-            p == "/v1/command"
-            or p.startswith("/v1/leases/")
-            or p in {"/v1/memory/put", "/v1/memory/delete"}
-            or p.startswith("/v1/maintenance/")
+            p == "/api/command"
+            or p.startswith("/api/leases/")
+            or p in {"/api/memory/put", "/api/memory/delete"}
+            or p.startswith("/api/maintenance/")
             or (
-                p.startswith("/v1/agent-state/")
+                p.startswith("/api/agent-state/")
                 and not (
-                    p == "/v1/agent-state/context"
-                    or (p == "/v1/agent-state/tasks" and isinstance(payload, dict) and payload.get("action") in {"get", "list", "count"})
-                    or (p == "/v1/agent-state/memory" and isinstance(payload, dict) and payload.get("action") in {"get", "find"})
-                    or (p == "/v1/agent-state/blackboard" and isinstance(payload, dict) and payload.get("action") in {"get", "list"})
-                    or (p == "/v1/agent-state/incidents" and isinstance(payload, dict) and payload.get("action") in {"find", "decision"})
-                    or (p == "/v1/agent-state/verification" and isinstance(payload, dict) and payload.get("action") in {"completion"})
+                    p == "/api/agent-state/context"
+                    or (p == "/api/agent-state/tasks" and isinstance(payload, dict) and payload.get("action") in {"get", "list", "count"})
+                    or (p == "/api/agent-state/memory" and isinstance(payload, dict) and payload.get("action") in {"get", "find"})
+                    or (p == "/api/agent-state/blackboard" and isinstance(payload, dict) and payload.get("action") in {"get", "list"})
+                    or (p == "/api/agent-state/incidents" and isinstance(payload, dict) and payload.get("action") in {"find", "decision"})
+                    or (p == "/api/agent-state/verification" and isinstance(payload, dict) and payload.get("action") in {"completion"})
                 )
             )
         )
@@ -381,41 +381,41 @@ class HubClient:
 
     def status(self, detail: str = "brief", scope: str = "process") -> dict[str, Any]:
         if detail == "agent_state":
-            return self.get("/v1/status?detail=agent_state")
-        return self.get(f"/v1/live/status?light=1&scope={scope}&detail={detail}")
+            return self.get("/api/status?detail=agent_state")
+        return self.get(f"/api/live/status?light=1&scope={scope}&detail={detail}")
 
     def coord(self, action: str, **kwargs: Any) -> dict[str, Any]:
         act = action.strip().lower().replace("-", "_")
         if act.startswith("task_"):
             task_action = act.replace("task_", "")
             payload = {"action": task_action, **kwargs}
-            return self.post("/v1/agent-state/tasks", payload)
+            return self.post("/api/agent-state/tasks", payload)
         if act in ("memo_put", "memo_get", "memo_search", "memo_delete"):
             if act == "memo_put":
-                return self.post("/v1/memory/put", {
+                return self.post("/api/memory/put", {
                     "root": kwargs.get("root", "."),
                     "key": kwargs.get("key", ""),
                     "value": kwargs.get("value", ""),
                     "ttl_seconds": kwargs.get("ttl_seconds", 604800),
                 })
             if act == "memo_get":
-                return self.post("/v1/memory/get", {"root": kwargs.get("root", "."), "key": kwargs.get("key", "")})
+                return self.post("/api/memory/get", {"root": kwargs.get("root", "."), "key": kwargs.get("key", "")})
             if act == "memo_search":
-                return self.post("/v1/memory/search", {"root": kwargs.get("root", "."), "query": kwargs.get("query", ""), "limit": kwargs.get("limit", 12)})
+                return self.post("/api/memory/search", {"root": kwargs.get("root", "."), "query": kwargs.get("query", ""), "limit": kwargs.get("limit", 12)})
             if act == "memo_delete":
-                return self.post("/v1/memory/delete", {"root": kwargs.get("root", "."), "key": kwargs.get("key", "")})
+                return self.post("/api/memory/delete", {"root": kwargs.get("root", "."), "key": kwargs.get("key", "")})
         if act.startswith("memory_"):
             mem_action = act.replace("memory_", "")
             payload = {"action": mem_action, **kwargs}
-            return self.post("/v1/agent-state/memory", payload)
+            return self.post("/api/agent-state/memory", payload)
         if act == "incident_decision":
-            return self.post("/v1/agent-state/incidents", {
+            return self.post("/api/agent-state/incidents", {
                 "action": "decision",
                 "fingerprint": kwargs.get("fingerprint") or {},
                 "state_revision": kwargs.get("state_revision", kwargs.get("revision", "")),
             })
         if act == "context_compile":
-            return self.post("/v1/agent-state/context", {
+            return self.post("/api/agent-state/context", {
                 "action": "compile",
                 "task_id": kwargs.get("task_id") or kwargs.get("query") or kwargs.get("task") or "",
                 "token_budget": kwargs.get("token_budget") or kwargs.get("max_tokens") or 4000,
@@ -423,7 +423,7 @@ class HubClient:
                 "root": kwargs.get("root", "."),
             })
         if act == "verify_receipt":
-            return self.post("/v1/agent-state/verification", {
+            return self.post("/api/agent-state/verification", {
                 "action": "receipt",
                 "receipt": kwargs.get("receipt") or {
                     "task_id": kwargs.get("task_id", ""),
@@ -433,19 +433,19 @@ class HubClient:
                 "root": kwargs.get("root", "."),
             })
         if act == "verify_completion":
-            return self.post("/v1/agent-state/verification", {
+            return self.post("/api/agent-state/verification", {
                 "action": "completion",
                 "task_id": kwargs.get("task_id") or kwargs.get("query") or kwargs.get("task") or "",
                 "root": kwargs.get("root", "."),
             })
         if act in {"negative_knowledge_record", "negative_knowledge_find"}:
             sub_act = "record" if act == "negative_knowledge_record" else "find"
-            return self.post("/v1/agent-state/incidents", {
+            return self.post("/api/agent-state/incidents", {
                 "action": sub_act,
                 **kwargs,
             })
         if act in ("claim", "claim_batch"):
-            return self.post("/v1/leases/claim_batch", {
+            return self.post("/api/leases/claim_batch", {
                 "root": kwargs.get("root", "."),
                 "paths": kwargs.get("paths") or [],
                 "ttl_seconds": kwargs.get("ttl_seconds", 900),
@@ -463,15 +463,15 @@ class HubClient:
                 "remote_sections": kwargs.get("remote_sections") or kwargs.get("sections") or {},
                 "clock": kwargs.get("clock"),
             }
-            return self.post("/v1/agent-state/blackboard", payload)
+            return self.post("/api/agent-state/blackboard", payload)
         if act == "release":
-            return self.post("/v1/leases/release", {"lease_id": kwargs.get("lease_id", "")})
+            return self.post("/api/leases/release", {"lease_id": kwargs.get("lease_id", "")})
         if act == "leases":
-            return self.get(f"/v1/leases?root={quote(str(kwargs.get('root', '')))}")
+            return self.get(f"/api/leases?root={quote(str(kwargs.get('root', '')))}")
         return {"success": False, "error": f"unknown coord action '{action}'"}
 
     def context_compile(self, task_id: str, token_budget: int = 4000, changed_paths: list[str] | None = None) -> dict[str, Any]:
-        return self.post("/v1/agent-state/context", {
+        return self.post("/api/agent-state/context", {
             "action": "compile",
             "task_id": task_id,
             "token_budget": token_budget,
@@ -479,7 +479,7 @@ class HubClient:
         })
 
     def verify_receipt(self, task_id: str, criterion: str, passed: bool = True, command_id: str = "", evidence_id: str = "", details: dict[str, Any] | None = None) -> dict[str, Any]:
-        return self.post("/v1/agent-state/verification", {
+        return self.post("/api/agent-state/verification", {
             "action": "receipt",
             "receipt": {
                 "task_id": task_id,
@@ -492,7 +492,7 @@ class HubClient:
         })
 
     def verify_completion(self, task_id: str) -> dict[str, Any]:
-        return self.post("/v1/agent-state/verification", {
+        return self.post("/api/agent-state/verification", {
             "action": "completion",
             "task_id": task_id,
         })
@@ -506,22 +506,22 @@ class HubClient:
             "scope": scope,
             **kwargs,
         }
-        return self.post("/v1/agent-state/tasks", payload)
+        return self.post("/api/agent-state/tasks", payload)
 
     def get_task(self, task_id: str) -> dict[str, Any]:
-        return self.post("/v1/agent-state/tasks", {"action": "get", "task_id": task_id})
+        return self.post("/api/agent-state/tasks", {"action": "get", "task_id": task_id})
 
     def list_tasks(self, status: str | None = None, limit: int = 100) -> dict[str, Any]:
         payload: dict[str, Any] = {"action": "list", "limit": limit}
         if status:
             payload["status"] = status
-        return self.post("/v1/agent-state/tasks", payload)
+        return self.post("/api/agent-state/tasks", payload)
 
     def complete_task(self, task_id: str, reason: str = "completed by agent") -> dict[str, Any]:
-        return self.post("/v1/agent-state/tasks", {"action": "complete", "task_id": task_id, "reason": reason})
+        return self.post("/api/agent-state/tasks", {"action": "complete", "task_id": task_id, "reason": reason})
 
     def fail_task(self, task_id: str, reason: str = "failed by agent") -> dict[str, Any]:
-        return self.post("/v1/agent-state/tasks", {"action": "fail", "task_id": task_id, "reason": reason})
+        return self.post("/api/agent-state/tasks", {"action": "fail", "task_id": task_id, "reason": reason})
 
     def checkpoint_task(self, task_id: str, phase: str = "", next_action: str = "", affected_paths: list[str] | None = None, **kwargs: Any) -> dict[str, Any]:
         payload = {
@@ -532,7 +532,7 @@ class HubClient:
             "affected_paths": affected_paths or [],
             **kwargs,
         }
-        return self.post("/v1/agent-state/tasks", payload)
+        return self.post("/api/agent-state/tasks", payload)
 
     def record_memory(self, key: str, value: Any, scope: str = "task", kind: str = "fact", **kwargs: Any) -> dict[str, Any]:
         payload = {
@@ -543,7 +543,7 @@ class HubClient:
             "kind": kind,
             **kwargs,
         }
-        return self.post("/v1/agent-state/memory", payload)
+        return self.post("/api/agent-state/memory", payload)
 
     def find_memory(self, scope: str | None = None, key: str | None = None, query: str | None = None, limit: int = 100) -> dict[str, Any]:
         payload: dict[str, Any] = {"action": "find", "limit": limit}
@@ -553,7 +553,7 @@ class HubClient:
             payload["key"] = key
         if query:
             payload["query"] = query
-        return self.post("/v1/agent-state/memory", payload)
+        return self.post("/api/agent-state/memory", payload)
 
     def continue_conversation(self, conversation_id: str, prompt: str, model: str | None = None, system: str | None = None, max_tokens: int | None = None, temperature: float | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -568,13 +568,13 @@ class HubClient:
             payload["max_tokens"] = max_tokens
         if temperature is not None:
             payload["temperature"] = temperature
-        return self.post("/v1/conversations/continue", payload)
+        return self.post("/api/conversations/continue", payload)
 
     def doctor(self) -> dict[str, Any]:
-        return self.get("/v1/doctor")
+        return self.get("/api/doctor")
 
     def logs(self, lines: int = 200) -> dict[str, Any]:
-        return self.get(f"/v1/logs/tail?lines={max(1, min(int(lines), 1000))}")
+        return self.get(f"/api/logs/tail?lines={max(1, min(int(lines), 1000))}")
 
     def events(self, stream_id: str = "", after_seq: int = 0, limit: int = 100) -> dict[str, Any]:
         import urllib.parse
@@ -586,10 +586,10 @@ class HubClient:
         if limit != 100:
             params.append(f"limit={limit}")
         qs = ("?" + "&".join(params)) if params else ""
-        return self.get(f"/v1/agent-state/events{qs}")
+        return self.get(f"/api/agent-state/events{qs}")
 
     def stream_events(self, stream_id: str = "", kind: str = "", after_seq: int = 0, timeout: float = 30.0):
-        """Yield parsed SSE events (event_type, data_dict) from /v1/agent-state/events/stream."""
+        """Yield parsed SSE events (event_type, data_dict) from /api/agent-state/events/stream."""
         import urllib.parse
         params = []
         if stream_id:
@@ -601,7 +601,7 @@ class HubClient:
         if timeout > 0:
             params.append(f"timeout={timeout}")
         qs = ("?" + "&".join(params)) if params else ""
-        url = f"{self.base_url}/v1/agent-state/events/stream{qs}"
+        url = f"{self.base_url}/api/agent-state/events/stream{qs}"
         req = Request(url, headers={"Authorization": f"Bearer {self.api_token}"} if self.api_token else {})
         with urlopen(req, timeout=timeout + 5.0 if timeout > 0 else 60.0) as resp:
             cur_event = ""

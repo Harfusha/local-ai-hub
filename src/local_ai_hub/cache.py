@@ -10,6 +10,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable
 
+from . import __version__
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
 
 
@@ -228,7 +229,7 @@ class SQLiteCache:
 
     def __init__(self, path: Path, namespace: str, ttl_seconds: int = 86400, max_entries: int = 5000, *, busy_timeout_seconds: float = 0.75, busy_retries: int = 3):
         self.path = path
-        self.namespace = namespace
+        self.namespace = f"{__version__}:{namespace}"
         self.ttl_seconds = max(0, int(ttl_seconds))
         self.max_entries = max(1, int(max_entries))
         self._lock = threading.RLock()

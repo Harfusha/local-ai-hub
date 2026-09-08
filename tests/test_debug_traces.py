@@ -41,7 +41,7 @@ def test_trace_detail_preserves_ordered_full_debug_content(tmp_path):
 
 def test_trace_detail_since_seq_and_list_filters_are_bounded(tmp_path):
     store = DebugTraceStore(_config(tmp_path))
-    first = store.start(kind="api_request", tenant="tenant", agent="codex", action="/v1/reason", model="m1")
+    first = store.start(kind="api_request", tenant="tenant", agent="codex", action="/api/reason", model="m1")
     store.event(first, "request_received", {"body": {"task": "inspect"}})
     second = store.start(kind="async_job", tenant="tenant", agent="worker", action="reason", model="m2")
 
@@ -86,7 +86,7 @@ def test_cleanup_deletes_terminal_traces_in_batches_and_protects_live_work(tmp_p
 
 def test_recover_incomplete_traces_marks_previous_processes_interrupted(tmp_path):
     store = DebugTraceStore(_config(tmp_path))
-    queued = store.start(kind="api_request", tenant="tenant", action="/v1/command")
+    queued = store.start(kind="api_request", tenant="tenant", action="/api/command")
     running = store.start(kind="async_job", tenant="tenant", action="reason")
     store.update(running, state="running")
 

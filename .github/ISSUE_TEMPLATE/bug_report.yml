@@ -13,7 +13,7 @@ body:
     attributes:
       label: Hub version
       description: Output of python tools/hubctl.py status or local-ai-hub --version
-      placeholder: "1.5.0"
+      placeholder: "3.0.0"
     validations:
       required: true
 

@@ -11,6 +11,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .artifacts import ArtifactStore
 from .budget import chars_for_tokens, estimate_tokens, fit_text
 from .cache import MemoryLRUCache, SQLiteCache, TieredCache, SingleFlightCache, SingleFlightGroup, stable_hash
@@ -60,7 +61,7 @@ def generation_cache_key(
         "options": options,
         "think": think,
         "execution": execution,
-        "v": 1,
+        "app_version": __version__,
     })
 
 
@@ -259,7 +260,7 @@ class LocalAIServices:
         reason = None
         if route["task_type"] in {"code", "review"}:
             if desired == models.get("fast_code") and active == models.get("heavy_code"):
-                # Heavy is quality-compatible with fast. Once benchmark history exists,
+                # Heavy meets the fast tier quality gate. Once benchmark history exists,
                 # keep it resident only when that is actually expected to be faster.
                 tuner_ready = bool(self.tuner is not None and self.tuner.ready(str(desired), str(active)))
                 if tuner_ready and self.tuner.prefer_resident(str(desired), str(active)):
@@ -380,7 +381,7 @@ class LocalAIServices:
         )
         semantic_scope = stable_hash({
             "model": model, "system": system, "options": options, "think": base_payload.get("think"), "execution": execution_scope,
-            "context": norm_context_fp, "source": source.split(":", 1)[0], "v": 1,
+            "context": norm_context_fp, "source": source.split(":", 1)[0], "app_version": __version__,
         })
         started = time.perf_counter()
         cache_layer = "miss"
@@ -2065,7 +2066,7 @@ class LocalAIServices:
                     res["_local_ai_execution"] = proxy_profile.cache_scope()
                 return res
 
-        key = stable_hash({"proxy": endpoint, "payload": clean, "v": 1})
+        key = stable_hash({"proxy": endpoint, "payload": clean, "app_version": __version__})
 
         def compute() -> dict[str, Any]:
             return self.scheduler.submit(

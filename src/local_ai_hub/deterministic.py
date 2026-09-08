@@ -16,6 +16,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .cache import MemoryLRUCache, SQLiteCache, stable_hash
 from .normalizer import normalize_query, tokenize_query_terms
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
@@ -60,8 +61,6 @@ class DeterministicEngine:
     reused across agents/restarts. Query resolution never rewrites source evidence;
     it returns coordinates and exact evidence ids supplied by EvidenceStore.
     """
-
-    VERSION = 1
 
     def __init__(self, config: dict[str, Any] | None = None, repo_tools: Any = None, code_index: Any = None, evidence: Any | None = None):
         config = config or {}
@@ -129,11 +128,11 @@ class DeterministicEngine:
               PRIMARY KEY(root,generation,query_key));
             CREATE INDEX IF NOT EXISTS idx_query_cache_updated ON query_cache(updated_at);
             CREATE TABLE IF NOT EXISTS fact_blobs(
-              content_hash TEXT NOT NULL,analyzer_version INTEGER NOT NULL,language TEXT NOT NULL,facts_json TEXT NOT NULL,updated_at REAL NOT NULL,
+              content_hash TEXT NOT NULL,analyzer_version TEXT NOT NULL,language TEXT NOT NULL,facts_json TEXT NOT NULL,updated_at REAL NOT NULL,
               PRIMARY KEY(content_hash,analyzer_version,language));
             CREATE INDEX IF NOT EXISTS idx_fact_blobs_updated ON fact_blobs(updated_at);
             CREATE TABLE IF NOT EXISTS manifest_blobs(
-              content_hash TEXT NOT NULL,analyzer_version INTEGER NOT NULL,filename TEXT NOT NULL,deps_json TEXT NOT NULL,scripts_json TEXT NOT NULL,updated_at REAL NOT NULL,
+              content_hash TEXT NOT NULL,analyzer_version TEXT NOT NULL,filename TEXT NOT NULL,deps_json TEXT NOT NULL,scripts_json TEXT NOT NULL,updated_at REAL NOT NULL,
               PRIMARY KEY(content_hash,analyzer_version,filename));
             CREATE INDEX IF NOT EXISTS idx_manifest_blobs_updated ON manifest_blobs(updated_at);
             """
@@ -142,8 +141,7 @@ class DeterministicEngine:
             con.execute("CREATE VIRTUAL TABLE IF NOT EXISTS fact_fts USING fts5(root UNINDEXED,path UNINDEXED,kind UNINDEXED,name,value)")
         except sqlite3.OperationalError:
             pass
-        con.execute(f"PRAGMA user_version={self.VERSION}")
-
+        
     def _init_db(self) -> None:
         try:
             with self._lock, closing(self._connect()) as con:
@@ -719,7 +717,7 @@ class DeterministicEngine:
 
 
     def _fact_blob_get(self, content_hash: str, language: str) -> list[dict[str, Any]] | None:
-        key = f"{content_hash}:{self.VERSION}:{language}"
+        key = f"{content_hash}:{__version__}:{language}"
         cached = self._fact_blob_l1.get(key)
         if cached is not None:
             self._stats["fact_blob_hits"] += 1
@@ -728,7 +726,7 @@ class DeterministicEngine:
             with self._lock, closing(self._connect()) as con:
                 row = con.execute(
                     "SELECT facts_json FROM fact_blobs WHERE content_hash=? AND analyzer_version=? AND language=?",
-                    (content_hash, self.VERSION, language),
+                    (content_hash, __version__, language),
                 ).fetchone()
             if row:
                 value = json.loads(str(row[0]))
@@ -742,14 +740,14 @@ class DeterministicEngine:
         return None
 
     def _fact_blob_put(self, content_hash: str, language: str, facts: list[dict[str, Any]]) -> None:
-        key = f"{content_hash}:{self.VERSION}:{language}"
+        key = f"{content_hash}:{__version__}:{language}"
         self._fact_blob_l1.set(key, facts)
         try:
             payload = json.dumps(facts, ensure_ascii=False, separators=(",", ":"))
             with self._lock, closing(self._connect()) as con:
                 con.execute(
                     "INSERT OR REPLACE INTO fact_blobs(content_hash,analyzer_version,language,facts_json,updated_at) VALUES(?,?,?,?,?)",
-                    (content_hash, self.VERSION, language, payload, time.time()),
+                    (content_hash, __version__, language, payload, time.time()),
                 )
                 count = int(con.execute("SELECT COUNT(*) FROM fact_blobs").fetchone()[0])
                 if count > self._fact_blob_max:
@@ -881,7 +879,7 @@ class DeterministicEngine:
                 params.extend([h, lang])
             try:
                 with self._lock, closing(self._connect()) as con:
-                    rows = con.execute(f"SELECT content_hash,language,facts_json FROM fact_blobs WHERE analyzer_version=? AND ({clauses})", (self.VERSION, *params)).fetchall()
+                    rows = con.execute(f"SELECT content_hash,language,facts_json FROM fact_blobs WHERE analyzer_version=? AND ({clauses})", (__version__, *params)).fetchall()
                 for row in rows:
                     value = json.loads(str(row[2]))
                     if isinstance(value, list):
@@ -896,7 +894,7 @@ class DeterministicEngine:
             facts = blob_map.get((content_hash, language))
             if facts is None:
                 facts = self._extract_source_facts(path, "\n".join(lines))
-                blob_rows.append((content_hash, self.VERSION, language, json.dumps(facts, ensure_ascii=False, separators=(",", ":")), now))
+                blob_rows.append((content_hash, __version__, language, json.dumps(facts, ensure_ascii=False, separators=(",", ":")), now))
             else:
                 self._stats["fact_blob_hits"] += 1
             parsed_rows.append((path, content_hash, language, facts))
@@ -956,7 +954,7 @@ class DeterministicEngine:
         return "script"
 
     def _manifest_blob_get(self, content_hash: str, filename: str) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]]] | None:
-        key = f"{content_hash}:{self.VERSION}:{filename.lower()}"
+        key = f"{content_hash}:{__version__}:{filename.lower()}"
         cached = self._manifest_blob_l1.get(key)
         if cached is not None:
             self._stats["manifest_blob_hits"] += 1
@@ -965,7 +963,7 @@ class DeterministicEngine:
             with self._lock, closing(self._connect()) as con:
                 row = con.execute(
                     "SELECT deps_json,scripts_json FROM manifest_blobs WHERE content_hash=? AND analyzer_version=? AND filename=?",
-                    (content_hash, self.VERSION, filename.lower()),
+                    (content_hash, __version__, filename.lower()),
                 ).fetchone()
             if row:
                 deps = [tuple(x) for x in json.loads(str(row[0]))]
@@ -980,14 +978,14 @@ class DeterministicEngine:
         return None
 
     def _manifest_blob_put(self, content_hash: str, filename: str, deps: list[tuple[str, str, str]], scripts: list[tuple[str, str, str]]) -> None:
-        key = f"{content_hash}:{self.VERSION}:{filename.lower()}"
+        key = f"{content_hash}:{__version__}:{filename.lower()}"
         self._manifest_blob_l1.set(key, (deps, scripts))
         try:
             now = time.time()
             with self._lock, closing(self._connect()) as con:
                 con.execute(
                     "INSERT OR REPLACE INTO manifest_blobs(content_hash,analyzer_version,filename,deps_json,scripts_json,updated_at) VALUES(?,?,?,?,?,?)",
-                    (content_hash, self.VERSION, filename.lower(), json.dumps(deps, ensure_ascii=False, separators=(",", ":")), json.dumps(scripts, ensure_ascii=False, separators=(",", ":")), now),
+                    (content_hash, __version__, filename.lower(), json.dumps(deps, ensure_ascii=False, separators=(",", ":")), json.dumps(scripts, ensure_ascii=False, separators=(",", ":")), now),
                 )
                 count = int(con.execute("SELECT COUNT(*) FROM manifest_blobs").fetchone()[0])
                 if count > self._manifest_blob_max:
@@ -1520,7 +1518,7 @@ class DeterministicEngine:
         # word order. Canonical keys make paraphrases such as "show auth routes" and
         # "routes for auth" reuse the same resolver result without semantic/LLM work.
         query_key = stable_hash({
-            "v": self.VERSION,
+            "v": __version__,
             "intent": intent,
             "terms": sorted(set(terms)),
             "limit": int(limit or self.max_query_results),
@@ -2908,13 +2906,13 @@ class DeterministicEngine:
             mapped.append(dependency)
         if not queries:
             return [], None
-        cache_key = stable_hash({"v": 1, "queries": queries})
+        cache_key = stable_hash({"app_version": __version__, "queries": queries})
         cached = self._osv_cache.get(cache_key)
         if isinstance(cached, dict) and isinstance(cached.get("vulnerabilities"), list):
             return cached["vulnerabilities"], None
         cfg = self.config.get("dependency_audit", {})
         timeout = max(0.5, min(15.0, float(cfg.get("osv_timeout_seconds", 5.0))))
-        osv_url = str(cfg.get("osv_api_url", "https://api.osv.dev/v1/querybatch"))
+        osv_url = str(cfg.get("osv_api_url", "https://api.osv.dev/api/querybatch"))
         request = urllib.request.Request(
             osv_url,
             data=json.dumps({"queries": queries}).encode("utf-8"),

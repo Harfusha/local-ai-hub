@@ -104,12 +104,12 @@ def test_windows_batch_execution(tmp_path: Path):
         pytest.skip("Windows-specific batch execution test")
 
     bat_file = tmp_path / "test_echo.bat"
-    bat_file.write_text("@echo OFF\necho phase5_batch_ok\n", encoding="utf-8")
+    bat_file.write_text("@echo OFF\necho windows_batch_ok\n", encoding="utf-8")
 
     broker = CommandBroker({"commands": {"allow_validation": True, "allow_read": True, "allow_unknown": True}})
     res = broker.run(f'"{bat_file}"', cwd=str(tmp_path))
     assert res.get("success") is True, f"Command failed: {res}"
-    assert "phase5_batch_ok" in res["stdout"]
+    assert "windows_batch_ok" in res["stdout"]
 
 
 def test_client_mutating_endpoints_not_replay_safe():
@@ -123,22 +123,22 @@ def test_client_mutating_endpoints_not_replay_safe():
     client.request = mock_request
 
     # Mutating command
-    client.post("/v1/command", {"command": "pytest"})
+    client.post("/api/command", {"command": "pytest"})
     assert captured[-1]["replay_safe"] is False
 
     # Leases
-    client.post("/v1/leases/claim", {"root": ".", "paths": ["a.py"]})
+    client.post("/api/leases/claim", {"root": ".", "paths": ["a.py"]})
     assert captured[-1]["replay_safe"] is False
 
     # Mutating agent-state
-    client.post("/v1/agent-state/tasks", {"action": "create", "name": "t1"})
+    client.post("/api/agent-state/tasks", {"action": "create", "name": "t1"})
     assert captured[-1]["replay_safe"] is False
 
     # Non-mutating agent-state
-    client.post("/v1/agent-state/tasks", {"action": "get", "task_id": "1"})
+    client.post("/api/agent-state/tasks", {"action": "get", "task_id": "1"})
     assert captured[-1]["replay_safe"] is True
 
-    client.post("/v1/agent-state/context", {"action": "compile", "task_id": "1"})
+    client.post("/api/agent-state/context", {"action": "compile", "task_id": "1"})
     assert captured[-1]["replay_safe"] is True
 
     # Root quoting in coord

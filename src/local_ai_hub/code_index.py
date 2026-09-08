@@ -11,6 +11,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .cache import MemoryLRUCache, stable_hash
 from .normalizer import normalize_query, tokenize_query_terms
 from .process_utils import canonical_root
@@ -27,8 +28,6 @@ _CONTROL_NAMES = {"if","for","while","switch","catch","return","new","throw","us
 
 
 class CodeIndex:
-    VERSION = 1
-
     def __init__(self, config: dict[str, Any], repo_tools: Any):
         self.config = config
         self.repo_tools = repo_tools
@@ -110,7 +109,7 @@ class CodeIndex:
 
         CREATE TABLE IF NOT EXISTS parse_blobs(
             content_hash TEXT,
-            analyzer_version INTEGER,
+            analyzer_version TEXT,
             language TEXT,
             payload_json TEXT,
             updated_at REAL,
@@ -118,8 +117,7 @@ class CodeIndex:
         );
         CREATE INDEX IF NOT EXISTS idx_parse_blobs_updated ON parse_blobs(updated_at);
         """)
-        con.execute(f"PRAGMA user_version={self.VERSION}")
-
+        
     def _init_db(self) -> None:
         try:
             with self._lock, closing(self._connect()) as con:
@@ -491,13 +489,13 @@ class CodeIndex:
             return self._parse_generic(text)
 
     def _parse_blob_get(self, content_hash: str, language: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]] | None:
-        key = f"{content_hash}:{self.VERSION}:{language}"
+        key = f"{content_hash}:{__version__}:{language}"
         cached = self._parse_blob_l1.get(key)
         if cached is not None:
             return cached
         try:
             with self._lock, closing(self._connect()) as con:
-                row = con.execute("SELECT payload_json FROM parse_blobs WHERE content_hash=? AND analyzer_version=? AND language=?", (content_hash, self.VERSION, language)).fetchone()
+                row = con.execute("SELECT payload_json FROM parse_blobs WHERE content_hash=? AND analyzer_version=? AND language=?", (content_hash, __version__, language)).fetchone()
             if row:
                 data = json.loads(str(row[0]))
                 if isinstance(data, dict):
@@ -509,12 +507,12 @@ class CodeIndex:
         return None
 
     def _parse_blob_put(self, content_hash: str, language: str, syms: list[dict[str, Any]], refs: list[dict[str, Any]], edges: list[dict[str, Any]]) -> None:
-        key = f"{content_hash}:{self.VERSION}:{language}"
+        key = f"{content_hash}:{__version__}:{language}"
         self._parse_blob_l1.set(key, (syms, refs, edges))
         try:
             payload = json.dumps({"symbols": syms, "refs": refs, "edges": edges}, ensure_ascii=False, separators=(",", ":"))
             with self._lock, closing(self._connect()) as con:
-                con.execute("INSERT OR REPLACE INTO parse_blobs(content_hash, analyzer_version, language, payload_json, updated_at) VALUES(?,?,?,?,?)", (content_hash, self.VERSION, language, payload, time.time()))
+                con.execute("INSERT OR REPLACE INTO parse_blobs(content_hash, analyzer_version, language, payload_json, updated_at) VALUES(?,?,?,?,?)", (content_hash, __version__, language, payload, time.time()))
                 count = int(con.execute("SELECT COUNT(*) FROM parse_blobs").fetchone()[0])
                 if count > self.parse_blob_max:
                     con.execute("DELETE FROM parse_blobs WHERE rowid IN (SELECT rowid FROM parse_blobs ORDER BY updated_at ASC LIMIT ?)", (max(100, count - self.parse_blob_max),))
@@ -623,7 +621,7 @@ class CodeIndex:
                     for h, lang in batch:
                         params.extend([h, lang])
                     with self._lock, closing(self._connect()) as con:
-                        rows = con.execute(f"SELECT content_hash,language,payload_json FROM parse_blobs WHERE analyzer_version=? AND ({clauses})", (self.VERSION, *params)).fetchall()
+                        rows = con.execute(f"SELECT content_hash,language,payload_json FROM parse_blobs WHERE analyzer_version=? AND ({clauses})", (__version__, *params)).fetchall()
                     for row in rows:
                         data = json.loads(str(row[2]))
                         if isinstance(data, dict):
@@ -642,7 +640,7 @@ class CodeIndex:
             parsed = blob_map.get((content_hash, lang))
             if parsed is None:
                 syms, refs, edges = self._parse_file_content("\n".join(lines), lang)
-                parse_blob_rows.append((content_hash, self.VERSION, lang, json.dumps({"symbols": syms, "refs": refs, "edges": edges}, ensure_ascii=False, separators=(",", ":")), now))
+                parse_blob_rows.append((content_hash, __version__, lang, json.dumps({"symbols": syms, "refs": refs, "edges": edges}, ensure_ascii=False, separators=(",", ":")), now))
             else:
                 syms, refs, edges = parsed
             paths_to_clean.append((str(base), path))

@@ -45,7 +45,7 @@ def test_resident_router_keeps_requested_fast_model_until_calibrated():
     assert "resident_optimization" not in route
 
 
-def test_resident_router_reuses_quality_compatible_model_after_calibration():
+def test_resident_router_reuses_quality_equivalent_model_after_calibration():
     route = _service(_Tuner(ready=True, prefer_resident=True))._resident_optimize(_fast_route(), "auto", "auto")
 
     assert route["model"] == "qwen3.5:9b"

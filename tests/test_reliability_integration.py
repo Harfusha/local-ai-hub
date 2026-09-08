@@ -34,8 +34,8 @@ def _config_path(tmp_path: Path, extra: str = "") -> Path:
 
 
 def test_sqlite_busy_is_not_treated_as_corruption(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    cache = SQLiteCache(tmp_path / "cache.sqlite3", "v15", busy_timeout_seconds=0.01, busy_retries=1)
-    cache.set("kept", {"v": 1})
+    cache = SQLiteCache(tmp_path / "cache.sqlite3", "sample", busy_timeout_seconds=0.01, busy_retries=1)
+    cache.set("kept", {"value": 1})
     recovery_calls = {"n": 0}
 
     def forbidden_recovery() -> None:
@@ -46,22 +46,22 @@ def test_sqlite_busy_is_not_treated_as_corruption(tmp_path: Path, monkeypatch: p
     blocker = sqlite3.connect(cache.path, timeout=0.01)
     try:
         blocker.execute("BEGIN IMMEDIATE")
-        cache.set("dropped-while-busy", {"v": 2})
+        cache.set("dropped-while-busy", {"value": 2})
         assert recovery_calls["n"] == 0
         assert cache.busy_fallbacks >= 1
     finally:
         blocker.rollback()
         blocker.close()
-    assert cache.get("kept") == {"v": 1}
+    assert cache.get("kept") == {"value": 1}
 
 
 def test_sqlite_l2_recency_write_is_sampled_once_per_process(tmp_path: Path):
-    cache = SQLiteCache(tmp_path / "cache.sqlite3", "v15")
-    cache.set("a", {"v": 1})
+    cache = SQLiteCache(tmp_path / "cache.sqlite3", "sample")
+    cache.set("a", {"value": 1})
     for _ in range(5):
-        assert cache.get("a") == {"v": 1}
+        assert cache.get("a") == {"value": 1}
     with closing(sqlite3.connect(cache.path)) as con:
-        hits = con.execute("SELECT hits FROM cache_entries WHERE namespace='v15' AND cache_key='a'").fetchone()[0]
+        hits = con.execute("SELECT hits FROM cache_entries WHERE namespace=? AND cache_key='a'", (cache.namespace,)).fetchone()[0]
     assert hits == 1
 
 
@@ -287,7 +287,7 @@ def test_client_preserves_retryable_http_error_metadata(tmp_path: Path, monkeypa
 
     def overloaded(*_args, **_kwargs):
         raise HTTPError(
-            client.base_url + "/v1/status",
+            client.base_url + "/api/status",
             503,
             "busy",
             {},
@@ -295,7 +295,7 @@ def test_client_preserves_retryable_http_error_metadata(tmp_path: Path, monkeypa
         )
 
     monkeypatch.setattr(client, "_pooled_open", overloaded)
-    result = client.get("/v1/status")
+    result = client.get("/api/status")
     assert result["status_code"] == 503
     assert result["retryable"] is True
     assert result["request_id"].startswith("req_")
@@ -376,7 +376,7 @@ def test_singleflight_waiter_returns_retryable_in_progress_quickly():
 
 def test_recovery_journal_waiter_replays_completed_owner_response(tmp_path: Path):
     journal = RecoveryJournal(tmp_path / "state")
-    journal.begin("request-1", "tenant", "/v1/search")
+    journal.begin("request-1", "tenant", "/api/search")
 
     def finish() -> None:
         time.sleep(0.02)
@@ -384,7 +384,7 @@ def test_recovery_journal_waiter_replays_completed_owner_response(tmp_path: Path
 
     worker = threading.Thread(target=finish)
     worker.start()
-    result = journal.wait_for("request-1", "tenant", "/v1/search", timeout_seconds=0.5)
+    result = journal.wait_for("request-1", "tenant", "/api/search", timeout_seconds=0.5)
     worker.join(1)
 
     assert result == {"state": "done", "status_code": 200, "response": {"success": True, "value": "reused"}}

@@ -92,11 +92,11 @@ def main() -> int:
     cfg = load_config(_config_arg())
     client = HubClient(tenant="telemetry-report", config_path=_config_arg())
     try:
-        telemetry = client.get(f"/v1/telemetry/report?days={max(1, args.days)}")
+        telemetry = client.get(f"/api/telemetry/report?days={max(1, args.days)}")
     except Exception:
         telemetry = {}
     try:
-        status = client.get("/v1/status")
+        status = client.get("/api/status")
     except Exception:
         status = {}
     report = {

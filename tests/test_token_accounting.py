@@ -41,8 +41,8 @@ def test_tool_accounting_subtracts_agent_call_and_read_cost():
     )
     assert event["agent_tool_request_tokens_est"] > 0
     assert event["agent_tool_response_tokens_est"] > 0
-    assert event["net_cloud_tokens_avoided_est"] == 2000 - event["agent_protocol_tokens_est"]
-    assert event["net_after_schema_tokens_avoided_est"] == max(0, event["net_cloud_tokens_avoided_est"] - 150)
+    assert event["net_cloud_token_delta_est"] == 2000 - event["agent_protocol_tokens_est"]
+    assert event["net_after_schema_token_delta_est"] == event["net_cloud_token_delta_est"] - 150
 
 
 def test_private_accounting_never_reaches_agent_payload():
@@ -60,7 +60,7 @@ def test_private_accounting_never_reaches_agent_payload():
     assert measured["gross_cloud_tokens_avoided_est"] == 900
 
 
-def test_telemetry_v2_reports_gross_protocol_net_and_breakdown(tmp_path: Path):
+def test_telemetry_reports_gross_protocol_net_and_breakdown(tmp_path: Path):
     store = TelemetryStore(tmp_path, enabled=True, flush_interval_seconds=0.01)
     try:
         store.record_tool_accounting({
@@ -68,52 +68,59 @@ def test_telemetry_v2_reports_gross_protocol_net_and_breakdown(tmp_path: Path):
             "tenant": "t",
             "agent": "codex",
             "gross_cloud_tokens_avoided_est": 1800,
+            "gross_input_tokens_avoided_est": 1000,
+            "gross_output_tokens_avoided_est": 800,
+            "input_savings_source": "deterministic_outline",
+            "output_savings_source": "response_compaction",
             "agent_tool_request_tokens_est": 40,
             "agent_tool_response_tokens_est": 160,
             "agent_protocol_tokens_est": 200,
             "tool_schema_tokens_est": 120,
-            "net_cloud_tokens_avoided_est": 1600,
-            "net_after_schema_tokens_avoided_est": 1480,
+            "net_cloud_token_delta_est": 1600,
+            "cloud_token_overhead_est": 0,
+            "net_after_schema_token_delta_est": 1480,
+            "schema_adjusted_overhead_est": 0,
             "local_compute_tokens_avoided_est": 500,
             "savings_breakdown": {"deterministic_outline": 1000, "response_compaction": 800},
         })
         assert store.flush(1.0)
         summary = store.summary(scope="process")
-        assert summary["token_accounting_version"] == 2
         assert summary["gross_cloud_tokens_avoided_est"] == 1800
         assert summary["agent_protocol_tokens_est"] == 200
         assert summary["agent_tool_request_tokens_est"] == 40
         assert summary["agent_tool_response_tokens_est"] == 160
-        assert summary["cloud_tokens_avoided_est"] == 1600
-        assert summary["net_after_schema_tokens_avoided_est"] == 1480
+        assert summary["net_cloud_token_delta_est"] == 1600
+        assert summary["net_after_schema_token_delta_est"] == 1480
         assert summary["local_compute_tokens_avoided_est"] == 500
         assert summary["token_savings_breakdown"]["deterministic_outline"] == 1000
     finally:
         store.close()
 
 
-def test_existing_telemetry_schema_is_migrated_additively(tmp_path: Path):
+def test_noncurrent_telemetry_schema_is_rebuilt(tmp_path: Path):
     import sqlite3
 
     path = tmp_path / "telemetry.sqlite3"
     con = sqlite3.connect(path)
-    con.execute("CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at REAL NOT NULL, tenant TEXT NOT NULL DEFAULT 'default', action TEXT NOT NULL DEFAULT 'unknown', model TEXT, cache_hit INTEGER NOT NULL DEFAULT 0, coalesced INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, avoided_cloud_tokens INTEGER NOT NULL DEFAULT 0, duration_ms REAL NOT NULL DEFAULT 0, success INTEGER NOT NULL DEFAULT 1, cache_layer TEXT NOT NULL DEFAULT '', load_duration_ms REAL NOT NULL DEFAULT 0, event_type TEXT NOT NULL DEFAULT 'inference', agent TEXT NOT NULL DEFAULT '', request_id TEXT NOT NULL DEFAULT '', trace_id TEXT NOT NULL DEFAULT '', stage TEXT NOT NULL DEFAULT '', task_type TEXT NOT NULL DEFAULT '', complexity TEXT NOT NULL DEFAULT '', route TEXT NOT NULL DEFAULT '', queue_wait_ms REAL NOT NULL DEFAULT 0, service_ms REAL NOT NULL DEFAULT 0, status_code INTEGER NOT NULL DEFAULT 0, degraded INTEGER NOT NULL DEFAULT 0, retry_count INTEGER NOT NULL DEFAULT 0, fallback_used INTEGER NOT NULL DEFAULT 0, error_type TEXT NOT NULL DEFAULT '', error_fingerprint TEXT NOT NULL DEFAULT '', tool_calls INTEGER NOT NULL DEFAULT 0, evidence_count INTEGER NOT NULL DEFAULT 0, response_bytes INTEGER NOT NULL DEFAULT 0)")
-    con.execute("CREATE TABLE errors (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at REAL NOT NULL, request_id TEXT NOT NULL DEFAULT '', tenant TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', component TEXT NOT NULL, operation TEXT NOT NULL, error_type TEXT NOT NULL, fingerprint TEXT NOT NULL, safe_message TEXT NOT NULL, retryable INTEGER NOT NULL DEFAULT 0, recovered INTEGER NOT NULL DEFAULT 0)")
-    con.execute("CREATE TABLE snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at REAL NOT NULL, name TEXT NOT NULL, metrics_json TEXT NOT NULL)")
-    con.execute("CREATE TABLE daily_rollups (day TEXT NOT NULL,event_type TEXT NOT NULL,action TEXT NOT NULL,agent TEXT NOT NULL,model TEXT NOT NULL,cache_layer TEXT NOT NULL,success INTEGER NOT NULL,events INTEGER NOT NULL DEFAULT 0,duration_ms REAL NOT NULL DEFAULT 0,queue_wait_ms REAL NOT NULL DEFAULT 0,input_tokens INTEGER NOT NULL DEFAULT 0,output_tokens INTEGER NOT NULL DEFAULT 0,avoided_cloud_tokens INTEGER NOT NULL DEFAULT 0,cache_hits INTEGER NOT NULL DEFAULT 0,fallback_count INTEGER NOT NULL DEFAULT 0,degraded_count INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(day,event_type,action,agent,model,cache_layer,success))")
-    con.commit(); con.close()
+    con.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, marker TEXT NOT NULL)")
+    con.execute("INSERT INTO events(id, marker) VALUES(1, 'discard-me')")
+    con.commit()
+    con.close()
 
     store = TelemetryStore(tmp_path, enabled=True)
     try:
         check = sqlite3.connect(path)
         try:
+            tables = {row[0] for row in check.execute("SELECT name FROM sqlite_master WHERE type='table'") if not row[0].startswith("sqlite_")}
             cols = {row[1] for row in check.execute("PRAGMA table_info(events)")}
+            rows = check.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         finally:
             check.close()
-        assert {"gross_avoided_cloud_tokens", "agent_protocol_tokens", "savings_breakdown_json", "net_cloud_token_delta", "cloud_token_overhead", "net_after_schema_token_delta"} <= cols
+        assert tables == {"events", "errors", "snapshots", "daily_rollups"}
+        assert cols == {"id", *store._EVENT_COLUMNS}
+        assert rows == 0
     finally:
         store.close()
-
 
 def test_tool_accounting_exposes_negative_net_delta_when_tool_costs_more_than_it_saves():
     event = finalize_tool_accounting(
@@ -124,7 +131,6 @@ def test_tool_accounting_exposes_negative_net_delta_when_tool_costs_more_than_it
         schema_tokens_est=100,
     )
     assert event["net_cloud_token_delta_est"] < 0
-    assert event["net_cloud_tokens_avoided_est"] == 0
     assert event["cloud_token_overhead_est"] == -event["net_cloud_token_delta_est"]
     assert event["net_after_schema_token_delta_est"] == event["net_cloud_token_delta_est"] - 100
     assert event["schema_adjusted_overhead_est"] == -event["net_after_schema_token_delta_est"]
@@ -157,16 +163,13 @@ def test_telemetry_preserves_signed_net_delta_and_overhead(tmp_path: Path):
             "agent_protocol_tokens_est": 50,
             "tool_schema_tokens_est": 100,
             "net_cloud_token_delta_est": -50,
-            "net_cloud_tokens_avoided_est": 0,
             "cloud_token_overhead_est": 50,
             "net_after_schema_token_delta_est": -150,
-            "net_after_schema_tokens_avoided_est": 0,
             "schema_adjusted_overhead_est": 150,
         })
         assert store.flush(1.0)
         summary = store.summary(scope="process")
         assert summary["net_cloud_token_delta_est"] == -50
-        assert summary["cloud_tokens_avoided_est"] == 0
         assert summary["cloud_token_overhead_est"] == 50
         assert summary["net_after_schema_token_delta_est"] == -150
         assert summary["schema_adjusted_overhead_est"] == 150

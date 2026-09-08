@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from . import __version__
 import copy
 import json
 import time
@@ -134,8 +135,6 @@ TOOLS = [
 
 class ToolAwareLocalAgent:
     """Bounded read-only Ollama agent loop over Local AI Hub's own cached tooling."""
-
-    VERSION = 1
 
     def __init__(self, config: dict[str, Any], services: Any, preprocessor: Any, rag: Any, code_index: Any | None = None, evidence: Any | None = None, deterministic: Any | None = None, external_tools: Any | None = None):
         self.config = config
@@ -363,7 +362,7 @@ class ToolAwareLocalAgent:
             model, role=role, input_tokens=max(1, (len(task) + len(seed_context)) // 4), output_tokens=int(max_tokens)
         ).cache_scope()
         cache_key = stable_hash({
-            "v": 3, "model": model, "role": role, "profile": profile.name if profile else "", "task": task,
+            "app_version": __version__, "model": model, "role": role, "profile": profile.name if profile else "", "task": task,
             "root": root, "workspace": workspace, "state": state.get("fingerprint"),
             "context_revision": context_revision, "seed": stable_hash(seed_context),
             "max_tokens": int(max_tokens), "execution": execution_hint,

@@ -195,8 +195,8 @@ def test_embedding_first_batch_uses_persistent_cache(tmp_path, monkeypatch):
         }
     )
     monkeypatch.setattr(embeddings, "_ensure_model", lambda: True)
-    identity = f"sentence-transformers:{model_name}"
-    key = stable_hash({"v": 2, "identity": identity, "query": False, "text": "shared content"})
+    identity = f"sentence-transformers:cpu:{model_name}"
+    key = stable_hash({"identity": identity, "query": False, "text": "shared content"})
     embeddings.cache.set(key, {"identity": identity, "dimension": 2, "vector": [0.2, 0.8]})
 
     result = embeddings.encode(["shared content"])

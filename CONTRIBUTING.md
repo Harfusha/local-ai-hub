@@ -1,6 +1,6 @@
 # Contributing to Local AI Hub
 
-Local AI Hub is an initial-release codebase. Prefer deletion/simplification over compatibility shims.
+Local AI Hub 3.0 is the sole supported application contract. Prefer one direct implementation over parallel aliases or alternate historical paths.
 
 ## Getting started
 
@@ -22,7 +22,7 @@ pip install -e ".[dev]"
 Run the full validation suite locally before opening a PR:
 
 ```bash
-python -m compileall -q src mcp tools tests
+python -m compileall -q src tools tests
 python -m pytest -q
 python tools/selftest.py
 python tools/hubctl.py generate
@@ -36,7 +36,7 @@ All commands must pass with no errors.
 - Keep **all waits bounded** — every subprocess, network call and model call must have a finite deadline. No `time.sleep` in hot paths without a bounded loop.
 - Preserve **loopback-first security** — the server must bind to 127.0.0.1 by default. Remote exposure is opt-in and requires an API token.
 - **Optional external tooling must fail soft** — Serena, CodeGraphContext and Ollama absence, crash or timeout must degrade cleanly to built-in indexes, never block a request handler.
-- **No migration shims** in this initial-release branch. Derived SQLite state is disposable and may be rebuilt.
+- **One current state contract** — derived SQLite state is disposable and is rebuilt when it does not match the current schema.
 
 ## Commit messages
 
@@ -52,7 +52,7 @@ Keep the subject line under 72 characters. Optionally add a body after a blank l
 
 ## Pull request checklist
 
-- [ ] python -m compileall -q src mcp tools tests passes
+- [ ] python -m compileall -q src tools tests passes
 - [ ] python -m pytest -q passes
 - [ ] python tools/selftest.py passes
 - [ ] python tools/hubctl.py generate passes

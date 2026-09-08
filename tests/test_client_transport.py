@@ -114,7 +114,7 @@ def test_client_replays_duplicate_request_until_owner_finishes(tmp_path, monkeyp
         calls += 1
         if calls == 1:
             raise HTTPError(
-                "http://127.0.0.1/v1/search",
+                "http://127.0.0.1/api/search",
                 409,
                 "Conflict",
                 {},
@@ -123,7 +123,7 @@ def test_client_replays_duplicate_request_until_owner_finishes(tmp_path, monkeyp
         return b'{"success":true,"value":"owner-result"}'
 
     monkeypatch.setattr(client, "_pooled_open", pooled_open)
-    result = client.request("/v1/search", {"root": "repo"}, timeout=1)
+    result = client.request("/api/search", {"root": "repo"}, timeout=1)
 
     assert result == {"success": True, "value": "owner-result"}
     assert calls == 2

@@ -204,22 +204,22 @@ enabled = true
 
     try:
         # 1. Flat task_create
-        r1 = post_json("/v1/agent-state/tasks", {"action": "create", "task_id": "flat-1", "goal": "Fix everything"})
+        r1 = post_json("/api/agent-state/tasks", {"action": "create", "task_id": "flat-1", "goal": "Fix everything"})
         assert r1["success"] is True
         assert r1["task"]["task_id"] == "flat-1"
 
         # 2. Flat task_checkpoint
-        r2 = post_json("/v1/agent-state/tasks", {"action": "checkpoint", "task_id": "flat-1", "phase": "validation", "next_action": "run_tests"})
+        r2 = post_json("/api/agent-state/tasks", {"action": "checkpoint", "task_id": "flat-1", "phase": "validation", "next_action": "run_tests"})
         assert r2["success"] is True
         assert r2["task"]["checkpoint"]["phase"] == "validation"
 
         # 3. Flat memory_record
-        r3 = post_json("/v1/agent-state/memory", {"action": "record", "key": "flat_k", "value": "flat_v", "kind": "finding"})
+        r3 = post_json("/api/agent-state/memory", {"action": "record", "key": "flat_k", "value": "flat_v", "kind": "finding"})
         assert r3["success"] is True
         assert r3["record"]["key"] == "flat_k"
 
         # 4. Memory find with query
-        r4 = post_json("/v1/agent-state/memory", {"action": "find", "query": "flat_v"})
+        r4 = post_json("/api/agent-state/memory", {"action": "find", "query": "flat_v"})
         assert r4["success"] is True
         assert len(r4["records"]) == 1
     finally:
@@ -321,8 +321,8 @@ def test_task_store_auto_complete_and_fail(tmp_path: Path):
 
     # 6. MemoryStore count
     assert mem_store.count() == 0
-    mem_store.record(MemoryRecord.create(key="k1", value="v1", kind="fact", scope="repo"))
-    mem_store.record(MemoryRecord.create(key="k2", value="v2", kind="decision", scope="repo"))
+    mem_store.record(MemoryRecord.create(key="k1", value="first", kind="fact", scope="repo"))
+    mem_store.record(MemoryRecord.create(key="k2", value="second", kind="decision", scope="repo"))
     assert mem_store.count() == 2
 
 

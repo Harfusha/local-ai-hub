@@ -41,10 +41,10 @@ APP: LocalAIApp | None = None
 # Monitoring/control reads must never appear as workload. Keep this hard safety set
 # independent of user config so a dashboard refresh cannot create immortal active jobs.
 MONITOR_PATHS = {
-    "/health", "/dashboard", "/favicon.ico", "/v1/live", "/v1/live/status",
-    "/v1/status", "/v1/capabilities", "/v1/metrics", "/v1/telemetry/report", "/v1/telemetry/tool-accounting", "/v1/audit/tail", "/v1/control",
-    "/v1/config", "/v1/logs/tail", "/v1/hardware/system", "/v1/hardware/gpu",
-    "/v1/debug-traces",
+    "/health", "/dashboard", "/favicon.ico", "/api/live", "/api/live/status",
+    "/api/status", "/api/capabilities", "/api/metrics", "/api/telemetry/report", "/api/telemetry/tool-accounting", "/api/audit/tail", "/api/control",
+    "/api/config", "/api/logs/tail", "/api/hardware/system", "/api/hardware/gpu",
+    "/api/debug-traces",
 }
 
 
@@ -279,7 +279,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if APP is not None:
                 excluded = set(APP.config.get("observability", {}).get("exclude_http_paths", []))
-                if path not in MONITOR_PATHS and not path.startswith("/v1/debug-traces/") and path not in excluded:
+                if path not in MONITOR_PATHS and not path.startswith("/api/debug-traces/") and path not in excluded:
                     APP.telemetry.record_live(kind="request", event_type="request_start", tenant=self._tenant(), agent=self._agent(), request_id=request_id, trace_id=trace_id, action=path, success=True)
                     trace_store = getattr(APP, "debug_traces", None)
                     if trace_store is not None:
@@ -532,22 +532,22 @@ class Handler(BaseHTTPRequestHandler):
                         return value
             raise RequestBodyError(f"{name} is required")
 
-        if path == "/v1/chat/completions":
+        if path == "/api/chat/completions":
             messages = payload.get("messages")
             if not isinstance(messages, list) or not messages or len(messages) > 128:
                 raise RequestBodyError("messages must be a non-empty list of at most 128 entries")
             if len(json.dumps(messages, ensure_ascii=False, default=str)) > 1_000_000:
                 raise RequestBodyError("messages exceed 1000000 characters", 413)
-        elif path == "/v1/embed":
+        elif path == "/api/embed":
             values = payload.get("texts", payload.get("input", []))
             values = [values] if isinstance(values, str) else values
             if not isinstance(values, list) or len(values) > 256:
                 raise RequestBodyError("texts must be a list of at most 256 entries")
             for value in values:
                 text(value, "embedding text", 200000)
-        elif path == "/v1/command":
+        elif path == "/api/command":
             text(payload.get("command", ""), "command", 8000)
-        elif path == "/v1/telemetry/tool-accounting":
+        elif path == "/api/telemetry/tool-accounting":
             events = payload.get("events", [])
             if not isinstance(events, list) or len(events) > 64:
                 raise RequestBodyError("events must be a list of at most 64 entries")
@@ -563,7 +563,7 @@ class Handler(BaseHTTPRequestHandler):
                 breakdown = event.get("savings_breakdown", {})
                 if not isinstance(breakdown, dict) or len(breakdown) > 16:
                     raise RequestBodyError("savings_breakdown must be an object with at most 16 entries")
-        elif path == "/v1/work-orders":
+        elif path == "/api/work-orders":
             action = text(payload.get("action", "submit"), "action", 32).strip().lower().replace("-", "_")
             if action not in {"submit", "status", "wait", "get", "cancel", "continue"}:
                 raise RequestBodyError("unsupported work-order action")
@@ -587,32 +587,32 @@ class Handler(BaseHTTPRequestHandler):
                     raise RequestBodyError(f"{name} must be an object")
             if "response_profile" in payload:
                 text(payload["response_profile"], "response_profile", 16)
-        elif path in {"/v1/preprocess", "/v1/repo/profile", "/v1/repo/map", "/v1/repo/code-index", "/v1/repo/deterministic", "/v1/search"}:
+        elif path in {"/api/preprocess", "/api/repo/profile", "/api/repo/map", "/api/repo/code-index", "/api/repo/deterministic", "/api/search"}:
             if "root" in payload:
                 text(payload["root"], "root", 4096)
-        elif path == "/v1/memory/put":
+        elif path == "/api/memory/put":
             required_text("key", maximum=160)
             required_text("value", maximum=1000000)
             if "root" in payload:
                 text(payload["root"], "root", 4096)
-        elif path in {"/v1/memory/get", "/v1/memory/delete"}:
+        elif path in {"/api/memory/get", "/api/memory/delete"}:
             required_text("key", maximum=160)
             if "root" in payload:
                 text(payload["root"], "root", 4096)
-        elif path == "/v1/memory/search":
+        elif path == "/api/memory/search":
             if "root" in payload:
                 text(payload["root"], "root", 4096)
             if "query" in payload:
                 text(payload["query"], "query", 4096)
-        elif path == "/v1/code/symbol":
+        elif path == "/api/code/symbol":
             required_text("symbol", maximum=1024)
-        elif path == "/v1/code/find_symbol":
+        elif path == "/api/code/find_symbol":
             required_text("pattern", "name_path_pattern", maximum=1024)
-        elif path in {"/v1/code/find_declaration", "/v1/code/find_implementations", "/v1/code/find_referencing_symbols"}:
+        elif path in {"/api/code/find_declaration", "/api/code/find_implementations", "/api/code/find_referencing_symbols"}:
             required_text("symbol", "name", maximum=1024)
-        elif path in {"/v1/code/ast_outline", "/v1/code/symbols_overview", "/v1/code/diagnostics"}:
+        elif path in {"/api/code/ast_outline", "/api/code/symbols_overview", "/api/code/diagnostics"}:
             required_text("path", "file", maximum=4096)
-        elif path == "/v1/code-intelligence/query":
+        elif path == "/api/code-intelligence/query":
             action = text(payload.get("action", "search"), "action", 80).strip().lower().replace("-", "_")
             if action not in {"dead_code", "dead", "stats", "repository_stats"}:
                 required_text("query", maximum=4096)
@@ -630,9 +630,9 @@ class Handler(BaseHTTPRequestHandler):
         if APP is None:
             return None
         action_by_path = {
-            "/v1/delegate": "delegate", "/v1/reason": "reason", "/v1/review": "review",
-            "/v1/second-opinion": "second_opinion", "/v1/compress": "compress",
-            "/v1/route": "route", "/v1/delegate/batch": "batch",
+            "/api/delegate": "delegate", "/api/reason": "reason", "/api/review": "review",
+            "/api/second-opinion": "second_opinion", "/api/compress": "compress",
+            "/api/route": "route", "/api/delegate/batch": "batch",
         }
         job_action = action_by_path.get(path)
         if not job_action:
@@ -692,9 +692,9 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 path = str(getattr(self, "_request_path", urlparse(self.path).path))
                 excluded = set(APP.config.get("observability", {}).get("exclude_http_paths", []))
-                if path not in MONITOR_PATHS and not path.startswith("/v1/debug-traces/") and path not in excluded:
+                if path not in MONITOR_PATHS and not path.startswith("/api/debug-traces/") and path not in excluded:
                     elapsed_ms = max(0.0, (time.perf_counter() - float(getattr(self, "_request_started", time.perf_counter()))) * 1000)
-                    policy_blocked = bool(path == "/v1/command" and isinstance(data, dict) and data.get("policy_blocked"))
+                    policy_blocked = bool(path == "/api/command" and isinstance(data, dict) and data.get("policy_blocked"))
                     telemetry_data = dict(data) if isinstance(data, dict) else data
                     if policy_blocked and isinstance(telemetry_data, dict):
                         telemetry_data["policy_blocked"] = True
@@ -880,18 +880,18 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/favicon.ico":
                 self._telemetry_finished = True
                 self.send_response(204); self.end_headers(); return
-            if path == "/v1/live":
+            if path == "/api/live":
                 after = int((query.get("after") or [0])[0]); limit = int((query.get("limit") or [200])[0])
                 max_batch = int(APP.config.get("monitoring", {}).get("live_max_batch", 200))
                 self._send(200, APP.telemetry.live(after, min(limit, max_batch))); return
-            if path == "/v1/live/status":
+            if path == "/api/live/status":
                 light = str((query.get("light") or ["0"])[0]).lower() in {"1", "true", "yes"}
                 scope = str((query.get("scope") or ["process"])[0])
                 status = APP.realtime_status(light=light, scope=scope)
                 if isinstance(self.server, LocalAIHTTPServer):
                     status["http_concurrency"] = self.server.concurrency_stats()
                 self._send(200, status); return
-            if path == "/v1/status":
+            if path == "/api/status":
                 detail = str((query.get("detail") or [""])[0]).strip().lower()
                 if detail == "agent_state":
                     tasks = APP.agent_tasks.list_tasks() if getattr(APP, "agent_tasks", None) else []
@@ -912,7 +912,7 @@ class Handler(BaseHTTPRequestHandler):
                 if isinstance(self.server, LocalAIHTTPServer):
                     status["http_concurrency"] = self.server.concurrency_stats()
                 self._send(200, status); return
-            if path == "/v1/agent-state/tasks":
+            if path == "/api/agent-state/tasks":
                 if not getattr(APP, "agent_tasks", None) or not APP.agent_tasks.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 task_id = (query.get("task_id") or [""])[0]
@@ -930,7 +930,7 @@ class Handler(BaseHTTPRequestHandler):
                 limit = int((query.get("limit") or [100])[0])
                 tasks = APP.agent_tasks.list_tasks(status=status_filter, limit=limit)
                 self._send(200, {"success": True, "tasks": [t.to_dict() for t in tasks]}); return
-            if path == "/v1/agent-state/memory":
+            if path == "/api/agent-state/memory":
                 if not getattr(APP, "agent_memory", None) or not APP.agent_memory.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 rec_id = (query.get("record_id") or [""])[0]
@@ -958,7 +958,7 @@ class Handler(BaseHTTPRequestHandler):
                 limit_val = int((query.get("limit") or [100])[0])
                 records = APP.agent_memory.find(scope=scope_val, key=key_val, query=query_val, status=status_val, limit=limit_val)
                 self._send(200, {"success": True, "records": [r.to_dict() for r in records]}); return
-            if path == "/v1/agent-state/events":
+            if path == "/api/agent-state/events":
                 if not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 stream_id = (query.get("stream_id") or [""])[0]
@@ -966,18 +966,18 @@ class Handler(BaseHTTPRequestHandler):
                 limit = int((query.get("limit") or [100])[0])
                 evs = APP.agent_state.events(stream_id=stream_id, after_seq=after_seq, limit=limit)
                 self._send(200, {"success": True, "events": [e.to_dict() for e in evs]}); return
-            if path == "/v1/agent-state/blackboard":
+            if path == "/api/agent-state/blackboard":
                 if not getattr(APP, "agent_blackboard", None):
                     self._send(503, {"success": False, "error": "blackboard unavailable"}); return
                 board_id = (query.get("board_id") or ["default"])[0]
                 section = (query.get("section") or [None])[0]
                 self._send(200, APP.agent_blackboard.get(board_id, section=section)); return
-            if path.startswith("/v1/agent-state/swarm/"):
-                swarm_id = path.split("/v1/agent-state/swarm/", 1)[1].strip()
+            if path.startswith("/api/agent-state/swarm/"):
+                swarm_id = path.split("/api/agent-state/swarm/", 1)[1].strip()
                 if not getattr(APP, "swarm", None):
                     self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
                 self._send(200, APP.swarm.get_status(swarm_id)); return
-            if path == "/v1/agent-state/events/stream":
+            if path == "/api/agent-state/events/stream":
                 if not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 stream_filter = (query.get("stream_id") or [""])[0]
@@ -986,24 +986,24 @@ class Handler(BaseHTTPRequestHandler):
                 timeout = float((query.get("timeout") or [0.0])[0])
                 self._stream_agent_events(stream_id=stream_filter, kind=kind_filter, after_seq=after_seq, timeout=timeout)
                 return
-            if path == "/v1/capabilities":
+            if path == "/api/capabilities":
                 self._send(200, APP.capabilities()); return
-            if path == "/v1/benchmark/summary":
+            if path == "/api/benchmark/summary":
                 if not getattr(APP, "benchmark_runner", None):
                     self._send(200, {"available": False}); return
                 self._send(200, APP.benchmark_runner.get_latest_summary()); return
-            if path == "/v1/metrics":
+            if path == "/api/metrics":
                 days = int((query.get("days") or [30])[0])
                 scope = str((query.get("scope") or ["window"])[0])
                 self._send(200, {"success": True, "metrics": APP.telemetry.summary(days, scope=scope)}); return
-            if path == "/v1/telemetry/report":
+            if path == "/api/telemetry/report":
                 days = int((query.get("days") or [30])[0])
                 scope = str((query.get("scope") or ["window"])[0])
                 self._send(200, {"success": True, "report": APP.telemetry.report(days, scope=scope)}); return
-            if path == "/v1/audit/tail":
+            if path == "/api/audit/tail":
                 limit = int((query.get("limit") or [20])[0])
                 self._send(200, {"success": True, "events": APP.telemetry.tail(limit)}); return
-            if path == "/v1/debug-traces":
+            if path == "/api/debug-traces":
                 result = APP.debug_traces.list(
                     kind=str((query.get("kind") or [""])[0]),
                     state=str((query.get("state") or [""])[0]),
@@ -1015,7 +1015,7 @@ class Handler(BaseHTTPRequestHandler):
                 for item in result.get("items", []):
                     self._reconcile_debug_trace(item)
                 self._send(200, result); return
-            if path.startswith("/v1/debug-traces/"):
+            if path.startswith("/api/debug-traces/"):
                 trace_id = path.rsplit("/", 1)[-1]
                 since_seq = int((query.get("since_seq") or [0])[0])
                 result = APP.debug_traces.detail(trace_id, since_seq=max(0, since_seq))
@@ -1023,26 +1023,26 @@ class Handler(BaseHTTPRequestHandler):
                     session = self._reconcile_debug_trace(result["session"])
                     result["terminal"] = session.get("state") in APP.debug_traces.TERMINAL_STATES
                 self._send(200, result); return
-            if path == "/v1/rag/workspaces":
+            if path == "/api/rag/workspaces":
                 self._send(200, {"success": True, "workspaces": APP.rag.list_workspaces(self._tenant())}); return
-            if path == "/v1/leases":
+            if path == "/api/leases":
                 root = (query.get("root") or [""])[0]
                 self._send(200, {"success": True, "leases": APP.leases.list(root), "waits": APP.leases.waits(root)}); return
-            if path == "/v1/cross_project_graph":
+            if path == "/api/cross_project_graph":
                 roots = [str(p.get("root")) for p in APP.preprocessor.status().get("projects", []) if p.get("root")]
                 if APP.deterministic is not None:
                     self._send(200, APP.deterministic.cross_project_graph(roots))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/dead_code":
+            if path == "/api/dead_code":
                 root = (query.get("root") or ["."])[0]
                 if APP.deterministic is not None:
                     self._send(200, APP.services.dead_code(root))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/symbol_callgraph":
+            if path == "/api/symbol_callgraph":
                 root = (query.get("root") or ["."])[0]
                 sym = (query.get("symbol") or [None])[0]
                 if APP.deterministic is not None:
@@ -1050,22 +1050,22 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/hardware/gpu":
+            if path == "/api/hardware/gpu":
                 from .gpu_monitor import get_gpu_telemetry
                 self._send(200, get_gpu_telemetry())
                 return
-            if path == "/v1/hardware/system":
+            if path == "/api/hardware/system":
                 from .gpu_monitor import get_system_telemetry
                 self._send(200, get_system_telemetry())
                 return
-            if path == "/v1/audit_dependencies":
+            if path == "/api/audit_dependencies":
                 root = (query.get("root") or ["."])[0]
                 if APP.deterministic is not None:
                     self._send(200, APP.deterministic.audit_dependencies(root))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/refactor_impact":
+            if path == "/api/refactor_impact":
                 root = (query.get("root") or ["."])[0]
                 file_param = (query.get("file") or [""])[0]
                 symbol_param = (query.get("symbol") or [None])[0]
@@ -1074,14 +1074,14 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/test_matrix":
+            if path == "/api/test_matrix":
                 root = (query.get("root") or ["."])[0]
                 if APP.deterministic is not None:
                     self._send(200, APP.services.test_matrix(root))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/security_audit":
+            if path == "/api/security_audit":
                 root = (query.get("root") or ["."])[0]
                 limit = int((query.get("limit") or [50])[0])
                 if APP.deterministic is not None:
@@ -1089,7 +1089,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/code/ast_outline":
+            if path == "/api/code/ast_outline":
                 root = (query.get("root") or ["."])[0]
                 path_param = (query.get("path") or [""])[0]
                 if APP.deterministic is not None:
@@ -1097,20 +1097,20 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/maintenance/optimize_db":
+            if path == "/api/maintenance/optimize_db":
                 self._send(200, APP.services.optimize_databases())
                 return
-            if path == "/v1/maintenance/purge_cache":
+            if path == "/api/maintenance/purge_cache":
                 days = int((query.get("days") or [7])[0])
                 self._send(200, APP.services.purge_stale_cache(days))
                 return
-            if path == "/v1/config":
+            if path == "/api/config":
                 view = json.loads(json.dumps(APP.config, ensure_ascii=False, default=str))
                 if isinstance(view.get("security"), dict) and view["security"].get("api_token"):
                     view["security"]["api_token"] = "***configured***"
                 self._send(200, {"success": True, "config": view, "config_path": APP.config.get("_config_path", ""), "runtime_override_path": APP.config.get("_runtime_override_path", "")})
                 return
-            if path == "/v1/logs/tail":
+            if path == "/api/logs/tail":
                 try:
                     lines = max(1, min(int((query.get("lines") or [200])[0]), 1000))
                     log_path = Path(APP.config["server"]["state_dir"]) / "logs" / "hub.log"
@@ -1123,19 +1123,19 @@ class Handler(BaseHTTPRequestHandler):
                 except (OSError, ValueError) as exc:
                     self._send(400, {"success": False, "error": str(exc)})
                 return
-            if path == "/v1/doctor":
+            if path == "/api/doctor":
                 self._send(200, APP.services.run_doctor())
                 return
-            if path in {"/v1/preprocess", "/v1/preprocess/status"}:
+            if path in {"/api/preprocess", "/api/preprocess/status"}:
                 root = (query.get("root") or [None])[0]
                 self._send(200, APP.preprocessor.status(root))
                 return
-            if path == "/v1/code/symbol":
+            if path == "/api/code/symbol":
                 root = (query.get("root") or ["."])[0]
                 sym = (query.get("symbol") or [""])[0]
                 self._send(200, APP.services.code_inspect_symbol(root, sym))
                 return
-            if path == "/v1/code/find_symbol":
+            if path == "/api/code/find_symbol":
                 root = (query.get("root") or ["."])[0]
                 pat = (query.get("pattern") or query.get("name_path_pattern") or [""])[0]
                 depth = int((query.get("depth") or [0])[0])
@@ -1143,36 +1143,36 @@ class Handler(BaseHTTPRequestHandler):
                 rel_path = (query.get("path") or query.get("relative_path") or [None])[0]
                 self._send(200, APP.services.code_find_symbol(root, pat, depth=depth, include_body=include_body, relative_path=rel_path))
                 return
-            if path == "/v1/code/find_declaration":
+            if path == "/api/code/find_declaration":
                 root = (query.get("root") or ["."])[0]
                 sym = (query.get("symbol") or query.get("name") or [""])[0]
                 rel_path = (query.get("path") or [None])[0]
                 self._send(200, APP.services.code_find_declaration(root, sym, path=rel_path))
                 return
-            if path == "/v1/code/find_implementations":
+            if path == "/api/code/find_implementations":
                 root = (query.get("root") or ["."])[0]
                 sym = (query.get("symbol") or query.get("name") or [""])[0]
                 rel_path = (query.get("path") or [None])[0]
                 self._send(200, APP.services.code_find_implementations(root, sym, path=rel_path))
                 return
-            if path == "/v1/code/find_referencing_symbols":
+            if path == "/api/code/find_referencing_symbols":
                 root = (query.get("root") or ["."])[0]
                 sym = (query.get("symbol") or query.get("name") or [""])[0]
                 rel_path = (query.get("path") or [None])[0]
                 self._send(200, APP.services.code_find_referencing_symbols(root, sym, path=rel_path))
                 return
-            if path == "/v1/code/symbols_overview":
+            if path == "/api/code/symbols_overview":
                 root = (query.get("root") or ["."])[0]
                 fpath = (query.get("path") or [""])[0]
                 depth = int((query.get("depth") or [1])[0])
                 self._send(200, APP.services.code_symbols_overview(root, fpath, depth=depth))
                 return
-            if path == "/v1/code/diagnostics":
+            if path == "/api/code/diagnostics":
                 root = (query.get("root") or ["."])[0]
                 fpath = (query.get("path") or [""])[0]
                 self._send(200, APP.services.code_diagnostics(root, fpath))
                 return
-            if path == "/v1/resolve_imports":
+            if path == "/api/resolve_imports":
                 root = (query.get("root") or ["."])[0]
                 lang = (query.get("language") or ["auto"])[0]
                 symbols = [s for s in (query.get("symbols") or (query.get("symbol") or [])) if s]
@@ -1181,14 +1181,14 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/git/status":
+            if path == "/api/git/status":
                 root = (query.get("root") or ["."])[0]
                 if APP.deterministic is not None:
                     self._send(200, APP.deterministic.git_status(root))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/git/synthesize_commit":
+            if path == "/api/git/synthesize_commit":
                 root = (query.get("root") or ["."])[0]
                 hint = (query.get("hint") or [""])[0]
                 task_id = (query.get("task_id") or [""])[0]
@@ -1197,7 +1197,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/models":
+            if path == "/api/models":
                 models = APP.runtime.installed_models()
                 self._send(200, {"object": "list", "data": [{"id": m, "object": "model", "owned_by": "ollama"} for m in models]}); return
             self._send(404, {"error": "not found"})
@@ -1225,10 +1225,10 @@ class Handler(BaseHTTPRequestHandler):
         self._begin_trace(path)
         if not self._require_authorized():
             return
-        # Bundle imports use raw ZIP bytes so dashboard/API clients do not pay the
-        # 33% base64 expansion and are governed by the bundle-specific safety cap.
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
-        if path == "/v1/bundle/import" and content_type in {"application/zip", "application/octet-stream"}:
+        if path == "/api/bundle/import":
+            if content_type not in {"application/zip", "application/octet-stream"}:
+                self._send(415, {"success": False, "error": "bundle import requires raw ZIP content"}); return
             try:
                 limit = max(1024, int(APP.config.get("bundles", {}).get("max_bundle_bytes", 128 * 1024 * 1024)))
                 raw_bundle = self._read_body(limit=limit)
@@ -1242,7 +1242,7 @@ class Handler(BaseHTTPRequestHandler):
             self._validate_payload(path, payload)
         except RequestBodyError as exc:
             self._send(exc.status, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
-        if path == "/v1/telemetry/tool-accounting":
+        if path == "/api/telemetry/tool-accounting":
             # Internal MCP reporter path: do not journal or recursively count this
             # metadata transport as an agent workload/tool call.
             self._telemetry_finished = True
@@ -1255,8 +1255,8 @@ class Handler(BaseHTTPRequestHandler):
                     continue
             self._send(200, {"success": True, "accepted": accepted}); return
         self._request_evaluation = payload.get("evaluation")
-        if path == "/v1/conversations/continue" or (
-            path in {"/v1/delegate", "/v1/reason"} and bool(payload.get("conversation", False))
+        if path == "/api/conversations/continue" or (
+            path in {"/api/delegate", "/api/reason"} and bool(payload.get("conversation", False))
         ):
             self._redact_debug_trace()
         trace_store = getattr(APP, "debug_traces", None)
@@ -1287,7 +1287,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
         try:
-            if path == "/v1/work-orders":
+            if path == "/api/work-orders":
                 if not getattr(APP, "work_orchestrator", None) or not APP.work_orchestrator.enabled:
                     self._send(403, {"success": False, "unsupported": True, "error": "work orchestrator is disabled", "terminal": True}); return
                 action = str(payload.get("action", "submit")).strip().lower().replace("-", "_")
@@ -1305,7 +1305,7 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "continue":
                     self._send(200, APP.work_orchestrator.continue_work(tenant, work_id, str(payload.get("answer", "")))); return
                 self._send(400, {"success": False, "error": "unknown work-order action", "terminal": True}); return
-            if path == "/v1/config/update":
+            if path == "/api/config/update":
                 action = str(payload.get("action", "update")).strip().lower()
                 config_path = str(APP.config.get("_config_path", ""))
                 if not config_path:
@@ -1344,7 +1344,7 @@ class Handler(BaseHTTPRequestHandler):
                 except (ConfigError, OSError, ValueError) as exc:
                     self._send(400, {"success": False, "error": str(exc)}); return
                 self._send(200, {"success": True, "restart_required": True, "runtime_override_path": str(target), "settings": requested}); return
-            if path == "/v1/control":
+            if path == "/api/control":
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
                 state_dir = Path(APP.config["server"]["state_dir"])
                 if action == "restart_hub":
@@ -1373,11 +1373,11 @@ class Handler(BaseHTTPRequestHandler):
             delivery = self._async_delivery(path, payload, tenant)
             if delivery is not None:
                 self._send(*delivery); return
-            if path == "/v1/delegate":
+            if path == "/api/delegate":
                 self._send(200, APP.services.delegate(payload, tenant)); return
-            if path == "/v1/conversations/continue":
+            if path == "/api/conversations/continue":
                 self._send(200, APP.services.continue_conversation(payload, tenant)); return
-            if path == "/v1/async-jobs":
+            if path == "/api/async-jobs":
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
                 if action == "submit":
                     self._send(200, APP.async_jobs.submit(tenant, str(payload.get("job_action", "reason")), payload)); return
@@ -1390,7 +1390,7 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "cancel":
                     self._send(200, APP.async_jobs.cancel(tenant, str(payload.get("job_id", "")))); return
                 self._send(400, {"success": False, "error": "unknown async job action", "terminal": True, "retryable": False}); return
-            if path == "/v1/agent-state/tasks":
+            if path == "/api/agent-state/tasks":
                 if not getattr(APP, "agent_tasks", None) or not APP.agent_tasks.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
@@ -1527,7 +1527,7 @@ class Handler(BaseHTTPRequestHandler):
                     tasks = APP.agent_tasks.list_tasks(status=status_filter, limit=limit)
                     self._send(200, {"success": True, "tasks": [t.to_dict() for t in tasks]}); return
                 self._send(400, {"success": False, "error": f"unknown task action '{action}'", "terminal": True, "retryable": False}); return
-            if path == "/v1/agent-state/memory":
+            if path == "/api/agent-state/memory":
                 if not getattr(APP, "agent_memory", None) or not APP.agent_memory.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
@@ -1642,7 +1642,7 @@ class Handler(BaseHTTPRequestHandler):
                     count = APP.agent_memory.reap_expired()
                     self._send(200, {"success": True, "reaped_count": count}); return
                 self._send(400, {"success": False, "error": f"unknown memory action '{action}'", "terminal": True, "retryable": False}); return
-            if path == "/v1/agent-state/incidents":
+            if path == "/api/agent-state/incidents":
                 if not getattr(APP, "agent_incidents", None) or not APP.agent_incidents.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
@@ -1713,7 +1713,7 @@ class Handler(BaseHTTPRequestHandler):
                     incidents = APP.agent_incidents.list_incidents(resolved=resolved_filter, limit=limit_val)
                     self._send(200, {"success": True, "incidents": [i.to_dict() for i in incidents]}); return
                 self._send(400, {"success": False, "error": f"unknown incident action '{action}'", "terminal": True, "retryable": False}); return
-            if path == "/v1/agent-state/verification":
+            if path == "/api/agent-state/verification":
                 if not getattr(APP, "agent_verification", None) or not APP.agent_verification.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
@@ -1743,7 +1743,7 @@ class Handler(BaseHTTPRequestHandler):
                     res = APP.agent_verification.completion(task_id)
                     self._send(200, {"success": True, "completion": res.to_dict()}); return
                 self._send(400, {"success": False, "error": f"unknown verification action '{action}'", "terminal": True, "retryable": False}); return
-            if path == "/v1/agent-state/context":
+            if path == "/api/agent-state/context":
                 if not getattr(APP, "agent_context", None) or not APP.agent_context.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
@@ -1759,7 +1759,7 @@ class Handler(BaseHTTPRequestHandler):
                     compiled = APP.agent_context.compile(req)
                     self._send(200, {"success": True, "context": compiled.to_dict(), "text": compiled.text()}); return
                 self._send(400, {"success": False, "error": f"unknown context action '{action}'", "terminal": True, "retryable": False}); return
-            if path == "/v1/agent-state/learning":
+            if path == "/api/agent-state/learning":
                 if not getattr(APP, "agent_learning", None) or not APP.agent_learning.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
@@ -1771,8 +1771,8 @@ class Handler(BaseHTTPRequestHandler):
                         else:
                             cand = ImprovementCandidate.create(
                                 name=str(cand_data.get("name", "")),
-                                baseline_version=str(cand_data.get("baseline_version", "v1")),
-                                candidate_version=str(cand_data.get("candidate_version", "v2")),
+                                baseline_version=str(cand_data.get("baseline_version", "baseline")),
+                                candidate_version=str(cand_data.get("candidate_version", "candidate")),
                                 slo_thresholds=cand_data.get("slo_thresholds"),
                                 metrics=cand_data.get("metrics"),
                             )
@@ -1809,13 +1809,13 @@ class Handler(BaseHTTPRequestHandler):
                     candidates = APP.agent_learning.list_candidates(limit=limit_val)
                     self._send(200, {"success": True, "candidates": [c.to_dict() for c in candidates]}); return
                 self._send(400, {"success": False, "error": f"unknown learning action '{action}'", "terminal": True, "retryable": False}); return
-            if path == "/v1/agent-state/cleanup":
+            if path == "/api/agent-state/cleanup":
                 if not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 retention = int(payload.get("retention_days") or APP.config.get("agent_state", {}).get("retention_days", 30))
                 res = APP.agent_state.cleanup(retention_days=retention)
                 self._send(200, res); return
-            if path == "/v1/agent-state/blackboard":
+            if path == "/api/agent-state/blackboard":
                 if not getattr(APP, "agent_blackboard", None):
                     self._send(503, {"success": False, "error": "blackboard unavailable"}); return
                 action = str(payload.get("action", "get")).strip().lower().replace("-", "_")
@@ -1843,7 +1843,7 @@ class Handler(BaseHTTPRequestHandler):
                     res = APP.agent_blackboard.delete(board_id, section=str(section) if section else None)
                     self._send(200, res); return
                 self._send(400, {"success": False, "error": f"unknown blackboard action '{action}'"}); return
-            if path == "/v1/agent-state/swarm/dispatch":
+            if path == "/api/agent-state/swarm/dispatch":
                 if not getattr(APP, "swarm", None):
                     self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
                 goal = str(payload.get("goal", payload.get("task", "")))
@@ -1855,7 +1855,7 @@ class Handler(BaseHTTPRequestHandler):
                 root = str(payload.get("root", "."))
                 res = APP.swarm.dispatch(goal=goal, target_paths=target_paths, test_command=test_command, author=author, root=root)
                 self._send(200, res); return
-            if path == "/v1/agent-state/swarm/step":
+            if path == "/api/agent-state/swarm/step":
                 if not getattr(APP, "swarm", None):
                     self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
                 swarm_id = str(payload.get("swarm_id", payload.get("task_id", "")))
@@ -1864,7 +1864,7 @@ class Handler(BaseHTTPRequestHandler):
                 step_payload = payload.get("payload", payload.get("content", {}))
                 res = APP.swarm.step(swarm_id=swarm_id, role=role, action=action, payload=step_payload)
                 self._send(200, res); return
-            if path == "/v1/benchmark/run":
+            if path == "/api/benchmark/run":
                 if not getattr(APP, "benchmark_runner", None):
                     self._send(503, {"success": False, "error": "benchmark runner unavailable"}); return
                 model = str(payload.get("model", ""))
@@ -1872,42 +1872,42 @@ class Handler(BaseHTTPRequestHandler):
                 num_tokens = int(payload.get("num_tokens", payload.get("max_tokens", 40)))
                 res = APP.benchmark_runner.run(model=model, prompt=prompt or "def test(): pass\n", num_tokens=num_tokens)
                 self._send(200, res); return
-            if path == "/v1/delegate/repo":
+            if path == "/api/delegate/repo":
                 self._send(200, APP.services.delegate_repo(payload, tenant)); return
-            if path == "/v1/solve/repo":
+            if path == "/api/solve/repo":
                 self._send(200, APP.services.solve_repo(payload, tenant)); return
-            if path == "/v1/route":
+            if path == "/api/route":
                 self._send(200, APP.services.route_context(payload, tenant)); return
-            if path == "/v1/delegate/batch":
+            if path == "/api/delegate/batch":
                 self._send(200, APP.services.batch_delegate(payload, tenant)); return
-            if path == "/v1/review":
+            if path == "/api/review":
                 self._send(200, APP.services.review(payload, tenant)); return
-            if path == "/v1/review/diff":
+            if path == "/api/review/diff":
                 self._send(200, APP.services.review_diff(payload, tenant)); return
-            if path == "/v1/reason":
+            if path == "/api/reason":
                 self._send(200, APP.services.reason(payload, tenant)); return
-            if path == "/v1/second-opinion":
+            if path == "/api/second-opinion":
                 self._send(200, APP.services.second_opinion(payload, tenant)); return
-            if path == "/v1/compress":
+            if path == "/api/compress":
                 self._send(200, APP.services.compress(payload, tenant)); return
-            if path == "/v1/generate_tests":
+            if path == "/api/generate_tests":
                 self._send(200, APP.services.generate_tests(payload, tenant))
                 return
-            if path == "/v1/patch/validate":
+            if path == "/api/patch/validate":
                 self._send(200, APP.services.validate_patch(payload, tenant))
                 return
-            if path == "/v1/query/expand":
+            if path == "/api/query/expand":
                 q = str(payload.get("query", ""))
                 self._send(200, {"success": True, "query": q, "expanded_terms": APP.services.expand_query(q, tenant)})
                 return
-            if path == "/v1/audit_dependencies":
+            if path == "/api/audit_dependencies":
                 root = str(payload.get("root", "."))
                 if APP.deterministic is not None:
                     self._send(200, APP.deterministic.audit_dependencies(root))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/refactor_impact":
+            if path == "/api/refactor_impact":
                 root = str(payload.get("root", "."))
                 file_param = str(payload.get("file", payload.get("path", "")))
                 symbol_param = payload.get("symbol")
@@ -1916,7 +1916,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/resolve_imports":
+            if path == "/api/resolve_imports":
                 root = str(payload.get("root", "."))
                 lang = str(payload.get("language", "csharp"))
                 syms = payload.get("symbols", [payload.get("symbol")] if payload.get("symbol") else [])
@@ -1925,14 +1925,14 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/git/status":
+            if path == "/api/git/status":
                 root = str(payload.get("root", "."))
                 if APP.deterministic is not None:
                     self._send(200, APP.deterministic.git_status(root))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/git/synthesize_commit":
+            if path == "/api/git/synthesize_commit":
                 root = str(payload.get("root", "."))
                 hint = str(payload.get("hint", payload.get("message", "")))
                 task_id = str(payload.get("task_id", ""))
@@ -1941,14 +1941,14 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/test_matrix":
+            if path == "/api/test_matrix":
                 root = str(payload.get("root", "."))
                 if APP.deterministic is not None:
                     self._send(200, APP.services.test_matrix(root))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/security_audit":
+            if path == "/api/security_audit":
                 root = str(payload.get("root", "."))
                 limit = int(payload.get("limit", 50))
                 if APP.deterministic is not None:
@@ -1956,7 +1956,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/code-intelligence/query":
+            if path == "/api/code-intelligence/query":
                 root = str(payload.get("root", "."))
                 self._send(200, APP.external_tools.query(
                     root, str(payload.get("query", "")),
@@ -1966,7 +1966,7 @@ class Handler(BaseHTTPRequestHandler):
                     limit=max(1, min(int(payload.get("limit", 20)), 50)),
                 ))
                 return
-            if path == "/v1/code/ast_outline":
+            if path == "/api/code/ast_outline":
                 root = str(payload.get("root", "."))
                 path_param = str(payload.get("path", payload.get("file", "")))
                 if APP.deterministic is not None:
@@ -1974,22 +1974,22 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/maintenance/optimize_db":
+            if path == "/api/maintenance/optimize_db":
                 self._send(200, APP.services.optimize_databases())
                 return
-            if path == "/v1/maintenance/purge_cache":
+            if path == "/api/maintenance/purge_cache":
                 days = int(payload.get("days", 7))
                 self._send(200, APP.services.purge_stale_cache(days))
                 return
-            if path == "/v1/doctor":
+            if path == "/api/doctor":
                 self._send(200, APP.services.run_doctor())
                 return
-            if path == "/v1/code/symbol":
+            if path == "/api/code/symbol":
                 root = str(payload.get("root", "."))
                 sym = str(payload.get("symbol", ""))
                 self._send(200, APP.services.code_inspect_symbol(root, sym))
                 return
-            if path == "/v1/code/find_symbol":
+            if path == "/api/code/find_symbol":
                 root = str(payload.get("root", "."))
                 pat = str(payload.get("pattern") or payload.get("name_path_pattern") or "")
                 depth = int(payload.get("depth", 0))
@@ -1999,36 +1999,36 @@ class Handler(BaseHTTPRequestHandler):
                 limit = int(payload.get("limit", 30))
                 self._send(200, APP.services.code_find_symbol(root, pat, depth=depth, include_body=include_body, include_info=include_info, relative_path=str(rel_path) if rel_path else None, limit=limit))
                 return
-            if path == "/v1/code/find_declaration":
+            if path == "/api/code/find_declaration":
                 root = str(payload.get("root", "."))
                 sym = str(payload.get("symbol") or payload.get("name") or "")
                 rel_path = payload.get("path")
                 self._send(200, APP.services.code_find_declaration(root, sym, path=str(rel_path) if rel_path else None))
                 return
-            if path == "/v1/code/find_implementations":
+            if path == "/api/code/find_implementations":
                 root = str(payload.get("root", "."))
                 sym = str(payload.get("symbol") or payload.get("name") or "")
                 rel_path = payload.get("path")
                 self._send(200, APP.services.code_find_implementations(root, sym, path=str(rel_path) if rel_path else None))
                 return
-            if path == "/v1/code/find_referencing_symbols":
+            if path == "/api/code/find_referencing_symbols":
                 root = str(payload.get("root", "."))
                 sym = str(payload.get("symbol") or payload.get("name") or "")
                 rel_path = payload.get("path")
                 self._send(200, APP.services.code_find_referencing_symbols(root, sym, path=str(rel_path) if rel_path else None))
                 return
-            if path == "/v1/code/symbols_overview":
+            if path == "/api/code/symbols_overview":
                 root = str(payload.get("root", "."))
                 fpath = str(payload.get("path", ""))
                 depth = int(payload.get("depth", 1))
                 self._send(200, APP.services.code_symbols_overview(root, fpath, depth=depth))
                 return
-            if path == "/v1/code/diagnostics":
+            if path == "/api/code/diagnostics":
                 root = str(payload.get("root", "."))
                 fpath = str(payload.get("path", ""))
                 self._send(200, APP.services.code_diagnostics(root, fpath))
                 return
-            if path == "/v1/code-intelligence/control":
+            if path == "/api/code-intelligence/control":
                 action = str(payload.get("action", "status")).strip().lower().replace("-", "_")
                 if action == "status":
                     self._send(200, {"success": True, **APP.external_tools.status()}); return
@@ -2037,23 +2037,23 @@ class Handler(BaseHTTPRequestHandler):
                 if action in {"reset", "reset_sessions"}:
                     self._send(200, APP.external_tools.reset_sessions(str(payload.get("backend", "all")), str(payload.get("root")) if payload.get("root") else None)); return
                 self._send(400, {"success": False, "error": f"unknown code-intelligence action: {action}"}); return
-            if path == "/v1/complete":
+            if path == "/api/complete":
                 # FIM completion routed through APP.services with caching / APP.scheduler.submit
                 self._send(200, APP.services.complete_code(payload, tenant)); return
-            if path == "/v1/preprocess":
+            if path == "/api/preprocess":
                 self._send(200, APP.services.preprocess(payload)); return
-            if path == "/v1/dead_code":
+            if path == "/api/dead_code":
                 root = str(payload.get("root", "."))
                 limit = int(payload.get("limit", 50))
                 self._send(200, APP.services.dead_code(root, limit))
                 return
-            if path == "/v1/symbol_callgraph":
+            if path == "/api/symbol_callgraph":
                 root = str(payload.get("root", "."))
                 sym = payload.get("symbol")
                 limit = int(payload.get("limit", 50))
                 self._send(200, APP.services.symbol_callgraph(root, str(sym) if sym else None, limit))
                 return
-            if path == "/v1/cross_project_graph":
+            if path == "/api/cross_project_graph":
                 roots = payload.get("roots")
                 if not isinstance(roots, list) or not roots:
                     roots = [str(p.get("root")) for p in APP.preprocessor.status().get("projects", []) if p.get("root")]
@@ -2062,7 +2062,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/cross_project_symbols":
+            if path == "/api/cross_project_symbols":
                 roots = payload.get("roots")
                 if not isinstance(roots, list) or not roots:
                     roots = [str(p.get("root")) for p in APP.preprocessor.status().get("projects", []) if p.get("root")]
@@ -2073,7 +2073,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/cross_project_impact":
+            if path == "/api/cross_project_impact":
                 roots = payload.get("roots")
                 if not isinstance(roots, list) or not roots:
                     roots = [str(p.get("root")) for p in APP.preprocessor.status().get("projects", []) if p.get("root")]
@@ -2084,7 +2084,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/repo/call_graph_diff":
+            if path == "/api/repo/call_graph_diff":
                 root = str(payload.get("root", "."))
                 diff = payload.get("diff")
                 if APP.deterministic is not None:
@@ -2092,7 +2092,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/v1/bundle/export":
+            if path == "/api/bundle/export":
                 root = str(payload.get("root", "."))
                 try:
                     data = APP.export_bundle(root)
@@ -2107,41 +2107,27 @@ class Handler(BaseHTTPRequestHandler):
                     if not _is_client_disconnect(exc):
                         self._send(500, {"success": False, "error": str(exc)})
                 return
-            if path == "/v1/bundle/import":
-                data_b64 = payload.get("bundle_base64")
-                target_root = payload.get("target_root")
-                if data_b64:
-                    import base64
-                    try:
-                        raw = base64.b64decode(str(data_b64), validate=True)
-                        res = APP.import_bundle(raw, str(target_root) if target_root else None)
-                        self._send(200 if res.get("success") else 400, res)
-                    except Exception as exc:
-                        self._send(400, {"success": False, "error": str(exc)})
-                else:
-                    self._send(400, {"success": False, "error": "missing bundle_base64 in json payload"})
-                return
-            if path == "/v1/benchmark":
+            if path == "/api/benchmark":
                 self._send(200, APP.services.benchmark(tenant)); return
-            if path == "/v1/evaluation":
+            if path == "/api/evaluation":
                 self._send(200, APP.services.evaluation(payload)); return
-            if path == "/v1/repo/profile":
+            if path == "/api/repo/profile":
                 self._send(200, APP.services.repo_profile(str(payload.get("root", ".")))); return
-            if path == "/v1/repo/map":
+            if path == "/api/repo/map":
                 self._send(200, APP.services.repo_map(str(payload.get("root", ".")), int(payload.get("max_symbols", 120)))); return
-            if path == "/v1/repo/code-index":
+            if path == "/api/repo/code-index":
                 self._send(200, APP.services.code_query(str(payload.get("root", ".")), str(payload.get("query", "")), int(payload.get("limit", 20)))); return
-            if path == "/v1/repo/deterministic":
+            if path == "/api/repo/deterministic":
                 self._send(200, APP.services.deterministic_query(str(payload.get("root", ".")), str(payload.get("query", "")), int(payload.get("limit", 24)))); return
-            if path == "/v1/repo/impact":
+            if path == "/api/repo/impact":
                 self._send(200, APP.services.repo_impact(
                     str(payload.get("root", ".")), str(payload.get("base", "HEAD")), bool(payload.get("staged", False)),
                     int(payload.get("max_symbols", APP.config.get("workflow", {}).get("impact_max_symbols", 48))),
                     int(payload.get("max_dependents", APP.config.get("workflow", {}).get("impact_max_dependents", 30))),
                 )); return
-            if path == "/v1/search":
+            if path == "/api/search":
                 self._send(200, APP.services.repo_search(str(payload.get("root", ".")), str(payload.get("query", "")), int(payload.get("top_k", 12)))); return
-            if path == "/v1/context/pack":
+            if path == "/api/context/pack":
                 root = str(payload.get("root", ".")); query_text = str(payload.get("query", ""))
                 max_tokens = int(payload.get("max_tokens", APP.config.get("token_saving", {}).get("default_repo_context_tokens", 4200)))
                 mode = str(payload.get("mode", "fast")).strip().lower()
@@ -2153,44 +2139,44 @@ class Handler(BaseHTTPRequestHandler):
                 if isinstance(result, dict):
                     result["delivery_mode"] = mode
                 self._send(200, result); return
-            if path == "/v1/artifact/get":
+            if path == "/api/artifact/get":
                 self._send(200, APP.artifacts.get(str(payload.get("artifact_id", "")), int(payload.get("offset", 0)), int(payload.get("max_chars", 6000)), str(payload.get("section", "")))); return
-            if path == "/v1/evidence/verify":
+            if path == "/api/evidence/verify":
                 evidence = payload.get("evidence", [])
                 self._send(200, APP.repo_tools.verify_evidence(str(payload.get("root", ".")), evidence if isinstance(evidence, list) else [])); return
-            if path == "/v1/evidence/get":
+            if path == "/api/evidence/get":
                 self._send(200, APP.evidence.get(str(payload.get("evidence_id", "")), verify=bool(payload.get("verify", True)))); return
-            if path in ("/v1/leases/claim", "/v1/leases/claim_batch"):
+            if path in ("/api/leases/claim", "/api/leases/claim_batch"):
                 paths = payload.get("paths", [])
                 self._send(200, APP.leases.claim_batch(tenant, str(payload.get("root", ".")), [str(x) for x in paths] if isinstance(paths, list) else [], int(payload.get("ttl_seconds", 900)), str(payload.get("purpose", "agent edit")))); return
-            if path == "/v1/leases/release":
+            if path == "/api/leases/release":
                 self._send(200, APP.leases.release(tenant, str(payload.get("lease_id", "")))); return
-            if path == "/v1/leases/renew":
+            if path == "/api/leases/renew":
                 self._send(200, APP.leases.renew(tenant, str(payload.get("lease_id", "")), int(payload.get("ttl_seconds", 900)))); return
-            if path == "/v1/memory/put":
+            if path == "/api/memory/put":
                 self._send(200, APP.memory.put(
                     str(payload.get("root", ".")), str(payload.get("key", "")), str(payload.get("value", "")), tenant,
                     ttl_seconds=payload.get("ttl_seconds"), metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None,
                 )); return
-            if path == "/v1/memory/get":
+            if path == "/api/memory/get":
                 self._send(200, APP.memory.get(str(payload.get("root", ".")), str(payload.get("key", "")))); return
-            if path == "/v1/memory/search":
+            if path == "/api/memory/search":
                 self._send(200, APP.memory.search(str(payload.get("root", ".")), str(payload.get("query", "")), int(payload.get("limit", 12)))); return
-            if path == "/v1/memory/delete":
+            if path == "/api/memory/delete":
                 self._send(200, APP.memory.delete(str(payload.get("root", ".")), str(payload.get("key", "")), tenant)); return
-            if path == "/v1/command":
+            if path == "/api/command":
                 self._send(200, APP.services.command(payload, tenant)); return
-            if path == "/v1/embed":
+            if path == "/api/embed":
                 texts = payload.get("texts", payload.get("input", []))
                 if isinstance(texts, str):
                     texts = [texts]
                 self._send(200, APP.services.embed([str(x) for x in texts], tenant, query=bool(payload.get("query", False)))); return
-            if path == "/v1/rerank":
+            if path == "/api/rerank":
                 docs = payload.get("documents", [])
                 self._send(200, APP.reranker.rerank(str(payload.get("query", "")), [str(x) for x in docs], payload.get("top_k"))); return
-            if path == "/v1/rag/index":
+            if path == "/api/rag/index":
                 self._send(200, APP.rag.index(str(payload.get("root", ".")), tenant, payload.get("workspace"))); return
-            if path == "/v1/rag/search":
+            if path == "/api/rag/search":
                 workspace = str(payload.get("workspace", ""))
                 if not workspace:
                     self._send(400, {"success": False, "error": "workspace is required"}); return

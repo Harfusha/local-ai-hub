@@ -1,6 +1,6 @@
 ---
 name: local-ai-orchestrator
-description: Local-first routing for Codex, Gemini, Claude, Cursor, Windsurf, VS Code/Copilot and MCP-compatible coding agents. Keeps the main agent as orchestrator and routes bounded work through Local AI Hub.
+description: Local-first routing for Codex, Gemini, Claude, Cursor, Windsurf, VS Code/Copilot and MCP coding agents. Keeps the main agent as orchestrator and routes bounded work through Local AI Hub.
 ---
 
 # Local AI Hub routing

@@ -219,7 +219,7 @@ enabled = true
             http_server.APP = DummyApp()
             handler = Handler.__new__(Handler)
             handler.client_address = ("127.0.0.1", 12345)
-            handler.path = "/v1/config/update"
+            handler.path = "/api/config/update"
             handler.headers = {}
             handler._read_json = lambda limit=None: {"action": "update", "settings": {"features.commands": False}}
             handler._require_authorized = lambda: True

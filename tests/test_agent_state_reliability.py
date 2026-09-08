@@ -255,7 +255,7 @@ def test_http_and_mcp_coordination_endpoints(tmp_path: Path) -> None:
     res = c.coord("blackboard_delete", board_id="b1", section="s1")
     assert res["success"] is True
     c.post.assert_called_once_with(
-        "/v1/agent-state/blackboard",
+        "/api/agent-state/blackboard",
         {
             "action": "delete",
             "board_id": "b1",

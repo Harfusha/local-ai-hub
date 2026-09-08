@@ -7,30 +7,30 @@ from local_ai_hub.http_server import Handler, RequestBodyError
 def test_memory_put_validation_requires_key_and_value():
     # Empty key raises RequestBodyError
     with pytest.raises(RequestBodyError, match="key is required"):
-        Handler._validate_payload("/v1/memory/put", {"key": "", "value": "test"})
+        Handler._validate_payload("/api/memory/put", {"key": "", "value": "test"})
 
     # Missing key raises RequestBodyError
     with pytest.raises(RequestBodyError, match="key is required"):
-        Handler._validate_payload("/v1/memory/put", {"value": "test"})
+        Handler._validate_payload("/api/memory/put", {"value": "test"})
 
     # Key exceeding 160 characters raises RequestBodyError
     with pytest.raises(RequestBodyError, match="key must be a string of at most 160 characters"):
-        Handler._validate_payload("/v1/memory/put", {"key": "k" * 161, "value": "test"})
+        Handler._validate_payload("/api/memory/put", {"key": "k" * 161, "value": "test"})
 
     # Empty value raises RequestBodyError
     with pytest.raises(RequestBodyError, match="value is required"):
-        Handler._validate_payload("/v1/memory/put", {"key": "my_key", "value": ""})
+        Handler._validate_payload("/api/memory/put", {"key": "my_key", "value": ""})
 
     # Missing value raises RequestBodyError
     with pytest.raises(RequestBodyError, match="value is required"):
-        Handler._validate_payload("/v1/memory/put", {"key": "my_key"})
+        Handler._validate_payload("/api/memory/put", {"key": "my_key"})
 
     # Valid payload passes
-    Handler._validate_payload("/v1/memory/put", {"key": "my_key", "value": "my_value"})
+    Handler._validate_payload("/api/memory/put", {"key": "my_key", "value": "my_value"})
 
 
 def test_memory_get_and_delete_validation_requires_key():
-    for path in ("/v1/memory/get", "/v1/memory/delete"):
+    for path in ("/api/memory/get", "/api/memory/delete"):
         with pytest.raises(RequestBodyError, match="key is required"):
             Handler._validate_payload(path, {"key": ""})
 

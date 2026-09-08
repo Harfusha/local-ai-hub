@@ -204,6 +204,16 @@ class IncidentStore:
                 con = connect_sqlite(self.state_store.db_path)
                 try:
                     with con:
+                        expected_columns = [
+                            "incident_id", "operation_class", "error_class", "signature_hash", "redacted_message",
+                            "state_revision", "attempts", "evidence_ids", "root_cause", "verified_fix", "confidence",
+                            "resolved", "created_at", "updated_at", "expires_at", "affected_paths",
+                        ]
+                        existing = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                        if "agent_incidents" in existing:
+                            actual_columns = [str(row[1]) for row in con.execute("PRAGMA table_info(agent_incidents)")]
+                            if actual_columns != expected_columns:
+                                con.execute("DROP TABLE agent_incidents")
                         con.execute(
                             """
                             CREATE TABLE IF NOT EXISTS agent_incidents (
@@ -226,10 +236,6 @@ class IncidentStore:
                             );
                             """
                         )
-                        try:
-                            con.execute("ALTER TABLE agent_incidents ADD COLUMN affected_paths TEXT NOT NULL DEFAULT '[]'")
-                        except Exception:
-                            pass
                         con.execute(
                             """
                             CREATE INDEX IF NOT EXISTS idx_agent_incidents_fp

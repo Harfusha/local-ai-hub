@@ -510,7 +510,7 @@ def test_existing_timed_out_external_index_is_promoted_to_revision_scoped_skip(t
         pre.close()
 
 
-def test_startup_reclassifies_persisted_revision_scoped_external_failure(tmp_path: Path):
+def test_external_state_is_preserved_across_restart(tmp_path: Path):
     cfg = _cfg(tmp_path)
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -534,7 +534,7 @@ def test_startup_reclassifies_persisted_revision_scoped_external_failure(tmp_pat
                 "SELECT status FROM external_index_state WHERE root=? AND backend=?",
                 (str(repo), "codegraph"),
             ).fetchone()
-        assert state[0] == "unavailable"
+        assert state[0] == "degraded"
     finally:
         reopened.close()
 

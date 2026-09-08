@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .budget import estimate_tokens
 from .cache import SQLiteCache, TieredCache, stable_hash
 from .normalizer import tokenize_query_terms
@@ -160,7 +161,7 @@ class LosslessTokenRouter:
         if not self.enabled or not lines:
             return {"success": True, "context": text, "evidence": [], "routed": False, "estimated_tokens": estimate_tokens(text)}
         mode = self._infer_mode(text, path)
-        scope = stable_hash({"text": stable_hash(text), "query": query, "path": path, "mode": mode, "v": 1})
+        scope = stable_hash({"text": stable_hash(text), "query": query, "path": path, "mode": mode, "app_version": __version__})
         cached = self.cache.get(scope)
         if isinstance(cached, dict):
             self.hits += 1

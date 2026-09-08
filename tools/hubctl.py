@@ -154,9 +154,9 @@ def main() -> int:
         c = client()
         try:
             try:
-                res = c.post("/v1/agent-state/cleanup", {}, timeout=3.0)
+                res = c.post("/api/agent-state/cleanup", {}, timeout=3.0)
             except TypeError:
-                res = c.post("/v1/agent-state/cleanup", {})
+                res = c.post("/api/agent-state/cleanup", {})
         except Exception as e:
             res = {"success": bool(cleaned_ports), "server_status": "offline", "detail": str(e)}
         if cleaned_ports:

@@ -1,10 +1,10 @@
 # Local AI Hub
 
-Local AI Hub **2.4.0** is a local, deterministic-first tool and inference layer for coding agents such as Codex, Claude Code, Gemini CLI, Cursor, Windsurf, VS Code/Copilot and other MCP clients. Its purpose is to keep repetitive repository discovery, code-relationship analysis, validation, retrieval and bounded local reasoning off the cloud agent's context while sharing the resulting work across agents.
+Local AI Hub **3.0.0** is a local, deterministic-first tool and inference layer for coding agents such as Codex, Claude Code, Gemini CLI, Cursor, Windsurf, VS Code/Copilot and other MCP clients. Its purpose is to keep repetitive repository discovery, code-relationship analysis, validation, retrieval and bounded local reasoning off the cloud agent's context while sharing the resulting work across agents.
 
 The public interface is intentionally small: **8 MCP tools**. Serena and CodeGraphContext are managed behind that surface by default, so agents gain language-aware symbols and graph relationships without paying for two additional MCP schemas on every turn.
 
-Version 2.4 adds **end-to-end token-efficiency accounting** at the MCP boundary. Gross repository/context/output avoidance is measured separately from the tokens the cloud agent spends emitting each tool call and reading the projected tool response; the dashboard therefore reports a signed net token delta instead of treating every tool call as a saving. Deterministic/indexed retrieval, context/diff/outline compaction and artifact-backed response projection contribute measured savings without double-counting overlapping transformations. Local cache/single-flight reuse is reported separately as local-compute avoidance. Tool-catalog schema exposure is shown as a separate conservative adjustment because MCP hosts differ in how often schemas are injected or cached. Version 2.4 also removes synchronous telemetry flushes from live/status/dashboard hot paths, batches accounting asynchronously, and fixes clean-checkout AgentState/TaskStore bootstrap. The v2.3 Work Orchestrator and v2.2 Intel NPU → iGPU → CPU retrieval fallback remain intact.
+Local AI Hub 3.0 uses one current runtime contract across packaging, HTTP, MCP, telemetry, caches and dashboard state. Token efficiency is accounted end-to-end at the MCP boundary: gross repository/context/output avoidance is measured separately from tool-call and tool-response protocol cost, producing a signed net cloud-token delta. Deterministic/indexed retrieval, context/diff/outline compaction and artifact-backed projection contribute measured savings without double-counting overlapping transformations. Local cache/single-flight reuse is reported separately as local-compute avoidance, and tool-catalog schema exposure is shown as a separate conservative scenario.
 
 ## What it does
 
@@ -176,7 +176,7 @@ No software can guarantee survival of OS, driver, power or hardware failures, bu
 
 ## Token-efficiency accounting
 
-Version 2.4 distinguishes cloud-context savings from the protocol cost required to obtain them. For every public MCP call the Hub estimates the compact tool name/arguments emitted by the agent and the exact projected response the agent must read. The default headline is therefore:
+Local AI Hub accounts for cloud-context savings together with the protocol cost required to obtain them. For every public MCP call the Hub estimates the compact tool name/arguments emitted by the agent and the exact projected response the agent must read. The default headline is therefore:
 
 `net cloud token delta = gross cloud context/output avoided - tool-call tokens - tool-response tokens`
 

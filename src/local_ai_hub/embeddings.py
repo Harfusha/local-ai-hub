@@ -43,9 +43,7 @@ class EmbeddingModel:
         self.cache = TieredCache(
             SQLiteCache(
                 state_dir / "cache.sqlite3",
-                # v2 separates entries by the model/backend that actually produced
-                # them; auto mode may legitimately fall back at runtime.
-                namespace="embed:v2",
+                namespace="embeddings",
                 ttl_seconds=int(cache_cfg.get("embedding_ttl_seconds", 30 * 86400)),
                 max_entries=int(cache_cfg.get("embedding_max_entries", 100_000)),
             ),
@@ -60,21 +58,6 @@ class EmbeddingModel:
         self._loaded_model_name = self.model_name
         self._active_cache_identity: str | None = None
         self._active_embedding_dimension: int | None = None
-
-    def _legacy_cpu_cache_identity(self) -> str | None:
-        """Return the v2.1 cache identity only when reuse is numerically safe.
-
-        v2.1 SentenceTransformers entries did not encode the execution device.
-        They were produced by the CPU path, so they may be reused by the new
-        CPU SentenceTransformers path but never by OpenVINO NPU/GPU execution.
-        Keeping the existing ``embed:v2`` namespace lets upgrades reuse those
-        durable entries without copying the whole cache database.
-        """
-        active_backend = self.active_backend or self.backend
-        active_device = str(self.active_device or self.device or "cpu").strip().lower()
-        if active_backend == "sentence-transformers" and active_device in {"cpu", "cpu.0"}:
-            return f"sentence-transformers:{self._loaded_model_name}"
-        return None
 
     @staticmethod
     def _valid_cached_vector(cached: Any, identity: str, expected_dimension: int | None) -> list[float] | None:
@@ -273,19 +256,10 @@ class EmbeddingModel:
         used_backend = self.active_backend or self.backend
         for i, text in enumerate(texts):
             clean_text = str(text).replace("\r\n", "\n")
-            key = stable_hash({"v": 2, "identity": cache_identity, "query": query, "text": clean_text}) if cache_identity else ""
+            key = stable_hash({"identity": cache_identity, "query": query, "text": clean_text}) if cache_identity else ""
             cached = self.cache.get(key) if self.cache_enabled and key else None
             cached_vector = self._valid_cached_vector(cached, cache_identity, self._active_embedding_dimension) if cache_identity else None
-            if cached_vector is None and self.cache_enabled and cache_identity:
-                # Backward-compatible, read-through migration from v2.1 CPU
-                # SentenceTransformers identities. Accelerator-produced entries
-                # always stay device-qualified and never consume this fallback.
-                legacy_identity = self._legacy_cpu_cache_identity()
-                if legacy_identity and legacy_identity != cache_identity:
-                    legacy_key = stable_hash({"v": 2, "identity": legacy_identity, "query": query, "text": clean_text})
-                    legacy = self.cache.get(legacy_key)
-                    cached_vector = self._valid_cached_vector(legacy, legacy_identity, self._active_embedding_dimension)
-                    if cached_vector is not None:
+            if cached_vector is not None:
                         self.cache.set(
                             key,
                             {"identity": cache_identity, "dimension": len(cached_vector), "vector": cached_vector},
@@ -300,7 +274,7 @@ class EmbeddingModel:
             # The same content is common across worktrees and generated/copied
             # files. Cache keys are content-addressed, so collapse duplicate misses
             # before invoking a model and fan one vector back out to every position.
-            pending_key = key or stable_hash({"v": 1, "query": query, "text": text})
+            pending_key = key or stable_hash({"query": query, "text": text})
             group_index = pending_by_key.get(pending_key)
             if group_index is None:
                 pending_by_key[pending_key] = len(missing_texts)
@@ -383,7 +357,7 @@ class EmbeddingModel:
                     vectors[idx] = vector
                 if self.cache_enabled:
                     clean_text = str(text).replace("\r\n", "\n")
-                    key = stable_hash({"v": 2, "identity": self._active_cache_identity, "query": query, "text": clean_text})
+                    key = stable_hash({"identity": self._active_cache_identity, "query": query, "text": clean_text})
                     self.cache.set(key, {"identity": self._active_cache_identity, "dimension": self._active_embedding_dimension, "vector": vector})
                 self._computed += 1
             self._batch_deduplicated += batch_deduplicated

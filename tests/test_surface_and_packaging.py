@@ -29,7 +29,7 @@ def test_packaged_defaults_match_source_defaults():
     assert (ROOT / "defaults.toml").read_bytes() == (ROOT / "src" / "local_ai_hub" / "defaults.toml").read_bytes()
 
 
-def test_shipping_agent_policy_advertises_v23_compact_workflow():
+def test_shipping_agent_policy_advertises_compact_workflow():
     policy = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     assert "local_ai_work" in policy
     assert "eight existing tools" in policy
@@ -38,7 +38,7 @@ def test_shipping_agent_policy_advertises_v23_compact_workflow():
 
 
 def test_version_and_disconnect_regressions(tmp_path: Path):
-    assert __version__ == "2.4.0"
+    assert __version__ == "3.0.0"
     assert _is_client_disconnect(BrokenPipeError()) is True
     assert _is_client_disconnect(ConnectionResetError()) is True
     assert _is_client_disconnect(ConnectionAbortedError()) is True
@@ -72,7 +72,7 @@ def test_telemetry_summary_cache_is_reachable(tmp_path: Path):
         store.close()
 
 
-def test_telemetry_summary_exposes_request_and_savings_totals(tmp_path: Path):
+def test_telemetry_summary_exposes_request_and_signed_token_accounting(tmp_path: Path):
     from local_ai_hub.telemetry import TelemetryStore
 
     store = TelemetryStore(
@@ -83,16 +83,27 @@ def test_telemetry_summary_exposes_request_and_savings_totals(tmp_path: Path):
     )
     try:
         store.record(event_type="inference", avoided_cloud_tokens=2_000_000, success=True, duration_ms=1)
-        store.record_http(action="/v1/delegate", status_code=200, success=True, duration_ms=2)
+        store.record_tool_accounting({
+            "tool": "local_ai_repo",
+            "gross_cloud_tokens_avoided_est": 2_000_000,
+            "agent_protocol_tokens_est": 250_000,
+            "agent_tool_request_tokens_est": 50_000,
+            "agent_tool_response_tokens_est": 200_000,
+            "net_cloud_token_delta_est": 1_750_000,
+            "cloud_token_overhead_est": 0,
+            "net_after_schema_token_delta_est": 1_700_000,
+            "schema_adjusted_overhead_est": 0,
+        })
+        store.record_http(action="/api/delegate", status_code=200, success=True, duration_ms=2)
         store.flush(1.0)
         summary = store.summary(1)
         assert summary["http"]["requests"] == 1
-        assert summary["cloud_tokens_avoided_est"] == 2_000_000
-        assert summary["estimated_savings_usd"] == 10.0
+        assert summary["context_tokens_avoided_est"] == 2_000_000
+        assert summary["net_cloud_token_delta_est"] == 1_750_000
+        assert summary["estimated_savings_usd"] == 8.75
         assert summary["cloud_token_cost_usd_per_million"] == 5.0
     finally:
         store.close()
-
 
 def test_repo_cache_stale_root_and_none_result_are_structured():
     from local_ai_hub.services import LocalAIServices

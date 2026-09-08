@@ -27,7 +27,7 @@ If Serena or CodeGraphContext is unavailable, the hub degrades to built-in index
 
 The canonical envelope is the existing JSON body plus `X-LocalAI-Tenant`, `X-LocalAI-Agent`, and one `X-LocalAI-Request-ID` per logical request. Reuse the returned result for `cache_hit` or `coalesced`; do not submit an equivalent foreground request again. A duplicate request ID briefly waits for its owner and replays its completed response when available; only then can it return `in_progress:true`. Replay-safe transport recovery is bounded to one retry with the same request ID, and overload responses carry `retryable:true` plus `retry_after_seconds`; wait at least that hint before any new attempt.
 
-For model-backed `local_ai_task` actions, use `delivery="sync"` when the answer must be inline (the compatibility default), `delivery="async"` when the agent can continue independently, or `delivery="auto"` with a positive `latency_budget_ms`. Auto delivery submits the existing durable, coalesced background job only after at least ten observations show endpoint p95 over that budget; sparse history stays inline rather than guessing. Retrieve a submitted job with one bounded `wait`, then `result`; never poll.
+For model-backed `local_ai_task` actions, use `delivery="sync"` when the answer must be inline (the default), `delivery="async"` when the agent can continue independently, or `delivery="auto"` with a positive `latency_budget_ms`. Auto delivery submits the existing durable, coalesced background job only after at least ten observations show endpoint p95 over that budget; sparse history stays inline rather than guessing. Retrieve a submitted job with one bounded `wait`, then `result`; never poll.
 
 For repository context, `local_ai_repo(action="context", mode="fast")` returns bounded deterministic/index context and a `continuation` for `mode="full"`. Use it when foreground p95 matters more than broad semantic recall. It runs no generation task. Repository responses expose `cache_hit`, `cache_layer="workspace"`, and `coalesced`; reuse them instead of submitting a near-identical root/revision/query request.
 
@@ -37,7 +37,7 @@ The built-in client reuses HTTP/1.1 loopback connections per thread and coalesce
 
 The client also rejects an empty code symbol before transport. Command `classify`/`discover` must precede unfamiliar commands; a policy or executable preflight rejection is terminal and should never be retried.
 
-For an honest deployment cohort, use `/v1/metrics?scope=process` or `/v1/telemetry/report?scope=process`. This excludes persisted pre-restart history and reports per-agent request count, failure rate, p95 and p99 without retaining prompts, source, or model output. The default `scope=window` remains the rolling-history view.
+For an honest deployment cohort, use `/api/metrics?scope=process` or `/api/telemetry/report?scope=process`. This excludes persisted pre-restart history and reports per-agent request count, failure rate, p95 and p99 without retaining prompts, source, or model output. The default `scope=window` remains the rolling-history view.
 
 `evaluation_report` includes a report-only promotion gate. It requires ten matched `hub_on`/`hub_off` opaque task IDs, complete quality and test evidence, no regression, and lower hub-on average duration. `promote` is evidence for an operator rollout, never an automatic routing change.
 

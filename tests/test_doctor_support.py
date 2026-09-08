@@ -22,4 +22,4 @@ def test_doctor_keeps_hub_online_when_health_passes_but_status_times_out():
     assert probe["hub_online"] is True
     assert probe["status_available"] is False
     assert probe["status"] == {}
-    assert client.paths == ["/v1/live/status?light=1"]
+    assert client.paths == ["/api/live/status?light=1"]

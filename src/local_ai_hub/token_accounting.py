@@ -299,10 +299,8 @@ def finalize_tool_accounting(
     protocol = request_tokens + response_tokens
     schema = _nonneg_int(schema_tokens_est)
 
-    # Keep a signed delta as the source of truth.  A tool call that saves no
-    # context but costs 120 protocol tokens must show -120, not an artificial 0.
-    # Compatibility fields remain non-negative so older dashboards/clients keep
-    # their established meaning.
+    # Signed delta is the source of truth — a tool call that saves no context
+    # but costs 120 protocol tokens shows -120, not an artificial 0.
     net_delta = gross - protocol
     schema_adjusted_delta = net_delta - schema
     return {
@@ -317,10 +315,8 @@ def finalize_tool_accounting(
         "agent_protocol_tokens_est": protocol,
         "tool_schema_tokens_est": schema,
         "net_cloud_token_delta_est": net_delta,
-        "net_cloud_tokens_avoided_est": max(0, net_delta),
         "cloud_token_overhead_est": max(0, -net_delta),
         "net_after_schema_token_delta_est": schema_adjusted_delta,
-        "net_after_schema_tokens_avoided_est": max(0, schema_adjusted_delta),
         "schema_adjusted_overhead_est": max(0, -schema_adjusted_delta),
         "local_compute_tokens_avoided_est": _nonneg_int(measured.get("local_compute_tokens_avoided_est")),
         "savings_breakdown": measured.get("savings_breakdown", {}) if isinstance(measured.get("savings_breakdown"), dict) else {},

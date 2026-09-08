@@ -22,9 +22,9 @@ def store(tmp_path: Path) -> LearningStore:
 
 def valid_candidate() -> ImprovementCandidate:
     return ImprovementCandidate.create(
-        name="routing_v2",
-        baseline_version="v1.0",
-        candidate_version="v2.0",
+        name="routing_candidate",
+        baseline_version="baseline",
+        candidate_version="candidate",
         slo_thresholds={"max_latency_ms": 500.0, "min_success_rate": 0.9},
     )
 
@@ -61,5 +61,5 @@ def test_declared_regression_rolls_back_to_last_known_good(store: LearningStore)
     trigger = store.observe(candidate.candidate_id, failing_slo_observation())
     assert trigger is not None
     assert trigger.action == "rollback"
-    assert trigger.restored_version == "v1.0"
+    assert trigger.restored_version == "baseline"
     assert store.get(candidate.candidate_id).status is CandidateStatus.ROLLED_BACK
