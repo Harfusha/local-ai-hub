@@ -104,5 +104,63 @@ def test_git_snapshot_clean_blob_uses_git_oid_identity(tmp_path: Path, monkeypat
     assert blob.identity == f"git:{expected_oid}"
 
 
+def test_git_snapshot_reuses_cached_index_probe(tmp_path: Path, monkeypatch):
+    repo = make_git_repo(tmp_path)
+    tools = make_tools()
+    calls: list[list[str]] = []
+    real_run = subprocess.run
+
+    def counted(args, *extra, **kwargs):
+        calls.append([str(item) for item in args])
+        return real_run(args, *extra, **kwargs)
+
+    monkeypatch.setattr("local_ai_hub.repo_tools.subprocess.run", counted)
+    first = tools.git_snapshot(str(repo))
+    second = tools.git_snapshot(str(repo))
+
+    assert first.blobs == second.blobs
+    assert sum("ls-files" in command for command in calls) == 1
+
+
+def test_git_snapshot_degrades_on_timeout_and_malformed_output(tmp_path: Path, monkeypatch):
+    repo = make_git_repo(tmp_path)
+    tools = make_tools()
+
+    def timed_out(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], 0.01)
+
+    monkeypatch.setattr("local_ai_hub.repo_tools.subprocess.run", timed_out)
+    timed_snapshot = tools.git_snapshot(str(repo))
+    assert timed_snapshot.degraded is True
+    assert timed_snapshot.blobs == {}
+
+    tools = make_tools()
+    monkeypatch.setattr(
+        "local_ai_hub.repo_tools.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout=b"malformed\n", stderr=b""),
+    )
+    malformed_snapshot = tools.git_snapshot(str(repo))
+    assert malformed_snapshot.degraded is True
+    assert tools.git_blob_map(str(repo)) == {}
+
+
+def test_git_snapshot_identity_is_worktree_specific(tmp_path: Path):
+    repo = make_git_repo(tmp_path)
+    worktree = tmp_path / "linked-worktree"
+    run_git(repo, "worktree", "add", str(worktree), "HEAD")
+    tools = make_tools()
+
+    main_snapshot = tools.git_snapshot(str(repo))
+    linked_snapshot = tools.git_snapshot(str(worktree))
+
+    assert main_snapshot.degraded is False
+    assert linked_snapshot.degraded is False
+    assert main_snapshot.common_dir == linked_snapshot.common_dir
+    assert main_snapshot.worktree_root != linked_snapshot.worktree_root
+    assert main_snapshot.git_dir != linked_snapshot.git_dir
+    assert main_snapshot.index_path != linked_snapshot.index_path
+    assert tools.git_blob_map(str(repo)) == tools.git_blob_map(str(worktree))
+
+
 # Symlink and submodule-like entries remain deferred because their Git/worktree
 # behavior is platform-dependent; core porcelain-v2 parsing above is portable.

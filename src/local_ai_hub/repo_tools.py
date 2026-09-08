@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 from collections import Counter, OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -23,6 +24,36 @@ _SYMBOL_PATTERNS = [
     re.compile(r"^\s*class\s+([A-Za-z_]\w*)"),
     re.compile(r"^\s*(?:public|private|protected|internal|static|final|virtual|override|abstract|sealed|partial|async|export|default|const|let|var|function|func|fn|type|interface|enum|struct|record|trait|impl|namespace|module)\s+(?:[\w<>,?\[\].]+\s+)*([A-Za-z_]\w*)"),
 ]
+
+
+@dataclass(frozen=True)
+class GitBlobRecord:
+    state: str
+    oid: str | None = None
+    identity: str | None = None
+
+
+@dataclass(frozen=True)
+class GitSnapshot:
+    common_dir: str | None
+    worktree_root: str
+    git_dir: str | None
+    index_path: str | None
+    index_signature: tuple[int, int, int, int] | None
+    head_oid: str | None
+    tree_oid: str | None
+    status: Mapping[str, str]
+    blobs: Mapping[str, GitBlobRecord]
+    deleted: tuple[str, ...]
+    renames: Mapping[str, str]
+    degraded: bool = False
+    error: str | None = None
+    status_identity: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "status", MappingProxyType(dict(self.status)))
+        object.__setattr__(self, "blobs", MappingProxyType(dict(self.blobs)))
+        object.__setattr__(self, "renames", MappingProxyType(dict(self.renames)))
 
 
 class RepositoryTools:
@@ -55,10 +86,12 @@ class RepositoryTools:
         self._git_files_lock = threading.RLock()
         self._git_files_cache: dict[str, tuple[float, tuple[str, ...]]] = {}
         self._git_blob_cache: dict[str, tuple[float, dict[str, str]]] = {}
+        self._git_snapshot_cache: dict[str, tuple[float, GitSnapshot]] = {}
+        self._git_snapshot_slow_until: dict[str, float] = {}
         self._git_files_slow_until: dict[str, float] = {}
         self._git_files_flights: dict[str, threading.Lock] = {}
         self._git_grep_slow_until: dict[str, float] = {}
-        self._git_stats = {"file_list_hits": 0, "file_list_misses": 0, "file_list_timeouts": 0, "file_list_coalesced": 0, "grep_timeouts": 0, "grep_cooldown_skips": 0}
+        self._git_stats = {"file_list_hits": 0, "file_list_misses": 0, "file_list_timeouts": 0, "file_list_coalesced": 0, "grep_timeouts": 0, "grep_cooldown_skips": 0, "snapshot_hits": 0, "snapshot_misses": 0, "snapshot_degraded": 0}
         snap = config.get("snapshot_cache", {})
         self.snapshot_max_entries = max(64, int(snap.get("max_entries", 4096)))
         self.snapshot_max_bytes = max(8_000_000, int(snap.get("max_bytes", 256_000_000)))
@@ -241,51 +274,291 @@ class RepositoryTools:
                 h.update(chunk)
         return h.hexdigest()
 
-    def git_blob_map(self, root: str) -> dict[str, str]:
-        """Return content-addressed Git blob IDs for clean tracked files only.
+    @staticmethod
+    def _git_empty_snapshot(root: str, error: str) -> GitSnapshot:
+        return GitSnapshot(
+            common_dir=None,
+            worktree_root=root,
+            git_dir=None,
+            index_path=None,
+            index_signature=None,
+            head_oid=None,
+            tree_oid=None,
+            status=MappingProxyType({}),
+            blobs=MappingProxyType({}),
+            deleted=(),
+            renames=MappingProxyType({}),
+            degraded=True,
+            error=error,
+        )
 
-        A worktree can reuse these IDs without reopening unchanged files. Modified
-        and untracked paths are deliberately omitted and still receive SHA-256.
-        """
+    def _git_snapshot_run(self, base: Path, *args: str) -> bytes:
+        completed = subprocess.run(
+            ["git", "-C", str(base), *args],
+            capture_output=True,
+            timeout=self.git_files_timeout,
+            check=False,
+            **hidden_run_kwargs(),
+        )
+        if not isinstance(completed.stdout, (bytes, bytearray)):
+            raise ValueError("git command failed")
+        if completed.returncode != 0:
+            # ``HEAD`` is legitimately unresolved before the first commit. Git
+            # still returns complete repository/index metadata in this case.
+            unborn_head = (
+                args[-1:] == ("HEAD",)
+                and bytes(completed.stdout).splitlines()[-1:] == [b"HEAD"]
+                and isinstance(completed.stderr, (bytes, bytearray))
+                and b"ambiguous argument 'HEAD'" in bytes(completed.stderr)
+            )
+            if not unborn_head:
+                raise ValueError("git command failed")
+        return bytes(completed.stdout)
+
+    @staticmethod
+    def _git_oid(raw: bytes) -> str:
+        try:
+            oid = raw.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise ValueError("invalid git object id") from exc
+        if len(oid) not in {40, 64} or re.fullmatch(r"[0-9a-fA-F]+", oid) is None:
+            raise ValueError("invalid git object id")
+        return oid.lower()
+
+    @staticmethod
+    def _git_path(root: Path, raw: bytes) -> str:
+        path = raw.decode("utf-8", errors="surrogateescape").replace("\\", "/")
+        if not path:
+            raise ValueError("empty git path")
+        candidate = Path(path)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        return str(candidate.resolve(strict=False))
+
+    @staticmethod
+    def _git_relpath(raw: bytes) -> str:
+        path = raw.decode("utf-8", errors="surrogateescape").replace("\\", "/")
+        parts = path.split("/")
+        if not path or path.startswith("/") or any(part in {"", ".", ".."} for part in parts):
+            raise ValueError("invalid git relative path")
+        return path
+
+    @staticmethod
+    def _git_nul_records(raw: bytes) -> list[bytes]:
+        if not isinstance(raw, bytes):
+            raise ValueError("git output is not bytes")
+        if not raw:
+            return []
+        if not raw.endswith(b"\0"):
+            raise ValueError("unterminated git output")
+        return [record for record in raw.split(b"\0")[:-1]]
+
+    @classmethod
+    def _git_parse_index(cls, raw: bytes) -> dict[str, str | None]:
+        entries: dict[str, list[tuple[int, str]]] = {}
+        for record in cls._git_nul_records(raw):
+            if b"\t" not in record:
+                raise ValueError("malformed git index record")
+            metadata, raw_path = record.split(b"\t", 1)
+            fields = metadata.split(b" ")
+            if len(fields) != 3 or re.fullmatch(rb"[0-7]{6}", fields[0]) is None:
+                raise ValueError("malformed git index metadata")
+            try:
+                stage = int(fields[2])
+            except ValueError as exc:
+                raise ValueError("malformed git index stage") from exc
+            if stage not in {0, 1, 2, 3}:
+                raise ValueError("malformed git index stage")
+            path = cls._git_relpath(raw_path)
+            entries.setdefault(path, []).append((stage, cls._git_oid(fields[1])))
+        result: dict[str, str | None] = {}
+        for path, values in entries.items():
+            stage_zero = [oid for stage, oid in values if stage == 0]
+            result[path] = stage_zero[0] if len(values) == 1 and len(stage_zero) == 1 else None
+        return result
+
+    @classmethod
+    def _git_parse_status(cls, raw: bytes) -> list[tuple[str, str, str, str, str | None]]:
+        records = cls._git_nul_records(raw)
+        parsed: list[tuple[str, str, str, str, str | None]] = []
+        index = 0
+        while index < len(records):
+            record = records[index]
+            if record.startswith(b"1 "):
+                fields = record.split(b" ", 8)
+                if len(fields) != 9 or len(fields[1]) != 2:
+                    raise ValueError("malformed porcelain-v2 ordinary record")
+                path = cls._git_relpath(fields[8])
+                x, y = chr(fields[1][0]), chr(fields[1][1])
+                parsed.append((path, x, y, cls._git_status_state(x, y), None))
+            elif record.startswith(b"2 "):
+                fields = record.split(b" ", 9)
+                if len(fields) != 10 or len(fields[1]) != 2 or index + 1 >= len(records):
+                    raise ValueError("malformed porcelain-v2 rename record")
+                path = cls._git_relpath(fields[9])
+                original = cls._git_relpath(records[index + 1])
+                if fields[8][:1] not in {b"R", b"C"} or not fields[8][1:].isdigit():
+                    raise ValueError("malformed porcelain-v2 rename score")
+                x, y = chr(fields[1][0]), chr(fields[1][1])
+                parsed.append((path, x, y, cls._git_status_state(x, y), original))
+                index += 1
+            elif record.startswith(b"u "):
+                fields = record.split(b" ", 10)
+                if len(fields) != 11 or len(fields[1]) != 2:
+                    raise ValueError("malformed porcelain-v2 unmerged record")
+                path = cls._git_relpath(fields[10])
+                parsed.append((path, chr(fields[1][0]), chr(fields[1][1]), "unmerged", None))
+            elif record.startswith(b"? "):
+                parsed.append((cls._git_relpath(record[2:]), ".", ".", "untracked", None))
+            elif record.startswith(b"! "):
+                cls._git_relpath(record[2:])
+            else:
+                raise ValueError("malformed porcelain-v2 status record")
+            index += 1
+        return parsed
+
+    @staticmethod
+    def _git_status_state(x: str, y: str) -> str:
+        if "U" in {x, y}:
+            return "unmerged"
+        if "D" in {x, y}:
+            return "deleted"
+        staged = x != "."
+        modified = y != "."
+        if staged and modified:
+            return "staged_and_worktree_modified"
+        if staged:
+            return "staged"
+        if modified:
+            return "modified"
+        return "clean"
+
+    @staticmethod
+    def _git_index_signature(index_path: str) -> tuple[int, int, int, int] | None:
+        try:
+            stat = Path(index_path).stat()
+        except OSError:
+            return None
+        # Git refreshes index stat-cache fields while answering ``status``. Keep
+        # signature stable across that metadata-only rewrite; status identity and
+        # indexed blob records detect logical index changes.
+        return (
+            int(stat.st_size),
+            0,
+            0,
+            0,
+        )
+
+    def git_snapshot(self, root: str) -> GitSnapshot:
         try:
             base = self._root(root)
         except ValueError:
-            return {}
-        if not (base / ".git").exists():
-            return {}
-        key = str(base)
+            return self._git_empty_snapshot(str(root), "invalid repository root")
+        worktree_root = str(base)
+        key = worktree_root
+        if shutil.which("git") is None:
+            return self._git_empty_snapshot(worktree_root, "git unavailable")
         now = time.monotonic()
         with self._git_files_lock:
-            cached = self._git_blob_cache.get(key)
-            if cached and now - cached[0] <= self.git_files_cache_ttl:
-                return dict(cached[1])
+            if now < self._git_snapshot_slow_until.get(key, 0.0):
+                self._git_stats["snapshot_degraded"] += 1
+                return self._git_empty_snapshot(worktree_root, "git snapshot cooldown")
+            cached_entry = self._git_snapshot_cache.get(key)
         try:
-            index = subprocess.run(
-                ["git", "-C", str(base), "ls-files", "-s", "-z"],
-                capture_output=True, timeout=self.git_files_timeout, check=False, **hidden_run_kwargs(),
+            identity_output = self._git_snapshot_run(base, "rev-parse", "--git-common-dir", "--git-dir", "--git-path", "index", "HEAD")
+            identity_lines = identity_output.splitlines()
+            if len(identity_lines) != 4 or any(not line for line in identity_lines[:3]):
+                raise ValueError("malformed git identity output")
+            common_dir = self._git_path(base, identity_lines[0])
+            git_dir = self._git_path(base, identity_lines[1])
+            index_path = self._git_path(base, identity_lines[2])
+            unborn_head = identity_lines[3] == b"HEAD"
+            head_oid = None if unborn_head else self._git_oid(identity_lines[3])
+
+            status_output = self._git_snapshot_run(base, "status", "--porcelain=v2", "--untracked-files=all", "-z")
+            status_entries = self._git_parse_status(status_output)
+            status_identity = hashlib.sha256(status_output).hexdigest()
+            index_signature = self._git_index_signature(index_path)
+            if cached_entry is not None:
+                cached_at, cached = cached_entry
+                same_identity = (
+                    cached.common_dir == common_dir
+                    and cached.worktree_root == worktree_root
+                    and cached.git_dir == git_dir
+                    and cached.index_path == index_path
+                    and cached.index_signature == index_signature
+                    and cached.head_oid == head_oid
+                    and cached.status_identity == status_identity
+                )
+                if same_identity and (self.git_files_cache_ttl <= 0 or now - cached_at <= self.git_files_cache_ttl):
+                    with self._git_files_lock:
+                        self._git_stats["snapshot_hits"] += 1
+                    return cached
+
+            if unborn_head:
+                tree_oid = None
+            else:
+                tree_output = self._git_snapshot_run(base, "rev-parse", "HEAD^{tree}")
+                tree_lines = tree_output.splitlines()
+                if len(tree_lines) != 1:
+                    raise ValueError("malformed git tree output")
+                tree_oid = self._git_oid(tree_lines[0])
+            index_entries = self._git_parse_index(self._git_snapshot_run(base, "ls-files", "--stage", "-z"))
+            status: dict[str, str] = {path: "clean" for path in index_entries}
+            renames: dict[str, str] = {}
+            deleted: set[str] = set()
+            for path, _x, _y, state, original in status_entries:
+                status[path] = state
+                if state == "deleted":
+                    deleted.add(path)
+                if original is not None:
+                    renames[path] = original
+            blobs: dict[str, GitBlobRecord] = {}
+            for path, oid in index_entries.items():
+                state = status.get(path, "clean")
+                identity = f"git:{oid}" if (state == "clean" or (unborn_head and state == "staged")) and oid is not None else None
+                blobs[path] = GitBlobRecord(state=state, oid=oid, identity=identity)
+            for path, state in status.items():
+                if path not in blobs:
+                    blobs[path] = GitBlobRecord(state=state)
+            snapshot = GitSnapshot(
+                common_dir=common_dir,
+                worktree_root=worktree_root,
+                git_dir=git_dir,
+                index_path=index_path,
+                index_signature=index_signature,
+                head_oid=head_oid,
+                tree_oid=tree_oid,
+                status=MappingProxyType(dict(status)),
+                blobs=MappingProxyType(dict(blobs)),
+                deleted=tuple(sorted(deleted)),
+                renames=MappingProxyType(dict(renames)),
+                status_identity=status_identity,
             )
-            dirty = subprocess.run(
-                ["git", "-C", str(base), "diff", "--name-only", "-z"],
-                capture_output=True, timeout=self.git_files_timeout, check=False, **hidden_run_kwargs(),
-            )
-            if index.returncode != 0 or dirty.returncode != 0:
-                return {}
-            dirty_paths = {x.decode("utf-8", errors="replace").replace("\\", "/") for x in dirty.stdout.split(b"\0") if x}
-            result: dict[str, str] = {}
-            for entry in index.stdout.split(b"\0"):
-                try:
-                    metadata, raw_path = entry.split(b"\t", 1)
-                    fields = metadata.decode("ascii", errors="strict").split()
-                    rel = raw_path.decode("utf-8", errors="replace").replace("\\", "/")
-                    if len(fields) >= 2 and rel not in dirty_paths:
-                        result[rel] = "git:" + fields[1]
-                except ValueError:
-                    continue
             with self._git_files_lock:
-                self._git_blob_cache[key] = (now, result)
-            return result
-        except Exception:
+                self._git_snapshot_cache[key] = (now, snapshot)
+                self._git_snapshot_slow_until.pop(key, None)
+                self._git_stats["snapshot_misses"] += 1
+                if len(self._git_snapshot_cache) > 64:
+                    for old_key in list(self._git_snapshot_cache)[:-32]:
+                        self._git_snapshot_cache.pop(old_key, None)
+            return snapshot
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            with self._git_files_lock:
+                self._git_stats["snapshot_degraded"] += 1
+                self._git_snapshot_slow_until[key] = time.monotonic() + self.git_files_slow_cooldown
+            return self._git_empty_snapshot(worktree_root, "bounded git snapshot failed")
+
+    def git_blob_map(self, root: str) -> dict[str, str]:
+        """Return ``git:<blob_oid>`` identities for clean tracked paths."""
+        snapshot = self.git_snapshot(root)
+        if snapshot.degraded:
             return {}
+        return {
+            path: record.identity
+            for path, record in snapshot.blobs.items()
+            if (record.state == "clean" or (snapshot.head_oid is None and record.state == "staged")) and record.identity is not None
+        }
 
     def git_blob_hashes(self, root: str, paths: list[str]) -> dict[str, str]:
         """Return clean tracked Git blob IDs for selected paths."""

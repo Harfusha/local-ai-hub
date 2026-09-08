@@ -53,19 +53,21 @@ def test_git_blob_map_is_reused_for_second_batch(tmp_path, monkeypatch):
     (root / "a.py").write_text("value = 1\n", encoding="utf-8")
     for command in (["git", "init"], ["git", "add", "a.py"]):
         subprocess.run(command, cwd=root, check=True, capture_output=True)
-    calls = 0
+    commands = []
     real_run = subprocess.run
     def counted(*args, **kwargs):
-        nonlocal calls
-        calls += 1
+        commands.append([str(item) for item in args[0]])
         return real_run(*args, **kwargs)
     monkeypatch.setattr("local_ai_hub.repo_tools.subprocess.run", counted)
     tools = RepositoryTools(_config(tmp_path))
 
-    tools.git_blob_hashes(str(root), ["a.py"])
-    tools.git_blob_hashes(str(root), ["a.py"])
+    first = tools.git_blob_hashes(str(root), ["a.py"])
+    first_call_count = len(commands)
+    second = tools.git_blob_hashes(str(root), ["a.py"])
 
-    assert calls == 2
+    assert first == second
+    assert len(commands) > first_call_count
+    assert sum("ls-files" in args for args in commands) == 1
 
 
 def test_dashboard_csp_uses_nonce_not_unsafe_inline_script():
