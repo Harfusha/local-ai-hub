@@ -34,6 +34,20 @@ STRUCTURAL_PREAMBLE_RE = re.compile(
     re.DOTALL,
 )
 
+# Conversational preamble pattern:
+# Openers like "Sure! Here is the fix:", "Certainly, ...", "Okay, here are ...", "Hello! ..."
+CONVERSATIONAL_PREAMBLE_RE = re.compile(
+    r"^(?:(?:sure|certainly|of course|here is|here are|hello|hi|okay|ok)[^\n]{0,120}(?::|\.|\!)\s*\n+)+(?=(?:```|~~~|[-*+]\s|\d+\.\s|[A-Z0-9_]{2,}:))",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Conversational postamble / closing pleasantries pattern:
+# Closings like "Hope this helps!", "Let me know if you need any further assistance!", etc.
+CONVERSATIONAL_POSTAMBLE_RE = re.compile(
+    r"(?:\n+(?:hope (?:this|that) helps[^\n]*|let me know if you (?:need|have)[^\n]*|feel free to ask[^\n]*|if you have any (?:other )?questions[^\n]*))+\Z",
+    re.IGNORECASE,
+)
+
 
 def normalize_query(
     query: str,
@@ -149,9 +163,17 @@ def postprocess_model_output(
     # 2. Strip runtime stop tokens
     cleaned = STOP_TOKENS_RE.sub("", cleaned).strip()
 
-    # 3. Structural preamble removal for technical roles
-    if strip_preamble and role in {"code", "review", "patch", "critic", "second-opinion", "fast", "smart"}:
+    # 3. Structural and conversational preamble/postamble removal for technical roles
+    role_lower = str(role or "general").lower()
+    is_technical_role = (
+        role_lower in {"code", "review", "patch", "critic", "second-opinion", "fast", "smart", "drafter", "explorer", "reasoning", "general"}
+        or "qwen-" in role_lower
+        or "profile" in role_lower
+    )
+    if strip_preamble and is_technical_role:
+        cleaned = CONVERSATIONAL_PREAMBLE_RE.sub("", cleaned).strip()
         cleaned = STRUCTURAL_PREAMBLE_RE.sub("", cleaned).strip()
+        cleaned = CONVERSATIONAL_POSTAMBLE_RE.sub("", cleaned).strip()
 
     # 4. Universal Markdown fence balance repair
     if repair_fences:

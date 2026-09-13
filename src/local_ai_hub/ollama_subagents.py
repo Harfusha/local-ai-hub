@@ -109,6 +109,7 @@ class OllamaSubagentCatalog:
             "semantic symbols, code graph, repository search, RAG, evidence IDs, and bounded file slices. "
             "Start with the cheapest evidence path. Respond in the same language as TASK while preserving paths, "
             "identifiers, code, line numbers, errors, numbers, and uncertainty exactly. "
+            "TERSE TECHNICAL OUTPUT: zero conversational filler, pleasantries, or preamble. Return facts, exact paths, line numbers, and minimal diffs only. "
             f"Detected task language: {language}. Return compact structured output with profile={profile.name}, "
             "advisory_only=true."
         )

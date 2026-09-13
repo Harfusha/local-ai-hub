@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import contextvars
 import functools
 import hashlib
 import inspect
@@ -247,30 +248,49 @@ def _desc_artifact() -> str:
 TaskAction: TypeAlias = Literal[
     "delegate", "reason", "continue", "review", "second_opinion", "compress", "route", "batch",
     "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait",
-    "result", "cancel", "candidate_create", "candidate_promote",
+    "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe",
+    "eval_suite", "prompt_eval", "eval_drift",
 ]
 RepoAction: TypeAlias = Literal[
     "profile", "search", "map", "code_index", "semantic", "graph", "intelligence",
     "deterministic", "context", "route", "delegate", "solve", "review_diff", "impact",
     "refactor_impact", "resolve_imports", "generate_tests", "validate_patch",
-    "audit_dependencies", "ast_outline", "test_matrix", "security_audit", "git_status",
+    "audit_dependencies", "ast_outline", "test_matrix", "security_audit", "git_status", "repo_state",
     "synthesize_commit", "verify", "preprocess", "preprocess_status", "preprocess_refresh",
     "preprocess_pause", "preprocess_resume", "preprocess_cancel", "preprocess_unregister",
     "context_compile", "verify_receipt", "verify_completion",
     "cross_project_graph", "cross_project_symbols", "cross_project_impact",
     "cross_repo_graph", "cross_repo_symbols", "cross_repo_impact",
     "call_graph_diff", "semantic_diff",
+    "affected_tests", "topology", "ast_refactor",
+    "generate_mocks", "split_changes", "synthesize_rules",
+    "code_invariants", "generate_dataset", "profile_digest",
+    "callers", "dead_code", "secret_scan", "schema_inspect", "explain_query", "env_compat",
+    "circular_dependencies", "generate_types", "complexity", "api_spec", "dependency_slice", "migration_drift", "package_audit",
+    "structural_search", "context_budget",
+    "git_diff", "git_history_search", "hotspots", "generate_tests_for_diff", "cross_repo_contract",
+    "reachability_dead_code", "mutation_test", "type_stubs", "skeletonize",
 ]
-RagAction: TypeAlias = Literal["index", "search", "list"]
-CommandAction: TypeAlias = Literal["run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix"]
+RagAction: TypeAlias = Literal["index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram"]
+CommandAction: TypeAlias = Literal[
+    "run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix", "run_affected", "format",
+    "lint_fix", "spawn_daemon", "daemon_status", "stop_daemon", "http_probe",
+    "stash_save", "stash_restore", "record_mock", "replay_mock",
+    "diff_hunk_stage", "flaky_detect", "webhook_replay",
+    "mock_server", "mock_server_start", "mock_server_stop", "mock_server_status",
+]
 CoordAction: TypeAlias = Literal[
     "claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete",
-    "task_create", "task_get", "task_checkpoint", "task_transition", "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat",
+    "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat",
     "memory_record", "memory_get", "memory_find", "memory_promote", "memory_reap",
+    "relation_record", "relation_find", "relation_traverse",
     "context_compile", "verify_receipt", "verify_completion",
     "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
     "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_merge", "blackboard_delete",
     "swarm_dispatch", "swarm_step", "swarm_status",
+    "worktree_lease", "worktree_release",
+    "pubsub_publish", "pubsub_poll", "simulate_merge",
+    "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree",
 ]
 StatusDetail: TypeAlias = Literal["brief", "cache", "telemetry", "full", "agent_state"]
 StatusScope: TypeAlias = Literal["process", "window"]
@@ -285,14 +305,19 @@ def _invalid_action(tool: str, action: str, valid: tuple[str, ...], guidance: st
 
 
 
-def _compact(value: Any, task_kind: str = "general") -> Any:
+_CURRENT_EXTRA_FIELDS: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar("_CURRENT_EXTRA_FIELDS", default=None)
+
+
+def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | None = None) -> Any:
     # Capture measured savings before the projector intentionally removes internal
     # token_saving/runtime fields. Private accounting metadata is stripped by the
     # instrumented MCP boundary and never enters agent context.
+    if extra_fields is None:
+        extra_fields = _CURRENT_EXTRA_FIELDS.get()
     raw_value = value
     value = attach_accounting(value)
-    projected = PROJECTOR.project(value, AGENT_NAME, task_kind)
-    compacted = compact_result(projected, max_text_chars=MAX_TEXT, max_evidence=MAX_EVIDENCE)
+    projected = PROJECTOR.project(value, AGENT_NAME, task_kind, extra_fields=extra_fields)
+    compacted = compact_result(projected, max_text_chars=MAX_TEXT, max_evidence=MAX_EVIDENCE, extra_fields=extra_fields)
     return account_projection(raw_value, compacted)
 
 
@@ -443,7 +468,13 @@ def _instrumented_tool():
                 arguments = dict(bound.arguments)
             except Exception:
                 arguments = dict(kwargs)
-            result = fn(*args, **kwargs)
+            extra = arguments.get("extra_fields") or kwargs.get("extra_fields")
+            token = _CURRENT_EXTRA_FIELDS.set(extra) if extra is not None else None
+            try:
+                result = fn(*args, **kwargs)
+            finally:
+                if token is not None:
+                    _CURRENT_EXTRA_FIELDS.reset(token)
             clean, measured = pop_accounting(result)
             try:
                 event = finalize_tool_accounting(
@@ -462,7 +493,7 @@ def _instrumented_tool():
 
 @mcp.tool()
 @_instrumented_tool()
-def local_ai_status(detail: StatusDetail = "brief", scope: str = "process") -> dict[str, Any]:
+def local_ai_status(detail: StatusDetail = "brief", scope: str = "process", extra_fields: list[str] | None = None) -> dict[str, Any]:
     """Health/queue/token-saving status. detail: brief, cache, telemetry, full, agent_state. scope: process (default) or window. Telemetry is metadata-only. Do not poll status during normal repository work or while preprocessing/model startup is in progress; one bounded health check is enough before native fallback. Use when: make one bounded health, cache, or telemetry check. Skip when: repository evidence or task work is needed."""
     if not FEATURES.status:
         return {"success": False, "unsupported": True, "error": "local_ai_status is disabled in configuration"}
@@ -550,6 +581,9 @@ def local_ai_task(
     conversation_id: str = "",
     approver: str = "",
     candidate_data: dict[str, Any] | None = None,
+    format: str | dict[str, Any] | None = None,
+    json_schema: dict[str, Any] | None = None,
+    extra_fields: list[str] | None = None,
 ) -> dict[str, Any]:
     """Bounded local-model worker for the main agent. Ordinary delegate/reason/review/second-opinion work uses the fast coding tier; configured smart models are reserved for genuinely complex routes. Named advisory profiles (qwen-explorer, qwen-drafter, qwen-critic) use Local AI Hub read-only tooling directly when root is supplied. Deterministic compression and repository evidence run first when sufficient. Use it for one bounded local-model worker, review or second opinion after indexed evidence. It is not the orchestrator for native Codex subagents; those are managed directly by Codex outside Local AI Hub. Actions: delegate, reason, continue, review, second_opinion, compress, route, batch, benchmark, evaluation_record, evaluation_report, submit, status, wait, result, cancel, candidate_create, candidate_promote. delivery=sync preserves the foreground contract; async returns a durable job now; auto requires a positive latency_budget_ms and only defers after sufficient endpoint history shows p95 above it. Evaluation stores only opaque ids, booleans, and numeric metadata; it never stores prompts or source text. Async wait is bounded to 90 seconds; never poll loops. Start a short-lived conversation with conversation=true on delegate or reason, then use continue with its opaque conversation_id; conversations are sync-only and process-memory only. Use when: bounded local generation, compression, review, routing, second opinion, or named advisory subagent work is needed. Skip when: repository evidence or safe commands are sufficient without model inference, or independent peer-agent work is managed by Codex."""
     if not FEATURES.tasks or not FEATURES.has_any_model():
@@ -601,6 +635,8 @@ def local_ai_task(
             "task": task, "context": context, "complexity": complexity, "max_tokens": max_tokens or 1100,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms,
         }
+        if format or json_schema:
+            payload["format"] = format or json_schema
         if conversation:
             payload["conversation"] = True
         return _compact(CLIENT.post("/api/delegate", payload), "delegate")
@@ -609,15 +645,20 @@ def local_ai_task(
             "problem": task, "context": context, "max_tokens": max_tokens or 1200,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms,
         }
+        if format or json_schema:
+            payload["format"] = format or json_schema
         if conversation:
             payload["conversation"] = True
         return _compact(CLIENT.post("/api/reason", payload), "reason")
     if action == "review":
-        return _compact(CLIENT.post("/api/review", {
+        payload = {
             "code": context, "instructions": task or "Report actionable defects only.",
             "complexity": complexity, "max_tokens": max_tokens or 1300,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms,
-        }), "review")
+        }
+        if format or json_schema:
+            payload["format"] = format or json_schema
+        return _compact(CLIENT.post("/api/review", payload), "review")
     if action == "second_opinion":
         return _compact(CLIENT.post("/api/second-opinion", {
             "question": task, "candidate": candidate, "context": context, "max_tokens": max_tokens or 1100,
@@ -653,6 +694,30 @@ def local_ai_task(
         return _compact(CLIENT.post("/api/agent-state/learning", {
             "action": "promote", "candidate_id": candidate or evaluation_task_id or task, "approver": approver or "user",
         }, timeout=_timeout("quick")), "status")
+    if action == "speculative_draft":
+        return _compact(CLIENT.post("/api/task/speculative_draft", {
+            "task": task or prompt, "file": candidate or workspace, "context": context, "root": root,
+        }, timeout=_timeout("model")), "delegate")
+    if action == "vision":
+        return _compact(CLIENT.post("/api/task/vision", {
+            "prompt": prompt or task, "image": candidate or context, "model": model,
+        }, timeout=_timeout("model")), "delegate")
+    if action == "transcribe":
+        return _compact(CLIENT.post("/api/task/transcribe", {
+            "audio_path": candidate or context or task or prompt, "model": model,
+        }, timeout=_timeout("long")), "delegate")
+    if action == "eval_suite":
+        return _compact(CLIENT.post("/api/task/eval_suite", {
+            "suite_name": task or prompt or "default",
+        }, timeout=_timeout("long")), "status")
+    if action == "prompt_eval":
+        return _compact(CLIENT.post("/api/task/prompt_eval", {
+            "template": prompt or task, "variables": candidate_data or ({"input": context} if context else {}),
+        }, timeout=_timeout("model")), "delegate")
+    if action == "eval_drift":
+        return _compact(CLIENT.post("/api/task/eval_drift", {
+            "suite_name": task or prompt or "default",
+        }, timeout=_timeout("long")), "status")
     return _invalid_action("local_ai_task", action, tuple(TaskAction.__args__), "Use Local AI Hub only for bounded local-model work; use Codex-owned orchestration for peer subagents.")
 
 
@@ -676,6 +741,7 @@ def local_ai_repo(
     profile: str = "",
     receipt: dict[str, Any] | None = None,
     task_id: str = "",
+    extra_fields: list[str] | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent. CALL THIS BEFORE broad repository reads/searches for any non-trivial repo task. MANDATORY GATE. Use deterministic, code_index/search, semantic/graph, context and solve for bounded evidence and implementation support. For implementation, diagnosis, refactoring or complex review, call solve after evidence and before native edits. When generation is needed, seed the basic fast tier before smart escalation. review_diff and security_audit are targeted local checks. After indexed evidence, use local_ai_task for one bounded local-model worker/review/second opinion. Codex separately decides whether to use native Codex subagents; Local AI Hub does not route or manage those agents. On first use of a stable absolute root call action=preprocess exactly once and continue immediately; never poll/wait/force-refresh preprocessing. Cheapest sufficient path: deterministic -> code_index/search -> semantic/graph for relationships -> context/solve -> RAG -> local model last; STOP as soon as a cheaper layer is sufficient and never fan out overlapping retrieval layers for the same question. Reuse fresh evidence/artifact slices and never repeat an identical root/query/action while repo state is unchanged. in_progress means another owner is doing identical work; retryable/429/503 means back off; degraded/stale means verify only the affected slice. Always pass the stable absolute project root; never rely on MCP cwd. Never loop or increase timeouts indefinitely. Use when: every non-trivial repository task needs indexed evidence or a bounded Hub operation. Skip when: the task is not repository-scoped or fresh evidence already answers it and no independent Hub scope exists."""
     if not FEATURES.repo:
@@ -744,12 +810,35 @@ def local_ai_repo(
         return _compact(CLIENT.post("/api/audit_dependencies", {"root": root}, timeout=_timeout("quick")), "context")
     if action == "ast_outline":
         return _compact(CLIENT.post("/api/code/ast_outline", {"root": root, "path": path or query or task}, timeout=_timeout("quick")), "architecture")
+    if action == "affected_tests":
+        paths_arg = [path] if path else ([query] if query and not query.startswith("-") else None)
+        return _compact(CLIENT.post("/api/repo/affected_tests", {"root": root, "paths": paths_arg}, timeout=_timeout("quick")), "architecture")
+    if action == "topology":
+        return _compact(CLIENT.post("/api/repo/topology", {"root": root}, timeout=_timeout("quick")), "architecture")
+    if action == "ast_refactor":
+        return _compact(CLIENT.post("/api/code/ast_rename", {
+            "root": root, "file": path, "old_symbol": query or task, "new_symbol": diff, "apply": staged,
+        }, timeout=_timeout("quick")), "verify")
+    if action == "generate_mocks":
+        return _compact(CLIENT.post("/api/code/generate_mocks", {
+            "root": root, "file": path, "symbol": query or task,
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "split_changes":
+        return _compact(CLIENT.post("/api/repo/split_changes", {
+            "root": root, "paths": [path] if path else ([query] if query and not query.startswith("-") else None),
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "synthesize_rules":
+        return _compact(CLIENT.post("/api/repo/synthesize_rules", {
+            "root": root, "limit": 10,
+        }, timeout=_timeout("quick")), "architecture")
     if action == "test_matrix":
         return _compact(CLIENT.post("/api/test_matrix", {"root": root}, timeout=_timeout("quick")), "architecture")
     if action == "security_audit":
         return _compact(CLIENT.post("/api/security_audit", {"root": root}, timeout=_timeout("quick")), "architecture")
     if action == "git_status":
         return _compact(CLIENT.get(f"/api/git/status?root={quote(root)}"), "status")
+    if action == "repo_state":
+        return _compact(CLIENT.post("/api/repo/state", {"root": root}, timeout=_timeout("quick")), "status")
     if action == "synthesize_commit":
         synth_payload = {"root": root, "hint": query or task}
         if task and str(task).startswith("task-"):
@@ -792,6 +881,118 @@ def local_ai_repo(
         return _compact(CLIENT.post("/api/cross_project_impact", {"roots": [root] if root else [], "symbol": query or task}, timeout=_timeout("quick")), "impact")
     if action in {"call_graph_diff", "semantic_diff"}:
         return _compact(CLIENT.post("/api/repo/call_graph_diff", {"root": root or ".", "diff": diff or "" if diff else None}, timeout=_timeout("quick")), "impact")
+    if action == "code_invariants":
+        return _compact(CLIENT.post("/api/repo/code_invariants", {
+            "root": root, "path": path or query or task or None,
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "generate_dataset":
+        return _compact(CLIENT.post("/api/repo/generate_dataset", {
+            "root": root, "schema_or_model": query or task or path,
+            "count": max_tokens or 10,
+            "format": relation or "json",
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "profile_digest":
+        return _compact(CLIENT.post("/api/repo/profile_digest", {
+            "profile_path": path or query or task, "top_n": max_tokens or 15,
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "callers":
+        return _compact(CLIENT.post("/api/repo/callers", {
+            "root": root, "symbol": query or task or path, "limit": max_tokens or 50,
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "dead_code":
+        return _compact(CLIENT.post("/api/repo/dead_code", {
+            "root": root, "limit": max_tokens or 50,
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "secret_scan":
+        scan_git = bool(staged or (query and ("git" in query.lower() or "history" in query.lower())))
+        return _compact(CLIENT.post("/api/repo/secret_scan", {
+            "root": root, "path": path or query or task or None,
+            "scan_git_history": scan_git,
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "schema_inspect":
+        return _compact(CLIENT.post("/api/repo/schema_inspect", {
+            "root": root, "db_path": path or query or task or None,
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "explain_query":
+        return _compact(CLIENT.post("/api/repo/explain_query", {
+            "root": root, "query": query or task, "db_path": path or None,
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "env_compat":
+        return _compact(CLIENT.post("/api/repo/env_compat", {
+            "root": root,
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "circular_dependencies":
+        return _compact(CLIENT.post("/api/repo/circular_dependencies", {
+            "root": root, "language": query or task or "python",
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "generate_types":
+        return _compact(CLIENT.post("/api/repo/generate_types", {
+            "root": root, "file": path or query or task, "write_stub": bool(diff),
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "complexity":
+        return _compact(CLIENT.post("/api/repo/complexity", {
+            "root": root, "path": path or query or task or None, "max_results": max_tokens or 20,
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "api_spec":
+        return _compact(CLIENT.post("/api/repo/api_spec", {
+            "root": root, "framework": query or task or None,
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "dependency_slice":
+        return _compact(CLIENT.post("/api/repo/dependency_slice", {
+            "root": root, "symbol": query or task, "path": path or None, "depth": max_tokens or 2,
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "migration_drift":
+        return _compact(CLIENT.post("/api/repo/migration_drift", {
+            "root": root, "db_path": path or query or task or None,
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "package_audit":
+        return _compact(CLIENT.post("/api/repo/package_audit", {
+            "root": root, "lockfile_path": path or query or task or None,
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "structural_search":
+        return _compact(CLIENT.post("/api/repo/structural_search", {
+            "root": root, "pattern": query or task, "path": path or None, "max_results": max_tokens or 30,
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "context_budget":
+        files_arg = [path] if path else ([query] if query and not query.startswith("-") else [])
+        return _compact(CLIENT.post("/api/repo/context_budget", {
+            "root": root, "files": files_arg, "max_tokens": max_tokens or 4000,
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "git_diff":
+        return _compact(CLIENT.get(f"/api/git/diff?root={quote(root)}&path={quote(path or query or '')}&staged={'true' if staged else 'false'}&max_lines={max_tokens or 500}"), "diff")
+    if action == "git_history_search":
+        return _compact(CLIENT.post("/api/git/history_search", {
+            "root": root, "query": query or task, "max_commits": max_tokens or 50,
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "hotspots":
+        days_val = int(diff) if (diff and diff.isdigit()) else 30
+        return _compact(CLIENT.post("/api/repo/hotspots", {
+            "root": root, "days": days_val, "limit": max_tokens or 20,
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "generate_tests_for_diff":
+        return _compact(CLIENT.post("/api/repo/generate_tests_for_diff", {
+            "root": root, "diff": diff or query or task, "path": path or None,
+        }, timeout=_timeout("context")), "delegate")
+    if action == "cross_repo_contract":
+        return _compact(CLIENT.post("/api/repo/cross_repo_contract", {
+            "backend_root": root, "frontend_root": path or workspace or query,
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "reachability_dead_code":
+        return _compact(CLIENT.post("/api/repo/reachability_dead_code", {
+            "root": root, "entrypoints": [path] if path else None,
+        }, timeout=_timeout("context")), "architecture")
+    if action == "mutation_test":
+        return _compact(CLIENT.post("/api/repo/mutation_test", {
+            "root": root, "file": path or query, "diff": diff or None,
+        }, timeout=_timeout("context")), "delegate")
+    if action == "type_stubs":
+        return _compact(CLIENT.post("/api/repo/type_stubs", {
+            "root": root, "file": path or query,
+        }, timeout=_timeout("quick")), "code")
+    if action == "skeletonize":
+        return _compact(CLIENT.post("/api/repo/skeletonize", {
+            "code": query or diff, "targets": [path] if path else None,
+        }, timeout=_timeout("quick")), "code")
     return _invalid_action("local_ai_repo", action, tuple(RepoAction.__args__), "Keep work bounded in Local AI Hub; use Codex-owned orchestration for peer subagents.")
 
 
@@ -803,6 +1004,7 @@ def local_ai_rag(
     workspace: str = "",
     query: str = "",
     top_k: int = 6,
+    extra_fields: list[str] | None = None,
 ) -> dict[str, Any]:
     """Fallback semantic retrieval after deterministic and indexed repository evidence. Use RAG only when cheaper Local AI Hub evidence is insufficient. Actions: index, search, list. Workspace is required for rag search. Use when: semantic retrieval is needed after cheaper code_index and search paths are insufficient. Skip when: deterministic manifests, symbols, or exact ripgrep search already locate the evidence."""
     if not FEATURES.rag:
@@ -819,7 +1021,26 @@ def local_ai_rag(
         }))
     if action == "list":
         return _compact(CLIENT.get("/api/rag/workspaces"))
+    if action == "docset_index":
+        return _compact(CLIENT.post("/api/rag/docset/index", {
+            "name": workspace or query or "default", "root": root,
+        }, timeout=_timeout("long")))
+    if action == "docset_search":
+        return _compact(CLIENT.post("/api/rag/docset/search", {
+            "name": workspace or "default", "query": query, "top_k": max(1, min(top_k, 12)),
+        }))
+    if action == "ingest_document":
+        return _compact(CLIENT.post("/api/rag/ingest_document", {
+            "workspace": workspace or "default", "content": query or root,
+        }, timeout=_timeout("quick")), "status")
+    if action == "ingest_diagram":
+        return _compact(CLIENT.post("/api/rag/ingest_diagram", {
+            "workspace": workspace or "default",
+            "image_path": query or root,
+            "caption": (extra_fields[0] if extra_fields else ""),
+        }, timeout=_timeout("quick")), "status")
     return _invalid_action("local_ai_rag", action, tuple(RagAction.__args__), "Use RAG only when cheaper Local AI Hub evidence is insufficient.")
+
 
 
 @mcp.tool()
@@ -836,8 +1057,11 @@ def local_ai_command(
     max_attempts: int = 3,
     stream: bool = False,
     stream_id: str = "",
+    snapshot: bool = False,
+    rollback_on_failure: bool = False,
+    extra_fields: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Bounded command broker for the main agent. MANDATORY for repeatable test/lint/typecheck/static-analysis/build/read-only commands whenever possible. Shared safe CLI broker. Actions: run, cancel, classify, discover, stats, repair_loop, auto_fix. Optional auto_fix=true or action=repair_loop runs autonomous self-healing test loop with safe rollback on failure. Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts. Optional stream=true or stream_id streams real-time stdout/stderr lines as command.log SSE events. Results are keyed by command + bounded repo state and duplicate runs coalesce across agents. Reuse fresh results. If run returns in_progress=true, DO NOT start the command natively or with force; continue independent work and retry later so the owner can populate the cache. cancel only stops an active matching command. force=true is exceptional recovery/admin behavior, never a retry button. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
+    """Bounded command broker for the main agent. MANDATORY for repeatable test/lint/typecheck/static-analysis/build/read-only commands whenever possible. Shared safe CLI broker. Actions: run, cancel, classify, discover, stats, repair_loop, auto_fix, run_affected, format. Optional auto_fix=true or action=repair_loop runs autonomous self-healing test loop with safe rollback on failure. Optional snapshot=true or rollback_on_failure=true captures git state and automatically reverts dirty changes if validation commands fail. Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts. Optional stream=true or stream_id streams real-time stdout/stderr lines as command.log SSE events. Results are keyed by command + bounded repo state and duplicate runs coalesce across agents. Reuse fresh results. If run returns in_progress=true, DO NOT start the command natively or with force; continue independent work and retry later so the owner can populate the cache. cancel only stops an active matching command. force=true is exceptional recovery/admin behavior, never a retry button. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
     if not FEATURES.commands:
         return {"success": False, "unsupported": True, "error": "local_ai_command is disabled in configuration"}
     action = action.strip().lower().replace("-", "_")
@@ -851,12 +1075,21 @@ def local_ai_command(
     effective_command_timeout = max(1, min(requested_timeout, max(1, int(host_timeout) - 30)))
     if action not in CommandAction.__args__:
         return _invalid_action("local_ai_command", action, tuple(CommandAction.__args__), "Use this broker for bounded commands; keep peer-agent orchestration in Codex.")
+    if action.startswith("mock_server"):
+        sub_act = "start" if action in {"mock_server", "mock_server_start"} else "stop" if action == "mock_server_stop" else "status"
+        port_val = int(command) if (command and command.isdigit()) else 11440
+        return _compact(CLIENT.post("/api/command/mock_server", {
+            "action": sub_act, "root": eff_cwd, "port": port_val, "spec_path": criterion or None,
+        }, timeout=host_timeout), "command")
+    paths_payload = [command] if (action == "format" and command and not command.startswith("-")) else None
     return _compact(CLIENT.post("/api/command", {
         "action": action, "command": command, "cwd": eff_cwd, "root": eff_cwd,
         "timeout": effective_command_timeout, "force": force,
         "task_id": task_id, "criterion": criterion,
         "auto_fix": auto_fix, "max_attempts": max_attempts,
         "stream": stream, "stream_id": stream_id,
+        "snapshot": snapshot, "rollback_on_failure": rollback_on_failure,
+        "paths": paths_payload,
     }, timeout=host_timeout), "command")
 
 
@@ -885,8 +1118,9 @@ def local_ai_coord(
     approver: str = "",
     fingerprint: dict[str, Any] | None = None,
     tool_outcome: dict[str, Any] | None = None,
+    extra_fields: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Cross-agent coordination for the main agent and bounded Hub workers. Actions: claim, release, leases, memo_put, memo_get, memo_search, memo_delete, task_create, task_get, task_checkpoint, task_transition, task_resume, task_list, task_complete, task_fail, task_heartbeat, memory_record, memory_get, memory_find, memory_promote, memory_reap, context_compile, verify_receipt, verify_completion, negative_knowledge_record, negative_knowledge_find, incident_decision, blackboard_update, blackboard_get, blackboard_list, blackboard_merge, blackboard_delete. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool. Use when: Hub workers share edit paths, leases, or reusable findings. Skip when: work is isolated and no shared Hub state or memo is involved."""
+    """Cross-agent coordination for the main agent and bounded Hub workers. Actions: claim, release, leases, memo_put, memo_get, memo_search, memo_delete, task_create, task_get, task_checkpoint, task_rollback, task_transition, task_resume, task_list, task_complete, task_fail, task_heartbeat, memory_record, memory_get, memory_find, memory_promote, memory_reap, context_compile, verify_receipt, verify_completion, negative_knowledge_record, negative_knowledge_find, incident_decision, blackboard_update, blackboard_get, blackboard_list, blackboard_merge, blackboard_delete. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool. Use when: Hub workers share edit paths, leases, or reusable findings. Skip when: work is isolated and no shared Hub state or memo is involved."""
     if not FEATURES.coord:
         return {"success": False, "unsupported": True, "error": "local_ai_coord is disabled in configuration"}
     action = action.strip().lower().replace("-", "_")
@@ -903,7 +1137,19 @@ def local_ai_coord(
             target_scope=target_scope, approver=approver, key=key,
             value=value, query=query, root=root, ttl_seconds=ttl_seconds,
         ), "status")
+    if action.startswith("relation_"):
+        return _compact(CLIENT.coord(
+            action=action, source_entity=key or task_id or query or task,
+            relation=reason or status or "relates_to",
+            target_entity=value or target_scope or "",
+            weight=float(ttl_seconds or 1.0) if ttl_seconds else 1.0,
+            metadata=record,
+            start_entity=key or task_id or query or task,
+            max_depth=max_tokens or 2,
+            limit=max_tokens or 50,
+        ), "status")
     if action == "context_compile":
+
         return _compact(CLIENT.post("/api/agent-state/context", {
             "action": "compile", "task_id": task_id or query or value or key,
             "token_budget": max_tokens or ttl_seconds or 4000, "root": root,
@@ -960,10 +1206,16 @@ def local_ai_coord(
         sec = key if (value and sub == "delete") else (key or target_scope or ("" if sub in {"get", "delete"} else "main"))
         content = record if record is not None else (value or query)
         author = approver or "agent"
+        exp_v = None
+        if isinstance(checkpoint, dict) and "expected_version" in checkpoint:
+            exp_v = checkpoint["expected_version"]
+        elif status and status.isdigit():
+            exp_v = int(status)
         return _compact(CLIENT.post("/api/agent-state/blackboard", {
             "action": sub, "board_id": board, "section": sec or None,
             "content": content, "author": author,
             "remote_sections": record or {},
+            "expected_version": exp_v,
         }, timeout=_timeout("quick")), "status")
     if action == "swarm_dispatch":
         return _compact(CLIENT.post("/api/agent-state/swarm/dispatch", {
@@ -983,6 +1235,42 @@ def local_ai_coord(
     if action == "swarm_status":
         sid = task_id or key or ""
         return _compact(CLIENT.get(f"/api/agent-state/swarm/{quote(sid)}", timeout=_timeout("quick")), "status")
+    if action == "worktree_lease":
+        return _compact(CLIENT.coord(action="worktree_lease", root=root, branch=key or task or task_id or None), "status")
+    if action == "worktree_release":
+        del_branch = status.lower() not in {"false", "0", "no"} if status else True
+        return _compact(CLIENT.coord(action="worktree_release", root=root, worktree_path=value or lease_id or key or "", delete_branch=del_branch, branch=key or task or task_id or None), "status")
+    if action == "pubsub_publish":
+        return _compact(CLIENT.coord(action="pubsub_publish", topic=key or target_scope or "default", message=value or query or record or {}, publisher=approver or "agent", root=root), "status")
+    if action == "pubsub_poll":
+        return _compact(CLIENT.coord(action="pubsub_poll", topic=key or target_scope or "default", subscriber=approver or "agent", limit=ttl_seconds or 50, root=root), "status")
+    if action == "simulate_merge":
+        return _compact(CLIENT.coord(action="simulate_merge", root=root, source_branch=key or task_id or value, target_branch=target_scope or "HEAD"), "status")
+    if action in {"curate_dataset", "curate_training_dataset"}:
+        return _compact(CLIENT.post("/api/agent-state/tasks", {
+            "action": "curate_dataset",
+            "output_path": key or value or query or "training_dataset.jsonl",
+            "min_receipts": int(status) if (status and status.isdigit()) else 1,
+            "format": target_scope or "jsonl",
+        }, timeout=_timeout("quick")), "status")
+    if action == "task_sync":
+        sync_act = status.lower() if status in ("export", "import") else "export"
+        if sync_act == "export":
+            return _compact(CLIENT.post("/api/agent-state/events/delta", {
+                "action": "export", "stream_id": key or task_id or "", "after_seq": int(ttl_seconds or 0), "limit": max_tokens or 1000,
+            }, timeout=_timeout("quick")), "status")
+        else:
+            return _compact(CLIENT.post("/api/agent-state/events/delta", {
+                "action": "import", "events": record or [],
+            }, timeout=_timeout("quick")), "status")
+    if action == "task_zombie_reap":
+        return _compact(CLIENT.post("/api/agent-state/tasks", {
+            "action": "reap_expired", "auto_recover": True,
+        }, timeout=_timeout("quick")), "status")
+    if action == "task_cleanup_worktree":
+        return _compact(CLIENT.post("/api/agent-state/tasks", {
+            "action": "cleanup_worktree", "task_id": task_id or key or "",
+        }, timeout=_timeout("quick")), "status")
     return _invalid_action("local_ai_coord", action, tuple(CoordAction.__args__), "Use coordination for bounded shared state; the main agent remains the owner of final integration.")
 
 
@@ -1004,6 +1292,7 @@ def local_ai_work(
     return_fields: list[str] | None = None,
     max_output_tokens: int = 0,
     keep_failed_workspace: bool = False,
+    extra_fields: list[str] | None = None,
 ) -> dict[str, Any]:
     """Whole-task local execution with durable verified handoff. See dynamic description for policy and response projection."""
     if not getattr(FEATURES, "work_orchestrator", False):
@@ -1023,7 +1312,7 @@ def local_ai_work(
 
 @mcp.tool()
 @_instrumented_tool()
-def local_ai_artifact(artifact_id: str, offset: int = 0, max_chars: int = 4000, section: str = "") -> dict[str, Any]:
+def local_ai_artifact(artifact_id: str, offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None) -> dict[str, Any]:
     """Fetch one needed artifact section or exact evidence slice. Evidence IDs start with E. Use when: exact source or evidence text is required after indexed discovery. Skip when: no source slice is needed or the existing compact result is sufficient."""
     if not FEATURES.artifacts:
         return {"success": False, "unsupported": True, "error": "local_ai_artifact is disabled in configuration"}

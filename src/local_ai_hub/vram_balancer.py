@@ -20,6 +20,8 @@ class VRAMBalancer:
         self._lock = threading.RLock()
         self._last_status: dict[str, Any] = {}
         self._last_check_time = 0.0
+        self._pinned_model: str | None = None
+        self._pin_expires: float = 0.0
 
     def status(self, force: bool = False) -> dict[str, Any]:
         now = time.monotonic()
@@ -85,10 +87,45 @@ class VRAMBalancer:
                     "strategy": strategy,
                     "active": level in {"moderate", "high"},
                 },
+                "pinned_model": (
+                    {
+                        "model": self._pinned_model,
+                        "ttl_remaining_seconds": round(max(0.0, self._pin_expires - now), 1),
+                    }
+                    if (self._pinned_model and now < self._pin_expires)
+                    else None
+                ),
             }
+            if self._pinned_model and now >= self._pin_expires:
+                self._pinned_model = None
             self._last_status = res
             self._last_check_time = now
             return res
+
+    def pin_model(self, model_name: str, ttl_seconds: float = 300.0) -> dict[str, Any]:
+        """Pin a warm model in VRAM to prevent cache thrashing."""
+        with self._lock:
+            self._pinned_model = str(model_name).strip()
+            self._pin_expires = time.monotonic() + max(0.001, float(ttl_seconds))
+            return {
+                "pinned": True,
+                "model": self._pinned_model,
+                "ttl_seconds": float(ttl_seconds),
+            }
+
+    def get_pinned_model(self) -> str | None:
+        """Return currently warm-pinned model if TTL has not expired."""
+        with self._lock:
+            if self._pinned_model and time.monotonic() < self._pin_expires:
+                return self._pinned_model
+            self._pinned_model = None
+            return None
+
+    def unpin_model(self) -> None:
+        """Clear warm model pin."""
+        with self._lock:
+            self._pinned_model = None
+            self._pin_expires = 0.0
 
     def should_throttle_background(self) -> bool:
         """Return True if VRAM pressure requires background GPU tasks to pause or downscale."""

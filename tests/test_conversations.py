@@ -85,12 +85,44 @@ def test_service_continues_with_pinned_route_without_persistent_cache() -> None:
     assert continued["conversation_id"] == started["conversation_id"]
     assert calls[1]["model"] == calls[0]["model"]
     assert calls[1]["system"] == calls[0]["system"]
+    assert "measured_cloud_context_tokens" not in calls[0]
+    assert "measured_cloud_context_tokens" not in calls[1]
     assert "first question" in calls[1]["prompt"]
     assert "answer 1" in calls[1]["prompt"]
     assert "clarify this" in calls[1]["prompt"]
     assert calls[0]["internal"] is True
     assert calls[0]["use_cache"] is False
     assert calls[1]["use_cache"] is False
+
+
+def test_regular_delegate_does_not_claim_local_context_as_cloud_savings() -> None:
+    from local_ai_hub.router import ModelRouter
+    from local_ai_hub.services import LocalAIServices
+
+    services = object.__new__(LocalAIServices)
+    services.config = {
+        "models": {"fast_code": "fast", "heavy_code": "heavy", "general": "general"},
+        "routing": {"prefer_resident_model": False},
+        "token_saving": {"max_local_input_tokens": 4000},
+    }
+    services.router = ModelRouter(services.config)
+    calls: list[dict] = []
+
+    def fake_generate(model, prompt, system, max_tokens, temperature, tenant, source, priority, **kwargs):
+        calls.append(kwargs)
+        return {"success": True, "model": model, "text": "answer"}
+
+    services._generate = fake_generate
+    result = services.delegate(
+        {"task": "inspect the repository", "context": "locally packed repository facts"},
+        "tenant-a",
+    )
+
+    assert result["success"] is True
+    assert len(calls) == 1
+    assert calls[0]["semantic_query"] == "inspect the repository"
+    assert calls[0]["semantic_context_fingerprint"]
+    assert "measured_cloud_context_tokens" not in calls[0]
 
 
 def test_service_discards_uncommitted_turn_after_model_failure() -> None:
@@ -239,5 +271,3 @@ def test_services_aborts_active_conversation_on_exception() -> None:
     assert err == ""
     assert conv is not None
     assert conv.active is True
-
-

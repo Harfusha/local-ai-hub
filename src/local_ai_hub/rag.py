@@ -58,6 +58,13 @@ def _simhash(text: str) -> int:
     return fp
 
 
+def _python_ast_chunks(text: str, size: int | Any = 4500, overlap: int | Any = 450) -> list[str]:
+    store = RAGStore.__new__(RAGStore)
+    sz = size if isinstance(size, int) else 4500
+    ov = overlap if isinstance(overlap, int) else 450
+    return store._python_ast_chunks(text, sz, ov)
+
+
 class RAGStore:
     """Persistent semantic index with file-level incremental updates.
 
@@ -74,6 +81,8 @@ class RAGStore:
         state_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = state_dir / "rag.sqlite3"
         self.scope = str(config.get("rag", {}).get("scope", "shared")).lower()
+        self._workspace_locks: dict[str, threading.RLock] = {}
+        self._workspace_locks_guard = threading.Lock()
         self._index_lock = threading.RLock()
         self._index_flights_lock = threading.Lock()
         self._index_flights: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -110,6 +119,13 @@ class RAGStore:
         except sqlite3.DatabaseError as exc:
             if not is_busy_error(exc):
                 self._recover_db()
+
+    def _get_workspace_lock(self, workspace: str | None = None) -> threading.RLock:
+        ws_key = str(workspace or "default")
+        with self._workspace_locks_guard:
+            if ws_key not in self._workspace_locks:
+                self._workspace_locks[ws_key] = threading.RLock()
+            return self._workspace_locks[ws_key]
 
     def _recover_db(self) -> None:
         import time, sqlite3
@@ -250,6 +266,10 @@ class RAGStore:
             ".sql": "sql",
         }
         lang = LANGUAGE_MAP.get(ext)
+        if ext == ".py":
+            py_chunks = self._python_ast_chunks(text, size, overlap)
+            if py_chunks:
+                return py_chunks
         if lang:
             ast_chunks = self._ast_chunks(text, lang, size, overlap)
             if ast_chunks:
@@ -257,6 +277,50 @@ class RAGStore:
 
         # Paragraph-aware fallback (original logic)
         return self._text_chunks(text, size, overlap)
+
+    def _python_ast_chunks(self, text: str, size: int, overlap: int) -> list[str]:
+        """Split Python code along AST boundaries (classes, functions) with module import headers."""
+        import ast
+        try:
+            tree = ast.parse(text)
+        except Exception:
+            return []
+
+        lines = text.splitlines(keepends=True)
+        if not lines:
+            return []
+
+        import_lines: list[str] = []
+        for node in tree.body:
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                import_lines.extend(lines[node.lineno - 1 : node.end_lineno])
+        preamble = "".join(import_lines).strip()
+        if len(preamble) > 400:
+            preamble = preamble[:400] + "\n# ... imports truncated ..."
+        preamble_header = f"# [Module context]\n{preamble}\n\n" if preamble else ""
+
+        chunks: list[str] = []
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                block = "".join(lines[node.lineno - 1 : node.end_lineno]).strip()
+                full_chunk = f"{preamble_header}{block}" if preamble_header and not block.startswith(preamble[:50]) else block
+                if len(full_chunk) <= size:
+                    chunks.append(full_chunk)
+                else:
+                    if isinstance(node, ast.ClassDef):
+                        cls_header = f"class {node.name}:\n"
+                        for item in node.body:
+                            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                                m_block = "".join(lines[item.lineno - 1 : item.end_lineno]).strip()
+                                sub = f"{preamble_header}{cls_header}    # method {item.name}\n{m_block}"
+                                if len(sub) <= size:
+                                    chunks.append(sub)
+                                else:
+                                    chunks.extend(self._text_chunks(sub, size, overlap))
+                    else:
+                        chunks.extend(self._text_chunks(full_chunk, size, overlap))
+
+        return [c for c in chunks if c.strip()]
 
     def _ast_chunks(self, text: str, language: str, size: int, overlap: int) -> list[str]:
         """Try to split code using tree-sitter AST boundaries."""
@@ -407,7 +471,7 @@ class RAGStore:
             }
 
         try:
-            with self._index_lock:
+            with self._get_workspace_lock(resolved_workspace):
                 result = self._index_locked(resolved_root, tenant, resolved_workspace)
         except Exception as exc:
             result = {"success": False, "error": str(exc), "retryable": True}
@@ -571,7 +635,7 @@ class RAGStore:
                     changed_records[duplicate_idx]["embedding"] = embedding
 
         # One transaction publishes all changed/deleted file state atomically.
-        with self._index_lock, closing(self._connect()) as con:
+        with self._get_workspace_lock(workspace), closing(self._connect()) as con:
             con.execute("BEGIN IMMEDIATE")
             del_paths = [(scope_key, workspace, rel) for rel in (deleted_paths + changed_paths)]
             if del_paths:
@@ -625,7 +689,7 @@ class RAGStore:
         """Delete RAG rows for files no longer present without rescanning the filesystem."""
         scope_key = self._scope_key(tenant)
         current = set(current_paths)
-        with self._index_lock, closing(self._connect()) as con:
+        with self._get_workspace_lock(workspace), closing(self._connect()) as con:
             existing = {str(r[0]) for r in con.execute(
                 "SELECT path FROM files WHERE tenant=? AND workspace=?", (scope_key, workspace)
             ).fetchall()}
@@ -651,7 +715,7 @@ class RAGStore:
         if not unique:
             return 0
         removed = 0
-        with self._index_lock, closing(self._connect()) as con:
+        with self._get_workspace_lock(workspace), closing(self._connect()) as con:
             for rel in unique:
                 row = con.execute(
                     "SELECT 1 FROM files WHERE tenant=? AND workspace=? AND path=?",
@@ -687,7 +751,7 @@ class RAGStore:
         processed_paths: list[str] = []
         embedded_chunks = 0
         reused_chunks = 0
-        with self._index_lock:
+        with self._get_workspace_lock(workspace):
             # 1. Read files and chunk
             file_data: list[dict[str, Any]] = []
             for rel in paths:
@@ -876,11 +940,11 @@ class RAGStore:
         Each call commits independently. Repeated calls converge to the same state as
         :meth:`index`, while foreground work can take over between calls.
         """
-        with self._index_lock:
-            root_path = Path(root).resolve()
-            if not root_path.exists() or not root_path.is_dir():
-                return {"success": False, "error": f"root directory does not exist: {root_path}"}
-            workspace = workspace or self.workspace_id(str(root_path))
+        root_path = Path(root).resolve()
+        if not root_path.exists() or not root_path.is_dir():
+            return {"success": False, "error": f"root directory does not exist: {root_path}"}
+        workspace = workspace or self.workspace_id(str(root_path))
+        with self._get_workspace_lock(workspace):
             scope_key = self._scope_key(tenant)
             if callable(should_yield) and should_yield():
                 return {"success": True, "workspace": workspace, "preempted": True, "done": False, "processed_files": 0}
@@ -1123,11 +1187,104 @@ class RAGStore:
         result["search_cache"] = {"hit": hit, "coalesced": coalesced, "revision": revision}
         return self._postprocess_search_payload(result, top_k) if isinstance(result, dict) else result
 
+    def _search_fts_candidates(self, query: str, tenant: str, workspace: str, limit: int = 16, scope_path: str | None = None) -> list[dict[str, Any]]:
+        scope_key = self._scope_key(tenant)
+        try:
+            import re
+            tokens = [re.sub(r"[^\w_]", "", t) for t in query.split()]
+            tokens = [t for t in tokens if len(t) > 1]
+            if not tokens:
+                return []
+            fts_expr = " OR ".join(f'"{t}"' for t in tokens[:8])
+            with closing(self._connect()) as con:
+                if scope_path:
+                    norm_scope = scope_path.replace("\\", "/").rstrip("/")
+                    fts_rows = con.execute(
+                        """SELECT c.path, c.chunk_no, c.text, c.content_hash, bm25(chunk_fts)
+                           FROM chunk_fts
+                           JOIN chunks c ON c.tenant=chunk_fts.tenant AND c.workspace=chunk_fts.workspace AND c.path=chunk_fts.path AND c.chunk_no=chunk_fts.chunk_no
+                           WHERE chunk_fts.tenant=? AND chunk_fts.workspace=? AND (chunk_fts.path=? OR chunk_fts.path LIKE ? || '/%') AND chunk_fts MATCH ?
+                           ORDER BY bm25(chunk_fts) LIMIT ?""",
+                        (scope_key, workspace, norm_scope, norm_scope, fts_expr, limit),
+                    ).fetchall()
+                else:
+                    fts_rows = con.execute(
+                        """SELECT c.path, c.chunk_no, c.text, c.content_hash, bm25(chunk_fts)
+                           FROM chunk_fts
+                           JOIN chunks c ON c.tenant=chunk_fts.tenant AND c.workspace=chunk_fts.workspace AND c.path=chunk_fts.path AND c.chunk_no=chunk_fts.chunk_no
+                           WHERE chunk_fts.tenant=? AND chunk_fts.workspace=? AND chunk_fts MATCH ?
+                           ORDER BY bm25(chunk_fts) LIMIT ?""",
+                        (scope_key, workspace, fts_expr, limit),
+                    ).fetchall()
+                return [
+                    {
+                        "path": r[0], "chunk_no": r[1], "text": r[2], "content_hash": r[3],
+                        "fts_score": float(r[4]),
+                    }
+                    for r in fts_rows
+                ]
+        except Exception:
+            return []
+
+    def _search_token_overlap(self, query: str, tenant: str, workspace: str, limit: int = 16, scope_path: str | None = None) -> list[dict[str, Any]]:
+        scope_key = self._scope_key(tenant)
+        import re
+        terms = [t.lower() for t in re.findall(r"\w+", query) if len(t) > 1]
+        if not terms:
+            return []
+        with closing(self._connect()) as con:
+            if scope_path:
+                norm_scope = scope_path.replace("\\", "/").rstrip("/")
+                rows = con.execute(
+                    "SELECT path, chunk_no, text, content_hash FROM chunks WHERE tenant=? AND workspace=? AND (path=? OR path LIKE ? || '/%')",
+                    (scope_key, workspace, norm_scope, norm_scope),
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    "SELECT path, chunk_no, text, content_hash FROM chunks WHERE tenant=? AND workspace=?",
+                    (scope_key, workspace),
+                ).fetchall()
+        scored: list[dict[str, Any]] = []
+        for r in rows:
+            low = str(r[2]).lower()
+            matches = sum(1 for t in terms if t in low)
+            if matches:
+                score = matches / len(terms)
+                scored.append({
+                    "path": r[0], "chunk_no": r[1], "text": r[2], "content_hash": r[3],
+                    "fts_score": float(score),
+                })
+        scored.sort(key=lambda x: x["fts_score"], reverse=True)
+        return scored[:limit]
+
     def _search_uncached(self, query: str, tenant: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None) -> dict[str, Any]:
         scope_key = self._scope_key(tenant)
-        query_result = self.services.embed([query], tenant, priority=priority, query=True)
+        try:
+            query_result = self.services.embed([query], tenant, priority=priority, query=True)
+        except Exception as exc:
+            query_result = {"success": False, "error": str(exc)}
         if not query_result.get("success"):
-            return query_result
+            candidates = self._search_fts_candidates(query, tenant, workspace, max(16, top_k * 2), scope_path)
+            if not candidates:
+                candidates = self._search_token_overlap(query, tenant, workspace, max(16, top_k * 2), scope_path)
+            results = [
+                {
+                    "path": c["path"],
+                    "chunk_no": c["chunk_no"],
+                    "text": c.get("text", ""),
+                    "content_hash": c.get("content_hash", ""),
+                    "score": float(c.get("fts_score", 0.5)),
+                }
+                for c in candidates[:top_k]
+            ]
+            return {
+                "success": True,
+                "workspace": workspace,
+                "results": results,
+                "degraded": True,
+                "fallback": "bm25_fts",
+                "reason": str(query_result.get("error", "embedder_unavailable")),
+            }
         query_vec = query_result["embeddings"][0]
 
         with closing(self._connect()) as con:
@@ -1213,42 +1370,7 @@ class RAGStore:
             candidates = scored[: int(self.config.get("rag", {}).get("rerank_candidates", 16))]
 
         # Hybrid search: combine vector candidates with FTS5 keyword hits via Reciprocal Rank Fusion (RRF)
-        fts_candidates: list[dict[str, Any]] = []
-        try:
-            import re
-            tokens = [re.sub(r"[^\w_]", "", t) for t in query.split()]
-            tokens = [t for t in tokens if len(t) > 1]
-            if tokens:
-                fts_expr = " OR ".join(f'"{t}"' for t in tokens[:8])
-                with closing(self._connect()) as con:
-                    if scope_path:
-                        norm_scope = scope_path.replace("\\", "/").rstrip("/")
-                        fts_rows = con.execute(
-                            """SELECT c.path, c.chunk_no, c.text, c.content_hash, bm25(chunk_fts)
-                               FROM chunk_fts
-                               JOIN chunks c ON c.tenant=chunk_fts.tenant AND c.workspace=chunk_fts.workspace AND c.path=chunk_fts.path AND c.chunk_no=chunk_fts.chunk_no
-                               WHERE chunk_fts.tenant=? AND chunk_fts.workspace=? AND (chunk_fts.path=? OR chunk_fts.path LIKE ? || '/%') AND chunk_fts MATCH ?
-                               ORDER BY bm25(chunk_fts) LIMIT ?""",
-                            (scope_key, workspace, norm_scope, norm_scope, fts_expr, 16),
-                        ).fetchall()
-                    else:
-                        fts_rows = con.execute(
-                            """SELECT c.path, c.chunk_no, c.text, c.content_hash, bm25(chunk_fts)
-                               FROM chunk_fts
-                               JOIN chunks c ON c.tenant=chunk_fts.tenant AND c.workspace=chunk_fts.workspace AND c.path=chunk_fts.path AND c.chunk_no=chunk_fts.chunk_no
-                               WHERE chunk_fts.tenant=? AND chunk_fts.workspace=? AND chunk_fts MATCH ?
-                               ORDER BY bm25(chunk_fts) LIMIT ?""",
-                            (scope_key, workspace, fts_expr, 16),
-                        ).fetchall()
-                    fts_candidates = [
-                        {
-                            "path": r[0], "chunk_no": r[1], "text": r[2], "content_hash": r[3],
-                            "fts_score": float(r[4]),
-                        }
-                        for r in fts_rows
-                    ]
-        except Exception:
-            fts_candidates = []
+        fts_candidates = self._search_fts_candidates(query, tenant, workspace, 16, scope_path)
 
         is_hybrid = bool(fts_candidates)
         if is_hybrid:
@@ -1290,18 +1412,80 @@ class RAGStore:
                             c["text"] = chunk_text
 
         reranked = False
-        if use_reranker and self.config.get("features", {}).get("reranker", True) and candidates:
-            rr = self.reranker.rerank(query, [c["text"] for c in candidates], top_k=top_k, priority=priority)
-            if rr.get("success"):
-                ordered: list[dict[str, Any]] = []
-                for item in rr["results"]:
-                    base = dict(candidates[item["index"]])
-                    base["rerank_score"] = item["score"]
-                    ordered.append(base)
-                candidates = ordered
-                reranked = True
+        if use_reranker and candidates:
+            if self.config.get("features", {}).get("reranker", True) and hasattr(self, "reranker") and self.reranker:
+                try:
+                    rr = self.reranker.rerank(query, [c["text"] for c in candidates], top_k=top_k, priority=priority)
+                    if rr.get("success"):
+                        ordered: list[dict[str, Any]] = []
+                        for item in rr["results"]:
+                            base = dict(candidates[item["index"]])
+                            base["rerank_score"] = item["score"]
+                            ordered.append(base)
+                        candidates = ordered
+                        reranked = True
+                except Exception:
+                    pass
 
-        return {"success": True, "workspace": workspace, "reranked": reranked, "hybrid": is_hybrid, "results": candidates[:top_k]}
+            if not reranked:
+                import re
+                q_terms = [t.lower() for t in re.findall(r"\w+", query) if len(t) > 1]
+                if q_terms:
+                    for c in candidates:
+                        h_score = float(c.get("rrf_score", c.get("embedding_score", 0.5)))
+                        txt = str(c.get("text", "")).lower()
+                        p_low = str(c.get("path", "")).lower()
+                        if any(t in p_low for t in q_terms):
+                            h_score *= 1.35
+                        for t in q_terms:
+                            if f"def {t}" in txt or f"class {t}" in txt or f"interface {t}" in txt:
+                                h_score *= 1.5
+                        if len(q_terms) >= 2 and all(t in txt for t in q_terms[:2]):
+                            h_score *= 1.2
+                        c["heuristic_rerank_score"] = round(h_score, 4)
+                    candidates = sorted(candidates, key=lambda x: x.get("heuristic_rerank_score", 0.0), reverse=True)
+                    reranked = True
+
+        graphrag_enriched = False
+        try:
+            state_dir = Path(self.config.get("server", {}).get("state_dir", "state")).resolve()
+            state_db = state_dir / "agent_state.sqlite3"
+            if state_db.is_file():
+                con_state = connect_sqlite(state_db)
+                try:
+                    cur_rel = con_state.cursor()
+                    for c in candidates[:top_k]:
+                        c_text = c.get("text", "")
+                        import re
+                        words = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{3,}\b", c_text[:1000]))
+                        if not words:
+                            continue
+                        matched_rels: list[dict[str, Any]] = []
+                        for w in list(words)[:15]:
+                            rows_rel = cur_rel.execute(
+                                "SELECT source_entity, relation, target_entity, weight FROM agent_entity_relations WHERE source_entity = ? OR target_entity = ? LIMIT 5",
+                                (w, w),
+                            ).fetchall()
+                            for r_row in rows_rel:
+                                matched_rels.append({
+                                    "source": r_row[0], "relation": r_row[1], "target": r_row[2], "weight": float(r_row[3]),
+                                })
+                        if matched_rels:
+                            c["graph_relations"] = matched_rels[:5]
+                            graphrag_enriched = True
+                finally:
+                    con_state.close()
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "workspace": workspace,
+            "reranked": reranked,
+            "hybrid": is_hybrid,
+            "graphrag_enriched": graphrag_enriched,
+            "results": candidates[:top_k],
+        }
 
     def list_workspaces(self, tenant: str) -> list[dict[str, Any]]:
         scope_key = self._scope_key(tenant)
@@ -1311,3 +1495,143 @@ class RAGStore:
                 (scope_key,),
             ).fetchall()
         return [{"workspace": r[0], "chunks": r[1], "files": r[2]} for r in rows]
+
+    def docset_index(self, name: str, root: str, tenant: str = "docset") -> dict[str, Any]:
+        """Index an offline library or API documentation directory under a named docset workspace."""
+        clean_name = str(name).strip().lower().replace(" ", "_")
+        return self.index(root, tenant, workspace=f"docset:{clean_name}")
+
+    def docset_search(self, name: str, query: str, tenant: str = "docset", top_k: int = 8, use_reranker: bool = True) -> dict[str, Any]:
+        """Search an indexed offline library or API docset."""
+        clean_name = str(name).strip().lower().replace(" ", "_")
+        return self.search(query, tenant, f"docset:{clean_name}", top_k=top_k, use_reranker=use_reranker)
+
+    def ingest_document(
+        self,
+        workspace: str,
+        content: str,
+        title: str = "",
+        metadata: dict[str, Any] | None = None,
+        tenant: str = "default",
+    ) -> dict[str, Any]:
+        """Ingest raw document or specification content into a RAG workspace."""
+        clean_text = str(content or "").strip()
+        if not clean_text:
+            return {"success": False, "error": "content is required"}
+
+        clean_ws = str(workspace or "default").strip()
+        doc_title = str(title or (metadata.get("title") if isinstance(metadata, dict) else "")).strip() or f"doc_{_fragment_hash(clean_text)[:8]}"
+        doc_path = f"doc:{doc_title}"
+        scope_key = self._scope_key(tenant)
+
+        raw_chunks = self._text_chunks(clean_text, size=1000, overlap=100)
+        if not raw_chunks:
+            raw_chunks = [clean_text[:1000]]
+
+        records: list[dict[str, Any]] = []
+        for i, ch_text in enumerate(raw_chunks):
+            records.append({
+                "chunk_no": i,
+                "text": ch_text,
+                "hash": _fragment_hash(ch_text),
+                "embedding": None,
+            })
+
+        if self.services is not None:
+            try:
+                vec_res = self.services.embed([r["text"] for r in records], tenant, priority=2, query=False)
+                if isinstance(vec_res, dict) and vec_res.get("success"):
+                    for idx, vec in enumerate(vec_res.get("embeddings", [])):
+                        try:
+                            import numpy as np
+                            records[idx]["embedding"] = sqlite3.Binary(np.array(vec, dtype=np.float32).tobytes())
+                        except Exception:
+                            records[idx]["embedding"] = json.dumps(vec, separators=(",", ":"))
+            except Exception:
+                pass
+
+        for r in records:
+            if r["embedding"] is None:
+                r["embedding"] = sqlite3.Binary(b"\x00" * 32)
+
+        with self._get_workspace_lock(clean_ws), closing(self._connect()) as con:
+            con.execute("BEGIN IMMEDIATE")
+            con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", (scope_key, clean_ws, doc_path))
+            con.execute("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", (scope_key, clean_ws, doc_path))
+            try:
+                con.execute("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", (scope_key, clean_ws, doc_path))
+            except Exception:
+                pass
+
+            now_ns = time.time_ns()
+            con.execute(
+                "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
+                (scope_key, clean_ws, doc_path, now_ns, len(clean_text.encode("utf-8")), _fragment_hash(clean_text)),
+            )
+            con.executemany(
+                "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) VALUES(?,?,?,?,?,?,?)",
+                [(scope_key, clean_ws, doc_path, r["chunk_no"], r["hash"], r["text"], r["embedding"]) for r in records],
+            )
+            try:
+                con.executemany(
+                    "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
+                    [(scope_key, clean_ws, doc_path, r["chunk_no"], r["text"]) for r in records],
+                )
+            except Exception:
+                pass
+            con.commit()
+
+        return {
+            "success": True,
+            "workspace": clean_ws,
+            "document_title": doc_title,
+            "chunks_ingested": len(records),
+            "embedded": any(r["embedding"] is not None for r in records),
+        }
+
+    def ingest_diagram(
+        self,
+        workspace: str,
+        image_path: str,
+        caption: str = "",
+        metadata: dict[str, Any] | None = None,
+        tenant: str = "default",
+    ) -> dict[str, Any]:
+        """Ingest architectural diagram, flowchart, or visual asset into RAG workspace."""
+        p_img = Path(image_path).expanduser().resolve(strict=False)
+        if not p_img.is_file():
+            return {"success": False, "error": f"image file not found: {image_path}"}
+
+        suffix = p_img.suffix.lower()
+        if suffix not in (".png", ".jpg", ".jpeg", ".webp", ".svg", ".bmp"):
+            return {"success": False, "error": f"unsupported diagram format: {suffix}"}
+
+        clean_ws = str(workspace or "default").strip()
+        doc_title = f"diagram_{p_img.stem}"
+
+        diagram_text = ""
+        if suffix == ".svg":
+            try:
+                raw_svg = p_img.read_text(encoding="utf-8", errors="replace")
+                texts = re.findall(r"<text[^>]*>(.*?)</text>", raw_svg, re.DOTALL | re.I)
+                diagram_text = f"SVG Diagram: {p_img.name}\nCaption: {caption}\nText nodes:\n" + "\n".join(t.strip() for t in texts if t.strip())
+            except Exception:
+                diagram_text = f"SVG Diagram: {p_img.name}\nCaption: {caption}"
+        else:
+            file_size_kb = round(p_img.stat().st_size / 1024, 1)
+            diagram_text = f"Architectural Diagram / Visual Asset: {p_img.name}\nFormat: {suffix.lstrip('.')}\nSize: {file_size_kb} KB\nCaption: {caption}\nFile path: {str(p_img)}"
+            if metadata:
+                diagram_text += f"\nMetadata: {json.dumps(metadata, ensure_ascii=False)}"
+
+        res = self.ingest_document(
+            workspace=clean_ws,
+            content=diagram_text,
+            title=doc_title,
+            metadata={"type": "diagram", "format": suffix, "image_path": str(p_img), **(metadata or {})},
+            tenant=tenant,
+        )
+        if isinstance(res, dict):
+            res["diagram_indexed"] = True
+            res["image_path"] = str(p_img)
+        return res
+

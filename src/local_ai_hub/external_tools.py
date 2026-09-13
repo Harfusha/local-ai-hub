@@ -330,7 +330,8 @@ class ExternalCodeIntelligence:
     _CGC_BASE_IGNORE_DIRS = {
         ".git", ".idea", ".serena", ".venv", ".vscode", "__pycache__", ".pytest_cache",
         ".tox", ".mypy_cache", "build", "dist", "env", "node_modules", "obj", "out",
-        "target", "tmp", "venv",
+        "target", "tmp", "venv", ".tmp", ".vs", ".woodbound", "Builds", "Library",
+        "Logs", "Temp", "UserSettings", "artifacts",
     }
     _CGC_SAFE_GIT_IGNORE_DIR_NAMES = {
         ".tmp", ".vs", ".woodbound", "Builds", "Library", "Logs", "Temp", "UserSettings",
@@ -507,6 +508,7 @@ class ExternalCodeIntelligence:
         lowered = message.lower()
         return any(marker in lowered for marker in (
             "indexing exceeded",
+            "index exited",
             "no associated project configuration",
             "no configuration file found",
             "project configuration auto-generation failed",
@@ -787,7 +789,7 @@ class ExternalCodeIntelligence:
                 qtype = {
                     "callers": "callers", "callees": "callees", "calls": "callees",
                     "imports": "imports", "importers": "importers", "inheritance": "inheritance",
-                    "hierarchy": "hierarchy", "relationships": "all", "relationship": "all",
+                    "hierarchy": "hierarchy", "relationships": "module_deps", "relationship": "module_deps",
                 }.get(action, action or "all")
                 result = client.call_tool("analyze_code_relationships", {"query_type": qtype, "target": query, "context": path or None, "repo_path": root})
             self.queries += 1

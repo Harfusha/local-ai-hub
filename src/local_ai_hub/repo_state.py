@@ -297,6 +297,19 @@ class RepoStateTracker:
             self.cache.set(cache_key, result)
             return dict(result)
 
+    def invalidate(self, root: str | None = None) -> None:
+        """Explicitly invalidate fingerprint cache for a root or all roots."""
+        with self._lock:
+            if root:
+                canon = canonical_root(root)
+                self.cache.delete(canon)
+                self._last_good.pop(canon, None)
+                self._slow_until.pop(canon, None)
+            else:
+                self.cache.clear()
+                self._last_good.clear()
+                self._slow_until.clear()
+
     def stats(self) -> dict[str, Any]:
         with self._lock, self._flight_lock:
             return {
@@ -305,3 +318,4 @@ class RepoStateTracker:
                 "slow_roots": sum(1 for until in self._slow_until.values() if until > time.monotonic()),
                 "fingerprint_flights": len(self._flights),
             }
+

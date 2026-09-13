@@ -10,6 +10,7 @@ include LICENSE
 include config.toml.example
 include defaults.toml
 include requirements-core.txt
+include requirements-token-economy.txt
 include requirements-local-nlp.txt
 include requirements-openvino.txt
 include install.ps1

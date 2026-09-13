@@ -186,6 +186,15 @@ class ProjectPreprocessor:
                 self._fs_watcher_thread = threading.Thread(target=self._fs_watcher_loop, name="local-ai-fs-watcher", daemon=True)
                 self._fs_watcher_thread.start()
 
+    def ingestion_reuse_rate(self) -> float:
+        lock = getattr(self, "_stats_lock", None)
+        with lock if lock is not None else nullcontext():
+            stats = getattr(self, "_stats", {})
+            hits = int(stats.get("file_card_hits", 0)) + int(stats.get("deterministic_card_hits", 0))
+            generations = int(stats.get("file_card_generations", 0))
+            total = hits + generations
+            return round(hits / total, 4) if total > 0 else 0.0
+
     def _connect(self) -> sqlite3.Connection:
         con = connect_sqlite(
             self.db_path,
@@ -363,11 +372,33 @@ class ProjectPreprocessor:
                     status TEXT NOT NULL,
                     updated_at REAL NOT NULL,
                     error TEXT,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY(root,backend)
                 );
                 CREATE VIRTUAL TABLE IF NOT EXISTS source_fts USING fts5(root UNINDEXED, path UNINDEXED, content);
                 """
             )
+            columns = {
+                str(row[1])
+                for row in con.execute("PRAGMA table_info(external_index_state)").fetchall()
+            }
+            if "retry_count" not in columns:
+                # This is disposable derived state. Rebuild the small table
+                # instead of adding a migration shim to the initial-release
+                # schema; project/file indexes remain authoritative.
+                con.execute("DROP TABLE IF EXISTS external_index_state")
+                con.execute(
+                    """CREATE TABLE external_index_state (
+                        root TEXT NOT NULL,
+                        backend TEXT NOT NULL,
+                        revision_hash TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        updated_at REAL NOT NULL,
+                        error TEXT,
+                        retry_count INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(root,backend)
+                    )"""
+                )
             con.commit()
 
     def _invalidate_rag_sync_state(self) -> None:
@@ -1277,6 +1308,7 @@ class ProjectPreprocessor:
             "phases": list(self.PHASES), "projects": projects,
             "scheduler_background_allowed": bg_allowed,
             "global_diagnostic": global_diagnostic,
+            "ingestion_reuse_rate": self.ingestion_reuse_rate(),
         }
         self._status_cache[key] = {"time": now_mono, "data": dict(res)}
         return res
@@ -2285,19 +2317,23 @@ class ProjectPreprocessor:
             return False
         revision = self._external_revision(root)
         force_refresh = bool(row.get("force_refresh"))
+        retry_count = 0
         with self._db_lock, closing(self._connect()) as con:
             state = con.execute(
-                "SELECT revision_hash,status,error FROM external_index_state WHERE root=? AND backend=?",
+                "SELECT revision_hash,status,error,retry_count FROM external_index_state WHERE root=? AND backend=?",
                 (root, backend),
             ).fetchone()
         if not force_refresh and state is not None and str(state[0]) == revision:
             prior_status = str(state[1])
             prior_error = str(state[2] or "")
+            retry_count = max(0, int(state[3] or 0))
             if prior_status in {"ready", "unavailable", "skipped"} or self._external_error_is_revision_scoped(prior_error):
-                if prior_status != "ready" and self._external_backend_available(backend):
+                if prior_status != "ready" and retry_count < 1 and self._external_backend_available(backend):
                     # A previous process may have timed out before the optional
                     # backend was installed/discovered. Retry it now instead of
-                    # treating the old derived state as a permanent skip.
+                    # treating the old derived state as a permanent skip. Once
+                    # that recovery attempt has failed, do not loop forever on
+                    # the same unchanged revision.
                     pass
                 else:
                     if prior_status not in {"unavailable"}:
@@ -2312,6 +2348,14 @@ class ProjectPreprocessor:
         if not Path(root).is_dir():
             result = {"success": False, "skipped": True, "error": "project root is missing"}
         else:
+            # Publish the active state before the potentially long subprocess so
+            # the dashboard cannot display a stale prior failure as RUNNING.
+            with self._db_lock, closing(self._connect()) as con:
+                con.execute(
+                    "INSERT OR REPLACE INTO external_index_state(root,backend,revision_hash,status,updated_at,error,retry_count) VALUES(?,?,?,?,?,?,?)",
+                    (root, backend, revision, "running", time.time(), "", retry_count),
+                )
+                con.commit()
             try:
                 result = self.external_tools.index(backend, root)
             except Exception as exc:
@@ -2328,8 +2372,8 @@ class ProjectPreprocessor:
         status = "ready" if success else "unavailable" if unavailable else "degraded"
         with self._db_lock, closing(self._connect()) as con:
             con.execute(
-                "INSERT OR REPLACE INTO external_index_state(root,backend,revision_hash,status,updated_at,error) VALUES(?,?,?,?,?,?)",
-                (root, backend, revision, status, time.time(), error),
+                "INSERT OR REPLACE INTO external_index_state(root,backend,revision_hash,status,updated_at,error,retry_count) VALUES(?,?,?,?,?,?,?)",
+                (root, backend, revision, status, time.time(), error, retry_count + 1),
             )
             con.commit()
         with self._stats_lock:
@@ -2362,6 +2406,7 @@ class ProjectPreprocessor:
             or "project configuration auto-generation failed" in normalized
             or "project root is missing" in normalized
             or "indexing exceeded" in normalized
+            or "index exited" in normalized
             or "no module named 'codegraphcontext'" in normalized
         )
 

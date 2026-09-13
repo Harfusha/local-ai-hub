@@ -1,15 +1,25 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
 
 
-def compact_result(value: Any, *, max_text_chars: int = 1800, max_evidence: int = 10) -> Any:
+def compact_result(
+    value: Any,
+    *,
+    max_text_chars: int = 1800,
+    max_evidence: int = 10,
+    extra_fields: Iterable[str] | None = None,
+) -> Any:
     """Remove low-value runtime detail before an MCP result enters cloud context.
 
     The full hub HTTP API remains unchanged. This is an agent-facing projection only.
     """
+    extra = {str(x).strip() for x in (extra_fields or ())} if extra_fields else set()
     if isinstance(value, list):
-        return [compact_result(v, max_text_chars=max_text_chars, max_evidence=max_evidence) for v in value[:50]]
+        return [
+            compact_result(v, max_text_chars=max_text_chars, max_evidence=max_evidence, extra_fields=extra)
+            for v in value[:50]
+        ]
     if not isinstance(value, dict):
         return value
 
@@ -22,7 +32,8 @@ def compact_result(value: Any, *, max_text_chars: int = 1800, max_evidence: int 
         "load_duration_ns", "eval_count", "prompt_eval_count", "total_duration_ns",
         "job_id", "prompt_budget",
     ):
-        data.pop(key, None)
+        if key not in extra:
+            data.pop(key, None)
 
     if isinstance(data.get("text"), str) and len(data["text"]) > max_text_chars:
         data["text"] = data["text"][:max_text_chars] + "\n[... compact MCP projection ...]"
@@ -56,8 +67,21 @@ def compact_result(value: Any, *, max_text_chars: int = 1800, max_evidence: int 
         new_results = []
         for item in data["results"][:50]:
             if isinstance(item, dict):
-                item = compact_result(item, max_text_chars=min(max_text_chars, 1100), max_evidence=max_evidence)
+                item = compact_result(item, max_text_chars=min(max_text_chars, 1100), max_evidence=max_evidence, extra_fields=extra)
             new_results.append(item)
         data["results"] = new_results
+
+    # Tool responses can wrap service payloads under arbitrary keys (for example
+    # structured/canonical/content). Compact nested containers too; otherwise a
+    # large inner model or command response bypasses the top-level limits.
+    for key, item in list(data.items()):
+        if key in {"results", "repo_context"}:
+            continue
+        if isinstance(item, (dict, list)):
+            data[key] = compact_result(item, max_text_chars=max_text_chars, max_evidence=max_evidence, extra_fields=extra)
+
+    for key in ("output", "content", "raw", "preview"):
+        if isinstance(data.get(key), str) and len(data[key]) > max_text_chars:
+            data[key] = data[key][:max_text_chars] + "\n[... compact MCP projection ...]"
 
     return data

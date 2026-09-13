@@ -52,8 +52,62 @@ def _nvidia_live() -> dict[str, Any] | None:
         return None
 
 
+def _rocm_live() -> dict[str, Any] | None:
+    smi = shutil.which("rocm-smi")
+    if not smi:
+        return None
+    try:
+        import json
+        completed = subprocess.run(
+            [smi, "--showuse", "--showmeminfo", "vram", "--json"],
+            capture_output=True, text=True, timeout=2.0, check=False, encoding="utf-8", errors="replace", **hidden_run_kwargs(),
+        )
+        if completed.returncode == 0 and completed.stdout.strip():
+            data = json.loads(completed.stdout)
+            if isinstance(data, dict):
+                first_card = next(iter(data.values())) if data else {}
+                used_bytes = _safe_float(first_card.get("VRAM Total Used Memory (B)", 0))
+                total_bytes = _safe_float(first_card.get("VRAM Total Memory (B)", 0))
+                used_mb = used_bytes / (1024 * 1024) if used_bytes else 0.0
+                total_mb = total_bytes / (1024 * 1024) if total_bytes else 0.0
+                use_pct = _safe_float(first_card.get("GPU use (%)", 0))
+                return {
+                    "available": True, "vendor": "amd", "backend": "rocm", "gpu_name": "AMD Radeon GPU",
+                    "gpu_utilization_pct": use_pct, "vram_used_mb": round(used_mb, 1), "vram_total_mb": round(total_mb, 1),
+                    "vram_used_pct": round(100.0 * used_mb / max(1.0, total_mb), 1) if total_mb else 0.0,
+                    "live_metrics": True, "timestamp": time.time(),
+                }
+    except Exception:
+        pass
+    return None
+
+
+def _windows_live() -> dict[str, Any] | None:
+    if os.name != "nt":
+        return None
+    try:
+        cmd = ["powershell", "-NoProfile", "-Command", "Get-CimInstance Win32_VideoController | Where-Object { $_.AdapterRAM -gt 0 } | Select-Object -First 1 Name, AdapterRAM | ConvertTo-Json"]
+        completed = subprocess.run(cmd, capture_output=True, text=True, timeout=2.5, check=False, **hidden_run_kwargs())
+        if completed.returncode == 0 and completed.stdout.strip():
+            import json
+            data = json.loads(completed.stdout)
+            name = str(data.get("Name", "Windows GPU"))
+            raw_ram = float(data.get("AdapterRAM", 0))
+            total_mb = round(raw_ram / (1024 * 1024), 1)
+            vendor = "amd" if "amd" in name.lower() or "radeon" in name.lower() else "intel" if "intel" in name.lower() else "nvidia" if "nvidia" in name.lower() else "generic"
+            backend = "directml" if vendor in {"amd", "intel"} else "cuda" if vendor == "nvidia" else "directx"
+            return {
+                "available": True, "vendor": vendor, "backend": backend, "gpu_name": name,
+                "gpu_utilization_pct": 0.0, "vram_used_mb": 0.0, "vram_total_mb": total_mb,
+                "vram_used_pct": 0.0, "live_metrics": True, "timestamp": time.time(),
+            }
+    except Exception:
+        pass
+    return None
+
+
 def get_gpu_telemetry() -> dict[str, Any]:
-    """Return vendor-neutral GPU information and live NVIDIA metrics where available."""
+    """Return vendor-neutral GPU information and live metrics where available."""
     global _GPU_CACHE, _GPU_CACHE_TIME
     now = time.time()
     if _GPU_CACHE and now - _GPU_CACHE_TIME < 1.5:
@@ -63,6 +117,10 @@ def get_gpu_telemetry() -> dict[str, Any]:
         if _GPU_CACHE and now - _GPU_CACHE_TIME < 1.5:
             return dict(_GPU_CACHE)
         live = _nvidia_live()
+        if live is None:
+            live = _rocm_live()
+        if live is None:
+            live = _windows_live()
         if live is not None:
             _GPU_CACHE, _GPU_CACHE_TIME = live, now
             return dict(live)

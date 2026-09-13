@@ -17,12 +17,14 @@ from local_ai_hub.services import LocalAIServices
 def test_revision_scoped_error_markers() -> None:
     # 1. ExternalCodeIntelligence
     assert ExternalCodeIntelligence._is_revision_scoped_index_error("index", "codegraph index exited 1: No configuration file found. Using defaults.")
+    assert ExternalCodeIntelligence._is_revision_scoped_index_error("index", "codegraph index exited 1: Loaded configuration from: C:/project/.env")
     assert ExternalCodeIntelligence._is_revision_scoped_index_error("index", "indexing exceeded 120s")
     assert not ExternalCodeIntelligence._is_revision_scoped_index_error("query", "No configuration file found")
 
     # 2. ProjectPreprocessor
     assert ProjectPreprocessor._external_error_is_revision_scoped("No configuration file found. Using defaults.")
     assert ProjectPreprocessor._external_error_is_revision_scoped("indexing exceeded 120s")
+    assert ProjectPreprocessor._external_error_is_revision_scoped("codegraph index exited 1: Loaded configuration from: C:/project/.env")
     assert ProjectPreprocessor._external_error_is_revision_scoped("no module named 'codegraphcontext'")
 
 

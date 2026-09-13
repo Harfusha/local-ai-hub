@@ -7,7 +7,9 @@ param(
     [switch]$SkipAgentConfig,
     [switch]$SkipService,
     [switch]$SkipOllamaInstall,
-    [switch]$SkipLocalNlpPreload
+    [switch]$SkipLocalNlpPreload,
+    [switch]$SkipTokenEconomy,
+    [switch]$SkipCompanionSkills
 )
 
 $ErrorActionPreference = 'Stop'
@@ -70,6 +72,8 @@ if ($SkipAgentConfig) { $argsList += '--skip-agent-config' }
 if ($SkipService) { $argsList += '--skip-service' }
 if ($SkipOllamaInstall) { $argsList += '--skip-ollama-install' }
 if ($SkipLocalNlpPreload) { $argsList += '--skip-local-nlp-preload' }
+if ($SkipTokenEconomy) { $argsList += '--skip-token-economy' }
+if ($SkipCompanionSkills) { $argsList += '--skip-companion-skills' }
 
 & $Python @argsList
 exit $LASTEXITCODE

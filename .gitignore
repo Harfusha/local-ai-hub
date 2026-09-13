@@ -22,6 +22,8 @@ config.toml.local-ai-hub-backup-*
 *.local-ai-hub-backup-*
 
 # Build / packaging artifacts
+backups/
+migration-backups/
 dist/
 build/
 *.egg-info/

@@ -127,3 +127,31 @@ def test_client_replays_duplicate_request_until_owner_finishes(tmp_path, monkeyp
 
     assert result == {"success": True, "value": "owner-result"}
     assert calls == 2
+
+
+def test_client_close_closes_connections_created_by_worker_threads(tmp_path, monkeypatch):
+    class Response:
+        status = 200
+        reason = "OK"
+        will_close = False
+        headers = {}
+
+        def read(self): return b'{"success":true}'
+
+    class Connection:
+        closed = 0
+
+        def __init__(self, *_args, **_kwargs): pass
+        def request(self, *_args, **_kwargs): pass
+        def getresponse(self): return Response()
+        def close(self): self.__class__.closed += 1
+
+    monkeypatch.setattr(client_module.http.client, "HTTPConnection", Connection)
+    client = _client(tmp_path)
+    worker = threading.Thread(target=lambda: client.get("/health"))
+    worker.start()
+    worker.join(1)
+
+    client.close()
+
+    assert Connection.closed == 1

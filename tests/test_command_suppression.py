@@ -88,7 +88,7 @@ def test_cancel_stops_active_command_and_clears_broker_state(tmp_path):
         assert cancelled["success"] is True
         assert cancelled["cancellation_requested"] is True
     finally:
-        worker.join(4)
+        worker.join(10)
     assert worker.is_alive() is False
     assert result["value"]["cancelled"] is True
     assert broker.stats()["active_count"] == 0

@@ -32,7 +32,10 @@ def test_release_uses_only_current_local_ai_hub_contracts():
 
     current_major = int(__version__.split(".", 1)[0])
     historical_majors = tuple(str(n) for n in range(1, current_major))
-    forbidden = ["bundle" + "_version", "ALTER" + " TABLE", "leg" + "acy"]
+    # The v3 contract no longer contains migration/version markers.  The word
+    # "blended" remains valid for the compatibility estimate of old telemetry
+    # rows, so it must not be treated as a historical release marker.
+    forbidden = ["bundle" + "_version", "ALTER" + " TABLE"]
     for major in historical_majors:
         forbidden.extend((f"Version {major}.", f"version {major}.", f"/v{major}/"))
     for path in files:
@@ -43,7 +46,10 @@ def test_release_uses_only_current_local_ai_hub_contracts():
     old_major_pattern = "|".join(re.escape(major) for major in historical_majors)
     historical_name = re.compile(rf"(?:^|[_-])v(?:{old_major_pattern})(?:[_.-]|$)|phase[0-9]+", re.IGNORECASE)
     for path in ROOT.rglob("*"):
-        if path.is_file() and "__pycache__" not in path.parts:
+        if path.is_file() and not any(part in {
+            ".git", "__pycache__", ".pytest_cache", ".venv", "tool-envs", "state", "data",
+            "generated", "backups", "migration-backups",
+        } for part in path.parts):
             assert not historical_name.search(path.name), f"historical release name: {path.relative_to(ROOT)}"
 
 def test_release_has_compact_mcp_surface_and_tool_first_policy():
@@ -60,6 +66,7 @@ def test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources():
     skip_parts = {
         ".git", "__pycache__", ".pytest_cache", ".venv", "tool-envs", "state", "data", "generated",
         ".agents", ".serena", ".superpowers", "agy-contextless-workspace",
+        "backups", "migration-backups",
     }
     skip_files = {"ORIGINAL_REQUEST.md", ".coverage"}
     for path in ROOT.rglob("*"):

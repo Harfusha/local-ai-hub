@@ -99,7 +99,7 @@ def start() -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Control the Local AI Hub singleton")
-    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "generate", "tasks", "memory", "doctor", "logs"])
+    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "memory", "doctor", "logs"])
     parser.add_argument("--config", type=Path, default=None, help="Path to config.toml")
     parser.add_argument("--install", action="store_true", help="Also deploy generated skill/instructions to configured agents")
     parser.add_argument("--task-id", type=str, default="", help="Task ID for task lookup")
@@ -179,6 +179,14 @@ def main() -> int:
 
         print(json.dumps(res, indent=2, ensure_ascii=False))
         return 0 if res.get("success", True) else 1
+    if args.action == "clean":
+        from tools.clean import clean as run_clean
+        dirs, files = run_clean(ROOT, all_clean=args.ports)
+        if args.raw_json:
+            print(json.dumps({"success": True, "dirs_removed": dirs, "files_removed": files}, indent=2))
+        else:
+            print(f"Cleaned {dirs} directories and {files} cache/build files.")
+        return 0
     if args.action == "tasks":
         c = client()
         if args.complete or args.fail:

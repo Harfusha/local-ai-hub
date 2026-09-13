@@ -97,6 +97,83 @@ def test_telemetry_reports_gross_protocol_net_and_breakdown(tmp_path: Path):
         store.close()
 
 
+def test_telemetry_reports_cache_domains_separately(tmp_path: Path):
+    store = TelemetryStore(tmp_path, enabled=True, flush_interval_seconds=0.01)
+    try:
+        store.record(event_type="inference", action="delegate:review", cache_hit=True, coalesced=False, success=True)
+        store.record(event_type="inference", action="delegate:review", cache_hit=False, coalesced=False, success=True)
+        store.record_http(action="/api/repo/code-index", cache_hit=True, cache_layer="workspace", success=True)
+        store.record_http(action="/api/repo/search", cache_hit=False, cache_layer="workspace-miss", success=True)
+        store.record_http(action="/api/command", cache_hit=True, cache_layer="", success=True)
+        assert store.flush(1.0)
+
+        domains = store.summary(scope="process")["cache_domains"]
+
+        assert domains["generation"] == {"events": 2, "hits": 1, "coalesced": 0, "hit_rate": 0.5}
+        assert domains["repository"] == {"events": 2, "hits": 1, "coalesced": 0, "hit_rate": 0.5}
+        assert domains["command"] == {"events": 1, "hits": 1, "coalesced": 0, "hit_rate": 1.0}
+    finally:
+        store.close()
+
+
+def test_telemetry_prices_input_and_output_savings_separately(tmp_path: Path):
+    store = TelemetryStore(
+        tmp_path,
+        enabled=True,
+        cloud_input_token_cost_usd_per_million=2.0,
+        cloud_output_token_cost_usd_per_million=8.0,
+        flush_interval_seconds=0.01,
+    )
+    try:
+        store.record_tool_accounting({
+            "tool": "local_ai_repo",
+            "gross_cloud_tokens_avoided_est": 1500,
+            "gross_input_tokens_avoided_est": 1000,
+            "gross_output_tokens_avoided_est": 500,
+            "agent_tool_request_tokens_est": 100,
+            "agent_tool_response_tokens_est": 200,
+            "agent_protocol_tokens_est": 300,
+            "net_cloud_token_delta_est": 1200,
+        })
+        assert store.flush(1.0)
+        summary = store.summary(scope="process")
+        assert summary["estimated_input_savings_usd"] == 0.0016
+        assert summary["estimated_output_savings_usd"] == 0.0032
+        assert summary["estimated_savings_usd"] == 0.0048
+        assert summary["cloud_input_token_cost_usd_per_million"] == 2.0
+        assert summary["cloud_output_token_cost_usd_per_million"] == 8.0
+    finally:
+        store.close()
+
+
+def test_telemetry_does_not_price_overlapping_output_baseline_twice(tmp_path: Path):
+    store = TelemetryStore(
+        tmp_path,
+        enabled=True,
+        cloud_input_token_cost_usd_per_million=2.0,
+        cloud_output_token_cost_usd_per_million=8.0,
+        flush_interval_seconds=0.01,
+    )
+    try:
+        store.record_tool_accounting({
+            "tool": "local_ai_repo",
+            "gross_cloud_tokens_avoided_est": 1000,
+            "gross_input_tokens_avoided_est": 1000,
+            "gross_output_tokens_avoided_est": 300,
+            "agent_tool_request_tokens_est": 100,
+            "agent_tool_response_tokens_est": 200,
+            "agent_protocol_tokens_est": 300,
+            "net_cloud_token_delta_est": 700,
+        })
+        assert store.flush(1.0)
+        summary = store.summary(scope="process")
+        assert summary["estimated_input_savings_usd"] == 0.0016
+        assert summary["estimated_output_savings_usd"] == -0.0008
+        assert summary["estimated_savings_usd"] == 0.0008
+    finally:
+        store.close()
+
+
 def test_noncurrent_telemetry_schema_is_rebuilt(tmp_path: Path):
     import sqlite3
 
@@ -116,7 +193,7 @@ def test_noncurrent_telemetry_schema_is_rebuilt(tmp_path: Path):
             rows = check.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         finally:
             check.close()
-        assert tables == {"events", "errors", "snapshots", "daily_rollups"}
+        assert tables == {"events", "errors", "snapshots", "daily_rollups", "process_sessions"}
         assert cols == {"id", *store._EVENT_COLUMNS}
         assert rows == 0
     finally:
@@ -220,18 +297,49 @@ def test_release_gate_rejects_patch_metadata_directory(tmp_path: Path):
     assert any("_local_ai_hub_patch" in item for item in errors)
 
 
-def test_structural_baseline_charges_visible_tool_response_once():
-    # Counterfactual: 1000 tokens of repository context would have been read.
-    # Actual: the agent emits the tool call and reads a packed 200-token-ish result.
+def test_structural_baseline_is_diagnostic_only():
+    # Counterfactual sizes do not prove what a cloud agent would have requested.
     measured = measure_savings({"original_estimated_tokens": 1000, "estimated_tokens": 200})
-    assert measured["gross_input_tokens_avoided_est"] == 1000
+    assert measured["gross_input_tokens_avoided_est"] == 0
     response = {"context": "x" * 680}
     event = finalize_tool_accounting(
         tool_name="local_ai_repo", arguments={"action": "context", "root": "/repo"},
         response=response, measured=measured,
     )
-    assert event["net_cloud_token_delta_est"] == 1000 - event["agent_protocol_tokens_est"]
-    assert event["net_cloud_token_delta_est"] < 1000
+    assert event["net_cloud_token_delta_est"] == -event["agent_protocol_tokens_est"]
+
+
+def test_counterfactual_diff_size_is_not_claimed_as_cloud_savings():
+    measured = measure_savings({
+        "original_diff_tokens": 52_000_000,
+        "local_diff_tokens": 8_000,
+        "truncated": True,
+    })
+
+    assert measured["gross_cloud_tokens_avoided_est"] == 0
+    assert measured["gross_input_tokens_avoided_est"] == 0
+
+
+def test_deterministic_outline_size_is_diagnostic_only():
+    measured = measure_savings({
+        "raw_tokens": 40_000,
+        "outline_tokens": 800,
+        "token_savings_pct": 98.0,
+    })
+
+    assert measured["gross_cloud_tokens_avoided_est"] == 0
+    assert measured["gross_input_tokens_avoided_est"] == 0
+
+
+def test_local_context_size_is_not_implicitly_a_cloud_baseline():
+    measured = measure_savings({
+        "context": "x" * 20000,
+        "estimated_tokens": 5000,
+        "_avoided_cloud_tokens": 5000,
+    })
+
+    assert measured["gross_cloud_tokens_avoided_est"] == 0
+
 
 
 def test_agent_supplied_text_does_not_create_fake_positive_savings():
@@ -264,6 +372,20 @@ def test_compact_result_does_not_mutate_original_nested_context():
     assert len(result["text"]) < len(original["text"])
 
 
+def test_compact_result_compacts_nested_output_payloads():
+    from local_ai_hub.compact import compact_result
+
+    result = compact_result(
+        {"structured": {"text": "x" * 5000, "summary": "y" * 5000, "stdout": "z" * 5000}},
+        max_text_chars=500,
+    )
+
+    nested = result["structured"]
+    assert len(nested["text"]) < 5000
+    assert len(nested["summary"]) < 5000
+    assert len(nested["stdout"]) < 5000
+
+
 def test_bounded_repository_search_reports_local_candidate_baseline(tmp_path: Path):
     from local_ai_hub.repo_tools import RepositoryTools
 
@@ -276,10 +398,10 @@ def test_bounded_repository_search_reports_local_candidate_baseline(tmp_path: Pa
     tools = RepositoryTools(cfg)
     try:
         result = tools.search(str(tmp_path), "cache", top_k=2)
-        saving = result.get("token_saving", {})
         assert result["success"] is True
-        assert saving.get("delegated_cloud_context_tokens_avoided_est", 0) > 0
+        assert "token_saving" not in result
+        assert result.get("candidate_context_tokens_est", 0) > 0
         measured = measure_savings(result)
-        assert measured["gross_input_tokens_avoided_est"] == saving["delegated_cloud_context_tokens_avoided_est"]
+        assert measured["gross_input_tokens_avoided_est"] == 0
     finally:
         pass

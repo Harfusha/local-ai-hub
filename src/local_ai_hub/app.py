@@ -105,6 +105,8 @@ class LocalAIApp:
             retention_days=int(obs.get("raw_retention_days", 30)),
             rollup_retention_days=int(obs.get("rollup_retention_days", 365)),
             cloud_token_cost_usd_per_million=float(saving.get("cloud_token_cost_usd_per_million", 3.0)),
+            cloud_input_token_cost_usd_per_million=float(saving.get("cloud_input_token_cost_usd_per_million", saving.get("cloud_token_cost_usd_per_million", 3.0))),
+            cloud_output_token_cost_usd_per_million=float(saving.get("cloud_output_token_cost_usd_per_million", saving.get("cloud_token_cost_usd_per_million", 3.0))),
             batch_size=int(obs.get("batch_size", 64)),
             flush_interval_seconds=float(obs.get("flush_interval_seconds", 0.5)),
             queue_size=int(obs.get("queue_size", 10000)),
@@ -133,6 +135,7 @@ class LocalAIApp:
         self.agent_incidents = IncidentStore(self.agent_state)
         self.agent_verification = VerificationStore(self.agent_state, task_store=self.agent_tasks)
         self.agent_policy = PolicyEngine(self.agent_state)
+        self.agent_tasks.set_policy_engine(self.agent_policy)
         self.agent_context = ContextCompiler(
             self.agent_state,
             task_store=self.agent_tasks,
@@ -158,6 +161,7 @@ class LocalAIApp:
         self.commands = CommandBroker(self.config, self.artifacts, self.repo_state)
         self.commands.set_incident_store(self.agent_incidents)
         self.commands.set_verification_store(self.agent_verification)
+        self.commands.set_policy_engine(self.agent_policy)
         self.services.set_commands(self.commands)
         self.services.set_task_store(self.agent_tasks)
         self.services.set_verification_store(self.agent_verification)
@@ -180,6 +184,7 @@ class LocalAIApp:
         self.work_orchestrator = WorkOrchestrator(self.config, state_dir, self.services, self.commands, self.leases, self.artifacts)
         self.projector = AgentProjector(self.config)
         self.vram_balancer = VRAMBalancer(self.config)
+        self.services.set_vram_balancer(self.vram_balancer)
         self.benchmark_runner = HardwareBenchmarkRunner(
             state_dir / "benchmarks.json",
             runtime=self.runtime,
@@ -455,6 +460,8 @@ class LocalAIApp:
                 "ollama_online": ollama, "scheduler": scheduler,
                 "headless": headless,
                 "background_gpu": self.background_gpu.status(),
+                "ollama_profile": self.runtime.managed_profile_status() if getattr(self, "runtime", None) else {},
+                "model_execution": self.services.model_policy.summary() if getattr(self, "services", None) and getattr(self.services, "model_policy", None) else {},
                 "vram_balancer": self.vram_balancer.status() if getattr(self, "vram_balancer", None) else {},
                 "benchmark": self.benchmark_runner.get_latest_summary() if getattr(self, "benchmark_runner", None) else {"available": False},
                 "debug_traces": self.debug_traces.stats(),
@@ -466,6 +473,7 @@ class LocalAIApp:
                     "paused": bool(prep_status.get("paused", False)) if isinstance(prep_status, dict) else False,
                     "global_diagnostic": str(prep_status.get("global_diagnostic", "")) if isinstance(prep_status, dict) else "",
                     "scheduler_background_allowed": prep_status.get("scheduler_background_allowed", True) if isinstance(prep_status, dict) else True,
+                    "query_hit_rate": observability.get("preprocessed_query_hit_rate", 0.0),
                 },
                 "runtime_stats": {
                     "generation_cache": self.services.generation_cache.stats(),

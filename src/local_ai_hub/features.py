@@ -128,8 +128,14 @@ class FeatureSet:
             "profile", "search", "map", "code_index", "deterministic", "context",
             "route", "delegate", "solve", "review_diff", "impact", "refactor_impact",
             "resolve_imports", "generate_tests", "validate_patch", "audit_dependencies",
-            "ast_outline", "test_matrix", "security_audit", "git_status",
-            "synthesize_commit", "verify",
+            "ast_outline", "test_matrix", "security_audit", "git_status", "repo_state",
+            "synthesize_commit", "verify", "affected_tests", "topology", "ast_refactor",
+            "generate_mocks", "split_changes", "synthesize_rules", "code_invariants",
+            "generate_dataset", "profile_digest", "callers", "dead_code", "secret_scan",
+            "schema_inspect", "explain_query", "env_compat", "circular_dependencies",
+            "generate_types", "complexity", "api_spec", "dependency_slice",
+            "migration_drift", "package_audit", "structural_search", "context_budget",
+            "git_diff", "git_history_search", "hotspots", "generate_tests_for_diff", "cross_repo_contract",
         ]
         if self.serena:
             actions.append("semantic")
@@ -144,7 +150,12 @@ class FeatureSet:
                 "preprocess_unregister",
             ])
         if self.agent_os:
-            actions.extend(["context_compile", "verify_receipt", "verify_completion", "call_graph_diff", "semantic_diff"])
+            actions.extend([
+                "context_compile", "verify_receipt", "verify_completion",
+                "call_graph_diff", "semantic_diff",
+                "cross_project_graph", "cross_project_symbols", "cross_project_impact",
+                "cross_repo_graph", "cross_repo_symbols", "cross_repo_impact",
+            ])
         return actions
 
     def supported_task_actions(self) -> list[str]:
@@ -155,7 +166,8 @@ class FeatureSet:
             "delegate", "reason", "continue", "review", "second_opinion", "compress",
             "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report",
             "submit", "status", "wait", "result", "cancel", "candidate_create",
-            "candidate_promote",
+            "candidate_promote", "speculative_draft", "vision", "transcribe",
+            "eval_suite", "prompt_eval", "eval_drift",
         ]
 
     def supported_coord_actions(self) -> list[str]:
@@ -167,20 +179,37 @@ class FeatureSet:
         ]
         if self.agent_os:
             actions.extend([
-                "task_create", "task_get", "task_checkpoint", "task_transition",
-                "task_resume", "task_list", "task_complete", "task_fail",
-                "memory_record", "memory_get", "memory_find", "memory_promote",
+                "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition",
+                "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat",
+                "memory_record", "memory_get", "memory_find", "memory_promote", "memory_reap",
+                "relation_record", "relation_find", "relation_traverse",
                 "context_compile", "verify_receipt", "verify_completion",
                 "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
+                "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge",
                 "swarm_dispatch", "swarm_step", "swarm_status",
+                "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge",
+                "curate_dataset",
             ])
         return actions
+
+    def supported_rag_actions(self) -> list[str]:
+        """Return list of valid local_ai_rag actions supported by active backends."""
+        if not self.rag:
+            return []
+        return ["index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram"]
+
 
     def supported_command_actions(self) -> list[str]:
         """Return list of valid local_ai_command actions supported by active broker."""
         if not self.commands:
             return []
-        return ["run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix"]
+        return [
+            "run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix",
+            "run_affected", "format", "lint_fix", "spawn_daemon", "daemon_status", "stop_daemon",
+            "http_probe", "stash_save", "stash_restore", "record_mock", "replay_mock",
+            "diff_hunk_stage", "flaky_detect", "webhook_replay",
+            "mock_server", "mock_server_start", "mock_server_stop", "mock_server_status",
+        ]
 
     def semantic_hint(self) -> str:
         """Short label for the semantic action(s) available."""

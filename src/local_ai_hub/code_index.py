@@ -18,8 +18,8 @@ from .process_utils import canonical_root
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
 
 IDENT = re.compile(r"\b[A-Za-z_$][A-Za-z0-9_$]{2,}\b")
-GENERIC_DEF = re.compile(r"^\s*(?:(?:public|private|protected|internal|static|final|async|export|abstract|virtual|override|sealed|readonly)\s+)*(?:class|interface|trait|enum|struct|record|function|func|fn|def|type)\s+([A-Za-z_$][A-Za-z0-9_$]*)")
-IMPORT = re.compile(r"^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w./@-]+)|(?:use|require|include|using)\s*\(?[\'\"]?([^\'\";]+)[\'\"]?\)?)")
+GENERIC_DEF = re.compile(r"^\s*(?:(?:public|private|protected|internal|static|final|async|export|abstract|virtual|override|sealed|readonly)\s+)*(class|interface|trait|enum|struct|record|function|func|fn|def|type)\s+([A-Za-z_$][A-Za-z0-9_$]*)")
+IMPORT = re.compile(r"^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w./@-]+)|(?:use|require|require_once|include|include_once|using)\s*\(?[\'\"]?([^\'\";]+)[\'\"]?\)?)")
 ARROW_DEF = re.compile(r"^\s*(?:(?:export|default|public|private|protected|internal|static|readonly|const|let|var)\s+)*([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*=>")
 GO_METHOD = re.compile(r"^\s*func\s*(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 TYPED_METHOD = re.compile(r"^\s*(?:(?:public|private|protected|internal|static|final|async|virtual|override|abstract|sealed|synchronized|native)\s+)*(?:[A-Za-z_$][\w.$<>,?\[\]]*\s+)+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^;{}]*)\)\s*(?:\{|=>|throws\b|where\b)")
@@ -436,24 +436,37 @@ class CodeIndex:
         total_lines = len(lines)
         brace_pairs, next_open = self._brace_metadata(lines)
 
+        ns_pattern = re.compile(r"^\s*namespace\s+([A-Za-z0-9_\\]+)")
+        curr_namespace = ""
+        for line in lines:
+            nm = ns_pattern.match(line)
+            if nm:
+                curr_namespace = nm.group(1).rstrip(";")
+                break
+
         raw_syms: list[dict[str, Any]] = []
         for i, line in enumerate(lines, 1):
             m = GENERIC_DEF.match(line)
-            name = m.group(1) if m else ""
-            if not name:
+            kind = "symbol"
+            name = ""
+            if m:
+                kind = m.group(1)
+                name = m.group(2)
+            else:
                 for pattern in (ARROW_DEF, GO_METHOD, TYPED_METHOD, JS_METHOD):
                     mm = pattern.match(line)
                     if mm and mm.group(1).lower() not in _CONTROL_NAMES:
                         name = mm.group(1)
+                        kind = "function"
                         break
             if name:
                 raw_syms.append({
                     "name": name,
-                    "kind": "symbol",
+                    "kind": kind,
                     "line": i,
                     "end_line": i,
-                    "container": "",
-                    "name_path": name,
+                    "container": curr_namespace,
+                    "name_path": f"{curr_namespace}\\{name}" if curr_namespace else name,
                     "signature": line.strip()[:100],
                     "access": "public",
                     "docstring": "",

@@ -191,7 +191,38 @@ class IncidentStore:
         self.state_store = state_store
         self._lock = threading.RLock()
         self._initialized = False
+        self.webhook_urls: list[str] = []
+        self._webhook_lock = threading.Lock()
         self._init_table()
+
+    def register_webhook(self, url: str) -> None:
+        clean = url.strip()
+        with self._webhook_lock:
+            if clean and clean not in self.webhook_urls:
+                self.webhook_urls.append(clean)
+
+    def unregister_webhook(self, url: str) -> None:
+        clean = url.strip()
+        with self._webhook_lock:
+            if clean in self.webhook_urls:
+                self.webhook_urls.remove(clean)
+
+    def _dispatch_webhooks(self, record_dict: dict[str, Any]) -> None:
+        with self._webhook_lock:
+            urls = list(self.webhook_urls)
+        if not urls:
+            return
+        payload = json.dumps(record_dict, default=str).encode("utf-8")
+        def _send() -> None:
+            import urllib.request
+            for u in urls:
+                try:
+                    req = urllib.request.Request(u, data=payload, headers={"Content-Type": "application/json", "User-Agent": "LocalAIHub-IncidentHook/1.0"})
+                    with urllib.request.urlopen(req, timeout=3.0) as resp:
+                        resp.read()
+                except Exception:
+                    pass
+        threading.Thread(target=_send, daemon=True).start()
 
     def _init_table(self) -> None:
         if self._initialized or not self.state_store.enabled:
@@ -367,6 +398,7 @@ class IncidentStore:
         )
         self.state_store.append(event)
         self._save_record(record)
+        self._dispatch_webhooks(record.to_dict())
         return record
 
     def resolve(
@@ -668,7 +700,7 @@ class IncidentStore:
             cur = con.execute(
                 """
                 SELECT incident_id, operation_class, error_class, redacted_message, state_revision,
-                       root_cause, verified_fix, confidence, attempts, updated_at
+                       root_cause, verified_fix, confidence, attempts, updated_at, affected_paths
                 FROM agent_incidents
                 ORDER BY updated_at DESC
                 """
@@ -680,9 +712,14 @@ class IncidentStore:
                 fix = str(r[6] or "")
                 msg = str(r[3] or "")
                 err_cls = str(r[2] or "")
+                aff = str(r[10] or "") if len(r) > 10 else ""
                 if q_norm:
-                    if (q_norm not in rc.lower() and q_norm not in fix.lower() and
-                        q_norm not in msg.lower() and q_norm not in err_cls.lower()):
+                    q_words = [w for w in q_norm.replace("/", " ").replace("\\", " ").replace(".", " ").split() if len(w) >= 3]
+                    matched = (
+                        q_norm in rc.lower() or q_norm in fix.lower() or q_norm in msg.lower() or q_norm in err_cls.lower() or
+                        any(w in rc.lower() or w in fix.lower() or w in msg.lower() or w in aff.lower() for w in q_words)
+                    )
+                    if not matched:
                         continue
                 results.append({
                     "incident_id": r[0],

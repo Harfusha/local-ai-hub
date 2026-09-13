@@ -37,32 +37,49 @@ def _version_from_init(root: Path) -> str:
     return match.group(1)
 
 
-def _iter_release_hygiene_violations(root: Path, *, post_test: bool = False) -> Iterable[str]:
+_INSTALLED_ENV_DIRS = {".venv", "tool-envs", "state", ".serena", ".agents", ".superpowers"}
+
+
+def _iter_release_hygiene_violations(root: Path, *, post_test: bool = False, allow_installed: bool = False) -> Iterable[str]:
     """Yield release-tree violations.
 
     ``post_test`` tolerates only known test/install caches that are expected to be
     cleaned before packaging. Runtime databases, local configuration, generated
     payloads and internal workspace files remain fatal so cleanup cannot mask them.
+
+    ``allow_installed`` additionally allows managed runtime/tool environments
+    (``.venv``, ``tool-envs``, ``state``) present in active developer checkouts.
     """
+    if allow_installed:
+        post_test = True
+
     for path in sorted(root.rglob("*")):
         rel = path.relative_to(root).as_posix()
         parts = path.relative_to(root).parts
         if ".git" in parts:
             continue
+        if allow_installed:
+            if parts and parts[0] in _INSTALLED_ENV_DIRS:
+                continue
+            if parts and parts[0] in {"generated", "data"}:
+                continue
+            if path.name in {"config.toml", ".local-ai-hub.zip"}:
+                continue
         if post_test:
             if ".pytest_cache" in parts or "__pycache__" in parts or any(part.endswith(".egg-info") for part in parts):
                 continue
             if path.is_file() and path.name.startswith(".coverage"):
                 continue
+        if parts and parts[0] in _TOP_LEVEL_FORBIDDEN_DIRS:
+            if len(parts) == 1:
+                yield f"forbidden directory: {rel}/"
+            continue
         if path.is_dir():
-            if (len(parts) == 1 and path.name in _TOP_LEVEL_FORBIDDEN_DIRS) or path.name in _FORBIDDEN_DIR_NAMES or path.name.endswith(".egg-info"):
+            if path.name in _FORBIDDEN_DIR_NAMES or path.name.endswith(".egg-info"):
                 yield f"forbidden directory: {rel}/"
             continue
         if any(part in _FORBIDDEN_DIR_NAMES for part in parts):
             yield f"compiled cache payload: {rel}"
-            continue
-        if parts and parts[0] in _TOP_LEVEL_FORBIDDEN_DIRS:
-            yield f"local workspace payload: {rel}"
             continue
         if rel in _ALLOWED_RUNTIME_PLACEHOLDERS:
             continue
@@ -82,7 +99,7 @@ def _iter_release_hygiene_violations(root: Path, *, post_test: bool = False) -> 
             yield f"runtime/build payload: {rel}"
 
 
-def run_checks(root: Path, *, expected_version: str | None = None, post_test: bool = False) -> dict[str, object]:
+def run_checks(root: Path, *, expected_version: str | None = None, post_test: bool = False, allow_installed: bool = False) -> dict[str, object]:
     errors: list[str] = []
     checks: list[dict[str, object]] = []
 
@@ -146,7 +163,7 @@ def run_checks(root: Path, *, expected_version: str | None = None, post_test: bo
     checks.append({"name": "public-docs", "ok": not missing_docs, "missing": missing_docs})
     errors.extend(f"missing public release file: {item}" for item in missing_docs)
 
-    hygiene = list(_iter_release_hygiene_violations(root, post_test=post_test))
+    hygiene = list(_iter_release_hygiene_violations(root, post_test=post_test, allow_installed=allow_installed))
     checks.append({"name": "workspace-hygiene", "ok": not hygiene, "violations": hygiene})
     errors.extend(hygiene)
 
@@ -167,9 +184,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     parser.add_argument("--expected-version", default=None, help="require package metadata to match this version (leading v is accepted)")
     parser.add_argument("--post-test", action="store_true", help="allow only known test/install caches while still rejecting runtime side effects")
+    parser.add_argument("--allow-installed", action="store_true", help="allow managed tool environments (.venv, tool-envs, state) in live checkouts")
     args = parser.parse_args(argv)
     root = args.root.expanduser().resolve()
-    result = run_checks(root, expected_version=args.expected_version, post_test=args.post_test)
+    result = run_checks(root, expected_version=args.expected_version, post_test=args.post_test, allow_installed=args.allow_installed)
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif result["success"]:

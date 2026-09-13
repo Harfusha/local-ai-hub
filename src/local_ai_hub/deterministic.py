@@ -5,7 +5,9 @@ import json
 import os
 import re
 import sqlite3
+import shutil
 import subprocess
+import sys
 import threading
 import time
 import tomllib
@@ -20,7 +22,7 @@ from . import __version__
 from .cache import MemoryLRUCache, SQLiteCache, stable_hash
 from .normalizer import normalize_query, tokenize_query_terms
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
-from .process_utils import canonical_root
+from .process_utils import canonical_root, hidden_run_kwargs
 from .state_paths import configured_state_dir
 
 
@@ -53,6 +55,25 @@ SECURITY_RE = re.compile(r"\b(auth|authentication|authorization|permission|role|
 TODO_RE = re.compile(r"\b(TODO|FIXME|XXX|HACK)\b[:\s-]*(.*)", re.I)
 
 
+def _is_test_file(rel_path: str) -> bool:
+    norm = rel_path.replace("\\", "/").lower()
+    parts = norm.split("/")
+    test_dirs = {"test", "tests", "fixtures", "fixture", "mock", "mocks", "__tests__", "spec", "specs"}
+    if any(p in test_dirs for p in parts[:-1]):
+        return True
+    fname = parts[-1]
+    if fname.startswith(("test_", "mock_")):
+        return True
+    test_suffixes = (
+        "_test.py", "_test.go", "_test.js", "_test.ts",
+        ".test.js", ".test.ts", ".test.tsx", ".test.jsx",
+        ".spec.js", ".spec.ts", ".spec.tsx", ".spec.jsx",
+        "test.php", "spec.php", "_test.php", ".test.php", ".spec.php",
+        ".test.mjs", ".spec.mjs", ".test.cjs", ".spec.cjs",
+    )
+    return any(fname.endswith(s) for s in test_suffixes)
+
+
 class DeterministicEngine:
     """Persistent deterministic project intelligence before any LLM inference.
 
@@ -65,6 +86,9 @@ class DeterministicEngine:
     def __init__(self, config: dict[str, Any] | None = None, repo_tools: Any = None, code_index: Any = None, evidence: Any | None = None):
         config = config or {}
         self.config = config
+        if repo_tools is None:
+            from .repo_tools import RepositoryTools
+            repo_tools = RepositoryTools(config)
         self.repo_tools = repo_tools
         self.code_index = code_index
         self.evidence = evidence
@@ -260,14 +284,30 @@ class DeterministicEngine:
     def _is_test(path: str) -> bool:
         low = "/" + path.replace("\\", "/").lower()
         name = Path(low).name
-        return any(marker in low for marker in TEST_MARKERS) or name.startswith("test_") or name.endswith("test.py")
+        return (
+            any(marker in low for marker in TEST_MARKERS)
+            or name.startswith("test_")
+            or name.endswith((
+                "test.py", "test.php", "spec.php", "test.ts", "spec.ts",
+                "test.js", "spec.js", "test.tsx", "spec.tsx", "test.jsx", "spec.jsx",
+                "test.mjs", "spec.mjs", "test.cjs", "spec.cjs",
+            ))
+        )
 
     @staticmethod
     def _language(path: str) -> str:
+        low = path.replace("\\", "/").lower()
+        if low.endswith(".blade.php"):
+            return "blade"
         ext = Path(path).suffix.lower()
         return {
-            ".py": "python", ".php": "php", ".js": "javascript", ".jsx": "javascript",
-            ".ts": "typescript", ".tsx": "typescript", ".cs": "csharp", ".java": "java",
+            ".py": "python", ".php": "php", ".ctp": "cakephp",
+            ".js": "javascript", ".jsx": "javascript",
+            ".ts": "typescript", ".tsx": "typescript", ".mjs": "javascript", ".cjs": "javascript",
+            ".mts": "typescript", ".cts": "typescript", ".vue": "vue", ".svelte": "svelte",
+            ".html": "html", ".htm": "html",
+            ".css": "css", ".scss": "scss", ".sass": "sass", ".less": "less",
+            ".cs": "csharp", ".java": "java",
             ".go": "go", ".rs": "rust", ".json": "json", ".toml": "toml", ".xml": "xml",
             ".yaml": "yaml", ".yml": "yaml", ".sql": "sql", ".sh": "shell", ".ps1": "powershell",
             ".tf": "terraform", ".tfvars": "terraform", ".proto": "protobuf", ".ini": "config", ".cfg": "config",
@@ -553,6 +593,44 @@ class DeterministicEngine:
                     facts.append(self._fact("route", current_path, method, line_no, method=method, source="openapi"))
                 elif current_path and stripped and indent <= path_indent and not stripped.startswith("#"):
                     current_path = ""
+
+        if name == "package.json":
+            try:
+                pkg_data = json.loads(text)
+                if isinstance(pkg_data, dict):
+                    if "name" in pkg_data:
+                        facts.append(self._fact("package_name", str(pkg_data["name"]), "npm", 1, source="package.json"))
+                    for script_name, cmd in (pkg_data.get("scripts") or {}).items():
+                        facts.append(self._fact("npm_script", str(script_name), str(cmd)[:300], 1, script=str(script_name), command=str(cmd)))
+                    for dep_key, kind in (("dependencies", "prod"), ("devDependencies", "dev"), ("peerDependencies", "peer")):
+                        for dep, ver in (pkg_data.get(dep_key) or {}).items():
+                            facts.append(self._fact("dependency", str(dep), str(ver), 1, manager="npm", dep_kind=kind))
+            except Exception:
+                pass
+
+        if name == "composer.json":
+            try:
+                comp_data = json.loads(text)
+                if isinstance(comp_data, dict):
+                    if "name" in comp_data:
+                        facts.append(self._fact("package_name", str(comp_data["name"]), "composer", 1, source="composer.json"))
+                    for dep_key, kind in (("require", "prod"), ("require-dev", "dev")):
+                        for dep, ver in (comp_data.get(dep_key) or {}).items():
+                            facts.append(self._fact("dependency", str(dep), str(ver), 1, manager="composer", dep_kind=kind))
+                    autoload = comp_data.get("autoload") or {}
+                    if isinstance(autoload, dict):
+                        for ns, target_dir in (autoload.get("psr-4") or {}).items():
+                            facts.append(self._fact("psr4_autoload", str(ns).rstrip("\\"), str(target_dir), 1, namespace=str(ns), path=str(target_dir)))
+                    autoload_dev = comp_data.get("autoload-dev") or {}
+                    if isinstance(autoload_dev, dict):
+                        for ns, target_dir in (autoload_dev.get("psr-4") or {}).items():
+                            facts.append(self._fact("psr4_autoload", str(ns).rstrip("\\"), str(target_dir), 1, namespace=str(ns), path=str(target_dir), dev=True))
+                    for script_name, cmd in (comp_data.get("scripts") or {}).items():
+                        cmd_val = cmd if isinstance(cmd, str) else json.dumps(cmd)
+                        facts.append(self._fact("composer_script", str(script_name), str(cmd_val)[:300], 1, script=str(script_name)))
+            except Exception:
+                pass
+
         return facts
 
     def _extract_source_facts(self, path: str, text: str) -> list[dict[str, Any]]:
@@ -606,11 +684,15 @@ class DeterministicEngine:
                 if "[CustomEditor(" in line:
                     facts.append(self._fact("unity_custom_editor", "CustomEditor", line.strip()[:200], line_no))
 
-        # React / TypeScript analyzer
-        if ext in (".ts", ".tsx", ".js", ".jsx"):
+        # JavaScript / TypeScript / Vue / Svelte analyzer
+        if ext in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".svelte"):
             REACT_COMPONENT = re.compile(r"(?:export\s+(?:default\s+)?)?(?:function|const|class)\s+([A-Z][A-Za-z0-9_]+)", re.M)
             REACT_HOOK = re.compile(r"\bconst\s+(use[A-Z][A-Za-z0-9_]*)\s*=", re.M)
             REACT_ROUTE = re.compile(r'(?:path|to)\s*[:=]\s*[\'"`]([/][^\'"`]*)[\'"`]', re.M)
+            TS_DECLARATION = re.compile(r"^\s*(?:export\s+)?(?:default\s+)?(interface|type|enum|class)\s+([A-Za-z_$][A-Za-z0-9_$]*)", re.M)
+            NEXT_ROUTE_HANDLER = re.compile(r"^\s*export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s*\(", re.M)
+            NEST_DECORATOR = re.compile(r"^\s*@(Controller|Injectable|Get|Post|Put|Patch|Delete)\s*(?:\(\s*['\"]?([^'\")\s]*)['\"]?\s*\))?", re.M)
+            TEST_SUITE_BLOCK = re.compile(r"^\s*(describe|it|test)\s*\(\s*['\"` ]([^'\"`]+)['\"` ]", re.M)
             for line_no, line in enumerate(text.splitlines(), 1):
                 cm = REACT_COMPONENT.search(line)
                 if cm and ("React" in text or "jsx" in path or "tsx" in path or "useState" in text or "useEffect" in text):
@@ -621,6 +703,219 @@ class DeterministicEngine:
                 rm = REACT_ROUTE.search(line)
                 if rm:
                     facts.append(self._fact("route", rm.group(1), "ANY", line_no))
+                tm = TS_DECLARATION.search(line)
+                if tm:
+                    kind = tm.group(1)
+                    symbol_name = tm.group(2)
+                    facts.append(self._fact(f"ts_{kind}", symbol_name, line.strip()[:200], line_no))
+                nm = NEXT_ROUTE_HANDLER.search(line)
+                if nm:
+                    method = nm.group(1).upper()
+                    route_path = "/" + Path(path.replace("\\", "/")).as_posix().lstrip("/")
+                    facts.append(self._fact("route", route_path, method, line_no, method=method, source="next-route-handler"))
+                nest_m = NEST_DECORATOR.search(line)
+                if nest_m:
+                    dec_type = nest_m.group(1)
+                    dec_val = nest_m.group(2) or ""
+                    if dec_type in {"Get", "Post", "Put", "Patch", "Delete"}:
+                        facts.append(self._fact("route", dec_val or "/", dec_type.upper(), line_no, method=dec_type.upper(), source="nestjs"))
+                    else:
+                        facts.append(self._fact("nest_decorator", dec_type, dec_val, line_no))
+                tbm = TEST_SUITE_BLOCK.search(line)
+                if tbm:
+                    block_type = tbm.group(1)
+                    test_title = tbm.group(2)
+                    facts.append(self._fact(f"test_{block_type}", test_title, line.strip()[:200], line_no))
+
+        # HTML & template analyzer
+        if ext in (".html", ".htm") or path.lower().endswith(".blade.php") or ext == ".ctp":
+            FORM_TAG = re.compile(r"<form\b([^>]*)>", re.I)
+            ACTION_ATTR = re.compile(r'\baction=["\']([^"\']+)["\']', re.I)
+            METHOD_ATTR = re.compile(r'\bmethod=["\']([^"\']+)["\']', re.I)
+            SCRIPT_SRC = re.compile(r'<script\b[^>]*\bsrc=["\']([^"\']+)["\']', re.I)
+            LINK_CSS = re.compile(r'<link\b[^>]*\bhref=["\']([^"\']+)["\']', re.I)
+            ELEM_ID = re.compile(r'\bid=["\']([A-Za-z0-9_-]+)["\']', re.I)
+            WEB_COMPONENT = re.compile(r'<([a-z0-9]+-[a-z0-9-]+)\b', re.I)
+            BLADE_DIRECTIVE = re.compile(r'@(extends|include|section|yield|livewire|component)\s*\(\s*["\']([^"\']+)["\']', re.I)
+
+            for line_no, line in enumerate(text.splitlines(), 1):
+                for fm in FORM_TAG.finditer(line):
+                    attrs = fm.group(1)
+                    am = ACTION_ATTR.search(attrs)
+                    mm = METHOD_ATTR.search(attrs)
+                    r_path = am.group(1) if am else "/"
+                    m_method = (mm.group(1) if mm else "GET").upper()
+                    facts.append(self._fact("html_form", r_path, m_method, line_no, method=m_method, action=r_path))
+                    facts.append(self._fact("route", r_path, m_method, line_no, method=m_method, source="html-form"))
+                sm = SCRIPT_SRC.search(line)
+                if sm:
+                    facts.append(self._fact("html_script", sm.group(1), sm.group(1), line_no))
+                lm = LINK_CSS.search(line)
+                if lm and ("stylesheet" in line.lower() or ".css" in lm.group(1).lower()):
+                    facts.append(self._fact("html_stylesheet", lm.group(1), lm.group(1), line_no))
+                for id_m in ELEM_ID.finditer(line):
+                    facts.append(self._fact("html_id", id_m.group(1), id_m.group(1), line_no))
+                for wc_m in WEB_COMPONENT.finditer(line):
+                    facts.append(self._fact("web_component", wc_m.group(1), wc_m.group(1), line_no))
+                for bm in BLADE_DIRECTIVE.finditer(line):
+                    directive, arg = bm.group(1).lower(), bm.group(2)
+                    facts.append(self._fact(f"blade_{directive}", arg, arg, line_no))
+
+        # CSS / SCSS / LESS analyzer
+        if ext in (".css", ".scss", ".sass", ".less"):
+            CSS_VAR = re.compile(r'--([A-Za-z0-9_-]+)\s*:\s*([^;]+);')
+            KEYFRAMES = re.compile(r'@keyframes\s+([A-Za-z0-9_-]+)')
+            MEDIA_QUERY = re.compile(r'@media\s+([^{]+)')
+            CSS_CLASS = re.compile(r'^\s*(\.[A-Za-z0-9_-]+)\s*\{')
+
+            for line_no, line in enumerate(text.splitlines(), 1):
+                vm = CSS_VAR.search(line)
+                if vm:
+                    facts.append(self._fact("css_variable", f"--{vm.group(1)}", vm.group(2).strip(), line_no))
+                km = KEYFRAMES.search(line)
+                if km:
+                    facts.append(self._fact("css_keyframes", km.group(1), km.group(1), line_no))
+                mm = MEDIA_QUERY.search(line)
+                if mm:
+                    facts.append(self._fact("css_media_query", mm.group(1).strip()[:100], mm.group(1).strip()[:100], line_no))
+                cm = CSS_CLASS.search(line)
+                if cm:
+                    facts.append(self._fact("css_class", cm.group(1), cm.group(1), line_no))
+
+        # PHP & CakePHP analyzer
+        if ext in (".php", ".ctp"):
+            PHP_DEF = re.compile(
+                r"^\s*(?:(?:final|abstract|readonly)\s+)*(class|trait|interface|enum)\s+([A-Za-z_][A-Za-z0-9_]*)",
+                re.M,
+            )
+            PHP_FUNC = re.compile(
+                r"^\s*(?:(?:public|protected|private|static|final|abstract)\s+)*function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+                re.M,
+            )
+            PHP_NS = re.compile(r"^\s*namespace\s+([A-Za-z_][A-Za-z0-9_\\]*)", re.M)
+            PHP_ROUTE_ATTR = re.compile(
+                r"#\[(?:Route|Get|Post|Put|Patch|Delete)\s*(?:\(\s*['\"]([^'\"]+)['\"](?:[^)]*methods:\s*\[([^\]]+)\])?\s*\))?\]",
+                re.M,
+            )
+            PHP_ATTR = re.compile(r"#\[([A-Za-z_][A-Za-z0-9_\\]*(?:\([^)]*\))?)\]", re.M)
+            WP_HOOK = re.compile(
+                r"\b(add_action|add_filter|do_action|apply_filters)\s*\(\s*['\"]([^'\"]+)['\"]",
+                re.M,
+            )
+            LARAVEL_RESOURCE = re.compile(
+                r"\bRoute::(?:apiResource|resource)\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*([A-Za-z0-9_\\]+)",
+                re.M,
+            )
+            # Laravel specifics
+            ELOQUENT_TABLE = re.compile(r'protected\s+\$table\s*=\s*[\'"]([^\'"]+)[\'"]')
+            ELOQUENT_FILLABLE = re.compile(r'protected\s+\$fillable\s*=\s*\[([^\]]+)\]')
+            ELOQUENT_REL = re.compile(r'return\s+\$this->(belongsTo|hasMany|hasOne|belongsToMany|morphTo|morphMany)\s*\(\s*([A-Za-z0-9_:\\]+)', re.I)
+            SCHEMA_CREATE = re.compile(r'Schema::create\s*\(\s*[\'"]([^\'"]+)[\'"]')
+            MIGRATION_COL = re.compile(r'\$table->(string|integer|bigInteger|unsignedBigInteger|id|foreignId|boolean|text|longText|json|timestamp|date)\s*\(\s*(?:[\'"]([^\'"]+)[\'"])?')
+            ARTISAN_CMD = re.compile(r'protected\s+\$signature\s*=\s*[\'"]([^\'"]+)[\'"]')
+            FORM_REQ = re.compile(r'class\s+([A-Za-z0-9_]+)\s+extends\s+FormRequest\b')
+
+            # CakePHP specifics
+            CAKE_ROUTE = re.compile(r'\$(?:builder|routes)->connect\s*\(\s*[\'"]([^\'"]+)[\'"]')
+            CAKE_RESOURCES = re.compile(r'\$(?:builder|routes)->resources\s*\(\s*[\'"]([^\'"]+)[\'"]')
+            CAKE_TABLE = re.compile(r'class\s+([A-Za-z0-9_]+Table)\s+extends\s+Table\b')
+            CAKE_ENTITY = re.compile(r'class\s+([A-Za-z0-9_]+)\s+extends\s+Entity\b')
+            CAKE_ASSOC = re.compile(r'\$this->(hasMany|belongsTo|belongsToMany|hasOne)\s*\(\s*[\'"]([^\'"]+)[\'"]')
+            CAKE_MIGRATION = re.compile(r'\$this->table\s*\(\s*[\'"]([^\'"]+)[\'"]')
+
+            current_ns = ""
+            for line_no, line in enumerate(text.splitlines(), 1):
+                ns_m = PHP_NS.search(line)
+                if ns_m:
+                    current_ns = ns_m.group(1).rstrip(";")
+                    facts.append(self._fact("php_namespace", current_ns, current_ns, line_no))
+                    continue
+
+                def_m = PHP_DEF.search(line)
+                if def_m:
+                    kind = def_m.group(1)
+                    name = def_m.group(2)
+                    fqn = f"{current_ns}\\{name}" if current_ns else name
+                    facts.append(self._fact(f"php_{kind}", name, fqn, line_no, namespace=current_ns, fqn=fqn))
+
+                fn_m = PHP_FUNC.search(line)
+                if fn_m:
+                    fn_name = fn_m.group(1)
+                    if fn_name.lower() not in {"__construct", "__destruct", "__get", "__set"}:
+                        facts.append(self._fact("php_function", fn_name, line.strip()[:200], line_no))
+
+                attr_m = PHP_ATTR.search(line)
+                if attr_m:
+                    attr_val = attr_m.group(1)
+                    facts.append(self._fact("php_attribute", attr_val, attr_val, line_no))
+
+                route_attr_m = PHP_ROUTE_ATTR.search(line)
+                if route_attr_m:
+                    route_path = route_attr_m.group(1) or "/"
+                    methods_str = route_attr_m.group(2) or "ANY"
+                    for method in methods_str.replace("'", "").replace('"', "").split(","):
+                        m_clean = method.strip().upper() or "ANY"
+                        facts.append(self._fact("route", route_path, m_clean, line_no, method=m_clean, source="php-attribute"))
+
+                lr_m = LARAVEL_RESOURCE.search(line)
+                if lr_m:
+                    res_path = lr_m.group(1)
+                    controller = lr_m.group(2)
+                    facts.append(self._fact("route", f"/{res_path.lstrip('/')}", "RESOURCE", line_no, controller=controller, source="laravel-resource"))
+
+                wp_m = WP_HOOK.search(line)
+                if wp_m:
+                    hook_kind = wp_m.group(1)
+                    hook_name = wp_m.group(2)
+                    facts.append(self._fact("wordpress_hook", hook_name, hook_kind, line_no, hook=hook_name, hook_type=hook_kind))
+
+                # Laravel facts
+                tbl_m = ELOQUENT_TABLE.search(line)
+                if tbl_m:
+                    facts.append(self._fact("eloquent_table", tbl_m.group(1), tbl_m.group(1), line_no))
+                fill_m = ELOQUENT_FILLABLE.search(line)
+                if fill_m:
+                    cols = [c.strip().strip("'\"") for c in fill_m.group(1).split(",") if c.strip().strip("'\"")]
+                    for col in cols:
+                        facts.append(self._fact("eloquent_fillable", col, col, line_no))
+                rel_m = ELOQUENT_REL.search(line)
+                if rel_m:
+                    facts.append(self._fact("eloquent_relation", rel_m.group(2).split("::")[0], rel_m.group(1), line_no, relation_type=rel_m.group(1)))
+                sc_m = SCHEMA_CREATE.search(line)
+                if sc_m:
+                    facts.append(self._fact("db_table", sc_m.group(1), sc_m.group(1), line_no, source="laravel-migration"))
+                col_m = MIGRATION_COL.search(line)
+                if col_m:
+                    c_type = col_m.group(1)
+                    c_name = col_m.group(2) or c_type
+                    facts.append(self._fact("db_column", c_name, c_type, line_no, col_type=c_type))
+                art_m = ARTISAN_CMD.search(line)
+                if art_m:
+                    cmd_name = art_m.group(1).split()[0]
+                    facts.append(self._fact("artisan_command", cmd_name, art_m.group(1), line_no))
+                freq_m = FORM_REQ.search(line)
+                if freq_m:
+                    facts.append(self._fact("form_request", freq_m.group(1), freq_m.group(1), line_no))
+
+                # CakePHP facts
+                cr_m = CAKE_ROUTE.search(line)
+                if cr_m:
+                    facts.append(self._fact("route", cr_m.group(1), "ANY", line_no, source="cakephp"))
+                cres_m = CAKE_RESOURCES.search(line)
+                if cres_m:
+                    facts.append(self._fact("route", f"/{cres_m.group(1).lstrip('/')}", "RESOURCE", line_no, source="cakephp-resource"))
+                ctbl_m = CAKE_TABLE.search(line)
+                if ctbl_m:
+                    facts.append(self._fact("cake_table", ctbl_m.group(1), ctbl_m.group(1), line_no))
+                cent_m = CAKE_ENTITY.search(line)
+                if cent_m:
+                    facts.append(self._fact("cake_entity", cent_m.group(1), cent_m.group(1), line_no))
+                cassoc_m = CAKE_ASSOC.search(line)
+                if cassoc_m:
+                    facts.append(self._fact("cake_association", cassoc_m.group(2), cassoc_m.group(1), line_no, association_type=cassoc_m.group(1)))
+                cmig_m = CAKE_MIGRATION.search(line)
+                if cmig_m:
+                    facts.append(self._fact("db_table", cmig_m.group(1), cmig_m.group(1), line_no, source="cakephp-migration"))
 
         # Python: decorators, dataclasses, async flows
         if ext == ".py":
@@ -657,6 +952,9 @@ class DeterministicEngine:
             # Extract names of classes/functions being tested from import statements and class names
             IMPORT_FROM = re.compile(r"^(?:from\s+([\w.]+)\s+import\s+([\w, ]+)|import\s+([\w.]+))", re.M)
             TESTED_CLASS = re.compile(r"class\s+Test(\w+)", re.M)
+            PHP_TESTED_CLASS = re.compile(r"class\s+(\w+)Test\b", re.M)
+            PHP_USE = re.compile(r"^\s*use\s+([A-Za-z_][A-Za-z0-9_\\]+);", re.M)
+            JS_IMPORT = re.compile(r"import\s+(?:\{([^}]+)\}|(\w+))\s+from\s+['\"]([^'\"]+)['\"]", re.M)
             for m in IMPORT_FROM.finditer(text):
                 module = m.group(1) or m.group(3) or ""
                 if module and not module.startswith("test") and "mock" not in module.lower():
@@ -669,6 +967,25 @@ class DeterministicEngine:
                             facts.append(self._fact("tests_symbol", s, path, 1))
             for m in TESTED_CLASS.finditer(text):
                 facts.append(self._fact("tests_class", m.group(1), path, 1))
+            for m in PHP_TESTED_CLASS.finditer(text):
+                facts.append(self._fact("tests_class", m.group(1), path, 1))
+            for m in PHP_USE.finditer(text):
+                use_target = m.group(1).split("\\")[-1]
+                if use_target and not use_target.endswith("Test") and not use_target.startswith("Test"):
+                    facts.append(self._fact("tests_symbol", use_target, path, 1))
+            for m in JS_IMPORT.finditer(text):
+                named = m.group(1)
+                default_sym = m.group(2)
+                import_src = m.group(3)
+                if named:
+                    for s in named.split(","):
+                        clean_s = s.strip().split(" as ")[0].strip()
+                        if clean_s and not clean_s.startswith("test"):
+                            facts.append(self._fact("tests_symbol", clean_s, path, 1))
+                if default_sym and not default_sym.startswith("test"):
+                    facts.append(self._fact("tests_symbol", default_sym, path, 1))
+                if import_src and not import_src.startswith("test"):
+                    facts.append(self._fact("tests_module", import_src, path, 1))
 
         # ── General line-by-line patterns ────────────────────────────────────────
         for line_no, line in enumerate(text.splitlines(), 1):
@@ -2942,7 +3259,7 @@ class DeterministicEngine:
         self._osv_cache.set(cache_key, {"vulnerabilities": vulnerabilities})
         return vulnerabilities, None
 
-    def audit_dependencies(self, root: str) -> dict[str, Any]:
+    def audit_dependencies(self, root: str, remediate: bool = False) -> dict[str, Any]:
         """Audit project dependencies for known vulnerabilities and security advisories."""
         resolved = self._root(root)
         fallback_vulns: list[dict[str, Any]] = []
@@ -2981,7 +3298,27 @@ class DeterministicEngine:
         osv_current = osv_enabled and osv_error is None
         vulns = osv_vulns if osv_current else fallback_vulns
         security_score = "A" if osv_current and not vulns else ("UNKNOWN" if not vulns else ("B" if len(vulns) <= 2 else "C"))
-        return {
+
+        remediations: list[dict[str, Any]] = []
+        for v in vulns:
+            pkg = v.get("package", "")
+            fixed_ver = v.get("fixed_version") or "latest"
+            manifest = v.get("manifest_path", "")
+            if "pyproject" in manifest or "requirements" in manifest:
+                cmd = f"pip install --upgrade '{pkg}>={fixed_ver}'"
+            elif "package.json" in manifest:
+                cmd = f"npm install '{pkg}@{fixed_ver}'"
+            elif "composer" in manifest.lower():
+                cmd = f"composer require '{pkg}:^{fixed_ver}'"
+            elif "cargo" in manifest.lower():
+                cmd = f"cargo update -p {pkg} --precise {fixed_ver}"
+            else:
+                cmd = f"upgrade {pkg} to >={fixed_ver}"
+            rem_item = {"package": pkg, "recommended_version": fixed_ver, "fix_command": cmd}
+            v["remediation"] = rem_item
+            remediations.append(rem_item)
+
+        res: dict[str, Any] = {
             "success": True,
             "root": resolved,
             "total_dependencies": len(deps_list),
@@ -2992,6 +3329,9 @@ class DeterministicEngine:
             "advisory_error": osv_error,
             "vulnerabilities": vulns,
         }
+        if remediate or remediations:
+            res["remediations"] = remediations
+        return res
 
     def refactor_impact(self, root: str, target_file: str, target_symbol: str | None = None) -> dict[str, Any]:
         """Compute the ripple effect and refactoring impact matrix across callers, dependents and tests."""
@@ -3082,9 +3422,9 @@ class DeterministicEngine:
         """
         resolved = self._root(root)
         requested_lang = (language or "auto").strip().lower()
-        aliases = {"cs": "csharp", "py": "python", "ts": "typescript", "js": "javascript"}
+        aliases = {"cs": "csharp", "py": "python", "ts": "typescript", "js": "javascript", "php": "php"}
         requested_lang = aliases.get(requested_lang, requested_lang)
-        supported = {"auto", "csharp", "python", "typescript", "javascript"}
+        supported = {"auto", "csharp", "python", "typescript", "javascript", "php"}
         if requested_lang not in supported:
             return {"success": False, "root": resolved, "language": requested_lang, "error": f"unsupported language: {requested_lang}"}
 
@@ -3094,8 +3434,9 @@ class DeterministicEngine:
             suffix = Path(path).suffix.lower()
             if suffix == ".py": return "python"
             if suffix == ".cs": return "csharp"
-            if suffix in {".ts", ".tsx"}: return "typescript"
-            if suffix in {".js", ".jsx", ".mjs", ".cjs"}: return "javascript"
+            if suffix == ".php": return "php"
+            if suffix in {".ts", ".tsx", ".mts", ".cts"}: return "typescript"
+            if suffix in {".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte"}: return "javascript"
             return "auto"
 
         def import_for(symbol: str, container: str, path: str, lang: str) -> str:
@@ -3111,6 +3452,19 @@ class DeterministicEngine:
                     except OSError:
                         pass
                 return f"using {namespace};" if namespace else ""
+            if lang == "php":
+                namespace = container
+                if not namespace:
+                    try:
+                        import re
+                        text = (Path(resolved) / path).read_text(encoding="utf-8", errors="replace")[:100000]
+                        match = re.search(r"(?m)^\s*namespace\s+([A-Za-z_][A-Za-z0-9_\\]*)", text)
+                        if match:
+                            namespace = match.group(1).rstrip(";")
+                    except OSError:
+                        pass
+                fqn = f"{namespace}\\{symbol}" if namespace else symbol
+                return f"use {fqn};"
             if lang == "python":
                 mod_path = Path(path.replace("\\", "/"))
                 without_suffix = mod_path.with_suffix("") if mod_path.suffix else mod_path
@@ -3122,7 +3476,7 @@ class DeterministicEngine:
             if lang in {"typescript", "javascript"}:
                 normalized = path.replace("\\", "/")
                 pth = Path(normalized)
-                if pth.suffix.lower() in {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}:
+                if pth.suffix.lower() in {".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"}:
                     normalized = str(pth.with_suffix("")).replace("\\", "/")
                 if not normalized.startswith("."):
                     normalized = "./" + normalized
@@ -3233,6 +3587,382 @@ class DeterministicEngine:
             }
         except Exception as exc:
             return {"success": False, "error": str(exc), "is_git": False}
+
+    def git_diff(
+        self,
+        root: str,
+        path: str | None = None,
+        staged: bool = False,
+        max_lines: int = 1000,
+    ) -> dict[str, Any]:
+        """Return structured git diff with parsed file hunks and statistics."""
+        import subprocess, shutil
+        from .process_utils import hidden_run_kwargs
+        resolved = self._root(root)
+        git_exe = shutil.which("git") or "git"
+        cmd = [git_exe, "-C", resolved, "diff"]
+        if staged:
+            cmd.append("--staged")
+        if path:
+            cmd.extend(["--", str(path)])
+
+        try:
+            res = subprocess.run(
+                cmd,
+                capture_output=True, text=True, timeout=5.0, check=False,
+                encoding="utf-8", errors="replace",
+                **hidden_run_kwargs(),
+            )
+            if res.returncode != 0:
+                return {"success": False, "error": res.stderr.strip() or "git diff failed", "root": resolved}
+
+            raw_diff = res.stdout
+            lines = raw_diff.splitlines()
+            files_changed: list[dict[str, Any]] = []
+            cur_file: dict[str, Any] | None = None
+            additions = 0
+            deletions = 0
+
+            for line in lines[:max_lines]:
+                if line.startswith("diff --git "):
+                    if cur_file:
+                        files_changed.append(cur_file)
+                    parts = line.split(" ")
+                    file_b = parts[-1].lstrip("b/") if len(parts) >= 4 else ""
+                    cur_file = {"file": file_b, "additions": 0, "deletions": 0, "hunks": []}
+                elif cur_file is not None:
+                    if line.startswith("@@"):
+                        cur_file["hunks"].append(line)
+                    elif line.startswith("+") and not line.startswith("+++"):
+                        cur_file["additions"] += 1
+                        additions += 1
+                    elif line.startswith("-") and not line.startswith("---"):
+                        cur_file["deletions"] += 1
+                        deletions += 1
+
+            if cur_file:
+                files_changed.append(cur_file)
+
+            truncated = len(lines) > max_lines
+            return {
+                "success": True,
+                "root": resolved,
+                "staged": staged,
+                "files_count": len(files_changed),
+                "total_additions": additions,
+                "total_deletions": deletions,
+                "stats": {
+                    "insertions": additions,
+                    "deletions": deletions,
+                    "files_changed": len(files_changed),
+                },
+                "files": files_changed,
+                "diff": "\n".join(lines[:max_lines]),
+                "raw_diff": "\n".join(lines[:max_lines]),
+                "truncated": truncated,
+            }
+        except Exception as exc:
+            return {"success": False, "error": str(exc), "root": resolved}
+
+    def git_history_search(
+        self,
+        root: str,
+        query: str,
+        max_commits: int = 20,
+    ) -> dict[str, Any]:
+        """Search git commit history by commit message and diff patch content."""
+        import subprocess, shutil
+        from .process_utils import hidden_run_kwargs
+        resolved = self._root(root)
+        git_exe = shutil.which("git") or "git"
+        clean_query = str(query or "").strip()
+        if not clean_query:
+            return {"success": False, "error": "query is required", "root": resolved}
+
+        try:
+            res_msg = subprocess.run(
+                [git_exe, "-C", resolved, "log", f"-n{max_commits}", f"--grep={clean_query}", "-i", "--format=%H|%an|%ad|%s", "--date=short"],
+                capture_output=True, text=True, timeout=5.0, check=False,
+                encoding="utf-8", errors="replace",
+                **hidden_run_kwargs(),
+            )
+            res_code = subprocess.run(
+                [git_exe, "-C", resolved, "log", f"-n{max_commits}", f"-S{clean_query}", "-i", "--format=%H|%an|%ad|%s", "--date=short"],
+                capture_output=True, text=True, timeout=5.0, check=False,
+                encoding="utf-8", errors="replace",
+                **hidden_run_kwargs(),
+            )
+
+            commits: dict[str, dict[str, Any]] = {}
+            for out, match_type in [(res_msg.stdout, "message"), (res_code.stdout, "diff_content")]:
+                for line in out.splitlines():
+                    parts = line.split("|", 3)
+                    if len(parts) >= 4:
+                        h, author, date, subj = parts[0], parts[1], parts[2], parts[3]
+                        if h not in commits:
+                            commits[h] = {
+                                "commit": h[:10],
+                                "full_hash": h,
+                                "author": author,
+                                "date": date,
+                                "subject": subj,
+                                "message": subj,
+                                "match_type": match_type,
+                            }
+                        elif match_type not in commits[h]["match_type"]:
+                            commits[h]["match_type"] += f", {match_type}"
+
+            res_list = list(commits.values())[:max_commits]
+            return {
+                "success": True,
+                "root": resolved,
+                "query": clean_query,
+                "count": len(res_list),
+                "commits": res_list,
+            }
+        except Exception as exc:
+            return {"success": False, "error": str(exc), "root": resolved}
+
+    def find_hotspots(
+        self,
+        root: str,
+        days: int = 30,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Identify technical debt hotspots combining git change churn with cyclomatic complexity."""
+        import subprocess, shutil, math
+        from .process_utils import hidden_run_kwargs
+        resolved = self._root(root)
+        git_exe = shutil.which("git") or "git"
+
+        churn_counts: dict[str, int] = defaultdict(int)
+        try:
+            res = subprocess.run(
+                [git_exe, "-C", resolved, "log", f"--since={max(1, int(days))} days ago", "--name-only", "--format=", "--no-merges"],
+                capture_output=True, text=True, timeout=5.0, check=False,
+                encoding="utf-8", errors="replace",
+                **hidden_run_kwargs(),
+            )
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    p = line.strip().replace("\\", "/")
+                    if p and not any(p.startswith(d) for d in (".git", "vendor", "node_modules", "dist", "build")):
+                        churn_counts[p] += 1
+        except Exception:
+            pass
+
+        if not churn_counts:
+            r_path = Path(resolved)
+            for p in list(r_path.rglob("*.py"))[:30]:
+                try:
+                    rel = str(p.relative_to(r_path)).replace("\\", "/")
+                    churn_counts[rel] = 1
+                except Exception:
+                    pass
+
+        hotspots: list[dict[str, Any]] = []
+        for file_rel, churn in sorted(churn_counts.items(), key=lambda x: x[1], reverse=True)[:limit * 2]:
+            full_p = Path(resolved) / file_rel
+            if not full_p.is_file():
+                continue
+            comp_score = 1
+            loc = 0
+            try:
+                content = full_p.read_text(encoding="utf-8", errors="replace")
+                loc = len(content.splitlines())
+                if full_p.suffix == ".py":
+                    tree = ast.parse(content, filename=file_rel)
+                    for node in ast.walk(tree):
+                        if isinstance(node, (ast.If, ast.For, ast.While, ast.Try, ast.ExceptHandler, ast.With, ast.Match)):
+                            comp_score += 1
+                else:
+                    comp_score = max(1, loc // 15)
+            except Exception:
+                comp_score = max(1, loc // 20)
+
+            hotspot_index = round(float(churn) * math.log2(1.0 + float(comp_score)), 2)
+            hotspots.append({
+                "file": file_rel,
+                "path": file_rel,
+                "churn": churn,
+                "churn_commits": churn,
+                "complexity": comp_score,
+                "lines_of_code": loc,
+                "debt_score": hotspot_index,
+                "hotspot_score": hotspot_index,
+                "risk_level": "critical" if hotspot_index >= 50 else ("high" if hotspot_index >= 20 else "moderate"),
+            })
+
+        hotspots.sort(key=lambda x: x["hotspot_score"], reverse=True)
+        hotspots = hotspots[:limit]
+        return {
+            "success": True,
+            "root": resolved,
+            "days": days,
+            "count": len(hotspots),
+            "hotspots": hotspots,
+        }
+
+    def generate_tests_for_diff(
+        self,
+        root: str,
+        diff: str | None = None,
+        path: str | None = None,
+    ) -> dict[str, Any]:
+        """Generate targeted regression test skeleton from git diff changes."""
+        resolved = self._root(root)
+        if not diff:
+            diff_res = self.git_diff(resolved, path=path)
+            diff = diff_res.get("diff", "")
+
+        if not diff or not diff.strip():
+            return {
+                "success": False,
+                "error": "No diff content provided or found in repository",
+                "root": resolved,
+            }
+
+        modified_targets: list[dict[str, Any]] = []
+        cur_file = ""
+        for line in diff.splitlines():
+            if line.startswith("+++ b/"):
+                cur_file = line[6:].strip()
+            elif line.startswith("@@") and cur_file:
+                hunk_match = re.search(r"@@.*?@@\s*(.*)", line)
+                if hunk_match:
+                    signature = hunk_match.group(1).strip()
+                    fn_match = re.search(r"(?:def|function|class|async\s+def|func)\s+([A-Za-z0-9_]+)", signature)
+                    symbol = fn_match.group(1) if fn_match else ""
+                    if symbol:
+                        modified_targets.append({
+                            "file": cur_file,
+                            "signature": signature,
+                            "symbol": symbol,
+                        })
+            elif (line.startswith("+") or line.startswith("-")) and cur_file and not (line.startswith("+++") or line.startswith("---")):
+                fn_match = re.search(r"(?:def|function|class|async\s+def|func)\s+([A-Za-z0-9_]+)", line)
+                if fn_match:
+                    symbol = fn_match.group(1)
+                    modified_targets.append({
+                        "file": cur_file,
+                        "signature": line.lstrip("+- ").strip(),
+                        "symbol": symbol,
+                    })
+
+        test_cases: list[str] = ['import pytest\n']
+        seen_symbols = set()
+        for item in modified_targets:
+            sym = item.get("symbol")
+            f_rel = item.get("file")
+            if not sym or sym in seen_symbols:
+                continue
+            seen_symbols.add(sym)
+            test_cases.append(f"""
+def test_{sym}_regression_nominal():
+    \"\"\"Verify nominal expected output for modified {sym}.\"\"\"
+    # TODO: Verify expected inputs/outputs for {sym}
+    pass
+
+def test_{sym}_regression_edge_cases():
+    \"\"\"Verify boundaries and error handling for modified {sym}.\"\"\"
+    pass
+""")
+
+        test_code = "\n".join(test_cases)
+        target_mods = list({str(t.get("file", "")).replace(".py", "").replace("/", ".").replace("\\", ".") for t in modified_targets if t.get("file")})
+        return {
+            "success": True,
+            "root": resolved,
+            "targets_count": len(seen_symbols),
+            "modified_targets": modified_targets,
+            "target_modules": target_mods,
+            "generated_test_code": test_code,
+            "test_skeleton": test_code,
+        }
+
+    def cross_repo_contract(
+        self,
+        backend_root: str,
+        frontend_root: str,
+    ) -> dict[str, Any]:
+        """Validate API contract alignment between backend routes and frontend API callers."""
+        b_root = canonical_root(backend_root)
+        f_root = canonical_root(frontend_root)
+
+        backend_spec = self.extract_api_spec(b_root)
+        backend_endpoints = backend_spec.get("endpoints", [])
+        backend_routes: dict[tuple[str, str], dict[str, Any]] = {}
+        for ep in backend_endpoints:
+            m = str(ep.get("method", "GET")).upper()
+            p = str(ep.get("path", "")).strip()
+            norm_p = re.sub(r"\{[a-zA-Z0-9_]+\}", ":param", p)
+            norm_p = re.sub(r"<[a-zA-Z0-9_:]+>", ":param", norm_p)
+            backend_routes[(m, norm_p)] = ep
+
+        frontend_calls: list[dict[str, Any]] = []
+        f_path = Path(f_root)
+        if f_path.is_dir():
+            for p in f_path.rglob("*"):
+                if p.suffix in (".ts", ".tsx", ".js", ".jsx", ".vue", ".svelte", ".py") and not any(d in p.parts for d in ("node_modules", ".git", "dist", "build")):
+                    try:
+                        content = p.read_text(encoding="utf-8", errors="replace")
+                        rel = str(p.relative_to(f_path)).replace("\\", "/")
+                        for line_no, line in enumerate(content.splitlines(), 1):
+                            m_call = re.findall(r"(?:fetch|axios\.(get|post|put|delete|patch)|apiFetch|get|post)\s*\(\s*['\"`](/api/[^'\"`]+)['\"`]", line)
+                            for item in m_call:
+                                if isinstance(item, tuple):
+                                    http_m = (item[0] or "GET").upper()
+                                    path_c = item[1]
+                                else:
+                                    http_m = "GET"
+                                    path_c = item
+                                norm_c = re.sub(r"/\$\{[^}]+\}", "/:param", path_c)
+                                norm_c = re.sub(r"/[0-9]+", "/:param", norm_c)
+                                frontend_calls.append({
+                                    "method": http_m,
+                                    "path": path_c,
+                                    "normalized_path": norm_c,
+                                    "file": rel,
+                                    "line": line_no,
+                                })
+                    except Exception:
+                        pass
+
+        matched_routes: list[dict[str, Any]] = []
+        missing_backend_routes: list[dict[str, Any]] = []
+        for call in frontend_calls:
+            k = (call["method"], call["normalized_path"])
+            found = backend_routes.get(k)
+            if not found:
+                alt_methods = [b_ep for (b_m, b_p), b_ep in backend_routes.items() if b_p == call["normalized_path"]]
+                if alt_methods:
+                    missing_backend_routes.append({**call, "issue": f"Method mismatch: frontend uses {call['method']} but backend expects {alt_methods[0].get('method')}"})
+                else:
+                    missing_backend_routes.append({**call, "issue": "Endpoint not defined on backend"})
+            else:
+                matched_routes.append({**call, "backend_handler": found.get("handler")})
+
+        unused_backend: list[dict[str, Any]] = []
+        f_norm_paths = {c["normalized_path"] for c in frontend_calls}
+        for (b_m, b_p), ep in backend_routes.items():
+            if b_p not in f_norm_paths:
+                unused_backend.append(ep)
+
+        return {
+            "success": True,
+            "backend_root": b_root,
+            "frontend_root": f_root,
+            "backend_endpoints_count": len(backend_routes),
+            "frontend_calls_count": len(frontend_calls),
+            "matched_contracts_count": len(matched_routes),
+            "violations_count": len(missing_backend_routes),
+            "violations": missing_backend_routes,
+            "unmatched_frontend_calls": [v["path"] for v in missing_backend_routes],
+            "matched": matched_routes,
+            "matched_endpoints": [m["path"] for m in matched_routes],
+            "unused_backend_endpoints": unused_backend,
+            "uncalled_backend_endpoints": [u.get("path") for u in unused_backend],
+        }
 
     def synthesize_commit(
         self,
@@ -3537,6 +4267,362 @@ class DeterministicEngine:
             "test_files": test_files,
         }
 
+    def affected_tests(self, root: str, changed_paths: list[str] | None = None, base: str = "HEAD") -> dict[str, Any]:
+        """Map changed paths/symbols directly to affected test files and formulate targeted command."""
+        matrix = self.test_matrix(root)
+        framework = matrix.get("framework", "unknown")
+        all_tests = matrix.get("test_files", [])
+        
+        resolved_root = Path(self._root(root))
+        if changed_paths is None:
+            changed_paths = []
+            try:
+                import subprocess
+                from .process_utils import hidden_run_kwargs
+                p = subprocess.run(["git", "status", "--porcelain"], cwd=str(resolved_root), capture_output=True, text=True, timeout=5, **hidden_run_kwargs())
+                if p.returncode == 0:
+                    for line in p.stdout.splitlines():
+                        parts = line.strip().split(maxsplit=1)
+                        if len(parts) == 2:
+                            changed_paths.append(parts[1].replace("\\", "/"))
+            except Exception:
+                pass
+
+        norm_changed = [p.replace("\\", "/").lstrip("./") for p in changed_paths if p]
+        if not norm_changed:
+            return {
+                "success": True,
+                "framework": framework,
+                "changed_files": [],
+                "test_files": [],
+                "suggested_command": "",
+                "confidence": 1.0,
+            }
+
+        test_paths_set: set[str] = set()
+        for p in norm_changed:
+            p_lower = p.lower()
+            if "test" in p_lower or "spec" in p_lower:
+                test_paths_set.add(p)
+
+        stems = {Path(p).stem.lower().replace("test_", "").replace("_test", "").replace(".test", "").replace(".spec", "") for p in norm_changed}
+        for t in all_tests:
+            t_path = t["path"].replace("\\", "/")
+            t_stem = Path(t_path).stem.lower().replace("test_", "").replace("_test", "").replace(".test", "").replace(".spec", "")
+            for s in stems:
+                if s and (s == t_stem or s in t_stem or t_stem in s):
+                    test_paths_set.add(t_path)
+
+        if self.code_index is not None:
+            try:
+                imp = self.code_index.impact(str(resolved_root), norm_changed)
+                for st in imp.get("suggested_tests", []):
+                    test_paths_set.add(st["path"].replace("\\", "/"))
+            except Exception:
+                pass
+
+        matched_tests = sorted(test_paths_set)
+        cmd = ""
+        if matched_tests:
+            if framework == "pytest":
+                cmd = f"pytest {' '.join(matched_tests)}"
+            elif framework == "dotnet":
+                filters = " | ".join(f"FullyQualifiedName~{Path(t).stem}" for t in matched_tests)
+                cmd = f"dotnet test --filter \"{filters}\""
+            elif framework == "npm":
+                cmd = f"npm test -- {' '.join(matched_tests)}"
+            elif framework == "cargo":
+                cmd = f"cargo test {' '.join(Path(t).stem for t in matched_tests)}"
+            elif framework == "go":
+                cmd = f"go test {' '.join(matched_tests)}"
+            else:
+                cmd = f"pytest {' '.join(matched_tests)}"
+
+        return {
+            "success": True,
+            "framework": framework,
+            "changed_files": norm_changed,
+            "test_files": matched_tests,
+            "suggested_command": cmd,
+            "confidence": 0.95 if matched_tests else 0.5,
+        }
+
+    def repo_topology(self, root: str) -> dict[str, Any]:
+        """Synthesize architectural layers, component topology, and central hub modules without LLM."""
+        resolved_root = Path(self._root(root))
+        root_str = str(resolved_root)
+        
+        all_files = [str(p.relative_to(resolved_root)).replace("\\", "/") for p in self.repo_tools.iter_files(root_str)]
+        
+        layers: dict[str, list[str]] = {
+            "entrypoints": [],
+            "presentation": [],
+            "core_services": [],
+            "domain_models": [],
+            "infrastructure": [],
+            "tests": [],
+            "utilities": [],
+        }
+
+        import_graph: dict[str, set[str]] = defaultdict(set)
+        in_degree: Counter[str] = Counter()
+
+        for rel in all_files:
+            rel_lower = rel.lower()
+            name = Path(rel).name.lower()
+            stem = Path(rel).stem.lower()
+
+            if "test" in rel_lower or "spec" in rel_lower:
+                layers["tests"].append(rel)
+            elif name in {"main.py", "app.py", "cli.py", "index.ts", "index.js", "server.ts", "server.js", "main.go", "main.rs", "__main__.py"}:
+                layers["entrypoints"].append(rel)
+            elif any(m in rel_lower for m in ("route", "controller", "view", "endpoint", "http_", "mcp_", "api/", "api.")):
+                layers["presentation"].append(rel)
+            elif any(m in rel_lower for m in ("service", "orchestrat", "planner", "pipeline", "handler", "manager", "engine", "core")):
+                layers["core_services"].append(rel)
+            elif any(m in rel_lower for m in ("model", "schema", "entity", "type", "event", "state", "dataclass")):
+                layers["domain_models"].append(rel)
+            elif any(m in rel_lower for m in ("db", "storage", "repo", "dao", "client", "cache", "telemetry", "hardware", "sqlite")):
+                layers["infrastructure"].append(rel)
+            else:
+                layers["utilities"].append(rel)
+
+            if rel.endswith(".py"):
+                fpath = resolved_root / rel
+                try:
+                    txt = fpath.read_text(encoding="utf-8", errors="replace")
+                    for m in re.finditer(r"(?:from\s+([\w\.]+)\s+import|import\s+([\w\.]+))", txt):
+                        target_mod = (m.group(1) or m.group(2)).split(".")[0]
+                        if target_mod and target_mod != stem:
+                            import_graph[rel].add(target_mod)
+                            in_degree[target_mod] += 1
+                except Exception:
+                    pass
+
+        top_hubs = [{"module": mod, "in_degree": count} for mod, count in in_degree.most_common(10)]
+
+        has_cli = bool(layers["entrypoints"])
+        has_api = bool(layers["presentation"])
+        has_services = bool(layers["core_services"])
+        
+        if has_api and has_services:
+            arch_pattern = "Layered Service / Web Application"
+        elif has_cli and has_services:
+            arch_pattern = "Modular CLI Application"
+        elif has_services:
+            arch_pattern = "Library / Application Engine"
+        else:
+            arch_pattern = "Package / Module Collection"
+
+        lines = [
+            f"# Architecture Topology: {resolved_root.name}",
+            f"**Pattern**: {arch_pattern}",
+            "",
+            "## Architectural Layers",
+        ]
+        for layer_name, files in layers.items():
+            if files:
+                sample = ", ".join(files[:4]) + (f" (+{len(files)-4} more)" if len(files) > 4 else "")
+                lines.append(f"- **{layer_name.replace('_', ' ').title()}** ({len(files)} files): `{sample}`")
+        
+        if top_hubs:
+            hubs_str = ", ".join(f"`{h['module']}` ({h['in_degree']})" for h in top_hubs[:5])
+            lines.append("")
+            lines.append(f"## Key Hub Modules (Blast Radius): {hubs_str}")
+
+        summary_md = "\n".join(lines)
+
+        return {
+            "success": True,
+            "root": root_str,
+            "architecture_pattern": arch_pattern,
+            "layers": layers,
+            "hub_modules": top_hubs,
+            "summary_markdown": summary_md,
+        }
+
+    def ast_rename(self, root: str, target_file: str, old_symbol: str, new_symbol: str, apply_changes: bool = False) -> dict[str, Any]:
+        """Mechanically rename a symbol across the target file and its callers using AST / pattern replacement."""
+        if not old_symbol or not new_symbol or old_symbol == new_symbol:
+            return {"success": False, "error": "Invalid old or new symbol"}
+        
+        resolved_root = Path(self._root(root))
+        norm_target = target_file.replace("\\", "/").lstrip("./")
+        target_path = resolved_root / norm_target
+        if not target_path.is_file():
+            return {"success": False, "error": f"Target file not found: {norm_target}"}
+
+        affected_files: set[str] = {norm_target}
+        code_exts = {".py", ".ts", ".tsx", ".js", ".jsx", ".cs", ".go", ".rs", ".java", ".cpp", ".c", ".h", ".hpp", ".rb", ".php"}
+        all_code_files = [
+            str(p.relative_to(resolved_root)).replace("\\", "/")
+            for p in self.repo_tools.iter_files(str(resolved_root))
+            if p.suffix.lower() in code_exts
+        ]
+        sym_pattern = re.compile(rf"\b{re.escape(old_symbol)}\b")
+        
+        for rel in all_code_files:
+            fpath = resolved_root / rel
+            try:
+                content = fpath.read_text(encoding="utf-8", errors="replace")
+                if sym_pattern.search(content):
+                    affected_files.add(rel)
+            except Exception:
+                pass
+
+        diffs: dict[str, str] = {}
+        modified_contents: dict[str, str] = {}
+
+        for rel in affected_files:
+            fpath = resolved_root / rel
+            try:
+                old_txt = fpath.read_text(encoding="utf-8", errors="replace")
+                new_txt = sym_pattern.sub(new_symbol, old_txt)
+                if new_txt != old_txt:
+                    modified_contents[rel] = new_txt
+                    import difflib
+                    diff_lines = list(difflib.unified_diff(
+                        old_txt.splitlines(keepends=True),
+                        new_txt.splitlines(keepends=True),
+                        fromfile=rel,
+                        tofile=rel,
+                    ))
+                    diffs[rel] = "".join(diff_lines)
+            except Exception as e:
+                return {"success": False, "error": f"Error processing {rel}: {e}"}
+
+        if apply_changes:
+            for rel, new_txt in modified_contents.items():
+                (resolved_root / rel).write_text(new_txt, encoding="utf-8")
+
+        return {
+            "success": True,
+            "old_symbol": old_symbol,
+            "new_symbol": new_symbol,
+            "applied": apply_changes,
+            "affected_files": sorted(modified_contents.keys()),
+            "diffs": diffs,
+        }
+
+    def generate_mocks(self, root: str, target_file: str, symbol: str) -> dict[str, Any]:
+        """Generate mock/stub objects and test fixtures for a target class, interface, or function."""
+        if not symbol:
+            return {"success": False, "error": "Symbol must not be empty"}
+
+        resolved_root = Path(self._root(root))
+        norm_target = target_file.replace("\\", "/").lstrip("./")
+        target_path = resolved_root / norm_target
+        if not target_path.is_file():
+            return {"success": False, "error": f"Target file not found: {norm_target}"}
+
+        try:
+            content = target_path.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            return {"success": False, "error": f"Failed to read target file: {e}"}
+
+        ext = target_path.suffix.lower()
+        if ext == ".py":
+            import ast
+            try:
+                tree = ast.parse(content, filename=norm_target)
+            except Exception:
+                tree = None
+
+            found_node = None
+            if tree:
+                for node in ast.walk(tree):
+                    if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == symbol:
+                        found_node = node
+                        break
+
+            if found_node and isinstance(found_node, ast.ClassDef):
+                methods = [
+                    m.name for m in found_node.body
+                    if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and not m.name.startswith("__")
+                ]
+                mock_lines = [
+                    f"class Mock{symbol}:",
+                    f'    """Mock implementation of {symbol}."""',
+                    "    def __init__(self, **kwargs):",
+                    "        for k, v in kwargs.items():",
+                    "            setattr(self, k, v)",
+                ]
+                for m in methods:
+                    mock_lines.append(f"    def {m}(self, *args, **kwargs):")
+                    mock_lines.append(f"        return MagicMock(name='{symbol}.{m}')")
+                if not methods:
+                    mock_lines.append("    pass")
+
+                fixture_lines = [
+                    "@pytest.fixture",
+                    f"def mock_{symbol.lower()}():",
+                    f"    return Mock{symbol}()",
+                    "",
+                    "@pytest.fixture",
+                    f"def autospec_{symbol.lower()}():",
+                    f"    return unittest.mock.create_autospec({symbol}, instance=True)",
+                ]
+                return {
+                    "success": True,
+                    "file": norm_target,
+                    "symbol": symbol,
+                    "kind": "class",
+                    "language": "python",
+                    "methods": methods,
+                    "mock_code": "\n".join(mock_lines),
+                    "fixture_code": "\n".join(fixture_lines),
+                }
+            elif found_node and isinstance(found_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                fixture_lines = [
+                    "@pytest.fixture",
+                    f"def mock_{symbol}():",
+                    f"    with unittest.mock.patch('{target_path.stem}.{symbol}') as m:",
+                    f"        yield m",
+                ]
+                return {
+                    "success": True,
+                    "file": norm_target,
+                    "symbol": symbol,
+                    "kind": "function",
+                    "language": "python",
+                    "mock_code": f"mock_{symbol} = unittest.mock.MagicMock(name='{symbol}')",
+                    "fixture_code": "\n".join(fixture_lines),
+                }
+            else:
+                mock_code = f"mock_{symbol} = unittest.mock.MagicMock(name='{symbol}')"
+                fixture_code = f"@pytest.fixture\ndef mock_{symbol.lower()}():\n    return {mock_code}"
+                return {
+                    "success": True,
+                    "file": norm_target,
+                    "symbol": symbol,
+                    "kind": "generic",
+                    "language": "python",
+                    "mock_code": mock_code,
+                    "fixture_code": fixture_code,
+                }
+        elif ext in {".ts", ".tsx", ".js", ".jsx"}:
+            mock_code = f"export const mock{symbol} = {{\n  // stub methods for {symbol}\n}};"
+            fixture_code = f"jest.mock('./{target_path.stem}', () => ({{\n  {symbol}: jest.fn().mockImplementation(() => mock{symbol}),\n}}));"
+            return {
+                "success": True,
+                "file": norm_target,
+                "symbol": symbol,
+                "kind": "generic",
+                "language": "typescript" if ext in {".ts", ".tsx"} else "javascript",
+                "mock_code": mock_code,
+                "fixture_code": fixture_code,
+            }
+        else:
+            return {
+                "success": True,
+                "file": norm_target,
+                "symbol": symbol,
+                "kind": "generic",
+                "language": ext.lstrip("."),
+                "mock_code": f"// Mock implementation for {symbol}",
+                "fixture_code": f"// Test fixture for {symbol}",
+            }
+
     def security_audit(self, root: str, limit: int = 50) -> dict[str, Any]:
         """Deterministic static security analysis (hardcoded secrets, unsafe deserialization, SQL injection)."""
         resolved_root = Path(self._root(root))
@@ -3619,6 +4705,878 @@ class DeterministicEngine:
             "findings": findings[:limit],
         }
 
+    def split_changes(self, root: str, changed_files: list[str] | None = None) -> dict[str, Any]:
+        """Cluster modified repo files into atomic, cohesive commit or PR chunks."""
+        resolved_root = Path(self._root(root))
+        files = list(changed_files or [])
+        if not files:
+            try:
+                cp = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    cwd=str(resolved_root),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    **hidden_run_kwargs(),
+                )
+                if cp.returncode == 0:
+                    for line in cp.stdout.splitlines():
+                        parts = line.strip().split(maxsplit=1)
+                        if len(parts) == 2:
+                            files.append(parts[1].replace("\\", "/"))
+            except Exception:
+                pass
+
+        if not files:
+            return {"success": True, "clusters": [], "total_files": 0, "message": "No changed files detected"}
+
+        categories: dict[str, list[str]] = {
+            "docs": [],
+            "config": [],
+            "core": [],
+            "api_or_services": [],
+            "models_or_schemas": [],
+            "tests": [],
+            "other": [],
+        }
+
+        for f in files:
+            norm = f.lower().replace("\\", "/")
+            if norm.startswith("docs/") or norm.endswith((".md", ".rst", ".txt")):
+                categories["docs"].append(f)
+            elif norm.endswith((".toml", ".json", ".yaml", ".yml", ".ini", ".cfg", ".lock")) or "config" in norm:
+                categories["config"].append(f)
+            elif "test" in norm or norm.startswith("tests/"):
+                categories["tests"].append(f)
+            elif any(k in norm for k in ("model", "schema", "entity", "dto")):
+                categories["models_or_schemas"].append(f)
+            elif any(k in norm for k in ("api", "service", "route", "controller", "endpoint")):
+                categories["api_or_services"].append(f)
+            elif any(k in norm for k in ("core", "engine", "util", "helper", "lib")):
+                categories["core"].append(f)
+            else:
+                categories["other"].append(f)
+
+        clusters = []
+        cluster_id = 1
+        order = ["models_or_schemas", "core", "api_or_services", "tests", "config", "docs", "other"]
+        for cat in order:
+            cat_files = categories[cat]
+            if cat_files:
+                clusters.append({
+                    "cluster_id": cluster_id,
+                    "name": cat.replace("_", " ").title(),
+                    "category": cat,
+                    "suggested_commit_message": f"feat({cat}): update {cat.replace('_', ' ')} components",
+                    "files": sorted(cat_files),
+                })
+                cluster_id += 1
+
+        return {
+            "success": True,
+            "root": str(resolved_root),
+            "total_files": len(files),
+            "cluster_count": len(clusters),
+            "clusters": clusters,
+        }
+
+    def synthesize_rules(self, root: str, limit: int = 10) -> dict[str, Any]:
+        """Synthesize proactive coding and architecture rules from repository conventions."""
+        resolved_root = Path(self._root(root))
+        rules: list[dict[str, Any]] = []
+
+        has_ruff = (resolved_root / "pyproject.toml").exists() or (resolved_root / "ruff.toml").exists()
+        has_ts = (resolved_root / "tsconfig.json").exists()
+
+        rules.append({
+            "rule_id": "rule_bounded_execution",
+            "title": "Always bound subprocesses and execution timeouts",
+            "context": "System stability",
+            "guidance": "Always specify bounded timeouts and use hidden_run_kwargs on Windows to avoid process orphans and GUI popups.",
+            "confidence": 0.95,
+        })
+
+        rules.append({
+            "rule_id": "rule_deterministic_first",
+            "title": "Query deterministic indexes before neural models",
+            "context": "Token & context efficiency",
+            "guidance": "Use deterministic symbol index, ast refactoring, and code search before invoking local or cloud LLMs.",
+            "confidence": 0.90,
+        })
+
+        if has_ts:
+            rules.append({
+                "rule_id": "rule_typescript_strict",
+                "title": "TypeScript typecheck before committing",
+                "context": "Type safety",
+                "guidance": "Run `tsc --noEmit` via local_ai_command before creating diffs or handoffs.",
+                "confidence": 0.85,
+            })
+
+        if has_ruff:
+            rules.append({
+                "rule_id": "rule_python_ruff",
+                "title": "Run ruff format and lint",
+                "context": "Python styling",
+                "guidance": "Format with `local_ai_command(action='format')` before submitting PRs.",
+                "confidence": 0.88,
+            })
+
+        return {
+            "success": True,
+            "root": str(resolved_root),
+            "rule_count": len(rules),
+            "rules": rules[:limit],
+        }
+
+    def code_invariants(self, root: str, path: str | None = None) -> dict[str, Any]:
+        """Static AST checker for critical coding invariants (unclosed resources, unawaited coroutines, missing timeouts)."""
+        resolved_root = Path(self._root(root))
+        target_paths: list[Path] = []
+        if path:
+            candidate = (resolved_root / path).resolve(strict=False)
+            if candidate.is_file():
+                target_paths.append(candidate)
+            else:
+                return {"success": False, "error": f"path not found: {path}"}
+        else:
+            for dirpath, dirnames, filenames in os.walk(resolved_root):
+                dirnames[:] = [d for d in dirnames if d not in {".git", ".venv", "node_modules", "__pycache__", ".pytest_cache"}]
+                for f in filenames:
+                    if f.endswith(".py"):
+                        target_paths.append(Path(dirpath) / f)
+                        if len(target_paths) >= 150:
+                            break
+                if len(target_paths) >= 150:
+                    break
+
+        violations: list[dict[str, Any]] = []
+
+        class InvariantVisitor(ast.NodeVisitor):
+            def __init__(self, rel_path: str):
+                self.rel_path = rel_path
+                self.with_items: set[int] = set()
+
+            def visit_With(self, node: ast.With) -> None:
+                for item in node.items:
+                    if isinstance(item.context_expr, ast.Call):
+                        self.with_items.add(id(item.context_expr))
+                self.generic_visit(node)
+
+            def visit_Call(self, node: ast.Call) -> None:
+                func_name = ""
+                if isinstance(node.func, ast.Name):
+                    func_name = node.func.id
+                elif isinstance(node.func, ast.Attribute):
+                    func_name = node.func.attr
+                    if isinstance(node.func.value, ast.Name):
+                        full_name = f"{node.func.value.id}.{func_name}"
+                        if full_name in ("subprocess.run", "subprocess.Popen", "requests.get", "requests.post", "requests.put", "requests.delete", "urllib.request.urlopen"):
+                            has_timeout = any(kw.arg == "timeout" for kw in node.keywords)
+                            if not has_timeout:
+                                violations.append({
+                                    "path": self.rel_path,
+                                    "line": node.lineno,
+                                    "col": node.col_offset,
+                                    "rule": "missing_timeout",
+                                    "message": f"Call to '{full_name}' lacks explicit 'timeout' parameter",
+                                    "severity": "high",
+                                })
+
+                if func_name == "open" and id(node) not in self.with_items:
+                    violations.append({
+                        "path": self.rel_path,
+                        "line": node.lineno,
+                        "col": node.col_offset,
+                        "rule": "missing_with_open",
+                        "message": "File 'open(...)' used without 'with' statement context manager",
+                        "severity": "medium",
+                    })
+
+                self.generic_visit(node)
+
+        for p in target_paths:
+            try:
+                rel = str(p.relative_to(resolved_root)).replace("\\", "/")
+                code = p.read_text(encoding="utf-8", errors="replace")
+                tree = ast.parse(code, filename=rel)
+                visitor = InvariantVisitor(rel)
+                visitor.visit(tree)
+            except Exception:
+                continue
+
+        return {
+            "success": True,
+            "root": str(resolved_root),
+            "files_checked": len(target_paths),
+            "violation_count": len(violations),
+            "violations": violations[:100],
+        }
+
+    def generate_dataset(
+        self,
+        root: str,
+        schema_or_model: dict[str, Any] | list[Any],
+        count: int = 10,
+        format: str = "json",
+    ) -> dict[str, Any]:
+        """Generate synthetic test datasets and seed data adhering to a field schema."""
+        import uuid
+        resolved_root = Path(self._root(root))
+        n = max(1, min(int(count), 1000))
+        fields: dict[str, str] = {}
+        if isinstance(schema_or_model, dict):
+            fields = {str(k): str(v).lower() for k, v in schema_or_model.items()}
+        elif isinstance(schema_or_model, list):
+            for item in schema_or_model:
+                if isinstance(item, dict):
+                    fields[str(item.get("name", "field"))] = str(item.get("type", "str")).lower()
+                else:
+                    fields[str(item)] = "str"
+        else:
+            fields = {"id": "uuid", "name": "str", "status": "str"}
+
+        rows: list[dict[str, Any]] = []
+        for i in range(1, n + 1):
+            row: dict[str, Any] = {}
+            for col, ctype in fields.items():
+                if "uuid" in ctype or col.lower() in ("id", "guid"):
+                    row[col] = f"{uuid.uuid4().hex[:12]}"
+                elif "int" in ctype or col.lower() in ("age", "count", "seq", "index"):
+                    row[col] = i * 10
+                elif "float" in ctype or col.lower() in ("price", "amount", "score", "rate"):
+                    row[col] = round(10.0 + (i * 3.5), 2)
+                elif "bool" in ctype or col.lower() in ("active", "enabled", "valid", "is_admin"):
+                    row[col] = (i % 2 == 0)
+                elif "email" in ctype or "email" in col.lower():
+                    row[col] = f"user_{i}@example.com"
+                elif "date" in ctype or "time" in col.lower():
+                    row[col] = f"2026-09-12T12:{i % 60:02d}:00Z"
+                else:
+                    row[col] = f"{col.capitalize()}_{i}"
+            rows.append(row)
+
+        fmt = format.lower()
+        if fmt == "csv":
+            import io, csv
+            out = io.StringIO()
+            writer = csv.DictWriter(out, fieldnames=list(fields.keys()))
+            writer.writeheader()
+            writer.writerows(rows)
+            rendered = out.getvalue()
+        elif fmt in ("sqlite", "sql"):
+            lines = []
+            table = "test_dataset"
+            cols = ", ".join(f'"{c}"' for c in fields.keys())
+            for r in rows:
+                vals = ", ".join(f"'{v}'" if isinstance(v, str) else str(v).lower() if isinstance(v, bool) else str(v) for v in r.values())
+                lines.append(f"INSERT INTO {table} ({cols}) VALUES ({vals});")
+            rendered = "\n".join(lines)
+        else:
+            rendered = json.dumps(rows, indent=2)
+
+        return {
+            "success": True,
+            "root": str(resolved_root),
+            "count": len(rows),
+            "format": fmt,
+            "fields": list(fields.keys()),
+            "data": rendered,
+            "rows": rows[:50],
+        }
+
+    def profile_digest(self, profile_path: str, top_n: int = 15) -> dict[str, Any]:
+        """Digest a cProfile / pstats binary profile or flamegraph trace into top bottleneck functions."""
+        p = Path(profile_path).expanduser().resolve(strict=False)
+        if not p.exists():
+            return {"success": False, "error": f"profile file not found: {profile_path}"}
+
+        limit = max(1, min(int(top_n), 100))
+        entries: list[dict[str, Any]] = []
+
+        try:
+            import pstats
+            stats = pstats.Stats(str(p))
+            stats.sort_stats("cumulative")
+            sorted_items = sorted(stats.stats.items(), key=lambda kv: kv[1][3], reverse=True)
+            for (fn_file, fn_line, fn_name), (cc, nc, tt, ct, _callers) in sorted_items[:limit]:
+                entries.append({
+                    "function": fn_name,
+                    "filename": Path(fn_file).name,
+                    "filepath": fn_file,
+                    "line": fn_line,
+                    "calls": nc,
+                    "primitive_calls": cc,
+                    "total_time_seconds": round(float(tt), 4),
+                    "cumulative_time_seconds": round(float(ct), 4),
+                    "time_per_call": round(float(ct) / max(1, nc), 6),
+                })
+            return {
+                "success": True,
+                "profile_path": str(p),
+                "format": "cProfile_pstats",
+                "total_functions_analyzed": len(stats.stats),
+                "top_functions": entries,
+            }
+        except Exception:
+            pass
+
+        try:
+            raw = p.read_text(encoding="utf-8", errors="replace")
+            data = json.loads(raw)
+            if isinstance(data, dict) and "traceEvents" in data:
+                events = data.get("traceEvents", [])
+                durations: dict[str, float] = {}
+                counts: dict[str, int] = {}
+                for ev in events:
+                    name = ev.get("name", "")
+                    dur = float(ev.get("dur", 0))
+                    if name and dur > 0:
+                        durations[name] = durations.get(name, 0.0) + dur
+                        counts[name] = counts.get(name, 0) + 1
+                sorted_events = sorted(durations.items(), key=lambda kv: kv[1], reverse=True)
+                for name, total_dur in sorted_events[:limit]:
+                    entries.append({
+                        "function": name,
+                        "cumulative_time_microseconds": round(total_dur, 2),
+                        "calls": counts.get(name, 1),
+                    })
+                return {
+                    "success": True,
+                    "profile_path": str(p),
+                    "format": "chrome_trace",
+                    "top_functions": entries,
+                }
+        except Exception:
+            pass
+
+        try:
+            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            for line in lines:
+                parts = line.strip().split()
+                if len(parts) >= 5 and parts[0].replace(".", "").isdigit():
+                    entries.append({"summary": line.strip()})
+                    if len(entries) >= limit:
+                        break
+            return {
+                "success": True,
+                "profile_path": str(p),
+                "format": "text_profile",
+                "top_functions": entries,
+            }
+        except Exception as exc:
+            return {"success": False, "error": f"failed to parse profile: {exc}"}
+
+    def find_callers(self, root: str, symbol: str, limit: int = 50) -> dict[str, Any]:
+        """Find all call sites and references to a symbol across repository AST."""
+        p_root = Path(self._root(root))
+        if not p_root.is_dir():
+            return {"success": False, "error": f"root not found: {root}"}
+        if not symbol or not symbol.strip():
+            return {"success": False, "error": "symbol cannot be empty"}
+
+        sym = symbol.strip()
+        callers: list[dict[str, Any]] = []
+
+        for p in p_root.rglob("*.py"):
+            if not p.is_file() or any(part.startswith((".", "node_modules", "venv", ".git")) for part in p.parts):
+                continue
+            try:
+                rel = str(p.relative_to(p_root)).replace("\\", "/")
+                content = p.read_text(encoding="utf-8", errors="replace")
+                if sym not in content:
+                    continue
+                tree = ast.parse(content, filename=str(p))
+                lines = content.splitlines()
+
+                class _CallerVisitor(ast.NodeVisitor):
+                    def __init__(self):
+                        self.scope_stack: list[str] = []
+
+                    def visit_FunctionDef(self, node):
+                        self.scope_stack.append(node.name)
+                        self.generic_visit(node)
+                        self.scope_stack.pop()
+
+                    def visit_AsyncFunctionDef(self, node):
+                        self.scope_stack.append(node.name)
+                        self.generic_visit(node)
+                        self.scope_stack.pop()
+
+                    def visit_ClassDef(self, node):
+                        self.scope_stack.append(node.name)
+                        self.generic_visit(node)
+                        self.scope_stack.pop()
+
+                    def visit_Call(self, node):
+                        matched = False
+                        if isinstance(node.func, ast.Name) and node.func.id == sym:
+                            matched = True
+                        elif isinstance(node.func, ast.Attribute) and node.func.attr == sym:
+                            matched = True
+                        if matched:
+                            enclosing = ".".join(self.scope_stack) if self.scope_stack else "<module>"
+                            line_idx = max(0, node.lineno - 1)
+                            snippet = lines[line_idx].strip() if line_idx < len(lines) else ""
+                            callers.append({
+                                "file": rel,
+                                "line": node.lineno,
+                                "col": node.col_offset,
+                                "caller": enclosing,
+                                "snippet": snippet[:160],
+                            })
+                        self.generic_visit(node)
+
+                visitor = _CallerVisitor()
+                visitor.visit(tree)
+                if len(callers) >= limit:
+                    break
+            except Exception:
+                continue
+
+        return {
+            "success": True,
+            "symbol": sym,
+            "caller_count": len(callers),
+            "callers": callers[:limit],
+        }
+
+    def find_dead_code(self, root: str, limit: int = 50) -> dict[str, Any]:
+        """Detect potentially dead/uncalled functions and classes in repository."""
+        p_root = Path(self._root(root))
+        if not p_root.is_dir():
+            return {"success": False, "error": f"root not found: {root}"}
+
+        defs: dict[str, dict[str, Any]] = {}
+        usages: set[str] = set()
+
+        for p in p_root.rglob("*.py"):
+            if not p.is_file():
+                continue
+            rel_parts = p.relative_to(p_root).parts
+            if any(part.startswith((".", "node_modules", "venv", ".git", "test")) for part in rel_parts):
+                continue
+            rel = str(p.relative_to(p_root)).replace("\\", "/")
+            try:
+                content = p.read_text(encoding="utf-8", errors="replace")
+                tree = ast.parse(content, filename=str(p))
+                for node in ast.walk(tree):
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        if not node.name.startswith("_") and node.name not in ("main", "run", "cli", "app"):
+                            defs[f"{rel}::{node.name}"] = {
+                                "file": rel, "name": node.name, "line": node.lineno, "kind": "function"
+                            }
+                    elif isinstance(node, ast.ClassDef):
+                        if not node.name.startswith("_"):
+                            defs[f"{rel}::{node.name}"] = {
+                                "file": rel, "name": node.name, "line": node.lineno, "kind": "class"
+                            }
+                    elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                        usages.add(node.id)
+                    elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
+                        usages.add(node.attr)
+            except Exception:
+                continue
+
+        dead_candidates: list[dict[str, Any]] = []
+        for key, item in defs.items():
+            if item["name"] not in usages:
+                dead_candidates.append(item)
+                if len(dead_candidates) >= limit:
+                    break
+
+        return {
+            "success": True,
+            "candidate_count": len(dead_candidates),
+            "dead_code": dead_candidates,
+            "dead_symbols": dead_candidates,
+        }
+
+    def ast_outline(self, root: str, path: str) -> dict[str, Any]:
+        """Generate a token-compact structural interface outline collapsing function/method bodies."""
+        p_root = Path(self._root(root))
+        target = Path(path)
+        if not target.is_absolute():
+            target = p_root / target
+        if not target.is_file():
+            return {"success": False, "error": f"file not found: {path}"}
+
+        content = target.read_text(encoding="utf-8", errors="replace")
+        try:
+            tree = ast.parse(content, filename=str(target))
+
+            class _BodyEllipsisTransformer(ast.NodeTransformer):
+                def visit_FunctionDef(self, node):
+                    doc = ast.get_docstring(node)
+                    new_body: list[ast.stmt] = []
+                    if doc:
+                        new_body.append(ast.Expr(value=ast.Constant(value=doc)))
+                    new_body.append(ast.Expr(value=ast.Constant(value=Ellipsis)))
+                    node.body = new_body
+                    return self.generic_visit(node)
+
+                def visit_AsyncFunctionDef(self, node):
+                    doc = ast.get_docstring(node)
+                    new_body: list[ast.stmt] = []
+                    if doc:
+                        new_body.append(ast.Expr(value=ast.Constant(value=doc)))
+                    new_body.append(ast.Expr(value=ast.Constant(value=Ellipsis)))
+                    node.body = new_body
+                    return self.generic_visit(node)
+
+            transformer = _BodyEllipsisTransformer()
+            new_tree = transformer.visit(tree)
+            ast.fix_missing_locations(new_tree)
+            outlined = ast.unparse(new_tree)
+            char_savings = max(0, len(content) - len(outlined))
+            token_savings_pct = round((char_savings / max(1, len(content))) * 100, 1)
+
+            return {
+                "success": True,
+                "path": str(target.relative_to(p_root)).replace("\\", "/"),
+                "outline": outlined,
+                "original_chars": len(content),
+                "outline_chars": len(outlined),
+                "reduction_pct": token_savings_pct,
+            }
+        except Exception:
+            out_lines = []
+            for line in content.splitlines():
+                if re.match(r"^\s*(?:def|class|async def|public|private|function|fn|func|interface|struct)\b", line):
+                    out_lines.append(line)
+            outline_txt = "\n".join(out_lines)
+            return {
+                "success": True,
+                "path": str(target.relative_to(p_root)).replace("\\", "/"),
+                "outline": outline_txt or content[:1000],
+                "fallback": True,
+            }
+
+    def secret_scan(
+        self,
+        root: str,
+        path: str | None = None,
+        *,
+        scan_git_history: bool = False,
+        commit_depth: int = 20,
+    ) -> dict[str, Any]:
+        """Scan repository or specific file for leaked secrets, API keys, and credentials."""
+        p_root = Path(self._root(root))
+        if not p_root.is_dir():
+            return {"success": False, "error": f"root not found: {root}"}
+
+        def _shannon_entropy(s: str) -> float:
+            if not s:
+                return 0.0
+            import math
+            from collections import Counter
+            counts = Counter(s)
+            length = len(s)
+            return -sum((cnt / length) * math.log2(cnt / length) for cnt in counts.values())
+
+        def _is_test_file(rel_path: str) -> bool:
+            norm = rel_path.replace("\\", "/").lower()
+            parts = norm.split("/")
+            test_dirs = {"test", "tests", "fixtures", "fixture", "mock", "mocks", "__tests__", "spec", "specs"}
+            if any(p in test_dirs for p in parts[:-1]):
+                return True
+            fname = parts[-1]
+            if fname.startswith(("test_", "mock_")):
+                return True
+            test_suffixes = (
+                "_test.py", "_test.go", "_test.js", "_test.ts",
+                ".test.js", ".test.ts", ".test.tsx", ".test.jsx",
+                "_spec.rb", ".spec.ts", ".spec.js"
+            )
+            return any(fname.endswith(sfx) for sfx in test_suffixes)
+
+        def _is_placeholder(token: str) -> bool:
+            t = token.upper()
+            placeholders = (
+                "EXAMPLE", "DUMMY", "SAMPLE", "PLACEHOLDER", "CHANGE_ME", "REPLACE_ME",
+                "YOUR_KEY", "YOUR_API_KEY", "YOUR_SECRET", "MY_SECRET", "FAKETOKEN",
+                "123456789", "ABCDEFGHIJKL"
+            )
+            return any(p in t for p in placeholders)
+
+        patterns: list[tuple[str, str, re.Pattern[str], str]] = [
+            ("openai_api_key", "OpenAI API Key", re.compile(r"(sk-(?:proj-|live-)?[A-Za-z0-9_-]{20,60})"), "CRITICAL"),
+            ("anthropic_api_key", "Anthropic API Key", re.compile(r"(sk-ant-api[0-9]{2}-[A-Za-z0-9_-]{20,80})"), "CRITICAL"),
+            ("aws_access_key", "AWS Access Key ID", re.compile(r"\b(AKIA[0-9A-Z]{16})\b"), "CRITICAL"),
+            ("github_pat", "GitHub Personal Access Token", re.compile(r"\b((?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36})\b"), "CRITICAL"),
+            ("slack_token", "Slack Token", re.compile(r"(xox[baprs]-[0-9A-Za-z-]{20,72})"), "HIGH"),
+            ("slack_webhook", "Slack Incoming Webhook", re.compile(r"(https:\/\/hooks\.slack\.com\/services\/T[0-9A-Z]+\/B[0-9A-Z]+\/[0-9A-Za-z]+)"), "HIGH"),
+            ("google_api_key", "Google Cloud / API Key", re.compile(r"\b(AIza[0-9A-Za-z-_]{35})\b"), "CRITICAL"),
+            ("stripe_secret_key", "Stripe Secret Key", re.compile(r"\b((?:sk|rk)_(?:live|test)_[0-9a-zA-Z]{24,})\b"), "CRITICAL"),
+            ("private_key", "Private Key Header", re.compile(r"(-----BEGIN (?:RSA|DSA|EC|OPENSSH|PGP) PRIVATE KEY-----)"), "CRITICAL"),
+            ("db_connection_uri", "Database Connection URI with Password", re.compile(r"\b((?:postgres|postgresql|mysql|mongodb|redis):\/\/[a-zA-Z0-9_\-\.]+:[a-zA-Z0-9_\-\.@#$%^&*!]+@[a-zA-Z0-9_\-\.]+)"), "HIGH"),
+            ("generic_secret_assignment", "Generic Hardcoded Secret", re.compile(r"(?:api_key|secret_key|auth_token|client_secret|access_token)\s*=\s*['\"]([A-Za-z0-9+/=_\-\.]{16,})['\"]", re.I), "HIGH"),
+        ]
+
+        findings: list[dict[str, Any]] = []
+        if path:
+            scan_files = [p_root / path]
+        else:
+            scan_files = []
+            for root_dir, dirs, files in os.walk(p_root):
+                dirs[:] = [d for d in dirs if not any(d.startswith(prefix) for prefix in (".", "node_modules", "venv", "tool-envs", "state", "build", "dist"))]
+                for f in files:
+                    scan_files.append(Path(root_dir) / f)
+
+        for p in scan_files:
+            if not p.is_file():
+                continue
+            if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".exe", ".bin", ".whl", ".pyc", ".db", ".sqlite3", ".zip", ".tar", ".gz", ".lock", ".wasm"):
+                continue
+            try:
+                rel = str(p.relative_to(p_root)).replace("\\", "/")
+                is_test = _is_test_file(rel)
+                lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+                for line_no, line in enumerate(lines, 1):
+                    stripped_line = line.strip()
+                    if not stripped_line or stripped_line.startswith(("#", "//", "/*", "*")):
+                        continue
+                    for rule_name, label, pat, base_sev in patterns:
+                        m = pat.search(line)
+                        if not m:
+                            continue
+                        secret_token = m.group(1) if m.groups() else m.group(0)
+                        entropy = _shannon_entropy(secret_token)
+                        placeholder = _is_placeholder(secret_token)
+                        if rule_name == "generic_secret_assignment" and entropy < 3.0 and not is_test:
+                            continue
+
+                        if len(secret_token) > 8:
+                            masked_secret = f"{secret_token[:4]}***{secret_token[-4:]}"
+                        else:
+                            masked_secret = "***"
+
+                        redacted_line = line.replace(secret_token, masked_secret).strip()[:140]
+                        severity = "LOW" if (is_test or placeholder) else base_sev
+
+                        findings.append({
+                            "file": rel,
+                            "line": line_no,
+                            "rule": rule_name,
+                            "description": label,
+                            "secret_type": rule_name,
+                            "severity": severity,
+                            "is_test": is_test,
+                            "is_placeholder": placeholder,
+                            "entropy": round(entropy, 2),
+                            "match": masked_secret,
+                            "redacted_secret": masked_secret,
+                            "redacted_snippet": redacted_line,
+                        })
+                        if len(findings) >= 100:
+                            break
+                    if len(findings) >= 100:
+                        break
+            except Exception:
+                continue
+
+        if scan_git_history and shutil.which("git"):
+            try:
+                proc = subprocess.run(
+                    ["git", "-C", str(p_root), "log", "-p", f"-n{max(1, int(commit_depth))}"],
+                    capture_output=True, text=True, check=False, timeout=15, **hidden_run_kwargs(),
+                )
+                if proc.returncode == 0:
+                    current_commit = "HEAD"
+                    current_file = "git-history"
+                    for h_line in proc.stdout.splitlines():
+                        if len(findings) >= 150:
+                            break
+                        if h_line.startswith("commit "):
+                            parts = h_line.split()
+                            if len(parts) >= 2:
+                                current_commit = parts[1][:8]
+                            continue
+                        elif h_line.startswith("diff --git "):
+                            parts = h_line.split()
+                            if len(parts) >= 4:
+                                current_file = parts[3].lstrip("b/")
+                            continue
+                        if not h_line.startswith("+") or h_line.startswith("+++"):
+                            continue
+                        raw_line = h_line[1:]
+                        for rule_name, label, pattern, base_sev in patterns:
+                            m = pattern.search(raw_line)
+                            if not m:
+                                continue
+                            secret_token = m.group(1) if m.groups() else m.group(0)
+                            entropy = _shannon_entropy(secret_token)
+                            placeholder = _is_placeholder(secret_token)
+                            if rule_name == "generic_secret_assignment" and entropy < 3.0:
+                                continue
+                            masked = f"{secret_token[:4]}***{secret_token[-4:]}" if len(secret_token) > 8 else "***"
+                            findings.append({
+                                "file": f"{current_file} (commit {current_commit})",
+                                "line": 0,
+                                "rule": rule_name,
+                                "description": f"{label} (in git history commit {current_commit})",
+                                "secret_type": rule_name,
+                                "severity": "LOW" if placeholder else base_sev,
+                                "is_test": _is_test_file(current_file),
+                                "is_placeholder": placeholder,
+                                "in_git_history": True,
+                                "commit": current_commit,
+                                "entropy": round(entropy, 2),
+                                "match": masked,
+                                "redacted_secret": masked,
+                                "redacted_snippet": raw_line.replace(secret_token, masked).strip()[:140],
+                            })
+            except Exception:
+                pass
+
+        real_leaks = [f for f in findings if not f["is_test"] and not f["is_placeholder"]]
+        test_fixtures = [f for f in findings if f["is_test"] or f["is_placeholder"]]
+
+        return {
+            "success": True,
+            "leak_count": len(real_leaks),
+            "real_leaks_count": len(real_leaks),
+            "test_findings_count": len(test_fixtures),
+            "secrets_count": len(findings),
+            "scanned_git_history": bool(scan_git_history),
+            "clean": len(real_leaks) == 0,
+            "findings": findings[:100],
+        }
+
+    def schema_inspect(self, root: str, db_path: str | None = None) -> dict[str, Any]:
+        """Inspect SQLite database schema (tables, columns, indexes, foreign keys)."""
+        p_root = Path(self._root(root))
+        target_db: Path | None = None
+        if db_path:
+            p = Path(db_path)
+            target_db = p if p.is_absolute() else p_root / p
+        else:
+            for ext in ("*.sqlite3", "*.db", "*.sqlite"):
+                for cand in p_root.rglob(ext):
+                    if not any(part.startswith((".", "node_modules", "venv")) for part in cand.parts):
+                        target_db = cand
+                        break
+                if target_db:
+                    break
+
+        if not target_db or not target_db.is_file():
+            return {"success": False, "error": f"no SQLite database found in root: {root}"}
+
+        tables: dict[str, Any] = {}
+        try:
+            with closing(sqlite3.connect(f"file:{target_db}?mode=ro", uri=True)) as con:
+                tbl_rows = con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
+                for (tbl_name,) in tbl_rows:
+                    cols = con.execute(f"PRAGMA table_info('{tbl_name}')").fetchall()
+                    indexes = con.execute(f"PRAGMA index_list('{tbl_name}')").fetchall()
+                    fks = con.execute(f"PRAGMA foreign_key_list('{tbl_name}')").fetchall()
+                    tables[tbl_name] = {
+                        "columns": [{"name": c[1], "type": c[2], "notnull": bool(c[3]), "pk": bool(c[5])} for c in cols],
+                        "indexes": [idx[1] for idx in indexes],
+                        "foreign_keys": [{"to_table": fk[2], "from_col": fk[3], "to_col": fk[4]} for fk in fks],
+                    }
+            return {
+                "success": True,
+                "db_path": str(target_db.relative_to(p_root)).replace("\\", "/"),
+                "table_count": len(tables),
+                "tables": tables,
+            }
+        except Exception as exc:
+            return {"success": False, "error": f"database inspection failed: {exc}"}
+
+    def explain_query(self, root: str, query: str, db_path: str | None = None) -> dict[str, Any]:
+        """Run EXPLAIN QUERY PLAN on an SQLite query to inspect execution strategy and indexes."""
+        p_root = Path(self._root(root))
+        target_db: Path | None = None
+        if db_path:
+            p = Path(db_path)
+            target_db = p if p.is_absolute() else p_root / p
+        else:
+            for ext in ("*.sqlite3", "*.db", "*.sqlite"):
+                for cand in p_root.rglob(ext):
+                    if not any(part.startswith((".", "node_modules", "venv")) for part in cand.parts):
+                        target_db = cand
+                        break
+                if target_db:
+                    break
+
+        if not target_db or not target_db.is_file():
+            return {"success": False, "error": f"no SQLite database found for query explain"}
+
+        if not query or not query.strip():
+            return {"success": False, "error": "query cannot be empty"}
+
+        clean_query = query.strip()
+        if not clean_query.lower().startswith("select"):
+            return {"success": False, "error": "only SELECT queries are allowed for explain_query"}
+
+        try:
+            with closing(sqlite3.connect(f"file:{target_db}?mode=ro", uri=True)) as con:
+                rows = con.execute(f"EXPLAIN QUERY PLAN {clean_query}").fetchall()
+                plan_items = [{"id": r[0], "parent": r[1], "detail": r[3]} for r in rows]
+                uses_index = any("USING INDEX" in item["detail"] or "USING COVERING INDEX" in item["detail"] for item in plan_items)
+                full_scan = any("SCAN TABLE" in item["detail"] for item in plan_items)
+
+            return {
+                "success": True,
+                "db_path": str(target_db.relative_to(p_root)).replace("\\", "/"),
+                "query": clean_query,
+                "uses_index": uses_index,
+                "has_full_table_scan": full_scan,
+                "plan": plan_items,
+            }
+        except Exception as exc:
+            return {"success": False, "error": f"explain query failed: {exc}"}
+
+    def env_compat(self, root: str) -> dict[str, Any]:
+        """Analyze project manifests for OS, runtime, and build-tool dependencies."""
+        p_root = Path(self._root(root))
+        if not p_root.is_dir():
+            return {"success": False, "error": f"root not found: {root}"}
+
+        current_os = os.name
+        results: dict[str, Any] = {
+            "os": "windows" if current_os == "nt" else "posix",
+            "python_version": sys.version.split()[0],
+            "detected_manifests": [],
+            "warnings": [],
+            "toolchain_requirements": [],
+        }
+
+        pyproj = p_root / "pyproject.toml"
+        if pyproj.is_file():
+            results["detected_manifests"].append("pyproject.toml")
+            content = pyproj.read_text(encoding="utf-8", errors="replace")
+            if "maturin" in content or "setuptools-rust" in content:
+                results["toolchain_requirements"].append("Rust compiler (cargo)")
+            if "pybind11" in content or "cython" in content:
+                results["toolchain_requirements"].append("C/C++ compiler toolchain (MSVC on Windows / GCC on Linux)")
+
+        pkg_json = p_root / "package.json"
+        if pkg_json.is_file():
+            results["detected_manifests"].append("package.json")
+            content = pkg_json.read_text(encoding="utf-8", errors="replace")
+            if "node-gyp" in content:
+                results["toolchain_requirements"].append("python + visual studio build tools (node-gyp)")
+
+        cargo_toml = p_root / "Cargo.toml"
+        if cargo_toml.is_file():
+            results["detected_manifests"].append("Cargo.toml")
+            if not shutil.which("cargo"):
+                results["warnings"].append("Cargo.toml found but 'cargo' binary is not on system PATH")
+
+        reqs = p_root / "requirements.txt"
+        if reqs.is_file():
+            results["detected_manifests"].append("requirements.txt")
+
+        return {
+            "success": True,
+            **results,
+            "python": results["python_version"],
+            "dependencies": results["detected_manifests"],
+            "ready": len(results["warnings"]) == 0,
+        }
+
     def status(self, root: str | None = None) -> dict[str, Any]:
         now = time.monotonic()
         key = str(root or "__all__")
@@ -3644,3 +5602,1401 @@ class DeterministicEngine:
             return res
         except Exception as exc:
             return {"success": False, "healthy": False, "error": str(exc), "stats": dict(self._stats)}
+
+    def find_circular_dependencies(self, root: str, language: str = "python") -> dict[str, Any]:
+        """Detect circular module import cycles in Python and JS/TS codebases."""
+        p_root = Path(root).expanduser().resolve(strict=False)
+        if not p_root.is_dir():
+            return {"success": False, "error": f"directory not found: {root}"}
+
+        skip_dirs = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".ruff_cache"}
+        mod_to_file: dict[str, Path] = {}
+        file_to_mod: dict[Path, str] = {}
+        
+        py_files: list[Path] = []
+        for p in p_root.rglob("*.py"):
+            if any(part in skip_dirs for part in p.parts):
+                continue
+            py_files.append(p)
+            rel = p.relative_to(p_root)
+            mod_parts = list(rel.parts)
+            if mod_parts[-1] == "__init__.py":
+                mod_parts.pop()
+            else:
+                mod_parts[-1] = mod_parts[-1][:-3]
+            mod_name = ".".join(mod_parts)
+            if mod_name:
+                mod_to_file[mod_name] = p
+                file_to_mod[p] = mod_name
+
+        graph: dict[str, set[str]] = defaultdict(set)
+        for p, mod_name in file_to_mod.items():
+            try:
+                content = p.read_text(encoding="utf-8", errors="replace")
+                tree = ast.parse(content, filename=str(p))
+            except Exception:
+                continue
+
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        target = alias.name
+                        for known in mod_to_file:
+                            if target == known or target.startswith(known + "."):
+                                if known != mod_name:
+                                    graph[mod_name].add(known)
+                elif isinstance(node, ast.ImportFrom):
+                    base = ""
+                    if node.level and node.level > 0:
+                        pkg_parts = mod_name.split(".")[:-1]
+                        if node.level - 1 <= len(pkg_parts):
+                            base_parts = pkg_parts[:len(pkg_parts) - (node.level - 1)]
+                            if node.module:
+                                base_parts.append(node.module)
+                            base = ".".join(base_parts)
+                    elif node.module:
+                        base = node.module
+
+                    for alias in node.names:
+                        candidates = [f"{base}.{alias.name}" if base else alias.name]
+                        if base:
+                            candidates.append(base)
+                        for target in candidates:
+                            for known in mod_to_file:
+                                if target == known or target.startswith(known + "."):
+                                    if known != mod_name:
+                                        graph[mod_name].add(known)
+
+        cycles: list[list[str]] = []
+        visited: set[str] = set()
+        stack: list[str] = []
+        stack_set: set[str] = set()
+
+        def dfs(curr: str):
+            visited.add(curr)
+            stack.append(curr)
+            stack_set.add(curr)
+            for nxt in sorted(graph.get(curr, [])):
+                if nxt in stack_set:
+                    idx = stack.index(nxt)
+                    cycle = stack[idx:] + [nxt]
+                    min_idx = cycle[:-1].index(min(cycle[:-1]))
+                    canon = cycle[min_idx:-1] + cycle[:min_idx] + [cycle[min_idx]]
+                    if canon not in cycles:
+                        cycles.append(canon)
+                elif nxt not in visited:
+                    dfs(nxt)
+            stack.pop()
+            stack_set.remove(curr)
+
+        for node in sorted(graph.keys()):
+            if node not in visited:
+                dfs(node)
+
+        formatted_cycles = []
+        for c in cycles:
+            formatted_cycles.append({
+                "cycle": c,
+                "chain": " -> ".join(c),
+                "length": len(c) - 1,
+                "files": [str(mod_to_file.get(m, m)) for m in c[:-1]],
+            })
+
+        return {
+            "success": True,
+            "root": str(p_root),
+            "modules_scanned": len(file_to_mod),
+            "cycles_found": len(formatted_cycles),
+            "cycles": formatted_cycles,
+            "has_cycles": len(formatted_cycles) > 0,
+        }
+
+    def generate_types(self, root: str, file_path: str, write_stub: bool = False) -> dict[str, Any]:
+        """Parse Python source file and generate PEP 484 .pyi type stub."""
+        p_root = Path(root).expanduser().resolve(strict=False)
+        target = Path(file_path)
+        if not target.is_absolute():
+            target = (p_root / target).resolve()
+        if not target.is_file():
+            return {"success": False, "error": f"file not found: {file_path}"}
+
+        try:
+            content = target.read_text(encoding="utf-8", errors="replace")
+            tree = ast.parse(content, filename=str(target))
+        except Exception as exc:
+            return {"success": False, "error": f"failed to parse AST: {exc}"}
+
+        stub_lines = ["from __future__ import annotations", "from typing import Any, Optional, Union, List, Dict, Tuple, Callable", ""]
+        
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                prefix = "async " if isinstance(node, ast.AsyncFunctionDef) else ""
+                args = ast.unparse(node.args) if hasattr(ast, "unparse") else "..."
+                ret = f" -> {ast.unparse(node.returns)}" if hasattr(ast, "unparse") and node.returns else " -> Any"
+                stub_lines.append(f"{prefix}def {node.name}({args}){ret}: ...")
+                stub_lines.append("")
+            elif isinstance(node, ast.ClassDef):
+                bases = f"({', '.join(ast.unparse(b) for b in node.bases)})" if hasattr(ast, "unparse") and node.bases else ""
+                stub_lines.append(f"class {node.name}{bases}:")
+                has_methods = False
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        has_methods = True
+                        prefix = "    async " if isinstance(item, ast.AsyncFunctionDef) else "    "
+                        args = ast.unparse(item.args) if hasattr(ast, "unparse") else "..."
+                        ret = f" -> {ast.unparse(item.returns)}" if hasattr(ast, "unparse") and item.returns else " -> Any"
+                        stub_lines.append(f"{prefix}def {item.name}({args}){ret}: ...")
+                if not has_methods:
+                    stub_lines.append("    ...")
+                stub_lines.append("")
+
+        stub_content = "\n".join(stub_lines).strip() + "\n"
+        stub_path = target.with_suffix(".pyi")
+        if write_stub:
+            from .process_utils import atomic_write_file
+            atomic_write_file(stub_path, stub_content)
+
+        return {
+            "success": True,
+            "source_file": str(target),
+            "stub_file": str(stub_path) if write_stub else None,
+            "stub_content": stub_content,
+            "stub_lines": len(stub_lines),
+        }
+
+    def code_complexity(self, root: str, path: str | None = None, max_results: int = 20) -> dict[str, Any]:
+        """Compute McCabe cyclomatic and cognitive complexity metrics per function/method."""
+        p_root = Path(root).expanduser().resolve(strict=False)
+        targets: list[Path] = []
+        if path:
+            p = Path(path)
+            if not p.is_absolute():
+                p = p_root / p
+            if p.is_file():
+                targets.append(p)
+        else:
+            skip_dirs = {".git", ".venv", "venv", "node_modules", "__pycache__"}
+            for p in p_root.rglob("*.py"):
+                if not any(part in skip_dirs for part in p.parts):
+                    targets.append(p)
+                if len(targets) >= 50:
+                    break
+
+        results: list[dict[str, Any]] = []
+
+        for p in targets:
+            try:
+                content = p.read_text(encoding="utf-8", errors="replace")
+                tree = ast.parse(content, filename=str(p))
+            except Exception:
+                continue
+
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    fn_name = node.name
+                    lineno = node.lineno
+                    cyclomatic = 1
+                    cognitive = 0
+
+                    def walk_cognitive(curr_node: ast.AST, depth: int):
+                        nonlocal cyclomatic, cognitive
+                        for child in ast.iter_child_nodes(curr_node):
+                            inc_depth = False
+                            if isinstance(child, (ast.If, ast.While, ast.For, ast.AsyncFor)):
+                                cyclomatic += 1
+                                cognitive += (1 + depth)
+                                inc_depth = True
+                            elif isinstance(child, ast.ExceptHandler):
+                                cyclomatic += 1
+                                cognitive += (1 + depth)
+                                inc_depth = True
+                            elif isinstance(child, (ast.With, ast.AsyncWith, ast.Assert)):
+                                cyclomatic += 1
+                            elif isinstance(child, ast.BoolOp):
+                                cyclomatic += max(0, len(child.values) - 1)
+                                cognitive += max(0, len(child.values) - 1)
+                            elif isinstance(child, ast.comprehension):
+                                cyclomatic += 1 + len(child.ifs)
+                                cognitive += (1 + depth)
+
+                            walk_cognitive(child, depth + (1 if inc_depth else 0))
+
+                    walk_cognitive(node, 0)
+                    risk = "high" if (cyclomatic >= 10 or cognitive >= 15) else "medium" if (cyclomatic >= 6 or cognitive >= 8) else "low"
+                    results.append({
+                        "name": fn_name,
+                        "file": str(p.relative_to(p_root) if p.is_relative_to(p_root) else p),
+                        "line": lineno,
+                        "cyclomatic_complexity": cyclomatic,
+                        "cognitive_complexity": cognitive,
+                        "risk": risk,
+                    })
+
+        results.sort(key=lambda x: (-x["cognitive_complexity"], -x["cyclomatic_complexity"]))
+        return {
+            "success": True,
+            "root": str(p_root),
+            "files_analyzed": len(targets),
+            "total_functions": len(results),
+            "high_risk_count": sum(1 for r in results if r["risk"] == "high"),
+            "functions": results[:max(1, min(int(max_results), 100))],
+        }
+
+    def extract_api_spec(self, root: str, framework: str | None = None) -> dict[str, Any]:
+        """Statically extract API routes and endpoints into OpenAPI 3.0 schema."""
+        p_root = Path(root).expanduser().resolve(strict=False)
+        skip_dirs = {".git", ".venv", "venv", "node_modules", "__pycache__"}
+        endpoints: list[dict[str, Any]] = []
+
+        # Check for static openapi.json / swagger.json in root
+        for spec_name in ("openapi.json", "swagger.json", "openapi.yaml", "openapi.yml"):
+            spec_file = p_root / spec_name
+            if spec_file.is_file():
+                try:
+                    spec_data = json.loads(spec_file.read_text(encoding="utf-8"))
+                    paths_obj = spec_data.get("paths", {})
+                    for p_str, methods_obj in paths_obj.items():
+                        if isinstance(methods_obj, dict):
+                            for m_str, m_meta in methods_obj.items():
+                                if m_str.lower() in {"get", "post", "put", "delete", "patch"}:
+                                    endpoints.append({
+                                        "method": m_str.upper(),
+                                        "path": p_str,
+                                        "handler": m_meta.get("operationId", p_str) if isinstance(m_meta, dict) else p_str,
+                                        "summary": m_meta.get("summary", "") if isinstance(m_meta, dict) else "",
+                                        "description": m_meta.get("description", "") if isinstance(m_meta, dict) else "",
+                                        "file": spec_name,
+                                        "line": 1,
+                                    })
+                except Exception:
+                    pass
+
+        for p in p_root.rglob("*.py"):
+            if any(part in skip_dirs for part in p.parts):
+                continue
+            try:
+                content = p.read_text(encoding="utf-8", errors="replace")
+                tree = ast.parse(content, filename=str(p))
+            except Exception:
+                continue
+
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for dec in node.decorator_list:
+                        route_path = None
+                        method = "GET"
+                        if isinstance(dec, ast.Call):
+                            func = dec.func
+                            if isinstance(func, ast.Attribute) and func.attr.lower() in {"get", "post", "put", "delete", "patch", "options", "head"}:
+                                method = func.attr.upper()
+                                if dec.args and isinstance(dec.args[0], ast.Constant) and isinstance(dec.args[0].value, str):
+                                    route_path = dec.args[0].value
+                            elif isinstance(func, ast.Attribute) and func.attr.lower() == "route":
+                                if dec.args and isinstance(dec.args[0], ast.Constant) and isinstance(dec.args[0].value, str):
+                                    route_path = dec.args[0].value
+                                for kw in dec.keywords:
+                                    if kw.arg == "methods" and isinstance(kw.value, (ast.List, ast.Tuple)):
+                                        m_list = [elt.value for elt in kw.value.elts if isinstance(elt, ast.Constant)]
+                                        if m_list:
+                                            method = m_list[0].upper()
+                        if route_path:
+                            doc = ast.get_docstring(node) or ""
+                            endpoints.append({
+                                "method": method,
+                                "path": route_path,
+                                "handler": node.name,
+                                "summary": doc.splitlines()[0] if doc else node.name,
+                                "description": doc,
+                                "file": str(p.relative_to(p_root) if p.is_relative_to(p_root) else p),
+                                "line": node.lineno,
+                            })
+
+        express_pat = re.compile(r"\b(?:app|router)\.(get|post|put|patch|delete|options|head)\s*\(\s*['\"]([^'\"]+)['\"]", re.I)
+        next_route_pat = re.compile(r"^\s*export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s*\(", re.M)
+        for p in list(p_root.rglob("*.js")) + list(p_root.rglob("*.ts")) + list(p_root.rglob("*.mjs")):
+            if any(part in skip_dirs for part in p.parts):
+                continue
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace")
+                for m in express_pat.finditer(text):
+                    method = m.group(1).upper()
+                    r_path = m.group(2)
+                    endpoints.append({
+                        "method": method,
+                        "path": r_path,
+                        "handler": f"route_{method.lower()}",
+                        "summary": f"{method} {r_path}",
+                        "description": "",
+                        "file": str(p.relative_to(p_root) if p.is_relative_to(p_root) else p),
+                        "line": text[:m.start()].count("\n") + 1,
+                    })
+                if p.stem.lower() == "route":
+                    for m in next_route_pat.finditer(text):
+                        method = m.group(1).upper()
+                        rel_p = p.relative_to(p_root) if p.is_relative_to(p_root) else p
+                        r_path = "/" + "/".join(part for part in rel_p.parts[:-1] if part not in {"app", "src", "api"})
+                        if not r_path or r_path == "/":
+                            r_path = "/api"
+                        endpoints.append({
+                            "method": method,
+                            "path": r_path,
+                            "handler": f"next_{method.lower()}",
+                            "summary": f"{method} {r_path}",
+                            "description": "",
+                            "file": str(rel_p),
+                            "line": text[:m.start()].count("\n") + 1,
+                        })
+            except Exception:
+                continue
+
+        php_route_pat = re.compile(r"\bRoute::(get|post|put|patch|delete|options|any)\s*\(\s*['\"]([^'\"]+)['\"]", re.I)
+        php_resource_pat = re.compile(r"\bRoute::(?:apiResource|resource)\s*\(\s*['\"]([^'\"]+)['\"]", re.I)
+        php_attr_route_pat = re.compile(r"#\[(?:Route|Get|Post|Put|Patch|Delete)\s*(?:\(\s*['\"]([^'\"]+)['\"](?:[^)]*methods:\s*\[([^\]]+)\])?\s*\))?\]", re.I)
+        cake_route_pat = re.compile(r"\$(?:builder|routes)->connect\s*\(\s*['\"]([^'\"]+)['\"]", re.I)
+        cake_resource_pat = re.compile(r"\$(?:builder|routes)->resources\s*\(\s*['\"]([^'\"]+)['\"]", re.I)
+
+        for p in list(p_root.rglob("*.php")) + list(p_root.rglob("*.ctp")):
+            if any(part in skip_dirs for part in p.parts):
+                continue
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace")
+                for m in php_route_pat.finditer(text):
+                    method = m.group(1).upper()
+                    r_path = m.group(2)
+                    endpoints.append({
+                        "method": method,
+                        "path": r_path,
+                        "handler": f"route_{method.lower()}",
+                        "summary": f"{method} {r_path}",
+                        "description": "",
+                        "file": str(p.relative_to(p_root) if p.is_relative_to(p_root) else p),
+                        "line": text[:m.start()].count("\n") + 1,
+                    })
+                for m in php_resource_pat.finditer(text):
+                    res_path = "/" + m.group(1).lstrip("/")
+                    endpoints.append({
+                        "method": "RESOURCE",
+                        "path": res_path,
+                        "handler": "resource_controller",
+                        "summary": f"RESOURCE {res_path}",
+                        "description": "",
+                        "file": str(p.relative_to(p_root) if p.is_relative_to(p_root) else p),
+                        "line": text[:m.start()].count("\n") + 1,
+                    })
+                for m in php_attr_route_pat.finditer(text):
+                    r_path = m.group(1) or "/"
+                    methods_str = m.group(2) or "GET"
+                    for method_raw in methods_str.replace("'", "").replace('"', "").split(","):
+                        method = method_raw.strip().upper() or "GET"
+                        endpoints.append({
+                            "method": method,
+                            "path": r_path,
+                            "handler": f"route_{method.lower()}",
+                            "summary": f"{method} {r_path}",
+                            "description": "",
+                            "file": str(p.relative_to(p_root) if p.is_relative_to(p_root) else p),
+                            "line": text[:m.start()].count("\n") + 1,
+                        })
+                for m in cake_route_pat.finditer(text):
+                    r_path = m.group(1)
+                    endpoints.append({
+                        "method": "ANY",
+                        "path": r_path,
+                        "handler": "cake_action",
+                        "summary": f"CakePHP route {r_path}",
+                        "description": "",
+                        "file": str(p.relative_to(p_root) if p.is_relative_to(p_root) else p),
+                        "line": text[:m.start()].count("\n") + 1,
+                    })
+                for m in cake_resource_pat.finditer(text):
+                    r_path = "/" + m.group(1).lstrip("/")
+                    endpoints.append({
+                        "method": "RESOURCE",
+                        "path": r_path,
+                        "handler": "cake_resource",
+                        "summary": f"CakePHP resource {r_path}",
+                        "description": "",
+                        "file": str(p.relative_to(p_root) if p.is_relative_to(p_root) else p),
+                        "line": text[:m.start()].count("\n") + 1,
+                    })
+            except Exception:
+                continue
+
+        form_pat = re.compile(r"<form\b(?=[^>]*\baction=['\"]([^'\"]+)['\"])(?:[^>]*\bmethod=['\"]([A-Za-z]+)['\"])?", re.I)
+        for p in list(p_root.rglob("*.html")) + list(p_root.rglob("*.htm")):
+            if any(part in skip_dirs for part in p.parts):
+                continue
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace")
+                for m in form_pat.finditer(text):
+                    r_path = m.group(1)
+                    method = (m.group(2) or "GET").upper()
+                    endpoints.append({
+                        "method": method,
+                        "path": r_path,
+                        "handler": "html_form",
+                        "summary": f"HTML form {method} {r_path}",
+                        "description": "",
+                        "file": str(p.relative_to(p_root) if p.is_relative_to(p_root) else p),
+                        "line": text[:m.start()].count("\n") + 1,
+                    })
+            except Exception:
+                continue
+
+        openapi_paths: dict[str, Any] = {}
+        for ep in endpoints:
+            p_val = ep["path"]
+            m_val = ep["method"].lower()
+            if p_val not in openapi_paths:
+                openapi_paths[p_val] = {}
+            openapi_paths[p_val][m_val] = {
+                "summary": ep.get("summary", ""),
+                "description": ep.get("description", ""),
+                "operationId": ep.get("handler", ""),
+                "responses": {"200": {"description": "Success"}},
+            }
+
+        return {
+            "success": True,
+            "openapi": "3.0.0",
+            "info": {"title": p_root.name, "version": "1.0.0"},
+            "total_endpoints": len(endpoints),
+            "paths": openapi_paths,
+            "endpoints": endpoints,
+        }
+
+    def slice_dependency_graph(self, root: str, symbol: str, path: str | None = None, depth: int = 2) -> dict[str, Any]:
+        """Extract a minimal AST dependency slice for a target symbol, saving context tokens."""
+        p_root = Path(root).expanduser().resolve(strict=False)
+        skip_dirs = {".git", ".venv", "venv", "node_modules", "__pycache__"}
+
+        target_file: Path | None = None
+        target_node: ast.AST | None = None
+        file_lines: list[str] = []
+
+        files_to_check: list[Path] = []
+        if path:
+            p = Path(path)
+            if not p.is_absolute():
+                p = p_root / p
+            if p.is_file():
+                files_to_check.append(p)
+        else:
+            for p in p_root.rglob("*.py"):
+                if not any(part in skip_dirs for part in p.parts):
+                    files_to_check.append(p)
+
+        for p in files_to_check:
+            try:
+                content = p.read_text(encoding="utf-8", errors="replace")
+                tree = ast.parse(content, filename=str(p))
+                for node in ast.walk(tree):
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == symbol:
+                        target_file = p
+                        target_node = node
+                        file_lines = content.splitlines()
+                        break
+            except Exception:
+                continue
+            if target_node:
+                break
+
+        if not target_node or not target_file:
+            return {"success": False, "error": f"symbol '{symbol}' not found"}
+
+        referenced_names: set[str] = set()
+        for sub in ast.walk(target_node):
+            if isinstance(sub, ast.Call):
+                if isinstance(sub.func, ast.Name):
+                    referenced_names.add(sub.func.id)
+                elif isinstance(sub.func, ast.Attribute):
+                    referenced_names.add(sub.func.attr)
+
+        snippets: list[str] = []
+        target_code = "\n".join(file_lines[target_node.lineno - 1: getattr(target_node, "end_lineno", target_node.lineno + 10)])
+        snippets.append(f"# === Target Symbol: {symbol} ({target_file.name}:{target_node.lineno}) ===\n{target_code}")
+
+        found_deps: list[str] = []
+        for dep_name in sorted(referenced_names):
+            if dep_name == symbol or len(dep_name) <= 2:
+                continue
+            for p in [target_file] + files_to_check[:10]:
+                try:
+                    c = p.read_text(encoding="utf-8", errors="replace")
+                    t = ast.parse(c, filename=str(p))
+                    for n in ast.walk(t):
+                        if isinstance(n, (ast.FunctionDef, ast.ClassDef)) and n.name == dep_name:
+                            lines = c.splitlines()
+                            dep_code = "\n".join(lines[n.lineno - 1: getattr(n, "end_lineno", n.lineno + 15)])
+                            snippets.append(f"# --- Dependency: {dep_name} ({p.name}:{n.lineno}) ---\n{dep_code}")
+                            found_deps.append(dep_name)
+                            break
+                except Exception:
+                    continue
+                if dep_name in found_deps:
+                    break
+
+        sliced_code = "\n\n".join(snippets)
+        total_original_chars = sum(len(f.read_text(encoding="utf-8", errors="replace")) for f in [target_file])
+        token_savings = max(0.0, round((1.0 - (len(sliced_code) / max(1, total_original_chars))) * 100, 1))
+
+        return {
+            "success": True,
+            "symbol": symbol,
+            "file": str(target_file.relative_to(p_root) if target_file.is_relative_to(p_root) else target_file),
+            "line": target_node.lineno,
+            "dependencies_found": found_deps,
+            "sliced_code": sliced_code,
+            "slice_chars": len(sliced_code),
+            "token_savings_percent": token_savings,
+        }
+
+    def migration_drift(self, root: str, db_path: str | None = None) -> dict[str, Any]:
+        """Detect drift between SQLite physical schema and declared models in source code."""
+        p_root = Path(root).expanduser().resolve(strict=False)
+        db_file: Path | None = None
+        if db_path:
+            p = Path(db_path)
+            db_file = p if p.is_absolute() else (p_root / p)
+        else:
+            for cand in [p_root / "app.db", p_root / "data.db", p_root / ".local-ai-hub" / "agent_state.db"]:
+                if cand.is_file():
+                    db_file = cand
+                    break
+
+        if not db_file or not db_file.is_file():
+            if not db_path:
+                return {
+                    "success": True,
+                    "db_path": None,
+                    "db_tables": [],
+                    "code_models_found": [],
+                    "drift_detected": False,
+                    "in_sync": True,
+                    "missing_tables_in_db": [],
+                    "extra_tables_in_db": [],
+                    "column_drifts": [],
+                    "drift": {},
+                    "status": "in_sync",
+                    "message": "No SQLite database found at default paths",
+                }
+            return {"success": False, "error": f"SQLite database not found at {db_path}"}
+
+        db_tables: dict[str, set[str]] = {}
+        try:
+            con = sqlite3.connect(db_file)
+            tables = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
+            for tbl in tables:
+                cols = {r[1] for r in con.execute(f"PRAGMA table_info({tbl})").fetchall()}
+                db_tables[tbl] = cols
+            con.close()
+        except Exception as exc:
+            return {"success": False, "error": f"failed to inspect SQLite schema: {exc}"}
+
+        code_tables: dict[str, set[str]] = {}
+        skip_dirs = {".git", ".venv", "venv", "node_modules", "__pycache__"}
+        for p in p_root.rglob("*.py"):
+            if any(part in skip_dirs for part in p.parts):
+                continue
+            try:
+                tree = ast.parse(p.read_text(encoding="utf-8", errors="replace"), filename=str(p))
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.ClassDef):
+                        tbl_name = None
+                        cols: set[str] = set()
+                        for item in node.body:
+                            if isinstance(item, ast.Assign):
+                                for target in item.targets:
+                                    if isinstance(target, ast.Name) and target.id == "__tablename__" and isinstance(item.value, ast.Constant):
+                                        tbl_name = str(item.value.value)
+                            elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                                cols.add(item.target.id)
+                        if tbl_name:
+                            code_tables[tbl_name] = cols
+            except Exception:
+                continue
+
+        missing_in_db = [t for t in code_tables if t not in db_tables]
+        extra_in_db = [t for t in db_tables if t not in code_tables and code_tables]
+        column_drifts: list[dict[str, Any]] = []
+        for t in code_tables:
+            if t in db_tables:
+                missing_cols = list(code_tables[t] - db_tables[t])
+                extra_cols = list(db_tables[t] - code_tables[t]) if code_tables[t] else []
+                if missing_cols or extra_cols:
+                    column_drifts.append({
+                        "table": t,
+                        "missing_in_db": missing_cols,
+                        "extra_in_db": extra_cols,
+                    })
+
+        drift_map: dict[str, Any] = {}
+        for cd in column_drifts:
+            drift_map[cd["table"]] = {
+                "missing_in_db": cd["missing_in_db"],
+                "missing_in_code": cd["extra_in_db"],
+                "type_mismatches": {},
+            }
+        for t in missing_in_db:
+            drift_map[t] = {
+                "missing_in_db": list(code_tables.get(t, [])),
+                "missing_in_code": [],
+                "type_mismatches": {},
+            }
+
+        drift_detected = bool(missing_in_db or column_drifts)
+        return {
+            "success": True,
+            "db_path": str(db_file),
+            "db_tables": list(db_tables.keys()),
+            "code_models_found": list(code_tables.keys()),
+            "drift_detected": drift_detected,
+            "in_sync": not drift_detected,
+            "missing_tables_in_db": missing_in_db,
+            "extra_tables_in_db": extra_in_db,
+            "column_drifts": column_drifts,
+            "drift": drift_map,
+            "status": "drift_detected" if drift_detected else "in_sync",
+        }
+
+    def package_audit(self, root: str, lockfile_path: str | None = None) -> dict[str, Any]:
+        """Offline security audit scanning lockfiles for known vulnerabilities."""
+        p_root = Path(root).expanduser().resolve(strict=False)
+        target_lock: Path | None = None
+        if lockfile_path:
+            p = Path(lockfile_path)
+            target_lock = p if p.is_absolute() else (p_root / p)
+        else:
+            candidates = ["poetry.lock", "requirements.txt", "package-lock.json", "composer.lock", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "uv.lock"]
+            for c in candidates:
+                cand = p_root / c
+                if cand.is_file():
+                    target_lock = cand
+                    break
+
+        if not target_lock or not target_lock.is_file():
+            return {"success": False, "error": "no supported lockfile found in root"}
+
+        KNOWN_CVES: list[dict[str, Any]] = [
+            {"package": "requests", "max_version": "2.31.0", "cve": "CVE-2023-32681", "severity": "MEDIUM", "fix": ">=2.31.0"},
+            {"package": "urllib3", "max_version": "2.0.7", "cve": "CVE-2023-45803", "severity": "HIGH", "fix": ">=2.0.7"},
+            {"package": "pyyaml", "max_version": "5.4.0", "cve": "CVE-2020-14343", "severity": "CRITICAL", "fix": ">=5.4"},
+            {"package": "jinja2", "max_version": "3.1.3", "cve": "CVE-2024-22195", "severity": "HIGH", "fix": ">=3.1.3"},
+            {"package": "cryptography", "max_version": "41.0.6", "cve": "CVE-2023-49083", "severity": "HIGH", "fix": ">=41.0.6"},
+            {"package": "lodash", "max_version": "4.17.21", "cve": "CVE-2021-23337", "severity": "HIGH", "fix": ">=4.17.21"},
+            {"package": "jsonwebtoken", "max_version": "9.0.0", "cve": "CVE-2022-23529", "severity": "HIGH", "fix": ">=9.0.0"},
+            {"package": "axios", "max_version": "1.7.4", "cve": "CVE-2024-39338", "severity": "MEDIUM", "fix": ">=1.7.4"},
+            {"package": "guzzlehttp/guzzle", "max_version": "7.4.5", "cve": "CVE-2022-31090", "severity": "HIGH", "fix": ">=7.4.5"},
+            {"package": "laravel/framework", "max_version": "9.1.8", "cve": "CVE-2022-40482", "severity": "HIGH", "fix": ">=9.1.8"},
+        ]
+
+        text = target_lock.read_text(encoding="utf-8", errors="replace")
+        scanned_pkgs: dict[str, str] = {}
+
+        if target_lock.name in {"requirements.txt"}:
+            for line in text.splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "==" in line:
+                    parts = line.split("==")
+                    scanned_pkgs[parts[0].strip().lower()] = parts[1].strip()
+        elif target_lock.name in {"poetry.lock"}:
+            curr_name = ""
+            for line in text.splitlines():
+                line = line.strip()
+                if line.startswith("name = "):
+                    curr_name = line.split("=")[1].strip().strip('"').lower()
+                elif line.startswith("version = ") and curr_name:
+                    scanned_pkgs[curr_name] = line.split("=")[1].strip().strip('"')
+                    curr_name = ""
+        elif target_lock.name in {"package-lock.json"}:
+            try:
+                pkg_data = json.loads(text)
+                deps = pkg_data.get("packages", pkg_data.get("dependencies", {}))
+                for k, v in deps.items():
+                    clean_name = k.replace("node_modules/", "").lower()
+                    if isinstance(v, dict) and "version" in v:
+                        scanned_pkgs[clean_name] = str(v["version"])
+            except Exception:
+                pass
+        elif target_lock.name in {"composer.lock"}:
+            try:
+                comp_data = json.loads(text)
+                for p_item in (comp_data.get("packages", []) or []) + (comp_data.get("packages-dev", []) or []):
+                    if isinstance(p_item, dict) and "name" in p_item and "version" in p_item:
+                        scanned_pkgs[str(p_item["name"]).lower()] = str(p_item["version"]).lstrip("v")
+            except Exception:
+                pass
+
+        vulnerabilities: list[dict[str, Any]] = []
+        for rule in KNOWN_CVES:
+            pkg = rule["package"]
+            if pkg in scanned_pkgs:
+                inst = scanned_pkgs[pkg]
+                def parse_v(v_str: str) -> tuple[int, ...]:
+                    return tuple(int(x) if x.isdigit() else 0 for x in re.findall(r"\d+", v_str)[:3])
+                if parse_v(inst) < parse_v(rule["max_version"]):
+                    vulnerabilities.append({
+                        "package": pkg,
+                        "installed_version": inst,
+                        "vulnerable_below": rule["max_version"],
+                        "cve": rule["cve"],
+                        "severity": rule["severity"],
+                        "recommendation": f"Upgrade {pkg} to {rule['fix']}",
+                    })
+
+        return {
+            "success": True,
+            "lockfile": str(target_lock),
+            "packages_scanned": len(scanned_pkgs),
+            "vulnerabilities_found": len(vulnerabilities),
+            "vulnerabilities": vulnerabilities,
+            "status": "clean" if not vulnerabilities else "vulnerabilities_detected",
+        }
+
+    def structural_search(
+        self,
+        root: str,
+        pattern: str,
+        path: str | None = None,
+        max_results: int = 30,
+    ) -> dict[str, Any]:
+        """Syntax-aware structural code search across Python and multi-language repositories."""
+        canon_root = canonical_root(root)
+        root_path = Path(canon_root)
+        if not root_path.is_dir():
+            return {"success": False, "error": f"invalid root directory: {root}"}
+
+        target_pattern = (pattern or "").strip().lower()
+        if not target_pattern:
+            return {"success": False, "error": "pattern is required"}
+
+        results: list[dict[str, Any]] = []
+        ignore_dirs = {".git", "node_modules", "vendor", "__pycache__", ".venv", "venv", "dist", "build"}
+
+        if path:
+            candidate = root_path / path
+            files_to_scan = [candidate] if candidate.is_file() else []
+        else:
+            files_to_scan = []
+            for cur_root, dirs, filenames in os.walk(root_path):
+                dirs[:] = [d for d in dirs if d not in ignore_dirs and not d.startswith(".")]
+                for f in filenames:
+                    if f.endswith((".py", ".ts", ".js", ".go", ".rs", ".cs")):
+                        files_to_scan.append(Path(cur_root) / f)
+                        if len(files_to_scan) >= 400:
+                            break
+                if len(files_to_scan) >= 400:
+                    break
+
+        for fpath in files_to_scan:
+            if len(results) >= max_results:
+                break
+            try:
+                rel_p = str(fpath.relative_to(root_path)).replace("\\", "/")
+                content = fpath.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+
+            lines = content.splitlines()
+
+            if fpath.suffix == ".py":
+                try:
+                    tree = ast.parse(content, filename=rel_p)
+                    for node in ast.walk(tree):
+                        if len(results) >= max_results:
+                            break
+
+                        if target_pattern in {"bare_except", "unhandled_exception", "missing_error_handling"}:
+                            if isinstance(node, ast.Try):
+                                for handler in node.handlers:
+                                    if handler.type is None:
+                                        snip = lines[handler.lineno - 1].strip() if handler.lineno <= len(lines) else ""
+                                        results.append({
+                                            "file": rel_p,
+                                            "line": handler.lineno,
+                                            "structure": "bare_except",
+                                            "description": "Bare 'except:' catches all exceptions including SystemExit and KeyboardInterrupt",
+                                            "snippet": snip,
+                                        })
+                                    elif isinstance(handler.type, ast.Name) and handler.type.id in {"Exception", "BaseException"}:
+                                        if len(handler.body) == 1 and isinstance(handler.body[0], ast.Pass):
+                                            snip = lines[handler.lineno - 1].strip() if handler.lineno <= len(lines) else ""
+                                            results.append({
+                                                "file": rel_p,
+                                                "line": handler.lineno,
+                                                "structure": "silent_except_pass",
+                                                "description": "Silent 'except Exception: pass' swallows errors without logging",
+                                                "snippet": snip,
+                                            })
+
+                        elif target_pattern in {"unclosed_resource", "open_without_with", "resource_leak"}:
+                            if isinstance(node, ast.Assign):
+                                if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and node.value.func.id == "open":
+                                    snip = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
+                                    results.append({
+                                        "file": rel_p,
+                                        "line": node.lineno,
+                                        "structure": "open_without_with",
+                                        "description": "File opened with direct assignment rather than 'with open(...)' context manager",
+                                        "snippet": snip,
+                                    })
+
+                        elif target_pattern in {"async_without_await", "redundant_async"}:
+                            if isinstance(node, ast.AsyncFunctionDef):
+                                has_await = any(isinstance(child, (ast.Await, ast.AsyncWith, ast.AsyncFor)) for child in ast.walk(node))
+                                if not has_await:
+                                    snip = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
+                                    results.append({
+                                        "file": rel_p,
+                                        "line": node.lineno,
+                                        "structure": "async_without_await",
+                                        "description": f"Async function '{node.name}' contains no await, async with, or async for expressions",
+                                        "snippet": snip,
+                                    })
+
+                        elif target_pattern.startswith("decorator:") or target_pattern.startswith("@"):
+                            dec_target = target_pattern.split(":", 1)[-1].lstrip("@").strip()
+                            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                                for dec in node.decorator_list:
+                                    dec_id = ""
+                                    if isinstance(dec, ast.Name):
+                                        dec_id = dec.id
+                                    elif isinstance(dec, ast.Attribute):
+                                        dec_id = dec.attr
+                                    elif isinstance(dec, ast.Call):
+                                        if isinstance(dec.func, ast.Name):
+                                            dec_id = dec.func.id
+                                        elif isinstance(dec.func, ast.Attribute):
+                                            dec_id = dec.func.attr
+                                    if dec_target.lower() in dec_id.lower():
+                                        snip = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
+                                        results.append({
+                                            "file": rel_p,
+                                            "line": node.lineno,
+                                            "structure": f"decorator:{dec_id}",
+                                            "symbol": node.name,
+                                            "description": f"Function/class '{node.name}' has matching decorator @{dec_id}",
+                                            "snippet": snip,
+                                        })
+
+                        elif target_pattern.startswith("subclass:") or target_pattern.startswith("inherit:"):
+                            sub_target = target_pattern.split(":", 1)[1].strip()
+                            if isinstance(node, ast.ClassDef):
+                                for base in node.bases:
+                                    base_id = ""
+                                    if isinstance(base, ast.Name):
+                                        base_id = base.id
+                                    elif isinstance(base, ast.Attribute):
+                                        base_id = base.attr
+                                    if sub_target.lower() in base_id.lower():
+                                        snip = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
+                                        results.append({
+                                            "file": rel_p,
+                                            "line": node.lineno,
+                                            "structure": f"subclass:{base_id}",
+                                            "symbol": node.name,
+                                            "description": f"Class '{node.name}' inherits from '{base_id}'",
+                                            "snippet": snip,
+                                        })
+
+                        elif target_pattern.startswith("call:"):
+                            fn_target = target_pattern.split(":", 1)[1].strip()
+                            if isinstance(node, ast.Call):
+                                call_id = ""
+                                if isinstance(node.func, ast.Name):
+                                    call_id = node.func.id
+                                elif isinstance(node.func, ast.Attribute):
+                                    call_id = node.func.attr
+                                if fn_target.lower() in call_id.lower():
+                                    snip = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
+                                    results.append({
+                                        "file": rel_p,
+                                        "line": node.lineno,
+                                        "structure": f"call:{call_id}",
+                                        "description": f"Call to '{call_id}'",
+                                        "snippet": snip,
+                                    })
+                except Exception:
+                    pass
+
+            if not results or fpath.suffix != ".py":
+                for idx, line in enumerate(lines, 1):
+                    if len(results) >= max_results:
+                        break
+                    raw_line = line.strip()
+                    if not raw_line or raw_line.startswith(("//", "#", "/*", "*")):
+                        continue
+                    matched = False
+                    desc = ""
+                    struct_type = "text_pattern"
+
+                    # Multi-language JS/TS patterns
+                    if target_pattern in {"unhandled_promise", "catch_missing"} and ".then(" in raw_line and ".catch(" not in raw_line:
+                        matched = True
+                        struct_type = "unhandled_promise"
+                        desc = "Promise .then() chained without .catch() handler"
+                    elif target_pattern in {"empty_catch", "silent_catch"} and (
+                        re.search(r"catch\s*(?:\([^)]*\))?\s*\{\s*\}", raw_line)
+                        or ("catch" in raw_line and "{" in raw_line and idx < len(lines) and lines[idx].strip() == "}")
+                    ):
+                        matched = True
+                        struct_type = "empty_catch"
+                        desc = "Empty catch block swallowing errors silently"
+                    elif target_pattern in {"any_type", "ts_any"} and re.search(r":\s*any\b|\bas\s+any\b", raw_line):
+                        matched = True
+                        struct_type = "any_type"
+                        desc = "TypeScript 'any' type bypasses static type verification"
+                    elif target_pattern in {"react_hook", "hook"} and re.search(r"\buse[A-Z][a-zA-Z0-9_]*\s*\(", raw_line):
+                        matched = True
+                        struct_type = "react_hook"
+                        desc = "React hook invocation"
+
+                    # Go patterns
+                    elif target_pattern in {"goroutine_leak", "goroutine"} and re.search(r"\bgo\s+(?:func|[a-zA-Z0-9_.]+\()", raw_line):
+                        matched = True
+                        struct_type = "goroutine"
+                        desc = "Goroutine spawned without explicit lifecycle management"
+                    elif target_pattern in {"error_ignored", "ignored_err"} and re.search(r"_,\s*err\s*:=|_\s*=\s*[a-zA-Z0-9_.]+\(", raw_line):
+                        matched = True
+                        struct_type = "error_ignored"
+                        desc = "Error return value ignored or discarded with blank identifier"
+
+                    # Rust patterns
+                    elif target_pattern in {"unwrap_call", "unwrap"} and (".unwrap()" in raw_line or ".expect(" in raw_line):
+                        matched = True
+                        struct_type = "unwrap_call"
+                        desc = "Potential panic via unchecked .unwrap() / .expect() call"
+                    elif target_pattern in {"unsafe_block", "unsafe"} and re.search(r"\bunsafe\s*\{", raw_line):
+                        matched = True
+                        struct_type = "unsafe_block"
+                        desc = "Unsafe Rust block bypassing memory safety guarantees"
+                    elif target_pattern in {"todo_macro", "unimplemented"} and re.search(r"\b(?:todo!|unimplemented!)\(", raw_line):
+                        matched = True
+                        struct_type = "todo_macro"
+                        desc = "Unfinished code via todo!() or unimplemented!() macro"
+
+                    # Universal prefix queries: fn:name, class:name, struct:name, interface:name
+                    elif target_pattern.startswith("fn:") or target_pattern.startswith("function:"):
+                        fn_name = target_pattern.split(":", 1)[1].strip().lower()
+                        if re.search(rf"\b(?:def|function|fn|func)\s+{re.escape(fn_name)}\b", raw_line, re.I):
+                            matched = True
+                            struct_type = f"function:{fn_name}"
+                            desc = f"Function declaration matching '{fn_name}'"
+                    elif target_pattern.startswith("class:") or target_pattern.startswith("struct:") or target_pattern.startswith("interface:"):
+                        prefix, ent_name = target_pattern.split(":", 1)
+                        if re.search(rf"\b(?:class|struct|interface|type)\s+{re.escape(ent_name.strip())}\b", raw_line, re.I):
+                            matched = True
+                            struct_type = f"{prefix}:{ent_name.strip()}"
+                            desc = f"{prefix.capitalize()} declaration matching '{ent_name.strip()}'"
+
+                    elif target_pattern in {"sql_injection"} and re.search(r"SELECT\s+.*\+\s*['\"]", raw_line, re.I):
+                        matched = True
+                        struct_type = "sql_injection"
+                        desc = "Potential raw string concatenation in SQL statement"
+                    elif target_pattern in raw_line.lower():
+                        matched = True
+                        desc = f"Pattern match for '{target_pattern}'"
+
+                    if matched:
+                        results.append({
+                            "file": rel_p,
+                            "line": idx,
+                            "structure": struct_type,
+                            "description": desc,
+                            "snippet": raw_line[:120],
+                        })
+
+        return {
+            "success": True,
+            "root": str(root_path),
+            "pattern": pattern,
+            "count": len(results),
+            "matches": results,
+        }
+
+    def context_budget(
+        self,
+        root: str,
+        files: list[str] | None = None,
+        max_tokens: int = 4000,
+    ) -> dict[str, Any]:
+        """Calculates token load per file and recommends surgical slices to fit within context budget."""
+        canon_root = canonical_root(root)
+        root_path = Path(canon_root)
+        if not root_path.is_dir():
+            return {"success": False, "error": f"invalid root directory: {root}"}
+
+        target_files = files or []
+        if not target_files:
+            found: list[str] = []
+            for cur_root, _, filenames in os.walk(root_path):
+                if any(p in cur_root for p in (".git", "node_modules", "__pycache__", ".venv")):
+                    continue
+                for f in filenames:
+                    if f.endswith((".py", ".ts", ".js", ".json", ".md")):
+                        p = Path(cur_root) / f
+                        found.append(str(p.relative_to(root_path)).replace("\\", "/"))
+                        if len(found) >= 15:
+                            break
+                if len(found) >= 15:
+                    break
+            target_files = found
+
+        file_breakdown: list[dict[str, Any]] = []
+        total_chars = 0
+        total_tokens = 0
+        all_compressible_regions: list[dict[str, Any]] = []
+
+        for rel in target_files:
+            fpath = root_path / rel
+            if not fpath.is_file():
+                continue
+            try:
+                content = fpath.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+
+            chars = len(content)
+            tokens = int(chars / 3.8) + 1
+            total_chars += chars
+            total_tokens += tokens
+
+            lines = content.splitlines()
+            compressible: list[dict[str, Any]] = []
+
+            in_docstring = False
+            doc_start = 0
+            for idx, line in enumerate(lines, 1):
+                s = line.strip()
+                if '"""' in s or "'''" in s:
+                    if not in_docstring:
+                        in_docstring = True
+                        doc_start = idx
+                    else:
+                        in_docstring = False
+                        if idx - doc_start > 3:
+                            compressible.append({
+                                "file": rel,
+                                "type": "docstring",
+                                "start_line": doc_start,
+                                "end_line": idx,
+                                "tokens_saved": int((idx - doc_start) * 8),
+                            })
+                elif s.startswith("import ") or s.startswith("from "):
+                    compressible.append({
+                        "file": rel,
+                        "type": "import_block",
+                        "start_line": idx,
+                        "end_line": idx,
+                        "tokens_saved": 5,
+                    })
+
+            all_compressible_regions.extend(compressible[:5])
+
+            file_breakdown.append({
+                "path": rel,
+                "lines": len(lines),
+                "chars": chars,
+                "est_tokens": tokens,
+                "compressible_regions_count": len(compressible),
+            })
+
+        exceeded = total_tokens > max_tokens
+        recommended_slices: list[dict[str, Any]] = []
+        if exceeded and file_breakdown:
+            token_budget_per_file = max(100, int(max_tokens / len(file_breakdown)))
+            for fb in file_breakdown:
+                allowed_lines = min(fb["lines"], int(token_budget_per_file / 6))
+                recommended_slices.append({
+                    "path": fb["path"],
+                    "slice": f"L1-L{allowed_lines}",
+                    "est_slice_tokens": min(fb["est_tokens"], token_budget_per_file),
+                })
+
+        return {
+            "success": True,
+            "root": str(root_path),
+            "max_tokens": max_tokens,
+            "total_files": len(file_breakdown),
+            "total_tokens": total_tokens,
+            "budget_exceeded": exceeded,
+            "file_breakdown": file_breakdown,
+            "compressible_regions": all_compressible_regions[:15],
+            "recommended_slices": recommended_slices,
+            "compression_achievable_ratio": round(min(0.8, 1.0 - (max_tokens / max(1, total_tokens))), 2) if exceeded else 0.0,
+        }
+
+    def reachability_dead_code(
+        self,
+        root: str,
+        entrypoints: list[str] | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Perform whole-repository call-graph reachability analysis from entry points to identify globally unused code."""
+        root_path = Path(root).expanduser().resolve(strict=False)
+        if not root_path.is_dir():
+            return {"success": False, "error": f"Root directory does not exist: {root_path}"}
+
+        ep_candidates = list(entrypoints or [])
+        all_py_files: list[Path] = []
+        for dirpath, dirnames, filenames in os.walk(root_path):
+            dirnames[:] = [d for d in dirnames if not d.startswith((".", "node_modules", "venv", "__pycache__", "build", "dist"))]
+            for fn in filenames:
+                p = Path(dirpath) / fn
+                if p.suffix.lower() == ".py" and not _is_test_file(str(p)):
+                    all_py_files.append(p)
+                    if not entrypoints and fn.lower() in ("main.py", "app.py", "cli.py", "__main__.py", "server.py"):
+                        ep_candidates.append(str(p.relative_to(root_path)).replace("\\", "/"))
+
+        if not ep_candidates and all_py_files:
+            ep_candidates.append(str(all_py_files[0].relative_to(root_path)).replace("\\", "/"))
+
+        defs: dict[str, dict[str, Any]] = {}
+        module_calls: dict[str, set[str]] = {}
+
+        for p in all_py_files:
+            rel = str(p.relative_to(root_path)).replace("\\", "/")
+            try:
+                tree = ast.parse(p.read_text(encoding="utf-8", errors="ignore"))
+            except Exception:
+                continue
+
+            file_calls: set[str] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    name = node.name
+                    if not name.startswith("__"):
+                        defs[name] = {"name": name, "file": rel, "line": node.lineno, "kind": type(node).__name__}
+                elif isinstance(node, ast.Call):
+                    if isinstance(node.func, ast.Name):
+                        file_calls.add(node.func.id)
+                    elif isinstance(node.func, ast.Attribute):
+                        file_calls.add(node.func.attr)
+                elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                    file_calls.add(node.id)
+            module_calls[rel] = file_calls
+
+        reachable: set[str] = set()
+        queue: list[str] = []
+
+        for ep in ep_candidates:
+            queue.extend(module_calls.get(ep, set()))
+
+        visited_nodes: set[str] = set()
+        while queue:
+            sym = queue.pop(0)
+            if sym in visited_nodes:
+                continue
+            visited_nodes.add(sym)
+            if sym in defs:
+                reachable.add(sym)
+                sym_file = defs[sym]["file"]
+                for neighbor in module_calls.get(sym_file, set()):
+                    if neighbor not in visited_nodes and neighbor in defs:
+                        queue.append(neighbor)
+
+        unreachable = [info for name, info in defs.items() if name not in reachable]
+
+        return {
+            "success": True,
+            "root": str(root_path),
+            "entrypoints": ep_candidates,
+            "total_symbols": len(defs),
+            "reachable_symbols_count": len(reachable),
+            "unreachable_symbols": unreachable[:limit],
+            "dead_code_count": len(unreachable),
+        }
+
+    def ast_mutation_test(
+        self,
+        root: str,
+        target_file: str,
+        diff: str | None = None,
+    ) -> dict[str, Any]:
+        """Generate syntax-aware AST mutation candidates to measure regression test coverage and test suite strength."""
+        root_path = Path(root).expanduser().resolve(strict=False)
+        p = (root_path / target_file) if not Path(target_file).is_absolute() else Path(target_file)
+        if not p.is_file():
+            return {"success": False, "error": f"File not found: {p}"}
+
+        try:
+            content = p.read_text(encoding="utf-8", errors="ignore")
+            tree = ast.parse(content)
+        except Exception as exc:
+            return {"success": False, "error": f"AST parse failed: {exc}"}
+
+        mutants: list[dict[str, Any]] = []
+        mutant_id = 1
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Compare):
+                for op in node.ops:
+                    orig_op = type(op).__name__
+                    repl_op = "NotEq" if orig_op == "Eq" else ("Eq" if orig_op == "NotEq" else ("GtE" if orig_op == "Lt" else "Lt"))
+                    mutants.append({
+                        "id": f"MUT_{mutant_id:03d}",
+                        "type": "comparison_boundary",
+                        "line": getattr(node, "lineno", 0),
+                        "original": orig_op,
+                        "mutant": repl_op,
+                        "description": f"Invert {orig_op} comparison to {repl_op} at L{getattr(node, 'lineno', 0)}",
+                    })
+                    mutant_id += 1
+            elif isinstance(node, ast.BinOp):
+                orig_op = type(node.op).__name__
+                if orig_op in ("Add", "Sub"):
+                    repl_op = "Sub" if orig_op == "Add" else "Add"
+                    mutants.append({
+                        "id": f"MUT_{mutant_id:03d}",
+                        "type": "arithmetic_inversion",
+                        "line": getattr(node, "lineno", 0),
+                        "original": orig_op,
+                        "mutant": repl_op,
+                        "description": f"Swap arithmetic {orig_op} to {repl_op} at L{getattr(node, 'lineno', 0)}",
+                    })
+                    mutant_id += 1
+            elif isinstance(node, ast.Constant) and isinstance(node.value, bool):
+                mutants.append({
+                    "id": f"MUT_{mutant_id:03d}",
+                    "type": "boolean_flip",
+                    "line": getattr(node, "lineno", 0),
+                    "original": str(node.value),
+                    "mutant": str(not node.value),
+                    "description": f"Flip boolean constant {node.value} to {not node.value} at L{getattr(node, 'lineno', 0)}",
+                })
+                mutant_id += 1
+
+        return {
+            "success": True,
+            "target_file": str(p.relative_to(root_path) if p.is_relative_to(root_path) else p),
+            "mutants_count": len(mutants),
+            "mutants": mutants[:50],
+            "vulnerability_index": round(min(1.0, len(mutants) / 20.0), 2),
+        }
+
+    def generate_type_stubs(
+        self,
+        root: str,
+        file_path: str,
+    ) -> dict[str, Any]:
+        """Generate clean .pyi or .d.ts type interface stubs from source AST."""
+        root_path = Path(root).expanduser().resolve(strict=False)
+        p = (root_path / file_path) if not Path(file_path).is_absolute() else Path(file_path)
+        if not p.is_file():
+            return {"success": False, "error": f"File not found: {p}"}
+
+        content = p.read_text(encoding="utf-8", errors="ignore")
+        if p.suffix.lower() == ".py":
+            try:
+                tree = ast.parse(content)
+            except Exception as exc:
+                return {"success": False, "error": f"Failed to parse python AST: {exc}"}
+
+            stubs: list[str] = ["from __future__ import annotations", "from typing import Any, Optional, Union, Callable\n"]
+            count = 0
+            for node in tree.body:
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    stubs.append(ast.unparse(node))
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    count += 1
+                    prefix = "async def" if isinstance(node, ast.AsyncFunctionDef) else "def"
+                    args_str = ast.unparse(node.args)
+                    ret_str = f" -> {ast.unparse(node.returns)}" if node.returns else " -> Any"
+                    stubs.append(f"{prefix} {node.name}({args_str}){ret_str}: ...")
+                elif isinstance(node, ast.ClassDef):
+                    count += 1
+                    bases = f"({', '.join(ast.unparse(b) for b in node.bases)})" if node.bases else ""
+                    stubs.append(f"class {node.name}{bases}:")
+                    methods_found = False
+                    for item in node.body:
+                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            methods_found = True
+                            count += 1
+                            prefix = "async def" if isinstance(item, ast.AsyncFunctionDef) else "def"
+                            args_str = ast.unparse(item.args)
+                            ret_str = f" -> {ast.unparse(item.returns)}" if item.returns else " -> Any"
+                            stubs.append(f"    {prefix} {item.name}({args_str}){ret_str}: ...")
+                    if not methods_found:
+                        stubs.append("    ...")
+
+            stub_content = "\n".join(stubs) + "\n"
+            return {
+                "success": True,
+                "file": file_path,
+                "stub_type": "pyi",
+                "symbols_annotated": count,
+                "stub_content": stub_content,
+            }
+        else:
+            lines = content.splitlines()
+            declarations: list[str] = []
+            for line in lines:
+                s = line.strip()
+                if s.startswith(("export function ", "export class ", "export interface ", "export type ")):
+                    declarations.append(s.rstrip("{").strip() + ";")
+            return {
+                "success": True,
+                "file": file_path,
+                "stub_type": "d.ts",
+                "symbols_annotated": len(declarations),
+                "stub_content": "\n".join(declarations) + "\n",
+            }
+
+    def skeletonize_code(
+        self,
+        code: str,
+        target_symbols: list[str] | None = None,
+        keep_imports: bool = True,
+    ) -> dict[str, Any]:
+        """Fold non-target function and method bodies into '...' to radically save prompt tokens while preserving AST outline."""
+        try:
+            tree = ast.parse(code)
+        except Exception:
+            return {"success": True, "skeleton_code": code, "original_chars": len(code), "skeleton_chars": len(code), "savings_ratio": 0.0}
+
+        targets = set(target_symbols or [])
+
+        class _SkeletonTransformer(ast.NodeTransformer):
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+                self.generic_visit(node)
+                if not targets or node.name not in targets:
+                    doc = ast.get_docstring(node)
+                    new_body: list[ast.stmt] = []
+                    if doc:
+                        new_body.append(ast.Expr(value=ast.Constant(value=doc)))
+                    new_body.append(ast.Expr(value=ast.Constant(value=Ellipsis)))
+                    node.body = new_body
+                return node
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
+                self.generic_visit(node)
+                if not targets or node.name not in targets:
+                    doc = ast.get_docstring(node)
+                    new_body: list[ast.stmt] = []
+                    if doc:
+                        new_body.append(ast.Expr(value=ast.Constant(value=doc)))
+                    new_body.append(ast.Expr(value=ast.Constant(value=Ellipsis)))
+                    node.body = new_body
+                return node
+
+        transformer = _SkeletonTransformer()
+        transformed = transformer.visit(tree)
+        ast.fix_missing_locations(transformed)
+
+        try:
+            skeleton = ast.unparse(transformed)
+        except Exception:
+            skeleton = code
+
+        orig_len = len(code)
+        skel_len = len(skeleton)
+        ratio = round((orig_len - skel_len) / max(1, orig_len), 3)
+
+        return {
+            "success": True,
+            "original_chars": orig_len,
+            "skeleton_chars": skel_len,
+            "savings_ratio": max(0.0, ratio),
+            "skeleton_code": skeleton,
+        }
+

@@ -173,7 +173,7 @@ def _windows_npus() -> list[dict[str, Any]]:
         return []
     script = (
         "Get-CimInstance Win32_PnPEntity | "
-        "Where-Object { $_.Name -match 'NPU|AI Boost|Neural Processing' } | "
+        "Where-Object { $_.Name -match '\\b(?:NPU|AI Boost|Neural Processing)\\b' } | "
         "Select-Object Name,Manufacturer,Status | ConvertTo-Json -Compress"
     )
     cp = _run(["powershell", "-NoProfile", "-Command", script], timeout=4.0)

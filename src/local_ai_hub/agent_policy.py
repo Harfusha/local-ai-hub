@@ -119,10 +119,53 @@ class PolicyDecision:
         }
 
 
+import threading
+import time
+from contextlib import closing
+from .sqlite_support import connect_sqlite, retry_busy
+
+
 class PolicyEngine:
     def __init__(self, state_store: Any | None = None) -> None:
         self.state_store = state_store
+        self._lock = threading.RLock()
         self._budgets: dict[str, Budget] = {}
+        self._initialized = False
+        self._init_table()
+
+    def _init_table(self) -> None:
+        if self._initialized or not self.state_store or not getattr(self.state_store, "enabled", False):
+            return
+        with self._lock:
+            if self._initialized or not self.state_store or not getattr(self.state_store, "enabled", False):
+                return
+            if hasattr(self.state_store, "_ensure_schema"):
+                self.state_store._ensure_schema()
+            def _setup() -> None:
+                with closing(connect_sqlite(self.state_store.db_path)) as con:
+                    with con:
+                        con.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS agent_budgets (
+                                task_id TEXT PRIMARY KEY,
+                                max_tokens INTEGER NOT NULL DEFAULT 100000,
+                                used_tokens INTEGER NOT NULL DEFAULT 0,
+                                max_compute_seconds REAL NOT NULL DEFAULT 600.0,
+                                used_compute_seconds REAL NOT NULL DEFAULT 0.0,
+                                max_external_calls INTEGER NOT NULL DEFAULT 50,
+                                used_external_calls INTEGER NOT NULL DEFAULT 0,
+                                updated_at REAL NOT NULL
+                            )
+                            """
+                        )
+                        con.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_agent_budgets_task ON agent_budgets(task_id)"
+                        )
+            try:
+                retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+                self._initialized = True
+            except Exception:
+                pass
 
     def authorize(
         self,
@@ -130,6 +173,16 @@ class PolicyEngine:
         task: TaskState,
         grant: CapabilityGrant | None = None,
     ) -> PolicyDecision:
+        # 1. Check budget expiration
+        if task and task.task_id:
+            budget = self.get_budget(task.task_id)
+            if budget.is_exhausted():
+                return PolicyDecision(
+                    allowed=False,
+                    requires_approval=False,
+                    reason=f"task budget exhausted ({task.task_id}): tokens={budget.used_tokens}/{budget.max_tokens}, time={budget.used_compute_seconds:.1f}/{budget.max_compute_seconds:.1f}s",
+                )
+
         if grant is not None:
             if request.action in grant.denied or request.risk_class.value in grant.denied:
                 return PolicyDecision(
@@ -182,9 +235,57 @@ class PolicyEngine:
         )
 
     def get_budget(self, task_id: str) -> Budget:
+        self._init_table()
+        if self.state_store and getattr(self.state_store, "enabled", False) and getattr(self.state_store, "db_path", None):
+            def _fetch():
+                with closing(connect_sqlite(self.state_store.db_path)) as con:
+                    row = con.execute(
+                        "SELECT task_id, max_tokens, used_tokens, max_compute_seconds, used_compute_seconds, max_external_calls, used_external_calls FROM agent_budgets WHERE task_id = ?",
+                        (task_id,),
+                    ).fetchone()
+                    if row:
+                        return Budget(
+                            task_id=str(row[0]),
+                            max_tokens=int(row[1]),
+                            used_tokens=int(row[2]),
+                            max_compute_seconds=float(row[3]),
+                            used_compute_seconds=float(row[4]),
+                            max_external_calls=int(row[5]),
+                            used_external_calls=int(row[6]),
+                        )
+                    return None
+            try:
+                b = retry_busy(_fetch, retries=3, base_delay_seconds=0.01)
+                if b is not None:
+                    self._budgets[task_id] = b
+                    return b
+            except Exception:
+                pass
+
         if task_id not in self._budgets:
             self._budgets[task_id] = Budget(task_id=task_id)
         return self._budgets[task_id]
+
+    def set_budget(
+        self,
+        task_id: str,
+        max_tokens: int | None = None,
+        max_compute_seconds: float | None = None,
+        max_external_calls: int | None = None,
+    ) -> Budget:
+        curr = self.get_budget(task_id)
+        updated = Budget(
+            task_id=task_id,
+            max_tokens=max_tokens if max_tokens is not None else curr.max_tokens,
+            used_tokens=curr.used_tokens,
+            max_compute_seconds=max_compute_seconds if max_compute_seconds is not None else curr.max_compute_seconds,
+            used_compute_seconds=curr.used_compute_seconds,
+            max_external_calls=max_external_calls if max_external_calls is not None else curr.max_external_calls,
+            used_external_calls=curr.used_external_calls,
+        )
+        self._persist_budget(updated)
+        self._budgets[task_id] = updated
+        return updated
 
     def consume(self, task_id: str, cost: BudgetCost) -> Budget:
         curr = self.get_budget(task_id)
@@ -197,5 +298,40 @@ class PolicyEngine:
             max_external_calls=curr.max_external_calls,
             used_external_calls=curr.used_external_calls + cost.external_calls,
         )
+        self._persist_budget(updated)
         self._budgets[task_id] = updated
         return updated
+
+    def _persist_budget(self, budget: Budget) -> None:
+        if not self.state_store or not getattr(self.state_store, "enabled", False) or not getattr(self.state_store, "db_path", None):
+            return
+        self._init_table()
+        now = time.time()
+        def _save():
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                with con:
+                    con.execute(
+                        """
+                        INSERT INTO agent_budgets (
+                            task_id, max_tokens, used_tokens, max_compute_seconds,
+                            used_compute_seconds, max_external_calls, used_external_calls, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(task_id) DO UPDATE SET
+                            max_tokens = excluded.max_tokens,
+                            used_tokens = excluded.used_tokens,
+                            max_compute_seconds = excluded.max_compute_seconds,
+                            used_compute_seconds = excluded.used_compute_seconds,
+                            max_external_calls = excluded.max_external_calls,
+                            used_external_calls = excluded.used_external_calls,
+                            updated_at = excluded.updated_at
+                        """,
+                        (
+                            budget.task_id, budget.max_tokens, budget.used_tokens,
+                            budget.max_compute_seconds, budget.used_compute_seconds,
+                            budget.max_external_calls, budget.used_external_calls, now,
+                        ),
+                    )
+        try:
+            retry_busy(_save, retries=5, base_delay_seconds=0.01)
+        except Exception:
+            pass

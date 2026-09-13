@@ -497,6 +497,109 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     )
 
 
+TOKEN_ECONOMIZER_SKILL_MD = """---
+name: token-economizer
+description: Enforce strict token and context efficiency. Prevents reading entire files, trims test/command outputs, delegates local microtasks, and leverages grep-ast, repo-map, trim-run, tokcount, repomix, ast-grep, Serena LSP, and Local AI Hub.
+---
+
+# Token Economizer
+
+Enforce context-saving practices across all operations to maximize token efficiency, prevent context degradation, and lower API costs.
+
+## Available Token-Saving Tooling
+
+1. **`tokcount <path|stdin>`**:
+   - Computes exact token count (o200k/Astra, cl100k/Codex) for any file, folder, or pipe.
+   - Example: `tokcount src/` or `git diff | tokcount`
+
+2. **`trim-run [-n 40] <command>` / `cmd | trim-run`**:
+   - Universal terminal wrapper: runs commands, strips ANSI codes, truncates large output dumps to first/last N lines.
+   - Example: `trim-run pytest -q` or `git log | trim-run`
+
+3. **`repo-map [dir] [-n 200]`**:
+   - Generates high-density AST skeleton (classes, methods, signatures) of the whole repo using Tree-sitter / grep-ast without reading file bodies.
+
+4. **`grep-ast <pattern> <file>`**:
+   - AST-aware search: returns matching lines with parent class/function scope instead of dumping the file.
+
+5. **`ast-grep scan --pattern '<pattern>'` (or `sg`)**:
+   - Fast structural AST search across codebase without loading files into context.
+
+6. **`repomix --compress --output <file>`**:
+   - Packs repo with comment stripping, blank line removal, Tree-sitter compression, and token counts.
+
+7. **`files-to-prompt -c <paths...>`**:
+   - Formats selected files into structured LLM XML without shell overhead.
+
+8. **`local_ai_artifact(action="slice")`**:
+   - Fetches exact slice of a file (e.g. lines 120-160) without reading entire file.
+
+9. **`local_ai_command`**:
+   - Bounded command runner with automatic ANSI stripping and failure compression.
+
+10. **`rg` (`ripgrep`)**:
+    - Fast regex code search: always bound matches with `-m <N>` or `--max-columns <N>` to avoid context floods.
+
+11. **`fd` (`fd-find`)**:
+    - Fast file/dir discovery: use `fd <pattern> -d <depth>` instead of wide recursive trees.
+
+12. **`jq <filter>`**:
+    - Stream JSON filter: slice and project only necessary fields from API responses or command outputs (`cmd | jq '...'`).
+
+## Rules of Engagement
+
+### 1. Zero Full-File Dumping
+- **NEVER** use `cat`, `type`, `Get-Content` or unconstrained reads on files larger than 80 lines.
+- Use `repo-map` or `grep-ast` for orientation.
+- Use `rg -m 5` or `fd` for bounded targeted search instead of unconstrained directory scans.
+- Use targeted line ranges (`view_file` with `StartLine`/`EndLine`) or `local_ai_artifact(action="slice")`.
+- Use **Serena** (`find_symbol`, `find_referencing_symbols`) or `ast-grep` before opening files.
+
+### 2. Bounded Command & Test Outputs
+- **NEVER** run verbose build/test commands raw into context.
+- Always wrap terminal commands with `trim-run` or route through `local_ai_command`.
+- Filter large JSON outputs with `jq` to extract only relevant fields before returning to LLM.
+- Use minimal test flags: `pytest -q --tb=short`, `dotnet test --verbosity quiet`.
+- Use compact git commands: `git status -s`, `git diff --stat`, `git log -n 5 --oneline`.
+
+### 3. Surgical Edits (Diffs Over Rewrites)
+- Prefer single-block replacements (`replace_file_content` / targeted patches) over rewriting entire files.
+- Do not recite or parrot existing file contents before or after changes.
+
+### 4. Offload to Local Model (Ollama / Local AI Hub)
+- For microtasks (summarization, lint fixing, boilerplate, second opinion), delegate to local inference:
+  - `local_ai_task(model="qwen2.5-coder:7b", ...)`
+  - Zero cloud tokens consumed.
+
+### 5. Concise Output (Caveman Protocol)
+- Omit conversational filler, decorative preambles, and post-execution summaries of obvious changes.
+- Focus strictly on file links, diff summaries, and failure diagnostics.
+"""
+
+
+def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
+    """Generate the standard TOKEN ECONOMY POLICY block."""
+    fast_model = "qwen2.5-coder:7b"
+    if cfg:
+        try:
+            fs = FeatureSet.from_config(cfg)
+            if fs.fast_model:
+                fast_model = fs.fast_model
+        except Exception:
+            pass
+    return (
+        "<!-- BEGIN TOKEN ECONOMY POLICY -->\n"
+        "- Zero full-file dumping: Never read files >80 lines in their entirety. Use `repo-map` for high-level structure, `grep-ast <pattern> <file>`, targeted line slices, or `local_ai_artifact(action=\"slice\")`.\n"
+        "- Fast code search: Use `rg` (`ripgrep`) with `-m 5` / bounded matches and `fd` for file finding before opening files.\n"
+        "- AST & structural code search: Use `ast-grep` (`sg`), Serena LSP (`find_symbol`, `find_referencing_symbols`), or `local_ai_repo(action=\"code_index\")` before opening files.\n"
+        "- Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.\n"
+        "- Bounded command outputs: Filter test and build output (`trim-run <cmd>`, `pytest -q --tb=short`, `dotnet test --verbosity quiet`, `git log | trim-run`, `jq` for JSON) or route through `local_ai_command`.\n"
+        "- Surgical edits: Prefer targeted block replacements over rewriting entire files.\n"
+        f"- Local model delegation: Route routine microtasks, reviews, and second opinions to local models via `local_ai_task(model=\"{fast_model}\")`.\n"
+        "<!-- END TOKEN ECONOMY POLICY -->"
+    )
+
+
 def generate_mcp_configs(
     cfg: dict[str, Any],
     install_dir: Path,
@@ -619,7 +722,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "type": "object",
                 "required": ["action"],
                 "properties": {
-                    "action": {"type": "string", "enum": ["run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix"]},
+                    "action": {"type": "string", "enum": fs.supported_command_actions()},
                     "command": {"type": "string", "default": ""},
                     "root": {"type": "string", "default": "."},
                     "task_id": {"type": "string", "default": ""},
@@ -733,12 +836,22 @@ def write_all_generated(
         ref_path.write_text(ref_content, encoding="utf-8")
         results["skill"].append(str(ref_path))
 
+    tok_skill_dir = target_root / "skills" / "token-economizer"
+    tok_skill_dir.mkdir(parents=True, exist_ok=True)
+    tok_skill_path = tok_skill_dir / "SKILL.md"
+    tok_skill_path.write_text(TOKEN_ECONOMIZER_SKILL_MD, encoding="utf-8")
+    results["skill"].append(str(tok_skill_path))
+
     # 2. Generated agent policy
     gen_dir = target_root / "generated"
     gen_dir.mkdir(parents=True, exist_ok=True)
     policy_path = gen_dir / "agent-policy.md"
     policy_path.write_text(generate_global_policy(cfg) + "\n", encoding="utf-8")
     results["instructions"].append(str(policy_path))
+
+    tok_policy_path = gen_dir / "token-economy-policy.md"
+    tok_policy_path.write_text(generate_token_economy_policy(cfg) + "\n", encoding="utf-8")
+    results["instructions"].append(str(tok_policy_path))
 
     # 3. Generated MCP manifests
     generic_mcp = generate_mcp_configs(cfg, target_root, python_bin, serena, codegraph, "generic")

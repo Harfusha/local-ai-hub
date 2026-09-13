@@ -20,7 +20,6 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .config import load_config
-from .process_utils import pid_alive
 
 
 def _live_start_lock(path: Path, stale_seconds: float) -> bool:
@@ -55,18 +54,32 @@ class HubClient:
         self.start_lock_stale = max(self.startup_wait, float(client_cfg.get("start_lock_stale_seconds", 20.0)))
         self.max_request_timeout = max(5.0, float(client_cfg.get("max_request_timeout_seconds", 900.0)))
         self._transport_local = threading.local()
+        self._connections_lock = threading.Lock()
+        self._connections: dict[int, http.client.HTTPConnection] = {}
         self._flight_lock = threading.RLock()
         self._flights: dict[str, dict[str, Any]] = {}
 
     def _drop_connection(self) -> None:
         conn = getattr(self._transport_local, "connection", None)
         self._transport_local.connection = None
+        with self._connections_lock:
+            if conn is not None and self._connections.get(threading.get_ident()) is conn:
+                self._connections.pop(threading.get_ident(), None)
         if conn is not None:
             try: conn.close()
             except Exception: pass
 
     def close(self) -> None:
-        self._drop_connection()
+        current = getattr(self._transport_local, "connection", None)
+        self._transport_local.connection = None
+        with self._connections_lock:
+            connections = list(self._connections.values())
+            self._connections.clear()
+        if current is not None and current not in connections:
+            connections.append(current)
+        for conn in connections:
+            try: conn.close()
+            except Exception: pass
 
     def __del__(self) -> None:
         try: self.close()
@@ -77,11 +90,21 @@ class HubClient:
         if conn is None:
             conn = http.client.HTTPConnection(self._http_host, self._http_port, timeout=timeout)
             self._transport_local.connection = conn
+            with self._connections_lock:
+                previous = self._connections.get(threading.get_ident())
+                self._connections[threading.get_ident()] = conn
+            if previous is not None and previous is not conn:
+                try: previous.close()
+                except Exception: pass
         elif getattr(conn, "sock", None) is not None:
             conn.sock.settimeout(timeout)
         return conn
 
     def _pooled_open(self, method: str, path: str, body: bytes | None, headers: dict[str, str], timeout: float) -> bytes:
+        is_reused = False
+        conn = getattr(self._transport_local, "connection", None)
+        if conn is not None and getattr(conn, "sock", None) is not None:
+            is_reused = True
         try:
             conn = self._connection(timeout)
             conn.request(method, path, body=body, headers=headers)
@@ -89,7 +112,18 @@ class HubClient:
             raw = response.read()
         except (OSError, http.client.HTTPException):
             self._drop_connection()
-            raise
+            if is_reused:
+                # Stale pooled keep-alive socket was closed by server idle timeout; retry once on fresh connection.
+                try:
+                    conn = self._connection(timeout)
+                    conn.request(method, path, body=body, headers=headers)
+                    response = conn.getresponse()
+                    raw = response.read()
+                except (OSError, http.client.HTTPException):
+                    self._drop_connection()
+                    raise
+            else:
+                raise
         if bool(getattr(response, "will_close", False)):
             self._drop_connection()
         if int(response.status) >= 400:
@@ -369,7 +403,7 @@ class HubClient:
                 and not (
                     p == "/api/agent-state/context"
                     or (p == "/api/agent-state/tasks" and isinstance(payload, dict) and payload.get("action") in {"get", "list", "count"})
-                    or (p == "/api/agent-state/memory" and isinstance(payload, dict) and payload.get("action") in {"get", "find"})
+                    or (p == "/api/agent-state/memory" and isinstance(payload, dict) and payload.get("action") in {"get", "find", "relation_find", "relation_traverse"})
                     or (p == "/api/agent-state/blackboard" and isinstance(payload, dict) and payload.get("action") in {"get", "list"})
                     or (p == "/api/agent-state/incidents" and isinstance(payload, dict) and payload.get("action") in {"find", "decision"})
                     or (p == "/api/agent-state/verification" and isinstance(payload, dict) and payload.get("action") in {"completion"})
@@ -408,7 +442,11 @@ class HubClient:
             mem_action = act.replace("memory_", "")
             payload = {"action": mem_action, **kwargs}
             return self.post("/api/agent-state/memory", payload)
+        if act.startswith("relation_"):
+            payload = {"action": act, **kwargs}
+            return self.post("/api/agent-state/memory", payload)
         if act == "incident_decision":
+
             return self.post("/api/agent-state/incidents", {
                 "action": "decision",
                 "fingerprint": kwargs.get("fingerprint") or {},
@@ -463,11 +501,45 @@ class HubClient:
                 "remote_sections": kwargs.get("remote_sections") or kwargs.get("sections") or {},
                 "clock": kwargs.get("clock"),
             }
+            if kwargs.get("expected_version") is not None:
+                payload["expected_version"] = kwargs["expected_version"]
             return self.post("/api/agent-state/blackboard", payload)
         if act == "release":
             return self.post("/api/leases/release", {"lease_id": kwargs.get("lease_id", "")})
         if act == "leases":
             return self.get(f"/api/leases?root={quote(str(kwargs.get('root', '')))}")
+        if act in {"worktree_lease", "worktree_claim"}:
+            return self.post("/api/coord/worktree_lease", {
+                "root": kwargs.get("root", "."),
+                "branch": kwargs.get("branch") or kwargs.get("key") or kwargs.get("task_id"),
+            })
+        if act in {"worktree_release"}:
+            return self.post("/api/coord/worktree_release", {
+                "root": kwargs.get("root", "."),
+                "worktree_path": kwargs.get("worktree_path") or kwargs.get("value") or kwargs.get("lease_id") or "",
+                "delete_branch": kwargs.get("delete_branch", True),
+                "branch": kwargs.get("branch") or kwargs.get("key") or kwargs.get("task_id"),
+            })
+        if act == "pubsub_publish":
+            return self.post("/api/coord/pubsub_publish", {
+                "root": kwargs.get("root", "."),
+                "topic": kwargs.get("topic") or kwargs.get("key", "default"),
+                "message": kwargs.get("message") or kwargs.get("value", ""),
+                "publisher": kwargs.get("publisher") or kwargs.get("approver", "agent"),
+            })
+        if act == "pubsub_poll":
+            return self.post("/api/coord/pubsub_poll", {
+                "root": kwargs.get("root", "."),
+                "topic": kwargs.get("topic") or kwargs.get("key", "default"),
+                "since_timestamp": float(kwargs.get("since_timestamp", 0.0)),
+                "limit": int(kwargs.get("limit", 50)),
+            })
+        if act == "simulate_merge":
+            return self.post("/api/coord/simulate_merge", {
+                "root": kwargs.get("root", "."),
+                "source_branch": kwargs.get("source_branch") or kwargs.get("key") or kwargs.get("branch", ""),
+                "target_branch": kwargs.get("target_branch") or kwargs.get("target_scope", "HEAD"),
+            })
         return {"success": False, "error": f"unknown coord action '{action}'"}
 
     def context_compile(self, task_id: str, token_budget: int = 4000, changed_paths: list[str] | None = None) -> dict[str, Any]:
@@ -625,3 +697,60 @@ class HubClient:
                     cur_event = line[len("event:"):].strip()
                 elif line.startswith("data:"):
                     cur_data.append(line[len("data:"):].strip())
+
+    def circular_dependencies(self, root: str = ".", language: str = "python") -> dict[str, Any]:
+        return self.post("/api/repo/circular_dependencies", {"root": root, "language": language})
+
+    def generate_types(self, root: str = ".", file: str = "", write_stub: bool = False) -> dict[str, Any]:
+        return self.post("/api/repo/generate_types", {"root": root, "file": file, "write_stub": write_stub})
+
+    def complexity(self, root: str = ".", path: str | None = None, max_results: int = 20) -> dict[str, Any]:
+        return self.post("/api/repo/complexity", {"root": root, "path": path, "max_results": max_results})
+
+    def api_spec(self, root: str = ".", framework: str | None = None) -> dict[str, Any]:
+        return self.post("/api/repo/api_spec", {"root": root, "framework": framework})
+
+    def dependency_slice(self, root: str = ".", symbol: str = "", path: str | None = None, depth: int = 2) -> dict[str, Any]:
+        return self.post("/api/repo/dependency_slice", {"root": root, "symbol": symbol, "path": path, "depth": depth})
+
+    def migration_drift(self, root: str = ".", db_path: str | None = None) -> dict[str, Any]:
+        return self.post("/api/repo/migration_drift", {"root": root, "db_path": db_path})
+
+    def package_audit(self, root: str = ".", lockfile_path: str | None = None) -> dict[str, Any]:
+        return self.post("/api/repo/package_audit", {"root": root, "lockfile_path": lockfile_path})
+
+    def diff_hunk_stage(self, cwd: str = ".", patch: str = "") -> dict[str, Any]:
+        return self.post("/api/command/diff_hunk_stage", {"cwd": cwd, "root": cwd, "patch": patch})
+
+    def flaky_detect(self, cwd: str = ".", command: str = "", runs: int = 5, timeout: int = 30) -> dict[str, Any]:
+        return self.post("/api/command/flaky_detect", {"cwd": cwd, "root": cwd, "command": command, "runs": runs, "timeout": timeout})
+
+    def webhook_replay(self, url: str = "", payload: dict[str, Any] | str = "", secret: str = "", signature_header: str = "X-Hub-Signature-256") -> dict[str, Any]:
+        return self.post("/api/command/webhook_replay", {"url": url, "payload": payload, "secret": secret, "signature_header": signature_header})
+
+    def eval_drift(self, suite_name: str = "default") -> dict[str, Any]:
+        return self.post("/api/task/eval_drift", {"suite_name": suite_name})
+
+    def git_diff(self, root: str = ".", path: str | None = None, staged: bool = False, max_lines: int = 1000) -> dict[str, Any]:
+        return self.post("/api/git/diff", {"root": root, "path": path, "staged": staged, "max_lines": max_lines})
+
+    def git_history_search(self, root: str = ".", query: str = "", max_commits: int = 20) -> dict[str, Any]:
+        return self.post("/api/git/history_search", {"root": root, "query": query, "max_commits": max_commits})
+
+    def hotspots(self, root: str = ".", days: int = 30, limit: int = 20) -> dict[str, Any]:
+        return self.post("/api/repo/hotspots", {"root": root, "days": days, "limit": limit})
+
+    def generate_tests_for_diff(self, root: str = ".", diff: str | None = None, path: str | None = None) -> dict[str, Any]:
+        return self.post("/api/repo/generate_tests_for_diff", {"root": root, "diff": diff, "path": path})
+
+    def cross_repo_contract(self, backend_root: str = ".", frontend_root: str = ".") -> dict[str, Any]:
+        return self.post("/api/repo/cross_repo_contract", {"backend_root": backend_root, "frontend_root": frontend_root})
+
+    def mock_server(self, action: str = "status", root: str = ".", spec_path: str | None = None, port: int = 11440) -> dict[str, Any]:
+        return self.post("/api/command/mock_server", {"action": action, "root": root, "spec_path": spec_path, "port": port})
+
+    def ingest_diagram(self, workspace: str = "default", image_path: str = "", caption: str = "", metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self.post("/api/rag/ingest_diagram", {"workspace": workspace, "image_path": image_path, "caption": caption, "metadata": metadata})
+
+    def curate_training_dataset(self, output_path: str = "training_dataset.jsonl", min_receipts: int = 1, format: str = "jsonl") -> dict[str, Any]:
+        return self.post("/api/agent-state/tasks", {"action": "curate_dataset", "output_path": output_path, "min_receipts": min_receipts, "format": format})

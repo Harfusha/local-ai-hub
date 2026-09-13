@@ -42,6 +42,14 @@ def test_version_and_disconnect_regressions(tmp_path: Path):
     assert _is_client_disconnect(BrokenPipeError()) is True
     assert _is_client_disconnect(ConnectionResetError()) is True
     assert _is_client_disconnect(ConnectionAbortedError()) is True
+    err_10038 = OSError(10038, "An operation was attempted on something that is not a socket")
+    setattr(err_10038, "winerror", 10038)
+    assert _is_client_disconnect(err_10038) is True
+    err_10058 = OSError(10058, "Cannot send after socket shutdown")
+    setattr(err_10058, "winerror", 10058)
+    assert _is_client_disconnect(err_10058) is True
+    assert _is_client_disconnect(OSError("WinError 10054: connection reset")) is True
+    assert _is_client_disconnect(ValueError("not socket error")) is False
     p = tmp_path / "config.toml"
     p.write_text(f'[server]\nstate_dir="{(tmp_path / "state").as_posix()}"\n[hardware]\nprofile="cpu"\n', encoding="utf-8")
     cfg = load_config(str(p))
@@ -146,3 +154,23 @@ def test_hybrid_context_missing_root_is_explicitly_degraded(tmp_path: Path):
     assert out["stale_root"] is True
     assert out["degraded"] is True
     assert out["error_type"] == "ValueError"
+
+
+def test_release_check_allow_installed(tmp_path: Path):
+    from tools.release_check import _iter_release_hygiene_violations
+
+    (tmp_path / ".venv" / "Lib").mkdir(parents=True)
+    (tmp_path / ".venv" / "Lib" / "site.py").write_text("# dummy", encoding="utf-8")
+    (tmp_path / "tool-envs" / "serena").mkdir(parents=True)
+    (tmp_path / "tool-envs" / "serena" / "tool.py").write_text("# dummy", encoding="utf-8")
+    (tmp_path / "state" / "logs").mkdir(parents=True)
+    (tmp_path / "state" / "logs" / "hub.log").write_text("log", encoding="utf-8")
+    (tmp_path / "config.toml").write_text("dummy", encoding="utf-8")
+    (tmp_path / "generated").mkdir()
+    (tmp_path / "generated" / "mcp.json").write_text("{}", encoding="utf-8")
+
+    violations_strict = list(_iter_release_hygiene_violations(tmp_path, post_test=True, allow_installed=False))
+    assert len(violations_strict) > 0
+
+    violations_installed = list(_iter_release_hygiene_violations(tmp_path, allow_installed=True))
+    assert len(violations_installed) == 0

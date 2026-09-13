@@ -162,26 +162,16 @@ def _scan(value: Any, signals: SavingsSignals, *, depth: int = 0, seen: set[int]
         signals.add_output("response_compaction", saving.get("compact_output_tokens_avoided_est", 0))
         signals.add_local("cache_or_local_reuse", saving.get("local_compute_tokens_avoided_est", 0))
 
-    original = _nonneg_int(value.get("original_estimated_tokens"))
-    packed = _nonneg_int(value.get("estimated_tokens"))
-    if original and original > packed:
-        # `original` is the counterfactual source/context volume. `packed` is part
-        # of the actual tool response and is charged at the MCP boundary, so using
-        # (original-packed) here would subtract the visible response twice.
-        signals.add_input("context_compaction", original)
-    routed_input = _nonneg_int(value.get("input_tokens_est"))
-    if routed_input and routed_input > packed:
-        signals.add_input("deterministic_routing", routed_input)
+    # Structural/counterfactual sizes describe work the local engine considered;
+    # they do not prove that a cloud agent would have received that full payload.
+    # In particular, a full git diff may be millions of tokens while the agent only
+    # sees a bounded RG-like projection. Only explicit `token_saving` or private
+    # measured metadata may claim cloud avoidance.
 
-    original_diff = _nonneg_int(value.get("original_diff_tokens"))
-    local_diff = _nonneg_int(value.get("local_diff_tokens"))
-    if original_diff and original_diff > local_diff:
-        signals.add_input("diff_compaction", original_diff)
-
-    raw = _nonneg_int(value.get("raw_tokens"))
-    outline = _nonneg_int(value.get("outline_tokens"))
-    if raw and raw > outline:
-        signals.add_input("deterministic_outline", raw)
+    # `raw_tokens`/`outline_tokens` are useful diagnostics, but a deterministic
+    # result does not prove that a cloud agent would have read the raw file. The
+    # agent may have used RG or another narrow tool instead, so do not monetize
+    # this counterfactual unless the producer supplies explicit private evidence.
 
     # Explicit private metadata lets deterministic/retrieval layers report a measured
     # baseline without exposing accounting chatter to the agent.
@@ -303,11 +293,19 @@ def finalize_tool_accounting(
     # but costs 120 protocol tokens shows -120, not an artificial 0.
     net_delta = gross - protocol
     schema_adjusted_delta = net_delta - schema
+    gross_in = _nonneg_int(measured.get("gross_input_tokens_avoided_est"))
+    gross_out = _nonneg_int(measured.get("gross_output_tokens_avoided_est"))
+    est_in_usd = round((gross_in / 1_000_000.0) * 3.0, 4)
+    est_out_usd = round((gross_out / 1_000_000.0) * 15.0, 4)
+    gross_usd = round(est_in_usd + est_out_usd, 4)
+    protocol_usd = round(((request_tokens / 1_000_000.0) * 3.0) + ((response_tokens / 1_000_000.0) * 15.0), 4)
+    net_usd = round(gross_usd - protocol_usd, 4)
+
     return {
         "tool": str(tool_name)[:80],
         "gross_cloud_tokens_avoided_est": gross,
-        "gross_input_tokens_avoided_est": _nonneg_int(measured.get("gross_input_tokens_avoided_est")),
-        "gross_output_tokens_avoided_est": _nonneg_int(measured.get("gross_output_tokens_avoided_est")),
+        "gross_input_tokens_avoided_est": gross_in,
+        "gross_output_tokens_avoided_est": gross_out,
         "input_savings_source": str(measured.get("input_savings_source", ""))[:64],
         "output_savings_source": str(measured.get("output_savings_source", ""))[:64],
         "agent_tool_request_tokens_est": request_tokens,
@@ -318,6 +316,93 @@ def finalize_tool_accounting(
         "cloud_token_overhead_est": max(0, -net_delta),
         "net_after_schema_token_delta_est": schema_adjusted_delta,
         "schema_adjusted_overhead_est": max(0, -schema_adjusted_delta),
+        "net_savings_usd": net_usd,
+        "estimated_savings_usd": max(0.0, net_usd),
+        "estimated_input_savings_usd": est_in_usd,
+        "estimated_output_savings_usd": est_out_usd,
         "local_compute_tokens_avoided_est": _nonneg_int(measured.get("local_compute_tokens_avoided_est")),
         "savings_breakdown": measured.get("savings_breakdown", {}) if isinstance(measured.get("savings_breakdown"), dict) else {},
     }
+
+
+class TenantQuotaEnforcer:
+    """Enforces tenant token and duration quotas over a rolling sliding window."""
+
+    def __init__(self) -> None:
+        import threading
+        self._quotas: dict[str, dict[str, Any]] = {}
+        self._usage: dict[str, list[tuple[float, int, float]]] = {}
+        self._lock = threading.Lock()
+
+    def set_quota(
+        self,
+        tenant: str,
+        max_tokens: int | None = None,
+        max_duration_ms: float | None = None,
+        window_seconds: float = 3600.0,
+    ) -> dict[str, Any]:
+        with self._lock:
+            self._quotas[tenant] = {
+                "max_tokens": max_tokens,
+                "max_duration_ms": max_duration_ms,
+                "window_seconds": max(1.0, float(window_seconds)),
+            }
+            return {"success": True, "tenant": tenant, **self._quotas[tenant]}
+
+    def record_usage(self, tenant: str, tokens: int = 0, duration_ms: float = 0.0) -> dict[str, Any]:
+        import time
+        now = time.time()
+        with self._lock:
+            self._usage.setdefault(tenant, []).append((now, max(0, int(tokens)), max(0.0, float(duration_ms))))
+            return self._check_unlocked(tenant, now)
+
+    def check_quota(self, tenant: str) -> dict[str, Any]:
+        import time
+        now = time.time()
+        with self._lock:
+            return self._check_unlocked(tenant, now)
+
+    def _check_unlocked(self, tenant: str, now: float) -> dict[str, Any]:
+        quota = self._quotas.get(tenant)
+        if not quota:
+            return {
+                "allowed": True,
+                "tenant": tenant,
+                "quota_configured": False,
+                "exceeded": False,
+            }
+
+        window = quota["window_seconds"]
+        cutoff = now - window
+
+        raw_items = self._usage.get(tenant, [])
+        valid_items = [item for item in raw_items if item[0] >= cutoff]
+        self._usage[tenant] = valid_items
+
+        total_tokens = sum(item[1] for item in valid_items)
+        total_duration = sum(item[2] for item in valid_items)
+
+        max_tokens = quota.get("max_tokens")
+        max_duration = quota.get("max_duration_ms")
+
+        token_exceeded = bool(max_tokens is not None and total_tokens > max_tokens)
+        duration_exceeded = bool(max_duration is not None and total_duration > max_duration)
+        exceeded = token_exceeded or duration_exceeded
+
+        return {
+            "allowed": not exceeded,
+            "tenant": tenant,
+            "quota_configured": True,
+            "exceeded": exceeded,
+            "tokens_used": total_tokens,
+            "max_tokens": max_tokens,
+            "token_exceeded": token_exceeded,
+            "duration_ms_used": round(total_duration, 1),
+            "max_duration_ms": max_duration,
+            "duration_exceeded": duration_exceeded,
+            "window_seconds": window,
+        }
+
+
+GLOBAL_QUOTA_ENFORCER = TenantQuotaEnforcer()
+

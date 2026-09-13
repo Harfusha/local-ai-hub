@@ -90,6 +90,20 @@ class AgentEvent:
             seq=seq,
         )
 
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> AgentEvent:
+        return cls(
+            event_id=str(data.get("event_id") or f"evt_{uuid.uuid4().hex[:16]}"),
+            stream_id=str(data.get("stream_id", "")),
+            kind=str(data.get("kind", "")),
+            payload=dict(data.get("payload") or {}),
+            idempotency_key=str(data.get("idempotency_key") or f"idemp_{uuid.uuid4().hex[:12]}"),
+            correlation_id=str(data.get("correlation_id", "")),
+            actor=str(data.get("actor", "agent")),
+            created_at=float(data.get("created_at") or time.time()),
+            seq=int(data["seq"]) if data.get("seq") is not None else None,
+        )
+
 
 @dataclass(frozen=True)
 class AppendResult:
@@ -413,3 +427,164 @@ class AgentStateStore:
                 con.close()
 
         return retry_busy(_do_cleanup, retries=5, base_delay_seconds=0.02)
+
+    def export_delta(self, stream_id: str = "", after_seq: int = 0, limit: int = 1000) -> dict[str, Any]:
+        if not self.enabled or not self.db_path.exists():
+            return {"success": True, "events": [], "count": 0}
+        self._ensure_schema()
+        con = connect_sqlite(self.db_path)
+        try:
+            if stream_id:
+                cur = con.execute(
+                    """
+                    SELECT stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at
+                    FROM agent_events
+                    WHERE stream_id = ? AND seq > ?
+                    ORDER BY seq ASC LIMIT ?
+                    """,
+                    (stream_id, int(after_seq), max(1, int(limit))),
+                )
+            else:
+                cur = con.execute(
+                    """
+                    SELECT stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at
+                    FROM agent_events
+                    WHERE seq > ?
+                    ORDER BY seq ASC LIMIT ?
+                    """,
+                    (int(after_seq), max(1, int(limit))),
+                )
+            rows = cur.fetchall()
+            evs = [AgentEvent.from_row(row).to_dict() for row in rows]
+            return {"success": True, "events": evs, "count": len(evs)}
+        finally:
+            con.close()
+
+    def import_delta(self, events: list[dict[str, Any]]) -> dict[str, Any]:
+        if not self.enabled:
+            return {"success": False, "error": "agent state store disabled"}
+        imported = 0
+        duplicates = 0
+        for ev_data in events:
+            try:
+                ev = AgentEvent.from_dict(ev_data)
+                res = self.append(ev)
+                if res.duplicate:
+                    duplicates += 1
+                elif res.seq > 0:
+                    imported += 1
+            except Exception:
+                continue
+        return {"success": True, "imported_count": imported, "duplicate_count": duplicates}
+
+
+class SwarmPubSub:
+    """Lightweight in-memory and SQLite-backed pubsub topic bus for swarm agent workers."""
+
+    _instance: SwarmPubSub | None = None
+    _lock = threading.Lock()
+
+    def __init__(self, state_store: AgentStateStore | None = None, max_age_seconds: float = 3600.0):
+        self.state_store = state_store
+        self.max_age_seconds = float(max_age_seconds)
+        self._topics: dict[str, list[dict[str, Any]]] = {}
+        self._subscribers: dict[str, dict[str, queue.Queue[dict[str, Any]]]] = {}
+        self._mu = threading.Lock()
+
+    @classmethod
+    def get_default(cls, state_store: AgentStateStore | None = None) -> SwarmPubSub:
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = cls(state_store)
+            elif state_store is not None and cls._instance.state_store is None:
+                cls._instance.state_store = state_store
+            return cls._instance
+
+    def subscribe(self, topic: str, maxsize: int = 100) -> tuple[str, queue.Queue[dict[str, Any]]]:
+        """Register a bounded listener queue for a topic."""
+        clean_topic = topic.strip().lower()
+        sub_id = f"sub_{uuid.uuid4().hex[:10]}"
+        q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=max(10, min(int(maxsize), 1000)))
+        with self._mu:
+            if clean_topic not in self._subscribers:
+                self._subscribers[clean_topic] = {}
+            self._subscribers[clean_topic][sub_id] = q
+        return sub_id, q
+
+    def unsubscribe(self, topic: str, sub_id: str) -> bool:
+        """Unregister a listener queue from a topic."""
+        clean_topic = topic.strip().lower()
+        with self._mu:
+            subs = self._subscribers.get(clean_topic, {})
+            if sub_id in subs:
+                del subs[sub_id]
+                return True
+        return False
+
+    def _prune_expired_locked(self, clean_topic: str, now: float) -> None:
+        cutoff = now - self.max_age_seconds
+        msgs = self._topics.get(clean_topic, [])
+        if msgs and msgs[0]["timestamp"] < cutoff:
+            self._topics[clean_topic] = [m for m in msgs if m["timestamp"] >= cutoff]
+
+    def publish(self, topic: str, message: dict[str, Any] | str, sender: str = "agent") -> dict[str, Any]:
+        """Publish a message to an ephemeral topic channel with memory bounds and TTL pruning."""
+        clean_topic = topic.strip().lower()
+        now = time.time()
+        msg_payload = message if isinstance(message, dict) else {"text": str(message)}
+        event = {
+            "id": f"pub_{uuid.uuid4().hex[:12]}",
+            "topic": clean_topic,
+            "sender": sender,
+            "timestamp": now,
+            "payload": msg_payload,
+        }
+        with self._mu:
+            if clean_topic not in self._topics:
+                self._topics[clean_topic] = []
+            self._topics[clean_topic].append(event)
+            if len(self._topics[clean_topic]) > 200:
+                self._topics[clean_topic] = self._topics[clean_topic][-200:]
+            self._prune_expired_locked(clean_topic, now)
+
+            # Fan out to bounded subscriber queues without leaking
+            for sub_id, q in list(self._subscribers.get(clean_topic, {}).items()):
+                try:
+                    q.put_nowait(event)
+                except queue.Full:
+                    try:
+                        q.get_nowait()
+                        q.put_nowait(event)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+        if self.state_store and self.state_store.enabled:
+            try:
+                self.state_store.append_event(
+                    AgentEvent.create(
+                        stream_id=f"pubsub:{clean_topic}",
+                        kind="pubsub_message",
+                        payload={"sender": sender, "message": msg_payload},
+                        actor=sender,
+                    )
+                )
+            except Exception:
+                pass
+
+        return {"success": True, "topic": clean_topic, "message_id": event["id"], "timestamp": now}
+
+    def poll(self, topic: str, since_timestamp: float = 0.0, limit: int = 50) -> dict[str, Any]:
+        """Poll messages from a topic published after since_timestamp."""
+        clean_topic = topic.strip().lower()
+        now = time.time()
+        with self._mu:
+            self._prune_expired_locked(clean_topic, now)
+            msgs = [m for m in self._topics.get(clean_topic, []) if m["timestamp"] > since_timestamp]
+        return {
+            "success": True,
+            "topic": clean_topic,
+            "count": len(msgs[:limit]),
+            "messages": msgs[:limit],
+        }

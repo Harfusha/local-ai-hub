@@ -8,6 +8,8 @@ state_dir = "~/.local-ai-hub/state"
 request_timeout_seconds = 210
 # Slow/broken clients cannot occupy a handler while dribbling a request body.
 request_body_timeout_seconds = 15
+# Release idle HTTP/1.1 keep-alive sockets so they do not exhaust handler slots.
+keepalive_timeout_seconds = 5
 # Bound handler threads independently from the model queue so overload fails fast.
 max_concurrent_requests = 64
 overload_wait_seconds = 0.05
@@ -257,8 +259,11 @@ max_diff_tokens = 8000
 max_local_input_tokens = 56000
 max_local_output_tokens = 2400
 compression_chunk_tokens = 4200
-# Blended cloud-equivalent rate used for transparent savings estimates in dashboard.
+# Legacy fallback rate for telemetry rows without separate input/output counters.
 cloud_token_cost_usd_per_million = 3.0
+# Cloud model input/output rates used for channel-specific USD savings estimates.
+cloud_input_token_cost_usd_per_million = 3.0
+cloud_output_token_cost_usd_per_million = 3.0
 # Large local responses are stored outside agent context and represented by a compact preview + artifact id.
 compact_responses = true
 max_inline_chars = 1800
@@ -334,6 +339,8 @@ allow_validation = true
 allow_build = true
 allow_mutating = false
 allow_unknown = false
+# User-whitelisted executable names for custom developer tooling:
+extra_allowed_tools = []
 timeout_seconds = 900
 # Duplicate agents wait only this long for an identical owner; the owner continues
 # and the waiter receives an in-progress response instead of hanging for the full build.
@@ -841,3 +848,11 @@ event_retention_days = 30
 max_payload_bytes = 65536
 snapshot_interval_events = 50
 cleanup_batch_size = 100
+
+[agent_output]
+ultra_compact = true
+strip_empty = true
+coalesce_snippets = true
+prune_stacktraces = true
+trim_diff_context = true
+flat_symbols = true

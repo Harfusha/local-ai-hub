@@ -131,8 +131,9 @@ class BlackboardStore:
         content: Any,
         author: str,
         clock: dict[str, int] | None = None,
+        expected_version: int | None = None,
     ) -> dict[str, Any]:
-        """Update a section on the blackboard, advancing the author's vector clock."""
+        """Update a section on the blackboard, advancing the author's vector clock. Supports optimistic concurrency via expected_version."""
         self._ensure_schema()
         clean_board = str(board_id).strip()
         clean_section = str(section).strip()
@@ -152,6 +153,16 @@ class BlackboardStore:
                 else:
                     existing_clock = {}
                     existing_version = 0
+
+                if expected_version is not None:
+                    if existing_version != int(expected_version):
+                        return {
+                            "success": False,
+                            "error": f"Version conflict: current version {existing_version} does not match expected {expected_version}",
+                            "version_conflict": True,
+                            "current_version": existing_version,
+                            "expected_version": int(expected_version),
+                        }
 
                 new_clock = dict(existing_clock)
                 if clock:
@@ -191,7 +202,7 @@ class BlackboardStore:
                     ),
                 )
                 con.commit()
-                return {"success": True, "board_id": clean_board, "section": sec.to_dict()}
+                return {"success": True, "board_id": clean_board, "section": sec.to_dict(), "version": sec.version, "content": sec.content}
 
         return retry_busy(_do_update, retries=5, base_delay_seconds=0.02)
 

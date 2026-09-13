@@ -157,6 +157,7 @@ def test_command_streaming_and_sse_events(tmp_path: Path):
     res = cmd_broker.run(
         f'"{sys.executable}" -c "print(\'live stream line 1\'); print(\'live stream line 2\')"',
         cwd=str(tmp_path),
+        force=True,
         log_callback=log_cb,
     )
     assert res["success"] is True

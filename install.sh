@@ -8,7 +8,7 @@ EXTRA=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --profile) PROFILE=${2:?missing profile}; shift 2 ;;
-    --skip-model-pull|--skip-tools|--skip-agent-config|--skip-service|--skip-ollama-install|--skip-local-nlp-preload)
+    --skip-model-pull|--skip-tools|--skip-agent-config|--skip-service|--skip-ollama-install|--skip-local-nlp-preload|--skip-token-economy|--skip-companion-skills)
       EXTRA="$EXTRA $1"; shift ;;
     -h|--help)
       echo "Usage: ./install.sh [--profile auto|cpu|integrated|low|balanced|high|max] [setup skip flags]"; exit 0 ;;

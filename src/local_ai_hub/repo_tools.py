@@ -187,15 +187,41 @@ class RepositoryTools:
         finally:
             flight.release()
 
-    def iter_files(self, root: str) -> Iterable[Path]:
+    def iter_files(self, root: str, max_depth: int = 25) -> Iterable[Path]:
         base = self._root(root)
         git_files = self._git_files(base)
         if git_files is not None:
             candidates = git_files
         else:
             candidates = []
-            for dirpath, dirnames, filenames in os.walk(base):
+            visited_realpaths: set[str] = set()
+            try:
+                visited_realpaths.add(os.path.realpath(base))
+            except Exception:
+                pass
+            for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
                 dirnames[:] = [d for d in dirnames if d not in self.ignore_dirs]
+                try:
+                    rel_parts = Path(dirpath).relative_to(base).parts
+                    if len(rel_parts) >= max_depth:
+                        dirnames.clear()
+                        continue
+                except Exception:
+                    pass
+
+                kept_dirnames: list[str] = []
+                for d in dirnames:
+                    subdir = os.path.join(dirpath, d)
+                    try:
+                        rpath = os.path.realpath(subdir)
+                        if rpath in visited_realpaths:
+                            continue
+                        visited_realpaths.add(rpath)
+                        kept_dirnames.append(d)
+                    except Exception:
+                        kept_dirnames.append(d)
+                dirnames[:] = kept_dirnames
+
                 for name in filenames:
                     p = Path(dirpath) / name
                     if self.extensions and p.suffix.lower() not in self.extensions and p.name.lower() not in self.special_filenames:
@@ -810,10 +836,9 @@ class RepositoryTools:
         candidate_tokens = sum(estimate_tokens(str(item.get("text", ""))) for item in candidate_pool)
         result = {"success": True, "root": str(base), "scanned_files": scanned, "terms": terms, "results": dedup, "engine": candidate_engine}
         if candidate_tokens:
-            # This is a conservative bounded counterfactual: only the candidate
-            # snippets already found by the local search engine, never the whole repo.
-            # Agent-facing projection removes token_saving metadata.
-            result["token_saving"] = {"delegated_cloud_context_tokens_avoided_est": candidate_tokens}
+            # Diagnostic only. Local RG-like filtering is not proof that a cloud
+            # agent would otherwise have paid for the candidate snippets.
+            result["candidate_context_tokens_est"] = candidate_tokens
         return result
 
     def repo_map(self, root: str, max_symbols: int = 120, paths: Iterable[str] | None = None) -> dict[str, Any]:
@@ -1326,7 +1351,7 @@ class RepositoryTools:
         candidate_tokens = sum(estimate_tokens(str(item.get("text", ""))) for item in candidate_pool)
         result = {"success": True, "root": str(base), "scanned_files": scanned, "terms": terms, "results": dedup, "targeted": True}
         if candidate_tokens:
-            result["token_saving"] = {"delegated_cloud_context_tokens_avoided_est": candidate_tokens}
+            result["candidate_context_tokens_est"] = candidate_tokens
         return result
 
     def context_pack_paths(self, root: str, query: str, paths: list[str], max_tokens: int = 2600, top_k: int = 10) -> dict[str, Any]:

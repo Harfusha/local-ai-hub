@@ -31,7 +31,7 @@ def main()->int:
                 p_tot = pr.get('total_phases', 11)
                 phase_name = pr.get('phase', 'idle')
                 status_str = pr.get('status', 'queued')
-                print(f"  • {pr.get('project')}: [{status_str.upper()}] Fáze {p_idx}/{p_tot} ({phase_name}) — celkem: {overall:.1f}% | RAG: {rag_f}/{tot} ({rag_f*100//tot}%) | Karty: {card_f}/{tot}")
+                print(f"  • {pr.get('project')}: [{status_str.upper()}] Phase {p_idx}/{p_tot} ({phase_name}) — overall: {overall:.1f}% | RAG: {rag_f}/{tot} ({rag_f*100//tot}%) | Cards: {card_f}/{tot}")
             print('\nRecent activity:')
             for e in list(live.get('events',[]))[-18:]:
                 ts=time.strftime('%H:%M:%S',time.localtime(float(e.get('created_at',0))))

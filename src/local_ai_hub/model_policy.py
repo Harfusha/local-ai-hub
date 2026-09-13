@@ -75,6 +75,7 @@ class ModelExecutionPolicy:
         output_tokens: int = 0,
         background: bool = False,
         force_think: bool | None = None,
+        vram_free_mb: int | None = None,
     ) -> ExecutionProfile:
         tier = self.tier_for(model)
         cfg = self._tier_cfg(tier)
@@ -95,6 +96,15 @@ class ModelExecutionPolicy:
         if requested_ctx is not None and int(requested_ctx) > 0:
             # Callers may ask for more context, but cannot exceed the safe tier cap.
             target = max(target, min(int(requested_ctx), max_ctx))
+
+        if vram_free_mb is not None and vram_free_mb > 0:
+            if vram_free_mb < 2048:
+                target = min(target, 8192)
+            elif vram_free_mb < 4096:
+                target = min(target, 16384)
+            elif vram_free_mb < 8192:
+                target = min(target, 32768)
+
         target = min(max_ctx, max(4096, target))
 
         role_l = str(role or "").lower()
@@ -123,6 +133,7 @@ class ModelExecutionPolicy:
         output_tokens: int = 0,
         background: bool = False,
         preserve_explicit_think: bool = True,
+        vram_free_mb: int | None = None,
     ) -> tuple[dict[str, Any], ExecutionProfile]:
         clean = dict(payload)
         options = dict(clean.get("options", {}) or {})
@@ -136,6 +147,7 @@ class ModelExecutionPolicy:
             output_tokens=output_tokens,
             background=background,
             force_think=(explicit_think if preserve_explicit_think and isinstance(explicit_think, bool) else None),
+            vram_free_mb=vram_free_mb,
         )
         options["num_ctx"] = profile.num_ctx
         clean["options"] = options

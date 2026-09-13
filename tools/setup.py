@@ -18,12 +18,14 @@ if str(SRC) not in sys.path:
 
 from local_ai_hub.config import load_config as load_hub_config  # noqa: E402
 from local_ai_hub.features import FeatureSet  # noqa: E402
-from local_ai_hub.generator import generate_global_policy, write_all_generated  # noqa: E402
+from local_ai_hub.generator import generate_global_policy, generate_token_economy_policy, write_all_generated  # noqa: E402
 
 MARKER_BEGIN = "# BEGIN LOCAL AI HUB MANAGED"
 MARKER_END = "# END LOCAL AI HUB MANAGED"
 GLOBAL_POLICY_BEGIN = "<!-- BEGIN LOCAL AI HUB TOOL POLICY -->"
 GLOBAL_POLICY_END = "<!-- END LOCAL AI HUB TOOL POLICY -->"
+TOKEN_ECONOMY_POLICY_BEGIN = "<!-- BEGIN TOKEN ECONOMY POLICY -->"
+TOKEN_ECONOMY_POLICY_END = "<!-- END TOKEN ECONOMY POLICY -->"
 
 
 def build_global_policy(cfg: dict[str, Any]) -> str:
@@ -100,7 +102,7 @@ def copy_install_tree(install_dir: Path, config_source: Path) -> None:
             shutil.rmtree(dst)
         shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache"))
     for name in [
-        "requirements-core.txt", "requirements-local-nlp.txt", "requirements-openvino.txt", "defaults.toml", "config.toml.example", "pyproject.toml",
+        "requirements-core.txt", "requirements-token-economy.txt", "requirements-local-nlp.txt", "requirements-openvino.txt", "defaults.toml", "config.toml.example", "pyproject.toml",
         "README.md", "FEATURES.md", "AGENTS.md", "LICENSE", "CHANGELOG.md", "THIRD_PARTY.md",
         "RELEASE.json", "CONTRIBUTING.md", "SECURITY.md", "install.ps1", "install.sh",
     ]:
@@ -127,6 +129,24 @@ def install_skill(source_skill: Path, target: Path) -> None:
         shutil.rmtree(target)
     shutil.copytree(source_skill, target)
     log(f"Skill installed: {target}")
+
+
+COMPANION_SKILLS: list[str] = [
+    "token-economizer",
+    "caveman",
+    "tool-orchestration",
+    "ollama-quality-routing",
+]
+
+
+def install_agent_skills(install_dir: Path, target_skills_dir: Path, *, include_companion: bool = True) -> None:
+    source_skill = install_dir / "skills" / "local-ai-orchestrator"
+    install_skill(source_skill, target_skills_dir / "local-ai-orchestrator")
+    if include_companion:
+        for skill_name in COMPANION_SKILLS:
+            source = install_dir / "skills" / skill_name
+            if source.exists():
+                install_skill(source, target_skills_dir / skill_name)
 
 
 def json_server_merge(
@@ -212,6 +232,18 @@ def merge_global_policy(path: Path, backup_enabled: bool, cfg: dict[str, Any] | 
         log(f"Tool-first policy installed: {path}")
 
 
+def merge_token_economy_policy(path: Path, backup_enabled: bool, cfg: dict[str, Any] | None = None) -> None:
+    policy = generate_token_economy_policy(cfg or {})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    pattern = re.compile(re.escape(TOKEN_ECONOMY_POLICY_BEGIN) + r".*?" + re.escape(TOKEN_ECONOMY_POLICY_END), re.DOTALL)
+    updated = pattern.sub(policy, text) if pattern.search(text) else (text.rstrip() + "\n\n" + policy + "\n")
+    if updated != text:
+        backup(path, backup_enabled)
+        path.write_text(updated, encoding="utf-8")
+        log(f"Token economy policy installed: {path}")
+
+
 def install_tool_env(install_dir: Path, name: str, package: str, executables: list[str]) -> Path | None:
     venv = install_dir / "tool-envs" / name
     python = ensure_venv(venv)
@@ -226,6 +258,86 @@ def install_tool_env(install_dir: Path, name: str, package: str, executables: li
             return candidate
     log(f"WARNING: {name} package installed but no supported executable was found")
     return None
+
+
+def install_token_economy_suite(install_dir: Path, hub_python: Path, *, allow_external_tools: bool = True) -> None:
+    """Install token-economy python dependencies, CLI wrapper scripts, and probe external CLI tools."""
+    req_file = install_dir / "requirements-token-economy.txt"
+    if req_file.is_file():
+        install_requirements(hub_python, req_file, optional=True)
+
+    scripts_dir = install_dir / ".venv" / ("Scripts" if os.name == "nt" else "bin")
+    if scripts_dir.is_dir():
+        py_exe = str(hub_python)
+        if os.name == "nt":
+            (scripts_dir / "tokcount.cmd").write_text(f'@echo off\n"{py_exe}" -m local_ai_hub.token_economy tokcount %*\n', encoding="utf-8")
+            (scripts_dir / "trim-run.cmd").write_text(f'@echo off\n"{py_exe}" -m local_ai_hub.token_economy trim_run %*\n', encoding="utf-8")
+            (scripts_dir / "repo-map.cmd").write_text(f'@echo off\n"{py_exe}" -m local_ai_hub.token_economy repo_map %*\n', encoding="utf-8")
+        else:
+            for tool_name in ["tokcount", "trim-run", "repo-map"]:
+                sh_file = scripts_dir / tool_name
+                subcmd = tool_name.replace("-", "_")
+                sh_file.write_text(f'#!/bin/sh\nexec "{py_exe}" -m local_ai_hub.token_economy {subcmd} "$@"\n', encoding="utf-8")
+                try:
+                    sh_file.chmod(0o755)
+                except Exception:
+                    pass
+
+    if not allow_external_tools:
+        return
+
+    # Probe and attempt install for external CLI tools
+    if not shutil.which("rg"):
+        log("ripgrep (rg) not found in PATH; attempting install...")
+        try:
+            if os.name == "nt" and shutil.which("winget"):
+                run(["winget", "install", "--id", "BurntSushi.ripgrep.MSVC", "-e", "--accept-package-agreements", "--accept-source-agreements", "--silent"], check=False, timeout=300)
+            elif sys.platform == "darwin" and shutil.which("brew"):
+                run(["brew", "install", "ripgrep"], check=False, timeout=300)
+            elif sys.platform.startswith("linux") and shutil.which("apt-get"):
+                run(["sudo", "apt-get", "install", "-y", "ripgrep"], check=False, timeout=300)
+        except Exception as exc:
+            log(f"Optional ripgrep install skipped: {exc}")
+
+    if not shutil.which("fd") and not shutil.which("fdfind"):
+        log("fd not found in PATH; attempting install...")
+        try:
+            if os.name == "nt" and shutil.which("winget"):
+                run(["winget", "install", "--id", "sharkdp.fd", "-e", "--accept-package-agreements", "--accept-source-agreements", "--silent"], check=False, timeout=300)
+            elif sys.platform == "darwin" and shutil.which("brew"):
+                run(["brew", "install", "fd"], check=False, timeout=300)
+            elif sys.platform.startswith("linux") and shutil.which("apt-get"):
+                run(["sudo", "apt-get", "install", "-y", "fd-find"], check=False, timeout=300)
+        except Exception as exc:
+            log(f"Optional fd install skipped: {exc}")
+
+    if not shutil.which("ast-grep") and not shutil.which("sg"):
+        if shutil.which("npm"):
+            log("ast-grep not found in PATH; installing via npm...")
+            try:
+                run(["npm", "install", "-g", "@ast-grep/cli"], check=False, timeout=300)
+            except Exception as exc:
+                log(f"Optional ast-grep install skipped: {exc}")
+
+    if not shutil.which("repomix"):
+        if shutil.which("npm"):
+            log("repomix not found in PATH; installing via npm...")
+            try:
+                run(["npm", "install", "-g", "repomix"], check=False, timeout=300)
+            except Exception as exc:
+                log(f"Optional repomix install skipped: {exc}")
+
+    if not shutil.which("jq"):
+        log("jq not found in PATH; attempting install...")
+        try:
+            if os.name == "nt" and shutil.which("winget"):
+                run(["winget", "install", "--id", "jqlang.jq", "-e", "--accept-package-agreements", "--accept-source-agreements", "--silent"], check=False, timeout=300)
+            elif sys.platform == "darwin" and shutil.which("brew"):
+                run(["brew", "install", "jq"], check=False, timeout=300)
+            elif sys.platform.startswith("linux") and shutil.which("apt-get"):
+                run(["sudo", "apt-get", "install", "-y", "jq"], check=False, timeout=300)
+        except Exception as exc:
+            log(f"Optional jq install skipped: {exc}")
 
 
 def build_mcp_entries(install_dir: Path, hub_python: Path, serena: Path | None, codegraph: Path | None, agent: str, cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -335,34 +447,53 @@ def write_generated_agent_manifests(install_dir: Path, hub_python: Path, serena:
     log(f"Dynamic skill, manifests, and schemas generated: {install_dir / 'generated'}")
 
 
-def configure_agents(install_dir: Path, hub_python: Path, serena: Path | None, codegraph: Path | None, cfg: dict[str, Any]) -> None:
+def configure_agents(
+    install_dir: Path,
+    hub_python: Path,
+    serena: Path | None,
+    codegraph: Path | None,
+    cfg: dict[str, Any],
+    *,
+    include_companion: bool = True,
+) -> None:
     backup_enabled = bool(cfg.get("setup", {}).get("backup_existing_configs", True))
     agents_cfg = cfg.get("agents", {})
     write_all_generated(cfg, install_dir, hub_python, serena, codegraph)
-    source_skill = install_dir / "skills" / "local-ai-orchestrator"
     if agents_cfg.get("agent_skills_standard", True):
-        install_skill(source_skill, Path.home() / ".agents" / "skills" / "local-ai-orchestrator")
+        install_agent_skills(install_dir, Path.home() / ".agents" / "skills", include_companion=include_companion)
     if agents_cfg.get("codex", True):
         codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
-        install_skill(source_skill, codex_home / "skills" / "local-ai-orchestrator")
+        install_agent_skills(install_dir, codex_home / "skills", include_companion=include_companion)
         if cfg.get("tool_policy", {}).get("install_global_instructions", True):
-            merge_global_policy(codex_home / ("AGENTS.override.md" if (codex_home / "AGENTS.override.md").exists() else "AGENTS.md"), backup_enabled, cfg=cfg)
+            doc = codex_home / ("AGENTS.override.md" if (codex_home / "AGENTS.override.md").exists() else "AGENTS.md")
+            merge_global_policy(doc, backup_enabled, cfg=cfg)
+            merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
         codex_mcp_merge(
             codex_home / "config.toml", build_mcp_entries(install_dir, hub_python, serena, codegraph, "codex", cfg), backup_enabled,
             startup_timeout=int(cfg.get("client", {}).get("startup_wait_seconds", 15)) + 15,
             tool_timeout=int(cfg.get("mcp", {}).get("host_tool_timeout_seconds", 900)),
         )
     if agents_cfg.get("claude", True):
-        install_skill(source_skill, Path.home() / ".claude" / "skills" / "local-ai-orchestrator")
+        install_agent_skills(install_dir, Path.home() / ".claude" / "skills", include_companion=include_companion)
         if cfg.get("tool_policy", {}).get("install_global_instructions", True):
-            merge_global_policy(Path.home() / ".claude" / "CLAUDE.md", backup_enabled, cfg=cfg)
+            doc = Path.home() / ".claude" / "CLAUDE.md"
+            merge_global_policy(doc, backup_enabled, cfg=cfg)
+            merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
         json_mcp_merge(Path.home() / ".claude.json", build_mcp_entries(install_dir, hub_python, serena, codegraph, "claude", cfg), backup_enabled)
     if agents_cfg.get("gemini", True):
-        install_skill(source_skill, Path.home() / ".gemini" / "skills" / "local-ai-orchestrator")
-        install_skill(source_skill, Path.home() / ".gemini" / "config" / "skills" / "local-ai-orchestrator")
+        install_agent_skills(install_dir, Path.home() / ".gemini" / "skills", include_companion=include_companion)
+        install_agent_skills(install_dir, Path.home() / ".gemini" / "config" / "skills", include_companion=include_companion)
         if cfg.get("tool_policy", {}).get("install_global_instructions", True):
-            merge_global_policy(Path.home() / ".gemini" / "GEMINI.md", backup_enabled, cfg=cfg)
+            doc = Path.home() / ".gemini" / "GEMINI.md"
+            merge_global_policy(doc, backup_enabled, cfg=cfg)
+            merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
         json_mcp_merge(Path.home() / ".gemini" / "settings.json", build_mcp_entries(install_dir, hub_python, serena, codegraph, "gemini", cfg), backup_enabled)
+        antigravity_mcp = Path.home() / ".gemini" / "antigravity" / "mcp" / "local-ai"
+        if antigravity_mcp.exists():
+            schemas_dir = install_dir / "generated" / "schemas"
+            if schemas_dir.exists():
+                for sfile in schemas_dir.glob("*.json"):
+                    shutil.copy2(sfile, antigravity_mcp / sfile.name)
     # Additional major MCP hosts. Their tool descriptions always carry the same
     # tool-first policy even when the host has no global skill format.
     if agents_cfg.get("cursor", True):
@@ -418,10 +549,13 @@ def main() -> int:
     parser.add_argument("--skip-agent-config", action="store_true")
     parser.add_argument("--skip-service", action="store_true")
     parser.add_argument("--skip-ollama-install", action="store_true")
+    parser.add_argument("--skip-token-economy", action="store_true", help="Do not install token economy packages or probe external CLI tools")
+    parser.add_argument("--skip-companion-skills", action="store_true", help="Do not install companion skills (token-economizer, caveman, tool-orchestration, ollama-quality-routing)")
     parser.add_argument("--generate-only", action="store_true", help="Generate dynamic skill, instructions, MCP manifests, and schemas without re-installing dependencies or service.")
     args = parser.parse_args()
 
     config_source, cfg, install_dir = select_config_source(args.config)
+    include_companion = not args.skip_companion_skills and bool(cfg.get("setup", {}).get("install_companion_skills", True))
     if args.generate_only:
         hub_python = venv_python(install_dir / ".venv")
         if not hub_python.exists():
@@ -430,7 +564,7 @@ def main() -> int:
         if install_dir.resolve() != SOURCE_ROOT.resolve():
             write_all_generated(cfg, install_dir, hub_python)
         if not args.skip_agent_config and bool(cfg.get("setup", {}).get("install_agent_configs", True)):
-            configure_agents(install_dir, hub_python, None, None, cfg)
+            configure_agents(install_dir, hub_python, None, None, cfg, include_companion=include_companion)
         log("Skill, agent instructions, and MCP artifacts successfully generated.")
         return 0
 
@@ -466,6 +600,8 @@ def main() -> int:
         cfg.setdefault("features", {})["pull_models_during_setup"] = False
     hub_python = ensure_venv(install_dir / ".venv")
     install_requirements(hub_python, install_dir / "requirements-core.txt")
+    if not args.skip_token_economy:
+        install_token_economy_suite(install_dir, hub_python, allow_external_tools=True)
 
     serena: Path | None = None
     codegraph: Path | None = None
@@ -518,7 +654,7 @@ def main() -> int:
         install_requirements(hub_python, install_dir / "requirements-local-nlp.txt", optional=True)
 
     if not args.skip_agent_config and bool(setup_cfg.get("install_agent_configs", True)):
-        configure_agents(install_dir, hub_python, serena, codegraph, cfg)
+        configure_agents(install_dir, hub_python, serena, codegraph, cfg, include_companion=include_companion)
     else:
         write_generated_agent_manifests(install_dir, hub_python, serena, codegraph, cfg)
 

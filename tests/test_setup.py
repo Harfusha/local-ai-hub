@@ -142,3 +142,35 @@ def test_copy_install_tree_copies_only_current_package_roots(tmp_path: Path, mon
     assert (target / "skills" / "marker.txt").read_text(encoding="utf-8") == "skills"
     assert (target / "tools" / "marker.txt").read_text(encoding="utf-8") == "tools"
     assert not (target / "mcp").exists()
+
+
+def test_install_agent_skills_includes_companion_by_default(tmp_path: Path):
+    source = tmp_path / "source"
+    skills = source / "skills"
+    for s in ["local-ai-orchestrator", "token-economizer", "caveman", "tool-orchestration", "ollama-quality-routing"]:
+        d = skills / s
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(f"name: {s}", encoding="utf-8")
+
+    target = tmp_path / "target_skills"
+    setup.install_agent_skills(source, target, include_companion=True)
+
+    for s in ["local-ai-orchestrator", "token-economizer", "caveman", "tool-orchestration", "ollama-quality-routing"]:
+        assert (target / s / "SKILL.md").exists()
+        assert (target / s / "SKILL.md").read_text(encoding="utf-8") == f"name: {s}"
+
+
+def test_install_agent_skills_skip_companion(tmp_path: Path):
+    source = tmp_path / "source"
+    skills = source / "skills"
+    for s in ["local-ai-orchestrator", "token-economizer", "caveman", "tool-orchestration", "ollama-quality-routing"]:
+        d = skills / s
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(f"name: {s}", encoding="utf-8")
+
+    target = tmp_path / "target_skills"
+    setup.install_agent_skills(source, target, include_companion=False)
+
+    assert (target / "local-ai-orchestrator" / "SKILL.md").exists()
+    for s in ["token-economizer", "caveman", "tool-orchestration", "ollama-quality-routing"]:
+        assert not (target / s).exists()

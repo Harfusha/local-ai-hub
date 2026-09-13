@@ -127,8 +127,14 @@ if int(writer.get("writer_errors", 0) or 0) > 0:
 
 loaded_details = status.get("loaded_model_details", []) if isinstance(status, dict) else []
 background_gpu = status.get("background_gpu", {}) if isinstance(status, dict) else {}
-execution_summary = status.get("model_execution", {}) if isinstance(status, dict) else {}
+execution_summary = (status.get("model_execution") or (status.get("runtime_profile", {}) or {}).get("execution", {})) if isinstance(status, dict) else {}
 ollama_profile = status.get("ollama_profile", {}) if isinstance(status, dict) else {}
+if not ollama_profile:
+    try:
+        from local_ai_hub.ollama import OllamaRuntime
+        ollama_profile = OllamaRuntime(cfg).managed_profile_status()
+    except Exception:
+        pass
 diag_cfg = cfg.get("diagnostics", {})
 if (
     bool(diag_cfg.get("warn_if_external_ollama_profile_unknown", True))
@@ -169,7 +175,10 @@ for row in loaded_details if isinstance(loaded_details, list) else []:
 
 if isinstance(background_gpu, dict) and background_gpu.get("enabled"):
     bg_error = str(background_gpu.get("last_error") or "")
-    if bg_error:
+    if bg_error and (
+        bool(background_gpu.get("startup_circuit_open"))
+        or float(background_gpu.get("retry_after_seconds", 0.0) or 0.0) > 0.0
+    ):
         warnings.append("Background GPU worker: " + bg_error)
     bg_limit = float(cfg.get("background_gpu", {}).get("max_cpu_offload_fraction", 0.12))
     for row in background_gpu.get("models", []) if isinstance(background_gpu.get("models"), list) else []:
@@ -192,6 +201,13 @@ report = {
     "runtime": {
         "ollama_command": shutil.which("ollama"),
         "ripgrep_command": shutil.which("rg"),
+        "fd_command": shutil.which("fd") or shutil.which("fdfind"),
+        "ast_grep_command": shutil.which("ast-grep") or shutil.which("sg"),
+        "repomix_command": shutil.which("repomix"),
+        "jq_command": shutil.which("jq"),
+        "tokcount_command": shutil.which("tokcount"),
+        "trim_run_command": shutil.which("trim-run"),
+        "repo_map_command": shutil.which("repo-map"),
         "hub_online": hub_online,
         "ollama_online": status.get("ollama_online") if isinstance(status, dict) else False,
         "active_model": (status.get("scheduler") or {}).get("active_model") if isinstance(status, dict) else None,

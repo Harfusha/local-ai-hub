@@ -104,6 +104,28 @@ def test_codegraph_sessions_are_isolated_per_project(monkeypatch, tmp_path: Path
     assert all(x.closed for x in _FakeClient.instances)
 
 
+def test_codegraph_relationships_use_supported_query_type(monkeypatch, tmp_path: Path):
+    import local_ai_hub.external_tools as mod
+
+    _FakeClient.instances = []
+    monkeypatch.setattr(mod, "MCPStdioClient", _FakeClient)
+    root = tmp_path / "repo"
+    root.mkdir()
+    cfg = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "code_intelligence": {"enabled": True, "codegraph_enabled": True, "serena_enabled": False, "codegraph_command": sys.executable},
+        "tools": {},
+    }
+    ext = ExternalCodeIntelligence(cfg, telemetry=None)
+    try:
+        result = ext.query_codegraph(str(root), "relationships", query="ExternalCodeIntelligence")
+    finally:
+        ext.close()
+
+    assert result["success"] is True
+    assert result["result"]["arguments"]["query_type"] == "module_deps"
+
+
 def test_serena_index_supplies_noninteractive_dominant_language(monkeypatch, tmp_path: Path):
     import local_ai_hub.external_tools as mod
 

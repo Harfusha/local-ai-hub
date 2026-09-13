@@ -88,6 +88,11 @@ class _TimedOutExternalTools:
         return {"success": False, "error": f"{backend} indexing exceeded 30s"}
 
 
+class _AvailableTimedOutExternalTools(_TimedOutExternalTools):
+    def backend_available(self, backend):
+        return True
+
+
 class _SuccessfulExternalTools:
     def __init__(self):
         self.calls = 0
@@ -98,6 +103,22 @@ class _SuccessfulExternalTools:
 
     def backend_available(self, backend):
         return True
+
+
+class _ObservingExternalTools(_SuccessfulExternalTools):
+    def __init__(self):
+        super().__init__()
+        self.pre = None
+        self.state_during_index = None
+
+    def index(self, backend, root):
+        self.calls += 1
+        with closing(self.pre._connect()) as con:
+            self.state_during_index = con.execute(
+                "SELECT status,error FROM external_index_state WHERE root=? AND backend=?",
+                (root, backend),
+            ).fetchone()
+        return {"success": True}
 
 
 def test_cached_external_unavailability_is_retried_when_backend_is_available(tmp_path: Path):
@@ -397,6 +418,54 @@ def test_time_bounded_external_index_is_skipped_once_per_revision(tmp_path: Path
         assert external.calls == 1
         assert state[0] == "unavailable"
         assert state[1] == "codegraph indexing exceeded 30s"
+    finally:
+        pre.close()
+
+
+def test_available_backend_timeout_is_not_retried_forever(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tools = RepositoryTools(cfg)
+    external = _AvailableTimedOutExternalTools()
+    pre = ProjectPreprocessor(
+        cfg,
+        _Noop(),
+        _Rag(),
+        _IdleScheduler(),
+        _Noop(),
+        tools,
+        external_tools=external,
+    )
+    try:
+        row = {"root": str(repo), "workspace": "test", "generation": 0}
+        assert pre._step_external_index(row, "codegraph", "lexical") is True
+        assert pre._step_external_index(row, "codegraph", "lexical") is True
+        assert external.calls == 1
+    finally:
+        pre.close()
+
+
+def test_external_index_publishes_running_state_before_invocation(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tools = RepositoryTools(cfg)
+    external = _ObservingExternalTools()
+    pre = ProjectPreprocessor(
+        cfg,
+        _Noop(),
+        _Rag(),
+        _IdleScheduler(),
+        _Noop(),
+        tools,
+        external_tools=external,
+    )
+    external.pre = pre
+    try:
+        row = {"root": str(repo), "workspace": "test", "generation": 0}
+        assert pre._step_external_index(row, "codegraph", "lexical") is True
+        assert tuple(external.state_during_index) == ("running", "")
     finally:
         pre.close()
 

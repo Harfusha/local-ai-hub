@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import queue
 import re
 import sqlite3
@@ -93,6 +94,7 @@ class TelemetryStore:
         "net_cloud_token_delta", "cloud_token_overhead",
         "net_after_schema_token_delta", "schema_adjusted_overhead",
         "savings_source", "input_savings_source", "output_savings_source", "savings_breakdown_json",
+        "preprocessed_hit",
     )
 
     def __init__(
@@ -104,6 +106,8 @@ class TelemetryStore:
         retention_days: int = 30,
         rollup_retention_days: int = 365,
         cloud_token_cost_usd_per_million: float = 3.0,
+        cloud_input_token_cost_usd_per_million: float | None = None,
+        cloud_output_token_cost_usd_per_million: float | None = None,
         batch_size: int = 64,
         flush_interval_seconds: float = 0.5,
         queue_size: int = 10000,
@@ -114,12 +118,19 @@ class TelemetryStore:
         self.retention_days = max(1, int(retention_days))
         self.rollup_retention_days = max(self.retention_days, int(rollup_retention_days))
         self.cloud_token_cost_usd_per_million = max(0.0, float(cloud_token_cost_usd_per_million))
+        input_rate = self.cloud_token_cost_usd_per_million if cloud_input_token_cost_usd_per_million is None else cloud_input_token_cost_usd_per_million
+        output_rate = self.cloud_token_cost_usd_per_million if cloud_output_token_cost_usd_per_million is None else cloud_output_token_cost_usd_per_million
+        self.cloud_input_token_cost_usd_per_million = max(0.0, float(input_rate))
+        self.cloud_output_token_cost_usd_per_million = max(0.0, float(output_rate))
         self.batch_size = max(1, min(int(batch_size), 1000))
         self.flush_interval_seconds = max(0.05, float(flush_interval_seconds))
         self.path = state_dir / "telemetry.sqlite3"
         # Persisted telemetry spans restarts. Keep an explicit in-memory boundary
         # so operators can separate current deploy/process behavior from history.
         self.process_started_at = time.time()
+        self._current_session_id: int | None = None
+        self._current_pid: int = os.getpid()
+        self._current_version: str = ""
         self._queue: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue(maxsize=max(100, int(queue_size)))
         self._stop = threading.Event()
         self._stats_lock = threading.Lock()
@@ -164,7 +175,7 @@ class TelemetryStore:
     def _schema_is_current(self) -> bool:
         if not self.path.exists():
             return True
-        expected_tables = {"events", "errors", "snapshots", "daily_rollups"}
+        expected_tables = {"events", "errors", "snapshots", "daily_rollups", "process_sessions"}
         expected_columns = {
             "events": {"id", *self._EVENT_COLUMNS},
             "errors": {
@@ -180,6 +191,9 @@ class TelemetryStore:
                 "agent_protocol_tokens", "tool_schema_tokens", "local_compute_tokens_avoided",
                 "tool_request_tokens", "tool_response_tokens", "net_cloud_token_delta",
                 "cloud_token_overhead", "net_after_schema_token_delta", "schema_adjusted_overhead",
+            },
+            "process_sessions": {
+                "id", "pid", "version", "started_at", "stopped_at", "last_heartbeat", "exit_clean",
             },
         }
         try:
@@ -251,7 +265,8 @@ class TelemetryStore:
                     savings_source TEXT NOT NULL DEFAULT '',
                     input_savings_source TEXT NOT NULL DEFAULT '',
                     output_savings_source TEXT NOT NULL DEFAULT '',
-                    savings_breakdown_json TEXT NOT NULL DEFAULT ''
+                    savings_breakdown_json TEXT NOT NULL DEFAULT '',
+                    preprocessed_hit INTEGER NOT NULL DEFAULT 0
                 )"""
             )
             con.executescript(
@@ -261,6 +276,16 @@ class TelemetryStore:
                 CREATE INDEX IF NOT EXISTS idx_events_action_created ON events(action, created_at);
                 CREATE INDEX IF NOT EXISTS idx_events_error ON events(error_fingerprint, created_at);
                 CREATE INDEX IF NOT EXISTS idx_events_model ON events(model, created_at);
+                CREATE TABLE IF NOT EXISTS process_sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    pid INTEGER NOT NULL,
+                    version TEXT NOT NULL DEFAULT '',
+                    started_at REAL NOT NULL,
+                    stopped_at REAL,
+                    last_heartbeat REAL NOT NULL,
+                    exit_clean INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_process_sessions_started ON process_sessions(started_at);
                 CREATE TABLE IF NOT EXISTS errors (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at REAL NOT NULL,
@@ -376,6 +401,7 @@ class TelemetryStore:
             "input_savings_source": str(event.get("input_savings_source", ""))[:80],
             "output_savings_source": str(event.get("output_savings_source", ""))[:80],
             "savings_breakdown_json": str(event.get("savings_breakdown_json", ""))[:2000],
+            "preprocessed_hit": 1 if event.get("preprocessed_hit") else 0,
         }
 
     def _publish_live(self, kind: str, payload: dict[str, Any]) -> None:
@@ -387,6 +413,7 @@ class TelemetryStore:
             "retry_count", "fallback_used", "error_type", "error_fingerprint",
             "tool_calls", "evidence_count", "response_bytes", "component", "operation",
             "fingerprint", "retryable", "recovered", "name", "metrics_json",
+            "preprocessed_hit",
         }
         event = {k: v for k, v in payload.items() if k in allowed}
         event["kind"] = kind
@@ -490,6 +517,14 @@ class TelemetryStore:
             "inference_events": int(history.get("events", len(inference)) or 0),
             "cache_hits": int(history.get("cache_hits", 0) or 0),
             "cache_hit_rate": float(history.get("cache_hit_rate", 0.0) or 0.0),
+            "generation_cache_hits": int(history.get("generation_cache_hits", history.get("cache_hits", 0)) or 0),
+            "generation_cache_hit_rate": float(history.get("generation_cache_hit_rate", history.get("cache_hit_rate", 0.0)) or 0.0),
+            "preprocessed_query_hits": int(history.get("preprocessed_query_hits", 0) or 0),
+            "preprocessed_query_events": int(history.get("preprocessed_query_events", 0) or 0),
+            "preprocessed_query_hit_rate": float(history.get("preprocessed_query_hit_rate", 0.0) or 0.0),
+            "sessions": history.get("sessions", []),
+            "cache_domains": history.get("cache_domains", {}),
+            "http_outcomes": history.get("http_outcomes", {}),
             "net_cloud_token_delta_est": int(history.get("net_cloud_token_delta_est", 0) or 0),
             "cloud_token_overhead_est": int(history.get("cloud_token_overhead_est", 0) or 0),
             "gross_cloud_tokens_avoided_est": int(history.get("gross_cloud_tokens_avoided_est", 0) or 0),
@@ -638,6 +673,122 @@ class TelemetryStore:
         )
         return fp
 
+    def session_start(self, pid: int | None = None, version: str = "") -> int:
+        if not self.enabled:
+            return 0
+        now = time.time()
+        pid = os.getpid() if pid is None else int(pid)
+        self._current_pid = pid
+        self._current_version = str(version)
+        self.process_started_at = now
+        with closing(self._connect()) as con:
+            cur = con.execute(
+                "INSERT INTO process_sessions (pid, version, started_at, last_heartbeat, exit_clean) VALUES (?, ?, ?, ?, 0)",
+                (pid, str(version), now, now),
+            )
+            con.commit()
+            session_id = int(cur.lastrowid or 0)
+        self._current_session_id = session_id
+        return session_id
+
+    def session_heartbeat(self) -> None:
+        if not self.enabled or not self._current_session_id:
+            return
+        now = time.time()
+        try:
+            with closing(self._connect()) as con:
+                con.execute(
+                    "UPDATE process_sessions SET last_heartbeat=? WHERE id=?",
+                    (now, self._current_session_id),
+                )
+                con.commit()
+        except Exception:
+            pass
+
+    def session_stop(self) -> None:
+        if not self.enabled or not self._current_session_id:
+            return
+        now = time.time()
+        try:
+            with closing(self._connect()) as con:
+                con.execute(
+                    "UPDATE process_sessions SET stopped_at=?, last_heartbeat=?, exit_clean=1 WHERE id=?",
+                    (now, now, self._current_session_id),
+                )
+                con.commit()
+        except Exception:
+            pass
+        self._current_session_id = None
+
+    def sessions(self, days: int = 30) -> list[dict[str, Any]]:
+        if not self.enabled:
+            return []
+        cutoff = time.time() - max(1, int(days)) * 86400
+        now = time.time()
+        with closing(self._connect()) as con:
+            rows = con.execute(
+                "SELECT id, pid, version, started_at, stopped_at, last_heartbeat, exit_clean FROM process_sessions WHERE started_at>=? ORDER BY started_at DESC LIMIT 100",
+                (cutoff,),
+            ).fetchall()
+
+            result = []
+            for r in rows:
+                sid, pid, version, started_at, stopped_at, last_heartbeat, exit_clean = r
+                is_current = (sid == self._current_session_id)
+                if is_current and stopped_at is None:
+                    status = "active"
+                    end_time = now
+                elif exit_clean:
+                    status = "clean_stop"
+                    end_time = stopped_at if stopped_at is not None else last_heartbeat
+                else:
+                    status = "crashed"
+                    end_time = stopped_at if stopped_at is not None else last_heartbeat
+
+                duration_seconds = max(0.0, float(end_time - started_at))
+
+                ev_stats = con.execute(
+                    """SELECT COUNT(*),
+                              COALESCE(SUM(cache_hit), 0),
+                              COALESCE(SUM(CASE WHEN event_type='inference' THEN 1 ELSE 0 END), 0),
+                              COALESCE(SUM(CASE WHEN event_type='inference' AND cache_hit=1 THEN 1 ELSE 0 END), 0),
+                              COALESCE(SUM(avoided_cloud_tokens), 0),
+                              COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END), 0)
+                       FROM events WHERE created_at>=? AND created_at<=?""",
+                    (started_at, end_time),
+                ).fetchone()
+
+                total_events = int(ev_stats[0] or 0)
+                total_cache_hits = int(ev_stats[1] or 0)
+                inf_events = int(ev_stats[2] or 0)
+                inf_cache_hits = int(ev_stats[3] or 0)
+                avoided_tokens = int(ev_stats[4] or 0)
+                failures = int(ev_stats[5] or 0)
+
+                if inf_events > 0:
+                    hit_rate = round(inf_cache_hits / inf_events, 4)
+                elif total_events > 0:
+                    hit_rate = round(total_cache_hits / total_events, 4)
+                else:
+                    hit_rate = 0.0
+
+                result.append({
+                    "session_id": sid,
+                    "pid": pid,
+                    "version": version,
+                    "started_at": started_at,
+                    "stopped_at": stopped_at,
+                    "last_heartbeat": last_heartbeat,
+                    "duration_seconds": round(duration_seconds, 1),
+                    "exit_clean": int(exit_clean),
+                    "status": status,
+                    "events": total_events,
+                    "cache_hits": inf_cache_hits if inf_events > 0 else total_cache_hits,
+                    "cache_hit_rate": hit_rate,
+                    "tokens_saved": avoided_tokens,
+                    "failures": failures,
+                })
+            return result
 
     def record_snapshot(self, name: str, metrics: dict[str, Any]) -> None:
         if not self.enabled:
@@ -827,6 +978,7 @@ class TelemetryStore:
             con.execute("DELETE FROM events WHERE created_at<?", (cutoff,))
             con.execute("DELETE FROM errors WHERE created_at<?", (cutoff,))
             con.execute("DELETE FROM snapshots WHERE created_at<?", (cutoff,))
+            con.execute("DELETE FROM process_sessions WHERE started_at<?", (cutoff,))
             count = int(con.execute("SELECT COUNT(*) FROM events").fetchone()[0])
             if count > self.max_events:
                 con.execute("DELETE FROM events WHERE id IN (SELECT id FROM events ORDER BY id ASC LIMIT ?)", (count - self.max_events,))
@@ -851,8 +1003,10 @@ class TelemetryStore:
                 if batch:
                     self._flush_batch(batch)
                     batch.clear()
+                    self.session_heartbeat()
                 if time.monotonic() - last_prune > 60.0:
                     self._prune(); last_prune = time.monotonic()
+                    self.session_heartbeat()
             except Exception as exc:
                 with self._stats_lock:
                     self._stats["writer_errors"] += 1
@@ -896,6 +1050,8 @@ class TelemetryStore:
             return "inference"
         if event_type == "http" and error_type == "policy_block":
             return "policy_rejection"
+        if event_type == "http" and error_type == "compatibility_404":
+            return "compatibility"
         if event_type == "http":
             return "agent_http"
         return "internal"
@@ -903,7 +1059,7 @@ class TelemetryStore:
     @classmethod
     def _cohort_summary(cls, rows: list[tuple[Any, ...]]) -> dict[str, dict[str, Any]]:
         cohorts: dict[str, list[tuple[Any, ...]]] = {
-            "agent_http": [], "inference": [], "policy_rejection": [], "internal": [],
+            "agent_http": [], "inference": [], "policy_rejection": [], "compatibility": [], "internal": [],
         }
         for row in rows:
             cohorts[cls._event_cohort(str(row[0]), str(row[1]))].append(row)
@@ -962,6 +1118,25 @@ class TelemetryStore:
                    FROM events WHERE created_at>=? AND event_type='inference' GROUP BY cache_layer ORDER BY COUNT(*) DESC""",
                 (cutoff,),
             ).fetchall()
+            cache_domains_rows = con.execute(
+                """SELECT CASE
+                           WHEN event_type='inference' THEN 'generation'
+                           WHEN action='/api/command' THEN 'command'
+                           WHEN cache_layer IN ('workspace','workspace-miss') THEN 'repository'
+                           ELSE 'other'
+                       END AS domain,
+                       COUNT(*),COALESCE(SUM(cache_hit),0),COALESCE(SUM(coalesced),0)
+                   FROM events WHERE created_at>=? AND event_type IN ('inference','http')
+                   GROUP BY domain ORDER BY domain""",
+                (cutoff,),
+            ).fetchall()
+            http_outcome_rows = con.execute(
+                """SELECT CASE WHEN error_type='' THEN 'success' ELSE error_type END,
+                          COUNT(*),COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0)
+                   FROM events WHERE created_at>=? AND event_type='http'
+                   GROUP BY error_type ORDER BY COUNT(*) DESC""",
+                (cutoff,),
+            ).fetchall()
             durations = [float(r[0]) for r in con.execute(
                 "SELECT duration_ms FROM events WHERE created_at>=? AND event_type='inference' ORDER BY id DESC LIMIT 10000", (cutoff,)
             )]
@@ -985,6 +1160,13 @@ class TelemetryStore:
                    FROM events WHERE created_at>=? AND event_type='http'
                      AND action LIKE '/api/%'
                      AND action NOT IN ('/api/live','/api/live/status','/api/status','/api/control')""",
+                (cutoff,),
+            ).fetchone()
+            prep_query = con.execute(
+                """SELECT
+                       COALESCE(SUM(CASE WHEN action LIKE '/api/repo/%' OR action='/api/search' OR action='/api/solve/repo' THEN 1 ELSE 0 END),0),
+                       COALESCE(SUM(CASE WHEN (action LIKE '/api/repo/%' OR action='/api/search' OR action='/api/solve/repo') AND preprocessed_hit=1 THEN 1 ELSE 0 END),0)
+                   FROM events WHERE created_at>=? AND event_type='http'""",
                 (cutoff,),
             ).fetchone()
             tool_accounting = con.execute(
@@ -1012,6 +1194,19 @@ class TelemetryStore:
                 (cutoff, cutoff),
             ).fetchall()
         total = int(row[0]); cached = int(row[1]); http_total = int(http[0])
+        cache_domains: dict[str, dict[str, Any]] = {}
+        for domain, events, hits, coalesced in cache_domains_rows:
+            count = int(events)
+            cache_domains[str(domain)] = {
+                "events": count,
+                "hits": int(hits),
+                "coalesced": int(coalesced),
+                "hit_rate": round(int(hits) / count, 4) if count else 0.0,
+            }
+        http_outcomes = {
+            str(category): {"events": int(events), "failures": int(failures)}
+            for category, events, failures in http_outcome_rows
+        }
         tool_accounting_events = int(tool_accounting[0])
         gross_avoided_cloud_tokens = int(tool_accounting[1])
         gross_input_tokens_avoided = int(tool_accounting[2])
@@ -1026,7 +1221,36 @@ class TelemetryStore:
         net_after_schema_token_delta = int(tool_accounting[11])
         schema_adjusted_overhead = int(tool_accounting[12])
         savings_breakdown = {str(source)[:64]: max(0, int(tokens or 0)) for source, tokens in tool_breakdown_rows}
+        if gross_input_tokens_avoided or gross_output_tokens_avoided:
+            # Tool responses are cloud input; tool calls are cloud output. Keep
+            # the token delta signed, but price each side with its own rate.
+            # Input/output counters can overlap (output compaction is diagnostic
+            # when an upstream input baseline won), so only sum them when they
+            # match the additive gross baseline.
+            additive_channels = gross_avoided_cloud_tokens == gross_input_tokens_avoided + gross_output_tokens_avoided
+            priced_input_tokens = gross_input_tokens_avoided if additive_channels or gross_input_tokens_avoided else 0
+            priced_output_tokens = gross_output_tokens_avoided if additive_channels or not gross_input_tokens_avoided else 0
+            net_input_tokens = priced_input_tokens - tool_response_tokens
+            net_output_tokens = priced_output_tokens - tool_request_tokens
+            estimated_input_savings_usd = round(
+                net_input_tokens * self.cloud_input_token_cost_usd_per_million / 1_000_000, 4
+            )
+            estimated_output_savings_usd = round(
+                net_output_tokens * self.cloud_output_token_cost_usd_per_million / 1_000_000, 4
+            )
+            estimated_savings_usd = round(estimated_input_savings_usd + estimated_output_savings_usd, 4)
+            pricing_mode = "input_output"
+        else:
+            # Older telemetry rows only have the blended total. Preserve their
+            # historical estimate until new channel-specific rows replace them.
+            estimated_input_savings_usd = None
+            estimated_output_savings_usd = None
+            estimated_savings_usd = round(net_cloud_token_delta * self.cloud_token_cost_usd_per_million / 1_000_000, 4)
+            pricing_mode = "blended"
 
+        prep_events = int(prep_query[0] or 0)
+        prep_hits = int(prep_query[1] or 0)
+        prep_hit_rate = round(prep_hits / prep_events, 4) if prep_events else 0.0
         cohorts = self._cohort_summary(cohort_rows)
         with self._stats_lock:
             writer = dict(self._stats)
@@ -1035,6 +1259,14 @@ class TelemetryStore:
             "enabled": True, "window_days": max(1, int(days)), "scope": scope,
             "process_started_at": self.process_started_at if scope == "process" else None, "events": total,
             "cache_hits": cached, "cache_hit_rate": round(cached / total, 4) if total else 0.0,
+            "generation_cache_hits": cached,
+            "generation_cache_hit_rate": round(cached / total, 4) if total else 0.0,
+            "preprocessed_query_hits": prep_hits,
+            "preprocessed_query_events": prep_events,
+            "preprocessed_query_hit_rate": prep_hit_rate,
+            "sessions": self.sessions(days=int(days)),
+            "cache_domains": cache_domains,
+            "http_outcomes": http_outcomes,
             "coalesced_waiters": int(row[2]), "local_input_tokens_est": int(row[3]),
             "local_output_tokens_est": int(row[4]),
             "context_tokens_avoided_est": int(row[5]),
@@ -1053,7 +1285,12 @@ class TelemetryStore:
             "token_savings_breakdown": dict(sorted(savings_breakdown.items(), key=lambda kv: (-kv[1], kv[0]))),
             "tool_accounting_events": tool_accounting_events,
             "cloud_token_cost_usd_per_million": self.cloud_token_cost_usd_per_million,
-            "estimated_savings_usd": round(net_cloud_token_delta * self.cloud_token_cost_usd_per_million / 1_000_000, 4),
+            "cloud_input_token_cost_usd_per_million": self.cloud_input_token_cost_usd_per_million,
+            "cloud_output_token_cost_usd_per_million": self.cloud_output_token_cost_usd_per_million,
+            "estimated_input_savings_usd": estimated_input_savings_usd,
+            "estimated_output_savings_usd": estimated_output_savings_usd,
+            "estimated_savings_pricing_mode": pricing_mode,
+            "estimated_savings_usd": estimated_savings_usd,
             "avg_duration_ms": round(float(row[6]), 1), "p50_duration_ms": _percentile(durations, 0.50),
             "p95_duration_ms": _percentile(durations, 0.95), "p99_duration_ms": _percentile(durations, 0.99),
             "aggregate_duration_scope": "inference_only", "cohorts": cohorts,
@@ -1328,9 +1565,39 @@ class TelemetryStore:
         values = [float(row[0] or 0.0) for row in rows]
         return {"samples": len(values), "p95_duration_ms": _percentile(values, 0.95)}
 
+    def get_timeline(self, limit: int = 100, *, _flush: bool = True) -> list[dict[str, Any]]:
+        """Return chronological timeline of agent operations for session replay and visualization."""
+        if not self.enabled:
+            return []
+        if _flush:
+            self.flush(0.2)
+        limit = max(1, min(int(limit), 500))
+        with closing(self._connect()) as con:
+            rows = con.execute(
+                """SELECT id, created_at, event_type, tenant, agent, action, duration_ms, success,
+                          avoided_cloud_tokens, error_type
+                   FROM events ORDER BY id ASC LIMIT ?""", (limit,)
+            ).fetchall()
+        return [
+            {
+                "id": int(r[0]),
+                "timestamp": float(r[1]),
+                "event_type": str(r[2]),
+                "tenant": str(r[3]),
+                "agent": str(r[4]),
+                "action": str(r[5]),
+                "duration_ms": float(r[6] or 0),
+                "success": bool(r[7]),
+                "net_tokens_saved": int(r[8] or 0),
+                "error_type": str(r[9] or ""),
+            }
+            for r in rows
+        ]
+
     def close(self) -> None:
         if not self.enabled:
             return
+        self.session_stop()
         self._stop.set()
         if self._thread and self._thread.is_alive() and threading.current_thread() is not self._thread:
             self._thread.join(timeout=max(1.0, self.flush_interval_seconds * 4))

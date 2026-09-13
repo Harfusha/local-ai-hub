@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from local_ai_hub import accelerators
+from local_ai_hub import hardware
 from local_ai_hub.embeddings import EmbeddingModel
 from local_ai_hub.hardware import _is_integrated_gpu, choose_profile, profile_overrides
 from local_ai_hub.ollama import OllamaRuntime
@@ -34,6 +35,27 @@ def test_intel_arc_shared_memory_is_not_treated_as_dedicated_vram() -> None:
     assert _is_integrated_gpu("intel", "Intel(R) Arc(TM) A370M Graphics", 128) is False
     assert choose_profile(_integrated_hw()["gpus"], 32.0) == "integrated"
     assert choose_profile(_integrated_hw()["gpus"], 8.0) == "cpu"
+
+
+def test_windows_npu_probe_does_not_match_usb_input_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(hardware.os, "name", "nt")
+    monkeypatch.setattr(hardware.shutil, "which", lambda name: "powershell.exe" if name == "powershell" else None)
+
+    def fake_run(cmd: list[str], **_kwargs):
+        assert r"\b(?:NPU|AI Boost|Neural Processing)\b" in cmd[-1]
+        return types.SimpleNamespace(
+            returncode=0,
+            stdout='[{"Name":"Intel(R) AI Boost","Manufacturer":"Intel","Status":"OK"}]',
+        )
+
+    monkeypatch.setattr(
+        hardware,
+        "_run",
+        fake_run,
+    )
+
+    npus = hardware._windows_npus()
+    assert [item["name"] for item in npus] == ["Intel(R) AI Boost"]
 
 
 def test_integrated_profile_is_conservative_and_accelerates_retrieval() -> None:

@@ -22,6 +22,8 @@ MARKER_END = "# END LOCAL AI HUB MANAGED"
 MCP_NAMES = {"local-ai", "serena-local", "codegraph-local"}
 POLICY_BEGIN = "<!-- BEGIN LOCAL AI HUB TOOL POLICY -->"
 POLICY_END = "<!-- END LOCAL AI HUB TOOL POLICY -->"
+TOKEN_ECONOMY_POLICY_BEGIN = "<!-- BEGIN TOKEN ECONOMY POLICY -->"
+TOKEN_ECONOMY_POLICY_END = "<!-- END TOKEN ECONOMY POLICY -->"
 
 
 def expand(value: str) -> Path:
@@ -70,7 +72,8 @@ def clean_policy(path: Path) -> None:
     if not path.exists():
         return
     text = path.read_text(encoding="utf-8")
-    cleaned = re.sub(re.escape(POLICY_BEGIN) + r".*?" + re.escape(POLICY_END), "", text, flags=re.DOTALL).strip() + "\n"
+    cleaned = re.sub(re.escape(POLICY_BEGIN) + r".*?" + re.escape(POLICY_END), "", text, flags=re.DOTALL)
+    cleaned = re.sub(re.escape(TOKEN_ECONOMY_POLICY_BEGIN) + r".*?" + re.escape(TOKEN_ECONOMY_POLICY_END), "", cleaned, flags=re.DOTALL).strip() + "\n"
     if cleaned != text:
         path.write_text(cleaned, encoding="utf-8")
         print(f"cleaned policy {path}")
@@ -113,15 +116,25 @@ def main() -> int:
     clean_policy(home / ".claude" / "CLAUDE.md")
     clean_policy(home / ".gemini" / "GEMINI.md")
 
-    for path in [
-        home / ".agents" / "skills" / "local-ai-orchestrator",
-        codex_home / "skills" / "local-ai-orchestrator",
-        home / ".claude" / "skills" / "local-ai-orchestrator",
-        home / ".gemini" / "skills" / "local-ai-orchestrator",
-    ]:
-        if path.exists():
-            shutil.rmtree(path)
-            print(f"removed {path}")
+    skills_to_clean = [
+        "local-ai-orchestrator",
+        "token-economizer",
+        "caveman",
+        "tool-orchestration",
+        "ollama-quality-routing",
+    ]
+    for skill in skills_to_clean:
+        for base in [
+            home / ".agents" / "skills",
+            codex_home / "skills",
+            home / ".claude" / "skills",
+            home / ".gemini" / "skills",
+            home / ".gemini" / "config" / "skills",
+        ]:
+            path = base / skill
+            if path.exists():
+                shutil.rmtree(path)
+                print(f"removed {path}")
 
     if install.exists() and not args.keep_install:
         try:

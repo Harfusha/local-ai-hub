@@ -138,16 +138,23 @@ def test_classify_quoted_semicolons(temp_dir: Path):
     assert res_val["allowed"] is True
     assert res_val["class"] == "validation"
 
-    # Unquoted semicolon must be blocked
+    # Safe compound commands must be allowed
+    res_safe = broker.classify('git status ; git diff')
+    assert res_safe["allowed"] is True
+    assert res_safe["class"] == "read"
+
+    res_safe_and = broker.classify('git status && git diff')
+    assert res_safe_and["allowed"] is True
+
+    # Dangerous compound command must be blocked
     res2 = broker.classify('python test.py ; rm -rf /')
     assert res2["allowed"] is False
-    assert res2["class"] == "unknown"
-    assert "shell operators are not accepted" in res2["reason"]
+    assert res2["class"] == "dangerous"
 
-    # Unquoted && must be blocked
+    # Dangerous unquoted && must be blocked
     res3 = broker.classify('pytest && rm -rf /')
     assert res3["allowed"] is False
-    assert res3["class"] == "unknown"
+    assert res3["class"] == "dangerous"
 
 
 def test_classify_python_c_dangerous_patterns(temp_dir: Path):
@@ -204,4 +211,167 @@ def test_classify_python_c_dangerous_patterns(temp_dir: Path):
     res6 = broker.classify("python -c \"assert True, 'sanity check'\"")
     assert res6["class"] == "validation"
     assert res6["allowed"] is True
+
+
+def test_broadened_command_classification(tmp_path: Path):
+    broker = CommandBroker({
+        "commands": {
+            "enabled": True,
+            "allow_read": True,
+            "allow_validation": True,
+            "allow_build": True,
+            "allow_mutating": False,
+            "allow_unknown": False,
+            "extra_allowed_tools": ["custom_tool", "my-cli"],
+        },
+        "server": {"state_dir": str(tmp_path)},
+    })
+
+    # Git commands
+    assert broker.classify("git log -p -n 5")["allowed"] is True
+    assert broker.classify("git log -p -n 5")["class"] == "read"
+    assert broker.classify("git --no-pager log")["allowed"] is True
+    assert broker.classify("git --no-pager log")["class"] == "read"
+    assert broker.classify("git -C some/dir status")["allowed"] is True
+    assert broker.classify("git blame src/main.py")["allowed"] is True
+    assert broker.classify("git stash list")["allowed"] is True
+    assert broker.classify("git config --get user.name")["allowed"] is True
+    assert broker.classify("git push origin main")["allowed"] is False
+    assert broker.classify("git reset --hard")["allowed"] is False
+    assert broker.classify("git -c core.pager=rm status")["allowed"] is False
+
+    # Read-only tools
+    for tool_cmd in ("fd pattern", "cat file.txt", "wc -l file.txt", "jq . data.json", "diff a.txt b.txt", "head -n 10 file.txt", "tail -n 20 file.txt", "sort file.txt"):
+        res = broker.classify(tool_cmd)
+        assert res["allowed"] is True, f"Failed for {tool_cmd}: {res}"
+        assert res["class"] == "read"
+
+    # Python commands
+    assert broker.classify("python -m pip list")["allowed"] is True
+    assert broker.classify("python -m pip list")["class"] == "read"
+    assert broker.classify("python -m coverage report")["allowed"] is True
+    assert broker.classify("python -m coverage report")["class"] == "validation"
+    assert broker.classify("python -m json.tool data.json")["allowed"] is True
+    assert broker.classify("python -m json.tool data.json")["class"] == "read"
+    assert broker.classify("python tools/benchmark.py")["allowed"] is True
+    assert broker.classify("python tools/benchmark.py")["class"] == "validation"
+    assert broker.classify("python tools/show_summary.py")["allowed"] is True
+    assert broker.classify("python -m pip install requests")["allowed"] is False
+
+    # Linters and formatters
+    assert broker.classify("flake8 src tests")["allowed"] is True
+    assert broker.classify("pylint src")["allowed"] is True
+    assert broker.classify("black --check .")["allowed"] is True
+    assert broker.classify("black --check .")["class"] == "validation"
+    assert broker.classify("black .")["allowed"] is False  # without --check: mutating
+
+    # Whitelisted custom tools
+    assert broker.classify("custom_tool --foo bar")["allowed"] is True
+    assert broker.classify("my-cli inspect")["allowed"] is True
+
+
+def test_benevolent_command_classification(tmp_path: Path):
+    broker = CommandBroker({
+        "commands": {
+            "enabled": True,
+            "allow_read": True,
+            "allow_validation": True,
+            "allow_build": True,
+            "allow_mutating": False,
+            "allow_unknown": False,
+        },
+        "server": {"state_dir": str(tmp_path)},
+    })
+
+    # Git plumbing and worktree inspection
+    for cmd in (
+        "git worktree list --porcelain",
+        "git stash show",
+        "git stash list",
+        "git for-each-ref --format='%(refname)'",
+        "git cat-file -p HEAD:README.md",
+        "git rev-list --count HEAD",
+        "git diff-tree -r --name-only HEAD",
+        "git hash-object README.md",
+    ):
+        res = broker.classify(cmd)
+        assert res["allowed"] is True, f"Blocked: {cmd} -> {res}"
+        assert res["class"] == "read"
+
+    # Dotnet inspection and build/test
+    for cmd in ("dotnet --info", "dotnet --version", "dotnet --list-sdks"):
+        res = broker.classify(cmd)
+        assert res["allowed"] is True, f"Blocked: {cmd} -> {res}"
+        assert res["class"] == "read"
+
+    assert broker.classify("dotnet test")["allowed"] is True
+    assert broker.classify("dotnet test")["class"] == "validation"
+    assert broker.classify("dotnet build")["allowed"] is True
+    assert broker.classify("dotnet build")["class"] == "build"
+
+    # Windows inspection tools
+    for cmd in ("tasklist", "whoami", "hostname", "systeminfo", "ipconfig", "netstat -ano"):
+        res = broker.classify(cmd)
+        assert res["allowed"] is True, f"Blocked: {cmd} -> {res}"
+        assert res["class"] == "read"
+
+    # Compound commands and pipelines
+    compound_safe = broker.classify("git diff --stat; git status")
+    assert compound_safe["allowed"] is True
+    assert compound_safe["class"] == "read"
+
+    pipe_safe = broker.classify("git ls-files | Select-String 'test'")
+    assert pipe_safe["allowed"] is True
+    assert pipe_safe["class"] == "read"
+
+    pipe_rg = broker.classify("git ls-files | rg test")
+    assert pipe_rg["allowed"] is True
+
+    pipe_findstr = broker.classify("tasklist | findstr Unity")
+    assert pipe_findstr["allowed"] is True
+
+    # PowerShell commands and scripts
+    ps_res = broker.classify("$ErrorActionPreference='Stop'; Get-Process")
+    assert ps_res["allowed"] is True
+    assert ps_res["class"] == "read"
+
+    ps_unity = broker.classify("pwsh -File tools/run/Invoke-WoodboundUnity.ps1 -runTests")
+    assert ps_unity["allowed"] is True
+    assert ps_unity["class"] == "validation"
+
+    # Loopback HTTP in python -c allowed
+    py_http = broker.classify('python -c "import urllib.request; print(urllib.request.urlopen(\'http://127.0.0.1:11435/health\').read())"')
+    assert py_http["allowed"] is True
+
+    # Dangerous commands still blocked
+    assert broker.classify("rm -rf /")["allowed"] is False
+    assert broker.classify("git push origin main")["allowed"] is False
+    assert broker.classify("git reset --hard")["allowed"] is False
+    assert broker.classify("git diff; rm -rf /")["allowed"] is False
+    assert broker.classify("Remove-Item -Recurse C:\\")["allowed"] is False
+
+
+def test_benevolent_command_execution(temp_dir: Path):
+    broker = make_broker(temp_dir)
+
+    # 1. Read-only git worktree list execution
+    res_wt = broker.run("git worktree list", cwd=str(Path.cwd()))
+    assert res_wt["success"] is True
+    assert res_wt["exit_code"] == 0
+
+    # 2. Compound command execution
+    res_compound = broker.run("git status --short; git branch --show-current", cwd=str(Path.cwd()))
+    assert res_compound["success"] is True
+    assert res_compound["exit_code"] == 0
+    assert len(res_compound["stdout"]) > 0
+
+    # 3. Pipeline execution
+    if os.name == "nt":
+        res_pipe = broker.run("git ls-files | Select-String 'commands.py'", cwd=str(Path.cwd()))
+    else:
+        res_pipe = broker.run("git ls-files | grep 'commands.py'", cwd=str(Path.cwd()))
+    assert res_pipe["success"] is True
+    assert res_pipe["exit_code"] == 0
+    assert "commands.py" in res_pipe["stdout"]
+
 

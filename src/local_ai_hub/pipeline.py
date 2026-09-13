@@ -215,9 +215,8 @@ class LocalAgentPipeline:
                     self.services._generate(
                         fast_model,
                         f"TASK:\n{task}\n\nREPO EVIDENCE:\n{packed.get('context','')}",
-                        "You are a read-only repository explorer. Identify the minimum relevant symbols/files, likely root cause or change points, and missing evidence. Do not write prose beyond dense bullets. Never invent unseen repository facts.",
+                        "You are a read-only repository explorer. Terse technical output only: zero conversational filler, pleasantries, or preamble. Identify the minimum relevant symbols/files, likely root cause or change points, and missing evidence. Do not write prose beyond dense bullets. Never invent unseen repository facts.",
                         self.max_explorer_tokens, 0.05, tenant, "pipeline:explorer", 7,
-                        avoided_cloud_tokens=int(packed.get("estimated_tokens", 0)),
                         semantic_query=task, semantic_context_fingerprint=semantic_context_fp, internal=True,
                     )
                 ),
@@ -233,9 +232,8 @@ class LocalAgentPipeline:
             explorer = self.services._generate(
                 fast_model,
                 f"TASK:\n{task}\n\nREPO EVIDENCE:\n{packed.get('context','')}",
-                "You are a read-only repository explorer. Identify the minimum relevant symbols/files, likely root cause or change points, and missing evidence. Do not write prose beyond dense bullets. Never invent unseen repository facts.",
+                "You are a read-only repository explorer. Terse technical output only: zero conversational filler, pleasantries, or preamble. Identify the minimum relevant symbols/files, likely root cause or change points, and missing evidence. Do not write prose beyond dense bullets. Never invent unseen repository facts.",
                 self.max_explorer_tokens, 0.05, tenant, "pipeline:explorer-fallback", 7,
-                avoided_cloud_tokens=int(packed.get("estimated_tokens", 0)),
                 semantic_query=task, semantic_context_fingerprint=semantic_context_fp, internal=True,
             )
         if not explorer.get("success"):
@@ -356,14 +354,14 @@ class LocalAgentPipeline:
                         workspace=args.get("workspace"),
                         seed_context=f"CANDIDATE STATE:\n{json.dumps(worker.get('structured') or {'summary': worker.get('text','')}, ensure_ascii=False, separators=(',',':'))}\n\nEVIDENCE:\n{packed.get('context','')}",
                         bootstrap={"deterministic": deterministic, "code_index": graph},
-                        system_suffix="Independently verify only material correctness gaps, unsafe assumptions, missed edge cases or missing validation. If none, say NO_MATERIAL_ISSUE. Do not praise or restate.",
+                        system_suffix="Terse technical output only: zero conversational filler. Independently verify only material correctness gaps, unsafe assumptions, missed edge cases or missing validation. If none, say NO_MATERIAL_ISSUE. Do not praise or restate.",
                     )
                     if tool_result.get("success"):
                         return tool_result
                 return self.services._generate(
                     critic_model,
                     f"TASK:\n{task}\n\nCANDIDATE STATE:\n{json.dumps(worker.get('structured') or {'summary': worker.get('text','')}, ensure_ascii=False, separators=(',',':'))}\n\nEVIDENCE:\n{packed.get('context','')}",
-                    "You are an independent skeptical critic. Return only concrete correctness gaps, unsafe assumptions, missed edge cases or missing validation. If no material issue is found, say NO_MATERIAL_ISSUE. Do not praise or restate.",
+                    "You are an independent skeptical critic. Terse technical output only: zero conversational filler, pleasantries, or preamble. Return only concrete correctness gaps, unsafe assumptions, missed edge cases or missing validation. If no material issue is found, say NO_MATERIAL_ISSUE. Do not praise or restate.",
                     self.max_critic_tokens, 0.05, tenant, "pipeline:critic", 6,
                     semantic_query=task, semantic_context_fingerprint=semantic_context_fp, internal=True,
                 )

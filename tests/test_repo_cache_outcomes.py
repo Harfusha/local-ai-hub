@@ -23,6 +23,43 @@ def test_repo_cache_outcome_is_promoted_to_top_level_response():
     assert result["cache_layer"] == "workspace"
 
 
+def test_repo_search_reuses_cache_for_equivalent_query_whitespace_and_case(tmp_path: Path):
+    class _Cache:
+        def __init__(self):
+            self.values = {}
+
+        def get_or_compute(self, key, compute):
+            if key in self.values:
+                return self.values[key], True, False
+            value = compute()
+            self.values[key] = value
+            return value, False, False
+
+    class _Tools:
+        def search(self, _root, query, top_k):
+            return {"success": True, "query": query, "results": [{"path": "a.py"}]}
+
+        def search_paths(self, _root, query, _paths, top_k):
+            return {"success": True, "query": query, "results": []}
+
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.repo_flight = _Cache()
+    services._touch_project = lambda _root: None
+    services._repo_cache_state = lambda _root: {"fingerprint": "rev", "kind": "filesystem"}
+    services.repo_tools = _Tools()
+    services.learner = None
+    services.deterministic = None
+    services.code_index = None
+    services.preprocessor = None
+    services.evidence_store = None
+
+    first = services.repo_search(str(tmp_path), "  Cache   Route  ", top_k=12)
+    second = services.repo_search(str(tmp_path), "cache route", top_k=12)
+
+    assert first["cache_hit"] is False
+    assert second["cache_hit"] is True
+
+
 def test_foreground_refresh_skips_active_background_preprocessing(tmp_path: Path):
     class _Index:
         def __init__(self):

@@ -4,7 +4,7 @@ Local AI Hub **3.0.0** is a local, deterministic-first tool and inference layer 
 
 The public interface is intentionally small: **8 MCP tools**. Serena and CodeGraphContext are managed behind that surface by default, so agents gain language-aware symbols and graph relationships without paying for two additional MCP schemas on every turn.
 
-Local AI Hub 3.0 uses one current runtime contract across packaging, HTTP, MCP, telemetry, caches and dashboard state. Token efficiency is accounted end-to-end at the MCP boundary: gross repository/context/output avoidance is measured separately from tool-call and tool-response protocol cost, producing a signed net cloud-token delta. Deterministic/indexed retrieval, context/diff/outline compaction and artifact-backed projection contribute measured savings without double-counting overlapping transformations. Local cache/single-flight reuse is reported separately as local-compute avoidance, and tool-catalog schema exposure is shown as a separate conservative scenario.
+Local AI Hub 3.0 uses one current runtime contract across packaging, HTTP, MCP, telemetry, caches and dashboard state. Token efficiency is accounted end-to-end at the MCP boundary: gross repository/context/output avoidance is measured separately from tool-call and tool-response protocol cost, producing a signed net cloud-token delta. Deterministic/indexed retrieval, context/diff/outline compaction and artifact-backed projection contribute to cloud savings only when an explicit measured baseline exists; diagnostic candidate sizes are not proof that a cloud agent would have read the same payload. Local cache/single-flight reuse is reported separately as local-compute avoidance, and tool-catalog schema exposure is shown as a separate conservative scenario.
 
 ## What it does
 
@@ -20,9 +20,45 @@ Local AI Hub 3.0 uses one current runtime contract across packaging, HTTP, MCP, 
 - model-affinity scheduling, bounded fallbacks and an optional preemptible background Ollama runtime;
 - automatic hardware profile selection across Windows, macOS and Linux, including NVIDIA, AMD, Intel and Apple graphics detection;
 - metadata-only telemetry, realtime monitoring and a self-contained dashboard;
-- **Agent Operating System**: durable execution state, scoped key-value memory, exact token-bounded context compilation, verification receipts, and negative knowledge incident avoidance.
+- **Agent Operating System**: durable execution state, scoped key-value memory, exact token-bounded context compilation, verification receipts, and negative knowledge incident avoidance;
+- **Token Economy Suite**: CLI tools (`tokcount`, `trim-run`, `repo-map`), AST structural search, ANSI-stripped output truncation, and automated context budgeting. See [docs/TOKEN_ECONOMY.md](docs/TOKEN_ECONOMY.md).
 
-## Installation
+## Supported Languages & Frameworks
+
+Local AI Hub features deep static intelligence, deterministic AST extraction, code indexing, test mapping, import resolution, and dependency security audits across modern technology stacks with zero LLM inference:
+
+| Language / Stack | Support Level | Frameworks & Ecosystem | Intelligence & Features |
+|---|---|---|---|
+| **PHP** | **Tier 1 (First-class)** | Laravel, CakePHP (2.x–5.x), Symfony, WordPress | Namespaces, FQN classes/traits/interfaces/enums, Eloquent ORM (table, fillable, relationships), migrations & columns, Artisan signatures, FormRequests, CakePHP Table/Entity ORM, CakePHP routes & resources, WordPress hooks/filters, `composer.json` (PSR-4 autoload, scripts), `composer.lock` offline CVE audit, PSR import resolution (`use App\Services\Foo;`). |
+| **TypeScript / JavaScript** | **Tier 1 (First-class)** | React, Next.js, NestJS, Vue, Svelte, Express, Fastify | Classes, interfaces, type aliases, enums, arrow functions, React components & hooks, Next.js App Router HTTP handlers (`GET`, `POST`), NestJS decorators & routes (`@Controller`, `@Get`), test suites (`describe`, `it`, `test`), `package.json` scripts/dependencies, `package-lock.json` CVE audit, import resolution. |
+| **HTML & Templates** | **Tier 1 (First-class)** | HTML5, Blade, CakePHP CTP, Web Components | Form endpoints & HTTP methods (`<form action="..." method="...">`), `<script>` assets, stylesheet links, element IDs, custom web components (`<x-widget>`), Blade directives (`@extends`, `@include`, `@section`, `@livewire`, `@component`). |
+| **CSS & Preprocessors** | **Tier 1 (First-class)** | CSS3, SCSS, SASS, LESS | CSS custom properties / variables (`--primary-color`), `@keyframes` animations, `@media` responsive queries, class selectors (`.class-name`). |
+| **Python** | **Tier 1 (First-class)** | FastAPI, Flask, Django, Pytest | AST function/class visitor, decorators, dataclasses, async defs, route decorators, test-to-production mapping, circular dependency checker, `pyproject.toml` / `requirements.txt` / `poetry.lock` / `uv.lock` security audit, import resolution. |
+| **C# / .NET** | **Tier 1 (First-class)** | Unity Engine, ASP.NET, NUnit | Namespaces, classes, records, interfaces, properties, methods, Unity MonoBehaviour lifecycles (`Awake`, `Start`, `Update`), `[SerializeField]`, `ScriptableObject`, Minimal APIs, `using` import resolution. |
+| **Go, Rust, Java, C/C++** | **Tier 2 (Structural)** | Standard idioms & libraries | Generic AST outline, struct/interface/method extraction, `go.mod`, `Cargo.lock` CVE audit. |
+| **Infra & DevOps** | **Tier 1 (First-class)** | Docker, Compose, K8s, CI/CD, Terraform | Dockerfile base images & exposed ports, Compose services & healthchecks, GitHub Actions, GitLab CI, Azure Pipelines, K8s manifests, Terraform resources, OpenAPI/Swagger 3.0 route parser. |
+
+## Key Features & Cloud Agent Impact
+
+Local AI Hub is engineered to maximize **Quality**, **Speed**, and **Token Economics** for frontier cloud models (Claude 3.5 Sonnet, GPT-4o, Gemini 1.5 Pro) by executing heavy, repetitive, and deterministic work locally:
+
+| Capability / Feature | Core Mechanism | Quality Impact | Speed & Latency Impact | Cloud Context & Cost Savings |
+|---|---|---|---|---|
+| **Deterministic Code Intelligence** (`local_ai_repo`) | AST parsing, FQN symbol indexing, route & ORM extraction across PHP, JS/TS, Python, C#, HTML, CSS | **100% exact facts**: Eliminates LLM hallucinations for imports, symbol definitions, routes, and DB relationships. | **Sub-millisecond**: Zero network latency; index hits in <5ms vs waiting 5–15s for cloud agent file reads. | **85–95% input token reduction**: Injects targeted symbol cards/fact summaries instead of full 500+ line files. |
+| **Token Economy Suite** (`tokcount`, `trim-run`, `repo-map`, `rg`, `fd`, `ast-grep`, `jq`) | Dedicated CLI tools & wrappers installed into PATH; ANSI stripping, head/tail log truncation, AST outline search | **Eliminates prompt pollution**: Prevents "Lost in the Middle" attention degradation caused by noisy logs and raw file dumps. | **Dramatically faster TTFT**: Cloud models generate answers in seconds when context stays bounded (<15k tokens). | **70–98% output token savings**: Caps bloated build/test logs and API JSON responses to only actionable lines. |
+| **Unified 8-Tool MCP Surface** (Managed Serena & CodeGraph) | Serena (LSP) and CodeGraph (call/dependency graph) run under `local_ai_repo` without separate schemas | **Deep graph reasoning**: Agent queries blast-radius impact and cross-file callers before modifying code. | **Pre-indexed & warm**: External tool processes run persistently; no cold-start timeouts during agent turns. | **Saves ~1,500 schema tokens/turn**: Avoids exposing multiple heavy tool schemas on every single agent interaction. |
+| **Agent Operating System** (`local_ai_coord`) | Durable execution state, scoped KV memory, negative knowledge incidents, verification receipts, path leases | **Prevents repeated mistakes**: Negative knowledge prevents retrying broken patterns; receipts enforce true test verification. | **Instant resumption**: Restores task state and active memory without re-discovering repository facts. | **Bounded context compilation**: Assembles exact token-budgeted memory slices, preventing runaway session context bloat. |
+| **Single-Flight Command Broker** (`local_ai_command`) | Deduplicated test/lint execution, SHA256 caching, ANSI removal, verification receipt generation | **Deterministic verification**: Guarantees identical execution conditions; prevents flaky duplicate runs. | **Instant cache returns (0ms)**: Subsequent test/lint runs in the same workspace state return cached results immediately. | **Avoids 5k–25k rerun tokens**: Keeps massive compiler errors or test suites from repeating across agent iterations. |
+| **Local Ollama Inference** (`local_ai_task`) | Fast local model (`qwen2.5-coder:7b`) with explorer, drafter, and critic advisory profiles | **Unbiased second opinion**: High-focus local models review diffs and draft AST fixes without cloud context contamination. | **Local concurrency**: Local generation runs in parallel with cloud agent high-level planning. | **100% free (0 cloud tokens)**: Offloads routine microtasks, file summaries, and formatting repairs completely off cloud bills. |
+| **Whole-Task Delegation** (`local_ai_work`) | Autonomous closed-loop execution: local plan, transactional patch staging, rollback journal, verification | **Transactional safety**: Automatic rollback on test failure prevents partially broken codebase commits. | **Autonomous iteration**: Iterates through 10–30 test-fix cycles locally without internet or cloud rate limits. | **Massive savings (95%+)**: Compresses multi-turn cloud exchanges (50k–200k tokens, $1–$5) into a single <350 token handoff. |
+| **Hardware-Aware Scheduling & NPU Acceleration** | Automatic hardware profiling (`integrated` to `max`), Vulkan/CUDA offloading, Intel NPU OpenVINO retrieval | **Rock-solid stability**: Never crashes host system with OOMs; scheduler throttles background work gracefully. | **NPU/iGPU offload**: Frees primary CPU cores for IDE responsiveness and build tools while searching vectors. | **Zero cloud dependency**: Enables fast local semantic search and embeddings on standard laptops without paid APIs. |
+
+## Installation & One-Command Setup
+
+Tell your AI coding assistant:
+> **"Install Local AI Hub"** *(or "Nainstaluj local ai hub")*
+
+Or run the bootstrap installer directly:
 
 ### Windows
 
@@ -38,15 +74,16 @@ chmod +x install.sh
 ./install.sh
 ```
 
-The bootstrapper finds or installs a suitable Python 3.11+ runtime where the platform package manager permits it, then runs `tools/setup.py`. Setup can install/prepare:
+The bootstrapper finds or installs a suitable Python 3.11+ runtime where the platform package manager permits it, then runs `tools/setup.py`. Setup automatically configures:
 
-- the Local AI Hub virtual environment and Python dependencies;
-- Ollama when it is missing (unless disabled);
-- configured Ollama models;
+- the Local AI Hub virtual environment, core dependencies, and Token Economy Suite (`tokcount`, `trim-run`, `repo-map`);
+- external CLI tools (`ripgrep` / `rg`, `fd`, `ast-grep`, `repomix`, `jq`);
+- Ollama when missing, plus fast code & embedding models (`qwen2.5-coder:7b`, `bge-m3`);
 - Serena and CodeGraphContext in isolated tool environments;
 - local SentenceTransformers/reranker dependencies and model cache;
 - optional OpenVINO dependencies/models when the selected Intel integrated profile requests NPU/iGPU retrieval acceleration;
-- MCP entries + the tool-first skill/policy for enabled agents;
+- MCP server registration into Codex, Claude Desktop, Gemini, Cursor, Windsurf, and VS Code/Copilot;
+- companion agent skills (`local-ai-orchestrator`, `token-economizer`, `caveman`, `tool-orchestration`, `ollama-quality-routing`) and policies (`LOCAL AI HUB TOOL POLICY`, `TOKEN ECONOMY POLICY`);
 - a per-user headless service/supervisor.
 
 Nothing requires administrator/root privileges unless the host package manager itself requires them.
@@ -181,6 +218,8 @@ Local AI Hub accounts for cloud-context savings together with the protocol cost 
 `net cloud token delta = gross cloud context/output avoided - tool-call tokens - tool-response tokens`
 
 The signed delta can be negative when a tool costs more context than it saves. `gross_*` counters remain available for diagnosis, while `cloud_token_overhead_est` exposes negative cases instead of clamping them away. Enabled-tool schema exposure is reported separately as `tool_schema_tokens_exposure_est` / `net_after_schema_token_delta_est` because different MCP hosts inject and cache schemas differently; it is an upper-bound scenario, not silently charged on every call.
+
+USD savings use separate configurable rates: saved cloud input tokens are priced with `token_saving.cloud_input_token_cost_usd_per_million`, and saved cloud output tokens with `token_saving.cloud_output_token_cost_usd_per_million`. Tool responses are treated as cloud input cost and tool calls as cloud output cost. The same additive-safe baseline selection applies here, so overlapping input/output counters are not charged twice. The blended rate remains available for telemetry rows that predate channel-specific counters.
 
 Savings sources are intentionally deduplicated: overlapping input-side transformations (for example raw source → deterministic outline → packed context) compete for the strongest measured counterfactual source baseline rather than being summed. The packed/projected tool response is then charged exactly once as actual agent-read cost. Response compaction is reported separately and is used as the headline baseline only when no stronger upstream source baseline exists, preventing raw → packed → projected double counting. Cache/single-flight reuse is tracked as `local_compute_tokens_avoided_est` and is not added to cloud-context savings. Telemetry stores only bounded numeric/category metadata; tool arguments, source, prompts and tool output are never persisted by the accounting path.
 

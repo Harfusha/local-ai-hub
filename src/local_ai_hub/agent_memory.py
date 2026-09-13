@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 import sqlite3
 import threading
 import time
@@ -298,6 +300,51 @@ class MemoryStore:
                             WHERE expires_at IS NOT NULL;
                             """
                         )
+                        con.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS agent_entity_relations (
+                                relation_id TEXT PRIMARY KEY,
+                                source_entity TEXT NOT NULL,
+                                relation TEXT NOT NULL,
+                                target_entity TEXT NOT NULL,
+                                weight REAL NOT NULL DEFAULT 1.0,
+                                metadata TEXT NOT NULL DEFAULT '{}',
+                                created_at REAL NOT NULL,
+                                updated_at REAL NOT NULL
+                            );
+                            """
+                        )
+                        con.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_entity_rel_source ON agent_entity_relations(source_entity);"
+                        )
+                        con.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_entity_rel_target ON agent_entity_relations(target_entity);"
+                        )
+                        con.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_entity_rel_type ON agent_entity_relations(relation);"
+                        )
+                        try:
+                            con.execute(
+                                """
+                                CREATE VIRTUAL TABLE IF NOT EXISTS agent_memory_fts USING fts5(
+                                    record_id UNINDEXED,
+                                    key,
+                                    value,
+                                    tokenize='unicode61'
+                                );
+                                """
+                            )
+                        except Exception:
+                            pass
+                        con.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS agent_memory_embeddings (
+                                record_id TEXT PRIMARY KEY,
+                                embedding TEXT NOT NULL,
+                                created_at REAL NOT NULL
+                            );
+                            """
+                        )
                 finally:
                     con.close()
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
@@ -420,6 +467,9 @@ class MemoryStore:
         limit: int = 100,
         *,
         include_expired: bool = False,
+        semantic: bool = True,
+        services: Any = None,
+        min_score: float = 0.1,
     ) -> list[MemoryRecord]:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return []
@@ -443,22 +493,142 @@ class MemoryStore:
         if key is not None:
             sql += " AND key = ?"
             params.append(key)
+        if status is not None:
+            sql += " AND status = ?"
+            params.append(status.value if hasattr(status, "value") else str(status))
+
+        base_sql = sql
+        base_params = list(params)
+
         if query:
             sql += " AND (key LIKE ? OR value LIKE ?)"
             pat = f"%{query}%"
             params.extend([pat, pat])
-        if status is not None:
-            sql += " AND status = ?"
-            params.append(status.value if hasattr(status, "value") else str(status))
+
         sql += " ORDER BY updated_at DESC LIMIT ?"
         params.append(max(1, int(limit)))
 
         con = connect_sqlite(self.state_store.db_path)
         try:
             cur = con.execute(sql, tuple(params))
-            return [self._row_to_record(row) for row in cur.fetchall()]
+            exact_records = [self._row_to_record(row) for row in cur.fetchall()]
+
+            if not query or not semantic:
+                return exact_records
+
+            # Hybrid Semantic Search: Vector Embeddings + FTS5 BM25 + Token Overlap
+            fts_scores: dict[str, float] = {}
+            clean_terms = [re.sub(r"[^\w_]", "", t) for t in query.split()]
+            clean_terms = [t for t in clean_terms if len(t) > 1]
+            if clean_terms:
+                fts_query = " OR ".join(f'"{t}"' for t in clean_terms[:8])
+                try:
+                    fts_cur = con.execute("SELECT record_id, rank FROM agent_memory_fts WHERE agent_memory_fts MATCH ? ORDER BY rank LIMIT 100", (fts_query,))
+                    for r_id, rk in fts_cur.fetchall():
+                        fts_scores[r_id] = 1.0 / (1.0 + abs(float(rk)))
+                except Exception:
+                    pass
+
+            vec_scores: dict[str, float] = {}
+            embed_fn = getattr(services, "embed", None)
+            if embed_fn and callable(embed_fn):
+                try:
+                    emb_res = embed_fn([query], tenant="agent")
+                    q_vec = emb_res.get("embeddings", [[]])[0]
+                    if q_vec:
+                        cur_emb = con.execute("SELECT record_id, embedding FROM agent_memory_embeddings")
+                        for r_id, emb_json in cur_emb.fetchall():
+                            rec_vec = json.loads(emb_json)
+                            sim = self._cosine_similarity(q_vec, rec_vec)
+                            if sim >= min_score:
+                                vec_scores[r_id] = sim
+                except Exception:
+                    pass
+
+            cand_ids = set(fts_scores.keys()) | set(vec_scores.keys())
+            cand_records: list[MemoryRecord] = []
+            if cand_ids:
+                placeholders = ",".join("?" for _ in cand_ids)
+                fetch_sql = base_sql + f" AND record_id IN ({placeholders})"
+                fetch_rows = con.execute(fetch_sql, tuple(base_params) + tuple(cand_ids)).fetchall()
+                cand_records.extend(self._row_to_record(row) for row in fetch_rows)
+
+            cand_sql = base_sql + " ORDER BY updated_at DESC LIMIT 100"
+            cand_rows = con.execute(cand_sql, tuple(base_params)).fetchall()
+            seen_cand = {r.record_id for r in cand_records}
+            for row in cand_rows:
+                rec = self._row_to_record(row)
+                if rec.record_id not in seen_cand:
+                    cand_records.append(rec)
+                    seen_cand.add(rec.record_id)
+
+            scored: list[tuple[float, MemoryRecord]] = []
+            seen_ids = set()
+
+            for rec in exact_records:
+                seen_ids.add(rec.record_id)
+                v_s = vec_scores.get(rec.record_id, 0.0)
+                f_s = fts_scores.get(rec.record_id, 0.0)
+                base = 1.0 + (v_s * 0.5 + f_s * 0.3)
+                scored.append((base + float(rec.confidence) * 0.2, rec))
+
+            for rec in cand_records:
+                if rec.record_id in seen_ids:
+                    continue
+                v_s = vec_scores.get(rec.record_id, 0.0)
+                f_s = fts_scores.get(rec.record_id, 0.0)
+                if v_s > 0 or f_s > 0:
+                    hybrid_s = (v_s * 0.65 + f_s * 0.35) * 0.8 + float(rec.confidence) * 0.2
+                    scored.append((hybrid_s, rec))
+                    seen_ids.add(rec.record_id)
+                elif clean_terms:
+                    content = f"{rec.key} {json.dumps(rec.value, default=str)}".lower()
+                    matches = sum(1 for term in clean_terms if term in content)
+                    if matches > 0:
+                        term_score = matches / len(clean_terms)
+                        if term_score >= min_score:
+                            combined_score = term_score * 0.8 + float(rec.confidence) * 0.2
+                            scored.append((combined_score, rec))
+                            seen_ids.add(rec.record_id)
+
+            scored.sort(key=lambda item: (-item[0], -item[1].updated_at))
+            return [item[1] for item in scored[:max(1, int(limit))]]
         finally:
             con.close()
+
+    @staticmethod
+    def _cosine_similarity(a: list[float], b: list[float]) -> float:
+        if not a or not b or len(a) != len(b):
+            return 0.0
+        dot = sum(x * y for x, y in zip(a, b))
+        na = math.sqrt(sum(x * x for x in a))
+        nb = math.sqrt(sum(y * y for y in b))
+        return dot / (na * nb) if na and nb else 0.0
+
+    def store_embedding(self, record_id: str, embedding: list[float]) -> bool:
+        if not self.state_store.enabled or not embedding:
+            return False
+        self._init_table()
+        now = time.time()
+        emb_json = json.dumps([float(x) for x in embedding])
+        def _insert():
+            con = connect_sqlite(self.state_store.db_path)
+            try:
+                with con:
+                    con.execute(
+                        """
+                        INSERT INTO agent_memory_embeddings (record_id, embedding, created_at)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(record_id) DO UPDATE SET
+                            embedding = excluded.embedding,
+                            created_at = excluded.created_at
+                        """,
+                        (record_id, emb_json, now),
+                    )
+            finally:
+                con.close()
+        retry_busy(_insert, retries=5, base_delay_seconds=0.02)
+        return True
 
     def reap_expired(self, now: float | None = None) -> int:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
@@ -545,6 +715,15 @@ class MemoryStore:
                         record.expires_at,
                     ),
                 )
+                try:
+                    val_str = json.dumps(record.value) if isinstance(record.value, (dict, list)) else str(record.value)
+                    con.execute("DELETE FROM agent_memory_fts WHERE record_id = ?", (record.record_id,))
+                    con.execute(
+                        "INSERT INTO agent_memory_fts(record_id, key, value) VALUES(?, ?, ?)",
+                        (record.record_id, str(record.key), val_str),
+                    )
+                except Exception:
+                    pass
                 con.execute("COMMIT")
             except Exception:
                 try:
@@ -712,5 +891,141 @@ class MemoryStore:
             "compacted_groups": len(created_records),
             "compacted_records": total_compacted,
             "created_records": created_records,
+        }
+
+    def record_relation(
+        self,
+        source: str,
+        relation: str,
+        target: str,
+        *,
+        weight: float = 1.0,
+        metadata: dict[str, Any] | None = None,
+        actor: str = "agent",
+    ) -> dict[str, Any]:
+        self._init_table()
+        rel_id = f"rel_{uuid.uuid4().hex[:12]}"
+        now = time.time()
+        meta_json = json.dumps(metadata or {}, ensure_ascii=False)
+        def _insert():
+            con = connect_sqlite(self.state_store.db_path)
+            try:
+                with con:
+                    con.execute(
+                        """
+                        INSERT INTO agent_entity_relations (
+                            relation_id, source_entity, relation, target_entity, weight, metadata, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (rel_id, source.strip(), relation.strip(), target.strip(), float(weight), meta_json, now, now),
+                    )
+            finally:
+                con.close()
+        retry_busy(_insert, retries=5, base_delay_seconds=0.02)
+        event = AgentEvent.create(
+            stream_id=f"relation:{source}:{target}",
+            kind="relation.recorded",
+            payload={"relation_id": rel_id, "source": source, "relation": relation, "target": target, "weight": weight},
+            actor=actor,
+        )
+        self.state_store.append(event)
+        return {
+            "success": True,
+            "relation_id": rel_id,
+            "source_entity": source,
+            "relation": relation,
+            "target_entity": target,
+            "weight": weight,
+        }
+
+    def find_relations(
+        self,
+        entity: str = "",
+        *,
+        source_entity: str | None = None,
+        target_entity: str | None = None,
+        direction: str = "both",
+        relation: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        self._init_table()
+        if source_entity:
+            ent = source_entity.strip()
+            direction = "out"
+        elif target_entity:
+            ent = target_entity.strip()
+            direction = "in"
+        else:
+            ent = entity.strip() if entity else ""
+
+        def _fetch():
+            con = connect_sqlite(self.state_store.db_path)
+            try:
+                params: list[Any] = []
+                where_clauses: list[str] = []
+                if ent:
+                    if direction == "out":
+                        where_clauses.append("source_entity = ?")
+                        params.append(ent)
+                    elif direction == "in":
+                        where_clauses.append("target_entity = ?")
+                        params.append(ent)
+                    else:
+                        where_clauses.append("(source_entity = ? OR target_entity = ?)")
+                        params.extend([ent, ent])
+                if relation:
+                    where_clauses.append("relation = ?")
+                    params.append(relation.strip())
+                sql = "SELECT relation_id, source_entity, relation, target_entity, weight, metadata, updated_at FROM agent_entity_relations"
+                if where_clauses:
+                    sql += " WHERE " + " AND ".join(where_clauses)
+                sql += " ORDER BY weight DESC, updated_at DESC LIMIT ?"
+                params.append(max(1, int(limit)))
+                cur = con.execute(sql, params)
+                results = []
+                for row in cur.fetchall():
+                    results.append({
+                        "relation_id": row[0],
+                        "source_entity": row[1],
+                        "relation": row[2],
+                        "target_entity": row[3],
+                        "weight": float(row[4]),
+                        "metadata": json.loads(row[5]) if row[5] else {},
+                        "updated_at": float(row[6]),
+                    })
+                return results
+            finally:
+                con.close()
+        return retry_busy(_fetch, retries=5, base_delay_seconds=0.02)
+
+    def traverse_graph(
+        self,
+        start_entity: str,
+        *,
+        max_depth: int = 2,
+        max_nodes: int = 50,
+    ) -> dict[str, Any]:
+        self._init_table()
+        visited_nodes: set[str] = {start_entity.strip()}
+        collected_edges: list[dict[str, Any]] = []
+        queue = [(start_entity.strip(), 0)]
+        while queue and len(visited_nodes) < max_nodes:
+            curr_node, depth = queue.pop(0)
+            if depth >= max_depth:
+                continue
+            rels = self.find_relations(curr_node, direction="both", limit=20)
+            for r in rels:
+                collected_edges.append(r)
+                neighbor = r["target_entity"] if r["source_entity"] == curr_node else r["source_entity"]
+                if neighbor not in visited_nodes and len(visited_nodes) < max_nodes:
+                    visited_nodes.add(neighbor)
+                    queue.append((neighbor, depth + 1))
+        return {
+            "success": True,
+            "start_entity": start_entity,
+            "nodes": sorted(list(visited_nodes)),
+            "edges": collected_edges,
+            "total_nodes": len(visited_nodes),
+            "total_edges": len(collected_edges),
         }
 
