@@ -345,6 +345,10 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         },
         "background_gpu": {"enabled": False, "parallel": 1},
         "cpu_retrieval": {"embedding_batch_size": 4, "reranker_batch_size": 2, "reranker_max_length": 512, "embedding_trust_remote_code": False},
+        "deterministic": {"context_raw_evidence": 3, "context_max_chars": 3600},
+        "search": {"context_top_k": 8, "max_snippets_per_file": 2},
+        "rag": {"rerank_candidates": 8},
+        "execution_planner": {"direct_confidence": 0.85, "worker_below_confidence": 0.72},
         "model_execution": {
             "background": {"parallel": 1, "context_tokens": 8192, "max_context_tokens": 16384, "max_prompt_tokens": 7000},
             "fast": {"parallel": 1, "context_tokens": 16384, "max_context_tokens": 24576, "max_prompt_tokens": 14000},
@@ -384,9 +388,14 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "kv_cache_type": "q4_0",
             "keep_alive": "5m",
             "flash_attention": True,
+            "num_threads": max(1, (os.cpu_count() or 4) - 2),
         },
         "background_gpu": {"enabled": False, "parallel": 1, "file_batch_size": 1, "module_batch_size": 1},
         "cpu_retrieval": {"embedding_batch_size": 4, "reranker_batch_size": 2, "reranker_max_length": 512, "embedding_trust_remote_code": False},
+        "deterministic": {"context_raw_evidence": 3, "context_max_chars": 3600},
+        "search": {"context_top_k": 8, "max_snippets_per_file": 2},
+        "rag": {"rerank_candidates": 8},
+        "execution_planner": {"direct_confidence": 0.85, "worker_below_confidence": 0.72},
         "local_pipeline": {
             "same_model_worker_passes": 1,
         },
@@ -515,8 +524,8 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
         for gpu in detected.get("gpus", []) if isinstance(gpu, dict)
     )
     has_npu = bool(detected.get("npus"))
-    if profile_name == "integrated" and (intel_integrated or has_npu):
-        # Retrieval models are small enough to be useful on Intel NPU/iGPU while
+    if (profile_name in ("integrated", "cpu") and has_npu) or (profile_name == "integrated" and intel_integrated):
+        # Retrieval models are small enough to be useful on Intel/AMD NPU/iGPU while
         # leaving the shared-memory LLM lane serial and conservative. Runtime
         # failures fall back to the next OpenVINO device and finally CPU.
         result = _deep_merge_dict(result, {

@@ -37,6 +37,7 @@ class RepetitionWatchdog:
         self.buffer = ""
         self.lines: list[str] = []
         self.loop_detected = False
+        self.cycle_length: int = 0
 
     def push(self, delta: str) -> bool:
         """Push streaming delta. Returns True if a repetitive loop is detected."""
@@ -52,7 +53,7 @@ class RepetitionWatchdog:
             norm = cleaned.lstrip("-* \t").strip()
             if len(norm) >= self.min_line_len:
                 self.lines.append(norm)
-                if len(self.lines) > 20:
+                if len(self.lines) > 30:
                     self.lines.pop(0)
                 if self._check_loop():
                     self.loop_detected = True
@@ -63,9 +64,12 @@ class RepetitionWatchdog:
         n = len(self.lines)
         if n < self.max_repeat:
             return False
+        # 1-line repetition: X, X, X
         last = self.lines[-1]
         if all(self.lines[-i] == last for i in range(1, self.max_repeat + 1)):
+            self.cycle_length = 1
             return True
+        # 2-line cycle: A, B, A, B, A, B
         if n >= self.max_repeat * 2:
             a, b = self.lines[-2], self.lines[-1]
             if a != b:
@@ -75,8 +79,46 @@ class RepetitionWatchdog:
                         is_2_cycle = False
                         break
                 if is_2_cycle:
+                    self.cycle_length = 2
+                    return True
+        # 3-line cycle: A, B, C, A, B, C, A, B, C
+        if n >= self.max_repeat * 3:
+            a, b, c = self.lines[-3], self.lines[-2], self.lines[-1]
+            if len({a, b, c}) >= 2:
+                is_3_cycle = True
+                for k in range(1, self.max_repeat + 1):
+                    if (
+                        self.lines[-3 * k] != a
+                        or self.lines[-3 * k + 1] != b
+                        or self.lines[-3 * k + 2] != c
+                    ):
+                        is_3_cycle = False
+                        break
+                if is_3_cycle:
+                    self.cycle_length = 3
                     return True
         return False
+
+    def trim_trailing_loop(self, text: str) -> str:
+        """Trims redundant trailing repeated loop cycles from the generated response."""
+        if not self.loop_detected or self.cycle_length <= 0 or not text:
+            return text
+        text_lines = text.splitlines(keepends=True)
+        if not text_lines:
+            return text
+        # Remove (self.max_repeat - 1) * self.cycle_length trailing repeating lines
+        lines_to_remove = (self.max_repeat - 1) * self.cycle_length
+        removed = 0
+        idx = len(text_lines) - 1
+        while idx >= 0 and removed < lines_to_remove:
+            line_content = text_lines[idx].strip()
+            norm = line_content.lstrip("-* \t").strip()
+            if len(norm) >= self.min_line_len:
+                removed += 1
+            idx -= 1
+        if idx >= 0:
+            return "".join(text_lines[:idx + 1]).rstrip() + "\n"
+        return text
 
 
 class OllamaRuntime:
@@ -199,10 +241,16 @@ class OllamaRuntime:
                         if chunk.get("done") is True:
                             break
                 if generated:
-                    final["response"] = "".join(generated)
+                    resp_text = "".join(generated)
+                    if watchdog.loop_detected:
+                        resp_text = watchdog.trim_trailing_loop(resp_text)
+                    final["response"] = resp_text
                 if chat:
                     message = dict(final.get("message") or {})
-                    message["content"] = "".join(chat)
+                    chat_text = "".join(chat)
+                    if watchdog.loop_detected:
+                        chat_text = watchdog.trim_trailing_loop(chat_text)
+                    message["content"] = chat_text
                     final["message"] = message
                 if final and not final.get("error"):
                     final["_lah_retry_count"] = max(0, attempt - 1)
@@ -261,6 +309,7 @@ class OllamaRuntime:
         text_parts: list[str] = []
         message_parts: list[str] = []
         final: dict[str, Any] = {}
+        watchdog = RepetitionWatchdog(max_repeat=3)
         try:
             with urlopen(req, timeout=total_timeout) as response:
                 for raw_line in response:
@@ -284,10 +333,18 @@ class OllamaRuntime:
                         return {"error": str(chunk.get("error"))}
                     token = chunk.get("response")
                     if token is not None:
-                        text_parts.append(str(token))
+                        text = str(token)
+                        text_parts.append(text)
+                        if watchdog.push(text):
+                            final["_lah_repetition_loop_detected"] = True
+                            break
                     message = chunk.get("message")
                     if isinstance(message, dict) and message.get("content") is not None:
-                        message_parts.append(str(message.get("content")))
+                        text = str(message.get("content"))
+                        message_parts.append(text)
+                        if watchdog.push(text):
+                            final["_lah_repetition_loop_detected"] = True
+                            break
                     final.update(chunk)
                     if chunk.get("done") is True:
                         break
@@ -305,10 +362,16 @@ class OllamaRuntime:
             return {"error": f"{type(exc).__name__}: {exc}"}
 
         if text_parts:
-            final["response"] = "".join(text_parts)
+            resp_text = "".join(text_parts)
+            if watchdog.loop_detected:
+                resp_text = watchdog.trim_trailing_loop(resp_text)
+            final["response"] = resp_text
         if message_parts:
             message = dict(final.get("message") or {})
-            message["content"] = "".join(message_parts)
+            chat_text = "".join(message_parts)
+            if watchdog.loop_detected:
+                chat_text = watchdog.trim_trailing_loop(chat_text)
+            message["content"] = chat_text
             final["message"] = message
         final["_lah_retry_count"] = 0
         return final

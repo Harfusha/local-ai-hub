@@ -182,11 +182,20 @@ def test_profile_overrides_cpu_and_integrated_defaults():
     assert cpu["ollama"]["keep_alive"] == "5m"
     assert cpu["preprocessing"]["cpu_workers"] == 1
     assert cpu["local_pipeline"]["same_model_worker_passes"] == 1
+    assert cpu["deterministic"]["context_raw_evidence"] == 3
+    assert cpu["search"]["context_top_k"] == 8
+    assert cpu["rag"]["rerank_candidates"] == 8
+    assert cpu["execution_planner"]["direct_confidence"] == 0.85
 
     assert integ["ollama"]["kv_cache_type"] == "q4_0"
     assert integ["ollama"]["keep_alive"] == "5m"
+    assert integ["ollama"]["num_threads"] > 0
     assert integ["preprocessing"]["cpu_workers"] == 1
     assert integ["local_pipeline"]["same_model_worker_passes"] == 1
+    assert integ["deterministic"]["context_raw_evidence"] == 3
+    assert integ["search"]["context_top_k"] == 8
+    assert integ["rag"]["rerank_candidates"] == 8
+    assert integ["execution_planner"]["direct_confidence"] == 0.85
 
 
 def test_ollama_runtime_environment_threads_and_keepalive(tmp_path):
@@ -200,4 +209,74 @@ def test_ollama_runtime_environment_threads_and_keepalive(tmp_path):
     assert env["OLLAMA_NUM_THREADS"] == "4"
     assert env["OLLAMA_KEEP_ALIVE"] == "5m"
     assert env["OLLAMA_KV_CACHE_TYPE"] == "q4_0"
+
+
+def test_repetition_watchdog_detects_3_line_cycle_and_trims():
+    watchdog = RepetitionWatchdog(max_repeat=3)
+    chunks = [
+        "Header 1\n",
+        "- **Section A**:\n",
+        "- **Section B**:\n",
+        "- **Section C**:\n",
+        "- **Section A**:\n",
+        "- **Section B**:\n",
+        "- **Section C**:\n",
+        "- **Section A**:\n",
+        "- **Section B**:\n",
+        "- **Section C**:\n",
+    ]
+    detected = False
+    for c in chunks:
+        if watchdog.push(c):
+            detected = True
+            break
+
+    assert detected is True
+    assert watchdog.loop_detected is True
+    assert watchdog.cycle_length == 3
+
+    full_text = "".join(chunks)
+    trimmed = watchdog.trim_trailing_loop(full_text)
+    # Trimmed should retain Header 1 and only ONE copy of Sections A, B, C
+    assert "- **Section A**:" in trimmed
+    assert trimmed.count("- **Section A**:") == 1
+    assert trimmed.count("- **Section B**:") == 1
+    assert trimmed.count("- **Section C**:") == 1
+
+
+def test_repetition_watchdog_trim_2_line_cycle():
+    watchdog = RepetitionWatchdog(max_repeat=3)
+    chunks = [
+        "Plan overview:\n",
+        "- **User Request**:\n",
+        "- **Policy Check**:\n",
+        "- **User Request**:\n",
+        "- **Policy Check**:\n",
+        "- **User Request**:\n",
+        "- **Policy Check**:\n",
+    ]
+    for c in chunks:
+        if watchdog.push(c):
+            break
+
+    assert watchdog.loop_detected is True
+    assert watchdog.cycle_length == 2
+    full_text = "".join(chunks)
+    trimmed = watchdog.trim_trailing_loop(full_text)
+    assert trimmed.count("- **User Request**:") == 1
+    assert trimmed.count("- **Policy Check**:") == 1
+    assert "Plan overview:" in trimmed
+
+
+def test_profile_overrides_cpu_profile_with_npu():
+    detected = {
+        "ram": {"total_gb": 16.0},
+        "gpus": [],
+        "npus": [{"vendor": "intel", "name": "Intel AI Boost NPU"}],
+    }
+    overrides = profile_overrides("cpu", detected)
+    assert overrides["models"]["embedding_backend"] == "openvino"
+    assert overrides["models"]["reranker_backend"] == "openvino"
+    assert overrides["openvino"]["enabled"] is True
+
 

@@ -144,7 +144,6 @@ class LocalAgentPipeline:
         det_context_threshold = float(det_cfg.get("context_confidence", 0.80))
         use_det_context = (
             getattr(self.services, "deterministic", None) is not None
-            and self.tool_agent is not None
             and deterministic.get("success")
             and float(deterministic.get("confidence", 0.0) or 0.0) >= det_context_threshold
             and (deterministic.get("evidence") or deterministic.get("dependencies") or deterministic.get("scripts") or deterministic.get("facts") or deterministic.get("code_index"))
@@ -216,7 +215,7 @@ class LocalAgentPipeline:
                     self.services._generate(
                         fast_model,
                         f"TASK:\n{task}\n\nREPO EVIDENCE:\n{packed.get('context','')}",
-                        "You are a read-only repository explorer. Terse technical output only: zero conversational filler, pleasantries, or preamble. Identify the minimum relevant symbols/files, likely root cause or change points, and missing evidence. Do not write prose beyond dense bullets. Never invent unseen repository facts.",
+                        "You are a read-only repository explorer. Terse technical output only: zero conversational filler, pleasantries, or preamble. Identify the minimum relevant symbols/files, likely root cause or change points, and missing evidence. Return a concise flat list of at most 5 items. Never nest bullet points, never repeat section headers or categories, and do not quote large evidence blocks. Never invent unseen repository facts.",
                         self.max_explorer_tokens, 0.05, tenant, "pipeline:explorer", 7,
                         semantic_query=task, semantic_context_fingerprint=semantic_context_fp, internal=True,
                     )
@@ -233,7 +232,7 @@ class LocalAgentPipeline:
             explorer = self.services._generate(
                 fast_model,
                 f"TASK:\n{task}\n\nREPO EVIDENCE:\n{packed.get('context','')}",
-                "You are a read-only repository explorer. Terse technical output only: zero conversational filler, pleasantries, or preamble. Identify the minimum relevant symbols/files, likely root cause or change points, and missing evidence. Do not write prose beyond dense bullets. Never invent unseen repository facts.",
+                "You are a read-only repository explorer. Terse technical output only: zero conversational filler, pleasantries, or preamble. Identify the minimum relevant symbols/files, likely root cause or change points, and missing evidence. Return a concise flat list of at most 5 items. Never nest bullet points, never repeat section headers or categories, and do not quote large evidence blocks. Never invent unseen repository facts.",
                 self.max_explorer_tokens, 0.05, tenant, "pipeline:explorer-fallback", 7,
                 semantic_query=task, semantic_context_fingerprint=semantic_context_fp, internal=True,
             )
@@ -274,7 +273,7 @@ class LocalAgentPipeline:
                         workspace=args.get("workspace"),
                         seed_context=f"EXPLORER STATE:\n{json.dumps(explorer.get('structured') or {'summary': explorer.get('text','')}, ensure_ascii=False, separators=(',',':'))}\n\nEVIDENCE:\n{packed.get('context','')}",
                         bootstrap={"deterministic": deterministic, "code_index": graph},
-                        system_suffix="Produce the smallest correct diagnosis/implementation plan, exact file/symbol actions, edge cases and validation. Do not repeat evidence.",
+                        system_suffix="Produce the smallest correct diagnosis/implementation plan, exact file/symbol actions, edge cases and validation. Return a concise flat list. Never nest bullet points or repeat section headers. Do not repeat evidence.",
                     )
                     if tool_result.get("success"):
                         return tool_result
@@ -283,7 +282,7 @@ class LocalAgentPipeline:
                 return self.services._generate(
                     worker_model,
                     f"TASK:\n{task}\n\nEXPLORER STATE:\n{json.dumps(explorer.get('structured') or {'summary': explorer.get('text','')}, ensure_ascii=False, separators=(',',':'))}\n\nEXACT/RETRIEVED EVIDENCE:\n{packed.get('context','')}",
-                    "You are the scoped implementation worker. Produce the smallest correct implementation/diagnosis plan, explicit file/symbol actions, edge cases and validation. Do not repeat evidence. If evidence is insufficient, say exactly what is missing.",
+                    "You are the scoped implementation worker. Produce the smallest correct implementation/diagnosis plan, explicit file/symbol actions, edge cases and validation. Return a concise flat list. Never nest bullet points or repeat section headers. Do not repeat evidence. If evidence is insufficient, say exactly what is missing.",
                     self.max_worker_tokens, 0.08, tenant, "pipeline:worker", 6,
                     semantic_query=task, semantic_context_fingerprint=semantic_context_fp, internal=True,
                 )
@@ -313,14 +312,14 @@ class LocalAgentPipeline:
                             workspace=args.get("workspace"),
                             seed_context=f"FIRST PASS:\n{json.dumps(first_state, ensure_ascii=False, separators=(',',':'))}\n\nEVIDENCE:\n{packed.get('context','')}",
                             bootstrap={"deterministic": deterministic, "code_index": graph},
-                            system_suffix="Second pass: independently verify the first fast-tier result, correct concrete mistakes, remove unsupported claims, and return only the improved final actions/risks/validation.",
+                            system_suffix="Second pass: independently verify the first fast-tier result, correct concrete mistakes, remove unsupported claims, and return only the improved final actions/risks/validation as a concise flat list without nested bullets or repeating headers.",
                         )
                         if refined.get("success"):
                             return refined
                     return self.services._generate(
                         worker_model,
                         f"TASK:\n{task}\n\nFIRST PASS:\n{json.dumps(first_state, ensure_ascii=False, separators=(',',':'))}\n\nEVIDENCE:\n{packed.get('context','')}",
-                        "You are the second-pass verifier/refiner. Correct concrete mistakes, remove unsupported claims and return only the improved final plan/actions/risks/validation. Do not restate evidence.",
+                        "You are the second-pass verifier/refiner. Return a concise flat list. Never nest bullet points or repeat section headers. Correct concrete mistakes, remove unsupported claims and return only the improved final plan/actions/risks/validation. Do not restate evidence.",
                         max(700, int(self.max_worker_tokens * 0.8)), 0.03, tenant, "pipeline:worker-refine", 6,
                         semantic_query=task, semantic_context_fingerprint=semantic_context_fp, internal=True,
                     )
@@ -355,14 +354,14 @@ class LocalAgentPipeline:
                         workspace=args.get("workspace"),
                         seed_context=f"CANDIDATE STATE:\n{json.dumps(worker.get('structured') or {'summary': worker.get('text','')}, ensure_ascii=False, separators=(',',':'))}\n\nEVIDENCE:\n{packed.get('context','')}",
                         bootstrap={"deterministic": deterministic, "code_index": graph},
-                        system_suffix="Terse technical output only: zero conversational filler. Independently verify only material correctness gaps, unsafe assumptions, missed edge cases or missing validation. If none, say NO_MATERIAL_ISSUE. Do not praise or restate.",
+                        system_suffix="Terse technical output only: zero conversational filler. Independently verify only material correctness gaps, unsafe assumptions, missed edge cases or missing validation. Return a flat list without nested bullets. If none, say NO_MATERIAL_ISSUE. Do not praise or restate.",
                     )
                     if tool_result.get("success"):
                         return tool_result
                 return self.services._generate(
                     critic_model,
                     f"TASK:\n{task}\n\nCANDIDATE STATE:\n{json.dumps(worker.get('structured') or {'summary': worker.get('text','')}, ensure_ascii=False, separators=(',',':'))}\n\nEVIDENCE:\n{packed.get('context','')}",
-                    "You are an independent skeptical critic. Terse technical output only: zero conversational filler, pleasantries, or preamble. Return only concrete correctness gaps, unsafe assumptions, missed edge cases or missing validation. If no material issue is found, say NO_MATERIAL_ISSUE. Do not praise or restate.",
+                    "You are an independent skeptical critic. Terse technical output only: zero conversational filler, pleasantries, or preamble. Return only concrete correctness gaps, unsafe assumptions, missed edge cases or missing validation as a flat list without nested bullets. If no material issue is found, say NO_MATERIAL_ISSUE. Do not praise or restate.",
                     self.max_critic_tokens, 0.05, tenant, "pipeline:critic", 6,
                     semantic_query=task, semantic_context_fingerprint=semantic_context_fp, internal=True,
                 )

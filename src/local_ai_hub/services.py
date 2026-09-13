@@ -2136,7 +2136,7 @@ class LocalAIServices:
             prompt = f"INSTRUCTION:\n{instruction}\n\nCHUNK {index + 1}/{len(chunks)}:\n{chunk}"
             result = self._generate(
                 general_model, prompt,
-                "Compress aggressively. Preserve only information needed to reconstruct decisions/facts. Use dense bullets when useful.",
+                "Compress aggressively. Preserve only information needed to reconstruct decisions/facts. Use a flat list without nested bullets when useful.",
                 per_chunk_out, 0.1, tenant, "compress:map", 4,
                 internal=True,
             )
