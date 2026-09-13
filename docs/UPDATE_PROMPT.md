@@ -67,6 +67,18 @@ Run the platform installer with the active hardware profile to apply dependency 
      ```bash
      "$HOME/.local-ai-hub/.venv/bin/python" "$HOME/.local-ai-hub/tools/doctor.py"
      ```
+4. **Hardware Acceleration Check (iGPU / NPU)**:
+   - On Windows with integrated graphics (Intel Arc / Iris Xe, AMD Radeon) and no dedicated NVIDIA GPU:
+     Verify that `OLLAMA_VULKAN=1` is set in the environment so Ollama offloads LLMs to the iGPU instead of using 100% CPU:
+     ```powershell
+     [System.Environment]::SetEnvironmentVariable('OLLAMA_VULKAN', '1', 'User')
+     ```
+   - If an NPU (Intel AI Boost / AMD XDNA) or Intel iGPU is present:
+     Ensure OpenVINO dependencies are installed in the venv to offload embeddings and reranking from CPU:
+     ```powershell
+     & "$HOME\.local-ai-hub\.venv\Scripts\pip.exe" install -r "$HOME\.local-ai-hub\requirements-openvino.txt"
+     & "$HOME\.local-ai-hub\.venv\Scripts\python.exe" "$HOME\.local-ai-hub\tools\prefetch_openvino.py"
+     ```
 
 ---
 

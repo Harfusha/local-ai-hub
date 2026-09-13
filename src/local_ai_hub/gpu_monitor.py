@@ -96,9 +96,14 @@ def _windows_live() -> dict[str, Any] | None:
             total_mb = round(raw_ram / (1024 * 1024), 1)
             vendor = "amd" if "amd" in name.lower() or "radeon" in name.lower() else "intel" if "intel" in name.lower() else "nvidia" if "nvidia" in name.lower() else "generic"
             backend = "directml" if vendor in {"amd", "intel"} else "cuda" if vendor == "nvidia" else "directx"
+            from .hardware import _is_integrated_gpu
+            is_integrated = _is_integrated_gpu(vendor, name, int(total_mb))
             return {
                 "available": True, "vendor": vendor, "backend": backend, "gpu_name": name,
-                "gpu_utilization_pct": 0.0, "vram_used_mb": 0.0, "vram_total_mb": total_mb,
+                "gpu_utilization_pct": 0.0, "vram_used_mb": 0.0,
+                "vram_total_mb": 0.0 if is_integrated else total_mb,
+                "reported_adapter_memory_mb": total_mb if is_integrated else 0.0,
+                "integrated": is_integrated, "shared_memory": is_integrated,
                 "vram_used_pct": 0.0, "live_metrics": True, "timestamp": time.time(),
             }
     except Exception:

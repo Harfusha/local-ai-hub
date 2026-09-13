@@ -123,6 +123,11 @@ class ModelExecutionPolicy:
     def parallel_limit(self, model: str) -> int:
         return self.profile(model).parallel_limit
 
+    @staticmethod
+    def _is_small_model(model: str) -> bool:
+        low = str(model or "").lower()
+        return any(tag in low for tag in ("0.5b", "1.5b", "3b", ":1b", ":2b"))
+
     def apply_payload(
         self,
         model: str,
@@ -150,6 +155,24 @@ class ModelExecutionPolicy:
             vram_free_mb=vram_free_mb,
         )
         options["num_ctx"] = profile.num_ctx
+        if self._is_small_model(model):
+            if "repeat_penalty" not in options:
+                options["repeat_penalty"] = 1.18
+            if "repeat_last_n" not in options:
+                options["repeat_last_n"] = 128
+            temp = options.get("temperature")
+            if temp is not None:
+                try:
+                    f_temp = float(temp)
+                    if 0.0 < f_temp < 0.18:
+                        options["temperature"] = 0.20
+                except (ValueError, TypeError):
+                    pass
+        else:
+            if "repeat_penalty" not in options:
+                options["repeat_penalty"] = 1.12
+            if "repeat_last_n" not in options:
+                options["repeat_last_n"] = 64
         clean["options"] = options
         if self._supports_thinking(model) and ("think" not in clean or not preserve_explicit_think):
             clean["think"] = profile.think

@@ -31,12 +31,13 @@ class VRAMBalancer:
 
             gpu = get_gpu_telemetry()
             available = bool(gpu.get("available", False))
+            is_integrated = bool(gpu.get("integrated", False)) or bool(gpu.get("shared_memory", False))
             total_mb = float(gpu.get("vram_total_mb", 0) or gpu.get("unified_memory_mb", 0) or 0)
             used_mb = float(gpu.get("vram_used_mb", 0) or 0)
             avail_mb = max(0.0, total_mb - used_mb) if total_mb > 0 else 0.0
             used_pct = float(gpu.get("vram_used_pct", 0) or (round(100.0 * used_mb / max(1.0, total_mb), 1) if total_mb > 0 else 0.0))
 
-            if not available or total_mb <= 0:
+            if not available or total_mb <= 0 or is_integrated:
                 level = "nominal"
                 factor = 1.0
                 strategy = "full_capacity"

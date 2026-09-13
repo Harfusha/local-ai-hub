@@ -629,7 +629,18 @@ def main() -> int:
             except Exception:
                 pass
 
-    needs_openvino = embedding_backend == "openvino" or reranker_backend == "openvino"
+    hw_detected = cfg.get("_hardware", {})
+    detected_gpus = hw_detected.get("gpus", []) if isinstance(hw_detected, dict) else []
+    detected_npus = hw_detected.get("npus", []) if isinstance(hw_detected, dict) else []
+    has_intel_gpu = any(str(g.get("vendor", "")).lower() == "intel" for g in detected_gpus if isinstance(g, dict))
+    has_npu_hw = bool(detected_npus)
+
+    needs_openvino = (
+        embedding_backend == "openvino"
+        or reranker_backend == "openvino"
+        or has_npu_hw
+        or (has_intel_gpu and cfg.get("_hardware", {}).get("profile") == "integrated")
+    )
     ov_cfg = cfg.get("openvino", {})
     install_openvino = (
         needs_openvino
@@ -657,6 +668,20 @@ def main() -> int:
         configure_agents(install_dir, hub_python, serena, codegraph, cfg, include_companion=include_companion)
     else:
         write_generated_agent_manifests(install_dir, hub_python, serena, codegraph, cfg)
+
+    if os.name == "nt":
+        has_nvidia = any(str(g.get("vendor", "")).lower() == "nvidia" for g in detected_gpus if isinstance(g, dict))
+        has_igpu = any(bool(g.get("integrated")) or "intel" in str(g.get("name", "")).lower() or "radeon" in str(g.get("name", "")).lower() for g in detected_gpus if isinstance(g, dict))
+        is_integrated_profile = cfg.get("_hardware", {}).get("profile") == "integrated" or cfg.get("hardware", {}).get("profile") == "integrated"
+        if (has_igpu or is_integrated_profile) and not has_nvidia:
+            if not os.environ.get("OLLAMA_VULKAN"):
+                try:
+                    ps_cmd = "[System.Environment]::SetEnvironmentVariable('OLLAMA_VULKAN', '1', 'User')"
+                    subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], check=False, timeout=10)
+                    os.environ["OLLAMA_VULKAN"] = "1"
+                    log("Configured OLLAMA_VULKAN=1 in Windows user environment for iGPU acceleration.")
+                except Exception as exc:
+                    log(f"Notice: Could not set OLLAMA_VULKAN environment variable: {exc}")
 
     ensure_ollama_for_setup(cfg, install_dir, allow_install=not args.skip_ollama_install)
     pull_ollama_models(cfg)

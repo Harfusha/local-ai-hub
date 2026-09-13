@@ -466,11 +466,32 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
     import copy
     result = copy.deepcopy(PROFILE_OVERRIDES.get(profile_name, PROFILE_OVERRIDES["balanced"]))
     detected = detected or {}
+    ram_gb = float(detected.get("ram", {}).get("total_gb", 0) or 0)
+    if profile_name == "integrated":
+        if ram_gb >= 24:
+            # 32 GB shared memory laptops have ample capacity for 32k context for 3B/1.5B
+            result = _deep_merge_dict(result, {
+                "model_execution": {
+                    "fast": {"context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 24000},
+                    "smart": {"context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 24000},
+                    "generic": {"context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 24000},
+                }
+            })
+        elif ram_gb >= 16:
+            # 16 GB shared memory laptops scale comfortably to 16k context
+            result = _deep_merge_dict(result, {
+                "model_execution": {
+                    "fast": {"context_tokens": 16384, "max_context_tokens": 24576, "max_prompt_tokens": 14000},
+                    "smart": {"context_tokens": 16384, "max_context_tokens": 24576, "max_prompt_tokens": 14000},
+                    "generic": {"context_tokens": 16384, "max_context_tokens": 24576, "max_prompt_tokens": 14000},
+                }
+            })
     intel_integrated = any(
         str(gpu.get("vendor", "")).lower() == "intel" and bool(gpu.get("integrated"))
         for gpu in detected.get("gpus", []) if isinstance(gpu, dict)
     )
-    if profile_name == "integrated" and intel_integrated:
+    has_npu = bool(detected.get("npus"))
+    if profile_name == "integrated" and (intel_integrated or has_npu):
         # Retrieval models are small enough to be useful on Intel NPU/iGPU while
         # leaving the shared-memory LLM lane serial and conservative. Runtime
         # failures fall back to the next OpenVINO device and finally CPU.

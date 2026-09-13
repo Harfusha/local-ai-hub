@@ -28,6 +28,57 @@ from .process_utils import hidden_run_kwargs, set_process_priority, terminate_tr
 from .model_policy import ModelExecutionPolicy
 
 
+class RepetitionWatchdog:
+    """Detects repetitive degenerative generation loops in streaming LLM responses."""
+
+    def __init__(self, max_repeat: int = 3, min_line_len: int = 4):
+        self.max_repeat = max_repeat
+        self.min_line_len = min_line_len
+        self.buffer = ""
+        self.lines: list[str] = []
+        self.loop_detected = False
+
+    def push(self, delta: str) -> bool:
+        """Push streaming delta. Returns True if a repetitive loop is detected."""
+        if self.loop_detected or not delta:
+            return self.loop_detected
+        self.buffer += delta
+        if "\n" not in self.buffer:
+            return False
+        parts = self.buffer.split("\n")
+        self.buffer = parts[-1]
+        for line in parts[:-1]:
+            cleaned = line.strip()
+            norm = cleaned.lstrip("-* \t").strip()
+            if len(norm) >= self.min_line_len:
+                self.lines.append(norm)
+                if len(self.lines) > 20:
+                    self.lines.pop(0)
+                if self._check_loop():
+                    self.loop_detected = True
+                    return True
+        return False
+
+    def _check_loop(self) -> bool:
+        n = len(self.lines)
+        if n < self.max_repeat:
+            return False
+        last = self.lines[-1]
+        if all(self.lines[-i] == last for i in range(1, self.max_repeat + 1)):
+            return True
+        if n >= self.max_repeat * 2:
+            a, b = self.lines[-2], self.lines[-1]
+            if a != b:
+                is_2_cycle = True
+                for k in range(1, self.max_repeat + 1):
+                    if self.lines[-2 * k] != a or self.lines[-2 * k + 1] != b:
+                        is_2_cycle = False
+                        break
+                if is_2_cycle:
+                    return True
+        return False
+
+
 class OllamaRuntime:
     def __init__(self, config: dict[str, Any], *, managed_name: str = "ollama"):
         self.config = config
@@ -108,6 +159,7 @@ class OllamaRuntime:
             generated: list[str] = []
             chat: list[str] = []
             final: dict[str, Any] = {}
+            watchdog = RepetitionWatchdog(max_repeat=3)
             req = Request(f"{self.base_url}{endpoint}", data=body, headers=headers)
             try:
                 with urlopen(req, timeout=max(0.05, remaining)) as response:
@@ -132,11 +184,17 @@ class OllamaRuntime:
                             text = str(delta); generated.append(text)
                             try: on_chunk(text)
                             except Exception: pass
+                            if watchdog.push(text):
+                                final["_lah_repetition_loop_detected"] = True
+                                break
                         message = chunk.get("message")
                         if isinstance(message, dict) and message.get("content") is not None:
                             text = str(message["content"]); chat.append(text)
                             try: on_chunk(text)
                             except Exception: pass
+                            if watchdog.push(text):
+                                final["_lah_repetition_loop_detected"] = True
+                                break
                         final.update(chunk)
                         if chunk.get("done") is True:
                             break

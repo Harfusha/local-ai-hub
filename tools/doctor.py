@@ -101,7 +101,20 @@ warnings: list[str] = []
 openvino_requested = str(models.get("embedding_backend", "")).lower() == "openvino" or str(models.get("reranker_backend", "")).lower() == "openvino"
 openvino_installed = runtime_module_available("openvino")
 if openvino_requested and not openvino_installed:
-    warnings.append("OpenVINO acceleration is configured but the runtime is not installed in the hub environment; embeddings/reranking will fall back to CPU where allowed")
+    warnings.append("OpenVINO acceleration is configured but runtime is not installed in hub environment; embeddings/reranking will fall back to CPU. Run: pip install -r requirements-openvino.txt")
+
+hw_detected = status.get("hardware") or cfg.get("_hardware") or {}
+gpus = hw_detected.get("gpus", []) if isinstance(hw_detected, dict) else []
+npus = hw_detected.get("npus", []) if isinstance(hw_detected, dict) else []
+has_nvidia = any(str(g.get("vendor", "")).lower() == "nvidia" for g in gpus if isinstance(g, dict))
+has_igpu = any(bool(g.get("integrated")) or "intel" in str(g.get("name", "")).lower() or "radeon" in str(g.get("name", "")).lower() for g in gpus if isinstance(g, dict))
+
+if npus and not openvino_installed:
+    warnings.append("NPU hardware detected, but openvino is not installed in hub environment. Embeddings and reranker will burn CPU. Run: pip install -r requirements-openvino.txt && python tools/prefetch_openvino.py")
+
+if os.name == "nt" and (has_igpu or cfg.get("hardware", {}).get("profile") == "integrated") and not has_nvidia:
+    if not os.environ.get("OLLAMA_VULKAN"):
+        warnings.append("Integrated GPU detected on Windows, but OLLAMA_VULKAN is not set in the environment. Ollama may run LLMs entirely on CPU. Run in PowerShell: [System.Environment]::SetEnvironmentVariable('OLLAMA_VULKAN', '1', 'User') and restart Ollama.")
 try:
     validate_network_security(cfg)
     network_security = "ok"
