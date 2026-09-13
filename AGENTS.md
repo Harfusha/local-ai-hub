@@ -63,6 +63,10 @@ Local model default: when generation is needed, use `qwen2.5-coder:1.5b` for ord
 - Treat client disconnects as normal cancellation/noise, not hub-fatal errors.
 - Never persist prompts, source text, model output, secrets, or full project paths in observability telemetry.
 - Do not add migration shims or deprecated aliases to this initial-release branch. Derived SQLite state is disposable and may be rebuilt.
+- Every release and update MUST publish and maintain matching agent prompts:
+  - `docs/INSTALL_PROMPT.md`: canonical bootstrap prompt for any agent in any repository.
+  - `docs/UPDATE_PROMPT.md`: canonical update prompt for any agent in any repository to upgrade hub components and refresh instructions.
+  - Any changes to tool policies, schemas, flags, or default models must be synced into both prompt files.
 
 ## Validation
 

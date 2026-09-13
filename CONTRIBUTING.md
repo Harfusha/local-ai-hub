@@ -60,6 +60,7 @@ Keep the subject line under 72 characters. Optionally add a body after a blank l
 - [ ] All subprocess/network calls have timeouts
 - [ ] Optional backends degrade gracefully (no hard failures for missing Serena/CodeGraph)
 - [ ] Updated CHANGELOG.md with a brief entry if user-visible
+- [ ] Maintained/synced agent prompts in `docs/INSTALL_PROMPT.md` and `docs/UPDATE_PROMPT.md` for any policy, tool, or behavior updates
 
 ## Reporting bugs
 
