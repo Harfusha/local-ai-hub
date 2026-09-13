@@ -34,8 +34,9 @@ class LocalAgentPipeline:
         self.max_explorer_tokens = int(cfg.get("explorer_max_tokens", 650))
         self.max_worker_tokens = int(cfg.get("worker_max_tokens", 1300))
         self.max_critic_tokens = int(cfg.get("critic_max_tokens", 750))
-        self.max_final_chars = int(cfg.get("canonical_max_chars", 7000))
-        self.same_model_worker_passes = max(1, int(cfg.get("same_model_worker_passes", 2)))
+        hw_prof = str(config.get("_hardware", {}).get("profile") or config.get("hardware", {}).get("profile") or "").lower()
+        default_passes = 1 if hw_prof in {"cpu", "integrated", "low"} else 2
+        self.same_model_worker_passes = max(1, int(cfg.get("same_model_worker_passes", default_passes)))
         self.second_pass_min_complexity_score = int(cfg.get("second_pass_min_complexity_score", 2))
         self.explorer_skip_worker_confidence = float(cfg.get("explorer_skip_worker_confidence", 0.90))
         self.direct_smart_enabled = bool(cfg.get("direct_smart_enabled", "direct_smart_complexity_score" in cfg or "direct_smart_risk_score" in cfg))

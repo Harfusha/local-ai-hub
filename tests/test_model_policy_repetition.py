@@ -171,3 +171,33 @@ def test_hardware_integrated_profile_enables_openvino_with_npu():
     assert overrides["models"]["embedding_backend"] == "openvino"
     assert overrides["models"]["reranker_backend"] == "openvino"
     assert overrides["openvino"]["enabled"] is True
+
+
+def test_profile_overrides_cpu_and_integrated_defaults():
+    from local_ai_hub.hardware import PROFILE_OVERRIDES
+    cpu = PROFILE_OVERRIDES["cpu"]
+    integ = PROFILE_OVERRIDES["integrated"]
+
+    assert cpu["ollama"]["kv_cache_type"] == "q4_0"
+    assert cpu["ollama"]["keep_alive"] == "5m"
+    assert cpu["preprocessing"]["cpu_workers"] == 1
+    assert cpu["local_pipeline"]["same_model_worker_passes"] == 1
+
+    assert integ["ollama"]["kv_cache_type"] == "q4_0"
+    assert integ["ollama"]["keep_alive"] == "5m"
+    assert integ["preprocessing"]["cpu_workers"] == 1
+    assert integ["local_pipeline"]["same_model_worker_passes"] == 1
+
+
+def test_ollama_runtime_environment_threads_and_keepalive(tmp_path):
+    from local_ai_hub.ollama import OllamaRuntime
+    cfg = {
+        "server": {"ollama_url": "http://127.0.0.1:11434", "state_dir": str(tmp_path)},
+        "ollama": {"num_threads": 4, "keep_alive": "5m", "kv_cache_type": "q4_0"},
+    }
+    runtime = OllamaRuntime(cfg)
+    env = runtime._configured_environment()
+    assert env["OLLAMA_NUM_THREADS"] == "4"
+    assert env["OLLAMA_KEEP_ALIVE"] == "5m"
+    assert env["OLLAMA_KV_CACHE_TYPE"] == "q4_0"
+

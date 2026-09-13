@@ -353,7 +353,14 @@ class OllamaRuntime:
             if ":" in host and not host.startswith("["):
                 host = f"[{host}]"
             env["OLLAMA_HOST"] = f"{host}:{parsed.port or 11434}"
-        env.setdefault("OLLAMA_KEEP_ALIVE", "-1m")
+        keep_alive = str(cfg.get("keep_alive", "")).strip()
+        if keep_alive:
+            env["OLLAMA_KEEP_ALIVE"] = keep_alive
+        else:
+            env.setdefault("OLLAMA_KEEP_ALIVE", "-1m")
+        num_threads = cfg.get("num_threads")
+        if num_threads:
+            env["OLLAMA_NUM_THREADS"] = str(int(num_threads))
         return env
 
     def ensure_running(self) -> bool:

@@ -334,9 +334,15 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "reasoning": "qwen2.5-coder:3b",
             "general": "qwen2.5-coder:1.5b",
         },
-        "features": {"reranker": False},
-        "scheduler": {"max_parallel": 1, "max_inflight_per_tenant": 1},
-        "ollama": {"num_parallel": 1},
+        "features": {"reranker": True},
+        "scheduler": {"max_parallel": 1, "max_inflight_per_tenant": 1, "max_loaded_models": 1},
+        "ollama": {
+            "num_parallel": 1,
+            "kv_cache_type": "q4_0",
+            "keep_alive": "5m",
+            "flash_attention": True,
+            "num_threads": max(1, (os.cpu_count() or 4) - 2),
+        },
         "background_gpu": {"enabled": False, "parallel": 1},
         "cpu_retrieval": {"embedding_batch_size": 4, "reranker_batch_size": 2, "reranker_max_length": 512, "embedding_trust_remote_code": False},
         "model_execution": {
@@ -344,7 +350,14 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "fast": {"parallel": 1, "context_tokens": 16384, "max_context_tokens": 24576, "max_prompt_tokens": 14000},
             "smart": {"parallel": 1, "context_tokens": 16384, "max_context_tokens": 24576, "max_prompt_tokens": 14000},
         },
-        "preprocessing": {"cpu_worker_sleep_seconds": 0.08},
+        "preprocessing": {
+            "cpu_workers": 1,
+            "cpu_worker_sleep_seconds": 0.20,
+            "idle_grace_seconds": 30.0,
+        },
+        "local_pipeline": {
+            "same_model_worker_passes": 1,
+        },
         "ollama_subagents": {"profiles": {
             "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
             "qwen-drafter": {"model": "qwen2.5-coder:1.5b"},
@@ -363,9 +376,20 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         # Ollama currently requires explicit admission for integrated GPUs. Keep
         # this lane serial and let Ollama fall back to CPU if Vulkan/iGPU support
         # is unavailable rather than forcing an accelerator backend.
-        "ollama": {"num_parallel": 1, "allow_integrated_gpu": True, "enable_vulkan": True, "gpu_overhead_bytes": 1073741824},
+        "ollama": {
+            "num_parallel": 1,
+            "allow_integrated_gpu": True,
+            "enable_vulkan": True,
+            "gpu_overhead_bytes": 1073741824,
+            "kv_cache_type": "q4_0",
+            "keep_alive": "5m",
+            "flash_attention": True,
+        },
         "background_gpu": {"enabled": False, "parallel": 1, "file_batch_size": 1, "module_batch_size": 1},
         "cpu_retrieval": {"embedding_batch_size": 4, "reranker_batch_size": 2, "reranker_max_length": 512, "embedding_trust_remote_code": False},
+        "local_pipeline": {
+            "same_model_worker_passes": 1,
+        },
         "model_execution": {
             "background": {"parallel": 1, "context_tokens": 4096, "max_context_tokens": 8192, "max_prompt_tokens": 3500},
             "fast": {"parallel": 1, "context_tokens": 8192, "max_context_tokens": 12288, "max_prompt_tokens": 7000},
@@ -380,11 +404,11 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             }
         },
         "preprocessing": {
-            "idle_grace_seconds": 15.0,
+            "idle_grace_seconds": 30.0,
             "max_preprocessing_projects": 1,
-            "cpu_workers": 2,
-            "rag_files_per_step": 8,
-            "cpu_worker_sleep_seconds": 0.10,
+            "cpu_workers": 1,
+            "rag_files_per_step": 6,
+            "cpu_worker_sleep_seconds": 0.20,
         },
         "prewarm": {"enabled": False},
         "async_jobs": {"max_pending": 16},

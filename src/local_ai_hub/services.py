@@ -1859,6 +1859,17 @@ class LocalAIServices:
         # This is an optimization hint only; if cards are absent or select nothing,
         # the full lexical search remains the correctness fallback.
         candidate_paths: list[str] = []
+        # Prioritize files explicitly named in the query/task (e.g. AGENTS.md, src/main.py)
+        root_path = Path(root)
+        for token in query.split():
+            clean_tok = token.strip("`'\"(),:;[]{}*")
+            if clean_tok and ("." in clean_tok or "/" in clean_tok or "\\" in clean_tok):
+                try:
+                    rel_p = clean_tok.replace("\\", "/").lstrip("./")
+                    if (root_path / rel_p).exists() and rel_p not in candidate_paths:
+                        candidate_paths.append(rel_p)
+                except Exception:
+                    pass
         if self.deterministic is not None:
             try: candidate_paths.extend(self.deterministic.related_paths(root, query, limit=28))
             except Exception: pass
