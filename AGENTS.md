@@ -2,24 +2,33 @@
 
 <!-- BEGIN LOCAL AI HUB TOOL POLICY -->
 Trigger map:
+- bounded health/cache/telemetry inspection (never poll): `local_ai_status`
 - repository facts/files/symbols: `local_ai_repo`
 - tests/lint/typecheck/build: `local_ai_command`
 - exact source/evidence text: `local_ai_artifact`
 - shared findings or overlapping edits: `local_ai_coord`
+- non-trivial multi-step, long-running, delegated, or acceptance-criteria work: `local_ai_coord` Agent OS task contracts, checkpoints, context, and verified completion
 - semantic retrieval after indexed paths are insufficient: `local_ai_rag`
 - bounded local generation or second opinion: `local_ai_task`
-- closed whole-task delegation with verified handoff: `local_ai_work`
+- image understanding/audio transcription: `local_ai_task` `vision`/`transcribe` actions
+- model/device benchmarks, evaluation/drift checks, candidate workflows, and async jobs: `local_ai_task` actions when the request calls for them
+- curated knowledge sets and document/diagram ingestion: `local_ai_rag` docset/ingest actions
+- requested automated repair, affected-test selection, format/lint fixes, and mock/replay workflows: `local_ai_command` specialized actions
+- symbol navigation and code relationships: `local_ai_repo` semantic/graph actions through configured Serena/CodeGraph backends
+- operator-facing live dashboard: `/dashboard` on the configured Hub server; use `local_ai_status` for bounded agent-side checks
+- Agent OS task and incident state: `local_ai_status(detail="agent_state")`
 
 Recipes (guidance, not gates):
 - Recipe — Explore: preprocess once, use the cheapest repository action, fetch only required evidence slices.
 - Recipe — Change: gather indexed evidence, use `local_ai_repo(action="solve")` before edits, claim `local_ai_coord` leases for overlapping paths, then run indexed impact/review before validation.
 - Recipe — Validate: route repeatable commands through `local_ai_command`, reuse cached results, use `review_diff` or `security_audit` when relevant.
+- Recipe — Durable execution: create a task contract before substantial work, checkpoint phase changes, attach validation receipts, and complete only after `verify_completion` passes.
 - Recipe — Retrieve: use `local_ai_rag` only after deterministic/indexed paths are exhausted.
 - A recipe step may be skipped when irrelevant; one bounded fallback is allowed when Hub is unavailable.
 
 Delegation is the default for any task with useful bounded independent work.
 
-- Use `qwen2.5-coder:1.5b-instruct-q5_K_M` only for preprocessing, `qwen2.5-coder:3b-instruct-q5_K_M` for default fast/general generation, and `qwen2.5-coder:7b-instruct-q5_K_M` only for complex or high-risk work. Keep deterministic simple tasks enabled and prefer indexed/deterministic Hub actions where they suffice.
+- Use `qwen2.5-coder:0.5b` for background preprocessing, `qwen2.5-coder:1.5b` for quick tasks, `qwen2.5-coder:3b` for complex tasks, and `qwen2.5-coder:7b` for the hardest reasoning. Keep deterministic simple tasks enabled and prefer indexed/deterministic Hub actions where they suffice.
 - Use the native Codex `multi_agent_v1__spawn_agent` path only for useful independent bounded work or an explicit Codex-subagent request.
 - Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
 - Do not duplicate the same scope across agents. Keep final decisions, edits, and integration in Codex.
@@ -38,7 +47,7 @@ For every non-trivial repository task, use Local AI Hub before broad native disc
 
 Adoption gate: `local_ai_command` alone is never sufficient for a repository task. The first useful Hub operation must be `local_ai_repo` (preprocess plus the cheapest applicable deterministic/code-index/search/context action); use the command broker only for commands, after repository evidence exists. For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence and before native edits. After edits, use the applicable indexed impact/review/security/evidence action before final validation.
 
-Cheapest path: deterministic -> code_index/search -> semantic/graph -> context/solve -> RAG -> qwen2.5-coder:3b-instruct-q5_K_M last.
+Cheapest path: deterministic -> code_index/search -> semantic/graph -> context/solve -> RAG -> qwen2.5-coder:1.5b for quick generation -> qwen2.5-coder:3b for complex work -> qwen2.5-coder:7b for highest reasoning.
  Stop escalating as soon as a cheaper layer provides enough evidence. Do not fan out overlapping retrieval layers in parallel for the same question. Before native `find`/`rg`/`grep`/recursive glob/tree or opening more than two files for discovery, use that hub path first. Reuse fresh evidence IDs, artifact slices, memos and cache hits;
  do not repeat the same hub action with the same root/query while repository state is unchanged.
 
@@ -47,9 +56,10 @@ Treat result state as a protocol: `cache_hit`/`coalesced` means reuse the result
 Route test/lint/typecheck/build/read-only commands through `local_ai_command` before running them natively. If it returns `in_progress=true`, do not launch a duplicate command. Before an expensive `solve`/model call, search coordination memos for reusable findings. For overlapping multi-agent edits use `local_ai_coord` leases and store concise reusable discoveries as memos.
  After edits, use indexed impact/review plus targeted cached validation; do not rerun broad discovery merely because files changed. `force` and `preprocess_refresh` are recovery/admin controls, never retry buttons. If an optional backend degrades, accept the hub's deterministic/index fallback. If the hub itself is unavailable, make one bounded health/retry attempt, then fall back to native tools. Never loop on health, status, preprocessing, model startup, a failing backend, or an identical command.
 
-Selection guide: `local_ai_repo` for bounded repository facts and checks (including `review_diff` and `security_audit`), `local_ai_command` for bounded repeatable commands, `local_ai_task` for small local-model work and second opinions, `local_ai_work` for a complete bounded repository task with planning, edits, validation and handoff, `local_ai_rag` only after cheaper indexed evidence, `local_ai_artifact` for exact slices, `local_ai_coord` for leases/memos.
+Selection guide: `local_ai_repo` for bounded repository facts, symbol/relationship analysis and checks (including `review_diff` and `security_audit`), `local_ai_command` for bounded repeatable commands and task-specific repair/testing workflows, `local_ai_task` for local generation, image/audio, benchmarks, evaluations, candidates, async jobs and second opinions, `local_ai_rag` for fallback retrieval plus enabled docset/document ingestion, `local_ai_artifact` for exact slices, `local_ai_status` for one-shot health/cache/telemetry and Agent OS state, and `local_ai_coord` for leases/memos and Agent OS task, memory, context, and verification workflows.
 
-Local model default: `qwen2.5-coder:3b-instruct-q5_K_M`; use `qwen2.5-coder:1.5b-instruct-q5_K_M` only for preprocessing and escalate to `qwen2.5-coder:7b-instruct-q5_K_M` only for complex or high-risk work. Keep deterministic simple tasks enabled; run deterministic and indexed Hub actions first when sufficient.
+Local model policy: `qwen2.5-coder:0.5b` is preprocessing-only, `qwen2.5-coder:1.5b` handles quick tasks, `qwen2.5-coder:3b` handles complex work, and `qwen2.5-coder:7b` handles the hardest reasoning. Keep deterministic simple tasks enabled; run deterministic and indexed Hub actions first when sufficient.
+On Intel-only GPU systems, the optional llama.cpp SYCL router may serve all four model tiers; see `docs/LLAMA_CPP_SYCL.md` for installation and setup. The default auto route uses SYCL only on Intel hardware when its loopback router has the configured model aliases available. Keep Ollama fallback enabled unless the operator explicitly verifies and disables it. NVIDIA/AMD discrete GPUs retain Ollama CUDA/ROCm; AMD iGPU stays on its existing Vulkan/CPU path.
 <!-- END LOCAL AI HUB TOOL POLICY -->
 
 <!-- BEGIN TOKEN ECONOMY POLICY -->
@@ -59,7 +69,7 @@ Local model default: `qwen2.5-coder:3b-instruct-q5_K_M`; use `qwen2.5-coder:1.5b
 - Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.
 - Bounded command outputs: Filter test and build output (`trim-run <cmd>`, `pytest -q --tb=short`, `dotnet test --verbosity quiet`, `git log | trim-run`, `jq` for JSON) or route through `local_ai_command`.
 - Surgical edits: Prefer targeted block replacements over rewriting entire files.
-- Local model delegation: Route routine microtasks, reviews, and second opinions to local models via `local_ai_task(model="qwen2.5-coder:3b-instruct-q5_K_M")`.
+- Local model delegation: Use 1.5B for routine microtasks and second opinions, 3B for complex work, 7B for the hardest reasoning, and reserve 0.5B for preprocessing.
 <!-- END TOKEN ECONOMY POLICY -->
 
 ## Architecture rules
@@ -98,12 +108,17 @@ python tools/hubctl.py status
 
 ## Agent Operating System
 
-Local AI Hub provides durable execution and memory primitives mapped into the standard tools:
+Use Agent OS for non-trivial multi-step, long-running, delegated, or acceptance-criteria work, even when the main agent retains ownership. A trivial one-step lookup can skip it. Start before edits, keep the returned task ID, checkpoint meaningful phase changes, and resume/compile context when interrupted or when state is scattered. Before repeating expensive work, search memory or negative knowledge and record reusable decisions or failed approaches.
+
+Create a task contract with `local_ai_coord(action="task_create", root=ABS_ROOT, task="...", contract={"acceptance_criteria": ["..."]})`. Attach test receipts by passing `task_id` and `criterion` to `local_ai_command(action="run", ...)`; then call `local_ai_coord(action="verify_completion", task_id=TASK_ID)` and `local_ai_coord(action="task_complete", task_id=TASK_ID)` only after all criteria pass. If automatic receipts are unavailable, call `local_ai_coord(action="verify_receipt", checkpoint={"task_id": TASK_ID, "criterion": "...", "passed": True})`.
+
+The enabled durable primitives are mapped into the standard tools:
 - `local_ai_coord`:
-  - Tasks: `task_create`, `task_get`, `task_checkpoint`, `task_complete`, `task_fail`, `task_list`.
-  - Memory: `memory_record`, `memory_get`, `memory_find` (scoped key/value storage with substring `query` search).
-  - Context: `context_compile` (assembles bounded state, active task, memories, negative knowledge, and active leases).
-  - Verification: `verify_receipt`, `verify_completion` (receipt-gated task completion).
-  - Negative knowledge: `negative_knowledge_record`, `negative_knowledge_find` (prevents repeating failed approaches).
+  - Tasks: create/get/checkpoint/rollback/transition/resume/list/heartbeat/complete/fail.
+  - Memory and relations: record/get/find/promote/reap and relation traversal.
+  - Context and verification: `context_compile`, `verify_receipt`, `verify_completion`.
+  - Negative knowledge/incidents, blackboard, swarm, worktree leases, pub/sub, merge simulation, and dataset curation.
 - `local_ai_command`:
   - Accepts optional `task_id` and `criterion` to auto-mint verification receipts on passing test/lint commands.
+
+Use only actions present in the active MCP schema; the installation's feature gates determine which optional primitives are available.

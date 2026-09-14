@@ -68,6 +68,140 @@ def generation_cache_key(
     })
 
 
+_REVIEW_DIFF_MIN_CHUNK_TOKENS = 256
+_REVIEW_DIFF_CONTEXT_FRACTION = 0.5
+_MAX_REVIEW_DIFF_CHUNKS = 8
+_REVIEW_SYNTHESIS_CONTEXT_TOKENS = 6000
+_UNIFIED_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
+
+
+def _review_model_identity(value: Any) -> str:
+    """Normalize Ollama quantization/instruct tags for tier comparisons."""
+    model = str(value or "").strip().casefold()
+    return re.sub(r"-(?:instruct|q\d+).*?$", "", model)
+
+
+def _review_text_error(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return "Model returned empty review output."
+    text = value.strip()
+    match = re.match(r"^(?:\*\*)?SUMMARY(?:\*\*)?:\s*(.*)$", text, re.IGNORECASE | re.DOTALL)
+    if match is None:
+        return "Model output did not start with the required SUMMARY: header."
+    words = re.findall(r"[^\W\d_]+", match.group(1), flags=re.UNICODE)
+    if len(words) < 2:
+        return "Model returned an incomplete or malformed review summary."
+    return None
+
+
+def _split_review_diff(diff_text: str, max_tokens: int) -> list[str]:
+    """Split a unified diff into bounded, file/hunk-aligned review inputs."""
+    budget = max(_REVIEW_DIFF_MIN_CHUNK_TOKENS, int(max_tokens))
+    sections = [part for part in re.split(r"(?=^diff --git )", diff_text, flags=re.MULTILINE) if part]
+    if not sections:
+        return [diff_text] if diff_text else []
+
+    chunks: list[str] = []
+    current = ""
+
+    def flush() -> None:
+        nonlocal current
+        if current:
+            chunks.append(current)
+            current = ""
+
+    for section in sections:
+        if estimate_tokens(section) <= budget:
+            if current and estimate_tokens(current + section) > budget:
+                flush()
+            current += section
+            continue
+
+        flush()
+        chunks.extend(_split_large_review_file(section, budget))
+    flush()
+    return chunks or [diff_text]
+
+
+def _split_large_review_file(section: str, budget: int) -> list[str]:
+    lines = section.splitlines(keepends=True)
+    hunk_starts = [index for index, line in enumerate(lines) if line.startswith("@@ ")]
+    if not hunk_starts:
+        return [section]
+
+    prefix = "".join(lines[:hunk_starts[0]])
+    hunks = [
+        "".join(lines[start:end])
+        for start, end in zip(hunk_starts, hunk_starts[1:] + [len(lines)])
+    ]
+    chunks: list[str] = []
+    pending_hunks: list[str] = []
+
+    def flush_pending() -> None:
+        if pending_hunks:
+            chunks.append(prefix + "".join(pending_hunks))
+            pending_hunks.clear()
+
+    for hunk in hunks:
+        candidate = prefix + "".join(pending_hunks) + hunk
+        if estimate_tokens(candidate) <= budget:
+            pending_hunks.append(hunk)
+            continue
+
+        flush_pending()
+        if estimate_tokens(prefix + hunk) <= budget:
+            pending_hunks.append(hunk)
+        else:
+            chunks.extend(_split_large_review_hunk(prefix, hunk, budget))
+
+    flush_pending()
+    return chunks or [section]
+
+
+def _split_large_review_hunk(prefix: str, hunk: str, budget: int) -> list[str]:
+    lines = hunk.splitlines(keepends=True)
+    if not lines:
+        return [prefix + hunk]
+    match = _UNIFIED_HUNK_RE.match(lines[0].rstrip("\r\n"))
+    if match is None:
+        return [prefix + hunk]
+
+    old_start = int(match.group(1))
+    old_consumed = 0
+    new_start = int(match.group(3))
+    new_consumed = 0
+    old_count = new_count = 0
+    suffix = match.group(5)
+    body: list[str] = []
+    chunks: list[str] = []
+
+    def render(part: list[str], old_offset: int, new_offset: int, old_lines: int, new_lines: int) -> str:
+        header = f"@@ -{old_start + old_offset},{old_lines} +{new_start + new_offset},{new_lines} @@{suffix}\n"
+        return prefix + header + "".join(part)
+
+    def flush_body() -> None:
+        nonlocal old_consumed, new_consumed, old_count, new_count, body
+        if not body:
+            return
+        chunks.append(render(body, old_consumed, new_consumed, old_count, new_count))
+        old_consumed += old_count
+        new_consumed += new_count
+        old_count = new_count = 0
+        body = []
+
+    for line in lines[1:]:
+        adds_old = int(line.startswith((" ", "-")))
+        adds_new = int(line.startswith((" ", "+")))
+        proposed = body + [line]
+        candidate = render(proposed, old_consumed, new_consumed, old_count + adds_old, new_count + adds_new)
+        if body and estimate_tokens(candidate) > budget:
+            flush_body()
+        body.append(line)
+        old_count += adds_old
+        new_count += adds_new
+    flush_body()
+    return chunks or [prefix + hunk]
+
 def normalize_context_for_hash(context: str) -> str:
     """Strip variable whitespace from context to ensure identical code/evidence matches fingerprint."""
     raw = str(context).replace("\r\n", "\n").replace("\r", "\n")
@@ -733,7 +867,7 @@ class LocalAIServices:
                 return self._conversation_error("", "conversations require delivery=sync")
         if str(args.get("profile", "")).strip():
             return self.delegate_profile(args, tenant)
-        task = str(args.get("task", ""))
+        task = str(args.get("task") or args.get("prompt") or "").strip()
         context = str(args.get("context", ""))
         task_type_override = str(args.get("task_type", "auto"))
         complexity_override = str(args.get("complexity", "auto"))
@@ -849,7 +983,7 @@ class LocalAIServices:
     def reason(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         payload = dict(args)
         payload["task_type"] = "reasoning"
-        payload["task"] = str(args.get("problem", args.get("task", "")))
+        payload["task"] = str(args.get("problem") or args.get("task") or args.get("prompt") or "").strip()
         payload.setdefault("max_tokens", 1700)
         return self.delegate(payload, tenant)
 
@@ -895,7 +1029,7 @@ class LocalAIServices:
         if not task:
             return {"success": False, "error": "task or prompt is required"}
 
-        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
+        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
         prompt = (
             f"TASK:\n{task}\n\n"
             f"FILE: {file_path}\n\n"
@@ -935,7 +1069,7 @@ class LocalAIServices:
                 verification["test_summary"] = cmd_res.get("summary", "")
 
         if bool(args.get("smart_review", False)):
-            smart_model = str(self.config.get("models", {}).get("smart_code", "qwen2.5-coder:7b-instruct-q5_K_M"))
+            smart_model = str(self.config.get("models", {}).get("smart_code", "qwen2.5-coder:3b"))
             review_prompt = f"REVIEW DRAFT IMPLEMENTATION:\nTask: {task}\nDraft Code:\n{draft_code}\nDoes this draft correctly solve the task without syntax or logical bugs? Return a short JSON object: {{\"approved\": true/false, \"confidence\": 0.0-1.0, \"summary\": \"...\"}}"
             review_res = self._generate(
                 smart_model,
@@ -1090,7 +1224,7 @@ class LocalAIServices:
 
     def eval_suite(self, tenant: str = "eval", model: str | None = None) -> dict[str, Any]:
         """Run standardized agent micro-evaluation suite measuring pass rate, latency, and tokens/sec."""
-        target_model = model or str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
+        target_model = model or str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
         test_cases = [
             {
                 "id": "py_sum",
@@ -1152,7 +1286,7 @@ class LocalAIServices:
         """Evaluate a prompt template against token efficiency and response consistency."""
         clean_template = prompt_template.strip()
         inputs = test_inputs or ["Implement quicksort in Python", "Validate email regex"]
-        target_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
+        target_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
         runs = []
 
         for inp in inputs:
@@ -2056,19 +2190,281 @@ class LocalAIServices:
                 aff = ", ".join(reg.get("affected_paths", []))
                 det_hint += f"- [PRIOR VERIFIED FIX] {reg.get('error_class')} in {aff}: {reg.get('verified_fix')}\n"
 
-        payload = {
-            "code": diff["diff"],
-            "instructions": instructions + det_hint,
-            "complexity": review_diff_complexity(args, det_diff, diff),
-            "max_tokens": int(args.get("max_tokens", 1800)),
-            # Diff token sizes stay diagnostic for the same reason.
-        }
-        # review() discards internal hint unless copied explicitly.
-        review_payload = dict(payload)
-        review_payload["task_type"] = "review"
-        review_payload["task"] = review_payload.pop("instructions")
-        review_payload["context"] = review_payload.pop("code")
-        result = self.delegate(review_payload, tenant)
+        # Keep non-diff prompt material bounded too; metadata descriptions and custom
+        # instructions can otherwise undo the per-segment input limit.
+        instructions = fit_text(instructions, 600).text
+        det_hint = fit_text(det_hint, 700).text if det_hint else ""
+
+        diff_text = str(diff["diff"])
+        complexity_hint = review_diff_complexity(args, det_diff, diff)
+        full_route = self.router.classify(
+            instructions + det_hint, diff_text, "review", complexity_hint
+        )
+        full_route = self._resident_optimize(full_route, "review", complexity_hint)
+        review_model = str(full_route.get("model", ""))
+        selected_tier = self.model_policy.tier_for(review_model)
+        complexity = (
+            "heavy" if selected_tier == "smart"
+            else "fast" if selected_tier in {"fast", "background"}
+            else str(full_route.get("complexity", "fast"))
+        )
+        max_output_tokens = max(64, int(args.get("max_tokens", 1800)))
+        vram_free_mb = None
+        try:
+            if getattr(self, "vram_balancer", None):
+                vram_free_mb = self.vram_balancer.status().get("vram_available_mb")
+        except Exception:
+            vram_free_mb = None
+        profile = self.model_policy.profile(
+            review_model,
+            role="review",
+            input_tokens=estimate_tokens(instructions + det_hint + diff_text),
+            output_tokens=max_output_tokens,
+            vram_free_mb=vram_free_mb,
+        )
+        configured_input_budget = max(
+            _REVIEW_DIFF_MIN_CHUNK_TOKENS,
+            int(self.config.get("token_saving", {}).get("max_local_input_tokens", 56000)),
+        )
+        effective_prompt_budget_tokens = min(configured_input_budget, profile.prompt_budget_tokens)
+        task_budget = max(128, int(effective_prompt_budget_tokens * 0.15))
+        review_task = fit_text(instructions + det_hint, task_budget).text
+        prompt_overhead = estimate_tokens(f"TASK:\n{review_task}\n\nCONTEXT:\n") + 64
+        synthesis_task = fit_text(
+            "SYNTHESIZE REVIEW FINDINGS ONLY. Merge duplicate findings and keep distinct actionable findings. "
+            "Preserve file paths, hunk/line references, severity and uncertainty. Do not re-review the source, "
+            "invent new findings, or discard a finding unless supplied findings show it is a duplicate or false positive. "
+            f"Return a concise final review.\n\nReview goal: {review_task}",
+            task_budget,
+        ).text
+        synthesis_prompt_overhead = estimate_tokens(f"TASK:\n{synthesis_task}\n\nCONTEXT:\n") + 64
+        synthesis_context_budget = max(
+            0,
+            min(
+                _REVIEW_SYNTHESIS_CONTEXT_TOKENS,
+                int(effective_prompt_budget_tokens * _REVIEW_DIFF_CONTEXT_FRACTION),
+                effective_prompt_budget_tokens - synthesis_prompt_overhead,
+            ),
+        )
+        review_chunk_token_budget = min(
+            int(effective_prompt_budget_tokens * _REVIEW_DIFF_CONTEXT_FRACTION),
+            effective_prompt_budget_tokens - prompt_overhead,
+        )
+        if review_chunk_token_budget < _REVIEW_DIFF_MIN_CHUNK_TOKENS:
+            return {
+                "success": False,
+                "error": "The selected model's prompt budget is too small for a safe diff review.",
+                "changed_files": diff.get("changed_files", []),
+                "effective_prompt_budget_tokens": effective_prompt_budget_tokens,
+            }
+
+        review_chunks = _split_review_diff(diff_text, max_tokens=review_chunk_token_budget)
+        largest_review_chunk_tokens = max(estimate_tokens(chunk) for chunk in review_chunks)
+        if largest_review_chunk_tokens > review_chunk_token_budget:
+            return {
+                "success": False,
+                "error": (
+                    f"A diff fragment exceeds the {review_chunk_token_budget}-token review budget and cannot be split safely. "
+                    "Narrow the diff or exclude generated/minified files."
+                ),
+                "changed_files": diff.get("changed_files", []),
+                "diff_truncated": bool(diff.get("truncated", False)),
+                "largest_review_chunk_tokens": largest_review_chunk_tokens,
+                "review_chunk_token_budget": review_chunk_token_budget,
+            }
+        if len(review_chunks) > _MAX_REVIEW_DIFF_CHUNKS:
+            return {
+                "success": False,
+                "error": (
+                    f"Review requires {len(review_chunks)} segments; the safe limit is "
+                    f"{_MAX_REVIEW_DIFF_CHUNKS}. Narrow the diff or lower diff_tokens."
+                ),
+                "changed_files": diff.get("changed_files", []),
+                "diff_truncated": bool(diff.get("truncated", False)),
+                "review_chunks": len(review_chunks),
+            }
+        chunked = len(review_chunks) > 1
+        if chunked:
+            header_tokens = sum(
+                estimate_tokens(f"### Counter-review segment {index}/{len(review_chunks)}\n") + 2
+                for index in range(1, len(review_chunks) + 1)
+            )
+            per_chunk_output_tokens = min(
+                max_output_tokens,
+                700,
+                max(64, (synthesis_context_budget - header_tokens - 64) // len(review_chunks)),
+            )
+        else:
+            per_chunk_output_tokens = max_output_tokens
+        review_payloads: list[dict[str, Any]] = []
+        primary_results: list[dict[str, Any]] = []
+        format_recovery_used = False
+        format_recoveries: list[dict[str, Any]] = []
+        for index, review_code in enumerate(review_chunks, start=1):
+            task = review_task
+            if chunked:
+                task += (
+                    f"\n\nThis is review segment {index}/{len(review_chunks)} of one diff. "
+                    "Review only the changed code shown in this segment; other segments are reviewed separately. "
+                    "Ground each finding in the displayed file and hunk."
+                )
+            review_payload = {
+                "task_type": "review",
+                "task": task,
+                "context": review_code,
+                "complexity": complexity,
+                "max_tokens": per_chunk_output_tokens,
+            }
+            review_payloads.append(review_payload)
+            try:
+                response = self.delegate(review_payload, tenant)
+            except Exception as exc:
+                return {
+                    "success": False,
+                    "error": f"Review segment {index}/{len(review_chunks)} failed during model generation.",
+                    "error_type": type(exc).__name__,
+                    "failed_segment": index,
+                    "partial_reviews": [str(item.get("text", "")) for item in primary_results],
+                }
+            if not isinstance(response, dict):
+                return {
+                    "success": False,
+                    "error": f"Review segment {index}/{len(review_chunks)} returned an invalid response.",
+                    "failed_segment": index,
+                    "invalid_model_response": True,
+                    "partial_reviews": [str(item.get("text", "")) for item in primary_results],
+                }
+            if response.get("success") is False:
+                if len(review_chunks) == 1:
+                    return response
+                return {
+                    "success": False,
+                    "error": f"Review segment {index}/{len(review_chunks)} failed.",
+                    "failed_segment": index,
+                    "partial_reviews": [str(item.get("text", "")) for item in primary_results],
+                }
+            output_error = _review_text_error(response.get("text"))
+            if output_error and not format_recovery_used:
+                format_recovery_used = True
+                primary_model = str(response.get("model") or "").strip()
+                models = self.config.get("models", {})
+                fast_model = str(models.get("fast_code") or "").strip() if isinstance(models, dict) else ""
+                heavy_model = str(models.get("heavy_code") or "").strip() if isinstance(models, dict) else ""
+                retry_model = fast_model or heavy_model
+                if (
+                    fast_model
+                    and heavy_model
+                    and primary_model
+                    and _review_model_identity(primary_model) == _review_model_identity(fast_model)
+                ):
+                    retry_model = heavy_model
+                retry_payload = dict(review_payload)
+                if retry_model:
+                    retry_payload["model"] = retry_model
+                retry_payload["task"] = (
+                    f"{review_payload.get('task', review_task)}\n\n"
+                    "FORMAT RECOVERY: The previous response did not follow the required review format. "
+                    "Review the diff again. Return plain text, with the first line exactly starting "
+                    "`SUMMARY:` followed by a useful sentence. Then list only actionable findings, "
+                    "or state that there are none. Do not use a code fence or emit token fragments."
+                )
+                try:
+                    retry_response = self.delegate(retry_payload, tenant)
+                except Exception as exc:
+                    return {
+                        "success": False,
+                        "error": f"Review segment {index}/{len(review_chunks)} failed during format recovery.",
+                        "error_type": type(exc).__name__,
+                        "failed_segment": index,
+                        "invalid_model_output": True,
+                        "attempted_models": [model for model in (primary_model, retry_model) if model],
+                        "partial_reviews": [str(item.get("text", "")) for item in primary_results],
+                    }
+                retry_error = (
+                    _review_text_error(retry_response.get("text"))
+                    if isinstance(retry_response, dict) and retry_response.get("success") is not False
+                    else "Fallback model did not return a successful review."
+                )
+                if retry_error is None:
+                    response = retry_response
+                    format_recoveries.append({
+                        "segment": index,
+                        "from_model": primary_model or None,
+                        "to_model": str(response.get("model") or retry_model or "").strip() or None,
+                    })
+                else:
+                    retry_model_returned = (
+                        str(retry_response.get("model") or retry_model or "").strip()
+                        if isinstance(retry_response, dict)
+                        else retry_model
+                    )
+                    return {
+                        "success": False,
+                        "error": f"Review segment {index}/{len(review_chunks)} remained unusable after one format-recovery attempt: {retry_error}",
+                        "failed_segment": index,
+                        "model": retry_model_returned or primary_model or None,
+                        "attempted_models": [model for model in (primary_model, retry_model_returned) if model],
+                        "invalid_model_output": True,
+                        "partial_reviews": [str(item.get("text", "")) for item in primary_results],
+                    }
+            elif output_error:
+                return {
+                    "success": False,
+                    "error": f"Review segment {index}/{len(review_chunks)} returned unusable output after format recovery was already used: {output_error}",
+                    "failed_segment": index,
+                    "model": response.get("model"),
+                    "invalid_model_output": True,
+                    "partial_reviews": [str(item.get("text", "")) for item in primary_results],
+                }
+            primary_results.append(response)
+
+        result = dict(primary_results[0])
+        if format_recoveries:
+            result["degraded"] = True
+            result["format_recoveries"] = format_recoveries
+
+        def merge_segment_results(segment_results, *, label: str, task_type: str):
+            raw_text = "\n\n".join(
+                f"### {label} {index}/{len(segment_results)}\n{str(item.get('text', '')).strip()}"
+                for index, item in enumerate(segment_results, start=1)
+            )
+            if not chunked:
+                return str(segment_results[0].get("text", "")), {"enabled": False}
+
+            context = raw_text
+            if estimate_tokens(context) > synthesis_context_budget:
+                return raw_text, {"enabled": True, "degraded": True, "error": "Segment findings exceed synthesis budget."}
+            try:
+                merged = self.delegate(
+                    {
+                        "task_type": task_type,
+                        "task": synthesis_task,
+                        "context": context,
+                        "complexity": complexity,
+                        "max_tokens": min(max_output_tokens, 1800),
+                    },
+                    tenant,
+                )
+                if isinstance(merged, dict) and merged.get("success") is not False:
+                    output_error = _review_text_error(merged.get("text"))
+                    if output_error is None:
+                        return str(merged["text"]), {
+                            "enabled": True,
+                            "degraded": False,
+                            "model": merged.get("model"),
+                        }
+                    error = f"Synthesis returned unusable output: {output_error}"
+                else:
+                    error = merged.get("error", "Synthesis returned no text.") if isinstance(merged, dict) else "Synthesis returned no result."
+                return raw_text, {"enabled": True, "degraded": True, "error": str(error)}
+            except Exception as exc:
+                return raw_text, {"enabled": True, "degraded": True, "error": str(exc)}
+
+        result["text"], result["review_synthesis"] = merge_segment_results(
+            primary_results, label="Review segment", task_type="review"
+        )
+        if result["review_synthesis"].get("model"):
+            result["model"] = result["review_synthesis"]["model"]
 
         # Multi-model consensus review for high-risk breaking changes or when explicitly requested
         consensus_requested = bool(args.get("consensus", False))
@@ -2076,24 +2472,38 @@ class LocalAIServices:
 
         if consensus_requested or auto_consensus:
             try:
-                sec_payload = dict(review_payload)
-                sec_payload["task_type"] = "reasoning"
-                sec_payload["task"] = (
-                    "CRITICAL COUNTER-REVIEW / CONSENSUS AUDIT:\n"
-                    "Analyze the diff independently and verify potential defects or breaking changes. "
-                    "Confirm genuine issues and flag false positives.\n\n"
-                    + str(review_payload["task"])
-                )
-                sec_result = self.delegate(sec_payload, tenant)
-                if isinstance(sec_result, dict) and sec_result.get("text"):
+                secondary_results = []
+                for review_payload in review_payloads:
+                    sec_payload = dict(review_payload)
+                    sec_payload["task_type"] = "reasoning"
+                    sec_payload["task"] = (
+                        "CRITICAL COUNTER-REVIEW / CONSENSUS AUDIT:\n"
+                        "Analyze the shown diff segment independently and verify potential defects or breaking changes. "
+                        "Confirm genuine issues and flag false positives.\n\n"
+                        + str(review_payload["task"])
+                    )
+                    sec_result = self.delegate(sec_payload, tenant)
+                    if not isinstance(sec_result, dict) or sec_result.get("success") is False:
+                        raise ValueError(f"Counter-review segment {len(secondary_results) + 1} failed.")
+                    output_error = _review_text_error(sec_result.get("text"))
+                    if output_error:
+                        raise ValueError(
+                            f"Counter-review segment {len(secondary_results) + 1} returned unusable output: {output_error}"
+                        )
+                    secondary_results.append(sec_result)
+                if secondary_results:
+                    secondary_text, secondary_synthesis = merge_segment_results(
+                        secondary_results, label="Counter-review segment", task_type="reasoning"
+                    )
                     result["consensus"] = {
                         "enabled": True,
                         "triggered_by": "explicit" if consensus_requested else "breaking_changes",
                         "primary_model": result.get("model", "primary"),
-                        "secondary_model": sec_result.get("model", "secondary"),
-                        "secondary_review": sec_result.get("text", ""),
+                        "secondary_model": secondary_results[0].get("model", "secondary"),
+                        "secondary_review": secondary_text,
+                        "synthesis": secondary_synthesis,
                     }
-                    result["text"] = str(result.get("text", "")) + "\n\n### Consensus / Counter-Review Findings:\n" + str(sec_result.get("text", ""))
+                    result["text"] = str(result.get("text", "")) + "\n\n### Consensus / Counter-Review Findings:\n" + secondary_text
             except Exception as exc:
                 result["consensus"] = {"enabled": True, "degraded": True, "error": str(exc)}
 
@@ -2105,6 +2515,14 @@ class LocalAIServices:
             "local_diff_tokens": diff["estimated_tokens"],
             "original_diff_tokens": diff["original_estimated_tokens"],
             "deterministic": det_diff,
+            "review_chunks": len(review_chunks),
+            "effective_prompt_budget_tokens": effective_prompt_budget_tokens,
+            "review_chunk_token_budget": review_chunk_token_budget,
+            "review_chunk_context_fraction": _REVIEW_DIFF_CONTEXT_FRACTION,
+            "review_segment_output_budget_tokens": per_chunk_output_tokens,
+            "review_synthesis_context_budget_tokens": synthesis_context_budget,
+            "review_model": review_model,
+            "largest_review_chunk_tokens": largest_review_chunk_tokens,
         }
         return result
 
@@ -2135,7 +2553,7 @@ class LocalAIServices:
         chunks = [text[i:i + chunk_chars] for i in range(0, len(text), chunk_chars)]
         summaries: list[str] = []
         per_chunk_out = max(180, min(700, target_tokens // max(1, len(chunks)) + 120))
-        general_model = str(self.config.get("models", {}).get("general", self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M")))
+        general_model = str(self.config.get("models", {}).get("general", self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b")))
         for index, chunk in enumerate(chunks):
             prompt = f"INSTRUCTION:\n{instruction}\n\nCHUNK {index + 1}/{len(chunks)}:\n{chunk}"
             result = self._generate(
@@ -2171,7 +2589,7 @@ class LocalAIServices:
         prefix = str(args.get("prefix", ""))
         suffix = str(args.get("suffix", ""))
         max_tokens = min(256, max(8, int(args.get("max_tokens", 80))))
-        model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
+        model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
 
         # Standard Qwen FIM prompt template
         prompt = f"<|fim_prefix|>{prefix[-3000:]}<|fim_suffix|>{suffix[:1500]}<|fim_middle|>"
@@ -2324,7 +2742,7 @@ class LocalAIServices:
             f"3. Return ONLY clean source code inside a code block, no chat."
         )
 
-        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
+        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
         res = self._generate(
             fast_model,
             prompt,
@@ -2569,7 +2987,7 @@ class LocalAIServices:
         rem = failure_result.get("remediation") or {}
         if rem.get("verified_fix") and isinstance(rem["verified_fix"], dict):
             return {str(k): str(v) for k, v in rem["verified_fix"].items()}
-        model = self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M")
+        model = self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b")
         diag = failure_result.get("diagnostics", [])
         stderr = str(failure_result.get("stderr", "") or failure_result.get("error", ""))[:2000]
         prompt = (
@@ -2592,7 +3010,7 @@ class LocalAIServices:
     def proxy_request(self, endpoint: str, payload: dict[str, Any], tenant: str, source: str) -> dict[str, Any]:
         if payload.get("stream") is True:
             return {"success": False, "error": "streaming is intentionally disabled through the affinity queue"}
-        model = str(payload.get("model") or self.config.get("models", {}).get("general", "qwen2.5-coder:3b-instruct-q5_K_M"))
+        model = str(payload.get("model") or self.config.get("models", {}).get("general", "qwen2.5-coder:1.5b"))
         clean = dict(payload)
         clean["stream"] = False
         clean.setdefault("keep_alive", self.config.get("ollama", {}).get("keep_alive", "-1"))

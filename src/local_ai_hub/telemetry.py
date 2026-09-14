@@ -471,7 +471,7 @@ class TelemetryStore:
                 return dict(cached)
             try:
                 report = self.report(days, recent_errors=12, scope=scope, _flush=False)
-                report["recent_http"] = self.recent_http(50, _flush=False)
+                report["recent_http"] = self.recent_http(200, _flush=False)
             except Exception:
                 report = dict(cached) if cached else {"summary": {"enabled": self.enabled}}
             self._dashboard_cache[key] = report

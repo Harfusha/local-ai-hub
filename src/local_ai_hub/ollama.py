@@ -15,6 +15,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from urllib.parse import urlparse
 
+from .llama_cpp import LlamaCppRouter
+
 
 def _normalise_keep_alive(payload: dict[str, Any] | None) -> dict[str, Any] | None:
     """Return an Ollama-valid keep_alive value without mutating caller input."""
@@ -181,6 +183,7 @@ class OllamaRuntime:
         self.managed_name = safe_name
         self.managed_pid_path = self.state_dir / f"{safe_name}.managed.pid"
         self.model_policy = ModelExecutionPolicy(config)
+        self.llama_cpp = LlamaCppRouter(config)
         self._meta_cache: dict[str, Any] = {}
         self._meta_cache_at: dict[str, float] = {}
         self._ensure_lock = threading.Lock()
@@ -194,6 +197,17 @@ class OllamaRuntime:
             # Stream internally even for non-streaming callers so the watchdog can
             # stop a repetitive generation before Ollama consumes its full token budget.
             return self.request_stream(endpoint, payload, lambda _chunk: None, timeout)
+        if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)):
+            if endpoint == "/api/version":
+                return {"version": "llama.cpp SYCL"} if self.llama_cpp.is_online() else {"error": "llama.cpp SYCL router unavailable"}
+            if endpoint == "/api/tags":
+                return {"models": [{"name": model} for model in self.llama_cpp.available_models()]}
+            if endpoint == "/api/ps":
+                return {"models": [
+                    {"name": row["name"], "model": row["name"], "context_length": row.get("context_length", 0), "size": 0, "size_vram": 0, "details": {"quantization_level": row.get("quantization", "GGUF")}}
+                    for row in self.llama_cpp.loaded_model_details()
+                ]}
+            return {"error": "Ollama fallback is disabled and this endpoint is not provided by llama.cpp SYCL"}
         payload = _normalise_keep_alive(payload)
         body = json.dumps(payload).encode("utf-8") if payload is not None else None
         headers = {"Content-Type": "application/json"} if body is not None else {}
@@ -251,6 +265,17 @@ class OllamaRuntime:
         return {"error": last_error, "_lah_retry_count": max(0, attempts - 1), "timed_out": time.monotonic() >= deadline}
 
     def request_stream(self, endpoint: str, payload: dict[str, Any] | None, on_chunk: Any, timeout: float | None = None) -> dict[str, Any]:
+        llama_result = self.llama_cpp.request_stream(endpoint, payload, on_chunk, timeout=timeout)
+        if llama_result is not None:
+            if "_lah_backend_unavailable" not in llama_result:
+                return llama_result
+            backend_fallback = str(llama_result.get("_lah_backend_unavailable", "SYCL unavailable"))
+            if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)):
+                return {"error": f"llama.cpp SYCL unavailable: {backend_fallback}", "_lah_provider": "llama.cpp-sycl"}
+        else:
+            backend_fallback = ""
+            if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)):
+                return {"error": "Ollama fallback is disabled and no llama.cpp SYCL route matches this model", "_lah_provider": "llama.cpp-sycl"}
         clean = dict(_normalise_keep_alive(payload) or {})
         clean["stream"] = True
         body = json.dumps(clean, ensure_ascii=False).encode("utf-8")
@@ -325,6 +350,8 @@ class OllamaRuntime:
                     final["message"] = message
                 if final and not final.get("error"):
                     final["_lah_retry_count"] = max(0, attempt - 1)
+                    if backend_fallback:
+                        final["_lah_backend_fallback"] = backend_fallback
                     return final
             except HTTPError as exc:
                 raw = exc.read().decode("utf-8", errors="replace")
@@ -369,6 +396,17 @@ class OllamaRuntime:
                 return {"success": False, "preempted": True, "error": "background request preempted before start"}
         except Exception:
             pass
+
+        llama_result = self.llama_cpp.request_stream(
+            endpoint, payload, lambda _chunk: None, timeout=timeout, should_stop=should_stop,
+        )
+        if llama_result is not None:
+            if "_lah_backend_unavailable" not in llama_result:
+                return llama_result
+            if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)):
+                return {"error": f"llama.cpp SYCL unavailable: {llama_result['_lah_backend_unavailable']}", "_lah_provider": "llama.cpp-sycl"}
+        elif not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)):
+            return {"error": "Ollama fallback is disabled and no llama.cpp SYCL route matches this model", "_lah_provider": "llama.cpp-sycl"}
 
         clean = _normalise_keep_alive(payload) or {}
         clean = dict(clean)
@@ -503,6 +541,10 @@ class OllamaRuntime:
         return env
 
     def ensure_running(self) -> bool:
+        if self.llama_cpp.is_online():
+            return True
+        if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)):
+            return False
         if self.is_online():
             return True
         if not bool(self.config.get("headless", {}).get("autostart_ollama", True)):
@@ -588,6 +630,10 @@ class OllamaRuntime:
                 "kv_cache_type": str(cfg.get("kv_cache_type", "q8_0")),
                 "gpu_overhead_bytes": int(cfg.get("gpu_overhead_bytes", 0) or 0),
             },
+            "llama_cpp": {
+                "mode": str(self.config.get("llama_cpp", {}).get("mode", "auto")),
+                "online_models": self.llama_cpp.available_models(),
+            },
         }
 
     def stop_managed_server(self) -> bool:
@@ -619,7 +665,13 @@ class OllamaRuntime:
         if v is not None:
             self._meta_cache["version"] = v
             self._meta_cache_at["version"] = now
-        return v or self._meta_cache.get("version")
+        if v:
+            return v
+        if self.llama_cpp.is_online():
+            self._meta_cache["version"] = "llama.cpp SYCL"
+            self._meta_cache_at["version"] = now
+            return "llama.cpp SYCL"
+        return self._meta_cache.get("version")
 
     def installed_models(self) -> list[str]:
         now = time.monotonic()
@@ -631,6 +683,11 @@ class OllamaRuntime:
             self._meta_cache["installed"] = models
             self._meta_cache_at["installed"] = now
             return models
+        llama_models = self.llama_cpp.available_models()
+        if llama_models:
+            self._meta_cache["installed"] = llama_models
+            self._meta_cache_at["installed"] = now
+            return llama_models
         return list(self._meta_cache.get("installed", []))
 
     def loaded_models(self) -> list[str]:
@@ -643,7 +700,8 @@ class OllamaRuntime:
             return list(self._meta_cache.get("loaded_details", []))
         result = self.request("/api/ps", timeout=1.0)
         if "error" in result or not isinstance(result, dict):
-            return list(self._meta_cache.get("loaded_details", []))
+            llama_rows = self.llama_cpp.loaded_model_details()
+            return llama_rows or list(self._meta_cache.get("loaded_details", []))
         rows: list[dict[str, Any]] = []
         for raw in result.get("models", []):
             if not isinstance(raw, dict):
@@ -682,6 +740,12 @@ class OllamaRuntime:
         model = str(model or "").strip()
         if not model:
             raise ValueError("model is required")
+        # llama.cpp loads the configured GGUF in its local server. Avoid also
+        # loading that same model into Ollama when the SYCL endpoint is ready.
+        if self.llama_cpp.ensure_model(model, timeout=float(self.config.get("llama_cpp", {}).get("model_load_timeout_seconds", 90))):
+            return []
+        if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)) and self.llama_cpp.supports_model(model):
+            raise RuntimeError("configured llama.cpp SYCL model is not available")
         if not self.ensure_running():
             raise RuntimeError("Ollama is not available")
 
@@ -727,6 +791,11 @@ class OllamaRuntime:
         return self.unload_model(model)
 
     def load_model(self, model: str, *, keep_alive: str | None = None) -> bool:
+        if self.llama_cpp.supports_model(model):
+            if self.llama_cpp.ensure_model(model, timeout=float(self.config.get("llama_cpp", {}).get("model_load_timeout_seconds", 90))):
+                return True
+            if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)):
+                return False
         payload: dict[str, Any] = {"model": model}
         if keep_alive:
             payload["keep_alive"] = keep_alive
@@ -741,6 +810,10 @@ class OllamaRuntime:
         return ok
 
     def unload_model(self, model: str) -> bool:
+        if self.llama_cpp.supports_model(model) and self.llama_cpp.ready_for_model(model):
+            return self.llama_cpp.unload_model(model)
+        if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)):
+            return False
         endpoint = "/api/generate"
         payload: dict[str, Any] = {"model": model, "keep_alive": 0}
         if self._is_embedding_model(model):

@@ -15,12 +15,18 @@ from typing import Any
 from local_ai_hub.features import FeatureSet
 
 
+def _actions_note(actions: list[str]) -> str:
+    """Keep generated tool descriptions aligned with each active action enum."""
+    return f" Supported actions: {', '.join(actions)}." if actions else " No actions are enabled."
+
+
 def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     """Generate a dynamic SKILL.md reflecting only enabled tools and models."""
     fs = FeatureSet.from_config(cfg)
 
     trigger_lines = "\n".join(fs.trigger_map_lines()) if fs.trigger_map_lines() else "- (all Hub tools currently disabled in configuration)"
     recipe_lines = "\n".join(fs.recipe_lines())
+    agent_os_skill_hint = " Includes Agent OS task contracts, checkpoints, context and receipt-gated completion." if fs.agent_os else ""
 
     # Delegation section
     if fs.tasks and fs.has_any_model():
@@ -35,12 +41,16 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         )
 
     work_delegation = ""
+    work_owner_note = ""
+    agent_os_work_note = ""
     if fs.work_orchestrator:
         work_delegation = (
             '- **Closed whole task:** prefer `local_ai_work(action="submit")` when the Hub can own planning, bounded edits, '
             'validation and handoff end-to-end. Use `response_profile="compact"` and request only decision-grade fields; '
             'fetch the artifact only when details are needed.'
         )
+        work_owner_note = " A submitted `local_ai_work` order may own its bounded internal planning, edits, validation and integration until handoff."
+        agent_os_work_note = " This task-and-receipt workflow remains separate from `local_ai_work` whole-task orchestration."
 
     # Ownership & tiering bullets
     tiering_bullets: list[str] = [
@@ -125,20 +135,20 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     if fs.work_orchestrator:
         routing_lines.append(f'{r_idx}. `local_ai_work(action="submit")` — delegate one complete bounded repository task; Hub plans a DAG, edits transactionally, validates, verifies, and returns a compact handoff.')
         r_idx += 1
-    if fs.rag:
-        routing_lines.append(f'{r_idx}. `local_ai_rag` — semantic fallback only when indexed evidence is insufficient.')
-        r_idx += 1
     if fs.tasks and fs.has_any_model():
-        routing_lines.append(f'{r_idx}. `local_ai_task(action="delegate"|"reason"|"review"|"second_opinion"|"compress")` — default local worker: `{fs.fast_model}`; smart escalation only for complex routes.')
+        routing_lines.append(f'{r_idx}. `local_ai_task` — local generation, review, compression, and the enabled image/audio, benchmark, evaluation, candidate, and async-job actions shown in its MCP schema; default tier `{fs.fast_model}`.')
         r_idx += 1
     if fs.commands:
-        routing_lines.append(f'{r_idx}. `local_ai_command(action="run")` — tests, lint, typecheck, builds and repeatable read-only commands before native execution.')
+        routing_lines.append(f'{r_idx}. `local_ai_command` — tests and safe commands; use enabled repair, affected-test, format/lint-fix, mock, and replay actions only when the task calls for them.')
         r_idx += 1
     if fs.artifacts:
         routing_lines.append(f'{r_idx}. `local_ai_artifact` — exact evidence/artifact slices only.')
         r_idx += 1
     if fs.coord:
         routing_lines.append(f'{r_idx}. `local_ai_coord` — leases before overlapping edits; memos before repeating investigation.')
+        r_idx += 1
+    if fs.rag:
+        routing_lines.append(f'{r_idx}. `local_ai_rag` — indexed semantic fallback, plus enabled docset and document/diagram-ingestion actions for managed knowledge.')
         r_idx += 1
     routing_section = "\n".join(routing_lines) if routing_lines else "*(No actions available: all tools disabled)*"
 
@@ -178,46 +188,30 @@ Skip profiles when deterministic or indexed Hub evidence already answers the que
         agent_os_section = f"""
 ## Agent Operating System & Durable Execution
 
-When working on non-trivial tasks, use Local AI Hub's Agent Operating System actions to preserve context, avoid repeating failed attempts, and verify work rigorously:
+Use Agent OS for every non-trivial multi-step, long-running, delegated, or acceptance-criteria task, even when the main agent keeps ownership. A trivial one-step lookup can skip it. Start before edits; keep the returned `task_id` for every later action.{agent_os_work_note}
 
-### 1. Goal Contracts & Resumption
-- **Create task contract:**
-  `local_ai_coord(action="task_create", task_id="task-1", contract={{"goal": "Implement feature", "acceptance_criteria": ["All tests pass"]}})`
-- **Checkpoint progress before context truncation:**
-  `local_ai_coord(action="task_checkpoint", task_id="task-1", checkpoint={{"phase": "testing", "next_action": "run integration tests", "affected_paths": ["src/main.py"]}})`
-- **Resume after session restart or interruption:**
-  `local_ai_coord(action="task_resume", task_id="task-1")`
-- **Complete or fail task:**
-  `local_ai_coord(action="task_complete", task_id="task-1")` or `local_ai_coord(action="task_fail", task_id="task-1", reason="reason")`
+1. **Create a task contract before edits** and retain the returned task ID:
+   `local_ai_coord(action="task_create", root=ABS_ROOT, task="Implement the feature", contract={{"acceptance_criteria": ["All tests pass"]}})`
+2. **Checkpoint meaningful phase changes**, discoveries, affected paths, and the next action; resume with `task_resume` after interruption:
+   `local_ai_coord(action="task_checkpoint", task_id=TASK_ID, checkpoint={{"phase": "testing", "next_action": "run integration tests", "affected_paths": ["src/main.py"]}})`
+3. **Compile or retrieve context when resuming or when state is scattered**; search memory before repeating expensive work, then record reusable decisions or failed approaches:
+   `local_ai_coord(action="context_compile", task_id=TASK_ID, max_tokens=4000)`
+   `local_ai_coord(action="memory_find", query="relevant convention")`
+   `local_ai_coord(action="memory_record", record={{"kind": "decision", "scope": "repository", "key": "convention", "value": "..."}})`
 
-### 2. Scoped Memory & Learnings
-- **Store durable findings and decisions:**
-  `local_ai_coord(action="memory_record", record={{"kind": "decision", "scope": "repository", "key": "convention", "value": "Token format must follow HMAC-SHA256"}})`
-- **Retrieve memories across turns:**
-  `local_ai_coord(action="memory_find", query="convention")`
-
-### 3. Exact Context Compilation
-- **Compile active task state, relevant memories, negative knowledge, and active edit leases into minimal tokens:**
-  `local_ai_coord(action="context_compile", task_id="task-1", max_tokens=4000)`
-
-### 4. Verification Receipts & Completion Gates
+4. **Attach receipts to validation and complete only after every criterion is verified:**
 {verification_receipt_item}
-- **Check if all acceptance criteria are verified before completing:**
-  `local_ai_coord(action="verify_completion", task_id="task-1")`
-- **Record a direct receipt when command auto-capture is not used:**
-  `local_ai_coord(action="verify_receipt", checkpoint={{"task_id": "task-1", "criterion": "All tests pass", "passed": True}})`
+   `local_ai_coord(action="verify_completion", task_id=TASK_ID)`
+   `local_ai_coord(action="task_complete", task_id=TASK_ID)`
+   If command auto-capture is unavailable, call `local_ai_coord(action="verify_receipt", checkpoint={{"task_id": TASK_ID, "criterion": "All tests pass", "passed": True}})`. Use `local_ai_coord(action="task_fail", task_id=TASK_ID, reason="...")` when the contract cannot be met.
 
-### 5. Negative Knowledge & Incident Avoidance
-- **Record failed approach or incident:**
-  `local_ai_coord(action="negative_knowledge_record", key="timeout", value="build timed out", reason="unindexed lock", status="add index")`
-- **Check before repeating a failed operation:**
-  `local_ai_coord(action="negative_knowledge_find", query="timeout")`
+The enabled Agent OS action families are task lifecycle, scoped memory and relations, context compilation, verification receipts, negative knowledge/incidents, blackboard state, swarm coordination, worktree leases, pub/sub, merge simulation, and dataset curation. Use only actions present in the active MCP schema.
 """
 
     # Full SKILL.md content
     return f"""---
 name: local-ai-orchestrator
-description: Local-first routing for Codex, Gemini, Claude, Cursor, Windsurf, VS Code/Copilot and MCP coding agents. Keeps the main agent as orchestrator and routes bounded work through Local AI Hub.
+description: Local-first routing for Codex, Gemini, Claude, Cursor, Windsurf, VS Code/Copilot and MCP coding agents. Keeps the main agent as orchestrator and routes bounded work through Local AI Hub.{agent_os_skill_hint}
 ---
 
 # Local AI Hub routing
@@ -238,7 +232,7 @@ Delegation is the default for any task with useful bounded independent work.
 
 ## Ownership and tiering
 
-The main agent owns task boundaries, permissions, unresolved decisions and the final user answer. A submitted `local_ai_work` order may own its bounded internal planning, edits, validation and integration until handoff.
+The main agent owns task boundaries, permissions, unresolved decisions and the final user answer.{work_owner_note}
 
 {tiering_section}
 
@@ -292,24 +286,41 @@ def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
     if fs.work_orchestrator:
         tool_bullets.append("- `local_ai_work`: durable whole-task orchestration with dependency planning, transactional edits, validation, whole-task verification and compact/lazy handoff.")
     if fs.tasks and fs.has_any_model():
-        tool_bullets.append(f"- `local_ai_task`: local-model microtasks (`{fs.fast_model}`), review, compression and second opinions after evidence exists.")
+        tool_bullets.append(f"- `local_ai_task`: local generation (`{fs.fast_model}`), review, compression, routing, and enabled image/audio, benchmark, evaluation, candidate, and async-job workflows.")
     if fs.rag:
-        tool_bullets.append("- `local_ai_rag`: semantic fallback only after deterministic/indexed retrieval.")
+        tool_bullets.append("- `local_ai_rag`: semantic fallback after deterministic/indexed retrieval; also manages docsets and document/diagram ingestion when those actions are enabled.")
+    if fs.has_semantic():
+        tool_bullets.append("- Code intelligence: use enabled `semantic`/`graph` actions through `local_ai_repo` for symbol navigation or code relationships; built-in indexes remain the fallback.")
     if fs.artifacts:
         tool_bullets.append("- `local_ai_artifact`: exact `E...` evidence or artifact slices.")
     if fs.coord:
-        tool_bullets.append("- `local_ai_coord`: edit leases and reusable investigation memos" + (", task contracts and durable memory" if fs.agent_os else "") + ".")
+        tool_bullets.append("- `local_ai_coord`: edit leases and reusable investigation memos" + (", Agent OS task lifecycle, scoped memory/relations, context, verification, negative knowledge, and coordination primitives" if fs.agent_os else "") + ".")
     if fs.status:
-        tool_bullets.append("- `local_ai_status`: bounded health/cache/telemetry inspection; no polling loops.")
+        status_detail_note = ", Agent OS task/incident state" if fs.agent_os else ""
+        tool_bullets.append(f"- `local_ai_status`: bounded health/cache/telemetry{status_detail_note} inspection; no polling loops.")
 
     tool_lines = "\n".join(tool_bullets) if tool_bullets else "- *(All tools disabled)*"
+    specialization_lines = "\n".join(fs.specialized_trigger_lines())
+    specialization_section = f"\n## Enabled specializations\n\n{specialization_lines}\n" if specialization_lines else ""
+    agent_os_reference = ""
+    if fs.agent_os:
+        agent_os_reference = """
+## Agent OS trigger and lifecycle
+
+Use this for non-trivial multi-step, long-running, delegated, or acceptance-criteria work, even when the main agent retains ownership. Create a task contract before edits, keep the returned task ID, checkpoint phase changes, compile context when resuming or when state is scattered, and attach validation receipts. Run `verify_completion` before `task_complete`. Trivial one-step lookups can skip this workflow.
+
+Enabled action families: task lifecycle, scoped memory and relations, context compilation, verification receipts, negative knowledge/incidents, blackboard state, swarm coordination, worktree leases, pub/sub, merge simulation, and dataset curation. Use only actions present in the active MCP schema.
+"""
+    work_owner_note = " The main agent retains final acceptance; a `local_ai_work` order may own planning and integration only inside its declared repository task and permissions." if fs.work_orchestrator else " The main agent retains final acceptance and integration."
     refs["tools.md"] = f"""# MCP routing card
 
 The active tool surface reflects your configuration:
 
 {tool_lines}
+{specialization_section}
 
-Keep assignments bounded. The main agent retains final acceptance; a `local_ai_work` order may own planning and integration only inside its declared repository task and permissions.
+{agent_os_reference}
+Keep assignments bounded.{work_owner_note}
 """
 
     # workflows.md
@@ -337,6 +348,8 @@ Keep assignments bounded. The main agent retains final acceptance; a `local_ai_w
 ## Local second opinion
 
 Use `local_ai_task(action="second_opinion")` for a bounded candidate decision. Include the evidence and uncertainty.
+
+Use the same tool's `vision`/`transcribe` actions for requested image understanding/audio transcription, benchmark actions for model or device performance, and evaluation/candidate actions for prompt or model assessment. The active MCP schema is authoritative for exact arguments.
 
 ## Long output and failures
 
@@ -371,6 +384,8 @@ Use `local_ai_work(action="submit", root=ABS_ROOT, task="...", response_profile=
         if (fs.tasks and fs.has_any_model())
         else "Local AI Hub operates in deterministic/indexed mode (local inference disabled)"
     )
+    agent_os_multi_agent_note = " Use Agent OS through `local_ai_coord` for non-trivial multi-step, long-running, delegated, or acceptance-criteria work; create a task contract, checkpoint phases, and verify receipts before completion." if fs.agent_os else ""
+    work_multi_agent_note = " A bounded `local_ai_work` order owns only its declared transactional workspace task through verified handoff." if fs.work_orchestrator else ""
     refs["multi-agent.md"] = f"""# Multi-agent coordination
 
 {multi_agent_desc}. External cloud agents (Codex, Claude, Gemini, Cursor, Copilot) remain the principal orchestrators.
@@ -378,7 +393,8 @@ Use `local_ai_work(action="submit", root=ABS_ROOT, task="...", response_profile=
 Rules:
 - Never duplicate the same scope across agents.
 - {"Use `local_ai_coord` leases to guard overlapping files before editing." if fs.coord else "Avoid concurrent edits on the same files across sessions."}
-- Main agent owns final acceptance and user response. A bounded `local_ai_work` order owns only its declared transactional workspace task through verified handoff.
+{agent_os_multi_agent_note}
+- Main agent owns final acceptance and user response.{work_multi_agent_note}
 """
 
     # preprocessing.md
@@ -568,7 +584,7 @@ Enforce context-saving practices across all operations to maximize token efficie
 
 ### 4. Offload to Local Model (Ollama / Local AI Hub)
 - For microtasks (summarization, lint fixing, boilerplate, second opinion), delegate to local inference:
-  - `local_ai_task(model="qwen2.5-coder:3b-instruct-q5_K_M", ...)`
+  - `local_ai_task(model="qwen2.5-coder:1.5b", ...)`
   - Zero cloud tokens consumed.
 
 ### 5. Concise Output (Caveman Protocol)
@@ -588,7 +604,7 @@ TOKEN_ECONOMIZER_SKILL_MD = TOKEN_ECONOMIZER_SKILL_MD.replace(
 
 def _base_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
     """Generate the standard TOKEN ECONOMY POLICY block."""
-    fast_model = "qwen2.5-coder:3b-instruct-q5_K_M"
+    fast_model = "qwen2.5-coder:1.5b"
     if cfg:
         try:
             fs = FeatureSet.from_config(cfg)
@@ -662,14 +678,21 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
     schemas: dict[str, dict[str, Any]] = {}
 
     if fs.status:
+        status_description = "Health, queue, and token-saving status."
+        status_description += " detail: brief, cache, telemetry, full, agent_state."
+        if fs.agent_os:
+            status_description += " `agent_state` summarizes durable Agent OS task state."
+        if fs.dashboard:
+            status_description += " The operator dashboard is available at `/dashboard` on the configured Hub server; use this tool for bounded agent-side checks."
         schemas["local_ai_status"] = {
             "name": "local_ai_status",
-            "description": "Health, queue, and token-saving status.",
+            "description": status_description,
             "parameters": {
                 "type": "object",
                 "properties": {
                     "detail": {"type": "string", "enum": ["brief", "cache", "telemetry", "full", "agent_state"], "default": "brief"},
                     "scope": {"type": "string", "enum": ["process", "window"], "default": "process"},
+                    "extra_fields": {"type": "array", "items": {"type": "string"}},
                 },
             },
         }
@@ -678,7 +701,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         repo_actions = fs.supported_repo_actions()
         schemas["local_ai_repo"] = {
             "name": "local_ai_repo",
-            "description": "Primary bounded repository worker; use review_diff/security_audit before model inference.",
+            "description": "Primary bounded repository worker; use deterministic/indexed evidence first, then semantic/graph as enabled; use review_diff/security_audit before model inference." + _actions_note(repo_actions),
             "parameters": {
                 "type": "object",
                 "required": ["action"],
@@ -696,6 +719,11 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "relation": {"type": "string", "default": ""},
                     "profile": {"type": "string", "default": ""},
                     "max_tokens": {"type": "integer", "default": 0},
+                    "diff": {"type": "string", "default": ""},
+                    "evidence": {"type": "array", "items": {"type": "object"}},
+                    "receipt": {"type": "object"},
+                    "extra_fields": {"type": "array", "items": {"type": "string"}},
+                    "workspace": {"type": "string", "default": ""},
                 },
             },
         }
@@ -704,7 +732,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         task_actions = fs.supported_task_actions()
         schemas["local_ai_task"] = {
             "name": "local_ai_task",
-            "description": f"Bounded local-model work ({fs.fast_model}) for the main agent.",
+            "description": f"Bounded local-model work ({fs.fast_model}) for the main agent, including enabled image/audio, benchmark, evaluation, candidate, and asynchronous-job workflows." + _actions_note(task_actions),
             "parameters": {
                 "type": "object",
                 "required": ["action"],
@@ -712,37 +740,61 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "action": {"type": "string", "enum": task_actions},
                     "task": {"type": "string", "default": ""},
                     "context": {"type": "string", "default": ""},
+                    "prompt": {"type": "string", "default": ""},
                     "root": {"type": "string", "default": ""},
+                    "workspace": {"type": "string", "default": ""},
                     "profile": {"type": "string", "default": ""},
+                    "model": {"type": "string", "default": ""},
                     "delivery": {"type": "string", "enum": ["sync", "async", "auto"], "default": "sync"},
+                    "latency_budget_ms": {"type": "integer"},
                     "complexity": {"type": "string", "default": "auto"},
                     "max_tokens": {"type": "integer", "default": 0},
                     "conversation": {"type": "boolean", "default": False},
                     "conversation_id": {"type": "string", "default": ""},
+                    "approver": {"type": "string", "default": ""},
+                    "candidate": {"type": "string", "default": ""},
+                    "candidate_data": {"type": "object"},
+                    "evaluation_cohort": {"type": "string", "default": ""},
+                    "evaluation_days": {"type": "integer"},
+                    "evaluation_duration_ms": {"type": "integer"},
+                    "evaluation_task_id": {"type": "string", "default": ""},
+                    "format": {"anyOf": [{"type": "string"}, {"type": "object"}]},
+                    "job_action": {"type": "string", "default": ""},
+                    "job_id": {"type": "string", "default": ""},
+                    "json_schema": {"type": "object"},
+                    "quality_pass": {"type": ["boolean", "null"]},
+                    "tasks": {"type": "array", "items": {"type": "object"}},
+                    "test_pass": {"type": ["boolean", "null"]},
+                    "timeout_seconds": {"type": "integer"},
+                    "extra_fields": {"type": "array", "items": {"type": "string"}},
                 },
             },
         }
 
     if fs.rag:
+        rag_actions = fs.supported_rag_actions()
         schemas["local_ai_rag"] = {
             "name": "local_ai_rag",
-            "description": "Fallback semantic retrieval for the main agent after indexed repository paths are insufficient.",
+            "description": "Fallback semantic retrieval after indexed evidence is insufficient; also supports managed docsets and document/diagram ingestion." + _actions_note(rag_actions),
             "parameters": {
                 "type": "object",
                 "required": ["action"],
                 "properties": {
-                    "action": {"type": "string", "enum": ["index", "search", "list"]},
+                    "action": {"type": "string", "enum": rag_actions},
                     "query": {"type": "string", "default": ""},
                     "root": {"type": "string", "default": "."},
                     "top_k": {"type": "integer", "default": 6},
+                    "workspace": {"type": "string", "default": ""},
+                    "extra_fields": {"type": "array", "items": {"type": "string"}},
                 },
             },
         }
 
     if fs.commands:
+        command_actions = fs.supported_command_actions()
         schemas["local_ai_command"] = {
             "name": "local_ai_command",
-            "description": "Safe CLI command execution broker.",
+            "description": "Safe CLI broker for validation and enabled repair, affected-test, format/lint-fix, mock, and replay workflows." + _actions_note(command_actions),
             "parameters": {
                 "type": "object",
                 "required": ["action"],
@@ -755,15 +807,26 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "timeout": {"type": "integer", "default": 0},
                     "stream": {"type": "boolean", "default": False},
                     "stream_id": {"type": "string", "default": ""},
+                    "cwd": {"type": "string", "default": ""},
+                    "extra_fields": {"type": "array", "items": {"type": "string"}},
+                    "auto_fix": {"type": "boolean"},
+                    "force": {"type": "boolean"},
+                    "max_attempts": {"type": "integer"},
+                    "rollback_on_failure": {"type": "boolean"},
+                    "snapshot": {"type": "boolean"},
                 },
             },
         }
 
     if fs.coord:
         coord_actions = fs.supported_coord_actions()
+        coord_description = "Coordination, leases, and reusable memos."
+        if fs.agent_os:
+            coord_description += " For non-trivial multi-step, long-running, delegated, or acceptance-criteria work, create an Agent OS task, checkpoint progress, compile context when needed, call `verify_completion`, then `task_complete` only when receipts satisfy every criterion. Enabled families: task lifecycle, scoped memory/relations, context, verification, negative knowledge/incidents, blackboard, swarm, worktree leases, pub/sub, merge simulation, and dataset curation."
+        coord_description += _actions_note(coord_actions)
         schemas["local_ai_coord"] = {
             "name": "local_ai_coord",
-            "description": "Coordination, leases, memos, and agent operating system durable state.",
+            "description": coord_description,
             "parameters": {
                 "type": "object",
                 "required": ["action"],
@@ -771,13 +834,26 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "action": {"type": "string", "enum": coord_actions},
                     "paths": {"type": "array", "items": {"type": "string"}},
                     "task_id": {"type": "string", "default": ""},
-                    "goal": {"type": "string", "default": ""},
-                    "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
+                    "task": {"type": "string", "default": ""},
+                    "root": {"type": "string", "default": ""},
+                    "contract": {"type": "object"},
+                    "checkpoint": {"type": "object"},
                     "key": {"type": "string", "default": ""},
                     "value": {"type": "string", "default": ""},
                     "query": {"type": "string", "default": ""},
                     "status": {"type": "string", "default": ""},
                     "reason": {"type": "string", "default": ""},
+                    "approver": {"type": "string", "default": ""},
+                    "command": {"type": "string", "default": ""},
+                    "extra_fields": {"type": "array", "items": {"type": "string"}},
+                    "fingerprint": {"type": "object"},
+                    "lease_id": {"type": "string", "default": ""},
+                    "max_tokens": {"type": "integer"},
+                    "record": {"type": "object"},
+                    "record_id": {"type": "string", "default": ""},
+                    "target_scope": {"type": "string", "default": ""},
+                    "tool_outcome": {"type": "object"},
+                    "ttl_seconds": {"type": "integer"},
                 },
             },
         }
@@ -815,12 +891,13 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "description": "Exact evidence or artifact slice fetcher.",
             "parameters": {
                 "type": "object",
-                "required": ["id"],
+                "required": ["artifact_id"],
                 "properties": {
-                    "id": {"type": "string"},
+                    "artifact_id": {"type": "string"},
                     "section": {"type": "string", "default": ""},
-                    "start_line": {"type": "integer", "default": 1},
-                    "end_line": {"type": "integer", "default": 0},
+                    "offset": {"type": "integer", "default": 0},
+                    "max_chars": {"type": "integer", "default": 0},
+                    "extra_fields": {"type": "array", "items": {"type": "string"}},
                 },
             },
         }

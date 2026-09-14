@@ -14,7 +14,7 @@ Enforce context-saving practices across all operations to maximize token efficie
    - Example: `tokcount src/` or `git diff | tokcount`
 
 2. **`trim-run [-n 40] <command>` / `cmd | trim-run`**:
-   - Runs only commands from the safe read/validation/build allowlist, strips ANSI codes, and truncates output to the first/last N lines. It never starts a shell or arbitrary script.
+   - Runs only commands from the safe read/validation allowlist, strips ANSI codes, and truncates output to the first/last N lines. It never starts a shell or arbitrary script.
    - Example: `trim-run pytest -q` or `git log | trim-run`
 
 3. **`repo-map [dir] [-n 200]`**:
@@ -27,7 +27,7 @@ Enforce context-saving practices across all operations to maximize token efficie
    - Fast structural AST search across codebase without loading files into context.
 
 6. **`repomix --stdout --compress`**:
-   - Streams a repo pack with comment stripping, blank line removal, Tree-sitter compression, and token counts without writing an output file.
+   - Packs repo with comment stripping, blank line removal, Tree-sitter compression, and token counts.
 
 7. **`files-to-prompt -c <paths...>`**:
    - Formats selected files into structured LLM XML without shell overhead.
@@ -69,7 +69,7 @@ Enforce context-saving practices across all operations to maximize token efficie
 
 ### 4. Offload to Local Model (Ollama / Local AI Hub)
 - For microtasks (summarization, lint fixing, boilerplate, second opinion), delegate to local inference:
-- `local_ai_task(model="qwen2.5-coder:3b-instruct-q5_K_M", ...)` by default; reserve `qwen2.5-coder:7b-instruct-q5_K_M` for very complex work.
+  - `local_ai_task(model="qwen2.5-coder:1.5b", ...)`
   - Zero cloud tokens consumed.
 
 ### 5. Concise Output (Caveman Protocol)

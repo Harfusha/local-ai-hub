@@ -359,6 +359,8 @@ class ContextCompiler:
         if self.incident_store is not None:
             incidents = self.incident_store.list_incidents(limit=10)
             for inc in incidents:
+                if inc.ignored:
+                    continue
                 if inc.verified_fix:
                     inc_content = f"[VERIFIED FIX] {inc.error_class}: {inc.verified_fix}"
                     candidates.append((

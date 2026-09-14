@@ -19,6 +19,8 @@
 
 Use `local_ai_task(action="second_opinion")` for a bounded candidate decision. Include the evidence and uncertainty.
 
+Use the same tool's `vision`/`transcribe` actions for requested image understanding/audio transcription, benchmark actions for model or device performance, and evaluation/candidate actions for prompt or model assessment. The active MCP schema is authoritative for exact arguments.
+
 ## Long output and failures
 
 Use `local_ai_task(action="compress")` for semantic condensation and `local_ai_artifact` for exact lines. Reuse cache/coalesced results, do not duplicate `in_progress` work, and make one bounded fallback when the hub is unavailable.

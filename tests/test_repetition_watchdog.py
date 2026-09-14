@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -68,6 +68,8 @@ class RepetitionWatchdogTests(unittest.TestCase):
 
     def test_repeated_model_response_fails_closed(self):
         runtime = object.__new__(OllamaRuntime)
+        runtime.llama_cpp = Mock()
+        runtime.llama_cpp.request_stream.return_value = None
         runtime.config = {"ollama": {"request_attempts": 1}}
         runtime.base_url = "http://ollama/"
         runtime.timeout = 1.0
@@ -83,6 +85,8 @@ class RepetitionWatchdogTests(unittest.TestCase):
 
     def test_repeated_streamed_response_fails_closed(self):
         runtime = object.__new__(OllamaRuntime)
+        runtime.llama_cpp = Mock()
+        runtime.llama_cpp.request_stream.return_value = None
         runtime.config = {"ollama": {"request_attempts": 1}}
         runtime.base_url = "http://ollama/"
         runtime.timeout = 1.0

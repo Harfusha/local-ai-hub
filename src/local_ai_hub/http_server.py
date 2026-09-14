@@ -1982,6 +1982,13 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(200, {"success": True, "incident": inc.to_dict()}); return
                     except KeyError:
                         self._send(404, {"success": False, "error": f"incident {inc_id} not found", "terminal": True, "retryable": False}); return
+                if action in {"ignore", "unignore"}:
+                    inc_id = str(payload.get("incident_id", payload.get("id", payload.get("record_id", ""))))
+                    try:
+                        inc = APP.agent_incidents.set_ignored(inc_id, ignored=action == "ignore")
+                        self._send(200, {"success": True, "incident": inc.to_dict()}); return
+                    except KeyError:
+                        self._send(404, {"success": False, "error": f"incident {inc_id} not found", "terminal": True, "retryable": False}); return
                 if action == "find_regressions":
                     paths_param = payload.get("paths") or ([payload.get("path")] if payload.get("path") else [])
                     p_list = [str(x) for x in paths_param] if isinstance(paths_param, list) else []
@@ -1990,8 +1997,9 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "find":
                     query_str = str(payload.get("query", payload.get("key", ""))).strip().lower()
                     resolved_filter = payload.get("resolved")
+                    status_filter = str(payload.get("status", "") or "")
                     limit_val = int(payload.get("limit", 100))
-                    all_incs = APP.agent_incidents.list_incidents(resolved=resolved_filter, limit=limit_val * 2)
+                    all_incs = APP.agent_incidents.list_incidents(resolved=resolved_filter, limit=limit_val * 2, status=status_filter)
                     if query_str:
                         matched = [
                             i for i in all_incs
@@ -2002,8 +2010,9 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, {"success": True, "incidents": [i.to_dict() for i in matched]}); return
                 if action == "list":
                     resolved_filter = payload.get("resolved")
+                    status_filter = str(payload.get("status", "") or "")
                     limit_val = int(payload.get("limit", 100))
-                    incidents = APP.agent_incidents.list_incidents(resolved=resolved_filter, limit=limit_val)
+                    incidents = APP.agent_incidents.list_incidents(resolved=resolved_filter, limit=limit_val, status=status_filter)
                     self._send(200, {"success": True, "incidents": [i.to_dict() for i in incidents]}); return
                 self._send(400, {"success": False, "error": f"unknown incident action '{action}'", "terminal": True, "retryable": False}); return
             if path == "/api/agent-state/verification":

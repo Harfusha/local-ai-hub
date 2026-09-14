@@ -329,11 +329,11 @@ def detect_hardware(requested_profile: str = "auto") -> dict[str, Any]:
 PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     "cpu": {
         "models": {
-            "background_code": "qwen2.5-coder:1.5b-instruct-q5_K_M",
-            "fast_code": "qwen2.5-coder:3b-instruct-q5_K_M",
-            "heavy_code": "qwen2.5-coder:7b-instruct-q5_K_M",
-            "reasoning": "qwen2.5-coder:7b-instruct-q5_K_M",
-            "general": "qwen2.5-coder:3b-instruct-q5_K_M",
+            "background_code": "qwen2.5-coder:0.5b",
+            "fast_code": "qwen2.5-coder:1.5b",
+            "heavy_code": "qwen2.5-coder:3b",
+            "reasoning": "qwen2.5-coder:7b",
+            "general": "qwen2.5-coder:1.5b",
         },
         "features": {"reranker": True},
         "scheduler": {"max_parallel": 1, "max_inflight_per_tenant": 1, "max_loaded_models": 1},
@@ -364,23 +364,23 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "same_model_worker_passes": 1,
         },
         "ollama_subagents": {"profiles": {
-            "qwen-explorer": {"model": "qwen2.5-coder:3b-instruct-q5_K_M"},
-            "qwen-drafter": {"model": "qwen2.5-coder:3b-instruct-q5_K_M"},
-            "qwen-critic": {"model": "qwen2.5-coder:3b-instruct-q5_K_M"},
+            "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
+            "qwen-drafter": {"model": "qwen2.5-coder:3b"},
+            "qwen-critic": {"model": "qwen2.5-coder:7b"},
         }},
     },
     "integrated": {
         "models": {
-            "background_code": "qwen2.5-coder:1.5b-instruct-q5_K_M",
-            "fast_code": "qwen2.5-coder:3b-instruct-q5_K_M",
-            "heavy_code": "qwen2.5-coder:7b-instruct-q5_K_M",
-            "reasoning": "qwen2.5-coder:7b-instruct-q5_K_M",
-            "general": "qwen2.5-coder:3b-instruct-q5_K_M",
+            "background_code": "qwen2.5-coder:0.5b",
+            "fast_code": "qwen2.5-coder:1.5b",
+            "heavy_code": "qwen2.5-coder:3b",
+            "reasoning": "qwen2.5-coder:7b",
+            "general": "qwen2.5-coder:1.5b",
         },
         "scheduler": {"max_parallel": 1, "max_loaded_models": 1, "max_queue": 32, "max_queued_per_tenant": 12, "max_inflight_per_tenant": 1},
-        # Ollama currently requires explicit admission for integrated GPUs. Keep
-        # this lane serial and let Ollama fall back to CPU if Vulkan/iGPU support
-        # is unavailable rather than forcing an accelerator backend.
+        # Keep shared-memory systems serial. Intel inference is routed to the
+        # optional llama.cpp SYCL server; Ollama stays off that iGPU and remains
+        # the fallback. AMD integrated GPUs retain the existing Vulkan path.
         "ollama": {
             "num_parallel": 1,
             "allow_integrated_gpu": True,
@@ -408,9 +408,9 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         },
         "ollama_subagents": {
             "profiles": {
-                "qwen-explorer": {"model": "qwen2.5-coder:3b-instruct-q5_K_M"},
-                "qwen-drafter": {"model": "qwen2.5-coder:3b-instruct-q5_K_M"},
-                "qwen-critic": {"model": "qwen2.5-coder:3b-instruct-q5_K_M"},
+        "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
+        "qwen-drafter": {"model": "qwen2.5-coder:3b"},
+        "qwen-critic": {"model": "qwen2.5-coder:7b"},
             }
         },
         "preprocessing": {
@@ -433,11 +433,11 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "low": {
         "models": {
-            "background_code": "qwen2.5-coder:1.5b-instruct-q5_K_M",
-            "fast_code": "qwen2.5-coder:3b-instruct-q5_K_M",
-            "heavy_code": "qwen2.5-coder:7b-instruct-q5_K_M",
-            "reasoning": "qwen2.5-coder:7b-instruct-q5_K_M",
-            "general": "qwen2.5-coder:3b-instruct-q5_K_M",
+            "background_code": "qwen2.5-coder:0.5b",
+            "fast_code": "qwen2.5-coder:1.5b",
+            "heavy_code": "qwen2.5-coder:3b",
+            "reasoning": "qwen2.5-coder:7b",
+            "general": "qwen2.5-coder:1.5b",
         },
         "scheduler": {"max_parallel": 1, "max_inflight_per_tenant": 1},
         "ollama": {"num_parallel": 1},
@@ -449,18 +449,18 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "smart": {"parallel": 1, "context_tokens": 24576, "max_context_tokens": 32768, "max_prompt_tokens": 22000},
         },
         "ollama_subagents": {"profiles": {
-            "qwen-explorer": {"model": "qwen2.5-coder:3b-instruct-q5_K_M"},
-            "qwen-drafter": {"model": "qwen2.5-coder:3b-instruct-q5_K_M"},
-            "qwen-critic": {"model": "qwen2.5-coder:3b-instruct-q5_K_M"},
+            "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
+            "qwen-drafter": {"model": "qwen2.5-coder:3b"},
+            "qwen-critic": {"model": "qwen2.5-coder:7b"},
         }},
     },
     "balanced": {
         "models": {
-            "background_code": "qwen2.5-coder:1.5b-instruct-q5_K_M",
-            "fast_code": "qwen2.5-coder:3b-instruct-q5_K_M",
-            "heavy_code": "qwen2.5-coder:7b-instruct-q5_K_M",
-            "reasoning": "qwen2.5-coder:7b-instruct-q5_K_M",
-            "general": "qwen2.5-coder:3b-instruct-q5_K_M",
+            "background_code": "qwen2.5-coder:0.5b",
+            "fast_code": "qwen2.5-coder:1.5b",
+            "heavy_code": "qwen2.5-coder:3b",
+            "reasoning": "qwen2.5-coder:7b",
+            "general": "qwen2.5-coder:1.5b",
         },
         "scheduler": {"max_parallel": 2, "max_inflight_per_tenant": 2},
         "ollama": {"num_parallel": 2},
@@ -469,11 +469,11 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "high": {
         "models": {
-            "background_code": "qwen2.5-coder:1.5b-instruct-q5_K_M",
-            "fast_code": "qwen2.5-coder:3b-instruct-q5_K_M",
-            "heavy_code": "qwen2.5-coder:7b-instruct-q5_K_M",
-            "reasoning": "qwen2.5-coder:7b-instruct-q5_K_M",
-            "general": "qwen2.5-coder:3b-instruct-q5_K_M",
+            "background_code": "qwen2.5-coder:0.5b",
+            "fast_code": "qwen2.5-coder:1.5b",
+            "heavy_code": "qwen2.5-coder:3b",
+            "reasoning": "qwen2.5-coder:7b",
+            "general": "qwen2.5-coder:1.5b",
         },
         "scheduler": {"max_parallel": 3, "max_inflight_per_tenant": 3},
         "ollama": {"num_parallel": 3},
@@ -482,11 +482,11 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "max": {
         "models": {
-            "background_code": "qwen2.5-coder:1.5b-instruct-q5_K_M",
-            "fast_code": "qwen2.5-coder:3b-instruct-q5_K_M",
-            "heavy_code": "qwen2.5-coder:7b-instruct-q5_K_M",
-            "reasoning": "qwen2.5-coder:7b-instruct-q5_K_M",
-            "general": "qwen2.5-coder:3b-instruct-q5_K_M",
+            "background_code": "qwen2.5-coder:0.5b",
+            "fast_code": "qwen2.5-coder:1.5b",
+            "heavy_code": "qwen2.5-coder:3b",
+            "reasoning": "qwen2.5-coder:7b",
+            "general": "qwen2.5-coder:1.5b",
         },
         "scheduler": {"max_parallel": 4, "max_inflight_per_tenant": 4},
         "ollama": {"num_parallel": 4},
@@ -502,8 +502,16 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
     detected = detected or {}
     ram_gb = float(detected.get("ram", {}).get("total_gb", 0) or 0)
     if profile_name == "integrated":
+        gpus = detected.get("gpus", [])
+        has_intel_gpu = any(
+            str(gpu.get("vendor", "")).lower() == "intel"
+            or "intel" in str(gpu.get("name", "")).lower()
+            for gpu in gpus if isinstance(gpu, dict)
+        ) if isinstance(gpus, list) else False
+        if has_intel_gpu:
+            result = _deep_merge_dict(result, {"ollama": {"allow_integrated_gpu": False, "enable_vulkan": False}})
         if ram_gb >= 24:
-            # 32 GB shared memory laptops have ample capacity for 32k context for 3B/1.5B
+            # 32 GB shared-memory laptops support all four configured model tiers.
             result = _deep_merge_dict(result, {
                 "model_execution": {
                     "fast": {"context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 24000},

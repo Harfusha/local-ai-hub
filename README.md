@@ -49,9 +49,9 @@ Local AI Hub is engineered to maximize **Quality**, **Speed**, and **Token Econo
 | **Unified 8-Tool MCP Surface** (Managed Serena & CodeGraph) | Serena (LSP) and CodeGraph (call/dependency graph) run under `local_ai_repo` without separate schemas | **Deep graph reasoning**: Agent queries blast-radius impact and cross-file callers before modifying code. | **Pre-indexed & warm**: External tool processes run persistently; no cold-start timeouts during agent turns. | **Saves ~1,500 schema tokens/turn**: Avoids exposing multiple heavy tool schemas on every single agent interaction. |
 | **Agent Operating System** (`local_ai_coord`) | Durable execution state, scoped KV memory, negative knowledge incidents, verification receipts, path leases | **Prevents repeated mistakes**: Negative knowledge prevents retrying broken patterns; receipts enforce true test verification. | **Instant resumption**: Restores task state and active memory without re-discovering repository facts. | **Bounded context compilation**: Assembles exact token-budgeted memory slices, preventing runaway session context bloat. |
 | **Single-Flight Command Broker** (`local_ai_command`) | Deduplicated test/lint execution, SHA256 caching, ANSI removal, verification receipt generation | **Deterministic verification**: Guarantees identical execution conditions; prevents flaky duplicate runs. | **Instant cache returns (0ms)**: Subsequent test/lint runs in the same workspace state return cached results immediately. | **Avoids 5k–25k rerun tokens**: Keeps massive compiler errors or test suites from repeating across agent iterations. |
-| **Local Ollama Inference** (`local_ai_task`) | Default `qwen2.5-coder:3b-instruct-q5_K_M`, with `qwen2.5-coder:7b-instruct-q5_K_M` for very complex work | **Unbiased second opinion**: Local models review diffs and draft AST fixes without cloud context contamination. | **Local concurrency**: Local generation runs in parallel with cloud agent high-level planning. | **100% free (0 cloud tokens)**: Offloads routine microtasks, file summaries, and formatting repairs completely off cloud bills. |
+| **Local Inference Runtime** (`local_ai_task`) | `qwen2.5-coder:0.5b` for preprocessing, `qwen2.5-coder:1.5b` for quick tasks, `qwen2.5-coder:3b` for complex work, `qwen2.5-coder:7b` for the hardest reasoning; optional llama.cpp SYCL router on Intel GPU | Deterministic/indexed operations handle simple repository tasks; local models handle bounded generation. | One resident model at a time on constrained hardware. | Offloads bounded reasoning and coding from cloud agents. |
 | **Whole-Task Delegation** (`local_ai_work`) | Autonomous closed-loop execution: local plan, transactional patch staging, rollback journal, verification | **Transactional safety**: Automatic rollback on test failure prevents partially broken codebase commits. | **Autonomous iteration**: Iterates through 10–30 test-fix cycles locally without internet or cloud rate limits. | **Massive savings (95%+)**: Compresses multi-turn cloud exchanges (50k–200k tokens, $1–$5) into a single <350 token handoff. |
-| **Hardware-Aware Scheduling & NPU Acceleration** | Automatic hardware profiling (`integrated` to `max`), Vulkan/CUDA offloading, Intel NPU OpenVINO retrieval | **Rock-solid stability**: Never crashes host system with OOMs; scheduler throttles background work gracefully. | **NPU/iGPU offload**: Frees primary CPU cores for IDE responsiveness and build tools while searching vectors. | **Zero cloud dependency**: Enables fast local semantic search and embeddings on standard laptops without paid APIs. |
+| **Hardware-Aware Scheduling & NPU Acceleration** | Automatic hardware profiling (`integrated` to `max`), CUDA/ROCm routes, optional llama.cpp SYCL for Intel GPU inference, Intel NPU OpenVINO retrieval | Scheduler throttles background work on shared-memory systems. | NPU/iGPU offload can free primary CPU cores for IDE responsiveness while searching vectors. | Enables local semantic search and embeddings without paid APIs. |
 
 ## Installation & One-Command Setup
 
@@ -78,7 +78,7 @@ The bootstrapper finds or installs a suitable Python 3.11+ runtime where the pla
 
 - the Local AI Hub virtual environment, core dependencies, and Token Economy Suite (`tokcount`, `trim-run`, `repo-map`);
 - external CLI tools (`ripgrep` / `rg`, `fd`, `ast-grep`, `repomix`, `jq`);
-- Ollama when missing, plus default code and embedding models (`qwen2.5-coder:3b-instruct-q5_K_M`, `bge-m3`);
+- Ollama when missing, plus configured code-model tiers (`qwen2.5-coder:0.5b`, `1.5b`, `3b`, `7b`) and embedding models;
 - Serena and CodeGraphContext in isolated tool environments;
 - local SentenceTransformers/reranker dependencies and model cache;
 - optional OpenVINO dependencies/models when the selected Intel integrated profile requests NPU/iGPU retrieval acceleration;
@@ -108,9 +108,9 @@ Run `python tools/hubctl.py generate` (or `python tools/setup.py --generate-only
 
 Profiles: `cpu`, `integrated`, `low`, `balanced`, `high`, `max`.
 
-`integrated` is selected for shared-memory iGPUs (for example Intel Arc Graphics on Core Ultra notebooks) instead of sizing the machine from the tiny `AdapterRAM` aperture value reported by Windows. It keeps one LLM/model resident at a time, uses 1.5B only for preprocessing, 3B for default fast/general work, and 7B for complex or high-risk work, disables the separate background Ollama process and prewarm, limits the scheduler queue to 32 (12 per tenant), async pending work to 16, code-intelligence/headless sessions to two per backend, and starts background preprocessing only after 15 seconds of idle time.
+`integrated` is selected for shared-memory iGPUs (for example Intel Arc Graphics on Core Ultra notebooks) instead of sizing the machine from the tiny `AdapterRAM` aperture value reported by Windows. It keeps one LLM/model resident at a time, uses 0.5B for background preprocessing, 1.5B for quick tasks, 3B for complex work, and 7B for the hardest reasoning, disables the separate background Ollama process and prewarm, limits the scheduler queue to 32 (12 per tenant), async pending work to 16, code-intelligence/headless sessions to two per backend, and starts background preprocessing only after 15 seconds of idle time.
 
-On Intel integrated systems, embeddings/reranking can use OpenVINO in `NPU -> GPU -> CPU` order. This is optional and failure-safe: missing drivers, unsupported model shapes, export failures or an unavailable OpenVINO runtime fall through to the next device and finally CPU. Ollama LLM generation is separate; the integrated profile admits the iGPU/Vulkan path for the managed Ollama process but remains serial and can fall back to CPU.
+On Intel integrated systems, embeddings/reranking can use OpenVINO in `NPU -> GPU -> CPU` order. This is optional and failure-safe. For text generation, Local AI Hub can route all four model tiers to a local llama.cpp router built with SYCL/Level Zero. On Intel integrated profiles Ollama's Vulkan/iGPU path is disabled; an unavailable SYCL server falls back to Ollama CPU. NVIDIA/AMD discrete-GPU routes stay on Ollama CUDA/ROCm. AMD iGPU keeps its separate Vulkan/CPU route because SYCL targets Intel GPUs. See [llama.cpp SYCL installation and configuration](docs/LLAMA_CPP_SYCL.md).
 
 ## Configuration
 
@@ -122,11 +122,11 @@ profile = "auto"
 auto_tune = true
 
 [models]
-background_code = "qwen2.5-coder:1.5b-instruct-q5_K_M" # preprocessing only
-fast_code = "qwen2.5-coder:3b-instruct-q5_K_M"
-heavy_code = "qwen2.5-coder:7b-instruct-q5_K_M"
-reasoning = "qwen2.5-coder:7b-instruct-q5_K_M"
-general = "qwen2.5-coder:3b-instruct-q5_K_M"
+background_code = "qwen2.5-coder:0.5b" # preprocessing only
+fast_code = "qwen2.5-coder:1.5b"
+heavy_code = "qwen2.5-coder:3b"
+reasoning = "qwen2.5-coder:7b"
+general = "qwen2.5-coder:1.5b"
 
 [code_intelligence]
 enabled = true

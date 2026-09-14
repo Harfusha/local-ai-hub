@@ -63,6 +63,7 @@ button,input,select,textarea{font:inherit}
 .sub{color:#94a3b8;font-size:11px;margin-top:5px;line-height:1.45}
 .section{margin-top:12px;overflow:hidden;border-radius:9px}
 .section h2{font-size:12.5px;margin:0;padding:10px 14px;background:var(--panel-head);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:8px;font-weight:600}
+.section.rag-narrow{width:min(100%, 960px);max-width:960px;margin:12px auto 0}
 .table-wrap{overflow:auto;max-height:520px}
 table{width:100%;border-collapse:collapse;font-size:11px}
 th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #1a2538;white-space:nowrap}
@@ -144,6 +145,10 @@ tbody tr.click:hover{background:#162338}
 .trace-queued{color:var(--warn)}
 .trace-toolbar{display:flex;gap:8px;align-items:center;padding:9px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
 .trace-toolbar select{background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:5px 8px;font:inherit;font-size:11px}
+.request-filter{display:flex;gap:8px;align-items:center;padding:9px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.request-filter input,.request-filter select{background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:6px 8px;font:inherit;font-size:11px}
+.request-filter input{flex:1;min-width:220px}
+.request-summary{margin-left:auto}
 .human-shell{padding:12px}
 .human-summary{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
 .human-summary .badge{border:1px solid #394758;border-radius:999px;padding:3px 8px;font-size:11px}
@@ -172,6 +177,27 @@ tbody tr.click:hover{background:#162338}
 .trace-step.open .trace-step-chevron{transform:rotate(90deg)}
 .trace-step-body{display:none;margin-top:5px;border:1px solid #273544;border-radius:6px;overflow:hidden}
 .trace-step.open .trace-step-body{display:block}
+.trace-event-content{display:grid;gap:8px;padding:2px 0}
+.trace-event-glance{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.trace-event-summary{font-weight:600;overflow-wrap:anywhere}
+.trace-progress{display:grid;grid-template-columns:minmax(90px,1fr) auto;align-items:center;gap:6px 10px;padding:7px 9px;border:1px solid #293746;border-radius:7px;background:#111820}
+.trace-progress-track{height:7px;overflow:hidden;border-radius:99px;background:#263341}
+.trace-progress-fill{height:100%;border-radius:inherit;background:linear-gradient(90deg,#6b9fff,#61c79a);transition:width .2s ease}
+.trace-progress-label{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.trace-event-status,.trace-event-chip{display:inline-flex;align-items:center;border:1px solid #394758;border-radius:999px;padding:2px 7px;font-size:10px;color:var(--muted)}
+.trace-event-status.ok{color:#79d2a3;border-color:#326a4c;background:#163123}
+.trace-event-status.warn{color:#e8c77a;border-color:#776235;background:#302816}
+.trace-event-status.bad{color:#ff9999;border-color:#784747;background:#351e22}
+.trace-event-section{display:grid;grid-template-columns:54px minmax(0,1fr);gap:8px;align-items:start;width:100%;padding:7px 0;border-top:1px solid #273544;min-width:0}
+.trace-event-label{padding-top:2px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.trace-event-section[data-kind="input"] .trace-event-label{color:#8eb4ff}
+.trace-event-section[data-kind="output"] .trace-event-label{color:#79d2a3}
+.trace-event-value{min-width:0;width:100%;overflow-wrap:anywhere}
+.trace-event-value .human-grid{width:100%}
+.trace-empty-output{color:var(--muted);font-size:11px}
+.trace-event-meta{min-width:0;border-top:1px solid #273544;padding-top:6px}
+.trace-event-meta summary{cursor:pointer;color:var(--muted);font-size:11px}
+.trace-event-meta .human-grid{margin-top:7px}
 .trace-event{padding:8px 10px;border-bottom:1px solid #202a35}
 .trace-event:last-child{border-bottom:0}
 .trace-output{color:#c9d6e4;white-space:pre-wrap;word-break:break-word;background:#0d1219;padding:8px;max-height:260px;overflow:auto}
@@ -197,7 +223,25 @@ tbody tr.click:hover{background:#162338}
 .modal-form input:focus,.modal-form select:focus,.modal-form textarea:focus{border-color:var(--accent);outline:none}
 .modal-checklist{display:flex;flex-direction:column;gap:6px}
 .modal-checklist-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;background:#131b26;border:1px solid #223142;border-radius:6px}
-.modal-checklist-item .item-text{font-size:12px;flex:1}
+.modal-checklist-item .item-text{font-size:13px;line-height:1.45;flex:1;min-width:0;overflow-wrap:anywhere;color:#dbe4ee}
+.task-criterion-state{flex:0 0 auto;padding:4px 9px;border-radius:999px;border:1px solid;font-size:10px;font-weight:700;white-space:nowrap}
+.task-criterion-state.is-verified{background:#0c2e1f;color:#86efac;border-color:#16a34a}
+.task-criterion-state.is-pending{background:#30230a;color:#fcd34d;border-color:#a16207}
+.task-criterion-state.is-failed{background:#2b1215;color:#fecaca;border-color:#b91c1c}
+.task-criterion-state.is-stale{background:#30230a;color:#fde68a;border-color:#a16207}
+.task-criterion-state.is-unavailable{background:#1b2532;color:#cbd5e1;border-color:#64748b}
+.task-criteria-summary{font-size:11px;font-weight:700;color:#cbd5e1}
+.task-criteria-summary.is-verified{color:#86efac}
+.task-criteria-summary.is-pending{color:#fcd34d}
+.task-criteria-summary.is-failed{color:#fecaca}
+.task-gate-result{margin-top:10px;padding:10px 12px;border:1px solid #64748b;border-radius:7px;background:#111b29;color:#dbe4ee;font-size:12px;line-height:1.45}
+.task-gate-result.is-ok{background:#0c241b;border-color:#15803d;color:#bbf7d0}
+.task-gate-result.is-warning{background:#2b210d;border-color:#a16207;color:#fde68a}
+.task-gate-result.is-failed{background:#2b1215;border-color:#b91c1c;color:#fecaca}
+.task-terminal-state{display:flex;align-items:center;gap:10px;padding:12px;border:1px solid #334155;border-radius:7px;background:#111b29;color:#dbe4ee;line-height:1.45}
+.task-terminal-state.is-completed{background:#0c241b;border-color:#15803d;color:#bbf7d0}
+.task-terminal-state.is-failed{background:#2b1215;border-color:#b91c1c;color:#fecaca}
+.task-terminal-state strong{font-size:11px;letter-spacing:.04em;text-transform:uppercase}
 .modal-radio-option{display:flex;gap:10px;padding:10px 12px;border:1px solid #2a3c52;border-radius:8px;background:#111823;cursor:pointer;transition:border-color .15s}
 .modal-radio-option:hover{border-color:var(--accent)}
 .modal-radio-option input[type="radio"]{margin-top:3px}
@@ -240,15 +284,12 @@ tbody tr.click:hover{background:#162338}
     <button class="tabbtn" data-tab="work">⚡ Queue &amp; requests</button>
     <button class="tabbtn" data-tab="agentos" data-feature="agent_os">🤖 Agent OS</button>
     <button class="tabbtn" data-tab="projects" data-feature="preprocessing">📁 Projects</button>
-    <button class="tabbtn" data-tab="explorer" data-feature="code_intelligence">🌲 Code Explorer</button>
     <button class="tabbtn" data-tab="commands" data-feature="commands">💻 Commands</button>
-    <button class="tabbtn" data-tab="architecture" data-feature="code_intelligence">🏗️ Architecture</button>
     <button class="tabbtn" data-tab="performance">🧠 Models &amp; RAG</button>
     <button class="tabbtn" data-tab="reliability">🛡️ Reliability &amp; Logs</button>
     <button class="tabbtn" data-tab="config">⚙️ Configuration</button>
     <button class="tabbtn" data-tab="bundles" data-feature="preprocessing">📦 Bundles</button>
     <button class="tabbtn" data-tab="events">📡 Live events</button>
-    <button class="tabbtn" data-tab="database">🗄️ Database</button>
   </div>
 </div>
 
@@ -299,8 +340,7 @@ tbody tr.click:hover{background:#162338}
 <div id="work" class="page">
   <section class="section"><h2>Scheduler queue <span class="tiny" id="queueSummary"></span></h2><div class="table-wrap"><table><thead><tr><th>State</th><th>Job</th><th>Agent/tenant</th><th>Source</th><th>Model</th><th>Priority</th><th>Wait</th><th>Processing</th><th>Reason</th></tr></thead><tbody id="jobs"></tbody></table></div></section>
   <section class="section"><h2>Active API requests <span class="tiny">monitoring endpoints excluded</span></h2><div class="table-wrap"><table><thead><tr><th>Request</th><th>Agent</th><th>Tenant</th><th>Action</th><th>Age</th></tr></thead><tbody id="activeReq"></tbody></table></div></section>
-  <section class="section"><h2>Recent API requests <span class="tiny">persisted telemetry · monitoring endpoints excluded</span></h2><div class="table-wrap"><table><thead><tr><th>Time</th><th>Request</th><th>Agent</th><th>Tenant</th><th>Action</th><th>Status</th><th>Duration</th></tr></thead><tbody id="recentReq"></tbody></table></div></section>
-  <section class="section"><h2>Agent debug traces <span class="tiny" id="traceSummary">full prompt/output · bounded retention</span></h2><div class="trace-toolbar"><span class="tiny">Click a trace for live events, model prompt, tool calls and output.</span><select id="traceKind"><option value="">All kinds</option><option value="api_request">API requests</option><option value="async_job">Async jobs</option></select><button class="btn" id="traceRefresh" style="padding:4px 8px;font-size:11px">Refresh</button></div><div class="table-wrap"><table><thead><tr><th>State</th><th>Kind</th><th>Action</th><th>Agent / tenant</th><th>Model</th><th>Created</th><th>Updated</th><th>Links</th></tr></thead><tbody id="traces"></tbody></table></div></section>
+  <section class="section"><h2>Recent API requests <span class="tiny">persisted telemetry · latest 200 · click a row for request details when a trace is available</span></h2><div class="request-filter"><input id="requestHistorySearch" type="search" placeholder="Search request ID, route, agent, tenant, error…" autocomplete="off"><select id="requestHistoryAction" aria-label="Filter by endpoint"><option value="">All endpoints</option></select><select id="requestHistoryStatus" aria-label="Filter by status"><option value="">All results</option><option value="failed">Failed</option><option value="2xx">2xx</option><option value="4xx">4xx</option><option value="5xx">5xx</option></select><select id="requestHistoryPeriod" aria-label="Filter by time"><option value="">All loaded</option><option value="3600">Last hour</option><option value="86400">Last 24 hours</option><option value="604800">Last 7 days</option><option value="2592000">Last 30 days</option></select><button class="btn" id="requestHistoryReset">Reset</button><span class="tiny request-summary" id="requestHistorySummary">0 requests</span></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Request</th><th>Agent</th><th>Tenant</th><th>Action</th><th>Status</th><th>Duration</th></tr></thead><tbody id="recentReq"></tbody></table></div></section>
 </div>
 
 <div id="agentos" class="page">
@@ -311,10 +351,7 @@ tbody tr.click:hover{background:#162338}
       <button class="subtab-btn active" id="subtabTasks" data-agentos-tab="tasks">Tasks &amp; Contracts</button>
       <button class="subtab-btn" id="subtabMemory" data-agentos-tab="memory">Memory &amp; Facts</button>
       <button class="subtab-btn" id="subtabIncidents" data-agentos-tab="incidents">Negative Knowledge &amp; Incidents</button>
-      <button class="subtab-btn" id="subtabVerification" data-agentos-tab="verification">Verification Receipts</button>
-      <button class="subtab-btn" id="subtabContext" data-agentos-tab="context">Context Playground</button>
-      <button class="subtab-btn" id="subtabLiveStream" data-agentos-tab="liveStream">Live Stream 🔴</button>
-      <button class="subtab-btn" id="subtabTrajectories" data-agentos-tab="trajectories">Trajectories &amp; Inspect</button>
+      <button class="subtab-btn" id="subtabTrajectories" data-agentos-tab="trajectories">Run History &amp; Inspect</button>
     </div>
   </section>
 
@@ -347,76 +384,23 @@ tbody tr.click:hover{background:#162338}
     <section class="section">
       <div class="project-toolbar">
         <input id="agentOsIncSearch" type="search" placeholder="Search error class, root cause, verified fix..." autocomplete="off">
-        <select id="agentOsIncFilter" aria-label="Incident status"><option value="">All incidents</option><option value="false">Unresolved</option><option value="true">Resolved with fix</option></select>
+        <select id="agentOsIncFilter" aria-label="Incident status"><option value="">All incidents</option><option value="unresolved">Unresolved</option><option value="resolved">Resolved with fix</option><option value="ignored">Ignored</option></select>
         <button class="btn warn" id="agentOsRecordIncBtn" style="padding:5px 9px">+ Record Anti-Pattern</button>
       </div>
-      <div class="table-wrap"><table><thead><tr><th>Incident ID</th><th>Operation</th><th>Error Class</th><th>Redacted Message</th><th>Root Cause</th><th>Verified Fix</th><th>Status</th></tr></thead><tbody id="agentOsIncBody"></tbody></table></div>
-    </section>
-  </div>
-
-  <div id="agentOsVerificationSec" style="display:none">
-    <section class="section">
-      <h2>Receipt &amp; Completion Gating <span class="tiny">Verify if acceptance criteria have valid verifiable receipts</span></h2>
-      <div style="padding:12px;display:flex;gap:8px;align-items:center">
-        <input type="text" id="agentOsVerifyTaskId" placeholder="Enter Task ID (e.g. task_abc123)..." style="flex:1;background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:8px 12px;font-size:12px">
-        <button class="btn ok" id="agentOsVerifyBtn">Check Completion Gate</button>
-      </div>
-      <div id="agentOsVerifyOut" style="padding:12px"></div>
-    </section>
-  </div>
-
-  <div id="agentOsContextSec" style="display:none">
-    <section class="section">
-      <h2>Context Compilation Playground <span class="tiny">Assemble bounded active task state, memories, negative knowledge &amp; active leases</span></h2>
-      <div style="padding:12px;display:flex;gap:8px;align-items:center">
-        <input type="text" id="agentOsCtxTaskId" placeholder="Task ID..." style="flex:1;background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:8px 12px;font-size:12px">
-        <input type="number" id="agentOsCtxBudget" value="4000" placeholder="Token budget" style="width:120px;background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:8px;font-size:12px">
-        <button class="btn ok" id="agentOsCtxCompileBtn">Compile Context</button>
-      </div>
-      <pre id="agentOsCtxOut" style="margin:0;padding:12px;background:#0d1219;color:#c9d6e4;font-size:11px;max-height:450px;overflow:auto;display:none;border-top:1px solid #1e293b"></pre>
-    </section>
-  </div>
-  <div id="agentOsLiveStreamSec" style="display:none">
-    <section class="section">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
-        <div style="display:flex;align-items:center;gap:10px">
-          <span class="badge-status badge-waiting" id="sseStreamBadge">Connecting…</span>
-          <span class="tiny muted" id="sseStreamStats">0 events received</span>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center">
-          <select id="sseKindFilter" style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:4px;padding:4px 8px;font-size:11px">
-            <option value="">All event kinds</option>
-            <option value="task.">Tasks (task.*)</option>
-            <option value="memory.">Memory (memory.*)</option>
-            <option value="incident.">Incidents (incident.*)</option>
-            <option value="verification.">Verification (verification.*)</option>
-            <option value="policy.">Policy (policy.*)</option>
-          </select>
-          <button class="btn" id="sseReconnectBtn" style="padding:4px 8px;font-size:11px">Reconnect</button>
-          <button class="btn warn" id="sseClearBtn" style="padding:4px 8px;font-size:11px">Clear Feed</button>
-        </div>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr><th>Seq</th><th>Time</th><th>Stream ID</th><th>Kind</th><th>Actor</th><th>Payload / Details</th></tr>
-          </thead>
-          <tbody id="agentOsLiveStreamBody"></tbody>
-        </table>
-      </div>
+      <div class="table-wrap"><table><thead><tr><th>Incident ID</th><th>Status</th><th>Attempts</th><th>Operation</th><th>Error Class</th><th>Redacted Message</th><th>Root Cause</th><th>Verified Fix</th></tr></thead><tbody id="agentOsIncBody"></tbody></table></div>
     </section>
   </div>
 
   <div id="agentOsTrajectoriesSec" style="display:none">
     <section class="section">
       <div class="project-toolbar">
-        <input id="trajSearch" type="search" placeholder="Search task trajectories..." autocomplete="off">
-        <button class="btn ok" id="trajRefreshBtn" style="padding:5px 9px">↻ Refresh Trajectories</button>
-        <span class="tiny project-summary" id="trajSummary">Inspect execution steps, tool calls, and LLM reasoning</span>
+        <input id="trajSearch" type="search" placeholder="Search task runs..." autocomplete="off">
+        <button class="btn ok" id="trajRefreshBtn" style="padding:5px 9px">↻ Refresh Run History</button>
+        <span class="tiny project-summary" id="trajSummary">Agent OS tasks, checkpoints, and events</span>
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Task / Trace</th><th>Goal / Prompt</th><th>Steps</th><th>Tokens Used</th><th>State</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Task</th><th>Goal</th><th>Steps</th><th>Tokens Used</th><th>State</th><th>Actions</th></tr></thead>
           <tbody id="trajTableBody"></tbody>
         </table>
       </div>
@@ -424,6 +408,11 @@ tbody tr.click:hover{background:#162338}
         <h3 id="trajDetailTitle" style="font-size:13px;margin:0 0 8px"></h3>
         <div id="trajStepsList" class="trace-timeline"></div>
       </div>
+    </section>
+    <section class="section">
+      <h2>Model &amp; tool traces <span class="tiny" id="traceSummary">full prompt/output · bounded retention</span></h2>
+      <div class="trace-toolbar"><span class="tiny">Inspect request events, model prompts, tool calls, and outputs.</span><select id="traceKind"><option value="">All kinds</option><option value="api_request">API requests</option><option value="async_job">Async jobs</option></select><button class="btn" id="traceRefresh" style="padding:4px 8px;font-size:11px">Refresh</button></div>
+      <div class="table-wrap"><table><thead><tr><th>State</th><th>Kind</th><th>Action</th><th>Agent / tenant</th><th>Model</th><th>Created</th><th>Updated</th><th>Links</th></tr></thead><tbody id="traces"></tbody></table></div>
     </section>
   </div>
 </div>
@@ -438,73 +427,14 @@ tbody tr.click:hover{background:#162338}
   </section>
 </div>
 
-<div id="explorer" class="page">
-  <div id="intelDisabledBanner" class="diag-banner bad" style="display:none">⚠️ <b>Code Intelligence is disabled in configuration</b> (<code>features.code_intelligence = false</code>). Symbol search and AST outline are unavailable.</div>
-  <section class="section">
-    <h2>Code &amp; AST Symbol Inspector <span class="tiny">Search any class, function or method across indexed projects</span></h2>
-    <div style="padding:12px;display:flex;gap:8px">
-      <input type="text" id="codeSearchInput" placeholder="Symbol name (e.g. LocalAIApp, PlayerController, CalculateTax)..." style="flex:1;background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:8px 12px;font-size:12px">
-      <button class="btn ok" id="codeSearchBtn">Inspect Symbol</button>
-    </div>
-    <div id="symbolDetails" style="padding:12px;display:none">
-      <div style="display:flex;gap:12px;margin-bottom:8px;font-size:12px;flex-wrap:wrap">
-        <span><b>Symbol:</b> <span id="symName" class="chip"></span></span>
-        <span><b>Kind:</b> <span id="symKind" class="chip"></span></span>
-        <span><b>File:</b> <span id="symPath" class="muted"></span></span>
-        <span><b>Lines:</b> <span id="symLines" class="mono"></span></span>
-      </div>
-      <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
-        <button class="btn" id="findDeclBtn">Find Declaration</button>
-        <button class="btn" id="findRefsBtn">Find References</button>
-        <button class="btn" id="findImplBtn">Find Implementations</button>
-        <button class="btn" id="genTestsBtn">Generate Tests</button>
-        <button class="btn warn" id="impactCheckBtn">Analyze Impact</button>
-        <button class="btn ok" id="resolveImpBtn">Resolve Imports</button>
-      </div>
-      <pre id="symCode" style="background:#0d1219;padding:12px;border-radius:6px;overflow:auto;max-height:420px;font-size:12px;border:1px solid #273341;color:#dbe5ef"></pre>
-    </div>
-  </section>
-
-  <section class="section" style="margin-top:12px">
-    <h2>File AST Outline &amp; Diagnostics <span class="tiny">Inspect AST hierarchy and compiler diagnostics for any file</span></h2>
-    <div style="padding:12px;display:flex;gap:8px">
-      <input type="text" id="codeFileInput" placeholder="File path (e.g. src/local_ai_hub/app.py)..." style="flex:1;background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:8px 12px;font-size:12px">
-      <button class="btn" id="codeOutlineBtn">Outline AST</button>
-      <button class="btn warn" id="codeDiagBtn">Check Diagnostics</button>
-    </div>
-    <div id="fileAnalysisDetails" style="padding:12px;display:none">
-      <h3 id="fileAnalysisTitle" style="font-size:12px;margin:0 0 8px"></h3>
-      <div id="fileAnalysisContent"></div>
-    </div>
-  </section>
-</div>
-
 <div id="commands" class="page">
   <div id="cmdDisabledBanner" class="diag-banner bad" style="display:none">⚠️ <b>Commands feature is disabled in configuration</b> (<code>features.commands = false</code>). Command classification and execution are blocked.</div>
-  <section class="section">
-    <h2>Safe command runner <span class="tiny">same fail-closed policy broker used by agents</span></h2>
-    <div style="padding:12px;display:grid;grid-template-columns:minmax(180px,.7fr) minmax(280px,2fr) auto auto auto;gap:8px">
-      <input id="cmdRoot" placeholder="Repository root" style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:8px">
-      <input id="cmdInput" placeholder="pytest -q / npm test / cargo check …" style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:8px">
-      <button class="btn" id="cmdClassify">Classify</button>
-      <button class="btn ok" id="cmdRun">Run allowed command</button>
-      <button class="btn" id="cmdGitDiffBtn" title="Inspect visual git diff">🔍 Git Diff</button>
-    </div>
-    <div style="padding:0 12px 6px;display:flex;justify-content:space-between;align-items:center">
-      <div style="display:flex;gap:6px">
-        <button class="btn tiny active" id="cmdTermViewBtn">Terminal / ANSI View</button>
-        <button class="btn tiny" id="cmdJsonViewBtn">Raw JSON View</button>
-      </div>
-      <span class="tiny muted" id="cmdExecMeta"></span>
-    </div>
-    <div id="cmdTermPane" style="margin:0 12px 12px;padding:12px;max-height:360px;overflow:auto;background:#0d1117;color:#c9d1d9;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;line-height:1.45;border-radius:6px;border:1px solid #30363d;white-space:pre-wrap"></div>
-    <pre id="cmdOutput" style="display:none;margin:0 12px 12px;padding:12px;white-space:pre-wrap;max-height:360px;overflow:auto;background:#0d1219;color:#c9d6e4;font-size:11px;border-radius:6px;border:1px solid #30363d"></pre>
-  </section>
   <section class="section"><h2>Running commands <span class="tiny" id="commandState">0 running</span></h2><div class="table-wrap"><table><thead><tr><th>Command</th><th>CWD</th><th>Tenant</th><th>Class</th><th>Age</th><th>Timeout</th></tr></thead><tbody id="activeCommands"></tbody></table></div></section>
   <div class="split"><section class="section"><h2>Command broker statistics</h2><div id="commandStats" class="kv"></div></section><section class="section"><h2>Blocked by policy</h2><div class="table-wrap"><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody id="blockedReasons"></tbody></table></div></section></div>
   <section class="section" style="margin-top:12px">
     <h2>Active Git Worktrees &amp; Subagent Sandboxes <span class="tiny" id="worktreeSummary">0 worktrees</span></h2>
-    <div style="padding:10px;display:flex;gap:8px;align-items:center">
+    <div style="padding:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <input id="worktreeRoot" placeholder="Repository root" style="flex:1;min-width:220px;background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:6px 8px">
       <button class="btn ok" id="refreshWorktreesBtn">↻ Refresh Worktrees</button>
       <button class="btn warn" id="pruneWorktreesBtn">🧹 Prune Stale Worktrees</button>
       <span class="tiny muted">Isolated worktrees prevent concurrent file write collisions</span>
@@ -519,48 +449,6 @@ tbody tr.click:hover{background:#162338}
 </div>
 
 
-<div id="architecture" class="page">
-  <section class="section">
-    <h2>Project Dependency Graph <span class="tiny" id="archSummary"></span></h2>
-    <div style="padding:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <button class="btn" id="archRefresh">Refresh projects</button>
-      <input type="text" id="symbolInput" placeholder="Symbol name (e.g. LocalAIApp)..." style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:6px 10px;font-size:11px">
-      <button class="btn" id="symbolGraphBtn">View Call-Graph</button>
-      <button class="btn warn" id="deadCodeBtn">Scan Dead Code</button>
-      <button class="btn ok" id="auditDepsBtn">Audit Security</button>
-      <button class="btn warn" id="circDepsBtn">Circular Deps</button>
-      <button class="btn" id="complexityBtn">Code Complexity</button>
-      <button class="btn ok" id="apiSpecBtn">API Spec</button>
-      <button class="btn warn" id="migrationDriftBtn">Migration Drift</button>
-      <button class="btn bad" id="secretScanBtn">Scan Secrets</button>
-      <input type="text" id="archFilterInput" placeholder="Filter nodes/modules..." style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:6px 10px;font-size:11px">
-      <button class="btn" id="archZoomIn" title="Zoom In">🔍 +</button>
-      <button class="btn" id="archZoomOut" title="Zoom Out">🔍 -</button>
-      <button class="btn" id="archZoomReset" title="Reset Zoom">↺ Reset</button>
-      <span id="archScanStatus" class="pill ok tiny" style="display:none;cursor:pointer" title="Click to jump to scan results"></span>
-      <span class="tiny muted">Drag nodes to rearrange · Scroll/Zoom to navigate</span>
-    </div>
-    <svg id="archSvg" style="width:100%;height:520px;background:#0d1219;border-radius:6px;display:block"></svg>
-
-    <div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>From</th><th>To</th><th>Type</th><th>Shared label / Reference</th></tr></thead><tbody id="archEdgesTable"></tbody></table></div>
-  </section>
-  <section class="section" id="deadCodeSec" style="display:none"><h2>Detected Dead Code &amp; Unused Symbols <span class="tiny" id="deadCodeSummary"></span></h2><div class="table-wrap"><table><thead><tr><th>Symbol</th><th>Kind</th><th>File</th><th>Line</th><th>Container</th><th>Reason</th></tr></thead><tbody id="deadCodeTable"></tbody></table></div></section>
-  <section class="section" id="auditSec" style="display:none"><h2>Dependency Vulnerability &amp; CVE Audit <span class="tiny" id="auditSummary"></span></h2><div class="table-wrap"><table><thead><tr><th>Package</th><th>Severity</th><th>Installed</th><th>Safe Version</th><th>Advisory</th><th>Manifest</th></tr></thead><tbody id="auditTable"></tbody></table></div></section>
-  <section class="section" id="circDepsSec" style="display:none"><h2>Circular Dependencies &amp; Import Cycles <span class="tiny" id="circDepsSummary"></span></h2><div class="table-wrap"><table><thead><tr><th>Cycle #</th><th>Language</th><th>Cycle Path</th><th>Length</th></tr></thead><tbody id="circDepsTable"></tbody></table></div></section>
-  <section class="section" id="complexitySec" style="display:none"><h2>Cyclomatic &amp; Cognitive Code Complexity <span class="tiny" id="complexitySummary"></span></h2><div class="table-wrap"><table><thead><tr><th>Symbol</th><th>File</th><th>Cyclomatic</th><th>Cognitive</th><th>Risk</th></tr></thead><tbody id="complexityTable"></tbody></table></div></section>
-  <section class="section" id="apiSpecSec" style="display:none"><h2>Static API Specification (OpenAPI 3.0) <span class="tiny" id="apiSpecSummary"></span></h2><div class="table-wrap"><table><thead><tr><th>Path</th><th>Method</th><th>Handler</th><th>Framework</th><th>Doc</th></tr></thead><tbody id="apiSpecTable"></tbody></table></div></section>
-  <section class="section" id="migrationDriftSec" style="display:none"><h2>Database Schema &amp; Model Drift <span class="tiny" id="migrationDriftSummary"></span></h2><div class="table-wrap"><table><thead><tr><th>Table</th><th>Status</th><th>Missing in DB</th><th>Missing in Code</th><th>Type Mismatches</th></tr></thead><tbody id="migrationDriftTable"></tbody></table></div></section>
-  <section class="section" id="secretScanSec" style="display:none">
-    <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px 0">
-      <h2 style="margin:0">Leaked Secrets &amp; Credentials <span class="tiny" id="secretScanSummary"></span></h2>
-      <label style="font-size:11px;color:var(--muted);display:inline-flex;align-items:center;gap:6px;cursor:pointer">
-        <input type="checkbox" id="secretScanHideTests" checked style="accent-color:var(--accent)"> Hide test suite fixtures &amp; mocks
-      </label>
-    </div>
-    <div class="table-wrap"><table><thead><tr><th>Rule</th><th>Description</th><th>File &amp; Line</th><th>Match</th><th>Entropy</th><th>Severity</th></tr></thead><tbody id="secretScanTable"></tbody></table></div>
-  </section>
-</div>
-
 <div id="performance" class="page">
   <section class="section">
     <h2>Live Telemetry Waves <span class="tiny">Real-time p95 latency &amp; queue wait (HTML5 Canvas · zero external CDN)</span></h2>
@@ -573,33 +461,12 @@ tbody tr.click:hover{background:#162338}
     </div>
   </section>
 
-  <div class="split" style="margin-top:12px">
-    <section class="section">
-      <h2>Installed Local Models &amp; VRAM <span class="tiny">Ollama engine &amp; model manager</span></h2>
-      <div style="padding:12px">
-        <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center">
-          <input type="text" id="modelPullName" placeholder="Model tag to pull (e.g. qwen2.5-coder:3b)..." style="flex:1;background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:6px 10px;font-size:12px">
-          <button class="btn ok" type="button" onclick="pullOllamaModel()">⬇ Pull</button>
-        </div>
-        <div id="modelManageStatus" class="tiny muted" style="margin-bottom:8px"></div>
-        <div id="installedModelsList"><div class="tiny muted">Loading installed models…</div></div>
-      </div>
-    </section>
-    <section class="section">
+  <div style="margin-top:12px">
+    <section class="section rag-narrow">
       <h2>RAG Vector Workspaces <span class="tiny">Persistent semantic code index</span></h2>
       <div style="padding:12px" id="ragWorkspacesList"><div class="tiny muted">Loading RAG workspaces…</div></div>
     </section>
   </div>
-
-  <section class="section" style="margin-top:12px">
-    <h2>RAG Semantic Search Testbed <span class="tiny">Test dense retrieval and re-ranking across indexed repositories</span></h2>
-    <div style="padding:12px;display:flex;gap:8px;flex-wrap:wrap">
-      <input type="text" id="ragSearchInput" placeholder="Semantic query (e.g. how does telemetry flush work?)..." style="flex:1;min-width:260px;background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:8px 12px;font-size:12px">
-      <select id="ragSearchWsSelect" style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:6px 10px;font-size:11px"><option value="">Select workspace…</option></select>
-      <button class="btn ok" id="ragSearchBtn">Semantic Search</button>
-    </div>
-    <div id="ragSearchResults" style="padding:12px;display:none"></div>
-  </section>
 
   <section class="section" style="margin-top:12px">
     <h2>Local Model Arena <span class="tiny">Side-by-side prompt testbed comparing fast tier vs smart tier</span></h2>
@@ -647,7 +514,6 @@ tbody tr.click:hover{background:#162338}
       </table>
     </div>
   </section>
-  <section class="section"><h2>Code-intelligence process control <span class="tiny">bounded Serena / CodeGraph sessions</span></h2><div style="padding:12px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="intelRediscover">Rediscover executables</button><button class="btn warn" id="intelReset">Reset all sessions</button><span class="tiny" id="intelControlStatus"></span></div></section>
   <section class="section">
     <h2><span>Operational log tail</span><div style="display:flex;gap:6px;align-items:center"><input type="text" id="logFilterInput" placeholder="Filter logs…" style="background:#0d141c;color:var(--fg);border:1px solid #334355;border-radius:5px;padding:3px 7px;font-size:11px;width:150px"><select id="logLinesSelect" style="background:#0d141c;color:var(--fg);border:1px solid #334355;border-radius:5px;padding:3px 6px;font-size:11px"><option value="100">100 lines</option><option value="250" selected>250 lines</option><option value="500">500 lines</option></select><button class="btn" id="loadLogs" style="padding:3px 8px">Refresh</button><button class="btn" id="copyLogsBtn" style="padding:3px 8px">Copy</button></div></h2>
     <pre id="logTail" style="margin:0;padding:12px;white-space:pre-wrap;max-height:420px;overflow:auto;background:#0d1219;color:#c9d6e4;font-size:11px">Click Refresh to load logs.</pre>
@@ -682,35 +548,6 @@ tbody tr.click:hover{background:#162338}
 </div>
 
 <div id="events" class="page"><section class="section"><h2>Live activity <span class="tiny">RAM ring buffer · display pause does not pause runtime</span></h2><div id="eventList" class="events"></div></section></div>
-
-<div id="database" class="page">
-  <section class="section">
-    <h2>🗄️ SQLite Data Explorer <span class="tiny">Read-only live query inspector across agent_state, cache, and telemetry</span></h2>
-    <div style="padding:12px">
-      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
-        <label style="font-weight:600;font-size:11px">Database:
-          <select id="dbSelect" style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:4px 8px;margin-left:4px">
-            <option value="agent_state">agent_state.sqlite3</option>
-            <option value="cache">cache.sqlite3</option>
-            <option value="telemetry">telemetry.sqlite3</option>
-          </select>
-        </label>
-        <span class="muted tiny">Presets:</span>
-        <button class="btn tiny" type="button" onclick="setDbPreset('tasks')">Tasks</button>
-        <button class="btn tiny" type="button" onclick="setDbPreset('events')">Events</button>
-        <button class="btn tiny" type="button" onclick="setDbPreset('memory')">Memory</button>
-        <button class="btn tiny" type="button" onclick="setDbPreset('relations')">Relations</button>
-        <button class="btn tiny" type="button" onclick="setDbPreset('cache')">Cache Entries</button>
-        <button class="btn ok tiny" id="dbRunBtn" style="margin-left:auto" onclick="runDbQuery()">▶ Execute Query</button>
-      </div>
-      <textarea id="dbQueryInput" rows="4" style="width:100%;background:#0d141c;color:#e2e8f0;font-family:monospace;font-size:12px;border:1px solid #2e405a;border-radius:6px;padding:8px" placeholder="SELECT * FROM tasks ORDER BY created_at DESC LIMIT 50">SELECT * FROM tasks ORDER BY created_at DESC LIMIT 50</textarea>
-      <div id="dbQueryStatus" class="tiny muted" style="margin:6px 0"></div>
-      <div id="dbResultsWrap" style="overflow-x:auto;max-height:450px;border:1px solid var(--line);border-radius:6px;margin-top:8px">
-        <table id="dbResultsTable" style="margin:0;width:100%"><thead id="dbResultsHead"></thead><tbody id="dbResultsBody"></tbody></table>
-      </div>
-    </div>
-  </section>
-</div>
 
 <div id="modalBg" class="modal-bg"><div class="modal"><div class="modal-head"><strong id="modalTitle">Details</strong><span id="modalLive" class="tiny" style="margin-left:10px"></span><button class="btn spacer" id="modalClose">Close</button></div><div id="modalBody"></div></div></div>
 
@@ -852,7 +689,6 @@ function inferEntityType(obj){
   if(obj.component&&(obj.operation||obj.count!==undefined))return 'error';
   if(obj.session_id)return 'session';
   if(obj.checks&&Array.isArray(obj.checks))return 'doctor';
-  if(obj.code||obj.tests||obj.test_code||obj.missing_imports||obj.callers)return 'code_intel';
   if(obj.databases_optimized!==undefined)return 'db_opt';
   if(obj.purged_entries!==undefined)return 'cache_purge';
   if(obj.tier&&obj.num_ctx!==undefined)return 'execution_profile';
@@ -861,10 +697,7 @@ function inferEntityType(obj){
   if(obj.route&&obj.task_type&&obj.complexity)return 'route_stat';
   if(obj.action&&obj.p50_duration_ms!==undefined)return 'http_tail';
   if(obj.avg_load_ms!==undefined&&obj.model)return 'model_stat';
-  if(obj.fixed_version||obj.advisory||(obj.package&&obj.severity))return 'audit_vulnerability';
-  if(obj.container!==undefined&&obj.reason&&obj.path)return 'dead_code';
   if(obj.reason&&obj.count!==undefined)return 'blocked_reason';
-  if(obj.from&&obj.to&&obj.type)return 'arch_edge';
   if(obj.job_id!==undefined&&(obj.wait_ms!==undefined||obj.service_ms!==undefined||obj.wait_reason!==undefined))return 'scheduler_job';
   if(obj.request_id&&obj.agent&&(obj.action||obj.status_code!==undefined||obj.duration_ms!==undefined||obj.age_ms!==undefined))return 'http_request';
   return 'generic';
@@ -926,20 +759,105 @@ function renderModelPrompt(prompt){
 function humanSection(title,value){return `<section class="human-section"><h3>${esc(title)}</h3>${renderAny(value)}</section>`}
 function rawFallback(obj){let raw='';try{raw=JSON.stringify(obj,null,2)}catch(e){raw=String(e)}return `<details class="raw-json"><summary>Raw JSON (fallback)</summary><pre>${esc(raw)}</pre></details>`}
 function toggleTraceStep(button){const step=button.closest('.trace-step');if(!step)return;const key=String(step.dataset.traceStep||'');const open=!step.classList.contains('open');step.classList.toggle('open',open);button.setAttribute('aria-expanded',String(open));if(open)traceOpenSteps.add(key);else traceOpenSteps.delete(key)}
+const traceInputFields=new Set(['input','input_text','input_data','user_input','arguments','args','prompt','messages','query','query_params','request','request_data','request_body','request_payload','body','form_data','headers','parameters','payload','method','path','url','endpoint']);
+const traceOutputFields=new Set(['output','output_text','output_data','generated_text','response_text','response_body','result','result_data','response','content','text','answer','completion','stdout','stderr','return_value','items']);
+const traceProcessFields=new Set(['state','status','stage','phase','progress','progress_percent','percent','step','step_index','current_step','total_steps','completed_steps','attempt','attempts','attempt_number','max_attempts','retry_count','retry_delay_ms','duration','duration_ms','duration_ns','elapsed','elapsed_ms','queue_time_ms','queue_wait_ms','started_at','finished_at','error','error_type','error_message','exception','failure','retry_after','delivery','background','chunks','truncated','status_code']);
+function traceEventTitle(type){
+  const titles={model_request:'Model input',output_stream:'Model output',output_delta:'Model output chunk',tool_call:'Tool call',tool_result:'Tool result',request_received:'Request received',handler_started:'Handler started',async_job_submitted:'Async job submitted',scheduled:'Scheduled',running:'Running',retry:'Retry',trace_truncated:'Trace truncated',completed:'Completed',complete:'Completed',done:'Completed',success:'Completed',succeeded:'Completed',failed:'Failed',error:'Error',cancelled:'Cancelled',canceled:'Cancelled',interrupted:'Interrupted',request_completed:'Request completed',request_failed:'Request failed'};
+  return Object.prototype.hasOwnProperty.call(titles,type)?titles[type]:humanLabel(type||'Event');
+}
+function traceEventSummary(type,p){
+  if(type==='model_request')return `Request to ${p.model||p.provider||'model'}`;
+  if(type==='tool_call')return `Calling ${p.name||p.tool||'tool'}`;
+  if(type==='tool_result')return p.isError||p.is_error||p.success===false||p.error?'Tool returned an error':'Tool returned a result';
+  if(type==='output_stream')return `${n(p.chunks||0)} output chunks${p.truncated?' · truncated':''}`;
+  if(type==='output_delta')return 'Output content received';
+  if(type==='scheduled')return `Queued${p.model?` · ${p.model}`:''}`;
+  if(type==='running')return `Started${p.action?` · ${p.action}`:''}`;
+  if(type==='retry')return `Retry${p.attempts?` · attempt ${p.attempts}`:''}`;
+  if(type==='request_received')return `${p.method||'Request'}${p.path?` · ${p.path}`:''}`;
+  if(type==='handler_started')return `Processing${p.action?` · ${p.action}`:''}`;
+  if(type==='async_job_submitted')return 'Background job submitted';
+  if(type==='trace_truncated')return 'Some trace data was omitted';
+  if(/^(complete|completed|done|success|succeeded|finished)$/i.test(type))return 'Operation completed';
+  if(/^(failed|error|request_failed)$/i.test(type))return String(p.error||p.error_message||p.message||'Operation failed').slice(0,160);
+  for(const key of ['summary','message','action','name','tool','path','model','job_id','request_id']){
+    const value=p[key];if((typeof value==='string'&&value.trim())||typeof value==='number')return String(value).slice(0,160);
+  }
+  return `${traceEventTitle(type)} event`;
+}
+function traceEventStatus(type,p,result){
+  const r=result||{},raw=String(p.state||p.status||r.state||r.status||'').trim(),eventState=`${type} ${raw}`;
+  if(/cancel|interrupt/i.test(eventState))return {label:raw||traceEventTitle(type),tone:'warn'};
+  if(/^(complete|completed|done|success|succeeded|finished|request_completed)$/i.test(type))return {label:'Completed',tone:'ok'};
+  const failed=Boolean(p.error||p.error_message||p.exception||p.failure||r.error||r.error_message||r.exception||p.is_error||p.isError||r.is_error||r.isError||p.success===false||r.success===false||/fail|error|exception/i.test(eventState));
+  if(failed)return {label:raw||'Error',tone:'bad'};
+  if(raw)return {label:humanLabel(raw),tone:/queued|pending|running|retry|scheduled|progress/i.test(raw)?'warn':'ok'};
+  if(p.success===true||r.success===true)return {label:'Success',tone:'ok'};
+  if(/queued|pending|running|retry|scheduled|submitted|started|progress/i.test(type))return {label:traceEventTitle(type),tone:'warn'};
+  if(type==='tool_call'&&result)return {label:'Completed',tone:'ok'};
+  if(type==='tool_call'&&!result)return {label:'Waiting',tone:'warn'};
+  return null;
+}
+function traceEventGroups(payload,excluded){
+  const groups={input:{},output:{},process:{},metadata:{}};const skip=new Set(excluded||[]);
+  Object.entries(payload&&typeof payload==='object'?payload:{}).forEach(([key,value])=>{
+    if(skip.has(key))return;const normalized=key.toLowerCase();
+    const group=traceInputFields.has(normalized)?'input':traceOutputFields.has(normalized)?'output':traceProcessFields.has(normalized)?'process':'metadata';
+    groups[group][key]=value;
+  });
+  return groups;
+}
+function traceProgressInfo(payload){
+  const p=payload&&typeof payload==='object'?payload:{};
+  const number=value=>{if(value===null||value===undefined||typeof value==='boolean')return null;const raw=typeof value==='string'?value.trim().replace(/%$/,'').trim():value;if(raw==='')return null;const parsed=Number(raw);return Number.isFinite(parsed)?parsed:null};
+  const ratio=(current,total)=>{const c=number(current),t=number(total);return c!==null&&t!==null&&c>=0&&t>0?{percent:Math.max(0,Math.min(100,c/t*100)),label:`${c} / ${t} steps`}:null};
+  const nested=p.progress&&typeof p.progress==='object'?p.progress:null;
+  if(nested){const steps=ratio(nested.current??nested.completed??nested.value,nested.total);if(steps)return steps;for(const key of ['percent','percentage']){const value=number(nested[key]);if(value!==null){const bounded=Math.max(0,Math.min(100,value));return {percent:bounded,label:`${Math.round(bounded)}%`}}}}
+  for(const key of ['progress_percent','percent','progress']){
+    const value=number(p[key]);if(value===null)continue;const percent=key==='progress'&&value>=0&&value<=1?value*100:value,bounded=Math.max(0,Math.min(100,percent));return {percent:bounded,label:`${Math.round(bounded)}%`};
+  }
+  return ratio(p.current_step??p.completed_steps??p.step_index??p.step,p.total_steps);
+}
+function traceProgressVisual(payload){
+  const progress=traceProgressInfo(payload);if(!progress)return '';
+  const width=Math.round(progress.percent*10)/10,label=String(progress.label||`${Math.round(width)}%`);
+  return `<div class="trace-progress" role="progressbar" aria-label="${esc(label)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${width}"><span class="trace-progress-track"><span class="trace-progress-fill" style="width:${width}%"></span></span><span class="trace-progress-label">${esc(label)}</span></div>`;
+}
+function traceEventChips(metadata,process){
+  const values={...(metadata||{}),...(process||{})},priority=['action','model','agent','attempts','attempt','attempt_number','max_attempts','retry_count','retry_delay_ms','duration_ms','duration_ns','elapsed_ms','elapsed','queue_wait_ms','queue_time_ms','status_code','current_step','total_steps','stage','phase','provider','job_id','request_id','delivery','background'];
+  return Object.entries(values).filter(([key,value])=>!['current_step','completed_steps','step_index','total_steps','progress','progress_percent','percent','percentage'].includes(key.toLowerCase())&&(value===null||['string','number','boolean'].includes(typeof value))).sort(([a],[b])=>{const ai=priority.indexOf(a.toLowerCase()),bi=priority.indexOf(b.toLowerCase());return (ai<0?priority.length:ai)-(bi<0?priority.length:bi)}).slice(0,5).map(([key,value])=>`<span class="trace-event-chip"><strong>${esc(humanLabel(key))}:</strong> ${esc(value===null?'null':String(value).slice(0,72))}</span>`).join('');
+}
+function traceEventSection(title,content,kind){return `<section class="trace-event-section" data-kind="${kind}"><span class="trace-event-label">${esc(title)}</span><div class="trace-event-value">${content}</div></section>`}
 function traceEventBody(event,events,index){
-  const type=String(event.event_type||'event'),p=event.payload||{};
-  if(type==='model_request')return renderModelPrompt(p);
+  const type=String(event.event_type||'event'),p=event.payload||{};let pairedResult=null,input='',output='',statusResult=null,groups;
   if(type==='tool_result'){
     const callId=p.call_id||'';
     if(callId&&events.slice(0,index).some(x=>x.event_type==='tool_call'&&((x.payload||{}).call_id||'')===callId))return '';
   }
-  if(type==='tool_call'){
-    const callId=p.call_id||'',result=events.slice(index+1).find(x=>x.event_type==='tool_result'&&(!callId||((x.payload||{}).call_id||'')===callId));
-    return `<div class="tool-pair"><div class="tool-part tool-call"><div class="tool-label">Tool call <span class="tiny">${esc(p.name||p.tool||'unnamed')}</span></div>${renderAny(p.arguments??p.input??p)}</div>${result?`<div class="tool-part tool-result"><div class="tool-label">Tool result</div>${renderAny(result.payload||{})}</div>`:`<div class="tool-pending">Waiting for tool result…</div>`}</div>`;
+  if(type==='model_request'){
+    const prompt=p.prompt??p.messages??p.content??p.input??p.request??'';input=prompt?renderAny(prompt):'<span class="trace-empty-output">No input captured for this event</span>';groups=traceEventGroups(p,['prompt','messages','content','system','input','request']);
+  }else if(type==='tool_call'){
+    const callId=p.call_id||'';pairedResult=events.slice(index+1).find(x=>x.event_type==='tool_result'&&(!callId||((x.payload||{}).call_id||'')===callId));
+    input=renderAny(p.arguments??p.input??{});output=pairedResult?renderAny(pairedResult.payload||{}):'';
+    statusResult=pairedResult?.payload||null;
+    groups=traceEventGroups(p,['arguments','input']);
+  }else if(type==='tool_result'){
+    groups=traceEventGroups(p);if(!Object.keys(groups.output).length)groups.output={result:p};
+  }else if(type==='output_stream'){
+    output=`<pre class="trace-output">${esc(p.text||'')}${p.truncated?'…':''}</pre>`;groups=traceEventGroups(p,['text']);
+  }else if(type==='output_delta'){
+    output=`<pre class="trace-output">${esc(p.text||'')}</pre>`;groups=traceEventGroups(p,['text']);
+  }else{
+    groups=traceEventGroups(p);input=Object.keys(groups.input).length?renderAny(groups.input):'';output=Object.keys(groups.output).length?renderAny(groups.output):'';
   }
-  if(type==='output_stream')return `<div class="trace-stream-summary"><strong>Model output · ${n(p.chunks||0)} chunks</strong><div class="trace-output">${esc(p.text||'')}${p.truncated?'…':''}</div></div>`;
-  if(type==='output_delta')return `<div class="trace-output">${esc(p.text||'')}</div>`;
-  return renderAny(p);
+  const status=traceEventStatus(type,p,statusResult),badge=status?`<span class="trace-event-status ${status.tone}">${esc(humanLabel(status.label))}</span>`:'';
+  const metadata=groups.metadata||{},chips=traceEventChips(metadata,groups.process),progress=traceProgressVisual(p);
+  const summary=`<div class="trace-event-glance"><strong class="trace-event-summary">${esc(traceEventSummary(type,p))}</strong>${badge}${chips}</div>${progress}`;
+  const details={...metadata,...(groups.process||{})},outputContent=output||(Object.keys(groups.output).length?renderAny(groups.output):'<span class="trace-empty-output">No output captured for this event</span>');
+  const inputContent=input||(Object.keys(groups.input).length?renderAny(groups.input):'');
+  const detailsPanel=Object.keys(details).length?`<details class="trace-event-meta"><summary>More details · ${Object.keys(details).length} fields</summary>${renderAny(details)}</details>`:'';
+  return `<div class="trace-event-content">${summary}${traceEventSection('Output',outputContent,'output')}${inputContent?traceEventSection('Input',inputContent,'input'):''}${detailsPanel}</div>`;
 }
 function compactTimelineEvents(events){
   const compact=[];let stream=null,streamBytes=0;
@@ -960,7 +878,7 @@ function traceTimeline(events){
   const groups=[];let current=null;
   (events||[]).forEach(event=>{const type=String(event.event_type||'event'),payload=event.payload||{};if(type==='model_request'||!current){current={index:groups.length+1,label:type==='model_request'?'Model request':'Execution',events:[]};groups.push(current)}if(type!=='model_request'&&payload&&payload.step){const step=Number(payload.step);current=groups.find(g=>g.step===step)||current}if(type==='model_request'&&payload&&payload.step)current.step=Number(payload.step);current.events.push(event)});
   if(!groups.length)return '<div class="empty-human">Waiting for agent events…</div>';
-  return `<div class="trace-timeline">${groups.map((group,index)=>{const key=String(group.step||group.index),open=traceOpenSteps.size?traceOpenSteps.has(key):index===groups.length-1,eventsForDisplay=compactTimelineEvents(group.events);return `<div class="trace-step ${open?'open':''}" data-trace-step="${esc(key)}"><button class="trace-step-head" data-trace-toggle aria-expanded="${open}"><span class="trace-step-index">Step ${esc(key)}</span><span>${esc(humanLabel(group.label))}</span><span class="tiny">${group.events.length} events · ${eventsForDisplay.length} shown</span><span class="trace-step-chevron">▶</span></button><div class="trace-step-body">${eventsForDisplay.map((event,eventIndex)=>{const type=String(event.event_type||'event'),body=traceEventBody(event,eventsForDisplay,eventIndex);if(!body)return '';return `<div class="trace-event"><div class="event-head"><span class="event-type">${esc(humanLabel(type))}</span><span class="event-time">${event.created_at?new Date(event.created_at*1000).toLocaleTimeString():'—'} · #${esc(event.seq)}</span></div>${body}</div>`}).join('')}</div></div>`}).join('')}</div>`;
+  return `<div class="trace-timeline">${groups.map((group,index)=>{const key=String(group.step||group.index),open=traceOpenSteps.size?traceOpenSteps.has(key):index===groups.length-1,eventsForDisplay=compactTimelineEvents(group.events);return `<div class="trace-step ${open?'open':''}" data-trace-step="${esc(key)}"><button class="trace-step-head" data-trace-toggle aria-expanded="${open}"><span class="trace-step-index">Step ${esc(key)}</span><span>${esc(humanLabel(group.label))}</span><span class="tiny">${group.events.length} events · ${eventsForDisplay.length} shown</span><span class="trace-step-chevron">▶</span></button><div class="trace-step-body">${eventsForDisplay.map((event,eventIndex)=>{const type=String(event.event_type||'event'),body=traceEventBody(event,eventsForDisplay,eventIndex);if(!body)return '';return `<div class="trace-event"><div class="event-head"><span class="event-type">${esc(traceEventTitle(type))}</span><span class="event-time">${event.created_at?new Date(event.created_at*1000).toLocaleTimeString():'—'} · #${esc(event.seq)}</span></div>${body}</div>`}).join('')}</div></div>`}).join('')}</div>`;
 }
 function renderHumanModal(obj){
   if(obj===null||typeof obj!=='object'){$('modalBody').innerHTML=`<div class="human-shell">${renderAny(obj)}${rawFallback(obj)}</div>`;return}
@@ -980,7 +898,7 @@ function renderTraceDetail(d){
   $('tracePageTitle').textContent=String(s.action||s.source||'Agent trace');$('tracePageLive').textContent=d?.terminal?'terminal · retained':'● live · auto-refresh';$('tracePageLive').className='tiny '+(d?.terminal?'ok':'trace-running');
   const state=traceDisplayState(s),displayState=traceStatus(s),stateClass=(displayState==='failed'||displayState==='error')?'bad':(displayState==='interrupted'?'warn':(d?.terminal?'ok':'warn'));
   const header=`<div class="trace-inspector-head"><div><div class="trace-kicker">Agent execution</div><strong>${esc(s.action||s.source||'Trace')}</strong><div class="tiny">${esc(s.agent||'unknown agent')} · ${esc(s.model||'model not recorded')}</div></div><span class="badge ${stateClass}">${esc(state)}</span></div><div class="trace-metrics"><span>${events.length} events</span><span>${esc(s.tenant||'no tenant')}</span><span>${s.text_bytes||0} bytes retained</span></div>`;
-  const timeline=`<section class="human-section"><h3>Agent timeline (${events.length})</h3>${traceTimeline(events)}</section>`,prompt=renderModelPrompt(payload.main_agent_prompt)+humanSection('Original request',payload.original_request),output=humanSection('Output',payload.output),response=humanSection('Final response',payload.response),views={timeline, prompt:prompt, output:output+response, events:`<section class="human-section"><h3>All events</h3>${renderAny(events)}</section>`, raw:traceRaw(payload)},content=views[traceView]||timeline;
+  const timeline=`${traceTimeline(events)}`,prompt=renderModelPrompt(payload.main_agent_prompt)+humanSection('Original request',payload.original_request),output=humanSection('Output',payload.output),response=humanSection('Final response',payload.response),views={timeline, prompt:prompt, output:output+response, events:`<section class="human-section"><h3>All events</h3>${renderAny(events)}</section>`, raw:traceRaw(payload)},content=views[traceView]||timeline;
   $('tracePageBody').className='trace-page-body';$('tracePageBody').innerHTML=`<div class="human-shell">${header}<nav class="trace-tabs" aria-label="Trace views">${traceTab('Timeline','timeline')}${traceTab('Prompt','prompt')}${traceTab('Output','output')}${traceTab('Events','events')}${traceTab('Raw','raw')}</nav><div class="trace-view">${content}</div></div>`;
 }
 function setTraceView(view){if(!['timeline','prompt','output','events','raw'].includes(view))return;traceView=view;if(activeTraceData)renderTraceDetail(activeTraceData)}
@@ -1015,7 +933,6 @@ function openModal(obj,title='',entityType=''){
     type==='error'?'Error Fingerprint':
     type==='db_opt'?'Database Optimization':
     type==='cache_purge'?'Cache Purge Summary':
-    type==='code_intel'?'Code Analysis Details':
     type==='http_tail'?'HTTP Tail Latency':
     type==='execution_profile'?'Execution Profile':
     type==='model_stat'?'Model Metrics':
@@ -1023,10 +940,6 @@ function openModal(obj,title='',entityType=''){
     type==='agent_stat'?'Agent Telemetry':
     type==='route_stat'?'Execution Route':
     type==='blocked_reason'?'Command Policy Block':
-    type==='dead_code'?'Dead Code Candidate':
-    type==='audit_vulnerability'?'Security Vulnerability Advisory':
-    type==='secret_finding'?'Secret Finding / Credential Leak':
-    type==='arch_edge'?'Architecture Dependency Connection':
     type==='scheduler_job'?'Scheduler Job':
     type==='session'?'Process Session Details':
     type==='http_request'?'HTTP Request':'Details'
@@ -1041,7 +954,6 @@ function openModal(obj,title='',entityType=''){
   else if(type==='lease')renderActiveLeaseModal(obj);
   else if(type==='command')renderActiveCommandModal(obj);
   else if(type==='error')renderErrorFingerprintModal(obj);
-  else if(type==='code_intel')renderCodeIntelModal(obj,defaultTitle);
   else if(type==='db_opt')renderDbOptModal(obj);
   else if(type==='cache_purge')renderCachePurgeModal(obj);
   else if(type==='http_tail')renderHttpTailModal(obj);
@@ -1051,10 +963,6 @@ function openModal(obj,title='',entityType=''){
   else if(type==='agent_stat')renderAgentStatModal(obj);
   else if(type==='route_stat')renderRouteStatModal(obj);
   else if(type==='blocked_reason')renderBlockedReasonModal(obj);
-  else if(type==='dead_code')renderDeadCodeModal(obj);
-  else if(type==='audit_vulnerability')renderAuditVulnModal(obj);
-  else if(type==='secret_finding')renderSecretFindingModal(obj);
-  else if(type==='arch_edge')renderArchEdgeModal(obj);
   else if(type==='scheduler_job')renderSchedulerJobModal(obj);
   else if(type==='http_request')renderHttpRequestModal(obj);
   else renderHumanModal(obj);
@@ -1062,11 +970,15 @@ function openModal(obj,title='',entityType=''){
   if($('modalBody'))$('modalBody').scrollTop=0;
 }
 
+let activeTaskInspectorState=null;
+
 function renderTaskModal(t){
   const st=String(t.status||'planned').toLowerCase();
+  const terminal=st==='completed'||st==='failed';
   const cls=st==='completed'?'badge-complete':(st==='failed'?'badge-error':(st==='active'?'badge-running':'badge-waiting'));
   const goal=t.contract?.goal||'No goal specified';
   const criteria=t.contract?.acceptance_criteria||[];
+  activeTaskInspectorState={taskId:String(t.task_id||''),criteria:[...criteria],status:st};
   const chk=t.checkpoint||{};
   const paths=chk.affected_paths||[];
   const evs=chk.evidence_ids||[];
@@ -1077,10 +989,10 @@ function renderTaskModal(t){
   let criteriaHtml='';
   if(criteria.length){
     criteriaHtml='<div class="modal-checklist">'+criteria.map((c,i)=>`
-      <div class="modal-checklist-item">
+      <div class="modal-checklist-item task-criterion-row" data-criterion-index="${i}">
         <span class="badge-status badge-waiting" style="font-size:9px">#${i+1}</span>
         <span class="item-text"><b>${esc(c)}</b></span>
-        <button class="action-btn-sm" onclick="checkTaskCriterion(${escJs(t.task_id)},${escJs(c)},this)">Verify</button>
+        <span class="task-criterion-state is-unavailable" role="status">Checking…</span>
       </div>
     `).join('')+'</div>';
   } else {
@@ -1115,12 +1027,15 @@ function renderTaskModal(t){
 
       <div class="modal-card">
         <div class="modal-card-head">
-          <span>Acceptance Criteria (${criteria.length})</span>
-          <button class="action-btn-sm" onclick="checkTaskCompletionGate(${escJs(t.task_id)})">Check Completion Gate</button>
+          <span>Acceptance Criteria <span class="tiny" style="margin-left:5px">(${criteria.length})</span></span>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end">
+            <span id="taskCriteriaSummary" class="task-criteria-summary" aria-live="polite">Checking receipts…</span>
+            <button class="action-btn-sm" id="taskCriteriaRefresh" onclick="checkTaskCompletionGate(${escJs(t.task_id)},${escJs(st)})">Refresh status</button>
+          </div>
         </div>
         <div class="modal-card-body">
           ${criteriaHtml}
-          <div id="taskGateResult" style="margin-top:10px;display:none"></div>
+          <div id="taskGateResult" class="task-gate-result" role="status" aria-live="polite">Checking verification receipts…</div>
         </div>
       </div>
 
@@ -1139,11 +1054,17 @@ function renderTaskModal(t){
       <div class="modal-card">
         <div class="modal-card-head"><span>Task Lifecycle &amp; Controls</span></div>
         <div class="modal-card-body">
+          ${terminal?`
+          <div class="task-terminal-state ${st==='completed'?'is-completed':'is-failed'}" role="status">
+            <strong>${st==='completed'?'Completed':'Failed'}</strong>
+            <span>This task is in a terminal state. Lifecycle controls are unavailable.</span>
+          </div>
+          `:`
           <div class="modal-actions-bar">
             <button class="btn ok" onclick="completeTaskAction(${escJs(t.task_id)})">✓ Complete Task</button>
             <button class="btn bad" onclick="showFailTaskInput()">✗ Mark Failed</button>
             <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
-              <span class="tiny muted">Status:</span>
+              <label class="tiny muted" for="taskTransStatus">Status:</label>
               <select id="taskTransStatus" style="background:#172233;color:var(--fg);border:1px solid #2e405a;border-radius:5px;padding:4px 8px;font-size:11px">
                 <option value="active" ${st==='active'?'selected':''}>active</option>
                 <option value="verifying" ${st==='verifying'?'selected':''}>verifying</option>
@@ -1154,7 +1075,7 @@ function renderTaskModal(t){
             </div>
           </div>
           <div id="failTaskBox" style="display:none;margin-top:10px;padding:8px;background:#181216;border:1px solid #7f1d1d;border-radius:6px">
-            <label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px;color:#fca5a5">Failure Reason *</label>
+            <label for="failTaskReason" style="font-size:11px;font-weight:600;display:block;margin-bottom:4px;color:#fca5a5">Failure Reason *</label>
             <div style="display:flex;gap:6px">
               <input type="text" id="failTaskReason" placeholder="Why did this task fail?" style="flex:1;background:#0d1219;border:1px solid #2d3f56;color:var(--fg);padding:4px 8px;border-radius:4px;font-size:11px">
               <button class="btn bad" onclick="submitFailTask(${escJs(t.task_id)})">Confirm Fail</button>
@@ -1162,56 +1083,102 @@ function renderTaskModal(t){
             </div>
           </div>
           <div id="taskActionStatus" class="tiny" style="margin-top:8px"></div>
+          `}
         </div>
       </div>
 
       <details class="raw-json"><summary>Raw Task JSON</summary><pre>${esc(JSON.stringify(t,null,2))}</pre></details>
     </div>
   `;
+  checkTaskCompletionGate(t.task_id,st);
 }
 
-async function checkTaskCompletionGate(taskId){
+async function checkTaskCompletionGate(taskId,status=''){
   const out=$('taskGateResult');
   if(!out)return;
-  out.style.display='block';
-  out.innerHTML='<span class="tiny muted">Checking receipts and completion gates…</span>';
+  const taskState=activeTaskInspectorState;
+  if(!taskState||taskState.taskId!==String(taskId))return;
+  const summary=$('taskCriteriaSummary');
+  const refresh=$('taskCriteriaRefresh');
+  if(refresh){refresh.disabled=true;refresh.textContent='Checking…';}
+  if(summary){summary.textContent='Checking receipts…';summary.className='task-criteria-summary';}
+  out.className='task-gate-result';
+  out.textContent='Checking verification receipts…';
   try{
     const res=await post('/api/agent-state/verification',{action:'completion',task_id:taskId});
-    const c=res.completion||{};
-    const canComplete=!!c.can_complete;
-    out.innerHTML=`
-      <div class="diag-banner ${canComplete?'ok':'warn'}" style="margin:0">
-        <span style="font-size:14px">${canComplete?'✅':'⏳'}</span>
-        <div>
-          <b>${canComplete?'Gate Passed: All criteria verified with receipts!':'Gate Pending: Outstanding criteria or missing receipts.'}</b>
-          <div class="tiny" style="margin-top:2px">Passed: <b>${(c.passed_criteria||[]).length}</b> · Pending: <b>${(c.pending_criteria||[]).length}</b></div>
-        </div>
-      </div>
-    `;
-  }catch(e){
-    out.innerHTML=`<div class="diag-banner bad" style="margin:0">Check error: ${esc(e.message||e)}</div>`;
-  }
-}
-
-async function checkTaskCriterion(taskId,criterion,btn){
-  const oldText=btn.textContent;
-  btn.disabled=true;
-  btn.textContent='Checking…';
-  try{
-    const res=await post('/api/agent-state/verification',{action:'completion',task_id:taskId});
-    const c=res.completion||{};
-    const passed=(c.passed_criteria||[]).includes(criterion);
-    if(passed){
-      btn.className='action-btn-sm ok';
-      btn.textContent='✓ Verified';
+    if(activeTaskInspectorState!==taskState)return;
+    if(!res||!res.completion)throw new Error(res?.error||'Completion status was not returned.');
+    const c=res.completion;
+    const satisfied=new Set(Array.isArray(c.satisfied_criteria)?c.satisfied_criteria.map(String):[]);
+    const unsatisfied=new Set(Array.isArray(c.unsatisfied_criteria)?c.unsatisfied_criteria.map(String):[]);
+    const stale=new Set(Array.isArray(c.stale_criteria)?c.stale_criteria.map(String):[]);
+    const receiptByCriterion=new Map((Array.isArray(c.receipts)?c.receipts:[]).filter(r=>r&&typeof r==='object'&&r.criterion!==undefined).map(r=>[String(r.criterion),r]));
+    const rows=Array.from(document.querySelectorAll('.task-criterion-row'));
+    const total=rows.length;
+    let passedCount=0,failedCount=0,staleCount=0,pendingCount=0,unavailableCount=0;
+    rows.forEach(row=>{
+      const criterion=taskState.criteria[Number(row.dataset.criterionIndex)];
+      const key=criterion===undefined?'':String(criterion);
+      const ok=criterion!==undefined&&satisfied.has(key);
+      const expired=!ok&&stale.has(key);
+      const failed=!ok&&!expired&&receiptByCriterion.get(key)?.passed===false;
+      const pending=!ok&&!expired&&!failed&&criterion!==undefined&&unsatisfied.has(key);
+      const unavailable=!ok&&!expired&&!failed&&!pending;
+      if(ok)passedCount++;
+      if(expired)staleCount++;
+      if(failed)failedCount++;
+      if(pending)pendingCount++;
+      if(unavailable)unavailableCount++;
+      const state=row.querySelector('.task-criterion-state');
+      if(!state)return;
+      state.className='task-criterion-state '+(ok?'is-verified':(expired?'is-stale':(failed?'is-failed':(pending?'is-pending':'is-unavailable'))));
+      state.textContent=ok?'✓ Verified':(expired?'Receipt expired':(failed?'✗ Failed':(pending?'! Pending':'Status unavailable')));
+      state.title=ok?'A valid verification receipt exists.':(expired?'The verification receipt has expired.':(failed?'The latest verification receipt failed.':(pending?'No valid verification receipt exists yet.':'Verification status could not be determined.')));
+    });
+    const detailCounts=[failedCount?`${failedCount} failed`:'',staleCount?`${staleCount} expired`:'',pendingCount?`${pendingCount} pending`:'',unavailableCount?`${unavailableCount} unavailable`:'' ].filter(Boolean);
+    if(summary){
+      summary.textContent=total?`${passedCount}/${total} verified${detailCounts.length?' · '+detailCounts.join(' · '):''}`:'No criteria';
+      summary.className='task-criteria-summary '+(failedCount?'is-failed':(total&&passedCount===total?'is-verified':(pendingCount||staleCount?'is-pending':'')));
+    }
+    status=String(status||taskState.status||'').toLowerCase();
+    if(!total){
+      out.className='task-gate-result';
+      out.textContent='No acceptance criteria are defined for this task.';
+    }else if(status==='completed'&&(c.complete!==true||passedCount<total)){
+      out.className='task-gate-result is-warning';
+      if(passedCount<total){
+        out.innerHTML=`<b>Completed status needs review.</b> ${passedCount} of ${total} criteria are verified${detailCounts.length?'; '+detailCounts.join(', '):''}.`;
+      }else{
+        out.innerHTML=`<b>Completed status needs review.</b> All ${total} criteria are verified, but the completion gate reports incomplete.`;
+      }
+    }else if(status==='completed'){
+      out.className='task-gate-result is-ok';
+      out.innerHTML=`<b>Task completed.</b> All ${total} acceptance criteria have valid receipts.`;
+    }else if(status==='failed'){
+      out.className='task-gate-result is-failed';
+      out.innerHTML=`<b>Task failed.</b> ${passedCount} of ${total} criteria have valid receipts.`;
+    }else if(c.complete===true&&passedCount===total){
+      out.className='task-gate-result is-ok';
+      out.innerHTML=`<b>Completion gate passed.</b> All ${total} criteria have valid receipts.`;
+    }else if(passedCount===total&&c.complete!==true){
+      out.className='task-gate-result is-warning';
+      out.innerHTML=`<b>Completion gate needs review.</b> All ${total} criteria are verified, but the gate reports incomplete.`;
     }else{
-      btn.className='action-btn-sm warn-t';
-      btn.textContent='Pending';
+      out.className='task-gate-result is-warning';
+      out.innerHTML=`<b>Completion gate pending.</b> ${passedCount} of ${total} criteria verified${detailCounts.length?'; '+detailCounts.join(', '):''}.`;
     }
   }catch(e){
-    btn.textContent='Error';
+    if(activeTaskInspectorState!==taskState)return;
+    const rows=Array.from(document.querySelectorAll('.task-criterion-row'));
+    rows.forEach(row=>{
+      const state=row.querySelector('.task-criterion-state');
+      if(state){state.className='task-criterion-state is-unavailable';state.textContent='Status unavailable';}
+    });
+    if(summary){summary.textContent='Status unavailable';summary.className='task-criteria-summary';}
+    out.className='task-gate-result is-warning';
+    out.textContent='Could not load verification receipts. Refresh status to try again.';
   }finally{
-    btn.disabled=false;
+    if(refresh){refresh.disabled=false;refresh.textContent='Refresh status';}
   }
 }
 
@@ -1524,7 +1491,9 @@ function renderIncidentModal(i){
   const msg=i.redacted_message||i.message||'—';
   const cause=i.root_cause||'—';
   const fix=i.verified_fix||'—';
-  const isResolved=!!i.verified_fix;
+  const status=String(i.status||(i.ignored?'ignored':i.resolved?'resolved':'unresolved'));
+  const isIgnored=status==='ignored';
+  const isResolved=status==='resolved';
 
   $('modalBody').innerHTML=`
     <div class="modal-hero">
@@ -1537,7 +1506,7 @@ function renderIncidentModal(i){
           </h2>
         </div>
         <div>
-          <span class="badge-status ${isResolved?'badge-complete':'badge-waiting'}">${isResolved?'✓ RESOLVED WITH FIX':'UNRESOLVED'}</span>
+            <span class="badge-status ${isIgnored?'badge-waiting':isResolved?'badge-complete':'badge-waiting'}">${isIgnored?'IGNORED':isResolved?'✓ RESOLVED WITH FIX':'UNRESOLVED'}</span>
         </div>
       </div>
       <div class="tiny muted" style="margin-top:8px">Tool/Operation: <b>${esc(op)}</b></div>
@@ -1580,6 +1549,14 @@ function renderIncidentModal(i){
         </div>
       `:''}
 
+      <div class="modal-card">
+        <div class="modal-card-head"><span>${isIgnored?'Ignored anti-pattern':'Suppress repeated anti-pattern'}</span></div>
+        <div class="modal-card-body" style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+          <span class="tiny muted">${isIgnored?'Restore this incident to normal tracking.':'Hide this repeated incident from future negative-knowledge prompts.'}</span>
+          <button class="btn ${isIgnored?'':'warn'}" onclick="setIncidentIgnoredAction(${escJs(id)},${!isIgnored})">${isIgnored?'Restore':'Ignore'}</button>
+        </div>
+      </div>
+
       <details class="raw-json"><summary>Raw Incident JSON</summary><pre>${esc(JSON.stringify(i,null,2))}</pre></details>
     </div>
   `;
@@ -1591,7 +1568,7 @@ async function resolveIncidentAction(id){
   const statusEl=$('resolveIncStatus');
   if(statusEl)statusEl.textContent='Saving fix…';
   try{
-    const res=await post('/api/agent-state/incidents',{action:'record',incident_id:id,verified_fix:fix});
+    const res=await post('/api/agent-state/incidents',{action:'resolve',incident_id:id,verified_fix:fix});
     if(res.success){
       await loadAgentOsView();
       if(res.incident)renderIncidentModal(res.incident);
@@ -2071,96 +2048,6 @@ async function openDoctorModal(){
   }
 }
 
-function renderCodeIntelModal(d,title){
-  if(d.code||d.tests||d.test_code){
-    const code=d.code||d.tests||d.test_code;
-    $('modalBody').innerHTML=`
-      <div class="modal-body-wrap">
-        <div class="modal-card">
-          <div class="modal-card-head">
-            <span>${esc(title||'Generated Unit Tests')}</span>
-            <button class="copy-btn" onclick="copyText(${esc(JSON.stringify(code))},this)">📋 Copy Code</button>
-          </div>
-          <div class="modal-card-body">
-            <pre class="code-box" style="margin:0;max-height:450px">${esc(code)}</pre>
-          </div>
-        </div>
-      </div>
-    `;
-    return;
-  }
-  if(d.callers||d.impact||d.affected_files){
-    const callers=d.callers||[];
-    const files=d.affected_files||d.files||[];
-    const risk=d.risk||d.risk_score||'medium';
-    $('modalBody').innerHTML=`
-      <div class="modal-body-wrap">
-        <div class="modal-hero" style="border-radius:6px;border:1px solid #2d3e56">
-          <div style="display:flex;justify-content:space-between;align-items:center">
-            <b>Refactoring Risk Assessment</b>
-            <span class="badge-status ${risk==='high'?'badge-error':risk==='medium'?'badge-paused':'badge-complete'}">${esc(String(risk).toUpperCase())} RISK</span>
-          </div>
-        </div>
-        <div class="modal-card">
-          <div class="modal-card-head"><span>Direct Callers (${callers.length})</span></div>
-          <div class="modal-card-body">
-            ${callers.length?callers.map(c=>`<div style="padding:4px 0"><span class="chip"><b>${esc(c.name||c)}</b></span> <span class="tiny muted">${esc(c.file||'')}</span></div>`).join(''):'<div class="muted tiny">No direct callers detected.</div>'}
-          </div>
-        </div>
-        <div class="modal-card">
-          <div class="modal-card-head"><span>Impacted Files (${files.length})</span></div>
-          <div class="modal-card-body">
-            ${files.length?files.map(f=>`<div style="padding:4px 0" class="mono tiny">${esc(f)}</div>`).join(''):'<div class="muted tiny">No downstream files impacted.</div>'}
-          </div>
-        </div>
-      </div>
-    `;
-    return;
-  }
-  if(d.imports||d.missing_imports){
-    const imps=d.imports||d.missing_imports||[];
-    const code=Array.isArray(imps)?imps.join('\n'):String(imps);
-    $('modalBody').innerHTML=`
-      <div class="modal-body-wrap">
-        <div class="modal-card">
-          <div class="modal-card-head">
-            <span>Resolved Missing Imports</span>
-            <button class="copy-btn" onclick="copyText(${esc(JSON.stringify(code))},this)">📋 Copy Imports</button>
-          </div>
-          <div class="modal-card-body">
-            <pre class="code-box" style="margin:0">${esc(code)}</pre>
-          </div>
-        </div>
-      </div>
-    `;
-    return;
-  }
-  if(d.symbols||d.declarations||d.references||d.implementations){
-    const items=d.symbols||d.declarations||d.references||d.implementations||[];
-    $('modalBody').innerHTML=`
-      <div class="modal-body-wrap">
-        <div class="modal-card">
-          <div class="modal-card-head"><span>Results (${items.length})</span></div>
-          <div class="modal-card-body">
-            ${items.length?items.map(s=>`
-              <div style="padding:6px 0;border-bottom:1px solid #1f2c3d">
-                <div style="display:flex;justify-content:space-between">
-                  <b>${esc(s.name||s.symbol||'symbol')}</b>
-                  <span class="chip">${esc(s.kind||'reference')}</span>
-                </div>
-                <div class="tiny mono muted" style="margin-top:2px">${esc(s.path||s.file||'')}:${n(s.line||s.start_line||0)}</div>
-                ${s.snippet?`<pre class="code-box" style="margin-top:4px;padding:6px">${esc(s.snippet)}</pre>`:''}
-              </div>
-            `).join(''):'<div class="muted tiny">No matching occurrences found.</div>'}
-          </div>
-        </div>
-      </div>
-    `;
-    return;
-  }
-  renderHumanModal(d);
-}
-
 function renderActiveLeaseModal(l){
   const paths=Array.isArray(l.paths)?l.paths:[l.path||''];
   $('modalBody').innerHTML=`
@@ -2634,171 +2521,6 @@ function renderBlockedReasonModal(x){
   `;
 }
 
-function renderDeadCodeModal(s){
-  const name=s.name||'Symbol';
-  const kind=s.kind||'symbol';
-  const path=s.path||'';
-  const line=s.line||0;
-  const cont=s.container||'—';
-  const reason=s.reason||'No callers found across repository AST callgraph';
-  $('modalBody').innerHTML=`
-    <div class="modal-hero">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <div>
-          <div class="tiny muted mono">CODEBASE OPTIMIZATION · UNUSED SYMBOL</div>
-          <h2 style="margin:2px 0 0;font-size:16px"><b>${esc(name)}</b> <span class="chip">${esc(kind)}</span></h2>
-        </div>
-        <span class="badge-status badge-waiting">CANDIDATE</span>
-      </div>
-    </div>
-    <div class="modal-body-wrap">
-      <div class="modal-card">
-        <div class="modal-card-head"><span>Location &amp; Reason</span></div>
-        <div class="modal-card-body">
-          <div class="kv" style="padding:0">
-            <div>File Path</div><div class="mono tiny">${esc(path)}:${n(line)}</div>
-            <div>Container / Parent</div><div>${esc(cont)}</div>
-            <div>Analysis Finding</div><div class="warn-t"><b>${esc(reason)}</b></div>
-          </div>
-        </div>
-      </div>
-      <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
-      </div>
-    </div>
-  `;
-}
-
-function renderAuditVulnModal(v){
-  const pkg=v.package||'Package';
-  const sev=v.severity||'MEDIUM';
-  const inst=v.installed_version||'—';
-  const fixed=v.fixed_version||'—';
-  const adv=v.advisory||'Security advisory';
-  const manifest=v.manifest_path||'—';
-  $('modalBody').innerHTML=`
-    <div class="modal-hero">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <div>
-          <div class="tiny muted mono">DEPENDENCY VULNERABILITY ADVISORY</div>
-          <h2 style="margin:2px 0 0;font-size:16px">🛡️ <b>${esc(pkg)}</b></h2>
-        </div>
-        <span class="badge-status ${sev==='HIGH'||sev==='CRITICAL'?'badge-error':'badge-waiting'}">${esc(sev)} SEVERITY</span>
-      </div>
-    </div>
-    <div class="modal-body-wrap">
-      <div class="modal-card">
-        <div class="modal-card-head"><span>Advisory Information</span></div>
-        <div class="modal-card-body">
-          <div style="font-size:12px;margin-bottom:8px">${esc(adv)}</div>
-          <div class="kv" style="padding:0">
-            <div>Package</div><div><b>${esc(pkg)}</b></div>
-            <div>Installed Version</div><div class="bad-t"><b>${esc(inst)}</b></div>
-            <div>Fixed Version</div><div class="ok"><b>${esc(fixed)}</b></div>
-            <div>Manifest Path</div><div class="mono tiny">${esc(manifest)}</div>
-          </div>
-        </div>
-      </div>
-      <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
-      </div>
-    </div>
-  `;
-}
-
-function renderSecretFindingModal(s){
-  const rule=s.rule||s.secret_type||'Secret';
-  const desc=s.description||rule;
-  const isMock=s.is_test||s.is_placeholder;
-  const file=s.file||'—';
-  const line=s.line||0;
-  const match=s.match||s.redacted_secret||'***';
-  const entropy=s.entropy!==undefined?s.entropy:'—';
-  const snippet=s.redacted_snippet||match;
-  const sev=isMock?'LOW':(s.severity||'HIGH');
-  const badgeCls=isMock?'badge-waiting':(sev==='CRITICAL'?'badge-error':'badge-running');
-
-  $('modalBody').innerHTML=`
-    <div class="modal-hero">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <div>
-          <div class="tiny muted mono">SECURITY AUDIT · CREDENTIAL SCANNER</div>
-          <h2 style="margin:2px 0 0;font-size:16px">🔑 <b>${esc(desc)}</b></h2>
-        </div>
-        <span class="badge-status ${badgeCls}">${isMock?'🧪 TEST SUITE MOCK':(sev+' LEAK')}</span>
-      </div>
-    </div>
-    <div class="modal-body-wrap">
-      <div class="modal-card">
-        <div class="modal-card-head"><span>Finding Details</span></div>
-        <div class="modal-card-body">
-          <div class="kv" style="padding:0">
-            <div>Rule Key</div><div class="mono">${esc(rule)}</div>
-            <div>File Location</div><div class="mono tiny">${esc(file)}:${n(line)}</div>
-            <div>Masked Match</div><div class="mono bad-t">${esc(match)}</div>
-            <div>Shannon Entropy</div><div><span class="chip">${esc(entropy)}</span> <span class="tiny muted">(>3.5 indicates true random cryptographic entropy)</span></div>
-            <div>Classification</div><div><b>${isMock?'<span class="warn-t">Unit Test Fixture (Safe)</span>':'<span class="bad-t">Live Production Credential Leak (Action Required)</span>'}</b></div>
-          </div>
-        </div>
-      </div>
-      <div class="modal-card">
-        <div class="modal-card-head"><span>Source Snippet</span></div>
-        <div class="modal-card-body">
-          <pre class="code-box" style="margin:0">${esc(snippet)}</pre>
-        </div>
-      </div>
-      ${!isMock?`
-      <div class="diag-banner bad">
-        <span>⚠️</span>
-        <div>
-          <b>Recommended Immediate Actions:</b>
-          <ol style="margin:4px 0 0;padding-left:18px;font-size:11px">
-            <li>Revoke or rotate this credential in provider dashboard immediately.</li>
-            <li>Purge credential from git history using <code>git-filter-repo</code> or BFG.</li>
-            <li>Move secrets to environment variables (e.g. <code>.env</code> in <code>.gitignore</code>).</li>
-          </ol>
-        </div>
-      </div>
-      `:''}
-      <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
-      </div>
-    </div>
-  `;
-}
-
-function renderArchEdgeModal(e){
-  const fromName=e.from?.split(/[\\/]/).pop()||e.from;
-  const toName=e.to?.split(/[\\/]/).pop()||e.to;
-  $('modalBody').innerHTML=`
-    <div class="modal-hero">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <div>
-          <div class="tiny muted mono">ARCHITECTURE DEPENDENCY LINK</div>
-          <h2 style="margin:2px 0 0;font-size:16px"><b>${esc(fromName)}</b> ➔ <b>${esc(toName)}</b></h2>
-        </div>
-        <span class="chip ok">${esc(e.type||'dependency')}</span>
-      </div>
-    </div>
-    <div class="modal-body-wrap">
-      <div class="modal-card">
-        <div class="modal-card-head"><span>Connection Information</span></div>
-        <div class="modal-card-body">
-          <div class="kv" style="padding:0">
-            <div>Source Project</div><div class="mono tiny">${esc(e.from)}</div>
-            <div>Target Dependency</div><div class="mono tiny">${esc(e.to)}</div>
-            <div>Relationship Kind</div><div><b>${esc(e.type)}</b></div>
-            <div>Context / Evidence</div><div>${esc(e.label||'Direct dependency / import linkage')}</div>
-          </div>
-        </div>
-      </div>
-      <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
-      </div>
-    </div>
-  `;
-}
-
 function renderSchedulerJobModal(j){
   const jid=n(j.job_id);
   const state=j.state||'queued';
@@ -2942,12 +2664,10 @@ function switchTab(tabId){
   document.querySelectorAll('.page').forEach(x=>x.classList.toggle('active',x.id===tabId));
   try{localStorage.setItem('activeTab',tabId)}catch{}
   if(location.hash.replace('#','')!==tabId)history.replaceState(null,'','#'+tabId);
-  if(tabId==='architecture'&&!archData)loadArchGraph();
   if(tabId==='config')loadConfigView();
   if(tabId==='agentos')loadAgentOsView();
-  if(tabId==='performance'){loadInstalledModels();loadRagWorkspaces();loadActiveLeases();}
+  if(tabId==='performance'){loadRagWorkspaces();loadActiveLeases();}
   if(tabId==='commands')loadWorktrees();
-  if(tabId==='database'&&!window._dbLoaded){runDbQuery();window._dbLoaded=true;}
 }
 
 document.querySelectorAll('.tabbtn').forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
@@ -3011,196 +2731,6 @@ $('cfgReset').onclick=async()=>{
   $('cfgStatus').textContent=r.success?'overrides reset · restart hub to apply':('error: '+(r.error||'failed'));
   if(r.success)loadConfigView();
 };
-
-function ansiToHtml(text){
-  if(!text)return '';
-  const colors={
-    '30':'#6e7681','31':'#f85149','32':'#3fb950','33':'#d29922','34':'#58a6ff','35':'#bc8cff','36':'#39c5cf','37':'#f0f6fc',
-    '90':'#8b949e','91':'#ff7b72','92':'#56d364','93':'#e3b341','94':'#79c0ff','95':'#d2a8ff','96':'#56d4dd','97':'#ffffff'
-  };
-  let out='',open=false;
-  const escaped=text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  const parts=escaped.split(/\u001b\[([0-9;]*)m/);
-  for(let i=0;i<parts.length;i++){
-    if(i%2===1){
-      const code=parts[i];
-      if(open){out+='</span>';open=false;}
-      if(code!=='0'&&code!==''){
-        const c=colors[code];
-        if(c){out+=`<span style="color:${c}">`;open=true;}
-        else if(code==='1'){out+='<span style="font-weight:bold">';open=true;}
-      }
-    }else{
-      out+=parts[i];
-    }
-  }
-  if(open)out+='</span>';
-  return out;
-}
-
-function renderCmdResult(res){
-  const outEl=$('cmdOutput'),paneEl=$('cmdTermPane'),metaEl=$('cmdExecMeta');
-  if(outEl)outEl.textContent=JSON.stringify(res,null,2);
-  let termContent='';
-  if(res?.stdout)termContent+=res.stdout;
-  if(res?.stderr)termContent+=(termContent?'\n':'')+res.stderr;
-  if(!termContent&&res?.output)termContent=res.output;
-  if(!termContent&&res?.error)termContent='Error: '+res.error;
-  if(paneEl)paneEl.innerHTML=ansiToHtml(termContent)||'<span class="muted">(no output)</span>';
-  if(metaEl){
-    const ec=res?.exit_code??res?.exitCode??res?.result?.exit_code;
-    const dur=res?.duration_ms??res?.duration??res?.result?.duration_ms;
-    const ok=ec===0;
-    metaEl.innerHTML=`${ec!==undefined?`<span class="pill tiny ${ok?'ok':'bad'}">exit: ${ec}</span>`:''} ${dur?`<span class="pill tiny">${Math.round(dur)}ms</span>`:''}`;
-  }
-}
-
-if($('cmdTermViewBtn'))$('cmdTermViewBtn').onclick=()=>{
-  $('cmdTermPane').style.display='block';
-  $('cmdOutput').style.display='none';
-  $('cmdTermViewBtn').classList.add('active');
-  $('cmdJsonViewBtn').classList.remove('active');
-};
-if($('cmdJsonViewBtn'))$('cmdJsonViewBtn').onclick=()=>{
-  $('cmdTermPane').style.display='none';
-  $('cmdOutput').style.display='block';
-  $('cmdJsonViewBtn').classList.add('active');
-  $('cmdTermViewBtn').classList.remove('active');
-};
-
-$('cmdClassify').onclick=async()=>{
-  const command=$('cmdInput').value.trim();
-  if(!command)return;
-  const res=await post('/api/command',{action:'classify',command});
-  renderCmdResult(res);
-};
-
-$('cmdRun').onclick=async()=>{
-  const command=$('cmdInput').value.trim(),cwd=$('cmdRoot').value.trim();
-  if(!command||!cwd){
-    renderCmdResult({error:'Repository root and command are required.'});
-    return;
-  }
-  const c=await post('/api/command',{action:'classify',command});
-  if(!c?.classification?.allowed){
-    renderCmdResult(c);
-    return;
-  }
-  if(!confirm('Run this '+c.classification.class+' command?\n\n'+command))return;
-  $('cmdRun').disabled=true;
-  try{
-    const res=await post('/api/command',{action:'run',command,cwd,force:true});
-    renderCmdResult(res);
-  } finally {
-    $('cmdRun').disabled=false;
-    pollStatus();
-  }
-};
-
-async function openGitDiffModal(defaultRoot,defaultPath,defaultStaged){
-  const root=defaultRoot||$('cmdRoot')?.value?.trim()||'.';
-  const path=defaultPath||'';
-  const staged=!!defaultStaged;
-  $('modalTitle').textContent='Visual Git Diff';
-  $('modalLive').innerHTML='';
-  $('modalBody').innerHTML=`
-    <div style="padding:8px 12px;background:#131d2b;border-bottom:1px solid #2e405a;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <input id="diffModalRoot" value="${esc(root)}" placeholder="Repo root" style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:4px 8px;font-size:11px;min-width:180px">
-      <input id="diffModalPath" value="${esc(path)}" placeholder="File path (optional)" style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:4px 8px;font-size:11px;min-width:180px">
-      <label style="font-size:11px;color:var(--fg);display:inline-flex;align-items:center;gap:4px">
-        <input type="checkbox" id="diffModalStaged" ${staged?'checked':''}> Staged only
-      </label>
-      <button class="btn ok tiny" id="diffModalRefresh">↻ Refresh Diff</button>
-      <button class="btn tiny" id="diffModalStageBtn" title="Stage current path or all (git add)">📥 Stage</button>
-      <button class="btn warn tiny" id="diffModalUnstageBtn" title="Unstage changes (git reset)">↩ Unstage</button>
-      <span id="diffModalStats" style="margin-left:auto;display:flex;gap:6px;align-items:center"></span>
-    </div>
-    <div id="diffModalContainer" style="padding:12px;max-height:550px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px">
-      <div class="muted">Loading diff…</div>
-    </div>
-  `;
-  $('modalBg').classList.add('open');
-
-  async function loadDiff(){
-    const r=$('diffModalRoot')?.value?.trim()||'.';
-    const p=$('diffModalPath')?.value?.trim()||'';
-    const s=$('diffModalStaged')?.checked;
-    const container=$('diffModalContainer');
-    const statsEl=$('diffModalStats');
-    if(!container)return;
-    container.innerHTML='<div class="muted">Loading diff…</div>';
-    try{
-      const res=await apiFetch('/api/git/diff?root='+encodeURIComponent(r)+'&path='+encodeURIComponent(p)+'&staged='+(s?'true':'false')+'&max_lines=1000');
-      const data=await res.json();
-      if(!data.success){
-        container.innerHTML=`<div class="bad-t">Error: ${esc(data.error||'Failed to load git diff')}</div>`;
-        return;
-      }
-      const stats=data.stats||{};
-      if(statsEl){
-        statsEl.innerHTML=`
-          <span class="pill ok tiny">+${stats.insertions||0}</span>
-          <span class="pill bad tiny">-${stats.deletions||0}</span>
-          <span class="pill tiny">${stats.files_changed||0} files</span>
-        `;
-      }
-      if(!data.raw_diff||!data.raw_diff.trim()){
-        container.innerHTML='<div class="muted" style="text-align:center;padding:30px">No changes detected (clean working tree).</div>';
-        return;
-      }
-      const lines=data.raw_diff.split('\n');
-      let html='<div style="background:#0d1117;border-radius:6px;border:1px solid #30363d;overflow:hidden">';
-      for(let line of lines){
-        let style='padding:1px 8px;white-space:pre-wrap;line-height:1.45;';
-        if(line.startsWith('+++')||line.startsWith('---')){
-          style+='background:#161b22;color:#8b949e;font-weight:bold;';
-        }else if(line.startsWith('@@')){
-          style+='background:#162031;color:#58a6ff;font-weight:bold;';
-        }else if(line.startsWith('+')){
-          style+='background:rgba(46,160,67,0.15);color:#3fb950;';
-        }else if(line.startsWith('-')){
-          style+='background:rgba(248,81,73,0.15);color:#f85149;';
-        }else if(line.startsWith('diff --git')){
-          style+='background:#21262d;color:#f0f6fc;font-weight:bold;margin-top:8px;border-top:1px solid #30363d;';
-        }else{
-          style+='color:#c9d1d9;';
-        }
-        html+=`<div style="${style}">${esc(line)||' '}</div>`;
-      }
-      html+='</div>';
-      container.innerHTML=html;
-    }catch(err){
-      if(container)container.innerHTML=`<div class="bad-t">Error: ${esc(String(err))}</div>`;
-    }
-  }
-
-  const refBtn=$('diffModalRefresh');
-  const stgCh=$('diffModalStaged');
-  const stageBtn=$('diffModalStageBtn');
-  const unstageBtn=$('diffModalUnstageBtn');
-  if(refBtn)refBtn.onclick=loadDiff;
-  if(stgCh)stgCh.onchange=loadDiff;
-  if(stageBtn)stageBtn.onclick=async()=>{
-    const r=$('diffModalRoot')?.value?.trim()||'.';
-    const p=$('diffModalPath')?.value?.trim()||'';
-    const cmd='git add '+(p?`"${p}"`:'.');
-    await post('/api/command',{action:'run',command:cmd,cwd:r,force:true});
-    await loadDiff();
-  };
-  if(unstageBtn)unstageBtn.onclick=async()=>{
-    const r=$('diffModalRoot')?.value?.trim()||'.';
-    const p=$('diffModalPath')?.value?.trim()||'';
-    const cmd='git reset HEAD -- '+(p?`"${p}"`:'.');
-    await post('/api/command',{action:'run',command:cmd,cwd:r,force:true});
-    await loadDiff();
-  };
-  loadDiff();
-}
-
-if($('cmdGitDiffBtn'))$('cmdGitDiffBtn').onclick=()=>openGitDiffModal($('cmdRoot')?.value?.trim());
-
-$('intelRediscover').onclick=async()=>{$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'rediscover'});$('intelControlStatus').textContent=r.success?'rediscovery complete':'error: '+(r.error||'failed');pollStatus()};
-$('intelReset').onclick=async()=>{if(!confirm('Reset all managed Serena/CodeGraph MCP sessions?'))return;$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'reset',backend:'all'});$('intelControlStatus').textContent=r.success?'sessions reset':'error: '+(r.error||'failed');pollStatus()};
 
 let logLines=['Click Refresh to load logs.'];
 async function loadLogsTail(){
@@ -3326,63 +2856,6 @@ $('optDbBtn').onclick=async()=>{try{const r=await post('/api/maintenance/optimiz
 $('purgeCacheBtn').onclick=async()=>{if(!confirm('Purge cache entries older than 7 days?'))return;try{const r=await post('/api/maintenance/purge_cache',{days:7});openModal(r,'Cache Purge Results','cache_purge')}catch(e){openModal({error:String(e)},'Error')}};
 $('doctorBtn').onclick=openDoctorModal;
 
-// Symbol Search & Inspector
-$('codeSearchBtn').onclick=async()=>{
-  const sym=$('codeSearchInput').value.trim();if(!sym)return;
-  try{
-    const r=await(await apiFetch('/api/code/symbol?symbol='+encodeURIComponent(sym))).json();
-    if(r.success){
-      $('symbolDetails').style.display='block';
-      $('symName').textContent=r.name||sym;
-      $('symKind').textContent=r.kind||'symbol';
-      $('symPath').textContent=r.path||'unknown';
-      $('symLines').textContent=(r.line||0)+'-'+(r.end_line||0);
-      $('symCode').textContent=r.snippet||r.code||'// No snippet available';
-    }else{openModal(r,'Symbol Search','code_intel')}
-  }catch(e){openModal({error:String(e)},'Error')}
-};
-$('codeSearchInput').onkeydown=e=>{if(e.key==='Enter')$('codeSearchBtn').click()};
-$('genTestsBtn').onclick=async()=>{const path=$('symPath').textContent,sym=$('symName').textContent;if(!path)return;try{const r=await post('/api/generate_tests',{file:path,symbol:sym});openModal(r,'Generated Automated Unit Tests','code_intel')}catch(e){openModal({error:String(e)},'Error')}};
-$('impactCheckBtn').onclick=async()=>{const path=$('symPath').textContent,sym=$('symName').textContent;if(!path)return;try{const r=await post('/api/refactor_impact',{file:path,symbol:sym});openModal(r,'Refactoring Impact & Risk Analysis','code_intel')}catch(e){openModal({error:String(e)},'Error')}};
-$('resolveImpBtn').onclick=async()=>{const sym=$('symName').textContent;if(!sym)return;try{const r=await post('/api/resolve_imports',{symbols:[sym],language:'csharp'});openModal(r,'Missing Imports & Namespace Resolver','code_intel')}catch(e){openModal({error:String(e)},'Error')}};
-$('findDeclBtn')?.addEventListener('click',async()=>{const sym=$('symName').textContent;if(!sym)return;try{const r=await(await apiFetch('/api/code/find_declaration?symbol='+encodeURIComponent(sym))).json();openModal(r,'Declaration: '+sym,'code_intel')}catch(e){openModal({error:String(e)},'Error')}});
-$('findRefsBtn')?.addEventListener('click',async()=>{const sym=$('symName').textContent;if(!sym)return;try{const r=await(await apiFetch('/api/code/find_referencing_symbols?symbol='+encodeURIComponent(sym))).json();openModal(r,'Referencing Symbols: '+sym,'code_intel')}catch(e){openModal({error:String(e)},'Error')}});
-$('findImplBtn')?.addEventListener('click',async()=>{const sym=$('symName').textContent;if(!sym)return;try{const r=await(await apiFetch('/api/code/find_implementations?symbol='+encodeURIComponent(sym))).json();openModal(r,'Implementations: '+sym,'code_intel')}catch(e){openModal({error:String(e)},'Error')}});
-
-// File AST Outline & Diagnostics
-$('codeOutlineBtn')?.addEventListener('click',async()=>{
-  const path=$('codeFileInput')?.value?.trim();if(!path)return;
-  try{
-    const r=await(await apiFetch('/api/code/ast_outline?path='+encodeURIComponent(path))).json();
-    $('fileAnalysisDetails').style.display='block';
-    $('fileAnalysisTitle').textContent='AST Structure: '+path;
-    if(r.classes||r.functions||r.imports){
-      let html='<div style="display:grid;gap:8px">';
-      if(r.classes?.length)html+=`<div><b>Classes (${r.classes.length}):</b><div style="margin-top:4px">${r.classes.map(c=>`<span class="chip">class <b>${esc(c.name)}</b> (${c.line}-${c.end_line})</span>`).join(' ')}</div></div>`;
-      if(r.functions?.length)html+=`<div><b>Functions / Methods (${r.functions.length}):</b><div style="margin-top:4px">${r.functions.map(f=>`<span class="chip">fn <b>${esc(f.name)}</b> (${f.line}-${f.end_line})</span>`).join(' ')}</div></div>`;
-      if(r.imports?.length)html+=`<div><b>Imports (${r.imports.length}):</b><div style="margin-top:4px">${r.imports.slice(0,25).map(i=>`<span class="chip mono">${esc(i)}</span>`).join(' ')}</div></div>`;
-      html+='</div>';
-      $('fileAnalysisContent').innerHTML=html;
-    }else{
-      $('fileAnalysisContent').innerHTML=`<pre style="background:#0d1219;padding:10px;border-radius:6px;max-height:300px;overflow:auto">${esc(JSON.stringify(r,null,2))}</pre>`;
-    }
-  }catch(e){openModal({error:String(e)},'Outline Error')}
-});
-$('codeDiagBtn')?.addEventListener('click',async()=>{
-  const path=$('codeFileInput')?.value?.trim();if(!path)return;
-  try{
-    const r=await(await apiFetch('/api/code/diagnostics?path='+encodeURIComponent(path))).json();
-    $('fileAnalysisDetails').style.display='block';
-    $('fileAnalysisTitle').textContent='Diagnostics: '+path;
-    const diags=r.diagnostics||[];
-    if(diags.length){
-      $('fileAnalysisContent').innerHTML=`<table><thead><tr><th>Severity</th><th>Line</th><th>Column</th><th>Message</th></tr></thead><tbody>${diags.map(d=>`<tr><td><span class="chip ${d.severity==='error'?'bad-t':'warn-t'}">${esc(d.severity)}</span></td><td>${n(d.line)}</td><td>${n(d.column)}</td><td>${esc(d.message)}</td></tr>`).join('')}</tbody></table>`;
-    }else{
-      $('fileAnalysisContent').innerHTML='<div class="ok" style="padding:10px">✅ No compiler or linter diagnostics reported. Clean file.</div>';
-    }
-  }catch(e){openModal({error:String(e)},'Diagnostics Error')}
-});
-
 function ensureHttpTailTable(){
   const performance=$('performance');if(!performance||$('httpTail'))return;
   performance.insertAdjacentHTML('beforeend','<section class="section"><h2>HTTP tail latency <span class="tiny">per action · excludes policy rejections</span></h2><div class="table-wrap"><table><thead><tr><th>Action</th><th>Calls</th><th>p50</th><th>p95</th><th>p99</th><th>Fails</th></tr></thead><tbody id="httpTail"></tbody></table></div></section>');
@@ -3390,16 +2863,61 @@ function ensureHttpTailTable(){
 function setupWorkLayout(){
   const work=$('work');if(!work||work.dataset.refined)return;work.dataset.refined='1';work.classList.add('work-page');
   const sections=[...work.children].filter(x=>x.classList.contains('section'));sections.forEach((x,i)=>x.classList.add('work-panel','work-panel-'+(i+1)));
-  const headers=[['State','Work item','Model / source','Timing','Reason'],['Request','Agent / tenant','Action','Age'],['Time','Request','Agent / tenant','Action','Result / duration'],['State','Kind / action','Agent / tenant','Model','Last activity','Link']];
+  const headers=[['State','Work item','Model / source','Timing','Reason'],['Request','Agent / tenant','Action','Age'],['Time','Request ID','Agent','Tenant','Action / context','Result','Duration'],['State','Kind','Action / context','Agent / tenant','Model','Created','Updated / duration','Links']];
   sections.forEach((section,index)=>{const row=section.querySelector('thead tr');if(row&&headers[index])row.innerHTML=headers[index].map(x=>`<th>${x}</th>`).join('')});
   work.insertAdjacentHTML('afterbegin','<section class="section work-summary"><div class="work-summary-head"><div><div class="work-kicker">Operations center</div><h2>Live work <span class="tiny">prioritized view</span></h2></div><span class="tiny">Click any row to inspect its trace</span></div><div class="work-kpis"><div><span>Queued</span><strong id="workQueued">—</strong></div><div><span>Running</span><strong id="workRunning">—</strong></div><div><span>Active API</span><strong id="workActive">—</strong></div><div><span>Retained traces</span><strong id="workRetained">—</strong></div></div><div class="work-filter"><input id="workSearch" type="search" placeholder="Search agent, tenant, action, model…" autocomplete="off"><select id="workState" aria-label="Work state"><option value="">All states</option><option value="running">Running</option><option value="queued">Queued</option><option value="failed">Failed</option><option value="completed">Completed</option></select><button class="btn" id="workReset">Reset</button><span class="work-filter-summary" id="workFilterSummary"></span></div></section>');
   $('workSearch').oninput=()=>last&&render(last);$('workState').onchange=()=>last&&render(last);$('workReset').onclick=()=>{$('workSearch').value='';$('workState').value='';if(last)render(last)};
+  if($('requestHistoryReset')&&!$('requestHistorySort'))$('requestHistoryReset').insertAdjacentHTML('beforebegin','<select id="requestHistorySort" aria-label="Sort recent API requests"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="duration-desc">Longest duration</option><option value="status">Status</option><option value="endpoint">Endpoint A–Z</option></select>');
+  if($('traceKind')&&!$('traceTableSearch'))$('traceKind').insertAdjacentHTML('beforebegin','<input id="traceTableSearch" type="search" aria-label="Search agent traces" placeholder="Search request, action, trace ID…" style="width:220px"><select id="traceTableState" aria-label="Filter traces by state"><option value="">All states</option><option value="running">Running</option><option value="queued">Queued</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="interrupted">Interrupted</option></select><select id="traceTableSort" aria-label="Sort agent traces"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="action">Action A–Z</option><option value="duration">Longest run</option><option value="state">State</option></select><button class="btn" id="traceTableReset">Reset</button>');
+  $('requestHistorySearch')?.addEventListener('input',()=>last&&render(last));
+  ['requestHistoryAction','requestHistoryStatus','requestHistoryPeriod','requestHistorySort'].forEach(id=>$(id)?.addEventListener('change',()=>last&&render(last)));
+  $('requestHistoryReset')?.addEventListener('click',()=>{['requestHistorySearch','requestHistoryAction','requestHistoryStatus','requestHistoryPeriod'].forEach(id=>{const control=$(id);if(control)control.value=''});if($('requestHistorySort'))$('requestHistorySort').value='newest';if(last)render(last)});
+  $('traceTableSearch')?.addEventListener('input',()=>renderTraceList(lastTraces));
+  ['traceTableState','traceTableSort'].forEach(id=>$(id)?.addEventListener('change',()=>renderTraceList(lastTraces)));
+  $('traceTableReset')?.addEventListener('click',()=>{if($('traceTableSearch'))$('traceTableSearch').value='';if($('traceTableState'))$('traceTableState').value='';if($('traceTableSort'))$('traceTableSort').value='newest';if($('traceKind'))$('traceKind').value='';renderTraceList(lastTraces)});
 }
 function workVisible(items){const query=String($('workSearch')?.value||'').trim().toLowerCase(),state=String($('workState')?.value||'').toLowerCase();return (items||[]).filter(item=>{const itemState=String(item.state||item.status||'').toLowerCase(),hay=Object.values(item||{}).join(' ').toLowerCase();return (!query||hay.includes(query))&&(!state||(state==='completed'?['completed','complete','succeeded','success','done'].includes(itemState):itemState===state||(state==='running'&&itemState==='processing')))});}
+function filterRecentRequests(items,allItems){
+  const all=allItems||items||[],selected=String($('requestHistoryAction')?.value||''),counts=new Map();
+  all.forEach(item=>{const action=String(item.action||'');if(action)counts.set(action,(counts.get(action)||0)+1)});
+  const actionSelect=$('requestHistoryAction');
+  if(actionSelect){actionSelect.innerHTML='<option value="">All endpoints ('+all.length+')</option>'+[...counts].sort((a,b)=>a[0].localeCompare(b[0])).map(([action,count])=>`<option value="${esc(action)}">${esc(action)} (${count})</option>`).join('');actionSelect.value=counts.has(selected)?selected:''}
+  const query=String($('requestHistorySearch')?.value||'').trim().toLowerCase(),action=String(actionSelect?.value||''),status=String($('requestHistoryStatus')?.value||''),period=Number($('requestHistoryPeriod')?.value||0),after=period?Date.now()/1000-period:0;
+  const visible=(items||[]).filter(item=>{
+    const code=Number(item.status_code||0),hay=[item.request_id,item.action,item.agent,item.tenant,item.error_type,code,traceContextLabel(requestTrace(item))].filter(Boolean).join(' ').toLowerCase();
+    const matchesStatus=!status||(status==='failed'?(item.success===false||code>=400):Math.floor(code/100)===Number(status[0]));
+    return (!query||hay.includes(query))&&(!action||String(item.action||'')===action)&&matchesStatus&&(!after||Number(item.created_at||0)>=after);
+  });
+  const sort=String($('requestHistorySort')?.value||'newest');
+  visible.sort((a,b)=>{const time=Number(a.created_at||0)-Number(b.created_at||0);if(sort==='oldest')return time;if(sort==='duration-desc')return Number(b.duration_ms||0)-Number(a.duration_ms||0);if(sort==='status')return Number(b.status_code||0)-Number(a.status_code||0);if(sort==='endpoint')return String(a.action||'').localeCompare(String(b.action||''))||-time;return -time});
+  const summary=$('requestHistorySummary');if(summary)summary.textContent=`${visible.length} of ${all.length} loaded · ${counts.size} endpoints`;
+  return visible;
+}
 function workState(state){const value=String(state||'queued'),cls=value==='failed'||value==='error'?'bad':(value==='running'||value==='processing'?'live':'');return `<span class="work-state ${cls}">${esc(value)}</span>`}
 function workSchedulerRow(job){const inner=`<td>${workState(job.state)}</td><td><strong>#${n(job.job_id)}</strong><div class="tiny">${esc(job.tenant||'—')}</div></td><td><strong>${esc(job.model||'—')}</strong><div class="tiny">${esc(job.source||'—')}</div></td><td><span class="timing-label">wait</span> ${ms(job.wait_ms)}<div><span class="timing-label">run</span> ${ms(job.service_ms)}</div></td><td>${esc(job.wait_reason||'ready')}</td>`;return schedulerRow(job,inner,5)}
 function workActiveRequestRow(request){const inner=`<td><strong>${esc(request.request_id||'—')}</strong></td><td>${esc(request.agent||'—')}<div class="tiny">${esc(request.tenant||'—')}</div></td><td>${esc(request.action||'—')}</td><td>${age(request.age_ms)}</td>`;return requestRow(request,inner,4)}
-function workRecentRequestRow(request){const inner=`<td>${request.created_at?new Date(request.created_at*1000).toLocaleTimeString():'—'}</td><td><strong>${esc(request.request_id||'—')}</strong></td><td>${esc(request.agent||'—')}<div class="tiny">${esc(request.tenant||'—')}</div></td><td>${esc(request.action||'—')}</td><td><span class="${request.success?'ok':'bad-t'}">${n(request.status_code)||'—'}</span><div class="tiny">${ms(request.duration_ms)}</div></td>`;return requestRow(request,inner,5)}
+function requestTrace(request){return lastTraces.find(x=>String(x.request_id||'')===String(request.request_id||''))}
+function traceContextLabel(trace){
+  if(!trace)return '';
+  const source=trace.source&&trace.source!==trace.action?trace.source:'',summary=trace.summary||trace.description||trace.operation||trace.action_detail||'',requestId=trace.request_id?`req ${String(trace.request_id).slice(-8)}`:'',jobId=trace.async_job_id?`job ${String(trace.async_job_id).slice(-8)}`:'';
+  return [...new Set([trace.request_summary,summary,source,trace.kind?humanLabel(trace.kind):'',trace.model?`model ${trace.model}`:'',requestId,jobId].filter(Boolean))].join(' · ');
+}
+
+async function setIncidentIgnoredAction(id,ignored){
+  const action=ignored?'ignore':'unignore';
+  try{
+    const res=await post('/api/agent-state/incidents',{action,incident_id:id});
+    if(res.success){
+      await loadAgentOsView();
+      if(res.incident)renderIncidentModal(res.incident);
+    }else{
+      alert('Unable to update incident: '+(res.error||'Unknown error'));
+    }
+  }catch(e){
+    alert('Unable to update incident: '+(e.message||e));
+  }
+}
+function workRecentRequestRow(request){const trace=requestTrace(request),failed=request.success===false||Number(request.status_code||0)>=400,context=trace?traceContextLabel(trace):(request.error_type||'No trace retained'),requestId=String(request.request_id||'—'),inner=`<td>${request.created_at?new Date(request.created_at*1000).toLocaleString():'—'}</td><td><strong>${esc(requestId.slice(-12))}</strong><div class="tiny">${trace?'Trace linked · '+esc(String(trace.trace_id||'').slice(-8)):'No trace'}</div></td><td>${esc(request.agent||'—')}</td><td>${esc(request.tenant||'—')}</td><td><strong>${esc(request.action||'—')}</strong><div class="tiny">${esc(context)}</div></td><td><span class="${failed?'bad-t':'ok'}">${n(request.status_code)||'—'}</span>${request.error_type?`<div class="tiny">${esc(request.error_type)}</div>`:''}</td><td>${ms(request.duration_ms)}</td>`;return requestRow(request,inner,7)}
 
 function render(s){
   last=s;
@@ -3416,7 +2934,7 @@ function render(s){
       {k:'commands',label:'Commands',tool:'local_ai_command',tab:'commands'},
       {k:'coord',label:'Coord',tool:'local_ai_coord',tab:'work'},
       {k:'artifacts',label:'Artifacts',tool:'local_ai_artifact',tab:'overview'},
-      {k:'code_intelligence',label:'Code intel',tool:'AST / Serena / Graph',tab:'explorer'},
+      {k:'code_intelligence',label:'Code intel',tool:'AST / Serena / Graph',tab:'projects'},
       {k:'preprocessing',label:'Preprocessing',tool:'Background workers',tab:'projects'},
       {k:'subagents',label:'Subagents',tool:'Ollama workers',tab:'performance'},
       {k:'agent_os',label:'Agent OS',tool:'Durable memory/receipts',tab:'agentos'},
@@ -3453,15 +2971,7 @@ function render(s){
       else if(badge){badge.remove();}
     });
     if($('cmdDisabledBanner'))$('cmdDisabledBanner').style.display=feat.commands===false?'flex':'none';
-    if($('intelDisabledBanner'))$('intelDisabledBanner').style.display=feat.code_intelligence===false?'flex':'none';
     if($('agentOsDisabledBanner'))$('agentOsDisabledBanner').style.display=feat.agent_os===false?'flex':'none';
-    if(feat.commands===false){
-      if($('cmdRun')){$('cmdRun').disabled=true;$('cmdRun').title='Commands feature disabled';}
-      if($('cmdClassify')){$('cmdClassify').disabled=true;$('cmdClassify').title='Commands feature disabled';}
-    }else{
-      if($('cmdRun')){$('cmdRun').disabled=false;$('cmdRun').title='';}
-      if($('cmdClassify')){$('cmdClassify').disabled=false;$('cmdClassify').title='';}
-    }
     if(feat.tasks===false){
       if($('fgQueue'))$('fgQueue').innerHTML='<span class="muted">local LLM tasks disabled</span>';
       if($('bgQueue'))$('bgQueue').innerHTML='<span class="muted">tasks feature disabled (features.tasks=false)</span>';
@@ -3477,7 +2987,8 @@ function render(s){
   })();
 
   const firstProject=(p.projects||[]).find(x=>x.root);
-  if(firstProject&&!$('cmdRoot').value)$('cmdRoot').value=firstProject.root;
+  const worktreeRoot=$('worktreeRoot');
+  if(firstProject&&worktreeRoot&&!worktreeRoot.value)worktreeRoot.value=firstProject.root;
 
   $('health').innerHTML=`<span class="${s.hub_online&&s.ollama_online?'ok':s.hub_online?'warn-t':'bad-t'}">${s.hub_online?'hub ✓':'hub ✗'} / ${s.ollama_online?'ollama ✓':'ollama ✗'} / ${esc(h.state||'n/a')}</span>`;
   $('uptime').textContent='uptime '+durSec(s.uptime_seconds)+' · supervisor restarts '+n(h.restarts);
@@ -3540,7 +3051,7 @@ function render(s){
   const hs=o.hotspots||[];
   $('hotspots').innerHTML=hs.length?hs.map((x,i)=>`<div>${esc(x.type||'signal')}</div><div><span class="chip">${esc(x.signal||'')}</span> ${esc(x.value??x.value_ms??x.count??'')}</div>`).join(''):'<div>Status</div><div class="ok">No persistent hotspot detected</div>';
 
-  const visibleJobs=workVisible(allJobs),visibleActive=workVisible(o.active_requests||[]),visibleRecent=workVisible(o.recent_http||[]);
+  const recentRequests=o.recent_http||[],visibleJobs=workVisible(allJobs),visibleActive=workVisible(o.active_requests||[]),visibleRecent=filterRecentRequests(workVisible(recentRequests),recentRequests);
   $('queueSummary').textContent=n(q.foreground_queued)+' fg + '+n(q.background_queued)+' bg queued · '+n(q.foreground_inflight)+' fg + '+n(q.inflight_background)+' bg running';
   $('workQueued').textContent=n((q.foreground_queued||0)+(q.background_queued||0));
   $('workRunning').textContent=n((q.foreground_inflight||0)+(q.inflight_background||0));
@@ -3550,7 +3061,7 @@ function render(s){
 
   rows('jobs',visibleJobs,j=>workSchedulerRow(j),5);
   rows('activeReq',visibleActive,x=>workActiveRequestRow(x),4);
-  rows('recentReq',visibleRecent,x=>workRecentRequestRow(x),5);
+  rows('recentReq',visibleRecent,x=>workRecentRequestRow(x),6);
   renderTraceList(lastTraces);
 
   const diagBar=$('prepDiagnosticBar');
@@ -3619,14 +3130,19 @@ function schedulerRow(job,html,cols){const linked=lastTraces.find(x=>String(x.sc
 function requestRow(request,html,cols){const linked=lastTraces.find(x=>String(x.request_id||'')===String(request.request_id||''));if(linked)return `<tr class="click" data-trace-id="${esc(linked.trace_id)}">${html}</tr>`;return clickableRow(request,html,'http_request');}
 
 function renderTraceList(items){
-  const kind=$('traceKind')?.value||'',historyQuery=String($('traceHistorySearch')?.value||'').trim().toLowerCase(),historyState=$('traceHistoryState')?.value||'useful',visible=workVisible(items||[]).filter(x=>!kind||x.kind===kind).filter(x=>{const state=traceStatus(x),hay=[x.action,x.kind,x.agent,x.tenant,x.model,x.error].filter(Boolean).join(' ').toLowerCase();return (!historyQuery||hay.includes(historyQuery))&&(historyState==='useful'?(state!=='interrupted'&&state!=='failed'):(!historyState||state===historyState))});
-  $('traceSummary').textContent=`${visible.length} shown · ${n(items?.length||0)} retained · full prompt/output · bounded retention`;
+  const base=workVisible(items||[]),kind=String($('traceKind')?.value||''),matching=base.filter(x=>!kind||x.kind===kind);
+  const tableQuery=String($('traceTableSearch')?.value||'').trim().toLowerCase(),tableState=String($('traceTableState')?.value||''),tableSort=String($('traceTableSort')?.value||'newest');
+  const tableVisible=matching.filter(x=>{const state=traceStatus(x),hay=[x.trace_id,x.request_id,x.action,x.source,x.kind,x.agent,x.tenant,x.model,x.error_type,x.error,traceContextLabel(x)].filter(Boolean).join(' ').toLowerCase();return (!tableQuery||hay.includes(tableQuery))&&(!tableState||state===tableState)});
+  tableVisible.sort((a,b)=>{const time=Number(a.updated_at||a.created_at||0)-Number(b.updated_at||b.created_at||0);if(tableSort==='oldest')return -time;if(tableSort==='action')return String(a.action||'').localeCompare(String(b.action||''))||-time;if(tableSort==='duration'){const ad=Number(a.updated_at||a.created_at||0)-Number(a.created_at||0),bd=Number(b.updated_at||b.created_at||0)-Number(b.created_at||0);return bd-ad||-time}if(tableSort==='state')return String(traceStatus(a)).localeCompare(String(traceStatus(b)))||-time;return -time});
+  const historyQuery=String($('traceHistorySearch')?.value||'').trim().toLowerCase(),historyState=$('traceHistoryState')?.value||'useful';
+  const sidebarVisible=matching.filter(x=>{const state=traceStatus(x),hay=[x.trace_id,x.request_id,x.action,x.source,x.kind,x.agent,x.tenant,x.model,x.error,traceContextLabel(x)].filter(Boolean).join(' ').toLowerCase();return (!historyQuery||hay.includes(historyQuery))&&(historyState==='useful'?(state!=='interrupted'&&state!=='failed'):(!historyState||state===historyState))});
+  $('traceSummary').textContent=`${tableVisible.length} shown · ${n(items?.length||0)} retained · full prompt/output · bounded retention`;
   if($('workRetained'))$('workRetained').textContent=n(items?.length||0);
-  rows('traces',visible,x=>{const state=traceStatus(x),cls='trace-'+state,links=[x.async_job_id&&('job '+String(x.async_job_id).slice(0,10)),x.scheduler_job_id&&('sched '+String(x.scheduler_job_id).slice(0,10))].filter(Boolean).join(' · '),activity=x.updated_at&&x.created_at?durSec(Math.max(0,Number(x.updated_at)-Number(x.created_at))):'—';return `<tr class="click" data-trace-id="${esc(x.trace_id)}"><td class="${cls}">${esc(humanLabel(state))}</td><td><strong>${esc(humanLabel(x.kind||'trace'))}</strong><div class="tiny">${esc(x.action||'—')}</div></td><td>${esc(x.agent||'—')}<div class="tiny">${esc(x.tenant||'—')}</div></td><td>${esc(x.model||'—')}</td><td>${x.updated_at?new Date(x.updated_at*1000).toLocaleTimeString():'—'}<div class="tiny">${esc(activity)} total</div></td><td class="tiny">${esc(links||'open trace')}</td></tr>`},6);
-  $('traceSideSummary').textContent=`${visible.length} trace${visible.length===1?'':'s'} · click to inspect`;
-  $('traceSidebarList').innerHTML=visible.length?visible.map(x=>{const state=traceStatus(x),label=state==='interrupted'?'Interrupted':state,cls=state==='interrupted'?'interrupted':(state==='failed'||state==='error'?'failed':(x.terminal||state==='completed'||state==='succeeded'?'done':'')),kindLabel=x.kind==='api_request'?'API request':humanLabel(x.kind||'trace');return `<button class="trace-side-item ${String(x.trace_id)===activeTraceId?'active':''}" data-trace-page-id="${esc(x.trace_id)}"><span class="trace-side-top"><span class="trace-side-state ${cls}"></span><span class="trace-side-action">${esc(x.action||x.kind||'Trace')}</span><span class="tiny spacer">${esc(label)}</span></span><span class="trace-side-meta">${esc(x.agent||'unknown agent')} · ${esc(kindLabel)}</span><span class="trace-side-meta">${x.updated_at?new Date(x.updated_at*1000).toLocaleTimeString():'—'} · ${esc(x.tenant||'no tenant')}</span></button>`}).join(''):'<div class="empty-human">No retained traces</div>';
+  rows('traces',tableVisible,x=>{const state=traceStatus(x),cls='trace-'+state,links=[x.async_job_id&&('job '+String(x.async_job_id).slice(0,10)),x.scheduler_job_id&&('sched '+String(x.scheduler_job_id).slice(0,10))].filter(Boolean).join(' · '),activity=x.updated_at&&x.created_at?durSec(Math.max(0,Number(x.updated_at)-Number(x.created_at))):'—',context=traceContextLabel({...x,kind:'',model:''});return `<tr class="click" data-trace-id="${esc(x.trace_id)}"><td class="${cls}">${esc(humanLabel(state))}</td><td>${esc(humanLabel(x.kind||'trace'))}</td><td><strong>${esc(x.action||'—')}</strong><div class="tiny">${esc(context||'No request details')}</div></td><td>${esc(x.agent||'—')}<div class="tiny">${esc(x.tenant||'—')}</div></td><td>${esc(x.model||'—')}</td><td>${x.created_at?new Date(x.created_at*1000).toLocaleTimeString():'—'}</td><td>${x.updated_at?new Date(x.updated_at*1000).toLocaleTimeString():'—'}<div class="tiny">${esc(activity)} total</div></td><td class="tiny">${esc(links||'open trace')}</td></tr>`},8);
+  $('traceSideSummary').textContent=`${sidebarVisible.length} trace${sidebarVisible.length===1?'':'s'} · click to inspect`;
+  $('traceSidebarList').innerHTML=sidebarVisible.length?sidebarVisible.map(x=>{const state=traceStatus(x),label=state==='interrupted'?'Interrupted':state,cls=state==='interrupted'?'interrupted':(state==='failed'||state==='error'?'failed':(x.terminal||state==='completed'||state==='succeeded'?'done':'')),kindLabel=x.kind==='api_request'?'API request':humanLabel(x.kind||'trace'),context=traceContextLabel({...x,kind:'',model:''});return `<button class="trace-side-item ${String(x.trace_id)===activeTraceId?'active':''}" data-trace-page-id="${esc(x.trace_id)}"><span class="trace-side-top"><span class="trace-side-state ${cls}"></span><span class="trace-side-action">${esc(x.action||x.kind||'Trace')}</span><span class="tiny spacer">${esc(label)}</span></span><span class="trace-side-meta">${esc(context||x.agent||'unknown agent')}</span><span class="trace-side-meta">${esc(x.agent||'unknown agent')} · ${esc(kindLabel)} · ${x.updated_at?new Date(x.updated_at*1000).toLocaleTimeString():'—'} · ${esc(x.tenant||'no tenant')}</span></button>`}).join(''):'<div class="empty-human">No retained traces</div>';
 }
-async function pollTraces(){try{const kind=$('traceKind')?.value||'',suffix=kind?'&kind='+encodeURIComponent(kind):'',r=await apiFetch('/api/debug-traces?limit=100'+suffix,{cache:'no-store'}),d=await r.json();if(d.success){lastTraces=d.items||[];renderTraceList(lastTraces)}}catch(e){console.warn('trace refresh failed',e)}}
+async function pollTraces(){try{const kind=$('traceKind')?.value||'',suffix=kind?'&kind='+encodeURIComponent(kind):'',r=await apiFetch('/api/debug-traces?limit=200'+suffix,{cache:'no-store'}),d=await r.json();if(d.success){lastTraces=d.items||[];renderTraceList(lastTraces)}}catch(e){console.warn('trace refresh failed',e)}}
 $('traceRefresh')?.addEventListener('click',pollTraces);$('traceKind')?.addEventListener('change',()=>renderTraceList(lastTraces));
 $('traceHistorySearch')?.addEventListener('input',()=>renderTraceList(lastTraces));$('traceHistoryState')?.addEventListener('change',()=>renderTraceList(lastTraces));
 
@@ -3647,11 +3163,20 @@ async function pollStatus(){
       const gr=await apiFetch('/api/hardware/system',{cache:'no-store'});
       if(gr.ok){
         const sys=await gr.json(), g=sys.gpu||{}, ram=sys.ram||{};
-        const cpuUtil=Number(sys.cpu_utilization_pct||0), ramPct=Number(ram.used_pct||0);
-        const gpuHtml=g.available?(()=>{const gUtil=Number(g.gpu_utilization_pct||0);return `<div style="display:flex;justify-content:space-between;align-items:center"><span>CPU ${cpuUtil}% · GPU ${gUtil}%</span><span class="tiny muted">${sys.cpu_count||1} threads</span></div><div class="bar"><i style="width:${Math.max(cpuUtil,gUtil)}%;background:${gUtil>80||cpuUtil>80?'var(--bad)':gUtil>50||cpuUtil>50?'var(--warn)':'var(--ok)'}"></i></div>`})():`<div style="display:flex;justify-content:space-between;align-items:center"><span>CPU ${cpuUtil}%</span><span class="tiny muted">${sys.cpu_count||1} threads</span></div><div class="bar"><i style="width:${cpuUtil}%;background:${cpuUtil>80?'var(--bad)':cpuUtil>50?'var(--warn)':'var(--ok)'}"></i></div>`;
-        $('sysUtil').innerHTML=gpuHtml;
+        const pct=value=>value==null||!Number.isFinite(Number(value))?null:Math.max(0,Math.min(100,Number(value)));
+        const cpuUtil=pct(sys.cpu_utilization_pct), gpuUtil=pct(g.gpu_utilization_pct), ramPct=Number(ram.used_pct||0);
+        const npus=Array.isArray(sys.npus)?sys.npus:[], ov=Array.isArray(sys.openvino_devices)?sys.openvino_devices:[], gpus=Array.isArray(sys.gpus)?sys.gpus:[];
+        const igpuAvailable=Boolean(sys.igpu_available||g.integrated||gpus.some(x=>x.integrated)), igpuUtil=pct(sys.igpu_utilization_pct??(g.integrated?g.gpu_utilization_pct:null));
+        const npuAvailable=Boolean(sys.npu_available||npus.length||ov.some(x=>x.kind==='npu')), npuUtil=pct(sys.npu_utilization_pct);
+        const loads=[['CPU',cpuUtil]];
+        if(g.available&&!g.integrated)loads.push(['GPU',gpuUtil]);
+        if(igpuAvailable)loads.push(['iGPU',igpuUtil]);
+        if(npuAvailable)loads.push(['NPU',npuUtil]);
+        const knownLoads=loads.map(x=>x[1]).filter(x=>x!==null), peak=knownLoads.length?Math.max(...knownLoads):0;
+        const barColor=peak>80?'var(--bad)':peak>50?'var(--warn)':'var(--ok)';
+        const loadText=loads.map(([label,value])=>`${label} ${value===null?'—':`${Math.round(value)}%`}`).join(' · ');
+        $('sysUtil').innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center"><span>${loadText}</span><span class="tiny muted">${sys.cpu_count||1} threads</span></div><div class="bar"><i style="width:${peak}%;background:${barColor}"></i></div>`;
         const vram=g.available?(g.vram_total_mb&&!g.integrated?` · VRAM ${Math.round(g.vram_used_mb||0)} / ${Math.round(g.vram_total_mb)} MB`:g.unified_memory_mb?` · Unified memory ${Math.round(g.unified_memory_mb)} MB`:g.integrated?' · shared-memory iGPU':''):'';
-        const npus=Array.isArray(sys.npus)?sys.npus:[], ov=Array.isArray(sys.openvino_devices)?sys.openvino_devices:[];
         const accel=npus.length?` · NPU ${npus[0].runtime_available?'ready':'detected'}`:(ov.some(x=>x.kind==='gpu')?' · OpenVINO GPU ready':'');
         $('sysSub').textContent=`RAM ${ram.used_gb||0} / ${ram.total_gb||0} GB (${ramPct}%)${vram}${accel}`;
       }
@@ -3664,305 +3189,6 @@ async function pollEvents(){try{const r=await apiFetch('/api/live?after='+cursor
 
 probeHealth();pollStatus();pollEvents();pollTraces();
 setInterval(probeHealth,5000);setInterval(pollStatus,1000);setInterval(pollEvents,1000);setInterval(pollTraces,2000);
-
-// ── Architecture Graph ────────────────────────────────────────────────────────
-let archData=null,archNodes=[],archEdges=[],archDragging=null;
-let archZoom=1.0,archPan={x:0,y:0},archFilter='';
-async function loadArchGraph(){
-  try{
-    const r=await apiFetch('/api/cross_project_graph',{cache:'no-store'});
-    if(!r.ok)return;
-    archData=await r.json();
-    renderArchGraph();
-  }catch(e){console.warn('arch graph error',e)}
-}
-function renderArchGraph(){
-  if(!archData)return;
-  const svg=$('archSvg');
-  const W=svg.clientWidth||800,H=svg.clientHeight||520;
-  const nodes=(archData.nodes||[]).map((n,i)=>({...n,x:W/2+Math.cos(i/Math.max(1,archData.nodes.length)*2*Math.PI)*200,y:H/2+Math.sin(i/Math.max(1,archData.nodes.length)*2*Math.PI)*160,vx:0,vy:0}));
-  const edges=archData.edges||[];
-  archNodes=nodes;archEdges=edges;
-  $('archSummary').textContent=nodes.length+' projects · '+edges.length+' connections · '+n(archData.shared_packages||0)+' shared packages';
-  rows('archEdgesTable',edges,e=>clickableRow(e,`<td>${esc(e.from?.split('/').pop()||e.from)}</td><td>${esc(e.to?.split('/').pop()||e.to)}</td><td><span class="chip">${esc(e.type)}</span></td><td>${esc(e.label)}</td>`,'arch_edge'),4);
-  drawArch(svg,nodes,edges,W,H);
-  runSimulation(svg,nodes,edges,W,H);
-}
-function drawArch(svg,nodes,edges,W,H){
-  svg.innerHTML='';
-  const defs=document.createElementNS('http://www.w3.org/2000/svg','defs');
-  const marker=document.createElementNS('http://www.w3.org/2000/svg','marker');
-  marker.setAttribute('id','arr');marker.setAttribute('markerWidth','6');marker.setAttribute('markerHeight','4');marker.setAttribute('refX','6');marker.setAttribute('refY','2');marker.setAttribute('orient','auto');
-  const mp=document.createElementNS('http://www.w3.org/2000/svg','polygon');mp.setAttribute('points','0 0, 6 2, 0 4');mp.setAttribute('fill','#4a6080');marker.appendChild(mp);defs.appendChild(marker);
-
-  const markerRed=document.createElementNS('http://www.w3.org/2000/svg','marker');
-  markerRed.setAttribute('id','arr-red');markerRed.setAttribute('markerWidth','6');markerRed.setAttribute('markerHeight','4');markerRed.setAttribute('refX','6');markerRed.setAttribute('refY','2');markerRed.setAttribute('orient','auto');
-  const mpRed=document.createElementNS('http://www.w3.org/2000/svg','polygon');mpRed.setAttribute('points','0 0, 6 2, 0 4');mpRed.setAttribute('fill','#f87171');markerRed.appendChild(mpRed);defs.appendChild(markerRed);
-  svg.appendChild(defs);
-
-  const viewport=document.createElementNS('http://www.w3.org/2000/svg','g');
-  viewport.setAttribute('id','archViewport');
-  viewport.setAttribute('transform',`translate(${archPan.x},${archPan.y}) scale(${archZoom})`);
-  svg.appendChild(viewport);
-
-  const adj={};
-  edges.forEach(e=>{ (adj[e.from]=adj[e.from]||[]).push(e.to); });
-  const cycleEdges=new Set();
-  function findCycles(curr, visited, pathStack){
-    visited.add(curr);
-    pathStack.push(curr);
-    for(const nxt of (adj[curr]||[])){
-      const idx = pathStack.indexOf(nxt);
-      if(idx !== -1){
-        for(let k=idx; k<pathStack.length-1; k++){
-          cycleEdges.add(`${pathStack[k]}->${pathStack[k+1]}`);
-        }
-        cycleEdges.add(`${pathStack[pathStack.length-1]}->${nxt}`);
-      } else if(!visited.has(nxt)){
-        findCycles(nxt, visited, pathStack);
-      }
-    }
-    pathStack.pop();
-  }
-  const vis=new Set();
-  nodes.forEach(n=>{ if(!vis.has(n.root)) findCycles(n.root, vis, []); });
-
-  const nodeIdx=Object.fromEntries(nodes.map((n,i)=>[n.root,i]));
-  edges.forEach(e=>{
-    const s=nodes[nodeIdx[e.from]],t=nodes[nodeIdx[e.to]];
-    if(!s||!t)return;
-    const isCycle = cycleEdges.has(`${e.from}->${e.to}`);
-    const line=document.createElementNS('http://www.w3.org/2000/svg','line');
-    line.setAttribute('class','arch-edge');line.setAttribute('x1',s.x);line.setAttribute('y1',s.y);line.setAttribute('x2',t.x);line.setAttribute('y2',t.y);
-    line.setAttribute('stroke',isCycle ? '#f87171' : (e.type==='shared_route'?'#7b5fff':'#3a5572'));
-    line.setAttribute('stroke-width',isCycle ? '2.5' : '1.5');
-    if(isCycle) line.setAttribute('stroke-dasharray','4 2');
-    line.setAttribute('marker-end',isCycle ? 'url(#arr-red)' : 'url(#arr)');
-    viewport.appendChild(line);
-  });
-  nodes.forEach((nd,i)=>{
-    const matches = !archFilter || (nd.root||'').toLowerCase().includes(archFilter) || (nd.label||'').toLowerCase().includes(archFilter);
-    const g=document.createElementNS('http://www.w3.org/2000/svg','g');g.setAttribute('transform',`translate(${nd.x},${nd.y})`);
-    g.style.opacity = matches ? '1.0' : '0.25';
-    const circ=document.createElementNS('http://www.w3.org/2000/svg','circle');
-    circ.setAttribute('r','26');circ.setAttribute('fill','#1a2d40');
-    circ.setAttribute('stroke',matches && archFilter ? '#fbbf24' : '#5380a8');
-    circ.setAttribute('stroke-width',matches && archFilter ? '2.5' : '1.5');
-    circ.style.cursor='pointer';
-    const lbl=document.createElementNS('http://www.w3.org/2000/svg','text');
-    lbl.setAttribute('text-anchor','middle');lbl.setAttribute('dy','4');lbl.setAttribute('fill','#c5d4e5');lbl.setAttribute('font-size','10');lbl.style.pointerEvents='none';
-    lbl.textContent=(nd.root||'').split(/[\\/]/).pop()?.slice(0,12)||'?';
-    g.appendChild(circ);g.appendChild(lbl);
-    let moved=false;
-    g.addEventListener('mousedown',ev=>{ev.preventDefault();moved=false;archDragging={node:nd,svg,dx:(ev.clientX/archZoom)-nd.x,dy:(ev.clientY/archZoom)-nd.y,setMoved:()=>{moved=true}}});
-    circ.addEventListener('click',ev=>{if(!moved)openArchNodeModal(nd)});
-    viewport.appendChild(g);
-  });
-  svg.addEventListener('mousemove',ev=>{
-    if(!archDragging)return;
-    archDragging.setMoved?.();
-    archDragging.node.x=(ev.clientX/archZoom)-archDragging.dx;
-    archDragging.node.y=(ev.clientY/archZoom)-archDragging.dy;
-    updateArchPositions(svg,nodes,edges);
-  });
-  svg.addEventListener('mouseup',()=>{archDragging=null});
-}
-function updateArchPositions(svg,nodes,edges){
-  const vp=$('archViewport')||svg;
-  const lines=vp.querySelectorAll('.arch-edge');const nodeIdx=Object.fromEntries(nodes.map((n,i)=>[n.root,i]));
-  lines.forEach((l,i)=>{const e=edges[i];if(!e)return;const s=nodes[nodeIdx[e.from]],t=nodes[nodeIdx[e.to]];if(!s||!t)return;l.setAttribute('x1',s.x);l.setAttribute('y1',s.y);l.setAttribute('x2',t.x);l.setAttribute('y2',t.y)});
-  const gs=vp.querySelectorAll('g');nodes.forEach((nd,i)=>{if(gs[i])gs[i].setAttribute('transform',`translate(${nd.x},${nd.y})`)});
-}
-
-function runSimulation(svg,nodes,edges,W,H){
-  const nodeIdx=Object.fromEntries(nodes.map((n,i)=>[n.root,i]));
-  let t=0;
-  function tick(){
-    if(t++>200||archDragging)return;
-    nodes.forEach(n=>{n.vx*=0.9;n.vy*=0.9;n.vx+=(W/2-n.x)*0.002;n.vy+=(H/2-n.y)*0.002});
-    nodes.forEach((a,i)=>nodes.forEach((b,j)=>{if(i>=j)return;const dx=b.x-a.x,dy=b.y-a.y,d=Math.sqrt(dx*dx+dy*dy)||1;const f=Math.max(0,80-d)/d*0.5;a.vx-=f*dx;a.vy-=f*dy;b.vx+=f*dx;b.vy+=f*dy}));
-    edges.forEach(e=>{const s=nodes[nodeIdx[e.from]],t2=nodes[nodeIdx[e.to]];if(!s||!t2)return;const dx=t2.x-s.x,dy=t2.y-s.y,d=Math.sqrt(dx*dx+dy*dy)||1;const f=(d-120)/d*0.15;s.vx+=f*dx;s.vy+=f*dy;t2.vx-=f*dx;t2.vy-=f*dy});
-    nodes.forEach(nd=>{nd.x=Math.max(30,Math.min(W-30,nd.x+nd.vx));nd.y=Math.max(30,Math.min(H-30,nd.y+nd.vy))});
-    updateArchPositions(svg,nodes,edges);requestAnimationFrame(tick);
-  }
-  tick();
-}
-$('archRefresh')?.addEventListener('click',loadArchGraph);
-$('archZoomIn')?.addEventListener('click', () => {
-  archZoom = Math.min(3.0, archZoom * 1.25);
-  const vp = $('archViewport');
-  if (vp) vp.setAttribute('transform', `translate(${archPan.x},${archPan.y}) scale(${archZoom})`);
-});
-$('archZoomOut')?.addEventListener('click', () => {
-  archZoom = Math.max(0.3, archZoom / 1.25);
-  const vp = $('archViewport');
-  if (vp) vp.setAttribute('transform', `translate(${archPan.x},${archPan.y}) scale(${archZoom})`);
-});
-$('archZoomReset')?.addEventListener('click', () => {
-  archZoom = 1.0; archPan = {x: 0, y: 0};
-  const vp = $('archViewport');
-  if (vp) vp.setAttribute('transform', `translate(0,0) scale(1)`);
-});
-$('archFilterInput')?.addEventListener('input', (ev) => {
-  archFilter = (ev.target.value || '').trim().toLowerCase();
-  const svg = $('archSvg');
-  if (archNodes && archEdges && svg) drawArch(svg, archNodes, archEdges, svg.clientWidth||800, svg.clientHeight||520);
-});
-
-$('symbolGraphBtn')?.addEventListener('click',async()=>{
-  const sym=$('symbolInput')?.value?.trim();
-  try{
-    const r=await apiFetch('/api/symbol_callgraph?symbol='+encodeURIComponent(sym||''),{cache:'no-store'});
-    if(!r.ok)return;
-    const d=await r.json();
-    if(d.nodes&&d.nodes.length){
-      archData={nodes:d.nodes.map(n=>({root:n.id,label:n.label})),edges:d.edges.map(e=>({from:e.from,to:e.to,type:e.type,label:e.type}))};
-      renderArchGraph();
-    }else{alert('No callgraph nodes found for symbol: '+sym)}
-  }catch(e){console.warn(e)}
-});
-function showScanReady(secId, label){
-  const el=$(secId);
-  if(el){el.style.display='block';el.scrollIntoView({behavior:'smooth',block:'start'})}
-  const status=$('archScanStatus');
-  if(status){
-    status.style.display='inline-flex';
-    status.textContent=`✓ ${label} (click to jump ↓)`;
-    status.onclick=()=>$(secId)?.scrollIntoView({behavior:'smooth',block:'start'});
-  }
-}
-function setScanPending(label){
-  const status=$('archScanStatus');
-  if(status){
-    status.style.display='inline-flex';
-    status.textContent=`⏳ ${label}…`;
-    status.onclick=null;
-  }
-}
-
-$('deadCodeBtn')?.addEventListener('click',async()=>{
-  $('deadCodeBtn').disabled=true;$('deadCodeBtn').textContent='Scanning…';setScanPending('Scanning dead code');
-  try{
-    const r=await apiFetch('/api/dead_code',{cache:'no-store'});
-    const d=await r.json();
-    $('deadCodeSec').style.display='block';
-    $('deadCodeSummary').textContent=n(d.dead_symbols_count||0)+' potentially unused symbols';
-    rows('deadCodeTable',d.dead_symbols||[],s=>clickableRow(s,`<td><b>${esc(s.name)}</b></td><td><span class="chip">${esc(s.kind)}</span></td><td>${esc(s.path)}</td><td>${n(s.line)}</td><td>${esc(s.container||'—')}</td><td class="muted">${esc(s.reason)}</td>`,'dead_code'),6);
-    showScanReady('deadCodeSec','Dead Code ('+n(d.dead_symbols_count||0)+')');
-  }catch(e){alert('Dead code scan failed: '+e.message)}
-  finally{$('deadCodeBtn').disabled=false;$('deadCodeBtn').textContent='Scan Dead Code'}
-});
-$('auditDepsBtn')?.addEventListener('click',async()=>{
-  $('auditDepsBtn').disabled=true;$('auditDepsBtn').textContent='Auditing…';setScanPending('Auditing dependencies');
-  try{
-    const r=await apiFetch('/api/audit_dependencies',{cache:'no-store'});
-    const d=await r.json();
-    $('auditSec').style.display='block';
-    $('auditSummary').textContent=`Score ${d.security_score||'A'} · ${n(d.total_dependencies||0)} packages · ${n(d.vulnerability_count||0)} advisories`;
-    rows('auditTable',d.vulnerabilities||[],v=>clickableRow(v,`<td><b>${esc(v.package)}</b></td><td><span class="chip ${v.severity==='HIGH'?'bad-t':'warn-t'}">${esc(v.severity)}</span></td><td>${esc(v.installed_version)}</td><td class="ok">${esc(v.fixed_version)}</td><td>${esc(v.advisory)}</td><td class="muted">${esc(v.manifest_path)}</td>`,'audit_vulnerability'),6);
-    showScanReady('auditSec','Security Audit ('+n(d.vulnerability_count||0)+' advisories)');
-  }catch(e){alert('Security audit failed: '+e.message)}
-  finally{$('auditDepsBtn').disabled=false;$('auditDepsBtn').textContent='Audit Security'}
-});
-
-$('circDepsBtn')?.addEventListener('click',async()=>{
-  $('circDepsBtn').disabled=true;$('circDepsBtn').textContent='Checking…';setScanPending('Checking circular deps');
-  try{
-    const r=await post('/api/repo/circular_dependencies',{root:'.'});
-    $('circDepsSec').style.display='block';
-    const cycles=r.cycles||[];
-    $('circDepsSummary').textContent=n(cycles.length)+' circular cycle(s) detected';
-    rows('circDepsTable',cycles,(c,i)=>clickableRow({cycle:c},`<td><b>#${i+1}</b></td><td><span class="chip">${esc(r.language||'python')}</span></td><td class="mono">${esc(Array.isArray(c)?c.join(' ➔ '):String(c))}</td><td>${n(Array.isArray(c)?c.length:1)}</td>`,'circ_dep'),4);
-    if(archNodes&&archEdges&&$('archSvg')){
-      drawArch($('archSvg'),archNodes,archEdges,$('archSvg').clientWidth||800,$('archSvg').clientHeight||520);
-    }
-    showScanReady('circDepsSec','Circular Deps ('+n(cycles.length)+')');
-  }catch(e){alert('Circular dependency scan failed: '+e.message)}
-  finally{$('circDepsBtn').disabled=false;$('circDepsBtn').textContent='Circular Deps'}
-});
-
-$('complexityBtn')?.addEventListener('click',async()=>{
-  $('complexityBtn').disabled=true;$('complexityBtn').textContent='Analyzing…';setScanPending('Analyzing complexity');
-  try{
-    const r=await post('/api/repo/complexity',{root:'.'});
-    $('complexitySec').style.display='block';
-    const funcs=r.functions||[];
-    $('complexitySummary').textContent=`Total ${n(r.total_functions||funcs.length)} functions · High risk: ${n(r.high_risk_count||0)}`;
-    rows('complexityTable',funcs,f=>{
-      const riskCls=f.risk==='high'?'bad-t':f.risk==='medium'?'warn-t':'ok';
-      return clickableRow(f,`<td><b>${esc(f.name)}</b></td><td class="muted">${esc(f.file)}:${n(f.line)}</td><td>${n(f.cyclomatic_complexity)}</td><td>${n(f.cognitive_complexity)}</td><td><span class="chip ${riskCls}">${esc(f.risk||'low')}</span></td>`,'complexity');
-    },5);
-    showScanReady('complexitySec','Complexity ('+n(funcs.length)+' funcs)');
-  }catch(e){alert('Complexity analysis failed: '+e.message)}
-  finally{$('complexityBtn').disabled=false;$('complexityBtn').textContent='Code Complexity'}
-});
-
-$('apiSpecBtn')?.addEventListener('click',async()=>{
-  $('apiSpecBtn').disabled=true;$('apiSpecBtn').textContent='Extracting…';setScanPending('Extracting API spec');
-  try{
-    const r=await post('/api/repo/api_spec',{root:'.'});
-    $('apiSpecSec').style.display='block';
-    const routes=r.routes||[];
-    $('apiSpecSummary').textContent=`${n(routes.length)} endpoints detected · Framework: ${esc(r.framework||'auto')}`;
-    rows('apiSpecTable',routes,rt=>clickableRow(rt,`<td><b>${esc(rt.path)}</b></td><td><span class="chip ok">${esc((rt.methods||['GET']).join(','))}</span></td><td class="mono">${esc(rt.handler||'—')}</td><td>${esc(rt.framework||'—')}</td><td class="tiny muted">${esc(rt.doc||'—')}</td>`,'api_route'),5);
-    showScanReady('apiSpecSec','API Spec ('+n(routes.length)+' routes)');
-  }catch(e){alert('API Spec extraction failed: '+e.message)}
-  finally{$('apiSpecBtn').disabled=false;$('apiSpecBtn').textContent='API Spec'}
-});
-
-$('migrationDriftBtn')?.addEventListener('click',async()=>{
-  $('migrationDriftBtn').disabled=true;$('migrationDriftBtn').textContent='Checking…';setScanPending('Checking migration drift');
-  try{
-    const r=await post('/api/repo/migration_drift',{root:'.'});
-    $('migrationDriftSec').style.display='block';
-    const drift=r.drift||{};
-    const tables=Object.keys(drift);
-    $('migrationDriftSummary').textContent=r.in_sync?'Database and code models are fully in sync ✓':`${n(tables.length)} drift table(s) found`;
-    rows('migrationDriftTable',tables,t=>{
-      const item=drift[t]||{};
-      return clickableRow(item,`<td><b>${esc(t)}</b></td><td><span class="chip ${r.in_sync?'ok':'warn-t'}">${r.in_sync?'SYNC':'DRIFT'}</span></td><td class="bad-t">${esc((item.missing_in_db||[]).join(', ')||'—')}</td><td class="bad-t">${esc((item.missing_in_code||[]).join(', ')||'—')}</td><td class="warn-t">${esc(JSON.stringify(item.type_mismatches||{})||'—')}</td>`,'migration_drift');
-    },5);
-    showScanReady('migrationDriftSec','Migration Drift ('+n(tables.length)+' tables)');
-  }catch(e){alert('Migration drift check failed: '+e.message)}
-  finally{$('migrationDriftBtn').disabled=false;$('migrationDriftBtn').textContent='Migration Drift'}
-});
-
-let secretScanCache=[];
-function renderSecretScanTable(){
-  const hideTests=$('secretScanHideTests')?.checked??true;
-  const filtered=hideTests?secretScanCache.filter(s=>!s.is_test&&!s.is_placeholder):secretScanCache;
-  rows('secretScanTable',filtered,s=>{
-    const isMock=s.is_test||s.is_placeholder;
-    const sevChip=isMock
-      ?'<span class="chip" style="color:#94a3b8;border-color:#475569">TEST / MOCK</span>'
-      :(s.severity==='CRITICAL'?'<span class="chip bad-t">CRITICAL</span>':'<span class="chip warn-t">HIGH</span>');
-    const matchVal=s.match||s.redacted_secret||s.redacted_snippet||'***';
-    const entropyVal=s.entropy!==undefined?s.entropy:'—';
-    return clickableRow(s,`<td><b>${esc(s.rule||s.secret_type||'secret')}</b></td><td class="muted">${esc(s.description||s.rule||'—')}</td><td class="mono tiny">${esc(s.file)}:${n(s.line)}</td><td class="mono bad-t">${esc(matchVal)}</td><td><span class="mono tiny">${esc(entropyVal)}</span></td><td>${sevChip}</td>`,'secret_finding');
-  },6);
-}
-$('secretScanHideTests')?.addEventListener('change',renderSecretScanTable);
-
-$('secretScanBtn')?.addEventListener('click',async()=>{
-  $('secretScanBtn').disabled=true;$('secretScanBtn').textContent='Scanning…';setScanPending('Scanning secrets');
-  try{
-    const r=await post('/api/repo/secret_scan',{root:'.'});
-    $('secretScanSec').style.display='block';
-    secretScanCache=r.findings||[];
-    const realLeaks=r.real_leaks_count!==undefined?r.real_leaks_count:secretScanCache.filter(s=>!s.is_test&&!s.is_placeholder).length;
-    const testLeaks=r.test_findings_count!==undefined?r.test_findings_count:secretScanCache.filter(s=>s.is_test||s.is_placeholder).length;
-    if(realLeaks>0){
-      $('secretScanSummary').innerHTML=`<span class="bad-t">⚠️ ${n(realLeaks)} active credential leak(s) detected!</span> <span class="tiny muted">(${n(testLeaks)} test suite fixtures)</span>`;
-    }else if(testLeaks>0){
-      $('secretScanSummary').innerHTML=`<span class="ok">✓ Production code clean</span> <span class="tiny muted">(${n(testLeaks)} mock/test fixtures found)</span>`;
-    }else{
-      $('secretScanSummary').innerHTML=`<span class="ok">Clean — 0 leaked credentials found ✓</span>`;
-    }
-    renderSecretScanTable();
-    showScanReady('secretScanSec',realLeaks>0?`Secrets (${realLeaks} leaks!)`:'Secrets (Clean ✓)');
-  }catch(e){alert('Secret scan failed: '+e.message)}
-  finally{$('secretScanBtn').disabled=false;$('secretScanBtn').textContent='Scan Secrets'}
-});
 
 // ── Bundles ────────────────────────────────────────────────────────────────────
 function renderBundles(s){
@@ -4010,87 +3236,14 @@ async function loadAgentOsView(){
   }catch(e){console.warn('Agent OS view load error', e)}
 }
 
-let sseSource=null, sseEvents=[], sseEventCount=0, sseDebounceTimer=null;
-
-function connectAgentOsStream(){
-  if(sseSource){
-    try{ sseSource.close(); }catch(e){}
-    sseSource=null;
-  }
-  const badge=$('sseStreamBadge');
-  if(badge){ badge.className='badge-status badge-waiting'; badge.textContent='Connecting…'; }
-  const token=localStorage.getItem('apiToken')||'';
-  const url='/api/agent-state/events/stream'+(token?'?token='+encodeURIComponent(token):'');
-  try{
-    sseSource=new EventSource(url);
-    sseSource.onopen=()=>{
-      if(badge){ badge.className='badge-status badge-complete'; badge.textContent='🟢 Live Stream Connected'; }
-    };
-    sseSource.onerror=()=>{
-      if(badge){ badge.className='badge-status badge-error'; badge.textContent='🔴 Disconnected (Retrying…)'; }
-    };
-    sseSource.onmessage=(e)=>{
-      try{
-        const data=JSON.parse(e.data);
-        handleAgentOsStreamEvent(data);
-      }catch(err){}
-    };
-  }catch(e){
-    if(badge){ badge.className='badge-status badge-error'; badge.textContent='Error: '+e.message; }
-  }
-}
-
-function handleAgentOsStreamEvent(ev){
-  sseEventCount++;
-  sseEvents.unshift(ev);
-  if(sseEvents.length>200) sseEvents.pop();
-  if($('sseStreamStats')) $('sseStreamStats').textContent=`${sseEventCount} events received`;
-  renderLiveStreamTable();
-
-  // Debounced auto-refresh of background tables when state changes
-  clearTimeout(sseDebounceTimer);
-  sseDebounceTimer=setTimeout(()=>{
-    loadAgentOsView();
-  }, 1200);
-}
-
-function renderLiveStreamTable(){
-  const filter=String($('sseKindFilter')?.value||'').trim();
-  const filtered=filter?sseEvents.filter(e=>String(e.kind||'').startsWith(filter)):sseEvents;
-  rows('agentOsLiveStreamBody', filtered, ev=>{
-    const seq=esc(ev.seq!==undefined?ev.seq:'—');
-    const dt=ev.timestamp?new Date(ev.timestamp*1000).toLocaleTimeString():'—';
-    const stream=esc(ev.stream_id||'—');
-    const kind=esc(ev.kind||'unknown');
-    const actor=esc(ev.actor||'system');
-    let payloadStr=typeof ev.payload==='object'?JSON.stringify(ev.payload):String(ev.payload||'');
-    if(payloadStr.length>85) payloadStr=payloadStr.slice(0,82)+'...';
-    let kindBadge='badge-waiting';
-    if(kind.startsWith('task.')) kindBadge='badge-running';
-    else if(kind.startsWith('verification.')) kindBadge='badge-complete';
-    else if(kind.startsWith('incident.')) kindBadge='badge-error';
-    return clickableRow(ev, `<td><strong>${seq}</strong></td><td class="tiny">${dt}</td><td class="tiny mono">${stream}</td><td><span class="badge-status ${kindBadge}">${kind}</span></td><td class="tiny">${actor}</td><td class="tiny mono" title="${esc(typeof ev.payload==='object'?JSON.stringify(ev.payload,null,2):payloadStr)}">${esc(payloadStr)}</td>`, 'event');
-  }, 6);
-}
-
-$('sseReconnectBtn')?.addEventListener('click', connectAgentOsStream);
-$('sseClearBtn')?.addEventListener('click', () => {
-  sseEvents = [];
-  renderLiveStreamTable();
-});
-$('sseKindFilter')?.addEventListener('change', renderLiveStreamTable);
-
 function switchAgentOsSubtab(tabKey){
-  const subtabs=['tasks','memory','incidents','verification','context','liveStream','trajectories'];
+  const subtabs=['tasks','memory','incidents','trajectories'];
   subtabs.forEach(t=>{
     const btn=$('subtab'+t.charAt(0).toUpperCase()+t.slice(1));
     const sec=$('agentOs'+t.charAt(0).toUpperCase()+t.slice(1)+'Sec');
     if(btn)btn.classList.toggle('active',t===tabKey);
     if(sec)sec.style.display=t===tabKey?'block':'none';
   });
-  if(tabKey==='liveStream' && !sseSource){
-    connectAgentOsStream();
-  }
   if(tabKey==='trajectories'){
     loadTrajectories();
   }
@@ -4125,9 +3278,10 @@ function renderAgentOsView(){
   const incQuery=String($('agentOsIncSearch')?.value||'').trim().toLowerCase();
   const incFilter=String($('agentOsIncFilter')?.value||'').trim();
   const filteredInc=agentOsIncidents.filter(i=>{
-    if(incFilter!==''){const resBool=incFilter==='true';if(!!i.verified_fix!==resBool)return false;}
+    const incidentStatus=String(i.status||(i.ignored?'ignored':i.resolved?'resolved':'unresolved'));
+    if(incFilter!==''&&incidentStatus!==incFilter)return false;
     if(!incQuery)return true;
-    const hay=[i.incident_id,i.error_class,i.redacted_message,i.root_cause,i.verified_fix].join(' ').toLowerCase();
+    const hay=[i.incident_id,i.error_class,i.redacted_message,i.root_cause,i.verified_fix,incidentStatus].join(' ').toLowerCase();
     return hay.includes(incQuery);
   });
 
@@ -4161,15 +3315,16 @@ function renderAgentOsView(){
 
   rows('agentOsIncBody',filteredInc,i=>{
     const id=esc(i.incident_id||'—');
+    const status=String(i.status||(i.ignored?'ignored':i.resolved?'resolved':'unresolved'));
+    const statusChip=status==='ignored'?'<span class="chip">ignored</span>':status==='resolved'?'<span class="chip ok">resolved</span>':'<span class="chip warn-t">unresolved</span>';
     const op=esc(i.outcome?.tool_name||'agent');
     const ec=esc(i.error_class||'Error');
     let msg=esc(i.redacted_message||'');
     if(msg.length>45)msg=msg.slice(0,42)+'...';
     const cause=esc(i.root_cause||'—');
     const fix=esc(i.verified_fix||'—');
-    const statusChip=i.verified_fix?'<span class="chip ok">resolved</span>':'<span class="chip warn-t">unresolved</span>';
-    return clickableRow(i,`<td><strong>${id}</strong></td><td><span class="chip">${op}</span></td><td><span class="chip bad-t">${ec}</span></td><td class="tiny" title="${esc(i.redacted_message||'')}">${msg}</td><td class="tiny">${cause}</td><td class="tiny ok">${fix}</td><td>${statusChip}</td>`,'incident',i.incident_id);
-  },7);
+    return clickableRow(i,`<td><strong>${id}</strong></td><td>${statusChip}</td><td>${n(i.attempts||1)}</td><td><span class="chip">${op}</span></td><td><span class="chip bad-t">${ec}</span></td><td class="tiny" title="${esc(i.redacted_message||'')}">${msg}</td><td class="tiny">${cause}</td><td class="tiny ok">${fix}</td>`,'incident',i.incident_id);
+  },8);
 }
 
 $('agentOsRefresh')?.addEventListener('click',loadAgentOsView);
@@ -4191,163 +3346,14 @@ $('agentOsRecordMemBtn')?.addEventListener('click',openRecordMemoryModal);
 // Record Incident Modal
 $('agentOsRecordIncBtn')?.addEventListener('click',openRecordIncidentModal);
 
-// Verification Check
-$('agentOsVerifyBtn')?.addEventListener('click',async()=>{
-  const taskId=$('agentOsVerifyTaskId')?.value?.trim();
-  if(!taskId){alert('Enter a Task ID to check completion');return;}
-  try{
-    const res=await post('/api/agent-state/verification',{action:'completion',task_id:taskId});
-    const c=res.completion||{};
-    const canComplete=c.can_complete;
-    $('agentOsVerifyOut').innerHTML=`<div class="diag-banner ${canComplete?'ok':'bad'}"><b>Status:</b> ${canComplete?'All acceptance criteria verified with valid receipts! Ready to complete.':'Task cannot complete yet. Outstanding criteria or missing evidence receipts.'}</div><div class="kv"><div>Complete Allowed</div><div class="${canComplete?'ok':'bad-t'}">${canComplete?'TRUE':'FALSE'}</div><div>Pending Criteria</div><div>${esc((c.pending_criteria||[]).join(', ')||'none')}</div><div>Passed Criteria</div><div>${esc((c.passed_criteria||[]).join(', ')||'none')}</div></div>`;
-  }catch(e){$('agentOsVerifyOut').innerHTML=`<div class="bad-t">Verification check error: ${esc(e.message||e)}</div>`}
-});
-
-// Context Compile
-$('agentOsCtxCompileBtn')?.addEventListener('click',async()=>{
-  const taskId=$('agentOsCtxTaskId')?.value?.trim();
-  const budget=Number($('agentOsCtxBudget')?.value||4000);
-  try{
-    const res=await post('/api/agent-state/context',{action:'compile',task_id:taskId||'',token_budget:budget});
-    const pre=$('agentOsCtxOut');
-    pre.style.display='block';
-    pre.textContent=res.text||JSON.stringify(res,null,2);
-  }catch(e){$('agentOsCtxOut').style.display='block';$('agentOsCtxOut').textContent='Compilation failed: '+(e.message||e)}
-});
-
 // ── Models, RAG & Leases ──────────────────────────────────────────────────────
-async function loadInstalledModels(){
-  const list=$('installedModelsList');
-  if(!list)return;
-  try{
-    const r=await apiFetch('/api/models/manage',{cache:'no-store'});
-    const d=await r.json();
-    if(!d.success){
-      const r2=await apiFetch('/api/models',{cache:'no-store'});
-      const d2=await r2.json();
-      const models=d2.data||[];
-      list.innerHTML=models.length?models.map(m=>`<span class="chip ok">🤖 <b>${esc(m.id)}</b></span>`).join(' '):'<span class="muted">No models detected via Ollama</span>';
-      return;
-    }
-    const models=d.models||[];
-    const runningMap=new Map((d.running||[]).map(x=>[x.name,x]));
-    if(!models.length){
-      list.innerHTML='<span class="muted">No installed Ollama models found.</span>';
-      return;
-    }
-    let html='<table style="width:100%;margin:0"><thead><tr><th>Model Name</th><th>Size</th><th>VRAM Status</th><th>Action</th></tr></thead><tbody>';
-    for(const m of models){
-      const name=m.name;
-      const sizeMb=m.size?Math.round(m.size/(1024*1024))+' MB':'—';
-      const isRun=runningMap.has(name);
-      const vramInfo=isRun?`<span class="pill ok tiny">Active in VRAM (${Math.round((runningMap.get(name).size_vram||0)/(1024*1024))} MB)</span>`:'<span class="muted tiny">Idle</span>';
-      html+=`<tr><td><strong>${esc(name)}</strong></td><td class="tiny">${sizeMb}</td><td>${vramInfo}</td><td><button class="btn bad tiny" onclick="deleteOllamaModel(${escJs(name)})">Delete</button></td></tr>`;
-    }
-    html+='</tbody></table>';
-    list.innerHTML=html;
-  }catch(e){
-    list.textContent='Failed to load models';
-  }
-}
-
-async function pullOllamaModel(){
-  const input=$('modelPullName');
-  const name=input?.value?.trim();
-  const st=$('modelManageStatus');
-  if(!name){alert('Enter a model name, e.g. qwen2.5-coder:3b');return;}
-  if(st)st.innerHTML=`<span class="warn-t">Pulling model ${esc(name)} in background…</span>`;
-  try{
-    const res=await post('/api/models/manage',{action:'pull',model:name});
-    if(st)st.innerHTML=res.success?`<span class="ok">✓ Pulling ${esc(name)} started</span>`:`<span class="bad-t">Error: ${esc(res.error)}</span>`;
-    setTimeout(loadInstalledModels,3000);
-  }catch(err){
-    if(st)st.innerHTML=`<span class="bad-t">Error: ${esc(String(err))}</span>`;
-  }
-}
-
-async function deleteOllamaModel(name){
-  if(!confirm(`Delete model ${name}?`))return;
-  const st=$('modelManageStatus');
-  try{
-    const res=await post('/api/models/manage',{action:'delete',model:name});
-    if(st)st.innerHTML=res.success?`<span class="ok">✓ Deleted ${esc(name)}</span>`:`<span class="bad-t">Error: ${esc(res.error)}</span>`;
-    loadInstalledModels();
-  }catch(err){
-    if(st)st.innerHTML=`<span class="bad-t">Error: ${esc(String(err))}</span>`;
-  }
-}
-
-function setDbPreset(preset){
-  const sel=$('dbSelect');
-  const input=$('dbQueryInput');
-  if(!sel||!input)return;
-  if(preset==='tasks'){
-    sel.value='agent_state';
-    input.value='SELECT id, role, status, scope_root, retry_count, updated_at FROM tasks ORDER BY updated_at DESC LIMIT 50';
-  }else if(preset==='events'){
-    sel.value='agent_state';
-    input.value='SELECT id, task_id, event_type, actor, timestamp FROM events ORDER BY id DESC LIMIT 50';
-  }else if(preset==='memory'){
-    sel.value='agent_state';
-    input.value='SELECT id, task_id, key, scope, updated_at, substr(value, 1, 100) as preview FROM agent_memory ORDER BY updated_at DESC LIMIT 50';
-  }else if(preset==='relations'){
-    sel.value='agent_state';
-    input.value='SELECT source_entity, relation, target_entity, weight, updated_at FROM agent_entity_relations ORDER BY weight DESC LIMIT 50';
-  }else if(preset==='cache'){
-    sel.value='cache';
-    input.value='SELECT key, created_at, expires_at FROM cache_entries ORDER BY created_at DESC LIMIT 50';
-  }
-}
-
-async function runDbQuery(){
-  const db=$('dbSelect')?.value||'agent_state';
-  const query=$('dbQueryInput')?.value?.trim();
-  const status=$('dbQueryStatus');
-  const thead=$('dbResultsHead');
-  const tbody=$('dbResultsBody');
-  if(!query){if(status)status.textContent='Please enter a query';return;}
-  if(status)status.innerHTML='<span class="muted">Running query…</span>';
-  try{
-    const res=await post('/api/db/query',{database:db,query:query});
-    if(!res.success){
-      if(status)status.innerHTML=`<span class="bad-t">Error: ${esc(res.error||'Query failed')}</span>`;
-      return;
-    }
-    const cols=res.columns||[];
-    const rows=res.rows||[];
-    if(status)status.innerHTML=`<span class="ok">✓ Returned ${rows.length} row(s) in ${res.duration_ms||0} ms ${res.truncated?'(truncated at 200 rows)':''}</span>`;
-    if(!cols.length){
-      if(thead)thead.innerHTML='';
-      if(tbody)tbody.innerHTML='<tr><td class="muted" style="padding:10px">Query returned no columns.</td></tr>';
-      return;
-    }
-    if(thead)thead.innerHTML='<tr>'+cols.map(c=>`<th>${esc(c)}</th>`).join('')+'</tr>';
-    if(tbody){
-      tbody.innerHTML=rows.map(r=>{
-        return '<tr>'+cols.map(c=>{
-          const v=Array.isArray(r)?r[cols.indexOf(c)]:r[c];
-          return `<td class="tiny mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(v)}">${esc(v===null?'NULL':(typeof v==='object'?JSON.stringify(v):v))}</td>`;
-        }).join('')+'</tr>';
-      }).join('');
-    }
-  }catch(err){
-    if(status)status.innerHTML=`<span class="bad-t">Error: ${esc(String(err))}</span>`;
-  }
-}
-
 async function loadRagWorkspaces(){
   try{
     const r=await apiFetch('/api/rag/workspaces',{cache:'no-store'}),d=await r.json();
     const wss=d.workspaces||[];
     const list=$('ragWorkspacesList');
-    const sel=$('ragSearchWsSelect');
     if(list){
-      list.innerHTML=wss.length?wss.map(w=>`<div style="margin-bottom:4px"><span class="chip">📚 <b>${esc(w.workspace||w.id||w)}</b></span> <span class="tiny muted">${n(w.document_count||w.count||0)} chunks</span></div>`).join(''):'<span class="muted">No RAG workspaces registered</span>';
-    }
-    if(sel){
-      const current=sel.value;
-      sel.innerHTML='<option value="">Select workspace…</option>'+wss.map(w=>{const wid=w.workspace||w.id||w;return `<option value="${esc(wid)}">${esc(wid)}</option>`}).join('');
-      if(current)sel.value=current;
+      list.innerHTML=wss.length?wss.map(w=>`<div style="margin-bottom:4px"><span class="chip">📚 <b>${esc(w.workspace||w.id||w)}</b></span> <span class="tiny muted">${n(w.chunks??w.document_count??w.count??0)} chunks</span></div>`).join(''):'<span class="muted">No RAG workspaces registered</span>';
     }
   }catch(e){if($('ragWorkspacesList'))$('ragWorkspacesList').textContent='Failed to load workspaces'}
 }
@@ -4377,29 +3383,10 @@ document.addEventListener('click',async e=>{
   }catch(err){alert('Release lease error: '+err)}
 });
 
-$('ragSearchBtn')?.addEventListener('click',async()=>{
-  const q=$('ragSearchInput')?.value?.trim();
-  const ws=$('ragSearchWsSelect')?.value?.trim();
-  if(!q||!ws){alert('Enter query and select workspace');return;}
-  $('ragSearchBtn').disabled=true;$('ragSearchBtn').textContent='Searching…';
-  try{
-    const res=await post('/api/rag/search',{workspace:ws,query:q,top_k:6});
-    const results=res.results||[];
-    const out=$('ragSearchResults');
-    out.style.display='block';
-    if(results.length){
-      out.innerHTML=`<h3 style="font-size:12px;margin:0 0 8px">Top ${results.length} Matches in ${esc(ws)}</h3>`+
-        results.map((r,i)=>`<div style="margin-bottom:8px;padding:8px;background:#0d1219;border:1px solid #273546;border-radius:6px"><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="chip mono"><b>${esc(r.file_path||r.path||'unknown')}</b></span><span class="chip ok">Score: ${r.score!==undefined?Number(r.score).toFixed(3):'—'}</span></div><pre style="margin:0;font-size:11px;color:#d7e2ef;max-height:160px;overflow:auto">${esc(r.content||r.text||'')}</pre></div>`).join('');
-    }else{
-      out.innerHTML='<div class="muted">No matches found for query.</div>';
-    }
-  }catch(err){alert('RAG search error: '+err)}
-  finally{$('ragSearchBtn').disabled=false;$('ragSearchBtn').textContent='Semantic Search'}
-});
 // ── Git Worktrees Manager ──────────────────────────────────────────────────
 async function loadWorktrees(){
   try{
-    const root=$('cmdRoot')?.value?.trim()||'.';
+    const root=$('worktreeRoot')?.value?.trim()||'.';
     const r=await apiFetch('/api/coord/worktrees?root='+encodeURIComponent(root),{cache:'no-store'});
     const d=await r.json();
     const wts=d.worktrees||[];
@@ -4422,7 +3409,7 @@ async function loadWorktrees(){
 $('refreshWorktreesBtn')?.addEventListener('click',loadWorktrees);
 $('pruneWorktreesBtn')?.addEventListener('click',async()=>{
   if(!confirm('Prune stale Git worktrees?'))return;
-  const root=$('cmdRoot')?.value?.trim()||'.';
+  const root=$('worktreeRoot')?.value?.trim()||'.';
   try{
     await post('/api/coord/worktree_prune',{root});
     await loadWorktrees();
@@ -4435,7 +3422,7 @@ document.addEventListener('click',async e=>{
   const wtPath=btn.dataset.releaseWorktree;
   if(!wtPath)return;
   if(!confirm(`Remove worktree ${wtPath}?`))return;
-  const root=$('cmdRoot')?.value?.trim()||'.';
+  const root=$('worktreeRoot')?.value?.trim()||'.';
   try{
     await post('/api/coord/worktree_release',{root,worktree_path:wtPath});
     await loadWorktrees();
@@ -4457,7 +3444,7 @@ $('arenaRunBtn')?.addEventListener('click',async()=>{
     try{
       const res=await post('/api/delegate',{task:prompt,complexity});
       const lat=Math.round(performance.now()-t0);
-      const model=res.route?.model||res.model||(complexity==='auto'?'qwen2.5-coder:3b':'qwen2.5-coder:7b');
+      const model=res.route?.model||res.model||(complexity==='auto'?'qwen2.5-coder:1.5b':'qwen2.5-coder:3b');
       const gen=res.eval_count||res.tokens_generated||0;
       const tps=res.eval_duration?Math.round((gen/(res.eval_duration/1e9))*10)/10:(lat>0&&gen>0?Math.round((gen/(lat/1000))*10)/10:'—');
       if(labelEl)labelEl.textContent=`${complexity==='auto'?'Fast Tier':'Smart Tier'} (${model})`;
@@ -4572,9 +3559,7 @@ window.addEventListener('keydown',e=>{
   if(e.key==='2')switchTab('work');
   if(e.key==='3')switchTab('agentos');
   if(e.key==='4')switchTab('projects');
-  if(e.key==='5')switchTab('explorer');
   if(e.key==='6')switchTab('commands');
-  if(e.key==='7')switchTab('architecture');
   if(e.key==='8')switchTab('performance');
   if(e.key==='9')switchTab('reliability');
   if(e.key==='0')switchTab('config');

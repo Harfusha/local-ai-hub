@@ -1,6 +1,6 @@
 interface:
   display_name: "Local AI Orchestrator"
-  short_description: "Local-first cached evidence routing, validation and review"
-  default_prompt: "Use $local-ai-orchestrator. For each non-trivial repo task, fire-and-forget preprocess once for the stable absolute root, then apply the mandatory cheapest-first hub gate before broad reads/searches. Route repeatable validation through local_ai_command, reuse fresh evidence/artifacts/caches, coordinate overlapping edits, and never poll preprocessing or retry with force/refresh. Native broad exploration is fallback-only after one bounded hub retry."
+  short_description: "Local-first routing with durable Agent OS task workflows when enabled"
+  default_prompt: "Use $local-ai-orchestrator. For each non-trivial repo task, fire-and-forget preprocess once for the stable absolute root, then apply the mandatory cheapest-first hub gate before broad reads/searches. When Agent OS is enabled, create a local_ai_coord task contract for non-trivial multi-step, long-running, delegated, or acceptance-criteria work; checkpoint progress, compile context when needed, and gate completion on receipts. Route repeatable validation through local_ai_command; use enabled task specializations for image/audio, benchmarks, evaluations, candidates and async jobs, and RAG docset/document ingestion when those requests arise. Reuse fresh evidence/artifacts/caches, coordinate overlapping edits, and never poll preprocessing or retry with force/refresh. Native broad exploration is fallback-only after one bounded hub retry."
 policy:
   allow_implicit_invocation: true
