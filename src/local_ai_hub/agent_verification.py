@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import threading
 import time
 import uuid
 from contextlib import closing
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Mapping
 
 from .agent_events import AgentEvent, AgentStateStore

@@ -17,7 +17,6 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from local_ai_hub.config import load_config as load_hub_config  # noqa: E402
-from local_ai_hub.features import FeatureSet  # noqa: E402
 from local_ai_hub.generator import generate_global_policy, generate_token_economy_policy, write_all_generated  # noqa: E402
 
 MARKER_BEGIN = "# BEGIN LOCAL AI HUB MANAGED"
@@ -51,6 +50,8 @@ def log(message: str) -> None:
 
 
 def run(cmd: list[str], *, check: bool = True, timeout: int | None = 120, capture: bool = False) -> subprocess.CompletedProcess[str]:
+    # Windows CreateProcess does not resolve PATHEXT (notably npm.cmd).
+    cmd = [shutil.which(str(cmd[0])) or str(cmd[0]), *cmd[1:]]
     log("$ " + " ".join(f'\"{x}\"' if " " in str(x) else str(x) for x in cmd))
     return subprocess.run(
         [str(x) for x in cmd], text=True, check=check, timeout=timeout,
@@ -600,6 +601,9 @@ def main() -> int:
         cfg.setdefault("features", {})["pull_models_during_setup"] = False
     hub_python = ensure_venv(install_dir / ".venv")
     install_requirements(hub_python, install_dir / "requirements-core.txt")
+    # Register the package and console entry points inside the managed runtime.
+    # Otherwise the global CLI wrappers only work with an explicit PYTHONPATH.
+    run([str(hub_python), "-m", "pip", "install", "--disable-pip-version-check", "--no-deps", "-e", str(install_dir)], timeout=300)
     if not args.skip_token_economy:
         install_token_economy_suite(install_dir, hub_python, allow_external_tools=True)
 

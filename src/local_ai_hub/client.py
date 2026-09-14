@@ -5,7 +5,6 @@ import http.client
 import io
 import json
 import os
-import socket
 import threading
 import uuid
 import subprocess

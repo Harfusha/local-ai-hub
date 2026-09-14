@@ -3,6 +3,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import subprocess
+import os
+import pytest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -10,6 +13,31 @@ SPEC = importlib.util.spec_from_file_location("local_ai_hub_setup", ROOT / "tool
 assert SPEC and SPEC.loader
 setup = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(setup)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows batch executable lookup')
+def test_run_resolves_windows_batch_executables(tmp_path, monkeypatch):
+    script = tmp_path / 'hub-test-command.cmd'
+    script.write_text('@echo off\necho batch-ok\n')
+    monkeypatch.setenv('PATH', str(tmp_path) + os.pathsep + os.environ['PATH'])
+    result = setup.run(['hub-test-command'], capture=True)
+    assert result.stdout.strip() == 'batch-ok'
+
+
+def test_token_economy_launchers_execute_python(tmp_path):
+    scripts = tmp_path / '.venv' / ('Scripts' if setup.os.name == 'nt' else 'bin')
+    scripts.mkdir(parents=True)
+    setup.install_token_economy_suite(tmp_path, Path(sys.executable), allow_external_tools=False)
+    for tool in ('tokcount', 'trim-run', 'repo-map'):
+        launcher = scripts / (tool + '.cmd' if setup.os.name == 'nt' else tool)
+        assert len(launcher.read_text().splitlines()) == 2
+        if setup.os.name != 'nt':
+            assert launcher.stat().st_mode & 0o111
+        args = [sys.executable, '-c', 'print(12345)'] if tool == 'trim-run' else ['--help']
+        cp = subprocess.run([str(launcher), *args], capture_output=True, text=True, timeout=15)
+        assert cp.returncode == 0, cp.stderr
+        assert ('12345' if tool == 'trim-run' else 'usage:') in cp.stdout.lower()
+
 
 
 def test_compact_agent_config_is_default(tmp_path: Path):

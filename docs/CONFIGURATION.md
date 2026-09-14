@@ -107,3 +107,23 @@ python tools/hubctl.py generate
 python tools/setup.py --generate-only
 ```
 
+### Verifying generation on shared-memory Windows GPUs
+
+Check a short, known-answer prompt after installation. An HTTP success response
+does not establish that the generated text is correct. If an integrated-GPU
+configuration produces garbled or repetitive text, compare it with this
+conservative CPU configuration in the installed `config.toml`:
+
+```toml
+[ollama]
+enable_vulkan = false
+allow_integrated_gpu = false
+flash_attention = false
+kv_cache_type = "f16"
+```
+
+Remove or disable inherited `OLLAMA_VULKAN` / `OLLAMA_IGPU_ENABLE` overrides,
+then restart the managed service (`python tools/service.py restart`). Verify
+the actual answer again. This is a compatibility fallback, not a claim that
+every AMD or Intel adapter requires CPU inference. Keep the model downloads;
+switching execution backends does not require downloading them again.

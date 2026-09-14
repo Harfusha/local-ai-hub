@@ -400,7 +400,6 @@ class AgentProjector:
             group.sort(key=lambda x: (int(x.get("start_line", 0)), int(x.get("end_line", 0))))
             curr = dict(group[0])
             for next_item in group[1:]:
-                curr_start = int(curr.get("start_line", 0))
                 curr_end = int(curr.get("end_line", 0))
                 next_start = int(next_item.get("start_line", 0))
                 next_end = int(next_item.get("end_line", 0))

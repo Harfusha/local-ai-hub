@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import re
@@ -34,7 +33,9 @@ def runtime_module_available(module: str) -> bool:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=8,
+            # A cold SentenceTransformers/Torch import on Windows can exceed
+            # eight seconds even when the installed backend is healthy.
+            timeout=30,
             check=False,
             **hidden_run_kwargs(),
         )

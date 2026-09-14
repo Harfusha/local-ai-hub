@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import signal
 import ntpath
 import shlex
 import shutil
@@ -16,7 +15,6 @@ from pathlib import Path
 from typing import Any
 
 from .cache import SQLiteCache, TieredCache, stable_hash
-from .repo_state import RepoStateTracker
 from .process_utils import assign_process_to_job, canonical_root, create_job_object_kill_on_close, hidden_run_kwargs, terminate_tree
 from .state_paths import configured_state_dir
 
@@ -101,8 +99,6 @@ def _is_interactive_prompt(text: str) -> bool:
 
 class CommandBroker:
     """Safe shared command runner with repo-state-aware cache and single-flight."""
-
-    _is_interactive_prompt = staticmethod(_is_interactive_prompt)
 
     READ_ONLY = {
         "git", "rg", "ripgrep", "grep", "findstr", "where", "which",

@@ -4,7 +4,6 @@ import base64
 import hashlib
 import json
 import os
-import queue
 import re
 import sqlite3
 import subprocess

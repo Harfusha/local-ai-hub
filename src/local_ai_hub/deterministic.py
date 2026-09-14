@@ -20,7 +20,7 @@ from typing import Any
 
 from . import __version__
 from .cache import MemoryLRUCache, SQLiteCache, stable_hash
-from .normalizer import normalize_query, tokenize_query_terms
+from .normalizer import tokenize_query_terms
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
 from .process_utils import canonical_root, hidden_run_kwargs
 from .state_paths import configured_state_dir
@@ -3853,7 +3853,6 @@ class DeterministicEngine:
         seen_symbols = set()
         for item in modified_targets:
             sym = item.get("symbol")
-            f_rel = item.get("file")
             if not sym or sym in seen_symbols:
                 continue
             seen_symbols.add(sym)
@@ -4089,108 +4088,6 @@ def test_{sym}_regression_edge_cases():
             "receipts": receipt_list,
         }
 
-    def ast_outline(self, root: str, path: str) -> dict[str, Any]:
-        """Generate a dense, high-efficiency AST outline of a source file, saving up to 90% tokens."""
-        resolved_root = Path(self._root(root))
-        target = (resolved_root / path).resolve()
-        try:
-            target.relative_to(resolved_root)
-        except ValueError:
-            return {"success": False, "error": "file is outside project root"}
-
-        if not target.is_file():
-            return {"success": False, "error": f"file not found: {path}"}
-
-        try:
-            text = target.read_text(encoding="utf-8", errors="replace")
-        except Exception as exc:
-            return {"success": False, "error": str(exc)}
-
-        ext = target.suffix.lower()
-        symbols: list[dict[str, Any]] = []
-        raw_tokens = max(1, len(text) // 4)
-
-        if ext == ".py":
-            try:
-                tree = ast.parse(text)
-                for node in tree.body:
-                    if isinstance(node, ast.ClassDef):
-                        bases = [ast.unparse(b) for b in node.bases]
-                        methods: list[dict[str, Any]] = []
-                        doc = ast.get_docstring(node) or ""
-                        doc_summary = doc.strip().splitlines()[0] if doc.strip() else ""
-                        for item in node.body:
-                            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                                m_doc = ast.get_docstring(item) or ""
-                                m_doc_summary = m_doc.strip().splitlines()[0] if m_doc.strip() else ""
-                                args_str = ", ".join(a.arg for a in item.args.args)
-                                ret = ast.unparse(item.returns) if item.returns else ""
-                                methods.append({
-                                    "name": item.name,
-                                    "line": item.lineno,
-                                    "is_async": isinstance(item, ast.AsyncFunctionDef),
-                                    "signature": f"({args_str})" + (f" -> {ret}" if ret else ""),
-                                    "doc": m_doc_summary[:120],
-                                })
-                        symbols.append({
-                            "kind": "class",
-                            "name": node.name,
-                            "line": node.lineno,
-                            "bases": bases,
-                            "doc": doc_summary[:160],
-                            "methods": methods,
-                        })
-                    elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        f_doc = ast.get_docstring(node) or ""
-                        f_doc_summary = f_doc.strip().splitlines()[0] if f_doc.strip() else ""
-                        args_str = ", ".join(a.arg for a in node.args.args)
-                        ret = ast.unparse(node.returns) if node.returns else ""
-                        symbols.append({
-                            "kind": "function",
-                            "name": node.name,
-                            "line": node.lineno,
-                            "is_async": isinstance(node, ast.AsyncFunctionDef),
-                            "signature": f"({args_str})" + (f" -> {ret}" if ret else ""),
-                            "doc": f_doc_summary[:160],
-                        })
-                    elif isinstance(node, ast.Assign):
-                        for t in node.targets:
-                            if isinstance(t, ast.Name) and (t.id.isupper() or t.id.startswith("_")):
-                                symbols.append({
-                                    "kind": "constant",
-                                    "name": t.id,
-                                    "line": node.lineno,
-                                })
-            except Exception:
-                pass
-        else:
-            # Universal regex outline for C#, TypeScript, Java, Rust, Go
-            import re
-            lines = text.splitlines()
-            class_re = re.compile(r"^\s*(?:public|private|protected|internal|export|abstract|sealed)?\s*(?:class|interface|struct|enum|trait)\s+([A-Za-z0-9_]+)", re.M)
-            func_re = re.compile(r"^\s*(?:public|private|protected|internal|export|async|fn|func|def)?\s*(?:[A-Za-z0-9_<>[\]?]+\s+)?([A-Za-z0-9_]+)\s*\((.*?)\)(?:\s*:\s*[A-Za-z0-9_<>[\]?]+)?\s*[{;]", re.M)
-            for i, line in enumerate(lines, 1):
-                cm = class_re.match(line)
-                if cm:
-                    symbols.append({"kind": "class", "name": cm.group(1), "line": i, "raw": line.strip()[:100]})
-                    continue
-                fm = func_re.match(line)
-                if fm and not any(k in fm.group(1) for k in ("if", "for", "while", "switch", "catch")):
-                    symbols.append({"kind": "function", "name": fm.group(1), "line": i, "signature": f"({fm.group(2).strip()[:60]})"})
-
-        outline_text = json.dumps(symbols, indent=2)
-        outline_tokens = max(1, len(outline_text) // 4)
-        savings = round(max(0.0, (raw_tokens - outline_tokens) / raw_tokens) * 100, 1)
-
-        return {
-            "success": True,
-            "path": path,
-            "symbols_count": len(symbols),
-            "symbols": symbols,
-            "raw_tokens": raw_tokens,
-            "outline_tokens": outline_tokens,
-            "token_savings_pct": savings,
-        }
 
     def test_matrix(self, root: str) -> dict[str, Any]:
         """Discover test frameworks, test files, and test mappings in the repository."""
@@ -4577,7 +4474,7 @@ def test_{sym}_regression_edge_cases():
                     "@pytest.fixture",
                     f"def mock_{symbol}():",
                     f"    with unittest.mock.patch('{target_path.stem}.{symbol}') as m:",
-                    f"        yield m",
+                    "        yield m",
                 ]
                 return {
                     "success": True,
@@ -5194,10 +5091,13 @@ def test_{sym}_regression_edge_cases():
 
     def ast_outline(self, root: str, path: str) -> dict[str, Any]:
         """Generate a token-compact structural interface outline collapsing function/method bodies."""
-        p_root = Path(self._root(root))
+        p_root = Path(self._root(root)).resolve()
         target = Path(path)
         if not target.is_absolute():
             target = p_root / target
+        target = target.resolve()
+        if not target.is_relative_to(p_root):
+            return {"success": False, "error": "file is outside project root"}
         if not target.is_file():
             return {"success": False, "error": f"file not found: {path}"}
 
@@ -5501,7 +5401,7 @@ def test_{sym}_regression_edge_cases():
                     break
 
         if not target_db or not target_db.is_file():
-            return {"success": False, "error": f"no SQLite database found for query explain"}
+            return {"success": False, "error": "no SQLite database found for query explain"}
 
         if not query or not query.strip():
             return {"success": False, "error": "query cannot be empty"}
@@ -6999,4 +6899,3 @@ def test_{sym}_regression_edge_cases():
             "savings_ratio": max(0.0, ratio),
             "skeleton_code": skeleton,
         }
-

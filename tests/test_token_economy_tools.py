@@ -4,6 +4,8 @@ import io
 import json
 import os
 import sys
+import runpy
+from unittest.mock import Mock
 from pathlib import Path
 
 import pytest
@@ -22,6 +24,13 @@ from local_ai_hub.generator import (
     TOKEN_ECONOMIZER_SKILL_MD,
 )
 from tools.clean import clean
+
+
+def test_importing_cli_does_not_fetch_tokenizer(monkeypatch):
+    tokenizer = Mock()
+    monkeypatch.setitem(sys.modules, 'tiktoken', tokenizer)
+    runpy.run_path(str(Path(__file__).parents[1] / 'src' / 'local_ai_hub' / 'token_economy.py'))
+    tokenizer.get_encoding.assert_not_called()
 
 
 def test_strip_ansi():

@@ -4,7 +4,6 @@ import argparse
 import os
 import plistlib
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -154,6 +153,24 @@ def native_start() -> None:
     spawn_detached()
 
 
+def set_windows_user_startup(enabled: bool) -> bool:
+    """Keep logon startup available when Task Scheduler requires elevation."""
+    try:
+        import winreg
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run") as key:
+            if enabled:
+                command = f'"{PYWIN}" "{ROOT / "tools" / "service_entry.py"}"'
+                winreg.SetValueEx(key, "LocalAIHubSupervisor", 0, winreg.REG_SZ, command)
+            else:
+                try:
+                    winreg.DeleteValue(key, "LocalAIHubSupervisor")
+                except FileNotFoundError:
+                    pass
+        return True
+    except (ImportError, OSError):
+        return False
+
+
 def install_windows() -> str:
     # Run one persistent supervisor at logon. Task Scheduler restarts the supervisor
     # after a crash; it does not launch a second singleton every minute.
@@ -171,6 +188,7 @@ def install_windows() -> str:
         ])
         cp = run([powershell, "-NoProfile", "-NonInteractive", "-Command", script])
         if cp.returncode == 0:
+            set_windows_user_startup(False)
             run(["schtasks", "/Run", "/TN", task])
             return "windows-logon-task"
     command = f'"{PYWIN}" "{script_path}"'
@@ -179,9 +197,14 @@ def install_windows() -> str:
         # Task registration can be denied by a policy while an older managed task
         # is already running. Do not turn that recoverable control-plane failure
         # into a second detached supervisor competing for the same hub port.
+        if set_windows_user_startup(True):
+            if not managed_service_running():
+                spawn_detached()
+            return "windows-user-startup"
         if managed_service_running():
             return "existing-service"
         spawn_detached(); return "detached-fallback"
+    set_windows_user_startup(False)
     run(["schtasks", "/Run", "/TN", task])
     return "windows-logon-task"
 
@@ -244,6 +267,7 @@ def uninstall() -> None:
     mark_disabled(True)
     kill_supervisor()
     if os.name == "nt":
+        set_windows_user_startup(False)
         run(["schtasks", "/Delete", "/TN", "LocalAIHubSupervisor", "/F"])
     elif sys.platform == "darwin":
         dest = Path.home() / "Library/LaunchAgents/com.localai.hub.plist"

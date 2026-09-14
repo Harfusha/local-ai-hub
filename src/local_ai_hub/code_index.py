@@ -13,7 +13,7 @@ from typing import Any
 
 from . import __version__
 from .cache import MemoryLRUCache, stable_hash
-from .normalizer import normalize_query, tokenize_query_terms
+from .normalizer import tokenize_query_terms
 from .process_utils import canonical_root
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
 
@@ -298,7 +298,6 @@ class CodeIndex:
         edges: list[dict[str, Any]] = []
 
         lines = text.splitlines()
-        total_lines = len(lines)
         brace_pairs, next_open = self._brace_metadata(lines)
 
         class_re = re.compile(
@@ -314,16 +313,11 @@ class CodeIndex:
             re.M,
         )
         using_re = re.compile(r"^\s*using\s+(?:static\s+)?([A-Za-z0-9_.]+);")
-        namespace_re = re.compile(r"^\s*namespace\s+([A-Za-z0-9_.]+)")
 
-        curr_namespace = ""
         container_stack: list[tuple[str, str, int, int]] = []
         overloads: dict[str, int] = {}
 
         for i, line in enumerate(lines, 1):
-            nm = namespace_re.match(line)
-            if nm:
-                curr_namespace = nm.group(1)
             um = using_re.match(line)
             if um:
                 edges.append({"src": "<module>", "dst": um.group(1), "kind": "imports", "line": i})
@@ -433,7 +427,6 @@ class CodeIndex:
         refs: list[dict[str, Any]] = []
         edges: list[dict[str, Any]] = []
         lines = text.splitlines()
-        total_lines = len(lines)
         brace_pairs, next_open = self._brace_metadata(lines)
 
         ns_pattern = re.compile(r"^\s*namespace\s+([A-Za-z0-9_\\]+)")

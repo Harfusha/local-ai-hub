@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import os
 import types
 from pathlib import Path
 
@@ -12,6 +13,20 @@ from local_ai_hub.embeddings import EmbeddingModel
 from local_ai_hub.hardware import _is_integrated_gpu, choose_profile, profile_overrides
 from local_ai_hub.ollama import OllamaRuntime
 from local_ai_hub.reranker import Reranker
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows Job Object API')
+def test_sandbox_job_enforces_memory_limit():
+    import win32job
+    from local_ai_hub.process_utils import create_sandboxed_job_object, close_job_object
+    job = create_sandboxed_job_object(memory_limit_mb=512)
+    assert job
+    try:
+        info = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
+        assert info['JobMemoryLimit'] == 512 * 1024 * 1024
+        assert info['BasicLimitInformation']['LimitFlags'] & win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    finally:
+        close_job_object(job)
 
 
 def _integrated_hw() -> dict:
@@ -57,6 +72,18 @@ def test_windows_npu_probe_does_not_match_usb_input_device(monkeypatch: pytest.M
 
     npus = hardware._windows_npus()
     assert [item["name"] for item in npus] == ["Intel(R) AI Boost"]
+
+
+@pytest.mark.parametrize('name', ['AMD Radeon (TM) Graphics', 'AMD Radeon(TM) Graphics', 'AMD Radeon Graphics', 'AMD Radeon 740M'])
+def test_amd_shared_memory_names_use_integrated_profile(name):
+    integrated = _is_integrated_gpu('amd', name, 2048)
+    assert integrated
+    assert choose_profile([{'vendor': 'amd', 'integrated': integrated, 'vram_mb': 2048}], 32) == 'integrated'
+
+
+@pytest.mark.parametrize('name', ['AMD Radeon RX 7600', 'AMD Radeon Pro W7800', 'AMD Radeon R9 390'])
+def test_amd_discrete_names_remain_discrete(name):
+    assert not _is_integrated_gpu('amd', name, 8192)
 
 
 def test_integrated_profile_is_conservative_and_accelerates_retrieval() -> None:

@@ -277,7 +277,7 @@ class FeatureSet:
         if self.commands:
             parts.append("`local_ai_command` for bounded repeatable commands")
         if self.tasks and self.has_any_model():
-            parts.append(f"`local_ai_task` for small local-model work and second opinions")
+            parts.append("`local_ai_task` for small local-model work and second opinions")
         if self.work_orchestrator:
             parts.append("`local_ai_work` for a complete bounded repository task with planning, edits, validation and handoff")
         if self.rag:
@@ -298,4 +298,3 @@ class FeatureSet:
     def from_config(cls, cfg: dict[str, Any]) -> "FeatureSet":
         """Construct from a merged hub config dict."""
         return cls(cfg)
-

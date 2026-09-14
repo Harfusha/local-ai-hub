@@ -7,7 +7,7 @@ import sqlite3
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, nullcontext
 from pathlib import Path
 from typing import Any
@@ -1479,7 +1479,7 @@ class ProjectPreprocessor:
                     self._gpu_wakeup.set()
                 else:
                     self._stop.wait(min(0.5, poll))
-            except Exception as exc:
+            except Exception:
                 with self._stats_lock:
                     self._stats["errors"] += 1
                 self._stop.wait(1.0)
@@ -2665,10 +2665,8 @@ class ProjectPreprocessor:
                 for t in pending_tasks
             ]
 
-        preempted = False
         for (item, card_key), generated in zip(pending_meta, results):
             if generated.get("preempted"):
-                preempted = True
                 continue
             if not generated.get("success"):
                 fallback_data = {"purpose": f"generation error: {str(generated.get('error', ''))[:200]}", "symbols": [], "dependencies": [], "side_effects": [], "risks": [], "tests": [], "keywords": []}
@@ -2930,7 +2928,7 @@ class ProjectPreprocessor:
 
     def _step_complete(self, row: dict[str, Any]) -> bool:
         root = str(row["root"])
-        interval = max(30, int(self.cfg.get("auto_recheck_seconds", 1800)))
+        max(30, int(self.cfg.get("auto_recheck_seconds", 1800)))
         now = time.time()
         # Derived SQLite stores are maintained only while idle and at a coarse
         # interval. This keeps WAL files/query plans healthy without adding latency
