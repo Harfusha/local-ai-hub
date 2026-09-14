@@ -62,7 +62,7 @@ class OllamaSubagentCatalog:
             raw = {}
         models = self.config.get("models", {})
         models = models if isinstance(models, dict) else {}
-        default_model = str(models.get("fast_code", "qwen2.5-coder:7b"))
+        default_model = str(models.get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
         requested_model = str(raw.get("model", default_model))
         model = requested_model
         model_fallback = False
@@ -80,7 +80,7 @@ class OllamaSubagentCatalog:
             max_steps=max(1, min(int(raw.get("max_steps", 3)), 8)),
             max_tool_calls=max(1, min(int(raw.get("max_tool_calls", 6)), 16)),
             max_tokens=max(64, min(int(raw.get("max_tokens", 800)), 2400)),
-            temperature=max(0.0, min(float(raw.get("temperature", 0.05)), 1.0)),
+            temperature=max(0.2, min(float(raw.get("temperature", 0.2)), 1.0)),
             model_fallback=model_fallback,
         )
 

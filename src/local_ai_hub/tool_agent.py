@@ -439,7 +439,7 @@ class ToolAwareLocalAgent:
             call_count = 0
             max_steps = profile.max_steps if profile else self.max_steps
             max_calls = profile.max_tool_calls if profile else self.max_calls
-            temperature = profile.temperature if profile else 0.05
+            temperature = profile.temperature if profile else 0.2
 
             for step in range(1 if direct else max_steps):
                 payload: dict[str, Any] = {
@@ -460,9 +460,10 @@ class ToolAwareLocalAgent:
                     response = self.services.runtime.request_stream("/api/chat", request_payload, trace_observer.output_delta)
                 else:
                     response = self.services.runtime.request("/api/chat", request_payload)
-                if "error" in response:
+                if "error" in response or response.get("_lah_repetition_loop_detected"):
                     self.failures += 1
-                    return {"success": False, "unsupported": "tool" in str(response.get("error", "")).lower(), "error": response["error"], "model": model}
+                    error = str(response.get("error") or "model output repetition loop detected")
+                    return {"success": False, "unsupported": "tool" in error.lower(), "error": error, "model": model, "_lah_repetition_loop_detected": bool(response.get("_lah_repetition_loop_detected"))}
                 message = response.get("message", {}) if isinstance(response.get("message"), dict) else {}
                 calls = message.get("tool_calls", []) if isinstance(message, dict) else []
                 if direct or not isinstance(calls, list) or not calls:

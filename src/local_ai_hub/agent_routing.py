@@ -72,7 +72,7 @@ class RoutingEngine:
     def __init__(self, cfg: dict[str, Any] | None = None, state_store: Any | None = None) -> None:
         self.state_store = state_store
         self._fast_model: str = (
-            (cfg or {}).get("models", {}).get("fast_code", "qwen2.5-coder:7b")
+            (cfg or {}).get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M")
         )
         self._known_flakes: set[str] = set()
         self._observations: list[ToolObservation] = []

@@ -88,9 +88,9 @@ def test_amd_discrete_names_remain_discrete(name):
 
 def test_integrated_profile_is_conservative_and_accelerates_retrieval() -> None:
     cfg = profile_overrides("integrated", _integrated_hw())
-    assert cfg["models"]["background_code"] == "qwen2.5-coder:0.5b"
-    assert cfg["models"]["fast_code"] == "qwen2.5-coder:1.5b"
-    assert cfg["models"]["heavy_code"] == "qwen2.5-coder:3b"
+    assert cfg["models"]["background_code"] == "qwen2.5-coder:1.5b-instruct-q5_K_M"
+    assert cfg["models"]["fast_code"] == "qwen2.5-coder:3b-instruct-q5_K_M"
+    assert cfg["models"]["heavy_code"] == "qwen2.5-coder:7b-instruct-q5_K_M"
     assert cfg["scheduler"]["max_parallel"] == 1
     assert cfg["scheduler"]["max_loaded_models"] == 1
     assert cfg["background_gpu"]["enabled"] is False

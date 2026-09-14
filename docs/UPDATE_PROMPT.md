@@ -2,6 +2,8 @@
 
 Use this prompt with any AI coding agent (Claude Code, Codex, Cursor, Windsurf, Gemini, Roo, GitHub Copilot) in any repository to update an existing Local AI Hub installation to the latest release, upgrade dependencies, restart services, and refresh the repository's instruction policies.
 
+Preserve model routing defaults when refreshing repository instructions: use qwen2.5-coder:1.5b-instruct-q5_K_M only for preprocessing, qwen2.5-coder:3b-instruct-q5_K_M by default, and qwen2.5-coder:7b-instruct-q5_K_M for complex or high-risk work.
+
 ---
 
 ```markdown
