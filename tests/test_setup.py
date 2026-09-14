@@ -24,10 +24,13 @@ def test_run_resolves_windows_batch_executables(tmp_path, monkeypatch):
     assert result.stdout.strip() == 'batch-ok'
 
 
-def test_token_economy_launchers_execute_python(tmp_path):
+def test_token_economy_launchers_execute_python(tmp_path, monkeypatch):
     scripts = tmp_path / '.venv' / ('Scripts' if setup.os.name == 'nt' else 'bin')
     scripts.mkdir(parents=True)
+    registered = []
+    monkeypatch.setattr(setup, "persist_token_economy_path", registered.append)
     setup.install_token_economy_suite(tmp_path, Path(sys.executable), allow_external_tools=False)
+    assert registered == [scripts]
     for tool in ('tokcount', 'trim-run', 'repo-map'):
         launcher = scripts / (tool + '.cmd' if setup.os.name == 'nt' else tool)
         assert len(launcher.read_text().splitlines()) == 2
@@ -38,6 +41,29 @@ def test_token_economy_launchers_execute_python(tmp_path):
         assert cp.returncode == 0, cp.stderr
         assert ('12345' if tool == 'trim-run' else 'usage:') in cp.stdout.lower()
 
+
+
+def test_token_economy_path_is_persisted_idempotently(tmp_path: Path):
+    scripts = tmp_path / ".local-ai-hub" / ".venv" / "bin"
+    setup.persist_token_economy_path(scripts, home=tmp_path, windows=False, shell="bash")
+    setup.persist_token_economy_path(scripts, home=tmp_path, windows=False, shell="bash")
+
+    profile = (tmp_path / ".profile").read_text(encoding="utf-8")
+    assert profile.count("# BEGIN LOCAL AI HUB TOKEN TOOLS PATH") == 1
+    assert str(scripts) in profile
+
+
+def test_token_economy_path_merge_preserves_existing_entries(tmp_path: Path):
+    scripts = tmp_path / "bin"
+    existing = os.pathsep.join(["existing-tool-dir", str(scripts)])
+    assert setup._merge_path_entry(existing, scripts, windows=os.name == "nt") == existing
+
+
+def test_token_economy_path_merge_deduplicates_case_insensitively(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(setup.os, "pathsep", ":")
+    scripts = Path(r"C:\Users\Test\TokenTools")
+    existing = r"C:\Users\Test\tokentools;D:\Existing"
+    assert setup._merge_path_entry(existing, scripts, windows=True) == existing
 
 
 def test_compact_agent_config_is_default(tmp_path: Path):

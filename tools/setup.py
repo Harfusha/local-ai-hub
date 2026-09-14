@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -283,6 +284,7 @@ def install_token_economy_suite(install_dir: Path, hub_python: Path, *, allow_ex
                     sh_file.chmod(0o755)
                 except Exception:
                     pass
+        persist_token_economy_path(scripts_dir)
 
     if not allow_external_tools:
         return
@@ -339,6 +341,70 @@ def install_token_economy_suite(install_dir: Path, hub_python: Path, *, allow_ex
                 run(["sudo", "apt-get", "install", "-y", "jq"], check=False, timeout=300)
         except Exception as exc:
             log(f"Optional jq install skipped: {exc}")
+
+
+def _merge_path_entry(path_value: str, entry: Path, *, windows: bool) -> str:
+    """Append an entry to PATH without duplicates, preserving existing entries."""
+    separator = ";" if windows else os.pathsep
+    candidate = os.path.normcase(os.path.normpath(str(entry))).casefold() if windows else os.path.normpath(str(entry))
+    parts = [part.strip().strip('"') for part in path_value.split(separator) if part.strip()]
+    for part in parts:
+        current = os.path.normcase(os.path.normpath(os.path.expandvars(part))).casefold() if windows else os.path.normpath(part)
+        if current == candidate:
+            return path_value
+    return separator.join([*parts, str(entry)])
+
+
+def persist_token_economy_path(
+    scripts_dir: Path,
+    *,
+    home: Path | None = None,
+    windows: bool | None = None,
+    shell: str | None = None,
+) -> Path | None:
+    """Expose installed token-economy CLI wrappers to future user shells."""
+    scripts_dir = scripts_dir.expanduser().resolve()
+    home = (home or Path.home()).expanduser()
+    windows = os.name == "nt" if windows is None else windows
+    if windows:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_READ | winreg.KEY_WRITE) as key:
+            try:
+                current, value_type = winreg.QueryValueEx(key, "Path")
+            except FileNotFoundError:
+                current, value_type = "", winreg.REG_EXPAND_SZ
+            updated = _merge_path_entry(current, scripts_dir, windows=True)
+            if updated != current:
+                winreg.SetValueEx(key, "Path", 0, value_type, updated)
+                try:
+                    import ctypes
+
+                    ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Environment", 0x0002, 5000, None)
+                except Exception:
+                    pass
+        log(f"Token Economy CLI PATH registered for user: {scripts_dir} (open a new terminal)")
+        return None
+
+    shell_name = Path(shell or os.environ.get("SHELL", "")).name.lower()
+    if shell_name == "fish":
+        profile = home / ".config" / "fish" / "conf.d" / "local-ai-hub-token-tools.fish"
+        line = f"set -gx PATH {shlex.quote(str(scripts_dir))} $PATH"
+    else:
+        profile = home / (".zprofile" if shell_name == "zsh" else ".profile")
+        line = f"export PATH={shlex.quote(str(scripts_dir))}:$PATH"
+
+    begin = "# BEGIN LOCAL AI HUB TOKEN TOOLS PATH"
+    end = "# END LOCAL AI HUB TOKEN TOOLS PATH"
+    block = f"{begin}\n{line}\n{end}"
+    profile.parent.mkdir(parents=True, exist_ok=True)
+    current = profile.read_text(encoding="utf-8") if profile.exists() else ""
+    pattern = re.compile(re.escape(begin) + r".*?" + re.escape(end), re.DOTALL)
+    updated = pattern.sub(lambda _match: block, current) if pattern.search(current) else f"{current.rstrip()}\n\n{block}\n"
+    if updated != current:
+        profile.write_text(updated, encoding="utf-8")
+    log(f"Token Economy CLI PATH registered in {profile} (open a new terminal)")
+    return profile
 
 
 def build_mcp_entries(install_dir: Path, hub_python: Path, serena: Path | None, codegraph: Path | None, agent: str, cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:

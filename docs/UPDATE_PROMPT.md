@@ -88,6 +88,9 @@ Locate active agent instruction files in this repository (`AGENTS.md`, `CLAUDE.m
 - Replace or sync the `<!-- BEGIN LOCAL AI HUB TOOL POLICY -->` block with the latest policy from `~/.local-ai-hub/generated/agent-policy.md`.
 - Replace or sync the `<!-- BEGIN TOKEN ECONOMY POLICY -->` block with the latest policy from `~/.local-ai-hub/generated/token-economy-policy.md`.
 - If no instruction file exists, ensure `AGENTS.md` is created with both policy blocks.
+- Verify the default setup deploys the `token-economizer` skill and registers the token-tool CLI directory on the user's persistent PATH. Keep the generated policy trigger that requires agents to load this skill before every repository task.
+- Ensure the refreshed policy retains this trigger verbatim:
+  - Before any repository task, load and follow the `token-economizer` skill when it is installed; this trigger applies even under deadline pressure.
 
 ---
 

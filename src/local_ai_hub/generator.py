@@ -499,12 +499,12 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
 
 TOKEN_ECONOMIZER_SKILL_MD = """---
 name: token-economizer
-description: Enforce strict token and context efficiency. Prevents reading entire files, trims test/command outputs, delegates local microtasks, and leverages grep-ast, repo-map, trim-run, tokcount, repomix, ast-grep, Serena LSP, and Local AI Hub.
+description: Use when starting any coding or repository task involving source discovery, file reading, tests, command output, or code review.
 ---
 
 # Token Economizer
 
-Enforce context-saving practices across all operations to maximize token efficiency, prevent context degradation, and lower API costs.
+Load and follow this skill before any coding or repository task. Apply its discovery, reading, and output limits even when a task is urgent; use the token-economy tools whenever they are available.
 
 ## Available Token-Saving Tooling
 
@@ -589,6 +589,7 @@ def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
             pass
     return (
         "<!-- BEGIN TOKEN ECONOMY POLICY -->\n"
+        "- Before any repository task, load and follow the `token-economizer` skill when it is installed; this trigger applies even under deadline pressure.\n"
         "- Zero full-file dumping: Never read files >80 lines in their entirety. Use `repo-map` for high-level structure, `grep-ast <pattern> <file>`, targeted line slices, or `local_ai_artifact(action=\"slice\")`.\n"
         "- Fast code search: Use `rg` (`ripgrep`) with `-m 5` / bounded matches and `fd` for file finding before opening files.\n"
         "- AST & structural code search: Use `ast-grep` (`sg`), Serena LSP (`find_symbol`, `find_referencing_symbols`), or `local_ai_repo(action=\"code_index\")` before opening files.\n"

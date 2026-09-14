@@ -100,14 +100,22 @@ def test_token_economy_policy_generation():
     policy = generate_token_economy_policy()
     assert "<!-- BEGIN TOKEN ECONOMY POLICY -->" in policy
     assert "<!-- END TOKEN ECONOMY POLICY -->" in policy
+    trigger = next(line for line in policy.splitlines() if line.startswith("- Before any repository task"))
     assert "repo-map" in policy
     assert "trim-run" in policy
     assert "tokcount" in policy
     assert "ast-grep" in policy
+    install_prompt = (Path(__file__).resolve().parents[1] / "docs" / "INSTALL_PROMPT.md").read_text(encoding="utf-8")
+    update_prompt = (Path(__file__).resolve().parents[1] / "docs" / "UPDATE_PROMPT.md").read_text(encoding="utf-8")
+    agents_file = (Path(__file__).resolve().parents[1] / "AGENTS.md").read_text(encoding="utf-8")
+    assert all(trigger in instructions for instructions in (install_prompt, update_prompt, agents_file))
 
 
 def test_token_economizer_skill_md():
     assert "name: token-economizer" in TOKEN_ECONOMIZER_SKILL_MD
+    assert "Use when starting any coding or repository task" in TOKEN_ECONOMIZER_SKILL_MD
+    assert "Load and follow this skill before any coding or repository task" in TOKEN_ECONOMIZER_SKILL_MD
+    assert (Path(__file__).resolve().parents[1] / "skills" / "token-economizer" / "SKILL.md").read_text(encoding="utf-8").strip() == TOKEN_ECONOMIZER_SKILL_MD.strip()
     assert "Zero Full-File Dumping" in TOKEN_ECONOMIZER_SKILL_MD
     assert "trim-run" in TOKEN_ECONOMIZER_SKILL_MD
     assert "tokcount" in TOKEN_ECONOMIZER_SKILL_MD
