@@ -197,7 +197,7 @@ class LocalAgentPipeline:
                 semantic_context_fp = stable_hash({"root": packed.get("root"), "revision": revision})
         except Exception:
             pass
-        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b"))
+        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
         heavy_model = str(self.config.get("models", {}).get("heavy_code", fast_model))
         reasoning_model = str(self.config.get("models", {}).get("reasoning", heavy_model))
 

@@ -160,19 +160,22 @@ class ModelExecutionPolicy:
                 options["repeat_penalty"] = 1.18
             if "repeat_last_n" not in options:
                 options["repeat_last_n"] = 128
-            temp = options.get("temperature")
-            if temp is not None:
-                try:
-                    f_temp = float(temp)
-                    if 0.0 < f_temp < 0.18:
-                        options["temperature"] = 0.20
-                except (ValueError, TypeError):
-                    pass
         else:
             if "repeat_penalty" not in options:
                 options["repeat_penalty"] = 1.12
             if "repeat_last_n" not in options:
                 options["repeat_last_n"] = 64
+        # Near-greedy sampling can make Qwen coder repeat fragments and emit
+        # low-quality filler. Keep explicit temperature=0 for deterministic probes,
+        # but give all generated text a small amount of sampling headroom.
+        temp = options.get("temperature")
+        if temp is not None:
+            try:
+                f_temp = float(temp)
+                if 0.0 < f_temp < 0.20:
+                    options["temperature"] = 0.20
+            except (ValueError, TypeError):
+                pass
         clean["options"] = options
         if self._supports_thinking(model) and ("think" not in clean or not preserve_explicit_think):
             clean["think"] = profile.think

@@ -26,7 +26,7 @@ class HardwareBenchmarkRunner:
         self.config = config or {}
 
     def _default_model(self) -> str:
-        return str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b"))
+        return str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
 
     def run(
         self,

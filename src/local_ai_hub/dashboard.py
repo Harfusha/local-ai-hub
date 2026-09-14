@@ -578,7 +578,7 @@ tbody tr.click:hover{background:#162338}
       <h2>Installed Local Models &amp; VRAM <span class="tiny">Ollama engine &amp; model manager</span></h2>
       <div style="padding:12px">
         <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center">
-          <input type="text" id="modelPullName" placeholder="Model tag to pull (e.g. qwen2.5-coder:1.5b)..." style="flex:1;background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:6px 10px;font-size:12px">
+          <input type="text" id="modelPullName" placeholder="Model tag to pull (e.g. qwen2.5-coder:3b)..." style="flex:1;background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:6px 10px;font-size:12px">
           <button class="btn ok" type="button" onclick="pullOllamaModel()">⬇ Pull</button>
         </div>
         <div id="modelManageStatus" class="tiny muted" style="margin-bottom:8px"></div>
@@ -4254,7 +4254,7 @@ async function pullOllamaModel(){
   const input=$('modelPullName');
   const name=input?.value?.trim();
   const st=$('modelManageStatus');
-  if(!name){alert('Enter a model name, e.g. qwen2.5-coder:1.5b');return;}
+  if(!name){alert('Enter a model name, e.g. qwen2.5-coder:3b');return;}
   if(st)st.innerHTML=`<span class="warn-t">Pulling model ${esc(name)} in background…</span>`;
   try{
     const res=await post('/api/models/manage',{action:'pull',model:name});
@@ -4457,7 +4457,7 @@ $('arenaRunBtn')?.addEventListener('click',async()=>{
     try{
       const res=await post('/api/delegate',{task:prompt,complexity});
       const lat=Math.round(performance.now()-t0);
-      const model=res.route?.model||res.model||(complexity==='auto'?'qwen2.5-coder:7b':'qwen3.5:9b');
+      const model=res.route?.model||res.model||(complexity==='auto'?'qwen2.5-coder:3b':'qwen2.5-coder:7b');
       const gen=res.eval_count||res.tokens_generated||0;
       const tps=res.eval_duration?Math.round((gen/(res.eval_duration/1e9))*10)/10:(lat>0&&gen>0?Math.round((gen/(lat/1000))*10)/10:'—');
       if(labelEl)labelEl.textContent=`${complexity==='auto'?'Fast Tier':'Smart Tier'} (${model})`;

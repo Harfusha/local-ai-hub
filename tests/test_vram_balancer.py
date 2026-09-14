@@ -6,7 +6,7 @@ from local_ai_hub.vram_balancer import VRAMBalancer
 
 
 def test_vram_balancer_nominal_pressure():
-    balancer = VRAMBalancer({"models": {"fast_code": "qwen2.5-coder:7b", "draft_code": "qwen2.5-coder:1.5b"}})
+    balancer = VRAMBalancer({"models": {"fast_code": "qwen2.5-coder:7b", "draft_code": "qwen2.5-coder:3b-instruct-q5_K_M"}})
     mock_gpu = {
         "available": True,
         "vendor": "nvidia",
@@ -21,7 +21,7 @@ def test_vram_balancer_nominal_pressure():
         assert st["context_budget_factor"] == 1.0
         assert st["throttle_background"] is False
         assert st["dynamic_context_tokens"] >= 32768
-        assert st["speculative_inference"]["draft_model"] == "qwen2.5-coder:1.5b"
+        assert st["speculative_inference"]["draft_model"] == "qwen2.5-coder:3b-instruct-q5_K_M"
         assert st["speculative_inference"]["strategy"] == "full_capacity"
 
 

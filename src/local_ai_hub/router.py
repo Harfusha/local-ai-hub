@@ -22,6 +22,30 @@ DEFAULT_CODE_TERMS = {
 DEFAULT_REVIEW_TERMS = {"review", "audit", "inspect", "critique", "second opinion", "check this"}
 
 
+def review_diff_complexity(
+    args: dict[str, Any], det_diff: dict[str, Any], diff: dict[str, Any]
+) -> str:
+    """Escalate substantial or high-risk diff reviews to the heavy model tier."""
+    complexity = str(args.get("complexity", "auto"))
+    if complexity != "auto":
+        return complexity
+
+    risk = det_diff.get("risk", {})
+    risk = risk if isinstance(risk, dict) else {}
+    risk_score = int(risk.get("score") or det_diff.get("risk_score") or 0)
+    risk_level = str(risk.get("level") or det_diff.get("risk_level") or "").lower()
+    changed_file_count = len(diff.get("changed_files", []))
+    estimated_tokens = int(diff.get("estimated_tokens", 0) or 0)
+    if (
+        risk_level in {"high", "critical"}
+        or risk_score >= 60
+        or changed_file_count >= 6
+        or estimated_tokens >= 3000
+    ):
+        return "heavy"
+    return "auto"
+
+
 class ModelRouter:
     def __init__(self, config: dict[str, Any]):
         self.config = config
@@ -74,10 +98,30 @@ class ModelRouter:
         if task_type in {"code", "review"}:
             model = self.models["heavy_code"] if heavy else self.models["fast_code"]
         elif task_type == "reasoning":
-            # Basic reasoning stays on the resident Qwen 2.5 Coder tier. Promote
-            # only genuinely complex reasoning to the configured smart model.
-            model = self.models["heavy_code"] if heavy else self.models["fast_code"]
+            # Ordinary reasoning stays on the default tier; complex reasoning escalates.
+            model = (
+                (self.models.get("reasoning") or self.models["heavy_code"])
+                if heavy
+                else self.models["fast_code"]
+            )
         else:
             model = self.models["general"]
 
         return {"task_type": task_type, "complexity_score": score, "complexity": "heavy" if heavy else "fast", "model": model}
+
+    def apply_model_override(self, route: dict[str, Any], requested_model: str = "") -> dict[str, Any]:
+        requested = str(requested_model or "").strip()
+        if not requested or requested == str(route.get("model", "")):
+            return route
+        configured = {
+            str(self.models.get(role))
+            for role in ("fast_code", "heavy_code", "reasoning", "general")
+            if self.models.get(role)
+        }
+        if requested not in configured:
+            raise ValueError("model override must match a configured model tier")
+        result = dict(route)
+        result["original_model"] = route.get("model")
+        result["model"] = requested
+        result["model_override"] = True
+        return result

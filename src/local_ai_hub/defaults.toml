@@ -29,12 +29,13 @@ profile = "auto"
 auto_tune = true
 
 [models]
+# 1.5B is reserved exclusively for background preprocessing.
 # These are the only model choices most users need to edit.
-background_code = "qwen2.5-coder:3b"
-fast_code = "qwen2.5-coder:7b"
-heavy_code = "qwen3.5:9b"
-reasoning = "qwen3.5:9b"
-general = "qwen2.5-coder:7b"
+background_code = "qwen2.5-coder:1.5b-instruct-q5_K_M"
+fast_code = "qwen2.5-coder:3b-instruct-q5_K_M"
+heavy_code = "qwen2.5-coder:7b-instruct-q5_K_M"
+reasoning = "qwen2.5-coder:7b-instruct-q5_K_M"
+general = "qwen2.5-coder:3b-instruct-q5_K_M"
 embedding = "BAAI/bge-small-en-v1.5"
 embedding_backend = "sentence-transformers"
 embedding_device = "cpu"
@@ -229,7 +230,7 @@ default_profile = "qwen-explorer"
 language = "match_input"
 
 [ollama_subagents.profiles.qwen-explorer]
-model = "qwen2.5-coder:7b"
+model = "qwen2.5-coder:3b-instruct-q5_K_M"
 role = "explorer"
 max_steps = 3
 max_tool_calls = 6
@@ -237,7 +238,7 @@ max_tokens = 700
 temperature = 0.05
 
 [ollama_subagents.profiles.qwen-drafter]
-model = "qwen2.5-coder:7b"
+model = "qwen2.5-coder:3b-instruct-q5_K_M"
 role = "drafter"
 max_steps = 3
 max_tool_calls = 6
@@ -245,7 +246,7 @@ max_tokens = 1100
 temperature = 0.08
 
 [ollama_subagents.profiles.qwen-critic]
-model = "qwen2.5-coder:7b"
+model = "qwen2.5-coder:3b-instruct-q5_K_M"
 role = "critic"
 max_steps = 3
 max_tool_calls = 6

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import subprocess
 import threading
@@ -34,6 +35,7 @@ class RepetitionWatchdog:
         self.min_line_len = min_line_len
         self.buffer = ""
         self.lines: list[str] = []
+        self.word_buffer = ""
         self.loop_detected = False
         self.cycle_length: int = 0
 
@@ -41,23 +43,64 @@ class RepetitionWatchdog:
         """Push streaming delta. Returns True if a repetitive loop is detected."""
         if self.loop_detected or not delta:
             return self.loop_detected
+        self.word_buffer = (self.word_buffer + delta)[-512:]
         self.buffer += delta
-        if "\n" not in self.buffer:
+        if "\n" in self.buffer:
+            parts = self.buffer.split("\n")
+            self.buffer = parts[-1]
+            for line in parts[:-1]:
+                cleaned = line.strip()
+                norm = cleaned.lstrip("-* \t").strip()
+                if len(norm) >= self.min_line_len:
+                    self.lines.append(norm)
+                    if len(self.lines) > 30:
+                        self.lines.pop(0)
+                    if self._check_loop():
+                        self.loop_detected = True
+                        return True
+        if self._check_ngram_loop() or self._check_word_loop():
+            self.loop_detected = True
+            return True
+        return False
+    def _check_word_loop(self) -> bool:
+        words = re.findall(r"[\w]+(?:['’][\w]+)?", self.word_buffer.casefold())
+        count = len(words)
+        if count < self.max_repeat:
             return False
-        parts = self.buffer.split("\n")
-        self.buffer = parts[-1]
-        for line in parts[:-1]:
-            cleaned = line.strip()
-            norm = cleaned.lstrip("-* \t").strip()
-            if len(norm) >= self.min_line_len:
-                self.lines.append(norm)
-                if len(self.lines) > 30:
-                    self.lines.pop(0)
-                if self._check_loop():
-                    self.loop_detected = True
-                    return True
+        for width in range(1, min(8, count // self.max_repeat) + 1):
+            repeats = max(4, self.max_repeat + 1) if width == 1 else self.max_repeat
+            if count < width * repeats:
+                continue
+            tail = words[-width * repeats:]
+            cycle = tail[-width:]
+            if all(tail[i:i + width] == cycle for i in range(0, len(tail), width)):
+                return True
         return False
 
+    def _check_ngram_loop(self) -> bool:
+        """Catch repeated token cycles in streamed or complete responses."""
+        tokens = [
+            token.strip(".,!?;:()[]{}<>\\\"'").lower()
+            for token in self.word_buffer.split()
+        ]
+        tail = [token for token in tokens if token][-64:]
+        if len(tail) < self.max_repeat * 2:
+            return False
+
+        for end in range(len(tail), max(0, len(tail) - 12), -1):
+            for width in range(1, min(12, end // self.max_repeat) + 1):
+                minimum_repeats = self.max_repeat + (1 if width == 1 else 0)
+                if end < width * minimum_repeats:
+                    continue
+                pattern = tail[end - width:end]
+                repeats = 1
+                cursor = end - width
+                while cursor >= width and tail[cursor - width:cursor] == pattern:
+                    repeats += 1
+                    cursor -= width
+                if repeats >= minimum_repeats:
+                    return True
+        return False
     def _check_loop(self) -> bool:
         n = len(self.lines)
         if n < self.max_repeat:
@@ -139,6 +182,8 @@ class OllamaRuntime:
         return bool(configured) and str(model or "").strip() == configured
 
     def request(self, endpoint: str, payload: dict[str, Any] | None = None, timeout: float | None = None) -> dict[str, Any]:
+        if payload is not None and endpoint in {"/api/chat", "/api/generate"}:
+            return self.request_stream(endpoint, payload, lambda _chunk: None, timeout)
         payload = _normalise_keep_alive(payload)
         body = json.dumps(payload).encode("utf-8") if payload is not None else None
         headers = {"Content-Type": "application/json"} if body is not None else {}
@@ -238,6 +283,13 @@ class OllamaRuntime:
                         final.update(chunk)
                         if chunk.get("done") is True:
                             break
+                if watchdog.loop_detected:
+                    return {
+                        "error": "model output repetition loop detected",
+                        "_lah_repetition_loop_detected": True,
+                        "_lah_retry_count": max(0, attempt - 1),
+                        "model": str(clean.get("model", "")),
+                    }
                 if generated:
                     resp_text = "".join(generated)
                     if watchdog.loop_detected:
@@ -359,6 +411,13 @@ class OllamaRuntime:
                 pass
             return {"error": f"{type(exc).__name__}: {exc}"}
 
+        if watchdog.loop_detected:
+            return {
+                "error": "model output repetition loop detected",
+                "_lah_repetition_loop_detected": True,
+                "_lah_retry_count": 0,
+                "model": str(clean.get("model", "")),
+            }
         if text_parts:
             resp_text = "".join(text_parts)
             if watchdog.loop_detected:

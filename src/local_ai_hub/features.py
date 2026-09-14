@@ -62,11 +62,11 @@ class FeatureSet:
         self.work_orchestrator: bool = self.tasks and self.commands and self.coord and bool(feat.get("work_orchestrator", True)) and bool(work.get("enabled", True))
 
         # Model names — used in descriptions and routing
-        self.fast_model: str = str(mdl.get("fast_code", "qwen2.5-coder:7b"))
+        self.fast_model: str = str(mdl.get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
         self.smart_model: str = str(mdl.get("heavy_code", self.fast_model))
         self.reasoning_model: str = str(mdl.get("reasoning", self.smart_model))
         self.general_model: str = str(mdl.get("general", self.fast_model))
-        self.background_model: str = str(mdl.get("background_code", "qwen2.5-coder:3b"))
+        self.background_model: str = str(mdl.get("background_code", "qwen2.5-coder:1.5b-instruct-q5_K_M"))
         self.embedding_model: str = str(mdl.get("embedding", "BAAI/bge-small-en-v1.5"))
         self.reranker_model: str = str(mdl.get("reranker", "BAAI/bge-reranker-v2-m3"))
 

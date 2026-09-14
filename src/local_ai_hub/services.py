@@ -463,6 +463,14 @@ class LocalAIServices:
                         response = self.runtime.request_stream("/api/generate", payload, trace_observer.output_delta)
                     else:
                         response = self.runtime.request("/api/generate", payload)
+                    if response.get("_lah_repetition_loop_detected"):
+                        return {
+                            "success": False,
+                            "error": str(response.get("error") or "model output repetition loop detected"),
+                            "model": candidate_model,
+                            "_lah_repetition_loop_detected": True,
+                            "_lah_retry_count": int(response.get("_lah_retry_count", 0) or 0),
+                        }
                     if "error" in response:
                         return {"success": False, "error": response["error"], "model": candidate_model, "_lah_retry_count": int(response.get("_lah_retry_count", 0) or 0)}
                     raw_text = response.get("response", "")
@@ -930,7 +938,7 @@ class LocalAIServices:
                 verification["test_summary"] = cmd_res.get("summary", "")
 
         if bool(args.get("smart_review", False)):
-            smart_model = str(self.config.get("models", {}).get("smart_code", "qwen3.5:9b"))
+            smart_model = str(self.config.get("models", {}).get("smart_code", "qwen2.5-coder:7b-instruct-q5_K_M"))
             review_prompt = f"REVIEW DRAFT IMPLEMENTATION:\nTask: {task}\nDraft Code:\n{draft_code}\nDoes this draft correctly solve the task without syntax or logical bugs? Return a short JSON object: {{\"approved\": true/false, \"confidence\": 0.0-1.0, \"summary\": \"...\"}}"
             review_res = self._generate(
                 smart_model,
@@ -2082,7 +2090,7 @@ class LocalAIServices:
         prefix = str(args.get("prefix", ""))
         suffix = str(args.get("suffix", ""))
         max_tokens = min(256, max(8, int(args.get("max_tokens", 80))))
-        model = str(self.config.get("models", {}).get("background_code", self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b")))
+        model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
 
         # Standard Qwen FIM prompt template
         prompt = f"<|fim_prefix|>{prefix[-3000:]}<|fim_suffix|>{suffix[:1500]}<|fim_middle|>"
@@ -2688,7 +2696,7 @@ class LocalAIServices:
             c_in = str(case.get("input", ""))
             c_exp = str(case.get("expected", ""))
             try:
-                model = str(payload.get("model") or getattr(self, "config", {}).get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
+                model = str(payload.get("model") or getattr(self, "config", {}).get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
                 response = self.runtime.request("/api/generate", {
                     "model": model, "prompt": c_in, "stream": False,
                     "options": {"num_predict": 128, "temperature": 0.0},

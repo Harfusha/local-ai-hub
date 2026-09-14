@@ -193,7 +193,7 @@ class LosslessTokenRouter:
                 f"Return JSON only: {{\"ranges\":[{{\"start\":N,\"end\":N,\"score\":0-1}}]}}; max {self.max_ranges} ranges.\n\n"
                 f"TASK:\n{query}\n\nNUMBERED INPUT:\n{numbered}"
             )
-            fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b"))
+            fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
             local = self.services._generate(
                 fast_model, selector_prompt,
                 "You are a lossless context router. Your sole job is selecting relevant original line coordinates. JSON only.",

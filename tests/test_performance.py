@@ -169,11 +169,11 @@ def test_local_agent_checks_exact_cache_before_bootstrap_and_prompts_with_prepro
     class RR:
         def workspace_id(self, root): return "w"
     agent = ToolAwareLocalAgent(config, services, pre, RR(), deterministic=object(), code_index=object())
-    first = agent.run("qwen2.5-coder:0.5b", "worker", "where is A", str(repo), "t", 128, 5)
+    first = agent.run("qwen2.5-coder:3b-instruct-q5_K_M", "worker", "where is A", str(repo), "t", 128, 5)
     assert first["success"] is True
     assert first["tool_agent"]["direct_synthesis"] is True
     assert first["tool_agent"]["preprocessed"] is True
     assert services.det_calls == 1 and services.code_calls == 1 and pre.compact_calls == 1
-    second = agent.run("qwen2.5-coder:0.5b", "worker", "where is A", str(repo), "t", 128, 5)
+    second = agent.run("qwen2.5-coder:3b-instruct-q5_K_M", "worker", "where is A", str(repo), "t", 128, 5)
     assert second["tool_agent_cache"]["hit"] is True
     assert services.det_calls == 1 and services.code_calls == 1 and pre.compact_calls == 1

@@ -20,9 +20,9 @@ def _config(tmp_path: Path, extra: str = "", server_bind: str | None = None):
 def test_cpu_profile_selects_small_models(tmp_path: Path):
     cfg = _config(tmp_path)
     assert cfg["_hardware"]["profile"] == "cpu"
-    assert cfg["models"]["background_code"] == "qwen2.5-coder:0.5b"
-    assert cfg["models"]["fast_code"] == "qwen2.5-coder:1.5b"
-    assert cfg["models"]["heavy_code"] == "qwen2.5-coder:3b"
+    assert cfg["models"]["background_code"] == "qwen2.5-coder:1.5b-instruct-q5_K_M"
+    assert cfg["models"]["fast_code"] == "qwen2.5-coder:3b-instruct-q5_K_M"
+    assert cfg["models"]["heavy_code"] == "qwen2.5-coder:7b-instruct-q5_K_M"
     assert cfg["background_gpu"]["enabled"] is False
 
 
