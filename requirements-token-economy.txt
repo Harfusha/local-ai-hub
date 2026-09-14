@@ -1,0 +1,4 @@
+tiktoken>=0.7
+files-to-prompt>=0.4
+grep-ast>=0.3
+ast-grep-cli>=0.42

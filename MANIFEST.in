@@ -1,0 +1,12 @@
+include README.md
+include LICENSE
+include config.toml.example
+include requirements-core.txt
+include requirements-local-nlp.txt
+include requirements-openvino.txt
+include requirements-token-economy.txt
+include defaults.toml
+recursive-include src/local_ai_hub *.toml *.json
+recursive-include docs *.md
+recursive-include skills *.md
+recursive-include generated *.md *.json

@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-ai-hub"
+version = "3.0.0"
+description = "Deterministic-first local tooling and inference hub for coding agents"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Local AI Hub contributors"}]
+dependencies = [
+  "mcp>=1.28,<2",
+  "watchdog>=4,<7",
+]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Console",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+
+[project.optional-dependencies]
+local-nlp = ["sentence-transformers>=5.4,<6"]
+intel-accelerators = ["sentence-transformers[openvino]>=5.4,<6", "openvino>=2026.1,<2027"]
+token-economy = ["tiktoken>=0.7", "files-to-prompt>=0.4", "grep-ast>=0.3"]
+dev = ["pytest>=8,<10", "pyflakes>=3.2,<4", "coverage[toml]>=7,<8"]
+
+[project.scripts]
+local-ai-hub = "local_ai_hub.__main__:main"
+tokcount = "local_ai_hub.token_economy:tokcount_main"
+trim-run = "local_ai_hub.token_economy:trim_run_main"
+repo-map = "local_ai_hub.token_economy:repo_map_main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+local_ai_hub = ["defaults.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "src"]
+addopts = "-ra"
+filterwarnings = [
+  "error::ResourceWarning",
+  "error::pytest.PytestUnraisableExceptionWarning",
+  "error::pytest.PytestUnhandledThreadExceptionWarning",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["local_ai_hub"]
+
+[tool.coverage.report]
+show_missing = true

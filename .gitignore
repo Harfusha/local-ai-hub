@@ -1,0 +1,16 @@
+/state/
+/config.toml
+/config.toml.bak-*
+/.venv/
+/tool-envs/
+/generated/
+/.serena/
+/.codegraph/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.coverage*
+htmlcov/

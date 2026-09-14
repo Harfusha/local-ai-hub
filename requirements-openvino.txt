@@ -1,0 +1,4 @@
+# Optional Intel NPU/iGPU retrieval acceleration. Installed only when the active
+# hardware/config profile requests the OpenVINO backend.
+sentence-transformers[openvino]>=5.4,<6
+openvino>=2026.1,<2027
