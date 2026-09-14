@@ -6,7 +6,6 @@ import json
 import threading
 import urllib.error
 import urllib.request
-from pathlib import Path
 from typing import Any
 
 from .cache import SQLiteCache, SingleFlightGroup, TieredCache, stable_hash

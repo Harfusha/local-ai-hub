@@ -149,7 +149,10 @@ def _is_integrated_gpu(vendor: str, name: str, vram_mb: int = 0) -> bool:
             return False
         return any(token in normalized for token in ("arc graphics", "iris", "uhd", "integrated")) or int(vram_mb or 0) < 1024
     if vendor == "amd":
-        return bool(re.search(r"\bradeon\s+\d{3,4}m\b", low)) or "integrated" in low
+        # Windows may expose Ryzen APUs only as "AMD Radeon (TM) Graphics".
+        # Match that complete generic name, never RX/Pro/R-series discrete GPUs.
+        generic_apu = re.fullmatch(r"(?:amd\s+)?radeon\s+graphics", " ".join(normalized.split()))
+        return bool(generic_apu or re.search(r"\bradeon\s+\d{3,4}m\b", normalized)) or "integrated" in low
     return False
 
 

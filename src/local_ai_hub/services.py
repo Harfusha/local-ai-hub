@@ -7,7 +7,6 @@ import shutil
 import subprocess
 import time
 import threading
-import uuid
 from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
@@ -16,7 +15,7 @@ from . import __version__
 from .artifacts import ArtifactStore
 from .budget import chars_for_tokens, estimate_tokens, fit_text
 from .cache import MemoryLRUCache, SQLiteCache, TieredCache, SingleFlightCache, SingleFlightGroup, stable_hash
-from .conversations import Conversation, ConversationStore
+from .conversations import ConversationStore
 from .normalizer import normalize_query, postprocess_model_output
 from .semantic_cache import SemanticGenerationCache
 from .model_policy import ModelExecutionPolicy
@@ -1084,91 +1083,7 @@ class LocalAIServices:
             return {"success": True, "evaluation": self.telemetry.report(days).get("evaluation", {})}
         return {"success": False, "error": "unknown evaluation action", "terminal": True}
 
-    def eval_suite(self, tenant: str = "eval", model: str | None = None) -> dict[str, Any]:
-        """Run standardized agent micro-evaluation suite measuring pass rate, latency, and tokens/sec."""
-        target_model = model or str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b"))
-        test_cases = [
-            {
-                "id": "py_sum",
-                "prompt": "Write a Python function `def add(a, b): return a + b`. Return only the code.",
-                "expected": "def add(a, b):",
-            },
-            {
-                "id": "json_format",
-                "prompt": "Return only a JSON object: `{\"status\": \"healthy\", \"code\": 200}`.",
-                "expected": '"status": "healthy"',
-            },
-        ]
-        results: list[dict[str, Any]] = []
-        total_time = 0.0
 
-        for case in test_cases:
-            t0 = time.perf_counter()
-            try:
-                payload = {
-                    "model": target_model,
-                    "prompt": case["prompt"],
-                    "stream": False,
-                    "options": {"num_predict": 64, "temperature": 0.0},
-                }
-                res = self.runtime.request("/api/generate", payload)
-                elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
-                total_time += elapsed_ms
-                resp_text = str(res.get("response", ""))
-                passed = case["expected"] in resp_text
-                results.append({
-                    "case_id": case["id"],
-                    "passed": passed,
-                    "latency_ms": elapsed_ms,
-                    "response_preview": resp_text[:120],
-                })
-            except Exception as exc:
-                elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
-                results.append({
-                    "case_id": case["id"],
-                    "passed": False,
-                    "latency_ms": elapsed_ms,
-                    "error": str(exc),
-                })
-
-        passed_count = sum(1 for r in results if r.get("passed"))
-        pass_rate = round(passed_count / max(1, len(results)), 2)
-
-        return {
-            "success": True,
-            "model": target_model,
-            "total_cases": len(results),
-            "passed_cases": passed_count,
-            "pass_rate": pass_rate,
-            "total_duration_ms": round(total_time, 1),
-            "cases": results,
-        }
-
-    def prompt_eval(self, prompt_template: str, test_inputs: list[str] | None = None, tenant: str = "prompt_eval") -> dict[str, Any]:
-        """Evaluate a prompt template against token efficiency and response consistency."""
-        clean_template = prompt_template.strip()
-        inputs = test_inputs or ["Implement quicksort in Python", "Validate email regex"]
-        target_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b"))
-        runs = []
-
-        for inp in inputs:
-            full_prompt = clean_template.replace("{input}", inp) if "{input}" in clean_template else f"{clean_template}\n\nTask: {inp}"
-            input_tokens = estimate_tokens(full_prompt)
-            runs.append({
-                "input": inp,
-                "input_tokens": input_tokens,
-                "prompt_chars": len(full_prompt),
-            })
-
-        avg_tokens = round(sum(r["input_tokens"] for r in runs) / max(1, len(runs)), 1)
-        return {
-            "success": True,
-            "model": target_model,
-            "template_chars": len(clean_template),
-            "avg_input_tokens": avg_tokens,
-            "evaluated_inputs": len(runs),
-            "runs": runs,
-        }
 
     def embed(self, texts: list[str], tenant: str, priority: int = 3, query: bool = False, background: bool | None = None, wait_timeout: float | None = None) -> dict[str, Any]:
         backend = self.config["models"].get("embedding_backend", "sentence-transformers")
@@ -2610,7 +2525,6 @@ class LocalAIServices:
                 preserve_explicit_think=True,
             )
             # Pre-flight context compaction & ceiling clamp
-            compacted_prompt = False
             if proxy_profile is not None and input_tokens > proxy_profile.prompt_budget_tokens:
                 budget = proxy_profile.prompt_budget_tokens
                 if isinstance(clean.get("prompt"), str):
@@ -2624,7 +2538,6 @@ class LocalAIServices:
                             + "\n\n[...context compacted by Local AI Hub for model budget...]\n\n"
                             + p_text[-tail_len:]
                         )
-                        compacted_prompt = True
                 elif isinstance(clean.get("messages"), list) and len(clean["messages"]) > 2:
                     msgs = list(clean["messages"])
                     system_msgs = [m for m in msgs if m.get("role") == "system"]
@@ -2774,8 +2687,20 @@ class LocalAIServices:
             c_id = str(case.get("id", "case"))
             c_in = str(case.get("input", ""))
             c_exp = str(case.get("expected", ""))
-            is_pass = bool(c_exp and (c_exp in c_in or c_exp == c_in or True))
-            results.append({"case_id": c_id, "passed": is_pass})
+            try:
+                model = str(payload.get("model") or getattr(self, "config", {}).get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
+                response = self.runtime.request("/api/generate", {
+                    "model": model, "prompt": c_in, "stream": False,
+                    "options": {"num_predict": 128, "temperature": 0.0},
+                })
+                is_pass = bool(c_exp and not response.get("error") and c_exp in str(response.get("response", "")))
+                result = {"case_id": c_id, "passed": is_pass}
+                if response.get("error"):
+                    result["error"] = str(response["error"])
+            except Exception as exc:
+                is_pass = False
+                result = {"case_id": c_id, "passed": False, "error": str(exc)}
+            results.append(result)
             if is_pass:
                 passed += 1
 

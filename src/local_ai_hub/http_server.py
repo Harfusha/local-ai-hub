@@ -18,7 +18,6 @@ from urllib.parse import parse_qs, urlparse
 
 from . import __version__
 from .app import LocalAIApp
-from .budget import estimate_tokens
 from .scheduler import ModelUnavailableError, QueueFullError
 from .debug_traces import DebugTraceObserver
 from .trace_context import reset_context, reset_observer, set_context, set_observer
@@ -31,7 +30,7 @@ from .agent_memory import ApprovalRequiredError, MemoryKind, MemoryRecord, Memor
 from .agent_incidents import IncidentFingerprint, ToolOutcome
 from .agent_verification import VerificationReceipt
 from .agent_context import ContextRequest
-from .agent_learning import CandidateStatus, ImprovementCandidate, SLOObservation
+from .agent_learning import ImprovementCandidate, SLOObservation
 
 
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
@@ -422,11 +421,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if action == "delete":
                 req = urllib.request.Request(f"{ollama_url}/api/delete", data=json.dumps({"name": model_name}).encode("utf-8"), headers={"Content-Type": "application/json"}, method="DELETE")
-                with urllib.request.urlopen(req, timeout=5) as resp:
+                with urllib.request.urlopen(req, timeout=5):
                     return {"success": True, "deleted": model_name}
             elif action == "pull":
                 req = urllib.request.Request(f"{ollama_url}/api/pull", data=json.dumps({"name": model_name, "stream": False}).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
-                with urllib.request.urlopen(req, timeout=120) as resp:
+                with urllib.request.urlopen(req, timeout=120):
                     return {"success": True, "pulled": model_name}
             return {"success": False, "error": f"Unknown action: {action}"}
         except Exception as exc:
@@ -1882,7 +1881,7 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "quarantine":
                     reason = str(payload.get("reason", "manual quarantine"))
                     try:
-                        quarantined = APP.agent_memory.quarantine(
+                        APP.agent_memory.quarantine(
                             str(payload.get("record_id", "")),
                             reason=reason,
                             actor=actor,
@@ -1955,7 +1954,6 @@ class Handler(BaseHTTPRequestHandler):
                             self._send(200, {"success": True, "incident": inc.to_dict()}); return
                         except KeyError:
                             pass
-                    err_class = str(payload.get("error_class", payload.get("class", "AgentError")))
                     msg = str(payload.get("message", payload.get("redacted_message", payload.get("value", ""))))
                     op = str(payload.get("operation_class", payload.get("tool_name", payload.get("key", "agent"))))
                     rev = str(payload.get("state_revision", payload.get("revision", "")))

@@ -322,10 +322,28 @@ def is_rooted_path(path: str | Path) -> bool:
     return bool(win.drive) or win.is_absolute()
 
 
+def _job_kernel32() -> Any:
+    """Use pointer-sized handles for the Windows Job Object APIs."""
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.windll.kernel32
+    for name, args, result in (
+        ("CreateJobObjectW", [ctypes.c_void_p, wintypes.LPCWSTR], wintypes.HANDLE),
+        ("SetInformationJobObject", [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD], wintypes.BOOL),
+        ("OpenProcess", [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE),
+        ("AssignProcessToJobObject", [wintypes.HANDLE, wintypes.HANDLE], wintypes.BOOL),
+        ("CloseHandle", [wintypes.HANDLE], wintypes.BOOL),
+    ):
+        fn = getattr(kernel32, name)
+        fn.argtypes = args
+        fn.restype = result
+    return kernel32
+
+
 def create_sandboxed_job_object(
-    *,
     memory_limit_mb: int | None = None,
     kill_on_close: bool = True,
+    cpu_rate_percent: int | None = None,
 ) -> Any | None:
     """Create a Windows Job Object with kill-on-close and optional memory limits.
 
@@ -337,7 +355,7 @@ def create_sandboxed_job_object(
         import ctypes
         from ctypes import wintypes
 
-        kernel32 = ctypes.windll.kernel32
+        kernel32 = _job_kernel32()
         job = kernel32.CreateJobObjectW(None, None)
         if not job:
             return None
@@ -395,37 +413,20 @@ def create_sandboxed_job_object(
         if not success:
             kernel32.CloseHandle(job)
             return None
+        if cpu_rate_percent is not None:
+            class CPU_RATE_INFORMATION(ctypes.Structure):
+                _fields_ = [("ControlFlags", wintypes.DWORD), ("CpuRate", wintypes.DWORD)]
+            rate = CPU_RATE_INFORMATION(0x1 | 0x4, max(1, min(100, int(cpu_rate_percent))) * 100)
+            if not kernel32.SetInformationJobObject(job, 15, ctypes.byref(rate), ctypes.sizeof(rate)):
+                kernel32.CloseHandle(job)
+                return None
         return job
     except Exception:
         return None
 
 
-def assign_process_to_job(job_handle: Any, pid: int) -> bool:
-    """Assign a process to a Windows Job Object handle."""
-    if os.name != "nt" or not job_handle:
-        return False
-    try:
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
-        proc_handle = kernel32.OpenProcess(0x0108, False, int(pid))  # PROCESS_SET_QUOTA | PROCESS_TERMINATE
-        if not proc_handle:
-            return False
-        try:
-            return bool(kernel32.AssignProcessToJobObject(job_handle, proc_handle))
-        finally:
-            kernel32.CloseHandle(proc_handle)
-    except Exception:
-        return False
 
 
-def close_job_object(job_handle: Any) -> None:
-    """Safely close a Windows Job Object handle."""
-    if os.name == "nt" and job_handle:
-        try:
-            import ctypes
-            ctypes.windll.kernel32.CloseHandle(job_handle)
-        except Exception:
-            pass
 
 
 def create_git_worktree(
@@ -654,69 +655,8 @@ def atomic_write_file(
 
 
 def create_job_object_kill_on_close() -> Any:
-    """Create a Windows Job Object configured to terminate all child processes on handle close."""
-    if os.name != "nt":
-        return None
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        class IO_COUNTERS(ctypes.Structure):
-            _fields_ = [
-                ("ReadOperationCount", ctypes.c_uint64),
-                ("WriteOperationCount", ctypes.c_uint64),
-                ("OtherOperationCount", ctypes.c_uint64),
-                ("ReadTransferCount", ctypes.c_uint64),
-                ("WriteTransferCount", ctypes.c_uint64),
-                ("OtherTransferCount", ctypes.c_uint64),
-            ]
-
-        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
-            _fields_ = [
-                ("PerProcessUserTimeLimit", ctypes.c_int64),
-                ("PerJobUserTimeLimit", ctypes.c_int64),
-                ("LimitFlags", wintypes.DWORD),
-                ("MinimumWorkingSetSize", ctypes.c_size_t),
-                ("MaximumWorkingSetSize", ctypes.c_size_t),
-                ("ActiveProcessLimit", wintypes.DWORD),
-                ("Affinity", ctypes.c_size_t),
-                ("PriorityClass", wintypes.DWORD),
-                ("SchedulingClass", wintypes.DWORD),
-            ]
-
-        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-            _fields_ = [
-                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
-                ("IoInfo", IO_COUNTERS),
-                ("ProcessMemoryLimit", ctypes.c_size_t),
-                ("JobMemoryLimit", ctypes.c_size_t),
-                ("PeakProcessMemoryLimit", ctypes.c_size_t),
-                ("PeakJobMemoryLimit", ctypes.c_size_t),
-            ]
-
-        kernel32 = ctypes.windll.kernel32
-        job = kernel32.CreateJobObjectW(None, None)
-        if not job:
-            return None
-
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
-        JobObjectExtendedLimitInformation = 9
-
-        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-
-        res = kernel32.SetInformationJobObject(
-            job,
-            JobObjectExtendedLimitInformation,
-            ctypes.byref(info),
-            ctypes.sizeof(info),
-        )
-        if not res:
-            kernel32.CloseHandle(job)
-            return None
-        return job
-    except Exception:
-        return None
+    """Create a Windows Job Object that terminates children on close."""
+    return create_sandboxed_job_object(kill_on_close=True)
 
 
 def assign_process_to_job(job_handle: Any, process_handle_or_pid: Any) -> bool:
@@ -724,8 +664,7 @@ def assign_process_to_job(job_handle: Any, process_handle_or_pid: Any) -> bool:
     if os.name != "nt" or not job_handle:
         return False
     try:
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
+        kernel32 = _job_kernel32()
         if isinstance(process_handle_or_pid, int):
             h_proc = kernel32.OpenProcess(0x0100 | 0x0001, False, process_handle_or_pid)
             if not h_proc:
@@ -745,26 +684,6 @@ def close_job_object(job_handle: Any) -> bool:
     if os.name != "nt" or not job_handle:
         return False
     try:
-        import ctypes
-        return bool(ctypes.windll.kernel32.CloseHandle(job_handle))
+        return bool(_job_kernel32().CloseHandle(job_handle))
     except Exception:
         return False
-
-
-def create_sandboxed_job_object(
-    memory_limit_mb: int | None = None,
-    kill_on_close: bool = True,
-    cpu_rate_percent: int | None = None,
-) -> Any:
-    """Create a Windows Job Object with optional memory limit and kill-on-close policy."""
-    job = create_job_object_kill_on_close() if kill_on_close else None
-    if os.name != "nt":
-        return None
-    if job is None:
-        try:
-            import ctypes
-            job = ctypes.windll.kernel32.CreateJobObjectW(None, None)
-        except Exception:
-            return None
-    return job
-

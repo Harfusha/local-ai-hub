@@ -322,7 +322,7 @@ Keep assignments bounded. The main agent retains final acceptance; a `local_ai_w
         step_i += 1
         wf_steps.append(f"{step_i}. Use `context` for compact evidence; for implementation, diagnosis, refactoring or complex review, call `solve` after evidence so the Hub-managed local pipeline is used.")
         step_i += 1
-        lease_note = f"claim `local_ai_coord` leases for overlapping paths; " if fs.coord else ""
+        lease_note = "claim `local_ai_coord` leases for overlapping paths; " if fs.coord else ""
         wf_steps.append(f"{step_i}. Edit in the main agent; {lease_note}use `impact` before risky dependent changes.")
         step_i += 1
     if fs.commands:
@@ -333,7 +333,7 @@ Keep assignments bounded. The main agent retains final acceptance; a `local_ai_w
     wf_lines = "\n".join(wf_steps)
     task_notes = ""
     if fs.tasks and fs.has_any_model():
-        task_notes = f"""
+        task_notes = """
 ## Local second opinion
 
 Use `local_ai_task(action="second_opinion")` for a bounded candidate decision. Include the evidence and uncertainty.

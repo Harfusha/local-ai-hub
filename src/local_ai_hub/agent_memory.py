@@ -3,14 +3,12 @@ from __future__ import annotations
 import json
 import math
 import re
-import sqlite3
 import threading
 import time
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
 from typing import Any, Mapping
 
 from .agent_events import AgentEvent, AgentStateStore
@@ -1028,4 +1026,3 @@ class MemoryStore:
             "total_nodes": len(visited_nodes),
             "total_edges": len(collected_edges),
         }
-

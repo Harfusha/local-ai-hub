@@ -252,6 +252,30 @@ def test_14_agent_eval_suite():
     assert "total" in res["summary"]
 
 
+def test_eval_suite_checks_model_output_instead_of_expected_text():
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"models": {"fast_code": "test-model"}}
+    services.runtime = MagicMock()
+    services.runtime.request.return_value = {"response": "wrong answer"}
+    payload = {"cases": [{"id": "bad", "input": "Return expected", "expected": "expected"}]}
+    result = services.eval_suite(payload)
+    assert result["summary"]["failed"] == 1
+    services.runtime.request.assert_called_once()
+    services.runtime.request.return_value = {"response": "expected"}
+    assert services.eval_suite(payload)["summary"]["passed"] == 1
+
+
+def test_ast_outline_rejects_paths_outside_root(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text('secret = 123\n')
+    engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
+    result = engine.ast_outline(str(root), "../outside.py")
+    assert result["success"] is False
+    assert 'outside' in result["error"]
+
+
 def test_15_prompt_eval():
     services = LocalAIServices.__new__(LocalAIServices)
     template = "Fix the following error in {{language}}: {{error}}"
@@ -337,4 +361,3 @@ def test_21_command_broker_powershell_safety(tmp_path: Path):
     res = broker.run("Remove-Item -Recurse C:\\secret", cwd=str(tmp_path))
     assert res["success"] is False
     assert "blocked" in res["error"].lower() or "dangerous" in res["error"].lower()
-

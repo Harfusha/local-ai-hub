@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import Any
 
 BOUNDARY_PUNCTUATION_CHARS = " \t\r\n-_.,:;!?¿¡'\"`~^/\\|#*+=()[]{}<>"
 

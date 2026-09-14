@@ -128,7 +128,7 @@ class RAGStore:
             return self._workspace_locks[ws_key]
 
     def _recover_db(self) -> None:
-        import time, sqlite3
+        import time
         stamp = int(time.time())
         try:
             if self.db_path.exists():
@@ -326,7 +326,7 @@ class RAGStore:
         """Try to split code using tree-sitter AST boundaries."""
         # Try to load the appropriate language grammar
         try:
-            from tree_sitter import Language, Parser
+            from tree_sitter import Parser
             lang_obj = self._get_ts_language(language)
             if lang_obj is None:
                 return []
@@ -1190,7 +1190,6 @@ class RAGStore:
     def _search_fts_candidates(self, query: str, tenant: str, workspace: str, limit: int = 16, scope_path: str | None = None) -> list[dict[str, Any]]:
         scope_key = self._scope_key(tenant)
         try:
-            import re
             tokens = [re.sub(r"[^\w_]", "", t) for t in query.split()]
             tokens = [t for t in tokens if len(t) > 1]
             if not tokens:
@@ -1228,7 +1227,6 @@ class RAGStore:
 
     def _search_token_overlap(self, query: str, tenant: str, workspace: str, limit: int = 16, scope_path: str | None = None) -> list[dict[str, Any]]:
         scope_key = self._scope_key(tenant)
-        import re
         terms = [t.lower() for t in re.findall(r"\w+", query) if len(t) > 1]
         if not terms:
             return []
@@ -1428,7 +1426,6 @@ class RAGStore:
                     pass
 
             if not reranked:
-                import re
                 q_terms = [t.lower() for t in re.findall(r"\w+", query) if len(t) > 1]
                 if q_terms:
                     for c in candidates:
@@ -1456,7 +1453,6 @@ class RAGStore:
                     cur_rel = con_state.cursor()
                     for c in candidates[:top_k]:
                         c_text = c.get("text", "")
-                        import re
                         words = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{3,}\b", c_text[:1000]))
                         if not words:
                             continue
@@ -1634,4 +1630,3 @@ class RAGStore:
             res["diagram_indexed"] = True
             res["image_path"] = str(p_img)
         return res
-
