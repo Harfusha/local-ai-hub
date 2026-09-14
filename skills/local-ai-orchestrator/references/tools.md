@@ -5,7 +5,7 @@ The active tool surface reflects your configuration:
 - `local_ai_repo`: deterministic, code index/search, semantic/graph, context/solve, preprocess, impact, `review_diff`, `security_audit`, patch validation and repository checks.
 - `local_ai_command`: cached/single-flight safe command broker for tests, lint, typecheck, builds and read-only checks; never the only Hub action for a repository task.
 - `local_ai_work`: durable whole-task orchestration with dependency planning, transactional edits, validation, whole-task verification and compact/lazy handoff.
-- local_ai_task: bounded local generation; use qwen2.5-coder:1.5b for quick work, 3b for complex tasks, 7b for hardest reasoning, and 0.5b only for preprocessing after evidence exists.
+- `local_ai_task`: local-model microtasks (`qwen2.5-coder:7b`), review, compression and second opinions after evidence exists.
 - `local_ai_rag`: semantic fallback only after deterministic/indexed retrieval.
 - `local_ai_artifact`: exact `E...` evidence or artifact slices.
 - `local_ai_coord`: edit leases and reusable investigation memos, task contracts and durable memory.

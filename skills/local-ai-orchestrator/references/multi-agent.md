@@ -1,6 +1,6 @@
 # Multi-agent coordination
 
-Local AI Hub uses qwen2.5-coder:0.5b only for preprocessing, 1.5b for quick tasks, 3b for complex tasks, and 7b for the hardest reasoning (`local_ai_task`). External cloud agents (Codex, Claude, Gemini, Cursor, Copilot) remain the principal orchestrators.
+Local AI Hub provides bounded microtasks via `qwen2.5-coder:7b` (local_ai_task). External cloud agents (Codex, Claude, Gemini, Cursor, Copilot) remain the principal orchestrators.
 
 Rules:
 - Never duplicate the same scope across agents.
