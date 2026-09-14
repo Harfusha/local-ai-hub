@@ -24,22 +24,33 @@ def test_run_resolves_windows_batch_executables(tmp_path, monkeypatch):
     assert result.stdout.strip() == 'batch-ok'
 
 
-def test_token_economy_launchers_execute_python(tmp_path, monkeypatch):
+def test_token_economy_launchers_and_trim_run_allowlist(tmp_path, monkeypatch):
     scripts = tmp_path / '.venv' / ('Scripts' if setup.os.name == 'nt' else 'bin')
     scripts.mkdir(parents=True)
     registered = []
     monkeypatch.setattr(setup, "persist_token_economy_path", registered.append)
     setup.install_token_economy_suite(tmp_path, Path(sys.executable), allow_external_tools=False)
     assert registered == [scripts]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(ROOT / "src")
     for tool in ('tokcount', 'trim-run', 'repo-map'):
         launcher = scripts / (tool + '.cmd' if setup.os.name == 'nt' else tool)
         assert len(launcher.read_text().splitlines()) == 2
         if setup.os.name != 'nt':
             assert launcher.stat().st_mode & 0o111
-        args = [sys.executable, '-c', 'print(12345)'] if tool == 'trim-run' else ['--help']
-        cp = subprocess.run([str(launcher), *args], capture_output=True, text=True, timeout=15)
+        if tool == 'trim-run':
+            unsafe = subprocess.run(
+                [str(launcher), 'python', '-c', 'print(12345)'],
+                capture_output=True, text=True, timeout=15, env=env,
+            )
+            assert unsafe.returncode == 2
+            assert "not in the safe" in unsafe.stderr
+            args = ['tokcount', '--help']
+        else:
+            args = ['--help']
+        cp = subprocess.run([str(launcher), *args], capture_output=True, text=True, timeout=15, env=env)
         assert cp.returncode == 0, cp.stderr
-        assert ('12345' if tool == 'trim-run' else 'usage:') in cp.stdout.lower()
+        assert 'usage:' in cp.stdout.lower()
 
 
 

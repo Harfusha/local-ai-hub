@@ -43,10 +43,26 @@ class FeatureSet:
         )
         self.rag: bool = bool(feat.get("rag", True))
         self.ollama: bool = bool(srv.get("auto_start_ollama", True))
+        llama = cfg.get("llama_cpp", {}) if isinstance(cfg.get("llama_cpp", {}), dict) else {}
+        llama_mode = str(llama.get("mode", "off")).strip().lower()
+        llama_models = llama.get("models", {}) if isinstance(llama.get("models", {}), dict) else {}
+        hardware = cfg.get("_hardware", {}) if isinstance(cfg.get("_hardware", {}), dict) else {}
+        gpus = hardware.get("gpus", []) if isinstance(hardware.get("gpus", []), list) else []
+        intel_gpu = any(
+            str(gpu.get("vendor", "")).lower() == "intel" or "intel" in str(gpu.get("name", "")).lower()
+            for gpu in gpus if isinstance(gpu, dict)
+        )
+        dedicated_other = any(
+            str(gpu.get("vendor", "")).lower() in {"amd", "nvidia"} and not bool(gpu.get("integrated"))
+            for gpu in gpus if isinstance(gpu, dict)
+        )
+        self.llama_cpp: bool = bool(llama_models) and (
+            llama_mode == "on" or (llama_mode == "auto" and intel_gpu and not dedicated_other)
+        )
         self.tasks: bool = (
             bool(feat.get("tasks", True))
             and bool(feat.get("local_models", True))
-            and self.ollama
+            and (self.ollama or self.llama_cpp)
         )
 
         # Code-intelligence backends
@@ -62,11 +78,11 @@ class FeatureSet:
         self.work_orchestrator: bool = self.tasks and self.commands and self.coord and bool(feat.get("work_orchestrator", True)) and bool(work.get("enabled", True))
 
         # Model names — used in descriptions and routing
-        self.fast_model: str = str(mdl.get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
-        self.smart_model: str = str(mdl.get("heavy_code", self.fast_model))
-        self.reasoning_model: str = str(mdl.get("reasoning", self.smart_model))
+        self.fast_model: str = str(mdl.get("fast_code", "qwen2.5-coder:1.5b"))
+        self.smart_model: str = str(mdl.get("heavy_code", "qwen2.5-coder:3b"))
+        self.reasoning_model: str = str(mdl.get("reasoning", "qwen2.5-coder:7b"))
         self.general_model: str = str(mdl.get("general", self.fast_model))
-        self.background_model: str = str(mdl.get("background_code", "qwen2.5-coder:1.5b-instruct-q5_K_M"))
+        self.background_model: str = str(mdl.get("background_code", "qwen2.5-coder:0.5b"))
         self.embedding_model: str = str(mdl.get("embedding", "BAAI/bge-small-en-v1.5"))
         self.reranker_model: str = str(mdl.get("reranker", "BAAI/bge-reranker-v2-m3"))
 
@@ -86,7 +102,7 @@ class FeatureSet:
 
     def has_any_model(self) -> bool:
         """True if any local-model execution is possible."""
-        return self.ollama and bool(self.fast_model)
+        return (self.ollama or self.llama_cpp) and bool(self.fast_model)
 
     @property
     def enabled_tools(self) -> list[str]:
@@ -236,6 +252,8 @@ class FeatureSet:
     def trigger_map_lines(self) -> list[str]:
         """Ordered trigger-map bullet lines for GLOBAL_POLICY and skills."""
         lines: list[str] = []
+        if self.status:
+            lines.append("- bounded health/cache/telemetry inspection (never poll): `local_ai_status`")
         if self.repo:
             lines.append("- repository facts/files/symbols: `local_ai_repo`")
         if self.commands:
@@ -244,12 +262,60 @@ class FeatureSet:
             lines.append("- exact source/evidence text: `local_ai_artifact`")
         if self.coord:
             lines.append("- shared findings or overlapping edits: `local_ai_coord`")
+            if self.agent_os:
+                lines.append("- non-trivial multi-step, long-running, or acceptance-criteria work: `local_ai_coord` Agent OS task contracts, checkpoints, context, and verified completion")
         if self.rag:
             lines.append("- semantic retrieval after indexed paths are insufficient: `local_ai_rag`")
         if self.tasks and self.has_any_model():
             lines.append("- bounded local generation or second opinion: `local_ai_task`")
         if self.work_orchestrator:
             lines.append("- closed whole-task delegation with verified handoff: `local_ai_work`")
+        lines.extend(self.specialized_trigger_lines())
+        return lines
+
+    def specialized_trigger_lines(self) -> list[str]:
+        """Feature-specific routes that are easy to miss from the compact tool names."""
+        lines: list[str] = []
+        if self.code_intelligence and (self.serena or self.codegraph):
+            backends = []
+            if self.serena:
+                backends.append("Serena symbol navigation")
+            if self.codegraph:
+                backends.append("CodeGraph relationship/call-graph analysis")
+            lines.append(
+                f"- symbol or code-relationship questions: `local_ai_repo` semantic/graph actions ({'; '.join(backends)}); indexed fallback remains available"
+            )
+        if self.status and self.agent_os:
+            lines.append("- Agent OS task and incident state: `local_ai_status(detail=\"agent_state\")`")
+
+        task_actions = set(self.supported_task_actions())
+        if "vision" in task_actions:
+            lines.append("- image understanding: `local_ai_task(action=\"vision\")`")
+        if "transcribe" in task_actions:
+            lines.append("- audio transcription: `local_ai_task(action=\"transcribe\")`")
+        if task_actions & {"benchmark", "hardware_benchmark"}:
+            lines.append("- local-model or device benchmarking: `local_ai_task` benchmark actions")
+        if task_actions & {"eval_suite", "prompt_eval", "eval_drift", "evaluation_record", "evaluation_report"}:
+            lines.append("- model/prompt evaluation and drift checks: `local_ai_task` evaluation actions")
+        if task_actions & {"candidate_create", "candidate_promote", "speculative_draft"}:
+            lines.append("- model/prompt candidate and speculative-draft workflows: `local_ai_task` candidate actions")
+        if task_actions & {"submit", "wait", "result", "cancel"}:
+            lines.append("- durable asynchronous local jobs: `local_ai_task` submit/status/wait/result/cancel; wait once, never poll")
+        if self.subagents and self.subagent_profiles:
+            lines.append("- named read-only local advisory profiles: `local_ai_task(action=\"delegate\", profile=...)`")
+
+        rag_actions = set(self.supported_rag_actions())
+        if rag_actions & {"docset_index", "docset_search", "ingest_document", "ingest_diagram"}:
+            lines.append("- curated knowledge sets and document/diagram ingestion: `local_ai_rag` docset and ingest actions")
+
+        command_actions = set(self.supported_command_actions())
+        if command_actions & {"repair_loop", "auto_fix", "run_affected", "format", "lint_fix"}:
+            lines.append("- requested automated repair, affected-test selection, formatting, or lint fixes: `local_ai_command` specialized actions")
+        if command_actions & {"mock_server", "mock_server_start", "mock_server_stop", "mock_server_status", "record_mock", "replay_mock", "flaky_detect", "webhook_replay"}:
+            lines.append("- local mock, replay, and flaky-test workflows: `local_ai_command` specialized actions")
+
+        if self.dashboard:
+            lines.append("- operator-facing live dashboard: `/dashboard` on the configured Hub server; use `local_ai_status` for bounded agent-side checks")
         return lines
 
     def recipe_lines(self) -> list[str]:
@@ -262,6 +328,8 @@ class FeatureSet:
             lines.append(f'- Recipe — Change: gather indexed evidence, use `local_ai_repo(action="solve")` before edits,{lease_hint} then run indexed impact/review before validation.')
         if self.commands:
             lines.append("- Recipe — Validate: route repeatable commands through `local_ai_command`, reuse cached results, use `review_diff` or `security_audit` when relevant.")
+        if self.agent_os:
+            lines.append("- Recipe — Durable execution: create a task contract before substantial work, checkpoint phase changes, attach validation receipts, and complete only after `verify_completion` passes.")
         elif self.repo:
             lines.append("- Recipe — Validate: run validation commands natively, review changes with `review_diff` or `security_audit`.")
         if self.rag:
@@ -285,7 +353,7 @@ class FeatureSet:
         if self.artifacts:
             parts.append("`local_ai_artifact` for exact slices")
         if self.coord:
-            parts.append("`local_ai_coord` for leases/memos")
+            parts.append("`local_ai_coord` for leases/memos and Agent OS task, memory, context, and verification workflows" if self.agent_os else "`local_ai_coord` for leases/memos")
         if not parts:
             return "Selection guide: use native agent tools."
         return "Selection guide: " + ", ".join(parts) + "."

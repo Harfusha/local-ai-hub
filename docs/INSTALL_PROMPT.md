@@ -74,12 +74,8 @@ Run the platform installer from the repository root. This automatically configur
      "$HOME/.local-ai-hub/.venv/bin/python" "$HOME/.local-ai-hub/tools/doctor.py"
      ```
 4. **Hardware Acceleration Verification (iGPU / NPU)**:
-   - On Windows with integrated graphics (Intel Arc / Iris Xe, AMD Radeon) and no dedicated NVIDIA GPU:
-     Verify that `OLLAMA_VULKAN=1` is set in the environment so Ollama offloads LLMs to the iGPU instead of using 100% CPU:
-     ```powershell
-     [System.Environment]::SetEnvironmentVariable('OLLAMA_VULKAN', '1', 'User')
-     ```
-     Restart Ollama if running.
+   - On Intel-only systems, follow `docs/LLAMA_CPP_SYCL.md` and verify that the official SYCL `llama-server.exe --list-devices` lists the Intel GPU before enabling `llama_cpp.mode = "on"`. The installed Hub selects the SYCL backend in `auto` mode when its Intel hardware profile and routes are present. Do not set `OLLAMA_VULKAN` for Intel inference.
+   - NVIDIA/AMD discrete GPUs continue through the configured Ollama CUDA/ROCm path. AMD iGPU is not an Intel SYCL target and retains its configured Ollama route. Do not enable llama.cpp SYCL on non-Intel hardware.
    - If an NPU (Intel AI Boost / AMD XDNA) or Intel iGPU is present:
      Ensure OpenVINO dependencies are installed in the venv to offload embeddings and reranking from CPU:
      ```powershell
@@ -123,7 +119,7 @@ Recipes (guidance, not gates):
 
 Delegation is the default for any task with useful bounded independent work.
 
-- Use `local_ai_task` for bounded local-model work when local inference is the right fit. `qwen2.5-coder:3b-instruct-q5_K_M` is the default fast tier.
+- Use `local_ai_task` for bounded local-model work when local inference is the right fit. Use `qwen2.5-coder:1.5b` for quick tasks, `qwen2.5-coder:3b` for complex work, `qwen2.5-coder:7b` for the hardest reasoning, and `qwen2.5-coder:0.5b` only for preprocessing.
 - Use the native Codex `multi_agent_v1__spawn_agent` path only for useful independent bounded work or an explicit Codex-subagent request.
 - Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
 - Do not duplicate the same scope across agents. Keep final decisions, edits, and integration in Codex.
@@ -142,7 +138,7 @@ For every non-trivial repository task, use Local AI Hub before broad native disc
 
 Adoption gate: `local_ai_command` alone is never sufficient for a repository task. The first useful Hub operation must be `local_ai_repo` (preprocess plus the cheapest applicable deterministic/code-index/search/context action); use the command broker only for commands, after repository evidence exists. For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence and before native edits. After edits, use the applicable indexed impact/review/security/evidence action before final validation.
 
-Cheapest path: deterministic -> code_index/search -> semantic/graph -> context/solve -> RAG -> qwen2.5-coder:3b-instruct-q5_K_M last.
+Cheapest path: deterministic -> code_index/search -> semantic/graph -> context/solve -> RAG -> qwen2.5-coder:1.5b quick generation -> qwen2.5-coder:3b complex work -> qwen2.5-coder:7b hardest reasoning.
  Stop escalating as soon as a cheaper layer provides enough evidence. Do not fan out overlapping retrieval layers in parallel for the same question. Before native `find`/`rg`/`grep`/recursive glob/tree or opening more than two files for discovery, use that hub path first. Reuse fresh evidence IDs, artifact slices, memos and cache hits;
  do not repeat the same hub action with the same root/query while repository state is unchanged.
 
@@ -153,7 +149,7 @@ Route test/lint/typecheck/build/read-only commands through `local_ai_command` be
 
 Selection guide: `local_ai_repo` for bounded repository facts and checks (including `review_diff` and `security_audit`), `local_ai_command` for bounded repeatable commands, `local_ai_task` for small local-model work and second opinions, `local_ai_work` for a complete bounded repository task with planning, edits, validation and handoff, `local_ai_rag` only after cheaper indexed evidence, `local_ai_artifact` for exact slices, `local_ai_coord` for leases/memos.
 
-Local model default: use `qwen2.5-coder:3b-instruct-q5_K_M` for ordinary local work, keep `qwen2.5-coder:1.5b-instruct-q5_K_M` preprocessing-only, and escalate to `qwen2.5-coder:7b-instruct-q5_K_M` for complex or high-risk work. Deterministic and indexed Hub actions run first.
+Local model policy: use `qwen2.5-coder:0.5b` only for preprocessing, `qwen2.5-coder:1.5b` for quick requests, `qwen2.5-coder:3b` for complex work, and `qwen2.5-coder:7b` for the hardest reasoning. Deterministic and indexed Hub actions run first.
 <!-- END LOCAL AI HUB TOOL POLICY -->
 
 <!-- BEGIN TOKEN ECONOMY POLICY -->
@@ -162,9 +158,9 @@ Local model default: use `qwen2.5-coder:3b-instruct-q5_K_M` for ordinary local w
 - Fast code search: Use `rg` (`ripgrep`) with `-m 5` / bounded matches and `fd` for file finding before opening files.
 - AST & structural code search: Use `ast-grep` (`sg`), Serena LSP (`find_symbol`, `find_referencing_symbols`), or `local_ai_repo(action="code_index")` before opening files.
 - Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.
-- Bounded command outputs: Filter test and build output (`trim-run <cmd>`, `pytest -q --tb=short`, `dotnet test --verbosity quiet`, `git log | trim-run`, `jq` for JSON) or route through `local_ai_command`.
+- Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.
 - Surgical edits: Prefer targeted block replacements over rewriting entire files.
-- Local model delegation: Route routine microtasks, reviews, and second opinions to local models via `local_ai_task(model="qwen2.5-coder:3b-instruct-q5_K_M")`.
+- Local model delegation: Use `qwen2.5-coder:1.5b` for quick microtasks, `qwen2.5-coder:3b` for complex work, and `qwen2.5-coder:7b` for the hardest reasoning via `local_ai_task`; reserve `qwen2.5-coder:0.5b` for preprocessing.
 <!-- END TOKEN ECONOMY POLICY -->
 ```
 

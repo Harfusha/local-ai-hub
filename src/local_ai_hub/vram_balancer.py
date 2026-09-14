@@ -67,8 +67,8 @@ class VRAMBalancer:
             dynamic_context = max(4096, int(base_context * factor))
 
             models_cfg = self.config.get("models", {})
-            target_model = str(models_cfg.get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
-            draft_model = str(models_cfg.get("draft_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
+            target_model = str(models_cfg.get("fast_code", "qwen2.5-coder:1.5b"))
+            draft_model = str(models_cfg.get("draft_code", "qwen2.5-coder:3b"))
 
             res = {
                 "available": available,
@@ -144,7 +144,7 @@ class VRAMBalancer:
         st = self.status()
         spec = st.get("speculative_inference", {})
         return {
-            "target_model": spec.get("target_model", "qwen2.5-coder:7b-instruct-q5_K_M"),
-            "draft_model": spec.get("draft_model", "qwen2.5-coder:3b-instruct-q5_K_M"),
+            "target_model": spec.get("target_model", "qwen2.5-coder:3b"),
+            "draft_model": spec.get("draft_model", "qwen2.5-coder:7b"),
             "strategy": spec.get("strategy", "full_capacity"),
         }

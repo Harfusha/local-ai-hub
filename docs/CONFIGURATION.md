@@ -8,7 +8,7 @@
 
 ### Shared-memory iGPU and Intel NPU
 
-The `integrated` profile is intentionally conservative. It is designed for iGPUs that borrow system RAM and therefore must not be scheduled from a nominal/dedicated VRAM value. The default integrated profile keeps one foreground LLM/model resident, disables the independent background Ollama runtime, uses smaller 0.5B/1.5B routine models and a 3B ceiling for explicit heavy/reasoning tasks, and reduces context and preprocessing concurrency.
+The `integrated` profile is intentionally conservative. It is designed for iGPUs that borrow system RAM and therefore must not be scheduled from a nominal/dedicated VRAM value. The default integrated profile keeps one foreground LLM/model resident, disables the independent background Ollama runtime, routes preprocessing to 0.5B, quick tasks to 1.5B, complex work to 3B, and the hardest reasoning to 7B; it also reduces context and preprocessing concurrency. For Intel iGPU systems, see [the llama.cpp SYCL setup](LLAMA_CPP_SYCL.md).
 
 For Intel integrated graphics, `[openvino]` controls optional retrieval acceleration. With `embedding_device = "auto"` / `reranker_device = "auto"`, Local AI Hub probes actual OpenVINO devices and uses `device_priority = ["NPU", "GPU", "CPU"]`. The SentenceTransformers wrapper remains on CPU while the underlying Optimum/OpenVINO model is compiled for the selected accelerator, so the path does not require a torch-native NPU device. `cpu_fallback = true` keeps RAG functional if the NPU/GPU driver or a particular model shape is unsupported.
 

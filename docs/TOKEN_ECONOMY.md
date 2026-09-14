@@ -40,7 +40,7 @@ The automated setup runner (`install.ps1` / `install.sh` / `python tools/setup.p
    - `jq`: High-speed JSON stream processor and projection filter via `winget` / `brew` / `apt`.
 5. **Configures Local Ollama Runtime & Models**:
    - Auto-starts Ollama daemon.
-   - Pulls default fast tier (`qwen2.5-coder:7b`) and embedding models (`bge-m3` or `nomic-embed-text`).
+   - Pulls the configured model tiers (0.5B preprocessing, 1.5B quick, 3B complex, 7B hardest reasoning) and embedding models (`bge-m3` or `nomic-embed-text`).
 6. **Auto-Wires MCP Hosts & Skills**:
    - Configures MCP endpoints into **Codex**, **Claude Desktop**, **Gemini**, **Cursor**, **Windsurf**, and **VS Code / GitHub Copilot**.
    - Installs companion skills: `token-economizer`, `caveman`, `tool-orchestration`, `ollama-quality-routing`.
@@ -54,7 +54,7 @@ The automated setup runner (`install.ps1` / `install.sh` / `python tools/setup.p
 | Tool | Source / Install | Purpose | Typical Token Savings |
 | :--- | :--- | :--- | :--- |
 | **`tokcount`** | Built-in CLI | Exact token measurement for files, dirs, or stdin (`o200k_base`, `cl100k_base`) | Context budgeting |
-| **`trim-run`** | Built-in CLI | Strips ANSI escapes; truncates massive test/build logs to first/last $N$ lines | 70–95% output reduction |
+| **`trim-run`** | Built-in CLI | Runs bundled token tools and read-only search CLIs from a safe allowlist, or truncates stdin pipelines to first/last $N$ lines | 70–95% output reduction |
 | **`repo-map`** | Built-in CLI | AST structural outline of classes, methods, and functions across 12 languages | 80–90% vs full files |
 | **`rg`** (`ripgrep`) | `winget` / `brew` / `apt` | Fast bounded regex search (`-m <N>`, `--max-columns <N>`) | 80–95% vs unconstrained grep |
 | **`fd`** (`fd-find`) | `winget` / `brew` / `apt` | Lightning-fast file/directory discovery (`-d <depth>`) | 85–95% vs recursive directory trees |
@@ -64,7 +64,7 @@ The automated setup runner (`install.ps1` / `install.sh` / `python tools/setup.p
 | **`repomix`** | npm (`repomix`) | Packs repos with comment stripping, empty line removal, and token counts | 40–60% vs raw directory |
 | **`files-to-prompt`** | PyPI (`files-to-prompt`) | Formats files into clean XML prompt structures without shell overhead | Clean prompt format |
 | **`local_ai_artifact`** | Local AI Hub MCP | Fetches exact line slices (`slice`) or evidence fragments | Zero whole-file reads |
-| **`local_ai_task`** | Local AI Hub MCP | Local model inference (`qwen2.5-coder:7b`) for summarization, lint fixing, second opinions | 100% free (0 cloud tokens) |
+| **`local_ai_task`** | Local AI Hub MCP | Local model inference: 1.5B for quick work, 3B for complex tasks, 7B for hardest reasoning | 100% free (0 cloud tokens) |
 | **`local_ai_command`** | Local AI Hub MCP | Single-flight cached command broker with automated ANSI stripping | Prevents rerun token waste |
 
 ---
@@ -85,8 +85,8 @@ tokcount src/ -q
 
 ### B. Bounded Command & Test Execution
 ```bash
-# Run pytest with automatic truncation to 40 lines
-trim-run -n 40 pytest -q
+# Pipe a test log into the stdin filter; run tests through local_ai_command when available
+pytest -q --tb=short | trim-run -n 40
 
 # Truncate verbose git log or build output via pipe
 git log --oneline -n 100 | trim-run -n 30
@@ -148,7 +148,7 @@ When paired with an AI coding agent, the following rules are permanently active 
 - Fast code search: Use `rg` (`ripgrep`) with `-m 5` / bounded matches and `fd` for file finding before opening files.
 - AST & structural code search: Use `ast-grep` (`sg`), Serena LSP (`find_symbol`, `find_referencing_symbols`), or `local_ai_repo(action="code_index")` before opening files.
 - Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.
-- Bounded command outputs: Filter test and build output (`trim-run <cmd>`, `pytest -q --tb=short`, `dotnet test --verbosity quiet`, `git log | trim-run`, `jq` for JSON) or route through `local_ai_command`.
+- Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.
 - Surgical edits: Prefer targeted block replacements over rewriting entire files.
 - Local model delegation: Route routine microtasks, reviews, and second opinions to local models via `local_ai_task(model="qwen2.5-coder:7b")`.
 <!-- END TOKEN ECONOMY POLICY -->

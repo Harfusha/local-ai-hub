@@ -35,10 +35,10 @@ def test_reasoning_uses_basic_qwen_until_complexity_requires_smart_model():
 
     router = ModelRouter({
         "models": {
-            "fast_code": "qwen2.5-coder:3b-instruct-q5_K_M",
-            "heavy_code": "qwen2.5-coder:7b-instruct-q5_K_M",
-            "reasoning": "qwen2.5-coder:7b-instruct-q5_K_M",
-            "general": "qwen2.5-coder:3b-instruct-q5_K_M",
+            "fast_code": "qwen2.5-coder:1.5b",
+            "heavy_code": "qwen2.5-coder:3b",
+            "reasoning": "qwen2.5-coder:7b",
+            "general": "qwen2.5-coder:1.5b",
         },
         "routing": {"heavy_min_score": 3},
     })
@@ -49,8 +49,8 @@ def test_reasoning_uses_basic_qwen_until_complexity_requires_smart_model():
         task_type="reasoning",
     )
 
-    assert basic["model"] == "qwen2.5-coder:3b-instruct-q5_K_M"
-    assert complex_task["model"] == "qwen2.5-coder:7b-instruct-q5_K_M"
+    assert basic["model"] == "qwen2.5-coder:3b"
+    assert complex_task["model"] == "qwen2.5-coder:7b"
 
 
 def test_second_opinion_uses_basic_qwen_by_default():
@@ -60,10 +60,10 @@ def test_second_opinion_uses_basic_qwen_by_default():
     service = LocalAIServices.__new__(LocalAIServices)
     service.config = {
         "models": {
-            "fast_code": "qwen2.5-coder:3b-instruct-q5_K_M",
-            "heavy_code": "qwen2.5-coder:7b-instruct-q5_K_M",
-            "reasoning": "qwen2.5-coder:7b-instruct-q5_K_M",
-            "general": "qwen2.5-coder:3b-instruct-q5_K_M",
+            "fast_code": "qwen2.5-coder:1.5b",
+            "heavy_code": "qwen2.5-coder:3b",
+            "reasoning": "qwen2.5-coder:7b",
+            "general": "qwen2.5-coder:1.5b",
         },
         "routing": {"heavy_min_score": 3},
     }
@@ -75,4 +75,4 @@ def test_second_opinion_uses_basic_qwen_by_default():
         "test-tenant",
     )
 
-    assert result["model"] == "qwen2.5-coder:3b-instruct-q5_K_M"
+    assert result["model"] == "qwen2.5-coder:3b"

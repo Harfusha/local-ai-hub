@@ -29,19 +29,46 @@ profile = "auto"
 auto_tune = true
 
 [models]
-# 1.5B is reserved exclusively for background preprocessing.
+# Use 0.5B for preprocessing, 1.5B for fast tasks, 3B for complex tasks, and 7B for the hardest reasoning.
 # These are the only model choices most users need to edit.
-background_code = "qwen2.5-coder:1.5b-instruct-q5_K_M"
-fast_code = "qwen2.5-coder:3b-instruct-q5_K_M"
-heavy_code = "qwen2.5-coder:7b-instruct-q5_K_M"
-reasoning = "qwen2.5-coder:7b-instruct-q5_K_M"
-general = "qwen2.5-coder:3b-instruct-q5_K_M"
+background_code = "qwen2.5-coder:0.5b"
+fast_code = "qwen2.5-coder:1.5b"
+heavy_code = "qwen2.5-coder:3b"
+reasoning = "qwen2.5-coder:7b"
+general = "qwen2.5-coder:1.5b"
 embedding = "BAAI/bge-small-en-v1.5"
 embedding_backend = "sentence-transformers"
 embedding_device = "cpu"
 reranker = "BAAI/bge-reranker-v2-m3"
 reranker_backend = "torch"
 reranker_device = "cpu"
+
+[llama_cpp]
+# On Intel-only systems, use the loopback SYCL model router when ready.
+# NVIDIA/AMD systems keep Ollama routing; the default permits Ollama fallback.
+mode = "auto" # off | auto | on (on is an explicit manual override)
+model_load_timeout_seconds = 90
+fallback_to_ollama = true
+
+[llama_cpp.models."qwen2.5-coder:1.5b"]
+url = "http://127.0.0.1:12438"
+served_model = "hub-qwen-15"
+context_length = 32768
+
+[llama_cpp.models."qwen2.5-coder:0.5b"]
+url = "http://127.0.0.1:12438"
+served_model = "hub-qwen-05"
+context_length = 16384
+
+[llama_cpp.models."qwen2.5-coder:3b"]
+url = "http://127.0.0.1:12438"
+served_model = "hub-qwen-3"
+context_length = 32768
+
+[llama_cpp.models."qwen2.5-coder:7b"]
+url = "http://127.0.0.1:12438"
+served_model = "hub-qwen-7"
+context_length = 32768
 
 [openvino]
 # Optional Intel NPU/iGPU acceleration for retrieval. The integrated hardware
@@ -57,17 +84,17 @@ cache_dir = "~/.local-ai-hub/state/openvino-cache"
 [model_execution.background]
 # Dedicated idle-only Ollama process. Hardware profiles adjust parallelism and
 # batch sizes before user overrides are applied. It never delays foreground work.
-context_tokens = 32768
-large_context_tokens = 32768
-max_context_tokens = 32768
-background_context_tokens = 32768
+context_tokens = 8192
+large_context_tokens = 16384
+max_context_tokens = 16384
+background_context_tokens = 8192
 parallel = 4
-max_prompt_tokens = 28672
+max_prompt_tokens = 12000
 context_reserve_tokens = 2048
 thinking = false
 
 [model_execution.fast]
-# Fast coding tier. Hardware profiles reduce parallelism/context pressure on smaller hosts.
+# Fast/simple tier (1.5B). Hardware profiles reduce context pressure on smaller hosts.
 context_tokens = 32768
 large_context_tokens = 32768
 max_context_tokens = 32768
@@ -78,24 +105,24 @@ context_reserve_tokens = 2048
 thinking = false
 
 [model_execution.smart]
-# Smart tier. Keep one slot by default; explicit hardware/user configuration may override it.
-context_tokens = 49152
-large_context_tokens = 65536
-max_context_tokens = 65536
+# Complex 3B and highest-reasoning 7B tiers. Qwen 2.5 Coder supports up to 32k here.
+context_tokens = 32768
+large_context_tokens = 32768
+max_context_tokens = 32768
 background_context_tokens = 24576
 parallel = 1
-max_prompt_tokens = 56000
+max_prompt_tokens = 24000
 context_reserve_tokens = 3072
 thinking = false
 thinking_roles = ["reasoning", "critic", "second-opinion"]
 
 [model_execution.generic]
 context_tokens = 32768
-large_context_tokens = 49152
-max_context_tokens = 65536
+large_context_tokens = 32768
+max_context_tokens = 32768
 background_context_tokens = 16384
 parallel = 1
-max_prompt_tokens = 28000
+max_prompt_tokens = 24000
 context_reserve_tokens = 2048
 thinking = false
 
@@ -196,9 +223,8 @@ max_list_limit = 100
 
 [ollama]
 num_parallel = 2
-# Auto hardware profiles set these true only for shared-memory iGPU machines.
-# They map to OLLAMA_IGPU_ENABLE=1 and OLLAMA_VULKAN=1 for hub-managed Ollama
-# processes. Vulkan is experimental upstream, so dGPU profiles do not force it.
+# Auto hardware profiles admit Vulkan only for non-Intel integrated graphics.
+# Intel GPU inference uses the optional llama.cpp SYCL route instead.
 allow_integrated_gpu = false
 enable_vulkan = false
 flash_attention = true
@@ -230,7 +256,7 @@ default_profile = "qwen-explorer"
 language = "match_input"
 
 [ollama_subagents.profiles.qwen-explorer]
-model = "qwen2.5-coder:3b-instruct-q5_K_M"
+model = "qwen2.5-coder:1.5b"
 role = "explorer"
 max_steps = 3
 max_tool_calls = 6
@@ -238,7 +264,7 @@ max_tokens = 700
 temperature = 0.05
 
 [ollama_subagents.profiles.qwen-drafter]
-model = "qwen2.5-coder:3b-instruct-q5_K_M"
+model = "qwen2.5-coder:3b"
 role = "drafter"
 max_steps = 3
 max_tool_calls = 6
@@ -246,7 +272,7 @@ max_tokens = 1100
 temperature = 0.08
 
 [ollama_subagents.profiles.qwen-critic]
-model = "qwen2.5-coder:3b-instruct-q5_K_M"
+model = "qwen2.5-coder:7b"
 role = "critic"
 max_steps = 3
 max_tool_calls = 6

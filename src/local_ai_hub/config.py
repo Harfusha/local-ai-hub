@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import copy
+import ipaddress
 import os
 import tomllib
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 class ConfigError(ValueError):
@@ -69,7 +71,7 @@ def validate_config(data: dict[str, Any]) -> None:
     Local AI Hub deliberately leaves most feature-specific keys extensible. Validation
     focuses on transport, resource limits, and code-intelligence lifecycle settings.
     """
-    for name in ("server", "security", "hardware", "openvino", "scheduler", "commands", "client", "mcp", "code_intelligence", "bundles", "resilience", "ollama", "ollama_subagents", "agent_state", "work_orchestrator"):
+    for name in ("server", "security", "hardware", "openvino", "scheduler", "commands", "client", "mcp", "code_intelligence", "bundles", "resilience", "ollama", "llama_cpp", "ollama_subagents", "agent_state", "work_orchestrator"):
         if name in data and not isinstance(data[name], dict):
             raise ConfigError(f"[{name}] must be a TOML table")
 
@@ -132,6 +134,38 @@ def validate_config(data: dict[str, Any]) -> None:
 
     ollama = data.get("ollama", {})
     _number(ollama, "startup_timeout_seconds", minimum=1, maximum=300)
+
+    llama_cpp = data.get("llama_cpp", {})
+    if isinstance(llama_cpp, dict):
+        mode = str(llama_cpp.get("mode", "auto")).strip().lower()
+        if mode not in {"off", "auto", "on"}:
+            raise ConfigError("llama_cpp.mode must be off, auto, or on")
+        _number(llama_cpp, "model_load_timeout_seconds", minimum=1, maximum=300)
+        models = llama_cpp.get("models", {})
+        if not isinstance(models, dict):
+            raise ConfigError("llama_cpp.models must be a TOML table")
+        for model, entry in models.items():
+            if not isinstance(entry, dict):
+                raise ConfigError(f"llama_cpp.models.{model} must be a TOML table")
+            raw_url = str(entry.get("url", "")).strip()
+            try:
+                parsed = urlsplit(raw_url)
+                if parsed.port is not None and not 1 <= parsed.port <= 65535:
+                    raise ValueError("invalid port")
+            except ValueError as exc:
+                raise ConfigError(f"llama_cpp.models.{model}.url is invalid") from exc
+            host = (parsed.hostname or "").lower()
+            is_loopback = host in {"localhost", "127.0.0.1", "::1"}
+            if not is_loopback:
+                try:
+                    is_loopback = ipaddress.ip_address(host).is_loopback
+                except ValueError:
+                    is_loopback = False
+            if parsed.scheme not in {"http", "https"} or not is_loopback or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
+                raise ConfigError(f"llama_cpp.models.{model}.url must be a loopback HTTP(S) base URL")
+            if not str(entry.get("served_model", model)).strip():
+                raise ConfigError(f"llama_cpp.models.{model}.served_model must not be empty")
+            _number(entry, "context_length", minimum=512, maximum=131072)
 
     subagents = data.get("ollama_subagents", {})
     if isinstance(subagents, dict):

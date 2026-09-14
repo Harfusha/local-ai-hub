@@ -2,7 +2,7 @@
 
 Use this prompt with any AI coding agent (Claude Code, Codex, Cursor, Windsurf, Gemini, Roo, GitHub Copilot) in any repository to update an existing Local AI Hub installation to the latest release, upgrade dependencies, restart services, and refresh the repository's instruction policies.
 
-Preserve model routing defaults when refreshing repository instructions: use qwen2.5-coder:1.5b-instruct-q5_K_M only for preprocessing, qwen2.5-coder:3b-instruct-q5_K_M by default, and qwen2.5-coder:7b-instruct-q5_K_M for complex or high-risk work.
+Preserve model routing defaults when refreshing repository instructions: qwen2.5-coder:0.5b for preprocessing only, qwen2.5-coder:1.5b for quick requests, qwen2.5-coder:3b for complex tasks, and qwen2.5-coder:7b for the hardest reasoning.
 
 ---
 
@@ -70,11 +70,8 @@ Run the platform installer with the active hardware profile to apply dependency 
      "$HOME/.local-ai-hub/.venv/bin/python" "$HOME/.local-ai-hub/tools/doctor.py"
      ```
 4. **Hardware Acceleration Check (iGPU / NPU)**:
-   - On Windows with integrated graphics (Intel Arc / Iris Xe, AMD Radeon) and no dedicated NVIDIA GPU:
-     Verify that `OLLAMA_VULKAN=1` is set in the environment so Ollama offloads LLMs to the iGPU instead of using 100% CPU:
-     ```powershell
-     [System.Environment]::SetEnvironmentVariable('OLLAMA_VULKAN', '1', 'User')
-     ```
+   - On Intel-only systems, follow `docs/LLAMA_CPP_SYCL.md` and verify that the official SYCL `llama-server.exe --list-devices` lists the Intel GPU before enabling `llama_cpp.mode = "on"`. The installed Hub selects the SYCL backend in `auto` mode when its Intel hardware profile and routes are present. Do not set `OLLAMA_VULKAN` for Intel inference.
+   - NVIDIA/AMD discrete GPUs continue through the configured Ollama CUDA/ROCm path. AMD iGPU is not an Intel SYCL target and retains its configured Ollama route. Do not enable llama.cpp SYCL on non-Intel hardware.
    - If an NPU (Intel AI Boost / AMD XDNA) or Intel iGPU is present:
      Ensure OpenVINO dependencies are installed in the venv to offload embeddings and reranking from CPU:
      ```powershell
@@ -93,6 +90,7 @@ Locate active agent instruction files in this repository (`AGENTS.md`, `CLAUDE.m
 - Verify the default setup deploys the `token-economizer` skill and registers the token-tool CLI directory on the user's persistent PATH. Keep the generated policy trigger that requires agents to load this skill before every repository task.
 - Ensure the refreshed policy retains this trigger verbatim:
   - Before any repository task, load and follow the `token-economizer` skill when it is installed; this trigger applies even under deadline pressure.
+- Preserve the `trim-run` safety boundary: only its bundled token tools and read-only search CLIs may be launched; use `local_ai_command` for tests/builds and arbitrary validation commands.
 
 ---
 

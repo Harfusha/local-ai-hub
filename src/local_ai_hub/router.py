@@ -98,12 +98,8 @@ class ModelRouter:
         if task_type in {"code", "review"}:
             model = self.models["heavy_code"] if heavy else self.models["fast_code"]
         elif task_type == "reasoning":
-            # Ordinary reasoning stays on the default tier; complex reasoning escalates.
-            model = (
-                (self.models.get("reasoning") or self.models["heavy_code"])
-                if heavy
-                else self.models["fast_code"]
-            )
+            # Ordinary reasoning uses the complex tier; only heavy reasoning uses the reasoning tier.
+            model = (self.models.get("reasoning") or self.models["heavy_code"]) if heavy else self.models["heavy_code"]
         else:
             model = self.models["general"]
 

@@ -62,7 +62,7 @@ class OllamaSubagentCatalog:
             raw = {}
         models = self.config.get("models", {})
         models = models if isinstance(models, dict) else {}
-        default_model = str(models.get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
+        default_model = str(models.get("fast_code", "qwen2.5-coder:1.5b"))
         requested_model = str(raw.get("model", default_model))
         model = requested_model
         model_fallback = False

@@ -12,8 +12,8 @@ from local_ai_hub.hardware import profile_overrides
 def test_apply_payload_injects_repetition_penalty_for_small_models():
     cfg = {
         "models": {
-            "fast_code": "qwen2.5-coder:1.5b-instruct-q5_K_M",
-            "heavy_code": "qwen2.5-coder:3b-instruct-q5_K_M",
+            "fast_code": "qwen2.5-coder:1.5b",
+            "heavy_code": "qwen2.5-coder:3b",
         },
         "model_execution": {},
     }
@@ -21,8 +21,8 @@ def test_apply_payload_injects_repetition_penalty_for_small_models():
 
     # Small 3B model with near-zero temperature should get repeat_penalty and clamped temperature
     clean, profile = policy.apply_payload(
-        "qwen2.5-coder:3b-instruct-q5_K_M",
-        {"model": "qwen2.5-coder:3b-instruct-q5_K_M", "prompt": "test", "options": {"temperature": 0.05}},
+        "qwen2.5-coder:3b",
+        {"model": "qwen2.5-coder:3b", "prompt": "test", "options": {"temperature": 0.05}},
     )
     opts = clean["options"]
     assert opts["repeat_penalty"] == 1.18
@@ -31,16 +31,16 @@ def test_apply_payload_injects_repetition_penalty_for_small_models():
 
     # Caller explicitly specifying custom repeat_penalty is respected
     clean2, _ = policy.apply_payload(
-        "qwen2.5-coder:3b-instruct-q5_K_M",
-        {"model": "qwen2.5-coder:3b-instruct-q5_K_M", "prompt": "test", "options": {"repeat_penalty": 1.25, "temperature": 0.5}},
+        "qwen2.5-coder:3b",
+        {"model": "qwen2.5-coder:3b", "prompt": "test", "options": {"repeat_penalty": 1.25, "temperature": 0.5}},
     )
     assert clean2["options"]["repeat_penalty"] == 1.25
     assert clean2["options"]["temperature"] == 0.5
 
     # 7B model should not have temperature clamped
     clean7, _ = policy.apply_payload(
-        "qwen2.5-coder:7b-instruct-q5_K_M",
-        {"model": "qwen2.5-coder:7b-instruct-q5_K_M", "prompt": "test", "options": {"temperature": 0.05}},
+        "qwen2.5-coder:7b",
+        {"model": "qwen2.5-coder:7b", "prompt": "test", "options": {"temperature": 0.05}},
     )
     assert clean7["options"]["temperature"] == 0.20
     assert clean7["options"]["repeat_penalty"] == 1.12
@@ -111,7 +111,7 @@ def test_repetition_watchdog_ignores_normal_code():
 
 
 def test_vram_balancer_nominal_for_integrated_gpu():
-    balancer = VRAMBalancer({"models": {"fast_code": "qwen2.5-coder:3b-instruct-q5_K_M"}})
+    balancer = VRAMBalancer({"models": {"fast_code": "qwen2.5-coder:1.5b"}})
     mock_gpu = {
         "available": True,
         "vendor": "intel",
