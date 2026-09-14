@@ -4,10 +4,17 @@ import inspect
 import sys
 from pathlib import Path
 from typing import Literal, get_args, get_origin, get_type_hints
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from local_ai_hub import mcp_server as local_ai_mcp  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def isolated_profile_catalog(monkeypatch):
+    # Routing tests must not inherit a developer's disabled installed profiles.
+    monkeypatch.setattr(local_ai_mcp, 'PROFILE_CATALOG', local_ai_mcp.OllamaSubagentCatalog({}))
 
 
 def test_public_action_parameters_are_explicit_literals() -> None:

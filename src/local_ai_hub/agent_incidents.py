@@ -3,14 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import sqlite3
 import threading
 import time
 import uuid
 from contextlib import closing
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Collection, Mapping
 
 from .agent_events import AgentEvent, AgentStateStore
 from .sqlite_support import connect_sqlite, retry_busy
@@ -163,7 +161,7 @@ def _extract_root_cause_and_fix(error_msg: str, tool_name: str = "", timed_out: 
     match = re.search(r"missing script:\s*([a-zA-Z0-9_\.-]+)", error_msg, re.IGNORECASE)
     if match:
         script = match.group(1)
-        return f"package.json missing script '{script}'", f"check available npm scripts in package.json", 0.95
+        return f"package.json missing script '{script}'", "check available npm scripts in package.json", 0.95
 
     low = error_msg.lower()
     if "database is locked" in low or "database table is locked" in low or "sqlite3.busyerror" in low:

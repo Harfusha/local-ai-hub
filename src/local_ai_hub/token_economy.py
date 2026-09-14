@@ -14,17 +14,19 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from functools import lru_cache
 from typing import Any, Iterable
 
 from local_ai_hub.process_utils import hidden_run_kwargs
 
-try:
-    import tiktoken
-    _ENC_O200K = tiktoken.get_encoding("o200k_base")
-    _ENC_CL100K = tiktoken.get_encoding("cl100k_base")
-except Exception:
-    _ENC_O200K = None
-    _ENC_CL100K = None
+@lru_cache(maxsize=1)
+def _encodings():
+    # Help, trim-run and repo-map must not download tokenizers during import.
+    try:
+        import tiktoken
+        return tiktoken.get_encoding("o200k_base"), tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        return None, None
 
 ANSI_REGEX = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 DEFAULT_EXTS = {
@@ -46,10 +48,11 @@ def count_tokens(text: str) -> tuple[int, int, int, int, int]:
     words = len(text.split())
     lines = text.count("\n") + (1 if text else 0)
 
-    if _ENC_O200K is not None and _ENC_CL100K is not None:
+    enc_o200k, enc_cl100k = _encodings()
+    if enc_o200k is not None and enc_cl100k is not None:
         try:
-            tok_o200k = len(_ENC_O200K.encode(text, disallowed_special=()))
-            tok_cl100k = len(_ENC_CL100K.encode(text, disallowed_special=()))
+            tok_o200k = len(enc_o200k.encode(text, disallowed_special=()))
+            tok_cl100k = len(enc_cl100k.encode(text, disallowed_special=()))
             return lines, words, chars, tok_o200k, tok_cl100k
         except Exception:
             pass
@@ -339,4 +342,3 @@ if __name__ == "__main__":
         elif subcmd == "repo_map":
             raise SystemExit(repo_map_main(subargs))
     raise SystemExit(tokcount_main(sys.argv[1:]))
-

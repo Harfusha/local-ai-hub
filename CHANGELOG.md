@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Register the managed Python package so global CLI commands work outside the checkout.
+- Resolve Windows batch executables during setup and preserve user logon startup when Task Scheduler denies registration.
+- Initialize tokenizers only when counting tokens, keeping CLI help and unrelated tools offline.
+- Recognize generic AMD Radeon Graphics adapters as integrated GPUs.
+- Enforce Windows Job Object memory and CPU limits with pointer-sized handles.
+- Reject AST outline paths outside the project, including resolved symlink escapes.
+- Evaluate benchmark cases against actual model responses instead of reporting unconditional passes.
+- Remove shadowed duplicate definitions, unused code and unresolved type annotations flagged by CI.
+
 ## 3.0.0 — 2026-09-08
 
 - One application release contract: Local AI Hub 3.0.0.

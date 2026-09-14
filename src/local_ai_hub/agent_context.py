@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import json
-import sqlite3
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Collection, Mapping
+from dataclasses import dataclass
+from typing import Any, Collection
 
-from .agent_events import AgentEvent, AgentStateStore
+from .agent_events import AgentStateStore
 from .sqlite_support import connect_sqlite, retry_busy
 
 
@@ -213,7 +210,6 @@ class ContextCompiler:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return 0
         self._init_table()
-        total_invalidated = 0
 
         def _do_invalidate() -> int:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
