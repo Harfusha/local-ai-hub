@@ -2,12 +2,32 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 import pytest
+from local_ai_hub.model_policy import ModelExecutionPolicy
+from local_ai_hub.router import ModelRouter
 from local_ai_hub.services import LocalAIServices
+
+
+def configure_review_routing(services):
+    config = {
+        "models": {
+            "fast_code": "qwen2.5-coder:3b-instruct-q5_K_M",
+            "heavy_code": "qwen2.5-coder:7b-instruct-q5_K_M",
+            "reasoning": "qwen2.5-coder:7b-instruct-q5_K_M",
+            "general": "qwen2.5-coder:3b-instruct-q5_K_M",
+        },
+        "routing": {"prefer_resident_model": False},
+        "token_saving": {"max_local_input_tokens": 56000},
+    }
+    services.config = config
+    services.router = ModelRouter(config)
+    services.model_policy = ModelExecutionPolicy(config)
+    services._resident_optimize = lambda route, task_type, complexity: route
+    services.vram_balancer = None
 
 
 def test_review_diff_consensus_explicit():
     services = MagicMock(spec=LocalAIServices)
-    services.config = {}
+    configure_review_routing(services)
     services.deterministic = MagicMock()
     services.deterministic.diff_facts.return_value = {
         "deterministic": True,
@@ -46,7 +66,7 @@ def test_review_diff_consensus_explicit():
 
 def test_review_diff_auto_consensus_on_breaking_changes():
     services = MagicMock(spec=LocalAIServices)
-    services.config = {}
+    configure_review_routing(services)
     services.deterministic = MagicMock()
     services.deterministic.diff_facts.return_value = {
         "deterministic": True,
