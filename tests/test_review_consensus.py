@@ -48,8 +48,8 @@ def test_review_diff_consensus_explicit():
     def fake_delegate(payload, tenant):
         delegate_calls.append(payload)
         if payload.get("task_type") == "reasoning":
-            return {"success": True, "text": "Secondary review: looks fine.", "model": "qwen3.5:9b"}
-        return {"success": True, "text": "Primary review: bug found.", "model": "qwen2.5-coder:7b"}
+            return {"success": True, "text": "SUMMARY: Secondary review looks fine.", "model": "qwen3.5:9b"}
+        return {"success": True, "text": "SUMMARY: Primary review found a bug.", "model": "qwen2.5-coder:7b"}
 
     services.delegate = fake_delegate
 
@@ -85,7 +85,7 @@ def test_review_diff_auto_consensus_on_breaking_changes():
     delegate_calls = []
     def fake_delegate(payload, tenant):
         delegate_calls.append(payload)
-        return {"success": True, "text": "Audited.", "model": "model_x"}
+        return {"success": True, "text": "SUMMARY: Audited all changed code; no additional issue.", "model": "model_x"}
 
     services.delegate = fake_delegate
 

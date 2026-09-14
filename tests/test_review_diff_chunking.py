@@ -54,7 +54,7 @@ class ReviewDiffChunkingTests(unittest.TestCase):
         services = self._services(diff_text, estimate_tokens(diff_text))
         calls = []
         services.delegate = lambda payload, tenant: calls.append(payload) or {
-            "success": True, "text": "No findings.", "model": "3b"
+            "success": True, "text": "SUMMARY: No findings.", "model": "3b"
         }
 
         result = LocalAIServices.review_diff(services, {"root": "."}, "test")
@@ -64,6 +64,48 @@ class ReviewDiffChunkingTests(unittest.TestCase):
         self.assertEqual(calls[0]["context"], diff_text)
         self.assertEqual(calls[0]["complexity"], "fast")
         self.assertEqual(result["diff"]["review_chunks"], 1)
+
+    def test_malformed_model_text_is_not_reported_as_success(self):
+        diff_text = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
+        services = self._services(diff_text, estimate_tokens(diff_text))
+        services.delegate = MagicMock(return_value={
+            "success": True, "text": "1**", "model": "7b"
+        })
+
+        result = LocalAIServices.review_diff(services, {"root": "."}, "test")
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["invalid_model_output"])
+        self.assertIn("SUMMARY:", result["error"])
+
+    def test_malformed_synthesis_falls_back_to_valid_segment_reviews(self):
+        changed_lines = [f"+    value_{index} = {index}\n" for index in range(500)]
+        diff_text = (
+            "diff --git a/sample.py b/sample.py\n--- a/sample.py\n+++ b/sample.py\n"
+            f"@@ -1,0 +1,{len(changed_lines)} @@\n"
+            + "".join(changed_lines)
+        )
+        services = self._services(diff_text, estimate_tokens(diff_text))
+        calls = []
+
+        def fake_delegate(payload, tenant):
+            calls.append(payload)
+            text = (
+                "SUMMARY: No actionable findings in this segment."
+                if payload["context"].startswith("diff --git")
+                else "1**"
+            )
+            return {"success": True, "text": text, "model": "7b"}
+
+        services.delegate = fake_delegate
+
+        result = LocalAIServices.review_diff(services, {"root": "."}, "test")
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["review_synthesis"]["degraded"])
+        self.assertIn("No actionable findings", result["text"])
+        self.assertNotIn("1**", result["text"])
+        self.assertGreater(result["diff"]["review_chunks"], 1)
 
     def test_large_hunk_is_split_under_budget_and_keeps_heavy_route(self):
         changed_lines = [f"+    value_{index} = {index}  # changed\n" for index in range(500)]
@@ -77,7 +119,7 @@ class ReviewDiffChunkingTests(unittest.TestCase):
         services = self._services(diff_text, estimate_tokens(diff_text))
         calls = []
         services.delegate = lambda payload, tenant: calls.append(payload) or {
-            "success": True, "text": "No actionable finding.", "model": "7b"
+            "success": True, "text": "SUMMARY: No actionable findings in this segment.", "model": "7b"
         }
 
         result = LocalAIServices.review_diff(services, {"root": "."}, "test")
@@ -130,7 +172,7 @@ class ReviewDiffChunkingTests(unittest.TestCase):
         services.model_policy = ModelExecutionPolicy(services.config)
         calls = []
         services.delegate = lambda payload, tenant: calls.append(payload) or {
-            "success": True, "text": "No findings.", "model": "3b"
+            "success": True, "text": "SUMMARY: No findings.", "model": "3b"
         }
 
         result = LocalAIServices.review_diff(services, {"root": "."}, "test")
@@ -160,7 +202,7 @@ class ReviewDiffChunkingTests(unittest.TestCase):
             calls.append(payload)
             return {
                 "success": True,
-                "text": f"{payload['task_type']} checked.",
+                "text": f"SUMMARY: {payload['task_type']} checked; no actionable defect.",
                 "model": "7b" if payload["task_type"] == "review" else "reasoning-7b",
             }
 
