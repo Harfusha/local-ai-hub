@@ -568,7 +568,7 @@ Enforce context-saving practices across all operations to maximize token efficie
 
 ### 4. Offload to Local Model (Ollama / Local AI Hub)
 - For microtasks (summarization, lint fixing, boilerplate, second opinion), delegate to local inference:
-  - `local_ai_task(model="qwen2.5-coder:7b", ...)`
+  - `local_ai_task(model="qwen2.5-coder:3b-instruct-q5_K_M", ...)`
   - Zero cloud tokens consumed.
 
 ### 5. Concise Output (Caveman Protocol)
@@ -588,7 +588,7 @@ TOKEN_ECONOMIZER_SKILL_MD = TOKEN_ECONOMIZER_SKILL_MD.replace(
 
 def _base_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
     """Generate the standard TOKEN ECONOMY POLICY block."""
-    fast_model = "qwen2.5-coder:7b"
+    fast_model = "qwen2.5-coder:3b-instruct-q5_K_M"
     if cfg:
         try:
             fs = FeatureSet.from_config(cfg)

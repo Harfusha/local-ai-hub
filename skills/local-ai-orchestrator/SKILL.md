@@ -21,7 +21,7 @@ Recipes (guidance, not gates):
 - A recipe step may be skipped when irrelevant; one bounded fallback is allowed when Hub is unavailable.
 
 Delegation is the default for any task with useful bounded independent work.
-- Use `local_ai_task` for bounded local-model work when local inference is the right fit. `qwen2.5-coder:1.5b` is the default fast tier.
+- Use `qwen2.5-coder:1.5b-instruct-q5_K_M` only for preprocessing, `qwen2.5-coder:3b-instruct-q5_K_M` for default fast/general work, and `qwen2.5-coder:7b-instruct-q5_K_M` only for complex or high-risk work. Keep deterministic simple tasks enabled and prefer indexed/deterministic Hub actions where they suffice.
 
 - Use the native Codex `multi_agent_v1__spawn_agent` path only for useful independent bounded work or an explicit Codex-subagent request.
 - Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
@@ -34,7 +34,7 @@ The main agent owns task boundaries, permissions, unresolved decisions and the f
 
 - **Local AI Hub first:** its own precise bounded microtasks, repository facts, indexed search, preprocess, impact, diff/security review, safe commands, compression, local-model synthesis and second opinions.
 - **Native Codex subagents:** use only for useful independent bounded work; Codex assigns scope, write permission, workspace/worktree, timeout, sandbox, cancellation and integration.
-- **qwen2.5-coder:1.5b default:** use `qwen2.5-coder:1.5b` for ordinary local reasoning, review, second opinions and compression after bounded evidence. Escalate to `qwen2.5-coder:3b` only for complexity/risk.
+- **Model tiers:** `qwen2.5-coder:1.5b-instruct-q5_K_M` is preprocessing-only; `qwen2.5-coder:3b-instruct-q5_K_M` is the default fast/general tier; escalate to `qwen2.5-coder:7b-instruct-q5_K_M` only for complex or high-risk work. Run deterministic/indexed actions first when sufficient.
 - **RAG:** use only after deterministic/indexed evidence and the basic local model are insufficient. Do not invoke a model to restate facts already available from the hub.
 
 ## READ-ONLY AUDIT CONTRACT
@@ -67,7 +67,7 @@ Stop escalating when evidence is sufficient; reuse cached results and bounded ev
 5. `local_ai_repo(action="context"|"solve")` — compact mixed evidence or bounded repository reasoning.
 6. `local_ai_repo(action="review_diff"|"security_audit"|"impact")` — targeted checks after or around edits.
 7. `local_ai_rag` — semantic fallback only when indexed evidence is insufficient.
-8. `local_ai_task(action="delegate"|"reason"|"review"|"second_opinion"|"compress")` — default local worker: `qwen2.5-coder:1.5b`; smart escalation only for complex routes.
+8. `local_ai_task(action="delegate"|"reason"|"review"|"second_opinion"|"compress")` — default local worker: `qwen2.5-coder:3b-instruct-q5_K_M`; use `qwen2.5-coder:7b-instruct-q5_K_M` only for very complex routes.
 9. `local_ai_command(action="run")` — tests, lint, typecheck, builds and repeatable read-only commands before native execution.
 10. `local_ai_artifact` — exact evidence/artifact slices only.
 11. `local_ai_coord` — leases before overlapping edits; memos before repeating investigation.
@@ -119,4 +119,3 @@ When working on non-trivial tasks, use Local AI Hub's Agent Operating System act
   `local_ai_coord(action="negative_knowledge_record", key="timeout", value="build timed out", reason="unindexed lock", status="add index")`
 - **Check before repeating a failed operation:**
   `local_ai_coord(action="negative_knowledge_find", query="timeout")`
-

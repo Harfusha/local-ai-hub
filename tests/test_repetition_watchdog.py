@@ -25,8 +25,13 @@ class _Response:
 
 
 class _StreamingResponse(_Response):
+    def __init__(self, payload):
+        super().__init__(payload)
+        self.iterated_chunks = 0
+
     def __iter__(self):
         for content in self.payload:
+            self.iterated_chunks += 1
             chunk = {"message": {"content": content}}
             yield json.dumps(chunk).encode("utf-8") + b"\n"
 
@@ -47,6 +52,14 @@ class RepetitionWatchdogTests(unittest.TestCase):
         self.assertFalse(watchdog.push("return only facts "))
         self.assertTrue(watchdog.push("return only facts"))
 
+    def test_detects_long_repeated_cycle_in_one_delta(self):
+        watchdog = RepetitionWatchdog()
+        cycle = "amber birch cedar delta elm fir grove hazel iris"
+        response = " ".join([cycle] * 3)
+
+        self.assertFalse(watchdog._check_word_loop())
+        self.assertTrue(watchdog.push(response))
+
     def test_does_not_reject_normal_prose_with_a_repeated_word(self):
         watchdog = RepetitionWatchdog()
 
@@ -58,11 +71,13 @@ class RepetitionWatchdogTests(unittest.TestCase):
         runtime.config = {"ollama": {"request_attempts": 1}}
         runtime.base_url = "http://ollama/"
         runtime.timeout = 1.0
-        response = _Response({"message": {"content": "text text text text text"}})
+        response = _StreamingResponse(["text ", "text ", "text ", "text ", "unused output"])
 
-        with patch("local_ai_hub.ollama.urlopen", return_value=response):
-            result = runtime.request("/api/chat", {"model": "test", "messages": []})
+        with patch("local_ai_hub.ollama.urlopen", return_value=response) as urlopen_mock:
+            result = runtime.request("/api/chat", {"model": "test", "messages": [], "stream": False})
 
+        self.assertTrue(json.loads(urlopen_mock.call_args.args[0].data)["stream"])
+        self.assertEqual(response.iterated_chunks, 4)
         self.assertTrue(result["_lah_repetition_loop_detected"])
         self.assertIn("repetition loop", result["error"])
 

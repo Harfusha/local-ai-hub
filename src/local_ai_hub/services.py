@@ -22,7 +22,7 @@ from .semantic_cache import SemanticGenerationCache
 from .model_policy import ModelExecutionPolicy
 from .ollama_subagents import OllamaSubagentCatalog
 from .repo_tools import RepositoryTools
-from .router import ModelRouter
+from .router import ModelRouter, review_diff_complexity
 from .telemetry import TelemetryStore
 from .trace_context import observer
 
@@ -739,27 +739,27 @@ class LocalAIServices:
         complexity_override = str(args.get("complexity", "auto"))
         route = self.router.classify(task, context, task_type_override, complexity_override)
         route = self._resident_optimize(route, task_type_override, complexity_override)
+        try:
+            route = self.router.apply_model_override(route, str(args.get("model", "")))
+        except ValueError as exc:
+            return {"success": False, "error": str(exc), "terminal": True, "retryable": False}
         task_type = route["task_type"]
         system = {
             "code": (
-                "You are a precise local coding subagent. Terse technical output only: zero conversational filler, pleasantries, or preamble. "
-                "Start with `SUMMARY:` in <=5 dense lines, then only actionable evidence/patch guidance. "
-                "Cite supplied file paths/lines when present. Do not restate context, do not invent repository facts, and stop after the useful answer."
+                "You are a precise local coding assistant. Return only the requested code or exact patch when asked; otherwise give a concise technical conclusion first. "
+                "Avoid filler and unnecessary headings. Cite supplied file paths/lines when present. Do not restate context or invent repository facts."
             ),
             "review": (
-                "You are a defect-first code reviewer. Terse technical output only: zero conversational filler, pleasantries, or preamble. "
-                "Start with `SUMMARY:` then report at most 8 actionable findings ordered by severity. "
-                "Prioritize correctness, regressions, security/concurrency and missing tests. Cite file/line evidence. No style commentary or praise."
+                "You are a defect-first code reviewer. Report at most 8 actionable findings ordered by severity. "
+                "Prioritize correctness, regressions, security/concurrency and missing tests. Cite file/line evidence. Avoid preamble, style commentary, and praise."
             ),
             "reasoning": (
-                "You are a critical engineering reasoning subagent. Terse technical output only: zero conversational filler, pleasantries, or preamble. "
-                "Start with `SUMMARY:` in <=5 lines. Then give only key assumptions, "
-                "failure modes, tradeoffs and the strongest counterargument. Prefer falsifiable claims over exposition."
+                "You are a critical engineering reasoning assistant. Give the best-supported conclusion first. "
+                "Include only material assumptions, failure modes, tradeoffs, and counterarguments. Avoid preamble and filler."
             ),
             "general": (
-                "You are a local second-brain assistant. Terse technical output only: zero conversational filler, pleasantries, or preamble. "
-                "Start with `SUMMARY:` and produce the shortest answer that preserves useful facts, "
-                "decisions, identifiers, numbers and uncertainty. Do not repeat the prompt."
+                "You are a concise local assistant. Answer directly and preserve useful facts, decisions, identifiers, numbers, and uncertainty. "
+                "Avoid preamble, filler, and repeating the prompt."
             ),
         }[task_type]
         prompt = self._conversation_user_prompt(task, context)
@@ -869,6 +869,10 @@ class LocalAIServices:
             "reasoning",
             str(args.get("complexity", "auto")),
         )
+        try:
+            route = self.router.apply_model_override(route, str(args.get("model", "")))
+        except ValueError as exc:
+            return {"success": False, "error": str(exc), "terminal": True, "retryable": False}
         model = str(route["model"])
         result = self._generate(
             model, prompt,
@@ -891,7 +895,7 @@ class LocalAIServices:
         if not task:
             return {"success": False, "error": "task or prompt is required"}
 
-        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b"))
+        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
         prompt = (
             f"TASK:\n{task}\n\n"
             f"FILE: {file_path}\n\n"
@@ -931,7 +935,7 @@ class LocalAIServices:
                 verification["test_summary"] = cmd_res.get("summary", "")
 
         if bool(args.get("smart_review", False)):
-            smart_model = str(self.config.get("models", {}).get("smart_code", "qwen3.5:9b"))
+            smart_model = str(self.config.get("models", {}).get("smart_code", "qwen2.5-coder:7b-instruct-q5_K_M"))
             review_prompt = f"REVIEW DRAFT IMPLEMENTATION:\nTask: {task}\nDraft Code:\n{draft_code}\nDoes this draft correctly solve the task without syntax or logical bugs? Return a short JSON object: {{\"approved\": true/false, \"confidence\": 0.0-1.0, \"summary\": \"...\"}}"
             review_res = self._generate(
                 smart_model,
@@ -1086,7 +1090,7 @@ class LocalAIServices:
 
     def eval_suite(self, tenant: str = "eval", model: str | None = None) -> dict[str, Any]:
         """Run standardized agent micro-evaluation suite measuring pass rate, latency, and tokens/sec."""
-        target_model = model or str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b"))
+        target_model = model or str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
         test_cases = [
             {
                 "id": "py_sum",
@@ -1148,7 +1152,7 @@ class LocalAIServices:
         """Evaluate a prompt template against token efficiency and response consistency."""
         clean_template = prompt_template.strip()
         inputs = test_inputs or ["Implement quicksort in Python", "Validate email regex"]
-        target_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b"))
+        target_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
         runs = []
 
         for inp in inputs:
@@ -2055,7 +2059,7 @@ class LocalAIServices:
         payload = {
             "code": diff["diff"],
             "instructions": instructions + det_hint,
-            "complexity": str(args.get("complexity", "auto")),
+            "complexity": review_diff_complexity(args, det_diff, diff),
             "max_tokens": int(args.get("max_tokens", 1800)),
             # Diff token sizes stay diagnostic for the same reason.
         }
@@ -2131,7 +2135,7 @@ class LocalAIServices:
         chunks = [text[i:i + chunk_chars] for i in range(0, len(text), chunk_chars)]
         summaries: list[str] = []
         per_chunk_out = max(180, min(700, target_tokens // max(1, len(chunks)) + 120))
-        general_model = str(self.config.get("models", {}).get("general", self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b")))
+        general_model = str(self.config.get("models", {}).get("general", self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M")))
         for index, chunk in enumerate(chunks):
             prompt = f"INSTRUCTION:\n{instruction}\n\nCHUNK {index + 1}/{len(chunks)}:\n{chunk}"
             result = self._generate(
@@ -2167,7 +2171,7 @@ class LocalAIServices:
         prefix = str(args.get("prefix", ""))
         suffix = str(args.get("suffix", ""))
         max_tokens = min(256, max(8, int(args.get("max_tokens", 80))))
-        model = str(self.config.get("models", {}).get("background_code", self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b")))
+        model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
 
         # Standard Qwen FIM prompt template
         prompt = f"<|fim_prefix|>{prefix[-3000:]}<|fim_suffix|>{suffix[:1500]}<|fim_middle|>"
@@ -2177,7 +2181,9 @@ class LocalAIServices:
             "raw": True,
             "options": {
                 "num_predict": max_tokens,
-                "temperature": 0.0,
+                "temperature": 0.2,
+                "repeat_penalty": 1.18,
+                "repeat_last_n": 128,
                 "stop": ["<|fim_prefix|>", "<|fim_suffix|>", "<|fim_middle|>", "<|endoftext|>", "<|file_separator|>"],
             },
         }
@@ -2318,7 +2324,7 @@ class LocalAIServices:
             f"3. Return ONLY clean source code inside a code block, no chat."
         )
 
-        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b"))
+        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
         res = self._generate(
             fast_model,
             prompt,
@@ -2563,7 +2569,7 @@ class LocalAIServices:
         rem = failure_result.get("remediation") or {}
         if rem.get("verified_fix") and isinstance(rem["verified_fix"], dict):
             return {str(k): str(v) for k, v in rem["verified_fix"].items()}
-        model = self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b")
+        model = self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M")
         diag = failure_result.get("diagnostics", [])
         stderr = str(failure_result.get("stderr", "") or failure_result.get("error", ""))[:2000]
         prompt = (
@@ -2586,7 +2592,7 @@ class LocalAIServices:
     def proxy_request(self, endpoint: str, payload: dict[str, Any], tenant: str, source: str) -> dict[str, Any]:
         if payload.get("stream") is True:
             return {"success": False, "error": "streaming is intentionally disabled through the affinity queue"}
-        model = str(payload.get("model") or self.config.get("models", {}).get("general", "qwen2.5-coder:7b"))
+        model = str(payload.get("model") or self.config.get("models", {}).get("general", "qwen2.5-coder:3b-instruct-q5_K_M"))
         clean = dict(payload)
         clean["stream"] = False
         clean.setdefault("keep_alive", self.config.get("ollama", {}).get("keep_alive", "-1"))

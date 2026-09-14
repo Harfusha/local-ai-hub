@@ -69,7 +69,7 @@ Enforce context-saving practices across all operations to maximize token efficie
 
 ### 4. Offload to Local Model (Ollama / Local AI Hub)
 - For microtasks (summarization, lint fixing, boilerplate, second opinion), delegate to local inference:
-  - `local_ai_task(model="qwen2.5-coder:7b", ...)`
+- `local_ai_task(model="qwen2.5-coder:3b-instruct-q5_K_M", ...)` by default; reserve `qwen2.5-coder:7b-instruct-q5_K_M` for very complex work.
   - Zero cloud tokens consumed.
 
 ### 5. Concise Output (Caveman Protocol)

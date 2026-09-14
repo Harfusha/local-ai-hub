@@ -46,6 +46,9 @@ class RepetitionWatchdog:
         if self.loop_detected or not delta:
             return self.loop_detected
         self.word_buffer = (self.word_buffer + delta)[-512:]
+        if self._check_ngram_loop():
+            self.loop_detected = True
+            return True
         if self._check_word_loop():
             self.loop_detected = True
             return True
@@ -79,6 +82,31 @@ class RepetitionWatchdog:
             cycle = tail[-width:]
             if all(tail[i:i + width] == cycle for i in range(0, len(tail), width)):
                 return True
+        return False
+
+    def _check_ngram_loop(self) -> bool:
+        """Catch repeated token cycles in streamed or complete responses."""
+        tokens = [
+            token.strip(".,!?;:()[]{}<>\"'`").lower()
+            for token in self.word_buffer.split()
+        ]
+        tail = [token for token in tokens if token][-64:]
+        if len(tail) < self.max_repeat * 2:
+            return False
+
+        for end in range(len(tail), max(0, len(tail) - 12), -1):
+            for width in range(1, min(12, end // self.max_repeat) + 1):
+                minimum_repeats = self.max_repeat + (1 if width == 1 else 0)
+                if end < width * minimum_repeats:
+                    continue
+                pattern = tail[end - width:end]
+                repeats = 1
+                cursor = end - width
+                while cursor >= width and tail[cursor - width:cursor] == pattern:
+                    repeats += 1
+                    cursor -= width
+                if repeats >= minimum_repeats:
+                    return True
         return False
 
     def _check_loop(self) -> bool:
@@ -162,6 +190,10 @@ class OllamaRuntime:
         return bool(configured) and str(model or "").strip() == configured
 
     def request(self, endpoint: str, payload: dict[str, Any] | None = None, timeout: float | None = None) -> dict[str, Any]:
+        if payload is not None and endpoint in {"/api/chat", "/api/generate"}:
+            # Stream internally even for non-streaming callers so the watchdog can
+            # stop a repetitive generation before Ollama consumes its full token budget.
+            return self.request_stream(endpoint, payload, lambda _chunk: None, timeout)
         payload = _normalise_keep_alive(payload)
         body = json.dumps(payload).encode("utf-8") if payload is not None else None
         headers = {"Content-Type": "application/json"} if body is not None else {}

@@ -329,11 +329,11 @@ def detect_hardware(requested_profile: str = "auto") -> dict[str, Any]:
 PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     "cpu": {
         "models": {
-            "background_code": "qwen2.5-coder:3b",
-            "fast_code": "qwen2.5-coder:3b",
-            "heavy_code": "qwen2.5-coder:3b",
-            "reasoning": "qwen2.5-coder:3b",
-            "general": "qwen2.5-coder:3b",
+            "background_code": "qwen2.5-coder:1.5b-instruct-q5_K_M",
+            "fast_code": "qwen2.5-coder:3b-instruct-q5_K_M",
+            "heavy_code": "qwen2.5-coder:7b-instruct-q5_K_M",
+            "reasoning": "qwen2.5-coder:7b-instruct-q5_K_M",
+            "general": "qwen2.5-coder:3b-instruct-q5_K_M",
         },
         "features": {"reranker": True},
         "scheduler": {"max_parallel": 1, "max_inflight_per_tenant": 1, "max_loaded_models": 1},
@@ -364,18 +364,18 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "same_model_worker_passes": 1,
         },
         "ollama_subagents": {"profiles": {
-            "qwen-explorer": {"model": "qwen2.5-coder:3b"},
-            "qwen-drafter": {"model": "qwen2.5-coder:3b"},
-            "qwen-critic": {"model": "qwen2.5-coder:3b"},
+            "qwen-explorer": {"model": "qwen2.5-coder:3b-instruct-q5_K_M"},
+            "qwen-drafter": {"model": "qwen2.5-coder:3b-instruct-q5_K_M"},
+            "qwen-critic": {"model": "qwen2.5-coder:3b-instruct-q5_K_M"},
         }},
     },
     "integrated": {
         "models": {
-            "background_code": "qwen2.5-coder:3b",
-            "fast_code": "qwen2.5-coder:3b",
-            "heavy_code": "qwen2.5-coder:3b",
-            "reasoning": "qwen2.5-coder:3b",
-            "general": "qwen2.5-coder:3b",
+            "background_code": "qwen2.5-coder:1.5b-instruct-q5_K_M",
+            "fast_code": "qwen2.5-coder:3b-instruct-q5_K_M",
+            "heavy_code": "qwen2.5-coder:7b-instruct-q5_K_M",
+            "reasoning": "qwen2.5-coder:7b-instruct-q5_K_M",
+            "general": "qwen2.5-coder:3b-instruct-q5_K_M",
         },
         "scheduler": {"max_parallel": 1, "max_loaded_models": 1, "max_queue": 32, "max_queued_per_tenant": 12, "max_inflight_per_tenant": 1},
         # Ollama currently requires explicit admission for integrated GPUs. Keep
@@ -408,9 +408,9 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         },
         "ollama_subagents": {
             "profiles": {
-                "qwen-explorer": {"model": "qwen2.5-coder:3b"},
-                "qwen-drafter": {"model": "qwen2.5-coder:3b"},
-                "qwen-critic": {"model": "qwen2.5-coder:3b"},
+                "qwen-explorer": {"model": "qwen2.5-coder:3b-instruct-q5_K_M"},
+                "qwen-drafter": {"model": "qwen2.5-coder:3b-instruct-q5_K_M"},
+                "qwen-critic": {"model": "qwen2.5-coder:3b-instruct-q5_K_M"},
             }
         },
         "preprocessing": {
@@ -433,11 +433,11 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "low": {
         "models": {
-            "background_code": "qwen2.5-coder:3b",
-            "fast_code": "qwen2.5-coder:3b",
-            "heavy_code": "qwen2.5-coder:7b",
-            "reasoning": "qwen2.5-coder:7b",
-            "general": "qwen2.5-coder:3b",
+            "background_code": "qwen2.5-coder:1.5b-instruct-q5_K_M",
+            "fast_code": "qwen2.5-coder:3b-instruct-q5_K_M",
+            "heavy_code": "qwen2.5-coder:7b-instruct-q5_K_M",
+            "reasoning": "qwen2.5-coder:7b-instruct-q5_K_M",
+            "general": "qwen2.5-coder:3b-instruct-q5_K_M",
         },
         "scheduler": {"max_parallel": 1, "max_inflight_per_tenant": 1},
         "ollama": {"num_parallel": 1},
@@ -449,18 +449,18 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "smart": {"parallel": 1, "context_tokens": 24576, "max_context_tokens": 32768, "max_prompt_tokens": 22000},
         },
         "ollama_subagents": {"profiles": {
-            "qwen-explorer": {"model": "qwen2.5-coder:3b"},
-            "qwen-drafter": {"model": "qwen2.5-coder:3b"},
-            "qwen-critic": {"model": "qwen2.5-coder:3b"},
+            "qwen-explorer": {"model": "qwen2.5-coder:3b-instruct-q5_K_M"},
+            "qwen-drafter": {"model": "qwen2.5-coder:3b-instruct-q5_K_M"},
+            "qwen-critic": {"model": "qwen2.5-coder:3b-instruct-q5_K_M"},
         }},
     },
     "balanced": {
         "models": {
-            "background_code": "qwen2.5-coder:3b",
-            "fast_code": "qwen2.5-coder:7b",
-            "heavy_code": "qwen3.5:9b",
-            "reasoning": "qwen3.5:9b",
-            "general": "qwen2.5-coder:7b",
+            "background_code": "qwen2.5-coder:1.5b-instruct-q5_K_M",
+            "fast_code": "qwen2.5-coder:3b-instruct-q5_K_M",
+            "heavy_code": "qwen2.5-coder:7b-instruct-q5_K_M",
+            "reasoning": "qwen2.5-coder:7b-instruct-q5_K_M",
+            "general": "qwen2.5-coder:3b-instruct-q5_K_M",
         },
         "scheduler": {"max_parallel": 2, "max_inflight_per_tenant": 2},
         "ollama": {"num_parallel": 2},
@@ -469,11 +469,11 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "high": {
         "models": {
-            "background_code": "qwen2.5-coder:3b",
-            "fast_code": "qwen2.5-coder:7b",
-            "heavy_code": "qwen3.5:9b",
-            "reasoning": "qwen3.5:9b",
-            "general": "qwen3.5:9b",
+            "background_code": "qwen2.5-coder:1.5b-instruct-q5_K_M",
+            "fast_code": "qwen2.5-coder:3b-instruct-q5_K_M",
+            "heavy_code": "qwen2.5-coder:7b-instruct-q5_K_M",
+            "reasoning": "qwen2.5-coder:7b-instruct-q5_K_M",
+            "general": "qwen2.5-coder:3b-instruct-q5_K_M",
         },
         "scheduler": {"max_parallel": 3, "max_inflight_per_tenant": 3},
         "ollama": {"num_parallel": 3},
@@ -482,11 +482,11 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "max": {
         "models": {
-            "background_code": "qwen2.5-coder:7b",
-            "fast_code": "qwen3.5:9b",
-            "heavy_code": "qwen3.5:27b",
-            "reasoning": "qwen3.5:27b",
-            "general": "qwen3.5:9b",
+            "background_code": "qwen2.5-coder:1.5b-instruct-q5_K_M",
+            "fast_code": "qwen2.5-coder:3b-instruct-q5_K_M",
+            "heavy_code": "qwen2.5-coder:7b-instruct-q5_K_M",
+            "reasoning": "qwen2.5-coder:7b-instruct-q5_K_M",
+            "general": "qwen2.5-coder:3b-instruct-q5_K_M",
         },
         "scheduler": {"max_parallel": 4, "max_inflight_per_tenant": 4},
         "ollama": {"num_parallel": 4},

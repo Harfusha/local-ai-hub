@@ -439,7 +439,7 @@ class ToolAwareLocalAgent:
             call_count = 0
             max_steps = profile.max_steps if profile else self.max_steps
             max_calls = profile.max_tool_calls if profile else self.max_calls
-            temperature = profile.temperature if profile else 0.05
+            temperature = profile.temperature if profile else 0.2
 
             for step in range(1 if direct else max_steps):
                 payload: dict[str, Any] = {

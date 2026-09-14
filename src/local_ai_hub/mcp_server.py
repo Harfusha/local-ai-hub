@@ -131,8 +131,8 @@ def _desc_task() -> str:
         )
     return (
         f"Bounded local-model worker for the main agent."
-        f" Ordinary delegate/reason/review/second-opinion work uses the `{FEATURES.fast_model}` fast tier;"
-        f" configured smart models are reserved for genuinely complex routes."
+        f" Default fast/general coding uses `{FEATURES.fast_model}`; 1.5B is preprocessing-only, and complex/high-risk routes use the configured heavy tier."
+        f" Explicit model overrides must match a configured model tag."
         f"{profile_note}"
         " Deterministic compression and repository evidence run first when sufficient."
         " Use it for one bounded local-model worker, review or second opinion after indexed evidence."
@@ -585,7 +585,7 @@ def local_ai_task(
     json_schema: dict[str, Any] | None = None,
     extra_fields: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Bounded local-model worker for the main agent. Ordinary delegate/reason/review/second-opinion work uses the fast coding tier; configured smart models are reserved for genuinely complex routes. Named advisory profiles (qwen-explorer, qwen-drafter, qwen-critic) use Local AI Hub read-only tooling directly when root is supplied. Deterministic compression and repository evidence run first when sufficient. Use it for one bounded local-model worker, review or second opinion after indexed evidence. It is not the orchestrator for native Codex subagents; those are managed directly by Codex outside Local AI Hub. Actions: delegate, reason, continue, review, second_opinion, compress, route, batch, benchmark, evaluation_record, evaluation_report, submit, status, wait, result, cancel, candidate_create, candidate_promote. delivery=sync preserves the foreground contract; async returns a durable job now; auto requires a positive latency_budget_ms and only defers after sufficient endpoint history shows p95 above it. Evaluation stores only opaque ids, booleans, and numeric metadata; it never stores prompts or source text. Async wait is bounded to 90 seconds; never poll loops. Start a short-lived conversation with conversation=true on delegate or reason, then use continue with its opaque conversation_id; conversations are sync-only and process-memory only. Use when: bounded local generation, compression, review, routing, second opinion, or named advisory subagent work is needed. Skip when: repository evidence or safe commands are sufficient without model inference, or independent peer-agent work is managed by Codex."""
+    """Bounded local-model worker. Default fast/general coding uses the fast tier; 1.5B is preprocessing-only, and complex/high-risk routes use the configured heavy tier. Explicit model overrides must match a configured model role. Named advisory profiles use read-only repository tools. Deterministic repository actions run first when sufficient. It is not the orchestrator for native Codex subagents. Actions: delegate, reason, continue, review, second_opinion, compress, route, batch, benchmark, evaluation_record, evaluation_report, submit, status, wait, result, cancel, candidate_create, candidate_promote. delivery=sync preserves the foreground contract; async returns a durable job; auto requires a positive latency budget. Evaluation stores only opaque ids, booleans, and numeric metadata. Async wait is bounded to 90 seconds. Conversations are sync-only and process-memory only."""
     if not FEATURES.tasks or not FEATURES.has_any_model():
         return {"success": False, "unsupported": True, "error": "Local model execution is disabled (features.tasks=false or no Ollama runtime configured)"}
     action = action.strip().lower().replace("-", "_")
@@ -633,7 +633,7 @@ def local_ai_task(
     if action == "delegate":
         payload = {
             "task": task, "context": context, "complexity": complexity, "max_tokens": max_tokens or 1100,
-            "delivery": delivery, "latency_budget_ms": latency_budget_ms,
+            "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model,
         }
         if format or json_schema:
             payload["format"] = format or json_schema
@@ -643,7 +643,7 @@ def local_ai_task(
     if action == "reason":
         payload = {
             "problem": task, "context": context, "max_tokens": max_tokens or 1200,
-            "delivery": delivery, "latency_budget_ms": latency_budget_ms,
+            "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model,
         }
         if format or json_schema:
             payload["format"] = format or json_schema
@@ -654,7 +654,7 @@ def local_ai_task(
         payload = {
             "code": context, "instructions": task or "Report actionable defects only.",
             "complexity": complexity, "max_tokens": max_tokens or 1300,
-            "delivery": delivery, "latency_budget_ms": latency_budget_ms,
+            "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model,
         }
         if format or json_schema:
             payload["format"] = format or json_schema
@@ -662,7 +662,7 @@ def local_ai_task(
     if action == "second_opinion":
         return _compact(CLIENT.post("/api/second-opinion", {
             "question": task, "candidate": candidate, "context": context, "max_tokens": max_tokens or 1100,
-            "delivery": delivery, "latency_budget_ms": latency_budget_ms,
+            "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model,
         }), "review")
     if action == "compress":
         return _compact(CLIENT.post("/api/compress", {

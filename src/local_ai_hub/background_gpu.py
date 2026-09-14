@@ -333,7 +333,7 @@ class IdleGPUWorker:
                 "format": task.get("schema"),
                 "stream": True,
                 "keep_alive": config.get("ollama", {}).get("keep_alive", "10m"),
-                "options": {"num_predict": max_tokens, "temperature": float(task.get("temperature", 0.0))},
+                    "options": {"num_predict": max_tokens, "temperature": float(task.get("temperature", 0.2))},
             },
             role="background",
             input_tokens=prepared.estimated_tokens,

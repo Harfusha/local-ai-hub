@@ -9,11 +9,13 @@ profile = "auto"
 auto_tune = true
 
 [models]
-# Local Ollama models. Run ollama list to see available models.
-# fast_code = "qwen2.5-coder:7b"
-# heavy_code = "qwen2.5-coder:14b"
-# reasoning = "qwen2.5-coder:14b"
-# background_code = "qwen2.5-coder:3b"
+# Local Ollama models. Use 1.5B only for preprocessing, 3B by default, and 7B only for complex work.
+# Check installed aliases with Ollama /api/tags.
+# fast_code = "qwen2.5-coder:3b-instruct-q5_K_M"
+# heavy_code = "qwen2.5-coder:7b-instruct-q5_K_M"
+# reasoning = "qwen2.5-coder:7b-instruct-q5_K_M"
+# background_code = "qwen2.5-coder:1.5b-instruct-q5_K_M"
+# general = "qwen2.5-coder:3b-instruct-q5_K_M"
 
 [code_intelligence]
 # Enable Serena (semantic symbols) and CodeGraphContext (call/dependency graphs).
