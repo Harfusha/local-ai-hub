@@ -9,13 +9,13 @@ profile = "auto"
 auto_tune = true
 
 [models]
-# Use 0.5B for preprocessing, 1.5B for fast tasks, 3B for complex tasks, and 7B for the hardest reasoning.
+# Use 0.5B for preprocessing, 1.5B for quick/simple requests, 3B for ordinary and more involved work, and 7B for the hardest reasoning.
 # Check installed aliases with Ollama /api/tags or llama.cpp /models.
 # fast_code = "qwen2.5-coder:1.5b"
 # heavy_code = "qwen2.5-coder:3b"
 # reasoning = "qwen2.5-coder:7b"
 # background_code = "qwen2.5-coder:0.5b"
-# general = "qwen2.5-coder:1.5b"
+# general = "qwen2.5-coder:3b"
 
 # Optional local llama.cpp SYCL model router for Intel GPU inference. It listens
 # on loopback port 12438 and loads one model at a time. Auto-routing applies on

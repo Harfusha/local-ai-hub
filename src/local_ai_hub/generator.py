@@ -15,9 +15,17 @@ from typing import Any
 from local_ai_hub.features import FeatureSet
 
 
+def _reasoning_tier_label(cfg: dict[str, Any], fs: FeatureSet) -> str:
+    models = cfg.get("models", {})
+    if isinstance(models, dict) and "reasoning" in models:
+        return f"`{fs.reasoning_model}`"
+    return "the configured hardest-reasoning tier"
+
+
 def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     """Generate a dynamic SKILL.md reflecting only enabled tools and models."""
     fs = FeatureSet.from_config(cfg)
+    reasoning_tier = _reasoning_tier_label(cfg, fs)
 
     trigger_lines = "\n".join(fs.trigger_map_lines()) if fs.trigger_map_lines() else "- (all Hub tools currently disabled in configuration)"
     recipe_lines = "\n".join(fs.recipe_lines())
@@ -26,7 +34,8 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     if fs.tasks and fs.has_any_model():
         delegation_task = (
             f"- Use `local_ai_task` for bounded local-model work when local inference is the right fit."
-            f" `{fs.fast_model}` is the default fast tier."
+            f" Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks,"
+            f" `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning."
         )
     else:
         delegation_task = (
@@ -53,8 +62,8 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     ]
     if fs.tasks and fs.has_any_model():
         tiering_bullets.append(
-            f"- **{fs.fast_model} default:** use `{fs.fast_model}` for ordinary local reasoning, review, second opinions and compression after bounded evidence. "
-            f"Escalate to `{fs.smart_model}` only for complexity/risk."
+            f"- **Local model tiers:** use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks, "
+            f"`{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest or highest-risk reasoning."
         )
     if fs.rag:
         tiering_bullets.append(
@@ -129,9 +138,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         routing_lines.append(f'{r_idx}. `local_ai_rag` — semantic fallback only when indexed evidence is insufficient.')
         r_idx += 1
     if fs.tasks and fs.has_any_model():
-        model_config = cfg.get("models", {}) if isinstance(cfg.get("models", {}), dict) else {}
-        reasoning_tier = f'`{fs.reasoning_model}`' if "reasoning" in model_config else "the configured hardest-reasoning tier"
-        routing_lines.append(f'{r_idx}. `local_ai_task(action="delegate"|"reason"|"review"|"second_opinion"|"compress")` — default local worker: `{fs.fast_model}`; use `{fs.smart_model}` for complex tasks and {reasoning_tier} for the hardest reasoning.')
+        routing_lines.append(f'{r_idx}. `local_ai_task(action="delegate"|"reason"|"review"|"second_opinion"|"compress")` — use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks, `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning.')
         r_idx += 1
     if fs.commands:
         routing_lines.append(f'{r_idx}. `local_ai_command(action="run")` — tests, lint, typecheck, builds and repeatable read-only commands before native execution.')
@@ -282,6 +289,7 @@ Do not fan out overlapping retrieval layers. Stop escalating when evidence is su
 def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
     """Generate dynamic reference documents for skills/local-ai-orchestrator/references/."""
     fs = FeatureSet.from_config(cfg)
+    reasoning_tier = _reasoning_tier_label(cfg, fs)
     refs: dict[str, str] = {}
 
     # tools.md
@@ -294,7 +302,7 @@ def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
     if fs.work_orchestrator:
         tool_bullets.append("- `local_ai_work`: durable whole-task orchestration with dependency planning, transactional edits, validation, whole-task verification and compact/lazy handoff.")
     if fs.tasks and fs.has_any_model():
-        tool_bullets.append(f"- `local_ai_task`: local-model microtasks (`{fs.fast_model}`), review, compression and second opinions after evidence exists.")
+        tool_bullets.append(f"- `local_ai_task`: tiered local-model work (`{fs.fast_model}` quick, `{fs.general_model}` ordinary, `{fs.smart_model}` more involved, {reasoning_tier} hardest) after evidence exists.")
     if fs.rag:
         tool_bullets.append("- `local_ai_rag`: semantic fallback only after deterministic/indexed retrieval.")
     if fs.artifacts:
@@ -398,6 +406,7 @@ Preprocessing scans, indexes, and builds AST and code maps in the background whi
 def generate_global_policy(cfg: dict[str, Any]) -> str:
     """Build a config-aware LOCAL AI HUB TOOL POLICY markdown block."""
     fs = FeatureSet.from_config(cfg)
+    reasoning_tier = _reasoning_tier_label(cfg, fs)
 
     trigger_lines = "\n".join(fs.trigger_map_lines()) if fs.trigger_map_lines() else "- (all Hub tools currently disabled)"
     recipe_lines = "\n".join(fs.recipe_lines())
@@ -406,15 +415,15 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     if fs.tasks and fs.has_any_model():
         task_delegation = (
             f"\n- Use `local_ai_task` for bounded local-model work when local inference is the right fit."
-            f" `{fs.fast_model}` is the default fast tier."
+            f" Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks,"
+            f" `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning."
         )
 
     model_default = ""
     if fs.tasks and fs.has_any_model():
         model_default = (
-            f"\nLocal model default: when generation is needed, use `{fs.fast_model}` for ordinary"
-            f" `local_ai_task` delegate/reason/review/second-opinion/compress work."
-            f" Escalate to `{fs.smart_model}` only for complex or high-risk work;"
+            f"\nLocal model routing: use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks,"
+            f" `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest or highest-risk reasoning;"
             " deterministic and indexed Hub actions run first."
         )
 
@@ -598,7 +607,7 @@ def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
         "- Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.\n"
         "- Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.\n"
         "- Surgical edits: Prefer targeted block replacements over rewriting entire files.\n"
-        f"- Local model delegation: Route routine microtasks, reviews, and second opinions to local models via `local_ai_task(model=\"{fast_model}\")`.\n"
+        f"- Local model delegation: Use `{fast_model}` only for quick/simple microtasks; let `local_ai_task` route ordinary, more involved, and highest-risk work to their configured tiers.\n"
         "<!-- END TOKEN ECONOMY POLICY -->"
     )
 
@@ -637,6 +646,7 @@ def generate_mcp_configs(
 def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Generate compact JSON tool schemas for all enabled tools."""
     fs = FeatureSet.from_config(cfg)
+    reasoning_tier = _reasoning_tier_label(cfg, fs)
     schemas: dict[str, dict[str, Any]] = {}
 
     if fs.status:
@@ -682,7 +692,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         task_actions = fs.supported_task_actions()
         schemas["local_ai_task"] = {
             "name": "local_ai_task",
-            "description": f"Bounded local-model work ({fs.fast_model}) for the main agent.",
+            "description": f"Tiered bounded local-model work ({fs.fast_model} quick, {fs.general_model} ordinary, {fs.smart_model} more involved, {reasoning_tier} hardest).",
             "parameters": {
                 "type": "object",
                 "required": ["action"],
