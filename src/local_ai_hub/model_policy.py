@@ -65,6 +65,12 @@ class ModelExecutionPolicy:
         low = model.lower()
         return "qwen3" in low or "deepseek-r1" in low or "deepseek-v3" in low or "gpt-oss" in low
 
+    @staticmethod
+    def _model_context_limit(model: str) -> int | None:
+        if "qwen2.5-coder" in str(model or "").lower():
+            return 32768
+        return None
+
     def profile(
         self,
         model: str,
@@ -84,6 +90,12 @@ class ModelExecutionPolicy:
         large_ctx = max(default_ctx, int(cfg.get("large_context_tokens", default_ctx)))
         max_ctx = max(large_ctx, int(cfg.get("max_context_tokens", large_ctx)))
         background_ctx = max(4096, int(cfg.get("background_context_tokens", min(default_ctx, 16384))))
+        model_ctx_limit = self._model_context_limit(model)
+        if model_ctx_limit is not None:
+            default_ctx = min(default_ctx, model_ctx_limit)
+            large_ctx = min(large_ctx, model_ctx_limit)
+            max_ctx = min(max_ctx, model_ctx_limit)
+            background_ctx = min(background_ctx, model_ctx_limit)
         parallel = max(1, int(cfg.get("parallel", 1)))
 
         need = max(0, int(input_tokens)) + max(0, int(output_tokens)) + max(1024, int(cfg.get("context_reserve_tokens", 2048)))
