@@ -29,13 +29,13 @@ profile = "auto"
 auto_tune = true
 
 [models]
-# Use 0.5B for preprocessing, 1.5B for fast tasks, 3B for complex tasks, and 7B for the hardest reasoning.
+# Use 0.5B for preprocessing, 1.5B for quick/simple requests, 3B for ordinary and more involved work, and 7B for the hardest reasoning.
 # These are the only model choices most users need to edit.
 background_code = "qwen2.5-coder:0.5b"
 fast_code = "qwen2.5-coder:1.5b"
 heavy_code = "qwen2.5-coder:3b"
 reasoning = "qwen2.5-coder:7b"
-general = "qwen2.5-coder:1.5b"
+general = "qwen2.5-coder:3b"
 embedding = "BAAI/bge-small-en-v1.5"
 embedding_backend = "sentence-transformers"
 embedding_device = "cpu"
