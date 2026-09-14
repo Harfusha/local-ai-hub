@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -69,6 +70,27 @@ class TestSkillGeneration:
         assert "deepseek-coder:6.7b" in skill
         assert "deepseek-coder:33b" in skill
         assert "qwen2.5-coder:7b" not in skill
+
+    def test_default_model_tiers_match_generated_routing_policy(self):
+        cfg = tomllib.loads((ROOT / "defaults.toml").read_text(encoding="utf-8"))
+        features = FeatureSet(cfg)
+        skill = generate_skill_markdown(cfg)
+        policy = generate_global_policy(cfg)
+
+        assert features.background_model == "qwen2.5-coder:0.5b"
+        assert features.fast_model == "qwen2.5-coder:1.5b"
+        assert features.general_model == "qwen2.5-coder:3b"
+        assert features.smart_model == "qwen2.5-coder:3b"
+        assert features.reasoning_model == "qwen2.5-coder:7b"
+        for generated in (skill, policy):
+            assert "qwen2.5-coder:1.5b` only for quick/simple requests" in generated
+            assert "qwen2.5-coder:3b` for ordinary tasks" in generated
+            assert "qwen2.5-coder:7b` for the hardest reasoning" in generated
+            assert "for ordinary local reasoning" not in generated
+
+    def test_general_model_falls_back_to_smart_tier(self):
+        features = FeatureSet({"models": {"fast_code": "fast", "heavy_code": "smart"}})
+        assert features.general_model == "smart"
 
     def test_skill_without_coord(self):
         cfg = {"features": {"coord": False}}

@@ -81,7 +81,7 @@ class FeatureSet:
         self.fast_model: str = str(mdl.get("fast_code", "qwen2.5-coder:1.5b"))
         self.smart_model: str = str(mdl.get("heavy_code", "qwen2.5-coder:3b"))
         self.reasoning_model: str = str(mdl.get("reasoning", "qwen2.5-coder:7b"))
-        self.general_model: str = str(mdl.get("general", self.fast_model))
+        self.general_model: str = str(mdl.get("general", self.smart_model))
         self.background_model: str = str(mdl.get("background_code", "qwen2.5-coder:0.5b"))
         self.embedding_model: str = str(mdl.get("embedding", "BAAI/bge-small-en-v1.5"))
         self.reranker_model: str = str(mdl.get("reranker", "BAAI/bge-reranker-v2-m3"))
