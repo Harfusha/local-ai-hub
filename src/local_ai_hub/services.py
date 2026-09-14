@@ -45,15 +45,16 @@ def cache_decision_reason(cache_layer: str, *, semantic_query: str) -> str:
     return "exact_reuse"
 
 
-_REVIEW_DIFF_CHUNK_TOKENS = 2400
+_REVIEW_DIFF_MIN_CHUNK_TOKENS = 256
+_REVIEW_DIFF_CONTEXT_FRACTION = 0.5
 _MAX_REVIEW_DIFF_CHUNKS = 8
 _REVIEW_SYNTHESIS_CONTEXT_TOKENS = 6000
 _UNIFIED_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
 
 
-def split_review_diff(diff_text: str, max_tokens: int = _REVIEW_DIFF_CHUNK_TOKENS) -> list[str]:
+def _split_review_diff(diff_text: str, max_tokens: int) -> list[str]:
     """Split a unified diff into bounded, file/hunk-aligned review inputs."""
-    budget = max(256, int(max_tokens))
+    budget = max(_REVIEW_DIFF_MIN_CHUNK_TOKENS, int(max_tokens))
     sections = [part for part in re.split(r"(?=^diff --git )", diff_text, flags=re.MULTILINE) if part]
     if not sections:
         return [diff_text] if diff_text else []
@@ -2095,18 +2096,82 @@ class LocalAIServices:
         instructions = fit_text(instructions, 600).text
         det_hint = fit_text(det_hint, 700).text if det_hint else ""
 
-        review_chunks = split_review_diff(str(diff["diff"]))
+        diff_text = str(diff["diff"])
+        complexity_hint = review_diff_complexity(args, det_diff, diff)
+        full_route = self.router.classify(
+            instructions + det_hint, diff_text, "review", complexity_hint
+        )
+        full_route = self._resident_optimize(full_route, "review", complexity_hint)
+        review_model = str(full_route.get("model", ""))
+        selected_tier = self.model_policy.tier_for(review_model)
+        complexity = (
+            "heavy" if selected_tier == "smart"
+            else "fast" if selected_tier in {"fast", "background"}
+            else str(full_route.get("complexity", "fast"))
+        )
+        max_output_tokens = max(64, int(args.get("max_tokens", 1800)))
+        vram_free_mb = None
+        try:
+            if getattr(self, "vram_balancer", None):
+                vram_free_mb = self.vram_balancer.status().get("vram_available_mb")
+        except Exception:
+            vram_free_mb = None
+        profile = self.model_policy.profile(
+            review_model,
+            role="review",
+            input_tokens=estimate_tokens(instructions + det_hint + diff_text),
+            output_tokens=max_output_tokens,
+            vram_free_mb=vram_free_mb,
+        )
+        configured_input_budget = max(
+            _REVIEW_DIFF_MIN_CHUNK_TOKENS,
+            int(self.config.get("token_saving", {}).get("max_local_input_tokens", 56000)),
+        )
+        effective_prompt_budget_tokens = min(configured_input_budget, profile.prompt_budget_tokens)
+        task_budget = max(128, int(effective_prompt_budget_tokens * 0.15))
+        review_task = fit_text(instructions + det_hint, task_budget).text
+        prompt_overhead = estimate_tokens(f"TASK:\n{review_task}\n\nCONTEXT:\n") + 64
+        synthesis_task = fit_text(
+            "SYNTHESIZE REVIEW FINDINGS ONLY. Merge duplicate findings and keep distinct actionable findings. "
+            "Preserve file paths, hunk/line references, severity and uncertainty. Do not re-review the source, "
+            "invent new findings, or discard a finding unless supplied findings show it is a duplicate or false positive. "
+            f"Return a concise final review.\n\nReview goal: {review_task}",
+            task_budget,
+        ).text
+        synthesis_prompt_overhead = estimate_tokens(f"TASK:\n{synthesis_task}\n\nCONTEXT:\n") + 64
+        synthesis_context_budget = max(
+            0,
+            min(
+                _REVIEW_SYNTHESIS_CONTEXT_TOKENS,
+                int(effective_prompt_budget_tokens * _REVIEW_DIFF_CONTEXT_FRACTION),
+                effective_prompt_budget_tokens - synthesis_prompt_overhead,
+            ),
+        )
+        review_chunk_token_budget = min(
+            int(effective_prompt_budget_tokens * _REVIEW_DIFF_CONTEXT_FRACTION),
+            effective_prompt_budget_tokens - prompt_overhead,
+        )
+        if review_chunk_token_budget < _REVIEW_DIFF_MIN_CHUNK_TOKENS:
+            return {
+                "success": False,
+                "error": "The selected model's prompt budget is too small for a safe diff review.",
+                "changed_files": diff.get("changed_files", []),
+                "effective_prompt_budget_tokens": effective_prompt_budget_tokens,
+            }
+
+        review_chunks = _split_review_diff(diff_text, max_tokens=review_chunk_token_budget)
         largest_review_chunk_tokens = max(estimate_tokens(chunk) for chunk in review_chunks)
-        if largest_review_chunk_tokens > _REVIEW_DIFF_CHUNK_TOKENS:
+        if largest_review_chunk_tokens > review_chunk_token_budget:
             return {
                 "success": False,
                 "error": (
-                    "A diff fragment exceeds the 2400-token review limit and cannot be split safely. "
+                    f"A diff fragment exceeds the {review_chunk_token_budget}-token review budget and cannot be split safely. "
                     "Narrow the diff or exclude generated/minified files."
                 ),
                 "changed_files": diff.get("changed_files", []),
                 "diff_truncated": bool(diff.get("truncated", False)),
                 "largest_review_chunk_tokens": largest_review_chunk_tokens,
+                "review_chunk_token_budget": review_chunk_token_budget,
             }
         if len(review_chunks) > _MAX_REVIEW_DIFF_CHUNKS:
             return {
@@ -2120,13 +2185,22 @@ class LocalAIServices:
                 "review_chunks": len(review_chunks),
             }
         chunked = len(review_chunks) > 1
-        complexity = review_diff_complexity(args, det_diff, diff)
-        max_output_tokens = max(64, int(args.get("max_tokens", 1800)))
-        per_chunk_output_tokens = min(max_output_tokens, 700) if chunked else max_output_tokens
+        if chunked:
+            header_tokens = sum(
+                estimate_tokens(f"### Counter-review segment {index}/{len(review_chunks)}\n") + 2
+                for index in range(1, len(review_chunks) + 1)
+            )
+            per_chunk_output_tokens = min(
+                max_output_tokens,
+                700,
+                max(64, (synthesis_context_budget - header_tokens - 64) // len(review_chunks)),
+            )
+        else:
+            per_chunk_output_tokens = max_output_tokens
         review_payloads: list[dict[str, Any]] = []
         primary_results: list[dict[str, Any]] = []
         for index, review_code in enumerate(review_chunks, start=1):
-            task = instructions + det_hint
+            task = review_task
             if chunked:
                 task += (
                     f"\n\nThis is review segment {index}/{len(review_chunks)} of one diff. "
@@ -2164,21 +2238,13 @@ class LocalAIServices:
                 return str(segment_results[0].get("text", "")), {"enabled": False}
 
             context = raw_text
-            if estimate_tokens(context) > _REVIEW_SYNTHESIS_CONTEXT_TOKENS:
+            if estimate_tokens(context) > synthesis_context_budget:
                 return raw_text, {"enabled": True, "degraded": True, "error": "Segment findings exceed synthesis budget."}
-            merge_task = (
-                "SYNTHESIZE REVIEW FINDINGS ONLY. The segments below were reviewed separately. "
-                "Merge duplicate findings and keep distinct actionable findings. Preserve file paths, "
-                "hunk/line references, severity and uncertainty. Do not re-review the source, invent "
-                "new findings, or discard a finding unless the supplied segment findings show it is "
-                "a duplicate or false positive. Return a concise final review.\n\n"
-                f"Review goal: {instructions}\n{det_hint}"
-            )
             try:
                 merged = self.delegate(
                     {
                         "task_type": task_type,
-                        "task": merge_task,
+                        "task": synthesis_task,
                         "context": context,
                         "complexity": complexity,
                         "max_tokens": min(max_output_tokens, 1800),
@@ -2246,7 +2312,12 @@ class LocalAIServices:
             "original_diff_tokens": diff["original_estimated_tokens"],
             "deterministic": det_diff,
             "review_chunks": len(review_chunks),
-            "review_chunk_token_budget": _REVIEW_DIFF_CHUNK_TOKENS,
+            "effective_prompt_budget_tokens": effective_prompt_budget_tokens,
+            "review_chunk_token_budget": review_chunk_token_budget,
+            "review_chunk_context_fraction": _REVIEW_DIFF_CONTEXT_FRACTION,
+            "review_segment_output_budget_tokens": per_chunk_output_tokens,
+            "review_synthesis_context_budget_tokens": synthesis_context_budget,
+            "review_model": review_model,
             "largest_review_chunk_tokens": largest_review_chunk_tokens,
         }
         return result
