@@ -31,7 +31,7 @@ Execute the following phases deterministically:
 
 ### PHASE 2: RUN BOOTSTRAP INSTALLATION
 
-Run the platform installer from the repository root. This automatically configures Python 3.11+, virtual environment, Token Economy tools, Ollama models, Serena/CodeGraphContext environments, global MCP configs, and background supervisor.
+Run the platform installer from the repository root. This automatically configures Python 3.11+, virtual environment, Token Economy tools, Ollama models, Serena/CodeGraphContext environments, global MCP configs, and background supervisor. The default install deploys the `token-economizer` skill and registers its CLI directory on the user's persistent PATH; verify both after setup, then open a new terminal. Do not pass `--skip-token-economy` or `--skip-companion-skills` for the standard install.
 
 - **Windows (PowerShell)**:
   ```powershell
@@ -157,6 +157,7 @@ Local model default: when generation is needed, use `qwen2.5-coder:7b` for ordin
 <!-- END LOCAL AI HUB TOOL POLICY -->
 
 <!-- BEGIN TOKEN ECONOMY POLICY -->
+- Before any repository task, load and follow the `token-economizer` skill when it is installed; this trigger applies even under deadline pressure.
 - Zero full-file dumping: Never read files >80 lines in their entirety. Use `repo-map` for high-level structure, `grep-ast <pattern> <file>`, targeted line slices, or `local_ai_artifact(action="slice")`.
 - Fast code search: Use `rg` (`ripgrep`) with `-m 5` / bounded matches and `fd` for file finding before opening files.
 - AST & structural code search: Use `ast-grep` (`sg`), Serena LSP (`find_symbol`, `find_referencing_symbols`), or `local_ai_repo(action="code_index")` before opening files.

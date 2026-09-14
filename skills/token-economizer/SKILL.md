@@ -1,11 +1,11 @@
 ---
 name: token-economizer
-description: Enforce strict token and context efficiency. Prevents reading entire files, trims test/command outputs, delegates local microtasks, and leverages grep-ast, repo-map, trim-run, tokcount, repomix, ast-grep, Serena LSP, and Local AI Hub.
+description: Use when starting any coding or repository task involving source discovery, file reading, tests, command output, or code review.
 ---
 
 # Token Economizer
 
-Enforce context-saving practices across all operations to maximize token efficiency, prevent context degradation, and lower API costs.
+Load and follow this skill before any coding or repository task. Apply its discovery, reading, and output limits even when a task is urgent; use the token-economy tools whenever they are available.
 
 ## Available Token-Saving Tooling
 
