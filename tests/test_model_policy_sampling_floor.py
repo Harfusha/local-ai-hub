@@ -35,6 +35,31 @@ class ModelPolicySamplingFloorTests(unittest.TestCase):
         )
         self.assertEqual(payload["options"]["temperature"], 0.0)
 
+    def test_qwen_coder_context_never_exceeds_its_32k_limit(self):
+        policy = ModelExecutionPolicy({
+            "models": {"heavy_code": "qwen2.5-coder:7b-instruct-q5_K_M"},
+            "model_execution": {
+                "smart": {
+                    "context_tokens": 49152,
+                    "large_context_tokens": 65536,
+                    "max_context_tokens": 65536,
+                    "max_prompt_tokens": 56000,
+                }
+            },
+        })
+
+        payload, profile = policy.apply_payload(
+            "qwen2.5-coder:7b-instruct-q5_K_M",
+            {"options": {"num_ctx": 65536}},
+            role="review",
+            input_tokens=40000,
+            output_tokens=1800,
+        )
+
+        self.assertEqual(payload["options"]["num_ctx"], 32768)
+        self.assertEqual(profile.max_ctx, 32768)
+        self.assertLessEqual(profile.prompt_budget_tokens + 1800 + 2048, 32768)
+
 
 if __name__ == "__main__":
     unittest.main()
