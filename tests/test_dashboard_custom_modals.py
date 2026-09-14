@@ -175,3 +175,20 @@ def test_dashboard_modal_scrolling_and_flex_structure() -> None:
 
     # Ensure openModal resets modalBody scroll to top
     assert "$('modalBody').scrollTop=0" in DASHBOARD_HTML
+
+
+def test_dashboard_onclick_handlers_use_safe_escaping() -> None:
+    # Verify escJs helper is defined
+    assert "escJs=v=>esc(JSON.stringify(v))" in DASHBOARD_HTML
+
+    # Ensure no onclick handlers interpolate raw '${esc(...)}' which breaks on Windows paths or quotes
+    unsafe_single = re.findall(r'onclick=[\'"][^\'"]*\'\$\{esc\([^\)]+\)\}\'[^\'"]*[\'"]', DASHBOARD_HTML)
+    assert not unsafe_single, f"Found unsafe single-quoted esc() in onclick: {unsafe_single}"
+
+    unsafe_double = re.findall(r'onclick=[\'"][^\'"]*\"\$\{esc\([^\)]+\)\}\"[^\'"]*[\'"]', DASHBOARD_HTML)
+    assert not unsafe_double, f"Found unsafe double-quoted esc() in onclick: {unsafe_double}"
+
+    # Verify unregister modal uses safe confirmDeleteProject binding
+    assert "id=\"confirmDeleteProjectBtn\"" in DASHBOARD_HTML
+    assert "confirmDeleteProject(${escJs(root)})" in DASHBOARD_HTML
+    assert "confirmBtn.onclick=()=>confirmDeleteProject(root)" in DASHBOARD_HTML

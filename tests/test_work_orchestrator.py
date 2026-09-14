@@ -238,7 +238,7 @@ def test_integrated_profile_contains_notebook_safe_limits():
     assert p["scheduler"]["max_queued_per_tenant"] == 12
     assert p["async_jobs"]["max_pending"] == 16
     assert p["prewarm"]["enabled"] is False
-    assert p["preprocessing"]["idle_grace_seconds"] == 15.0
+    assert p["preprocessing"]["idle_grace_seconds"] == 30.0
     assert p["code_intelligence"]["max_sessions_per_backend"] == 2
     assert p["headless"]["max_sessions_per_backend"] == 2
     assert p["debug_traces"]["max_bytes"] == 134217728

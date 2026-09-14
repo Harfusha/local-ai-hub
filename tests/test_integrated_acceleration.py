@@ -67,9 +67,12 @@ def test_integrated_profile_is_conservative_and_accelerates_retrieval() -> None:
     assert cfg["scheduler"]["max_parallel"] == 1
     assert cfg["scheduler"]["max_loaded_models"] == 1
     assert cfg["background_gpu"]["enabled"] is False
-    assert cfg["preprocessing"]["cpu_workers"] == 2
-    assert cfg["model_execution"]["fast"]["context_tokens"] == 8192
-    assert cfg["model_execution"]["smart"]["max_context_tokens"] == 12288
+    assert cfg["preprocessing"]["cpu_workers"] == 1
+    assert cfg["model_execution"]["fast"]["context_tokens"] == 32768
+    assert cfg["model_execution"]["smart"]["max_context_tokens"] == 32768
+    base_cfg = profile_overrides("integrated")
+    assert base_cfg["model_execution"]["fast"]["context_tokens"] == 8192
+    assert base_cfg["model_execution"]["smart"]["max_context_tokens"] == 12288
     assert cfg["models"]["embedding"] == "BAAI/bge-small-en-v1.5"
     assert cfg["models"]["embedding_backend"] == "openvino"
     assert cfg["models"]["reranker"] == "cross-encoder/ms-marco-MiniLM-L6-v2"

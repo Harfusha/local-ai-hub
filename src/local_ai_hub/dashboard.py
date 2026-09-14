@@ -722,7 +722,7 @@ const traceStyles=document.createElement('style');
 traceStyles.textContent='.trace-inspector-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:12px;background:linear-gradient(135deg,#172535,#11171e);border:1px solid #33485f;border-radius:8px}.trace-kicker{color:var(--accent);font-size:10px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px}.trace-inspector-head strong{font-size:15px;display:block;overflow-wrap:anywhere}.trace-metrics{display:flex;gap:7px;flex-wrap:wrap;padding:8px 0 2px;color:var(--muted);font-size:10px}.trace-metrics span{border:1px solid #2b3948;border-radius:999px;padding:3px 7px}.trace-tabs{display:flex;gap:5px;overflow:auto;padding:10px 0 2px;border-bottom:1px solid var(--line)}.trace-tab{background:transparent;color:var(--muted);border:0;border-bottom:2px solid transparent;padding:7px 9px;cursor:pointer;white-space:nowrap;font-size:11px}.trace-tab:hover,.trace-tab.active{color:var(--fg);border-bottom-color:var(--accent)}.trace-view{min-height:80px}.tool-pair{display:grid;gap:6px}.tool-part{border-left:3px solid #6d86a8;background:#0d141c;padding:8px;border-radius:4px}.tool-result{border-left-color:var(--ok)}.tool-label{color:var(--accent);font-weight:700;font-size:11px;margin-bottom:6px}.tool-label .tiny{margin-left:7px;color:var(--fg);font-weight:400}.tool-pending{color:var(--warn);font-size:11px;padding:7px 0}.trace-raw-panel pre{margin:0}';
 document.head.append(traceStyles);
 
-const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])), escJs=v=>esc(JSON.stringify(v));
 const n=v=>Number(v||0).toLocaleString(), ms=v=>{v=Number(v||0);return v>=1000?(v/1000).toFixed(v>=10000?1:2)+' s':Math.round(v)+' ms'}, durSec=s=>{s=Number(s||0);if(s<60)return Math.round(s)+'s';if(s<3600)return Math.floor(s/60)+'m '+Math.round(s%60)+'s';if(s<86400)return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';return Math.floor(s/86400)+'d '+Math.floor((s%86400)/3600)+'h'}, age=msv=>durSec(Number(msv||0)/1000);
 
 // Lightweight pure-canvas chart renderer
@@ -1080,7 +1080,7 @@ function renderTaskModal(t){
       <div class="modal-checklist-item">
         <span class="badge-status badge-waiting" style="font-size:9px">#${i+1}</span>
         <span class="item-text"><b>${esc(c)}</b></span>
-        <button class="action-btn-sm" onclick="checkTaskCriterion('${esc(t.task_id)}','${esc(c)}',this)">Verify</button>
+        <button class="action-btn-sm" onclick="checkTaskCriterion(${escJs(t.task_id)},${escJs(c)},this)">Verify</button>
       </div>
     `).join('')+'</div>';
   } else {
@@ -1094,7 +1094,7 @@ function renderTaskModal(t){
           <div class="tiny muted mono">DURABLE AGENT TASK</div>
           <h2 style="margin:2px 0 0;font-size:16px;display:flex;align-items:center;gap:8px">
             <span class="mono">${esc(t.task_id)}</span>
-            <button class="copy-btn" onclick="copyText('${esc(t.task_id)}',this)">Copy ID</button>
+            <button class="copy-btn" onclick="copyText(${escJs(t.task_id)},this)">Copy ID</button>
           </h2>
         </div>
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
@@ -1116,7 +1116,7 @@ function renderTaskModal(t){
       <div class="modal-card">
         <div class="modal-card-head">
           <span>Acceptance Criteria (${criteria.length})</span>
-          <button class="action-btn-sm" onclick="checkTaskCompletionGate('${esc(t.task_id)}')">Check Completion Gate</button>
+          <button class="action-btn-sm" onclick="checkTaskCompletionGate(${escJs(t.task_id)})">Check Completion Gate</button>
         </div>
         <div class="modal-card-body">
           ${criteriaHtml}
@@ -1140,7 +1140,7 @@ function renderTaskModal(t){
         <div class="modal-card-head"><span>Task Lifecycle &amp; Controls</span></div>
         <div class="modal-card-body">
           <div class="modal-actions-bar">
-            <button class="btn ok" onclick="completeTaskAction('${esc(t.task_id)}')">✓ Complete Task</button>
+            <button class="btn ok" onclick="completeTaskAction(${escJs(t.task_id)})">✓ Complete Task</button>
             <button class="btn bad" onclick="showFailTaskInput()">✗ Mark Failed</button>
             <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
               <span class="tiny muted">Status:</span>
@@ -1150,14 +1150,14 @@ function renderTaskModal(t){
                 <option value="blocked" ${st==='blocked'?'selected':''}>blocked</option>
                 <option value="planned" ${st==='planned'?'selected':''}>planned</option>
               </select>
-              <button class="btn" onclick="transitionTaskAction('${esc(t.task_id)}')">Apply</button>
+              <button class="btn" onclick="transitionTaskAction(${escJs(t.task_id)})">Apply</button>
             </div>
           </div>
           <div id="failTaskBox" style="display:none;margin-top:10px;padding:8px;background:#181216;border:1px solid #7f1d1d;border-radius:6px">
             <label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px;color:#fca5a5">Failure Reason *</label>
             <div style="display:flex;gap:6px">
               <input type="text" id="failTaskReason" placeholder="Why did this task fail?" style="flex:1;background:#0d1219;border:1px solid #2d3f56;color:var(--fg);padding:4px 8px;border-radius:4px;font-size:11px">
-              <button class="btn bad" onclick="submitFailTask('${esc(t.task_id)}')">Confirm Fail</button>
+              <button class="btn bad" onclick="submitFailTask(${escJs(t.task_id)})">Confirm Fail</button>
               <button class="btn" onclick="$('failTaskBox').style.display='none'">Cancel</button>
             </div>
           </div>
@@ -1376,7 +1376,7 @@ function renderMemoryModal(m){
           <div class="tiny muted mono">AGENT MEMORY ENTRY</div>
           <h2 style="margin:2px 0 0;font-size:16px;display:flex;align-items:center;gap:8px">
             <strong>${esc(key)}</strong>
-            <button class="copy-btn" onclick="copyText('${esc(key)}',this)">Copy Key</button>
+            <button class="copy-btn" onclick="copyText(${escJs(key)},this)">Copy Key</button>
           </h2>
         </div>
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
@@ -1391,7 +1391,7 @@ function renderMemoryModal(m){
       <div class="modal-card">
         <div class="modal-card-head">
           <span>Memory Value</span>
-          <button class="copy-btn" onclick="copyText(${esc(JSON.stringify(valStr))},this)">Copy Value</button>
+          <button class="copy-btn" onclick="copyText(${escJs(valStr)},this)">Copy Value</button>
         </div>
         <div class="modal-card-body">
           <pre class="code-box" style="margin:0">${esc(valStr)}</pre>
@@ -1406,7 +1406,7 @@ function renderMemoryModal(m){
           </div>
           <div id="confirmDelMemBox" style="display:none;align-items:center;gap:8px;padding:6px 10px;background:#1a1015;border:1px solid #7f1d1d;border-radius:4px">
             <span class="tiny" style="color:#fca5a5">Delete memory <b>${esc(m.key)}</b> (${esc(m.scope)})?</span>
-            <button class="btn bad" onclick="deleteMemoryAction('${esc(m.key)}','${esc(m.scope)}')">Confirm Delete</button>
+            <button class="btn bad" onclick="deleteMemoryAction(${escJs(m.key)},${escJs(m.scope)})">Confirm Delete</button>
             <button class="btn" onclick="$('confirmDelMemBox').style.display='none';$('memActionRow').style.display='flex'">Cancel</button>
           </div>
           <div id="memoryActionStatus" class="tiny" style="margin-top:8px"></div>
@@ -1560,7 +1560,7 @@ function renderIncidentModal(i){
       <div class="modal-card" style="border-color:${isResolved?'var(--ok)':'#334155'}">
         <div class="modal-card-head" style="background:${isResolved?'#0c2e1f':'#131d2b'}">
           <span class="${isResolved?'ok':''}">Verified Prevention Rule / Fix</span>
-          ${fix!=='—'?`<button class="copy-btn" onclick="copyText('${esc(fix)}',this)">Copy Fix</button>`:''}
+          ${fix!=='—'?`<button class="copy-btn" onclick="copyText(${escJs(fix)},this)">Copy Fix</button>`:''}
         </div>
         <div class="modal-card-body">
           <div style="font-size:12px;font-weight:500;color:${isResolved?'#86efac':'var(--fg)'}">${esc(fix)}</div>
@@ -1573,7 +1573,7 @@ function renderIncidentModal(i){
           <div class="modal-card-body">
             <div style="display:flex;gap:8px">
               <input type="text" id="resolveFixInput" placeholder="Enter verified fix or prevention rule..." style="flex:1;background:#131d2b;color:var(--fg);border:1px solid #2d3f56;border-radius:6px;padding:6px 10px;font-size:11px">
-              <button class="btn ok" onclick="resolveIncidentAction('${esc(id)}')">Mark Resolved</button>
+              <button class="btn ok" onclick="resolveIncidentAction(${escJs(id)})">Mark Resolved</button>
             </div>
             <div id="resolveIncStatus" class="tiny" style="margin-top:6px"></div>
           </div>
@@ -1758,14 +1758,14 @@ function renderLiveStreamModal(ev){
       ${taskId?`
         <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:#101a26;border:1px solid #1e354d;border-radius:6px">
           <span>Related Task: <b class="mono">${esc(taskId)}</b></span>
-          <button class="btn ok" onclick="openTaskById('${esc(taskId)}')">↗ Open Task Inspector</button>
+          <button class="btn ok" onclick="openTaskById(${escJs(taskId)})">↗ Open Task Inspector</button>
         </div>
       `:''}
 
       <div class="modal-card">
         <div class="modal-card-head">
           <span>Event Payload</span>
-          <button class="copy-btn" onclick="copyText(${esc(JSON.stringify(payloadStr))},this)">Copy Payload</button>
+          <button class="copy-btn" onclick="copyText(${escJs(payloadStr)},this)">Copy Payload</button>
         </div>
         <div class="modal-card-body">
           <pre class="code-box" style="margin:0">${esc(payloadStr)}</pre>
@@ -1818,7 +1818,7 @@ function renderProjectModal(p){
           <div class="tiny muted mono">PREPROCESSED REPOSITORY WORKSPACE</div>
           <h2 style="margin:2px 0 0;font-size:16px;display:flex;align-items:center;gap:8px">
             <b>${esc(p.project)}</b>
-            <button class="copy-btn" onclick="copyText('${esc(p.root)}',this)">Copy Path</button>
+            <button class="copy-btn" onclick="copyText(${escJs(p.root)},this)">Copy Path</button>
           </h2>
           <div class="tiny mono muted" style="margin-top:3px">${esc(p.root)}</div>
         </div>
@@ -1858,10 +1858,10 @@ function renderProjectModal(p){
         <div class="modal-card-head"><span>Workspace Controls</span></div>
         <div class="modal-card-body">
           <div class="modal-actions-bar">
-            <button class="btn" onclick="projectAction('${esc(p.root)}','${state==='paused'?'resume':'pause'}');$('modalClose').click()">${state==='paused'?'▶ Resume Preprocessing':'⏸ Pause Preprocessing'}</button>
-            <button class="btn ok" onclick="projectAction('${esc(p.root)}','refresh');$('modalClose').click()">↻ Force Re-scan</button>
-            <button class="btn" onclick="exportBundle('${esc(p.root)}')">📦 Export Bundle</button>
-            <button class="btn bad" style="margin-left:auto" onclick="deleteProjectDialog('${esc(p.root)}','${esc(p.project)}')">🗑 Unregister / Delete</button>
+            <button class="btn" onclick="projectAction(${escJs(p.root)},'${state==='paused'?'resume':'pause'}');$('modalClose').click()">${state==='paused'?'▶ Resume Preprocessing':'⏸ Pause Preprocessing'}</button>
+            <button class="btn ok" onclick="projectAction(${escJs(p.root)},'refresh');$('modalClose').click()">↻ Force Re-scan</button>
+            <button class="btn" onclick="exportBundle(${escJs(p.root)})">📦 Export Bundle</button>
+            <button class="btn bad" style="margin-left:auto" onclick="deleteProjectDialog(${escJs(p.root)},${escJs(p.project)})">🗑 Unregister / Delete</button>
           </div>
         </div>
       </div>
@@ -1954,11 +1954,13 @@ function openDeleteProjectModal(root,name){
 
       <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px">
         <button class="btn" onclick="$('modalClose').click()">Cancel</button>
-        <button class="btn bad" onclick="confirmDeleteProject('${esc(root)}')">Confirm Unregister / Purge</button>
+        <button class="btn bad" id="confirmDeleteProjectBtn" onclick="confirmDeleteProject(${escJs(root)})">Confirm Unregister / Purge</button>
       </div>
     </div>
   `;
   $('modalBg').classList.add('open');
+  const confirmBtn=$('confirmDeleteProjectBtn');
+  if(confirmBtn)confirmBtn.onclick=()=>confirmDeleteProject(root);
 }
 
 async function confirmDeleteProject(root){
@@ -1967,6 +1969,10 @@ async function confirmDeleteProject(root){
   if(statusEl)statusEl.textContent='Processing…';
   try{
     const r=await post('/api/preprocess',{root,action:'unregister',purge_data:purge});
+    if(r && r.success===false){
+      if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(r.error||'Failed to unregister')}</span>`;
+      return;
+    }
     $('modalClose').click();
     await pollStatus();
   }catch(e){
@@ -2185,7 +2191,7 @@ function renderActiveLeaseModal(l){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn bad" onclick="releaseLeaseAction('${esc(l.lease_id)}')">Release Lease</button>
+        <button class="btn bad" onclick="releaseLeaseAction(${escJs(l.lease_id)})">Release Lease</button>
       </div>
     </div>
   `;
@@ -2837,7 +2843,7 @@ function renderSchedulerJobModal(j){
       ${traceId?`
         <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:#101a26;border:1px solid #1e354d;border-radius:6px">
           <span>Linked Trace: <b class="mono">${esc(traceId)}</b></span>
-          <button class="btn ok" onclick="openTrace('${esc(traceId)}')">↗ Open Full Trace</button>
+          <button class="btn ok" onclick="openTrace(${escJs(traceId)})">↗ Open Full Trace</button>
         </div>
       `:''}
       <details class="raw-json"><summary>Raw Job Details</summary><pre>${esc(JSON.stringify(j,null,2))}</pre></details>
@@ -2898,6 +2904,11 @@ $('modalClose').onclick=()=>{$('modalBg').classList.remove('open');activeTraceId
 $('modalBg').onclick=e=>{if(e.target===$('modalBg'))$('modalClose').click()};
 
 document.addEventListener('click',e=>{
+  const closeBtn=e.target.closest?.('button');
+  if(closeBtn && (closeBtn.getAttribute('onclick')?.includes('modalClose') || closeBtn.dataset.modalClose!==undefined || (closeBtn.textContent?.trim()==='Cancel' && closeBtn.closest('#modalBody')))){
+    $('modalClose').click();
+    return;
+  }
   const tab=e.target.closest?.('[data-trace-view]');if(tab){setTraceView(tab.dataset.traceView);return}
   const pageTrace=e.target.closest?.('[data-trace-page-id]');if(pageTrace){openTrace(pageTrace.dataset.tracePageId);return}
   const back=e.target.closest?.('[data-trace-back]');if(back){switchTab('work');return}
@@ -4230,7 +4241,7 @@ async function loadInstalledModels(){
       const sizeMb=m.size?Math.round(m.size/(1024*1024))+' MB':'—';
       const isRun=runningMap.has(name);
       const vramInfo=isRun?`<span class="pill ok tiny">Active in VRAM (${Math.round((runningMap.get(name).size_vram||0)/(1024*1024))} MB)</span>`:'<span class="muted tiny">Idle</span>';
-      html+=`<tr><td><strong>${esc(name)}</strong></td><td class="tiny">${sizeMb}</td><td>${vramInfo}</td><td><button class="btn bad tiny" onclick="deleteOllamaModel('${esc(name)}')">Delete</button></td></tr>`;
+      html+=`<tr><td><strong>${esc(name)}</strong></td><td class="tiny">${sizeMb}</td><td>${vramInfo}</td><td><button class="btn bad tiny" onclick="deleteOllamaModel(${escJs(name)})">Delete</button></td></tr>`;
     }
     html+='</tbody></table>';
     list.innerHTML=html;

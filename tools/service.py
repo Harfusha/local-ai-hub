@@ -136,7 +136,9 @@ def native_start() -> None:
     if os.name == "nt":
         cp = run(["schtasks", "/Change", "/TN", "LocalAIHubSupervisor", "/ENABLE"])
         if cp.returncode == 0:
-            run(["schtasks", "/Run", "/TN", "LocalAIHubSupervisor"]); return
+            run_cp = run(["schtasks", "/Run", "/TN", "LocalAIHubSupervisor"])
+            if run_cp.returncode == 0:
+                return
         spawn_detached(); return
     if sys.platform == "darwin":
         dest = Path.home() / "Library/LaunchAgents/com.localai.hub.plist"
@@ -162,9 +164,9 @@ def install_windows() -> str:
         def psq(value: object) -> str:
             return "'" + str(value).replace("'", "''") + "'"
         script = "; ".join([
-            f"$a=New-ScheduledTaskAction -Execute {psq(PYWIN)} -Argument {psq(str(script_path))}",
+            f"$a=New-ScheduledTaskAction -Execute {psq(PYWIN)} -Argument {psq(str(script_path))} -WorkingDirectory {psq(str(ROOT))}",
             "$t=New-ScheduledTaskTrigger -AtLogOn",
-            "$s=New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew",
+            "$s=New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable",
             f"Register-ScheduledTask -TaskName {psq(task)} -Action $a -Trigger $t -Settings $s -Force | Out-Null",
         ])
         cp = run([powershell, "-NoProfile", "-NonInteractive", "-Command", script])

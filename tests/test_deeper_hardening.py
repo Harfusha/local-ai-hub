@@ -80,6 +80,8 @@ def test_dashboard_csp_uses_nonce_not_unsafe_inline_script():
     policy = headers["Content-Security-Policy"]
     assert "script-src 'nonce-test-nonce'" in policy
     assert "script-src 'self' 'unsafe-inline'" not in policy
+    assert "script-src-attr 'unsafe-inline'" in policy
+    assert "form-action 'self'" in policy
 
 
 def test_api_schema_rejects_excessive_embedding_items():

@@ -42,6 +42,7 @@ class LocalAgentPipeline:
         self.direct_smart_enabled = bool(cfg.get("direct_smart_enabled", "direct_smart_complexity_score" in cfg or "direct_smart_risk_score" in cfg))
         self.direct_smart_complexity_score = int(cfg.get("direct_smart_complexity_score", 99))
         self.direct_smart_risk_score = int(cfg.get("direct_smart_risk_score", 99))
+        self.max_final_chars = int(cfg.get("max_final_chars", config.get("token_saving", {}).get("max_inline_chars", 3600)))
         self.refine_runs = 0
         self.execution_policy_fp = stable_hash(config.get("model_execution", {}))
         state_dir = Path(config["server"]["state_dir"])

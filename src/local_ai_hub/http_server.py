@@ -314,7 +314,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
         if html:
             script_source = f"'nonce-{nonce}'" if nonce else "'none'"
-            self.send_header("Content-Security-Policy", f"default-src 'none'; connect-src 'self'; img-src 'self' data:; style-src 'unsafe-inline'; script-src {script_source}; script-src-attr 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+            self.send_header("Content-Security-Policy", f"default-src 'none'; connect-src 'self'; img-src 'self' data:; style-src 'unsafe-inline'; script-src {script_source}; script-src-attr 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 
     def _send_html(self, status: int, html: str) -> None:
         nonce = uuid.uuid4().hex
