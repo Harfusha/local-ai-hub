@@ -52,6 +52,19 @@ _REVIEW_SYNTHESIS_CONTEXT_TOKENS = 6000
 _UNIFIED_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
 
 
+def _review_text_error(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return "Model returned empty review output."
+    text = value.strip()
+    match = re.match(r"^(?:\*\*)?SUMMARY(?:\*\*)?:\s*(.*)$", text, re.IGNORECASE | re.DOTALL)
+    if match is None:
+        return "Model output did not start with the required SUMMARY: header."
+    words = re.findall(r"[^\W\d_]+", match.group(1), flags=re.UNICODE)
+    if len(words) < 2:
+        return "Model returned an incomplete or malformed review summary."
+    return None
+
+
 def _split_review_diff(diff_text: str, max_tokens: int) -> list[str]:
     """Split a unified diff into bounded, file/hunk-aligned review inputs."""
     budget = max(_REVIEW_DIFF_MIN_CHUNK_TOKENS, int(max_tokens))
@@ -2225,6 +2238,16 @@ class LocalAIServices:
                     "failed_segment": index,
                     "partial_reviews": [str(item.get("text", "")) for item in primary_results],
                 }
+            output_error = _review_text_error(response.get("text"))
+            if output_error:
+                return {
+                    "success": False,
+                    "error": f"Review segment {index}/{len(review_chunks)} returned unusable output: {output_error}",
+                    "failed_segment": index,
+                    "model": response.get("model"),
+                    "invalid_model_output": True,
+                    "partial_reviews": [str(item.get("text", "")) for item in primary_results],
+                }
             primary_results.append(response)
 
         result = dict(primary_results[0])
@@ -2251,13 +2274,17 @@ class LocalAIServices:
                     },
                     tenant,
                 )
-                if isinstance(merged, dict) and merged.get("success") is not False and merged.get("text"):
-                    return str(merged["text"]), {
-                        "enabled": True,
-                        "degraded": False,
-                        "model": merged.get("model"),
-                    }
-                error = merged.get("error", "Synthesis returned no text.") if isinstance(merged, dict) else "Synthesis returned no result."
+                if isinstance(merged, dict) and merged.get("success") is not False:
+                    output_error = _review_text_error(merged.get("text"))
+                    if output_error is None:
+                        return str(merged["text"]), {
+                            "enabled": True,
+                            "degraded": False,
+                            "model": merged.get("model"),
+                        }
+                    error = f"Synthesis returned unusable output: {output_error}"
+                else:
+                    error = merged.get("error", "Synthesis returned no text.") if isinstance(merged, dict) else "Synthesis returned no result."
                 return raw_text, {"enabled": True, "degraded": True, "error": str(error)}
             except Exception as exc:
                 return raw_text, {"enabled": True, "degraded": True, "error": str(exc)}
@@ -2285,8 +2312,14 @@ class LocalAIServices:
                         + str(review_payload["task"])
                     )
                     sec_result = self.delegate(sec_payload, tenant)
-                    if isinstance(sec_result, dict) and sec_result.get("text"):
-                        secondary_results.append(sec_result)
+                    if not isinstance(sec_result, dict) or sec_result.get("success") is False:
+                        raise ValueError(f"Counter-review segment {len(secondary_results) + 1} failed.")
+                    output_error = _review_text_error(sec_result.get("text"))
+                    if output_error:
+                        raise ValueError(
+                            f"Counter-review segment {len(secondary_results) + 1} returned unusable output: {output_error}"
+                        )
+                    secondary_results.append(sec_result)
                 if secondary_results:
                     secondary_text, secondary_synthesis = merge_segment_results(
                         secondary_results, label="Counter-review segment", task_type="reasoning"
