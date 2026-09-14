@@ -91,7 +91,11 @@ def test_default_config_declares_three_advisory_profiles() -> None:
 
     profiles = config["ollama_subagents"]["profiles"]
     assert set(profiles) == {"qwen-explorer", "qwen-drafter", "qwen-critic"}
-    assert all(profile["model"] == "qwen2.5-coder:7b" for profile in profiles.values())
+    assert {name: profile["model"] for name, profile in profiles.items()} == {
+        "qwen-explorer": "qwen2.5-coder:1.5b",
+        "qwen-drafter": "qwen2.5-coder:3b",
+        "qwen-critic": "qwen2.5-coder:7b",
+    }
 
 
 def test_profile_limits_are_validated_at_config_load() -> None:

@@ -13,10 +13,10 @@ class ReviewDiffRoutingTests(unittest.TestCase):
         router = ModelRouter(
             {
                 "models": {
-                    "fast_code": "qwen2.5-coder:3b-instruct-q5_K_M",
-                    "heavy_code": "qwen2.5-coder:7b-instruct-q5_K_M",
-                    "reasoning": "qwen2.5-coder:7b-instruct-q5_K_M",
-                    "general": "qwen2.5-coder:3b-instruct-q5_K_M",
+                    "fast_code": "qwen2.5-coder:1.5b",
+                    "heavy_code": "qwen2.5-coder:3b",
+                    "reasoning": "qwen2.5-coder:7b",
+                    "general": "qwen2.5-coder:1.5b",
                 }
             }
         )
@@ -26,22 +26,22 @@ class ReviewDiffRoutingTests(unittest.TestCase):
             "Analyze the root cause", task_type="reasoning", complexity="heavy"
         )
 
-        self.assertEqual(basic["model"], "qwen2.5-coder:3b-instruct-q5_K_M")
-        self.assertEqual(complex_route["model"], "qwen2.5-coder:7b-instruct-q5_K_M")
+        self.assertEqual(basic["model"], "qwen2.5-coder:3b")
+        self.assertEqual(complex_route["model"], "qwen2.5-coder:7b")
 
     def test_model_override_requires_a_configured_tier(self):
         router = ModelRouter(
-            {"models": {"background_code": "qwen2.5-coder:1.5b-instruct-q5_K_M", "fast_code": "qwen2.5-coder:3b-instruct-q5_K_M", "heavy_code": "qwen2.5-coder:7b-instruct-q5_K_M"}}
+            {"models": {"background_code": "qwen2.5-coder:0.5b", "fast_code": "qwen2.5-coder:1.5b", "heavy_code": "qwen2.5-coder:3b", "reasoning": "qwen2.5-coder:7b"}}
         )
         route = router.classify("Complete this function", task_type="code")
 
-        overridden = router.apply_model_override(route, "qwen2.5-coder:7b-instruct-q5_K_M")
-        self.assertEqual(overridden["model"], "qwen2.5-coder:7b-instruct-q5_K_M")
-        self.assertEqual(overridden["original_model"], "qwen2.5-coder:3b-instruct-q5_K_M")
+        overridden = router.apply_model_override(route, "qwen2.5-coder:7b")
+        self.assertEqual(overridden["model"], "qwen2.5-coder:7b")
+        self.assertEqual(overridden["original_model"], "qwen2.5-coder:1.5b")
         with self.assertRaisesRegex(ValueError, "configured model tier"):
             router.apply_model_override(route, "qwen2.5-coder:9b")
         with self.assertRaisesRegex(ValueError, "configured model tier"):
-            router.apply_model_override(route, "qwen2.5-coder:1.5b-instruct-q5_K_M")
+            router.apply_model_override(route, "qwen2.5-coder:0.5b")
 
     def test_high_risk_metadata_escalates_to_heavy_model(self):
         complexity = review_diff_complexity(

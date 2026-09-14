@@ -169,6 +169,10 @@ def filter_and_print_trimmed(lines: Iterable[str], max_lines: int) -> None:
             print(l)
 
 
+_TRIM_RUN_ALLOWED_COMMANDS = {"rg", "fd", "grep-ast"}
+_TRIM_RUN_BUNDLED_COMMANDS = {"tokcount": "tokcount", "repo-map": "repo_map"}
+
+
 def trim_run_main(argv: list[str] | None = None) -> int:
     """CLI entry point for trim-run."""
     if hasattr(sys.stdout, "reconfigure"):
@@ -196,16 +200,49 @@ def trim_run_main(argv: list[str] | None = None) -> int:
         filter_and_print_trimmed(lines, max_lines)
         return 0
 
-    # Subprocess execution mode
+    # Subprocess execution mode is deliberately allowlisted. trim-run is not a
+    # shell wrapper: use local_ai_command for arbitrary validation commands.
+    command_name = os.path.basename(args[0]).lower()
+    if os.path.basename(args[0]) != args[0]:
+        print("trim-run: command is not in the safe read/validation allowlist", file=sys.stderr)
+        return 2
+    if command_name in _TRIM_RUN_BUNDLED_COMMANDS:
+        command_args = [sys.executable, __file__, _TRIM_RUN_BUNDLED_COMMANDS[command_name], *args[1:]]
+    elif command_name in _TRIM_RUN_ALLOWED_COMMANDS:
+        lowered_args = [arg.lower() for arg in args[1:]]
+        if command_name == "rg" and any(arg == "--pre" or arg.startswith("--pre=") for arg in lowered_args):
+            print("trim-run: rg preprocessors are not allowed", file=sys.stderr)
+            return 2
+        if command_name == "fd" and any(
+            arg in {"-x", "-X", "--exec", "--exec-batch"}
+            or arg.startswith(("--exec=", "--exec-batch="))
+            for arg in lowered_args
+        ):
+            print("trim-run: fd command execution options are not allowed", file=sys.stderr)
+            return 2
+        command_args = args
+    else:
+        print("trim-run: command is not in the safe read/validation allowlist", file=sys.stderr)
+        return 2
+
+    safe_env = os.environ.copy()
+    # Search CLIs accept options from environment config files as well as argv;
+    # strip those channels so an inherited --pre/--exec cannot escape the checks.
+    safe_env.pop("RIPGREP_CONFIG_PATH", None)
+    safe_env.pop("FD_OPTIONS", None)
+
+    # Always pass argv directly. shell=True would turn this token-saving helper
+    # into an arbitrary command launcher on Windows and POSIX.
     try:
         proc = subprocess.Popen(
-            args if len(args) > 1 else args[0],
-            shell=len(args) == 1,
+            command_args,
+            shell=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=safe_env,
             **hidden_run_kwargs(),
         )
         lines: list[str] = []
@@ -280,7 +317,15 @@ def generate_repo_map(root_dir: str | Path, max_lines: int = 250, exts: set[str]
                             **hidden_run_kwargs(),
                         )
                         if res.stdout and res.stdout.strip():
-                            extracted_lines = [l for l in res.stdout.splitlines() if l.strip()]
+                            candidates = [l for l in res.stdout.splitlines() if l.strip()]
+                            # Some grep-ast releases print only a file heading
+                            # for Python files they cannot parse. Treat that as
+                            # an empty result so the built-in declaration scan
+                            # remains a reliable fallback.
+                            for candidate_line in candidates:
+                                source_line = re.sub(r"^.*?:\d+:\s*", "", candidate_line)
+                                if _OUTLINE_PATTERN.search(source_line):
+                                    extracted_lines.append(source_line.rstrip())
                     except Exception:
                         pass
 

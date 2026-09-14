@@ -28,7 +28,7 @@ class TestFeatureSetDefaults:
 
     def test_default_model_names(self):
         fs = FeatureSet({})
-        assert fs.fast_model == "qwen2.5-coder:7b"
+        assert fs.fast_model == "qwen2.5-coder:1.5b"
 
     def test_has_semantic_true_when_either_backend_on(self):
         assert FeatureSet({}).has_semantic() is True
@@ -113,6 +113,22 @@ class TestOllamaDisabled:
         fs = FeatureSet(cfg)
         assert fs.fast_model not in fs.cheapest_path_hint()
 
+    def test_llama_cpp_backend_keeps_local_tasks_available_when_ollama_is_off(self):
+        cfg = {
+            "server": {"auto_start_ollama": False},
+            "llama_cpp": {
+                "mode": "on",
+                "models": {"qwen2.5-coder:3b": {"url": "http://127.0.0.1:12438"}},
+            },
+        }
+
+        fs = FeatureSet(cfg)
+
+        assert fs.ollama is False
+        assert fs.llama_cpp is True
+        assert fs.tasks is True
+        assert fs.has_any_model() is True
+
 
 class TestCustomModelNames:
     def test_custom_fast_model(self):
@@ -185,7 +201,7 @@ enabled = true
         from local_ai_hub.agent_routing import RoutingEngine, RouteRequest
         engine = RoutingEngine()
         dec = engine.select(RouteRequest(needs_model=True))
-        assert dec.target == "qwen2.5-coder:7b"
+        assert dec.target == "qwen2.5-coder:1.5b"
 
     def test_custom_model_from_cfg(self):
         from local_ai_hub.agent_routing import RoutingEngine, RouteRequest
@@ -235,5 +251,4 @@ enabled = true
             assert sent[0][1]["restart_required"] is True
         finally:
             http_server.APP = old_app
-
 

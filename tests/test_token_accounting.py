@@ -83,7 +83,7 @@ def test_telemetry_reports_gross_protocol_net_and_breakdown(tmp_path: Path):
             "local_compute_tokens_avoided_est": 500,
             "savings_breakdown": {"deterministic_outline": 1000, "response_compaction": 800},
         })
-        assert store.flush(1.0)
+        assert store.flush()
         summary = store.summary(scope="process")
         assert summary["gross_cloud_tokens_avoided_est"] == 1800
         assert summary["agent_protocol_tokens_est"] == 200
@@ -105,7 +105,7 @@ def test_telemetry_reports_cache_domains_separately(tmp_path: Path):
         store.record_http(action="/api/repo/code-index", cache_hit=True, cache_layer="workspace", success=True)
         store.record_http(action="/api/repo/search", cache_hit=False, cache_layer="workspace-miss", success=True)
         store.record_http(action="/api/command", cache_hit=True, cache_layer="", success=True)
-        assert store.flush(1.0)
+        assert store.flush()
 
         domains = store.summary(scope="process")["cache_domains"]
 
@@ -135,7 +135,7 @@ def test_telemetry_prices_input_and_output_savings_separately(tmp_path: Path):
             "agent_protocol_tokens_est": 300,
             "net_cloud_token_delta_est": 1200,
         })
-        assert store.flush(1.0)
+        assert store.flush()
         summary = store.summary(scope="process")
         assert summary["estimated_input_savings_usd"] == 0.0016
         assert summary["estimated_output_savings_usd"] == 0.0032
@@ -165,7 +165,7 @@ def test_telemetry_does_not_price_overlapping_output_baseline_twice(tmp_path: Pa
             "agent_protocol_tokens_est": 300,
             "net_cloud_token_delta_est": 700,
         })
-        assert store.flush(1.0)
+        assert store.flush()
         summary = store.summary(scope="process")
         assert summary["estimated_input_savings_usd"] == 0.0016
         assert summary["estimated_output_savings_usd"] == -0.0008
@@ -244,7 +244,7 @@ def test_telemetry_preserves_signed_net_delta_and_overhead(tmp_path: Path):
             "net_after_schema_token_delta_est": -150,
             "schema_adjusted_overhead_est": 150,
         })
-        assert store.flush(1.0)
+        assert store.flush()
         summary = store.summary(scope="process")
         assert summary["net_cloud_token_delta_est"] == -50
         assert summary["cloud_token_overhead_est"] == 50

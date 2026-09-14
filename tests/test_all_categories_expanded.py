@@ -328,9 +328,9 @@ def test_vram_context_scaling():
     prof_3g = policy.profile("qwen2.5-coder:7b", requested_ctx=49152, vram_free_mb=3072)
     assert prof_3g.num_ctx == 16384
 
-    # If 12GB VRAM, context allows larger
+    # The model's 32K context cap applies even with 12GB VRAM.
     prof_12g = policy.profile("qwen2.5-coder:7b", requested_ctx=49152, vram_free_mb=12288)
-    assert prof_12g.num_ctx == 49152
+    assert prof_12g.num_ctx == 32768
 
 
 def test_generation_cache_key_with_format():

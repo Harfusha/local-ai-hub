@@ -129,7 +129,9 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         routing_lines.append(f'{r_idx}. `local_ai_rag` — semantic fallback only when indexed evidence is insufficient.')
         r_idx += 1
     if fs.tasks and fs.has_any_model():
-        routing_lines.append(f'{r_idx}. `local_ai_task(action="delegate"|"reason"|"review"|"second_opinion"|"compress")` — default local worker: `{fs.fast_model}`; smart escalation only for complex routes.')
+        model_config = cfg.get("models", {}) if isinstance(cfg.get("models", {}), dict) else {}
+        reasoning_tier = f'`{fs.reasoning_model}`' if "reasoning" in model_config else "the configured hardest-reasoning tier"
+        routing_lines.append(f'{r_idx}. `local_ai_task(action="delegate"|"reason"|"review"|"second_opinion"|"compress")` — default local worker: `{fs.fast_model}`; use `{fs.smart_model}` for complex tasks and {reasoning_tier} for the hardest reasoning.')
         r_idx += 1
     if fs.commands:
         routing_lines.append(f'{r_idx}. `local_ai_command(action="run")` — tests, lint, typecheck, builds and repeatable read-only commands before native execution.')
@@ -513,8 +515,8 @@ Load and follow this skill before any coding or repository task. Apply its disco
    - Example: `tokcount src/` or `git diff | tokcount`
 
 2. **`trim-run [-n 40] <command>` / `cmd | trim-run`**:
-   - Universal terminal wrapper: runs commands, strips ANSI codes, truncates large output dumps to first/last N lines.
-   - Example: `trim-run pytest -q` or `git log | trim-run`
+   - Safe output wrapper: allows bundled `tokcount`/`repo-map` and read-only `rg`/`fd`/`grep-ast` commands; it also trims stdin pipelines. It never runs arbitrary shell commands.
+   - Example: `repo-map . | trim-run -n 40` or `git log | trim-run`
 
 3. **`repo-map [dir] [-n 200]`**:
    - Generates high-density AST skeleton (classes, methods, signatures) of the whole repo using Tree-sitter / grep-ast without reading file bodies.
@@ -557,7 +559,7 @@ Load and follow this skill before any coding or repository task. Apply its disco
 
 ### 2. Bounded Command & Test Outputs
 - **NEVER** run verbose build/test commands raw into context.
-- Always wrap terminal commands with `trim-run` or route through `local_ai_command`.
+- Route tests/builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or to trim stdin pipelines.
 - Filter large JSON outputs with `jq` to extract only relevant fields before returning to LLM.
 - Use minimal test flags: `pytest -q --tb=short`, `dotnet test --verbosity quiet`.
 - Use compact git commands: `git status -s`, `git diff --stat`, `git log -n 5 --oneline`.
@@ -568,7 +570,7 @@ Load and follow this skill before any coding or repository task. Apply its disco
 
 ### 4. Offload to Local Model (Ollama / Local AI Hub)
 - For microtasks (summarization, lint fixing, boilerplate, second opinion), delegate to local inference:
-  - `local_ai_task(model="qwen2.5-coder:3b-instruct-q5_K_M", ...)`
+- Use `qwen2.5-coder:1.5b` for quick local work, `qwen2.5-coder:3b` for complex tasks, and `qwen2.5-coder:7b` for the hardest reasoning; reserve `qwen2.5-coder:0.5b` for preprocessing.
   - Zero cloud tokens consumed.
 
 ### 5. Concise Output (Caveman Protocol)
@@ -579,7 +581,7 @@ Load and follow this skill before any coding or repository task. Apply its disco
 
 def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
     """Generate the standard TOKEN ECONOMY POLICY block."""
-    fast_model = "qwen2.5-coder:3b-instruct-q5_K_M"
+    fast_model = "qwen2.5-coder:1.5b"
     if cfg:
         try:
             fs = FeatureSet.from_config(cfg)
@@ -594,7 +596,7 @@ def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
         "- Fast code search: Use `rg` (`ripgrep`) with `-m 5` / bounded matches and `fd` for file finding before opening files.\n"
         "- AST & structural code search: Use `ast-grep` (`sg`), Serena LSP (`find_symbol`, `find_referencing_symbols`), or `local_ai_repo(action=\"code_index\")` before opening files.\n"
         "- Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.\n"
-        "- Bounded command outputs: Filter test and build output (`trim-run <cmd>`, `pytest -q --tb=short`, `dotnet test --verbosity quiet`, `git log | trim-run`, `jq` for JSON) or route through `local_ai_command`.\n"
+        "- Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.\n"
         "- Surgical edits: Prefer targeted block replacements over rewriting entire files.\n"
         f"- Local model delegation: Route routine microtasks, reviews, and second opinions to local models via `local_ai_task(model=\"{fast_model}\")`.\n"
         "<!-- END TOKEN ECONOMY POLICY -->"

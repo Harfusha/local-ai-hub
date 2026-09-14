@@ -26,8 +26,8 @@ class CompletionModelRoutingTests(unittest.TestCase):
     def test_code_completion_uses_fast_model_not_preprocessing_model(self):
         services = object.__new__(LocalAIServices)
         services.config = {"models": {
-            "background_code": "qwen2.5-coder:1.5b-instruct-q5_K_M",
-            "fast_code": "qwen2.5-coder:3b-instruct-q5_K_M",
+            "background_code": "qwen2.5-coder:0.5b",
+            "fast_code": "qwen2.5-coder:1.5b",
         }}
         services.scheduler = CaptureScheduler()
         services.runtime = CaptureRuntime()
@@ -35,19 +35,19 @@ class CompletionModelRoutingTests(unittest.TestCase):
 
         result = services.complete_code({"prefix": "def answer():"}, "test")
 
-        self.assertEqual(result["model"], "qwen2.5-coder:3b-instruct-q5_K_M")
-        self.assertEqual(services.runtime.model, "qwen2.5-coder:3b-instruct-q5_K_M")
+        self.assertEqual(result["model"], "qwen2.5-coder:1.5b")
+        self.assertEqual(services.runtime.model, "qwen2.5-coder:1.5b")
 
     def test_code_completion_falls_back_to_fast_default(self):
         services = object.__new__(LocalAIServices)
-        services.config = {"models": {"background_code": "qwen2.5-coder:1.5b-instruct-q5_K_M"}}
+        services.config = {"models": {"background_code": "qwen2.5-coder:0.5b"}}
         services.scheduler = CaptureScheduler()
         services.runtime = CaptureRuntime()
         services.generation_cache = ImmediateCache()
 
         result = services.complete_code({"prefix": "def answer():"}, "test")
 
-        self.assertEqual(result["model"], "qwen2.5-coder:3b-instruct-q5_K_M")
+        self.assertEqual(result["model"], "qwen2.5-coder:1.5b")
 
 
 if __name__ == "__main__":

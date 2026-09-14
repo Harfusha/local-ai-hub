@@ -17,7 +17,7 @@ Adoption gate: `local_ai_command` alone is not a repository workflow. After the 
 
 Before native recursive search/tree/glob or opening many files for discovery, route cheapest-first: `deterministic` -> `code_index`/`search` -> Serena `semantic` / CodeGraph `graph` -> `context` / `solve`; RAG and local-model synthesis come last. Stop as soon as a layer supplies enough evidence. Do not launch overlapping deterministic/search/context/RAG/model calls in parallel for one question; broader layers already compose or reuse cheaper indexes, so only independent questions should be parallelized. Repeatable tests, lint, typecheck, builds and safe read-only commands go through `local_ai_command`, which state-keys, caches and single-flights duplicate work.
 
-When generation is needed, use the basic local `qwen2.5-coder:7b` tier by default for `local_ai_task` actions `delegate`, `reason`, `review`, `second_opinion` and model-backed `compress`. Escalate to `heavy_code` only when complexity/risk requires it; deterministic/indexed evidence still runs first.
+When generation is needed, use `qwen2.5-coder:1.5b` for quick work, `qwen2.5-coder:3b` for complex tasks, and `qwen2.5-coder:7b` for the hardest reasoning; reserve `qwen2.5-coder:0.5b` for preprocessing. Deterministic/indexed evidence still runs first.
 
 Exact source should be fetched through `E…` evidence or artifact slices only when inspection/editing requires it. Fresh hub discovery and command results should not be repeated natively. `force=true` and `preprocess_refresh` are exceptional controls, not retry mechanisms.
 

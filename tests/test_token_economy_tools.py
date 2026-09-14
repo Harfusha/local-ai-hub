@@ -79,6 +79,19 @@ def test_trim_run_filter_and_print(capsys: pytest.CaptureFixture):
     assert "line 99" in out
 
 
+@pytest.mark.parametrize(
+    ("command", "args"),
+    [
+        ("python", ["-c", "print(1)"]),
+        ("rg", ["--pre", "python -c x"]),
+        ("fd", ["-x", "python"]),
+    ],
+)
+def test_trim_run_rejects_unlisted_or_command_executing_options(command, args, capsys):
+    assert trim_run_main([command, *args]) == 2
+    assert "trim-run:" in capsys.readouterr().err
+
+
 def test_generate_repo_map(tmp_path: Path):
     mod = tmp_path / "module.py"
     mod.write_text(

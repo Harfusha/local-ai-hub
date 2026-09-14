@@ -9,13 +9,41 @@ profile = "auto"
 auto_tune = true
 
 [models]
-# Local Ollama models. Use 1.5B only for preprocessing, 3B by default, and 7B only for complex work.
-# Check installed aliases with Ollama /api/tags.
-# fast_code = "qwen2.5-coder:3b-instruct-q5_K_M"
-# heavy_code = "qwen2.5-coder:7b-instruct-q5_K_M"
-# reasoning = "qwen2.5-coder:7b-instruct-q5_K_M"
-# background_code = "qwen2.5-coder:1.5b-instruct-q5_K_M"
-# general = "qwen2.5-coder:3b-instruct-q5_K_M"
+# Use 0.5B for preprocessing, 1.5B for fast tasks, 3B for complex tasks, and 7B for the hardest reasoning.
+# Check installed aliases with Ollama /api/tags or llama.cpp /models.
+# fast_code = "qwen2.5-coder:1.5b"
+# heavy_code = "qwen2.5-coder:3b"
+# reasoning = "qwen2.5-coder:7b"
+# background_code = "qwen2.5-coder:0.5b"
+# general = "qwen2.5-coder:1.5b"
+
+# Optional local llama.cpp SYCL model router for Intel GPU inference. It listens
+# on loopback port 12438 and loads one model at a time. Auto-routing applies on
+# Intel-only systems when all model aliases are configured; otherwise Ollama runs.
+[llama_cpp]
+mode = "auto" # off | auto | on; use "on" only when these are known SYCL servers
+model_load_timeout_seconds = 90
+fallback_to_ollama = true
+
+[llama_cpp.models."qwen2.5-coder:0.5b"]
+url = "http://127.0.0.1:12438"
+served_model = "hub-qwen-05"
+context_length = 16384
+
+[llama_cpp.models."qwen2.5-coder:1.5b"]
+url = "http://127.0.0.1:12438"
+served_model = "hub-qwen-15"
+context_length = 32768
+
+[llama_cpp.models."qwen2.5-coder:3b"]
+url = "http://127.0.0.1:12438"
+served_model = "hub-qwen-3"
+context_length = 32768
+
+[llama_cpp.models."qwen2.5-coder:7b"]
+url = "http://127.0.0.1:12438"
+served_model = "hub-qwen-7"
+context_length = 32768
 
 [code_intelligence]
 # Enable Serena (semantic symbols) and CodeGraphContext (call/dependency graphs).

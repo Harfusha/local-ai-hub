@@ -117,7 +117,7 @@ def _desc_status() -> str:
 def _desc_task() -> str:
     if not FEATURES.has_any_model():
         return (
-            "Local-model worker — disabled on this installation (no Ollama runtime configured)."
+            "Local-model worker — disabled on this installation (no local model backend configured)."
             " Returns unsupported=true for all actions."
             " Use when: never (no local inference available). Skip when: always use indexed evidence only."
             " Local AI Hub does not route or manage external agents."
@@ -131,7 +131,7 @@ def _desc_task() -> str:
         )
     return (
         f"Bounded local-model worker for the main agent."
-        f" Default fast/general coding uses `{FEATURES.fast_model}`; 1.5B is preprocessing-only, and complex/high-risk routes use the configured heavy tier."
+        f" Use 0.5B for preprocessing, `{FEATURES.fast_model}` for quick tasks, `{FEATURES.smart_model}` for complex work, and `{FEATURES.reasoning_model}` for the hardest reasoning."
         f" Explicit model overrides must match a configured model tag."
         f"{profile_note}"
         " Deterministic compression and repository evidence run first when sufficient."
@@ -164,7 +164,7 @@ def _desc_repo() -> str:
         f" Use deterministic, code_index/search,{' ' + FEATURES.semantic_hint() + ',' if FEATURES.has_semantic() else ''}"
         " context and solve for bounded evidence and implementation support."
         " For implementation, diagnosis, refactoring or complex review, call `solve` after evidence and before native edits."
-        f"{' When generation is needed, seed the basic `' + FEATURES.fast_model + '` fast tier before smart escalation.' if FEATURES.has_any_model() else ''}"
+        f"{' When generating, use `' + FEATURES.fast_model + '` for quick tasks, `' + FEATURES.smart_model + '` for complex work, and `' + FEATURES.reasoning_model + '` for hardest reasoning.' if FEATURES.has_any_model() else ''}"
         " `review_diff` and `security_audit` are targeted local checks."
         f"{'  After indexed evidence, use `local_ai_task` for one bounded local-model worker/review/second opinion.' if FEATURES.has_any_model() else ''}"
         " Codex separately decides whether to use native Codex subagents;"
@@ -585,7 +585,7 @@ def local_ai_task(
     json_schema: dict[str, Any] | None = None,
     extra_fields: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Bounded local-model worker. Default fast/general coding uses the fast tier; 1.5B is preprocessing-only, and complex/high-risk routes use the configured heavy tier. Explicit model overrides must match a configured model role. Named advisory profiles use read-only repository tools. Deterministic repository actions run first when sufficient. It is not the orchestrator for native Codex subagents. Actions: delegate, reason, continue, review, second_opinion, compress, route, batch, benchmark, evaluation_record, evaluation_report, submit, status, wait, result, cancel, candidate_create, candidate_promote. delivery=sync preserves the foreground contract; async returns a durable job; auto requires a positive latency budget. Evaluation stores only opaque ids, booleans, and numeric metadata. Async wait is bounded to 90 seconds. Conversations are sync-only and process-memory only."""
+    """Bounded local-model worker. Use 0.5B for preprocessing, the fast tier for quick tasks, the heavy tier for complex work, and the reasoning tier for hardest reasoning. Explicit model overrides must match a configured model role. Named advisory profiles use read-only repository tools. Deterministic repository actions run first when sufficient. It is not the orchestrator for native Codex subagents. Actions: delegate, reason, continue, review, second_opinion, compress, route, batch, benchmark, evaluation_record, evaluation_report, submit, status, wait, result, cancel, candidate_create, candidate_promote. delivery=sync preserves the foreground contract; async returns a durable job; auto requires a positive latency budget. Evaluation stores only opaque ids, booleans, and numeric metadata. Async wait is bounded to 90 seconds. Conversations are sync-only and process-memory only. Use when: one bounded generation, review, compression, routing or second-opinion task should run on a configured local model. Skip when: deterministic/indexed repository evidence suffices, or local-model tasks are disabled."""
     if not FEATURES.tasks or not FEATURES.has_any_model():
         return {"success": False, "unsupported": True, "error": "Local model execution is disabled (features.tasks=false or no Ollama runtime configured)"}
     action = action.strip().lower().replace("-", "_")

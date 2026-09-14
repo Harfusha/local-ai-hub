@@ -2444,7 +2444,7 @@ class ProjectPreprocessor:
     def _content_card_key(self, content_hash: str) -> str:
         return stable_hash({
             "app_version": __version__, "sha": content_hash,
-                    "model": self.config.get("models", {}).get("background_code", "qwen2.5-coder:1.5b-instruct-q5_K_M"),
+                    "model": self.config.get("models", {}).get("background_code", "qwen2.5-coder:0.5b"),
         })
 
     def _find_next_files(self, root: str, limit: int) -> list[sqlite3.Row]:
@@ -2559,7 +2559,7 @@ class ProjectPreprocessor:
                 self._set_project(root, phase="modules", force_refresh=0)
             return True
 
-        background_model = str(self.config.get("models", {}).get("background_code", "qwen2.5-coder:1.5b-instruct-q5_K_M"))
+        background_model = str(self.config.get("models", {}).get("background_code", "qwen2.5-coder:0.5b"))
         pending_tasks: list[dict[str, Any]] = []
         pending_meta: list[tuple[sqlite3.Row, str]] = []
         progressed = False
@@ -2609,17 +2609,7 @@ class ProjectPreprocessor:
                 progressed = True
                 continue
 
-            # Tiered card quality: use the fast/smart tier for high-complexity files
-            complexity_threshold = int(self.config.get("background_gpu", {}).get("tiered_card_complexity_threshold", 15))
             item_model = background_model
-            if self.deterministic is not None:
-                try:
-                    det_info = self.deterministic.file_card(root, str(item["path"]))
-                    cc = int((det_info.get("card") or {}).get("cyclomatic_complexity", 0))
-                    if cc >= complexity_threshold:
-                        item_model = str(self.config.get("models", {}).get("fast_code", background_model))
-                except Exception:
-                    pass
 
             # Diff-based update: if old card exists and fewer than 15% lines changed, use diff prompt
             old_card_text: str | None = None
@@ -2725,7 +2715,7 @@ class ProjectPreprocessor:
 
         bg_cfg = self.config.get("background_gpu", {})
         batch_size = max(1, int(bg_cfg.get("module_batch_size", bg_cfg.get("parallel", 4))))
-        background_model = str(self.config.get("models", {}).get("background_code", "qwen2.5-coder:1.5b-instruct-q5_K_M"))
+        background_model = str(self.config.get("models", {}).get("background_code", "qwen2.5-coder:0.5b"))
         pending_tasks: list[dict[str, Any]] = []
         pending_meta: list[tuple[str, str]] = []
         progressed = False
@@ -2819,7 +2809,7 @@ class ProjectPreprocessor:
                 return False
             prompt = json.dumps({"profile": profile, "repo_map": repo_map, "modules": module_data}, ensure_ascii=False)[:40000]
             generated = self._run_background_generate(
-                str(self.config.get("models", {}).get("background_code", "qwen2.5-coder:1.5b-instruct-q5_K_M")), prompt,
+                str(self.config.get("models", {}).get("background_code", "qwen2.5-coder:0.5b")), prompt,
                 "Build a compact factual project navigation card. Optimize it for future coding agents: architecture, entry points, tests, config, data flow, security/concurrency hot spots and validation. Do not invent unseen facts.",
                 PROJECT_SCHEMA, int(self.cfg.get("project_output_tokens", 650)), "preprocess:project",
             )

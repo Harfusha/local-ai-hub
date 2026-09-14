@@ -129,10 +129,18 @@ def main() -> int:
         finally:
             if proc.poll() is None:
                 proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill(); proc.wait(timeout=2)
+            try:
+                # Drain both pipes and wait for process teardown before the
+                # temporary state directory (including hub.log) is removed.
+                proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate(timeout=2)
+            finally:
+                if proc.stdout is not None:
+                    proc.stdout.close()
+                if proc.stderr is not None:
+                    proc.stderr.close()
 
     ok = all(bool(item.get("ok")) for item in checks)
     print(json.dumps({"success": ok, "checks": checks}, ensure_ascii=False, indent=2))

@@ -10,10 +10,10 @@ from local_ai_hub.services import LocalAIServices
 def configure_review_routing(services):
     config = {
         "models": {
-            "fast_code": "qwen2.5-coder:3b-instruct-q5_K_M",
-            "heavy_code": "qwen2.5-coder:7b-instruct-q5_K_M",
-            "reasoning": "qwen2.5-coder:7b-instruct-q5_K_M",
-            "general": "qwen2.5-coder:3b-instruct-q5_K_M",
+            "fast_code": "qwen2.5-coder:1.5b",
+            "heavy_code": "qwen2.5-coder:3b",
+            "reasoning": "qwen2.5-coder:7b",
+            "general": "qwen2.5-coder:1.5b",
         },
         "routing": {"prefer_resident_model": False},
         "token_saving": {"max_local_input_tokens": 56000},

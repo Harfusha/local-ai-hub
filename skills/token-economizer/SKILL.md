@@ -14,8 +14,8 @@ Load and follow this skill before any coding or repository task. Apply its disco
    - Example: `tokcount src/` or `git diff | tokcount`
 
 2. **`trim-run [-n 40] <command>` / `cmd | trim-run`**:
-   - Universal terminal wrapper: runs commands, strips ANSI codes, truncates large output dumps to first/last N lines.
-   - Example: `trim-run pytest -q` or `git log | trim-run`
+   - Safe output wrapper: allows bundled `tokcount`/`repo-map` and read-only `rg`/`fd`/`grep-ast` commands; it also trims stdin pipelines. It never runs arbitrary shell commands.
+   - Example: `repo-map . | trim-run -n 40` or `git log | trim-run`
 
 3. **`repo-map [dir] [-n 200]`**:
    - Generates high-density AST skeleton (classes, methods, signatures) of the whole repo using Tree-sitter / grep-ast without reading file bodies.
@@ -58,7 +58,7 @@ Load and follow this skill before any coding or repository task. Apply its disco
 
 ### 2. Bounded Command & Test Outputs
 - **NEVER** run verbose build/test commands raw into context.
-- Always wrap terminal commands with `trim-run` or route through `local_ai_command`.
+- Route tests/builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or to trim stdin pipelines.
 - Filter large JSON outputs with `jq` to extract only relevant fields before returning to LLM.
 - Use minimal test flags: `pytest -q --tb=short`, `dotnet test --verbosity quiet`.
 - Use compact git commands: `git status -s`, `git diff --stat`, `git log -n 5 --oneline`.
@@ -69,7 +69,7 @@ Load and follow this skill before any coding or repository task. Apply its disco
 
 ### 4. Offload to Local Model (Ollama / Local AI Hub)
 - For microtasks (summarization, lint fixing, boilerplate, second opinion), delegate to local inference:
-- `local_ai_task(model="qwen2.5-coder:3b-instruct-q5_K_M", ...)` by default; reserve `qwen2.5-coder:7b-instruct-q5_K_M` for very complex work.
+- Use `qwen2.5-coder:1.5b` for quick local work, `qwen2.5-coder:3b` for complex tasks, and `qwen2.5-coder:7b` for the hardest reasoning; reserve `qwen2.5-coder:0.5b` for preprocessing.
   - Zero cloud tokens consumed.
 
 ### 5. Concise Output (Caveman Protocol)

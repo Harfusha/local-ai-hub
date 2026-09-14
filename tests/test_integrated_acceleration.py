@@ -88,9 +88,9 @@ def test_amd_discrete_names_remain_discrete(name):
 
 def test_integrated_profile_is_conservative_and_accelerates_retrieval() -> None:
     cfg = profile_overrides("integrated", _integrated_hw())
-    assert cfg["models"]["background_code"] == "qwen2.5-coder:1.5b-instruct-q5_K_M"
-    assert cfg["models"]["fast_code"] == "qwen2.5-coder:3b-instruct-q5_K_M"
-    assert cfg["models"]["heavy_code"] == "qwen2.5-coder:7b-instruct-q5_K_M"
+    assert cfg["models"]["background_code"] == "qwen2.5-coder:0.5b"
+    assert cfg["models"]["fast_code"] == "qwen2.5-coder:1.5b"
+    assert cfg["models"]["heavy_code"] == "qwen2.5-coder:3b"
     assert cfg["scheduler"]["max_parallel"] == 1
     assert cfg["scheduler"]["max_loaded_models"] == 1
     assert cfg["background_gpu"]["enabled"] is False
@@ -104,7 +104,8 @@ def test_integrated_profile_is_conservative_and_accelerates_retrieval() -> None:
     assert cfg["models"]["embedding_backend"] == "openvino"
     assert cfg["models"]["reranker"] == "cross-encoder/ms-marco-MiniLM-L6-v2"
     assert cfg["models"]["reranker_backend"] == "openvino"
-    assert cfg["ollama"]["allow_integrated_gpu"] is True
+    assert cfg["ollama"]["allow_integrated_gpu"] is False
+    assert cfg["ollama"]["enable_vulkan"] is False
     assert cfg["ollama"]["gpu_overhead_bytes"] == 1024 * 1024 * 1024
 
 

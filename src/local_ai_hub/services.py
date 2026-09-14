@@ -1067,7 +1067,7 @@ class LocalAIServices:
                 verification["test_summary"] = cmd_res.get("summary", "")
 
         if bool(args.get("smart_review", False)):
-            smart_model = str(self.config.get("models", {}).get("smart_code", "qwen2.5-coder:7b-instruct-q5_K_M"))
+            smart_model = str(self.config.get("models", {}).get("heavy_code", "qwen2.5-coder:3b"))
             review_prompt = f"REVIEW DRAFT IMPLEMENTATION:\nTask: {task}\nDraft Code:\n{draft_code}\nDoes this draft correctly solve the task without syntax or logical bugs? Return a short JSON object: {{\"approved\": true/false, \"confidence\": 0.0-1.0, \"summary\": \"...\"}}"
             review_res = self._generate(
                 smart_model,
@@ -2418,7 +2418,7 @@ class LocalAIServices:
         prefix = str(args.get("prefix", ""))
         suffix = str(args.get("suffix", ""))
         max_tokens = min(256, max(8, int(args.get("max_tokens", 80))))
-        model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
+        model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
 
         # Standard Qwen FIM prompt template
         prompt = f"<|fim_prefix|>{prefix[-3000:]}<|fim_suffix|>{suffix[:1500]}<|fim_middle|>"
@@ -3024,7 +3024,7 @@ class LocalAIServices:
             c_in = str(case.get("input", ""))
             c_exp = str(case.get("expected", ""))
             try:
-                model = str(payload.get("model") or getattr(self, "config", {}).get("models", {}).get("fast_code", "qwen2.5-coder:3b-instruct-q5_K_M"))
+                model = str(payload.get("model") or getattr(self, "config", {}).get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
                 response = self.runtime.request("/api/generate", {
                     "model": model, "prompt": c_in, "stream": False,
                     "options": {"num_predict": 128, "temperature": 0.0},
