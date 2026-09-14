@@ -21,7 +21,7 @@ from .semantic_cache import SemanticGenerationCache
 from .model_policy import ModelExecutionPolicy
 from .ollama_subagents import OllamaSubagentCatalog
 from .repo_tools import RepositoryTools
-from .router import ModelRouter
+from .router import ModelRouter, review_diff_complexity
 from .telemetry import TelemetryStore
 from .trace_context import observer
 
@@ -43,6 +43,121 @@ def cache_decision_reason(cache_layer: str, *, semantic_query: str) -> str:
     if cache_layer == "ollama":
         return "new_exact_key"
     return "exact_reuse"
+
+
+_REVIEW_DIFF_CHUNK_TOKENS = 2400
+_MAX_REVIEW_DIFF_CHUNKS = 8
+_REVIEW_SYNTHESIS_CONTEXT_TOKENS = 6000
+_UNIFIED_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
+
+
+def split_review_diff(diff_text: str, max_tokens: int = _REVIEW_DIFF_CHUNK_TOKENS) -> list[str]:
+    """Split a unified diff into bounded, file/hunk-aligned review inputs."""
+    budget = max(256, int(max_tokens))
+    sections = [part for part in re.split(r"(?=^diff --git )", diff_text, flags=re.MULTILINE) if part]
+    if not sections:
+        return [diff_text] if diff_text else []
+
+    chunks: list[str] = []
+    current = ""
+
+    def flush() -> None:
+        nonlocal current
+        if current:
+            chunks.append(current)
+            current = ""
+
+    for section in sections:
+        if estimate_tokens(section) <= budget:
+            if current and estimate_tokens(current + section) > budget:
+                flush()
+            current += section
+            continue
+
+        flush()
+        chunks.extend(_split_large_review_file(section, budget))
+    flush()
+    return chunks or [diff_text]
+
+
+def _split_large_review_file(section: str, budget: int) -> list[str]:
+    lines = section.splitlines(keepends=True)
+    hunk_starts = [index for index, line in enumerate(lines) if line.startswith("@@ ")]
+    if not hunk_starts:
+        return [section]
+
+    prefix = "".join(lines[:hunk_starts[0]])
+    hunks = [
+        "".join(lines[start:end])
+        for start, end in zip(hunk_starts, hunk_starts[1:] + [len(lines)])
+    ]
+    chunks: list[str] = []
+    pending_hunks: list[str] = []
+
+    def flush_pending() -> None:
+        if pending_hunks:
+            chunks.append(prefix + "".join(pending_hunks))
+            pending_hunks.clear()
+
+    for hunk in hunks:
+        candidate = prefix + "".join(pending_hunks) + hunk
+        if estimate_tokens(candidate) <= budget:
+            pending_hunks.append(hunk)
+            continue
+
+        flush_pending()
+        if estimate_tokens(prefix + hunk) <= budget:
+            pending_hunks.append(hunk)
+        else:
+            chunks.extend(_split_large_review_hunk(prefix, hunk, budget))
+
+    flush_pending()
+    return chunks or [section]
+
+
+def _split_large_review_hunk(prefix: str, hunk: str, budget: int) -> list[str]:
+    lines = hunk.splitlines(keepends=True)
+    if not lines:
+        return [prefix + hunk]
+    match = _UNIFIED_HUNK_RE.match(lines[0].rstrip("\r\n"))
+    if match is None:
+        return [prefix + hunk]
+
+    old_start = int(match.group(1))
+    old_consumed = 0
+    new_start = int(match.group(3))
+    new_consumed = 0
+    old_count = new_count = 0
+    suffix = match.group(5)
+    body: list[str] = []
+    chunks: list[str] = []
+
+    def render(part: list[str], old_offset: int, new_offset: int, old_lines: int, new_lines: int) -> str:
+        header = f"@@ -{old_start + old_offset},{old_lines} +{new_start + new_offset},{new_lines} @@{suffix}\n"
+        return prefix + header + "".join(part)
+
+    def flush_body() -> None:
+        nonlocal old_consumed, new_consumed, old_count, new_count, body
+        if not body:
+            return
+        chunks.append(render(body, old_consumed, new_consumed, old_count, new_count))
+        old_consumed += old_count
+        new_consumed += new_count
+        old_count = new_count = 0
+        body = []
+
+    for line in lines[1:]:
+        adds_old = int(line.startswith((" ", "-")))
+        adds_new = int(line.startswith((" ", "+")))
+        proposed = body + [line]
+        candidate = render(proposed, old_consumed, new_consumed, old_count + adds_old, new_count + adds_new)
+        if body and estimate_tokens(candidate) > budget:
+            flush_body()
+        body.append(line)
+        old_count += adds_old
+        new_count += adds_new
+    flush_body()
+    return chunks or [prefix + hunk]
 
 
 def generation_cache_key(
@@ -1975,19 +2090,117 @@ class LocalAIServices:
                 aff = ", ".join(reg.get("affected_paths", []))
                 det_hint += f"- [PRIOR VERIFIED FIX] {reg.get('error_class')} in {aff}: {reg.get('verified_fix')}\n"
 
-        payload = {
-            "code": diff["diff"],
-            "instructions": instructions + det_hint,
-            "complexity": str(args.get("complexity", "auto")),
-            "max_tokens": int(args.get("max_tokens", 1800)),
-            # Diff token sizes stay diagnostic for the same reason.
-        }
-        # review() discards internal hint unless copied explicitly.
-        review_payload = dict(payload)
-        review_payload["task_type"] = "review"
-        review_payload["task"] = review_payload.pop("instructions")
-        review_payload["context"] = review_payload.pop("code")
-        result = self.delegate(review_payload, tenant)
+        # Keep non-diff prompt material bounded too; metadata descriptions and custom
+        # instructions can otherwise undo the per-segment input limit.
+        instructions = fit_text(instructions, 600).text
+        det_hint = fit_text(det_hint, 700).text if det_hint else ""
+
+        review_chunks = split_review_diff(str(diff["diff"]))
+        largest_review_chunk_tokens = max(estimate_tokens(chunk) for chunk in review_chunks)
+        if largest_review_chunk_tokens > _REVIEW_DIFF_CHUNK_TOKENS:
+            return {
+                "success": False,
+                "error": (
+                    "A diff fragment exceeds the 2400-token review limit and cannot be split safely. "
+                    "Narrow the diff or exclude generated/minified files."
+                ),
+                "changed_files": diff.get("changed_files", []),
+                "diff_truncated": bool(diff.get("truncated", False)),
+                "largest_review_chunk_tokens": largest_review_chunk_tokens,
+            }
+        if len(review_chunks) > _MAX_REVIEW_DIFF_CHUNKS:
+            return {
+                "success": False,
+                "error": (
+                    f"Review requires {len(review_chunks)} segments; the safe limit is "
+                    f"{_MAX_REVIEW_DIFF_CHUNKS}. Narrow the diff or lower diff_tokens."
+                ),
+                "changed_files": diff.get("changed_files", []),
+                "diff_truncated": bool(diff.get("truncated", False)),
+                "review_chunks": len(review_chunks),
+            }
+        chunked = len(review_chunks) > 1
+        complexity = review_diff_complexity(args, det_diff, diff)
+        max_output_tokens = max(64, int(args.get("max_tokens", 1800)))
+        per_chunk_output_tokens = min(max_output_tokens, 700) if chunked else max_output_tokens
+        review_payloads: list[dict[str, Any]] = []
+        primary_results: list[dict[str, Any]] = []
+        for index, review_code in enumerate(review_chunks, start=1):
+            task = instructions + det_hint
+            if chunked:
+                task += (
+                    f"\n\nThis is review segment {index}/{len(review_chunks)} of one diff. "
+                    "Review only the changed code shown in this segment; other segments are reviewed separately. "
+                    "Ground each finding in the displayed file and hunk."
+                )
+            review_payload = {
+                "task_type": "review",
+                "task": task,
+                "context": review_code,
+                "complexity": complexity,
+                "max_tokens": per_chunk_output_tokens,
+            }
+            review_payloads.append(review_payload)
+            response = self.delegate(review_payload, tenant)
+            if not isinstance(response, dict) or response.get("success") is False:
+                if len(review_chunks) == 1 and isinstance(response, dict):
+                    return response
+                return {
+                    "success": False,
+                    "error": f"Review segment {index}/{len(review_chunks)} failed.",
+                    "failed_segment": index,
+                    "partial_reviews": [str(item.get("text", "")) for item in primary_results],
+                }
+            primary_results.append(response)
+
+        result = dict(primary_results[0])
+
+        def merge_segment_results(segment_results, *, label: str, task_type: str):
+            raw_text = "\n\n".join(
+                f"### {label} {index}/{len(segment_results)}\n{str(item.get('text', '')).strip()}"
+                for index, item in enumerate(segment_results, start=1)
+            )
+            if not chunked:
+                return str(segment_results[0].get("text", "")), {"enabled": False}
+
+            context = raw_text
+            if estimate_tokens(context) > _REVIEW_SYNTHESIS_CONTEXT_TOKENS:
+                return raw_text, {"enabled": True, "degraded": True, "error": "Segment findings exceed synthesis budget."}
+            merge_task = (
+                "SYNTHESIZE REVIEW FINDINGS ONLY. The segments below were reviewed separately. "
+                "Merge duplicate findings and keep distinct actionable findings. Preserve file paths, "
+                "hunk/line references, severity and uncertainty. Do not re-review the source, invent "
+                "new findings, or discard a finding unless the supplied segment findings show it is "
+                "a duplicate or false positive. Return a concise final review.\n\n"
+                f"Review goal: {instructions}\n{det_hint}"
+            )
+            try:
+                merged = self.delegate(
+                    {
+                        "task_type": task_type,
+                        "task": merge_task,
+                        "context": context,
+                        "complexity": complexity,
+                        "max_tokens": min(max_output_tokens, 1800),
+                    },
+                    tenant,
+                )
+                if isinstance(merged, dict) and merged.get("success") is not False and merged.get("text"):
+                    return str(merged["text"]), {
+                        "enabled": True,
+                        "degraded": False,
+                        "model": merged.get("model"),
+                    }
+                error = merged.get("error", "Synthesis returned no text.") if isinstance(merged, dict) else "Synthesis returned no result."
+                return raw_text, {"enabled": True, "degraded": True, "error": str(error)}
+            except Exception as exc:
+                return raw_text, {"enabled": True, "degraded": True, "error": str(exc)}
+
+        result["text"], result["review_synthesis"] = merge_segment_results(
+            primary_results, label="Review segment", task_type="review"
+        )
+        if result["review_synthesis"].get("model"):
+            result["model"] = result["review_synthesis"]["model"]
 
         # Multi-model consensus review for high-risk breaking changes or when explicitly requested
         consensus_requested = bool(args.get("consensus", False))
@@ -1995,24 +2208,32 @@ class LocalAIServices:
 
         if consensus_requested or auto_consensus:
             try:
-                sec_payload = dict(review_payload)
-                sec_payload["task_type"] = "reasoning"
-                sec_payload["task"] = (
-                    "CRITICAL COUNTER-REVIEW / CONSENSUS AUDIT:\n"
-                    "Analyze the diff independently and verify potential defects or breaking changes. "
-                    "Confirm genuine issues and flag false positives.\n\n"
-                    + str(review_payload["task"])
-                )
-                sec_result = self.delegate(sec_payload, tenant)
-                if isinstance(sec_result, dict) and sec_result.get("text"):
+                secondary_results = []
+                for review_payload in review_payloads:
+                    sec_payload = dict(review_payload)
+                    sec_payload["task_type"] = "reasoning"
+                    sec_payload["task"] = (
+                        "CRITICAL COUNTER-REVIEW / CONSENSUS AUDIT:\n"
+                        "Analyze the shown diff segment independently and verify potential defects or breaking changes. "
+                        "Confirm genuine issues and flag false positives.\n\n"
+                        + str(review_payload["task"])
+                    )
+                    sec_result = self.delegate(sec_payload, tenant)
+                    if isinstance(sec_result, dict) and sec_result.get("text"):
+                        secondary_results.append(sec_result)
+                if secondary_results:
+                    secondary_text, secondary_synthesis = merge_segment_results(
+                        secondary_results, label="Counter-review segment", task_type="reasoning"
+                    )
                     result["consensus"] = {
                         "enabled": True,
                         "triggered_by": "explicit" if consensus_requested else "breaking_changes",
                         "primary_model": result.get("model", "primary"),
-                        "secondary_model": sec_result.get("model", "secondary"),
-                        "secondary_review": sec_result.get("text", ""),
+                        "secondary_model": secondary_results[0].get("model", "secondary"),
+                        "secondary_review": secondary_text,
+                        "synthesis": secondary_synthesis,
                     }
-                    result["text"] = str(result.get("text", "")) + "\n\n### Consensus / Counter-Review Findings:\n" + str(sec_result.get("text", ""))
+                    result["text"] = str(result.get("text", "")) + "\n\n### Consensus / Counter-Review Findings:\n" + secondary_text
             except Exception as exc:
                 result["consensus"] = {"enabled": True, "degraded": True, "error": str(exc)}
 
@@ -2024,6 +2245,9 @@ class LocalAIServices:
             "local_diff_tokens": diff["estimated_tokens"],
             "original_diff_tokens": diff["original_estimated_tokens"],
             "deterministic": det_diff,
+            "review_chunks": len(review_chunks),
+            "review_chunk_token_budget": _REVIEW_DIFF_CHUNK_TOKENS,
+            "largest_review_chunk_tokens": largest_review_chunk_tokens,
         }
         return result
 
