@@ -31,6 +31,7 @@ def _integrated_hw() -> dict:
 
 def test_intel_arc_shared_memory_is_not_treated_as_dedicated_vram() -> None:
     assert _is_integrated_gpu("intel", "Intel(R) Arc(TM) Graphics", 128) is True
+    assert _is_integrated_gpu("intel", "Intel(R) Arc(TM) Graphics", 2047) is True
     assert _is_integrated_gpu("intel", "Intel Arc A370M Graphics", 4096) is False
     assert _is_integrated_gpu("intel", "Intel(R) Arc(TM) A370M Graphics", 128) is False
     assert choose_profile(_integrated_hw()["gpus"], 32.0) == "integrated"
@@ -240,6 +241,119 @@ def test_reranker_uses_only_current_device_qualified_cache_key(tmp_path: Path, m
         {"identity": "torch:cpu:cache-test", "q": "q", "d": "doc"}
     )
     assert reranker.cache.get(current_key) == pytest.approx(0.42)
+
+def test_embedding_openvino_npu_uses_static_model_shapes(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: dict[str, object] = {}
+
+    class FakeOpenVINOModel:
+        config = types.SimpleNamespace(max_position_embeddings=512)
+
+        def reshape(self, batch_size: int, sequence_length: int) -> None:
+            calls["shape"] = (batch_size, sequence_length)
+
+        def compile(self) -> None:
+            calls["compiled"] = True
+
+    class FakeSentenceTransformer:
+        prompts: dict[str, str] = {}
+        max_seq_length = 512
+
+        def __init__(self, _model: str, **kwargs: object) -> None:
+            calls["kwargs"] = kwargs
+            self.auto_model = FakeOpenVINOModel()
+
+        def __getitem__(self, _index: int) -> types.SimpleNamespace:
+            return types.SimpleNamespace(auto_model=self.auto_model)
+
+    sentence_transformers = types.ModuleType("sentence_transformers")
+    sentence_transformers.SentenceTransformer = FakeSentenceTransformer
+    monkeypatch.setitem(sys.modules, "sentence_transformers", sentence_transformers)
+    monkeypatch.setattr("local_ai_hub.embeddings.openvino_device_candidates", lambda *_args: ["NPU"])
+
+    embeddings = EmbeddingModel(
+        {
+            "models": {
+                "embedding": "BAAI/bge-small-en-v1.5",
+                "embedding_backend": "openvino",
+                "embedding_device": "auto",
+            },
+            "openvino": {"device_priority": ["NPU"], "cpu_fallback": False},
+            "cpu_retrieval": {},
+        }
+    )
+
+    assert embeddings._load_candidate(0) is True
+    assert calls["kwargs"]["model_kwargs"]["compile"] is False  # type: ignore[index]
+    assert calls["shape"] == (1, 512)
+    assert calls["compiled"] is True
+    assert embeddings.active_device == "NPU"
+
+
+def test_embedding_openvino_npu_pads_tokens_to_static_shape() -> None:
+    torch = pytest.importorskip("torch")
+
+    class FakeSentenceTransformer:
+        max_seq_length = 8
+        prompts: dict[str, str] = {}
+
+        def __init__(self) -> None:
+            self.seen_features: dict[str, object] = {}
+
+        def __getitem__(self, _index: int) -> types.SimpleNamespace:
+            return types.SimpleNamespace(tokenizer=types.SimpleNamespace(pad_token_id=0))
+
+        def preprocess(self, _texts: list[str], prompt: str | None = None) -> dict[str, object]:
+            return {
+                "input_ids": torch.tensor([[101, 102, 103]], dtype=torch.long),
+                "attention_mask": torch.tensor([[1, 1, 1]], dtype=torch.long),
+            }
+
+        def __call__(self, features: dict[str, object]) -> dict[str, object]:
+            self.seen_features = features
+            return {"sentence_embedding": torch.tensor([[3.0, 4.0]])}
+
+    model = FakeSentenceTransformer()
+    encoded = EmbeddingModel._encode_static_npu_batch(model, ["short text"], prompts={}, query=False)
+
+    assert tuple(model.seen_features["input_ids"].shape) == (1, 8)  # type: ignore[union-attr]
+    assert tuple(model.seen_features["attention_mask"].shape) == (1, 8)  # type: ignore[union-attr]
+    assert model.seen_features["input_ids"][0, -1].item() == 0  # type: ignore[index]
+    assert model.seen_features["attention_mask"][0, -1].item() == 0  # type: ignore[index]
+
+
+def test_embedding_openvino_npu_accepts_mapping_preprocess_features() -> None:
+    torch = pytest.importorskip("torch")
+    from collections import UserDict
+
+    class FakeSentenceTransformer:
+        max_seq_length = 8
+
+        def preprocess(self, texts: list[str]) -> UserDict[str, object]:
+            return UserDict(
+                {
+                    "input_ids": torch.tensor([[1, 2, 3]]),
+                    "attention_mask": torch.tensor([[1, 1, 1]]),
+                    "modality": "text",
+                }
+            )
+
+        def tokenize(self, texts: list[str]) -> dict[str, object]:
+            raise AssertionError("preprocess mapping should be used directly")
+
+        def __getitem__(self, index: int) -> object:
+            return types.SimpleNamespace(tokenizer=types.SimpleNamespace(pad_token_id=0))
+
+        def __call__(self, features: dict[str, object]) -> dict[str, object]:
+            return {"sentence_embedding": torch.tensor([[3.0, 4.0]])}
+
+    encoded = EmbeddingModel._encode_static_npu_batch(
+        FakeSentenceTransformer(), ["short text"], prompts={}, query=False
+    )
+
+    assert encoded.shape == (1, 2)
+    assert torch.allclose(torch.from_numpy(encoded), torch.tensor([[0.6, 0.8]]))
+    assert torch.allclose(torch.linalg.vector_norm(torch.from_numpy(encoded), dim=1), torch.ones(1))
+
 
 def test_reranker_device_switch_restarts_before_cache_write(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     class SwitchingModel:

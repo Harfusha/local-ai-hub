@@ -1173,7 +1173,7 @@ class LocalAIServices:
     def embed(self, texts: list[str], tenant: str, priority: int = 3, query: bool = False, background: bool | None = None, wait_timeout: float | None = None) -> dict[str, Any]:
         backend = self.config["models"].get("embedding_backend", "sentence-transformers")
         model = str(self.config.get("models", {}).get("embedding", "qwen3-embedding:0.6b"))
-        if backend == "sentence-transformers":
+        if backend in {"sentence-transformers", "openvino"}:
             return self.embeddings.encode(texts, query=query, priority=priority)
 
         if not texts:

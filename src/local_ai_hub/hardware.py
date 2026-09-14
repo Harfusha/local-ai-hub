@@ -139,6 +139,7 @@ def _amd() -> list[dict[str, Any]]:
 
 def _is_integrated_gpu(vendor: str, name: str, vram_mb: int = 0) -> bool:
     low = str(name or "").lower()
+    normalized = low.replace("(tm)", "")
     vendor = str(vendor or "").lower()
     if vendor == "intel":
         # Intel Arc A/B-series names are discrete; plain "Arc Graphics", Iris and
@@ -146,7 +147,7 @@ def _is_integrated_gpu(vendor: str, name: str, vram_mb: int = 0) -> bool:
         # values reported by Windows are not usable as dedicated-VRAM capacity.
         if re.search(r"\barc(?:\(tm\))?\s+(?:pro\s+)?[ab]\d{2,4}m?\b", low) or "arc pro" in low:
             return False
-        return any(token in low for token in ("arc graphics", "iris", "uhd", "integrated")) or int(vram_mb or 0) < 1024
+        return any(token in normalized for token in ("arc graphics", "iris", "uhd", "integrated")) or int(vram_mb or 0) < 1024
     if vendor == "amd":
         return bool(re.search(r"\bradeon\s+\d{3,4}m\b", low)) or "integrated" in low
     return False

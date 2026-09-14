@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import json
 import threading
 import urllib.error
@@ -117,7 +119,12 @@ class EmbeddingModel:
                 # Optimum/OpenVINO through model_kwargs instead.
                 kwargs["device"] = "cpu"
                 kwargs["backend"] = "openvino"
+                npu_static = str(device).upper().startswith("NPU")
                 ov_model_kwargs: dict[str, Any] = {"device": str(device).lower()}
+                if npu_static:
+                    # OpenVINO's NPU plugin only accepts static shapes. Defer the
+                    # initial compile so we can reshape the exported transformer.
+                    ov_model_kwargs["compile"] = False
                 cache_dir = openvino_cache_dir(self.config)
                 if cache_dir is not None:
                     ov_model_kwargs["ov_config"] = {"CACHE_DIR": str(cache_dir)}
@@ -138,6 +145,12 @@ class EmbeddingModel:
                 except Exception:
                     pass
                 model.max_seq_length = min(self.max_seq_length, max_pos)
+                if backend == "openvino" and str(device).upper().startswith("NPU"):
+                    ov_model = getattr(model[0], "auto_model", None)
+                    if ov_model is None:
+                        raise RuntimeError("OpenVINO NPU model does not expose a reshapeable transformer")
+                    ov_model.reshape(1, int(model.max_seq_length))
+                    ov_model.compile()
             self._model = model
             self._loaded_model_name = loaded_model_name
             self.active_backend = backend
@@ -188,6 +201,29 @@ class EmbeddingModel:
             model = self._model
             if model is None:
                 return None, self.active_backend or "sentence-transformers"
+            if (
+                self.active_backend == "openvino"
+                and str(self.active_device or "").upper().startswith("NPU")
+                and len(batch_texts) > 1
+            ):
+                # The NPU model is compiled for batch 1. If that device rejects a
+                # single input and fallback switches accelerators, finish the rest
+                # of this logical batch on the new device in one call.
+                vectors: list[list[float]] = []
+                for index, text in enumerate(batch_texts):
+                    item_vectors, active = self._encode_st_batch([text], query=query, priority=priority)
+                    if item_vectors is None:
+                        return None, active
+                    vectors.extend(item_vectors)
+                    if not str(self.active_device or "").upper().startswith("NPU"):
+                        remaining = batch_texts[index + 1 :]
+                        if remaining:
+                            rest_vectors, active = self._encode_st_batch(remaining, query=query, priority=priority)
+                            if rest_vectors is None:
+                                return None, active
+                            vectors.extend(rest_vectors)
+                        return vectors, active
+                return vectors, self.active_backend or "sentence-transformers"
             prompts = getattr(model, "prompts", {}) or {}
             kwargs: dict[str, Any] = {
                 "normalize_embeddings": True, "show_progress_bar": False, "batch_size": self.batch_size
@@ -196,7 +232,10 @@ class EmbeddingModel:
                 kwargs["prompt_name"] = "query"
             try:
                 with self._cpu_gate.slot(priority):
-                    encoded = model.encode(batch_texts, **kwargs)
+                    if self.active_backend == "openvino" and str(self.active_device or "").upper().startswith("NPU"):
+                        encoded = self._encode_static_npu_batch(model, batch_texts, prompts=prompts, query=query)
+                    else:
+                        encoded = model.encode(batch_texts, **kwargs)
                 vectors: list[list[float]] = []
                 for vector in encoded:
                     as_list = vector.tolist() if hasattr(vector, "tolist") else list(vector)
@@ -214,6 +253,49 @@ class EmbeddingModel:
                     if self._ensure_st_model():
                         continue
                 return None, self.active_backend or "sentence-transformers"
+
+    @staticmethod
+    def _encode_static_npu_batch(
+        model: Any, batch_texts: list[str], *, prompts: dict[str, Any], query: bool
+    ) -> Any:
+        """Run one fixed-shape OpenVINO NPU batch through SentenceTransformers."""
+        import torch
+
+        sequence_length = int(getattr(model, "max_seq_length", 512) or 512)
+        prompt = prompts.get("query") if query and isinstance(prompts, dict) else None
+        preprocess = getattr(model, "preprocess", None)
+        if callable(preprocess):
+            features = preprocess(batch_texts, prompt=prompt) if prompt else preprocess(batch_texts)
+        else:
+            features = None
+        if not isinstance(features, Mapping):
+            inputs = [f"{prompt}{text}" for text in batch_texts] if prompt else batch_texts
+            features = model.tokenize(inputs)
+        if not isinstance(features, Mapping):
+            raise RuntimeError("SentenceTransformers preprocessing did not return input features")
+        features = dict(features)
+
+        tokenizer = getattr(model[0], "tokenizer", None)
+        pad_token_id = int(getattr(tokenizer, "pad_token_id", 0) or 0)
+        for name, value in list(features.items()):
+            if not torch.is_tensor(value) or value.ndim != 2:
+                continue
+            width = int(value.shape[1])
+            if width < sequence_length:
+                pad_value = pad_token_id if name == "input_ids" else 0
+                features[name] = torch.nn.functional.pad(
+                    value, (0, sequence_length - width), value=pad_value
+                )
+            elif width > sequence_length:
+                features[name] = value[:, :sequence_length]
+
+        with torch.inference_mode():
+            output = model(features)
+        embeddings = output.get("sentence_embedding") if isinstance(output, dict) else None
+        if embeddings is None:
+            raise RuntimeError("SentenceTransformers model returned no sentence_embedding")
+        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+        return embeddings.detach().cpu().numpy()
 
     def _encode_ollama(self, texts: list[str]) -> list[list[float]] | None:
         """Call Ollama /api/embed on GPU."""

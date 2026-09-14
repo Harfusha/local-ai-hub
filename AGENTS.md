@@ -52,6 +52,16 @@ Selection guide: `local_ai_repo` for bounded repository facts and checks (includ
 Local model default: when generation is needed, use `qwen2.5-coder:1.5b` for ordinary `local_ai_task` delegate/reason/review/second-opinion/compress work. Escalate to `qwen2.5-coder:3b` only for complex or high-risk work; deterministic and indexed Hub actions run first.
 <!-- END LOCAL AI HUB TOOL POLICY -->
 
+<!-- BEGIN TOKEN ECONOMY POLICY -->
+- Zero full-file dumping: Never read files >80 lines in their entirety. Use `repo-map` for high-level structure, `grep-ast <pattern> <file>`, targeted line slices, or `local_ai_artifact(action="slice")`.
+- Fast code search: Use `rg` (`ripgrep`) with `-m 5` / bounded matches and `fd` for file finding before opening files.
+- AST & structural code search: Use `ast-grep` (`sg`), Serena LSP (`find_symbol`, `find_referencing_symbols`), or `local_ai_repo(action="code_index")` before opening files.
+- Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.
+- Bounded command outputs: Filter test and build output (`trim-run <cmd>`, `pytest -q --tb=short`, `dotnet test --verbosity quiet`, `git log | trim-run`, `jq` for JSON) or route through `local_ai_command`.
+- Surgical edits: Prefer targeted block replacements over rewriting entire files.
+- Local model delegation: Route routine microtasks, reviews, and second opinions to local models via `local_ai_task(model="qwen2.5-coder:1.5b")`.
+<!-- END TOKEN ECONOMY POLICY -->
+
 ## Architecture rules
 
 - Python 3.11+; all runtime state belongs under the configured `server.state_dir` and must not be committed.
