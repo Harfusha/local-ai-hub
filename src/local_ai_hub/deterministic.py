@@ -1750,9 +1750,11 @@ class DeterministicEngine:
                             ).fetchall()
                             for r in f_rows:
                                 fact_map[(r["path"], r["kind"], r["name"], r["value"])] = dict(r)
+                        seen_keys: set[tuple[str, str, str, str]] = set()
                         for item in fts_rows:
                             k = (item["path"], item["kind"], item["name"], item["value"])
-                            if k in fact_map and fact_map[k] not in rows:
+                            if k in fact_map and k not in seen_keys:
+                                seen_keys.add(k)
                                 rows.append(fact_map[k])
                 self._stats["fact_fts_hits"] += 1
             except sqlite3.OperationalError:

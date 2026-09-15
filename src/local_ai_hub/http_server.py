@@ -355,10 +355,20 @@ class Handler(BaseHTTPRequestHandler):
         if not target_db or not target_db.is_file():
             return {"success": False, "error": f"Database not found: {db_name}"}
 
+        def _readonly_authorizer(action: int, *_args: str | None) -> int:
+            """SQLite authorizer that permits only read operations."""
+            _ALLOWED = {
+                sqlite3.SQLITE_SELECT,  # SELECT statements
+                sqlite3.SQLITE_READ,    # Reading a column
+                sqlite3.SQLITE_FUNCTION,  # Calling a function
+            }
+            return sqlite3.SQLITE_OK if action in _ALLOWED else sqlite3.SQLITE_DENY
+
         try:
             uri = f"file:{target_db.as_posix()}?mode=ro"
             con = sqlite3.connect(uri, uri=True, timeout=3.0)
             try:
+                con.set_authorizer(_readonly_authorizer)
                 cur = con.cursor()
                 cur.execute(sql_clean)
                 col_names = [d[0] for d in cur.description] if cur.description else []
@@ -375,8 +385,14 @@ class Handler(BaseHTTPRequestHandler):
                 }
             finally:
                 con.close()
-        except Exception as exc:
-            return {"success": False, "error": str(exc)}
+        except sqlite3.DatabaseError as exc:
+            # Sanitize error to avoid leaking internal paths
+            msg = str(exc)
+            if state_dir.as_posix() in msg or str(state_dir) in msg:
+                msg = "query execution failed"
+            return {"success": False, "error": msg}
+        except Exception:
+            return {"success": False, "error": "query execution failed"}
 
     def _handle_models_list(self) -> dict[str, Any]:
         if APP is None:
