@@ -35,8 +35,8 @@ Coordinate available tools and capabilities systematically across six distinct e
 - Formulate an explicit plan or mental model before making mutations.
 - Assess risk, side-effects, and backward compatibility using `local_ai_repo(action="refactor_impact")`.
 - **Local AI Hub Delegation**:
-  - For complex logic, architectural choices, or difficult debugging: delegate to **Qwen3.5-9B** smart tier via `local_ai_task`.
-  - For fast routine code synthesis or second opinion: delegate to **Qwen2.5-Coder-7B** fast tier via `local_ai_task`.
+  - For the hardest reasoning: use the 7B tier via `local_ai_task`.
+  - For routine code synthesis or second opinions: use the 1.5B tier; use 3B for complex logic and difficult debugging.
 - **Fallback Rule**: If Local AI Hub is unreachable, fall back immediately to internal reasoning without blocking.
 
 ### 4. Act

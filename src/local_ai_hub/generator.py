@@ -15,6 +15,11 @@ from typing import Any
 from local_ai_hub.features import FeatureSet
 
 
+def _actions_note(actions: list[str]) -> str:
+    """Keep generated tool descriptions aligned with each active action enum."""
+    return f" Supported actions: {', '.join(actions)}." if actions else " No actions are enabled."
+
+
 def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     """Generate a dynamic SKILL.md reflecting only enabled tools and models."""
     fs = FeatureSet.from_config(cfg)
@@ -41,7 +46,11 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
             'validation and handoff end-to-end. Use `response_profile="compact"` and request only decision-grade fields; '
             'fetch the artifact only when details are needed.'
         )
-
+    work_owner_note = (
+        "A submitted `local_ai_work` order may own its bounded internal planning, edits, validation and integration until handoff."
+        if fs.work_orchestrator
+        else "The main agent owns planning, edits, validation and final integration."
+    )
     # Ownership & tiering bullets
     tiering_bullets: list[str] = [
         "- **Local AI Hub first:** its own precise bounded microtasks, repository facts, indexed search,"
@@ -52,9 +61,12 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         "- **Native Codex subagents:** use only for useful independent bounded work; Codex assigns scope, write permission, workspace/worktree, timeout, sandbox, cancellation and integration.",
     ]
     if fs.tasks and fs.has_any_model():
+        model_config = cfg.get("models", {}) if isinstance(cfg.get("models", {}), dict) else {}
+        reasoning_tier = f"`{fs.reasoning_model}`" if "reasoning" in model_config else "the configured hardest-reasoning tier"
         tiering_bullets.append(
-            f"- **{fs.fast_model} default:** use `{fs.fast_model}` for ordinary local reasoning, review, second opinions and compression after bounded evidence. "
-            f"Escalate to `{fs.smart_model}` only for complexity/risk."
+            f"- **Tiered local models:** `{fs.background_model}` for preprocessing, `{fs.fast_model}` for quick tasks, "
+            f"`{fs.smart_model}` for complex work, and {reasoning_tier} for the hardest reasoning. "
+            "Run deterministic/indexed Hub actions first when they suffice."
         )
     if fs.rag:
         tiering_bullets.append(
@@ -180,17 +192,17 @@ Skip profiles when deterministic or indexed Hub evidence already answers the que
         agent_os_section = f"""
 ## Agent Operating System & Durable Execution
 
-When working on non-trivial tasks, use Local AI Hub's Agent Operating System actions to preserve context, avoid repeating failed attempts, and verify work rigorously:
+Use Agent OS for every non-trivial multi-step, long-running, delegated, or acceptance-criteria task, even when the main agent keeps ownership. A trivial one-step lookup can skip it. Start before edits; keep the returned `task_id` for every later action.
 
 ### 1. Goal Contracts & Resumption
-- **Create task contract:**
+- **Create a task contract before edits:**
   `local_ai_coord(action="task_create", task_id="task-1", contract={{"goal": "Implement feature", "acceptance_criteria": ["All tests pass"]}})`
 - **Checkpoint progress before context truncation:**
   `local_ai_coord(action="task_checkpoint", task_id="task-1", checkpoint={{"phase": "testing", "next_action": "run integration tests", "affected_paths": ["src/main.py"]}})`
 - **Resume after session restart or interruption:**
   `local_ai_coord(action="task_resume", task_id="task-1")`
-- **Complete or fail task:**
-  `local_ai_coord(action="task_complete", task_id="task-1")` or `local_ai_coord(action="task_fail", task_id="task-1", reason="reason")`
+- **Complete only after `verify_completion` passes every acceptance criterion; otherwise fail with a reason:**
+  `local_ai_coord(action="verify_completion", task_id="task-1")`, then `local_ai_coord(action="task_complete", task_id="task-1")` or `local_ai_coord(action="task_fail", task_id="task-1", reason="reason")`
 
 ### 2. Scoped Memory & Learnings
 - **Store durable findings and decisions:**
@@ -240,7 +252,7 @@ Delegation is the default for any task with useful bounded independent work.
 
 ## Ownership and tiering
 
-The main agent owns task boundaries, permissions, unresolved decisions and the final user answer. A submitted `local_ai_work` order may own its bounded internal planning, edits, validation and integration until handoff.
+    The main agent owns task boundaries, permissions, unresolved decisions and the final user answer. {work_owner_note}
 
 {tiering_section}
 
@@ -282,6 +294,11 @@ Do not fan out overlapping retrieval layers. Stop escalating when evidence is su
 def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
     """Generate dynamic reference documents for skills/local-ai-orchestrator/references/."""
     fs = FeatureSet.from_config(cfg)
+    work_owner_note = (
+        "A submitted `local_ai_work` order may own its bounded internal planning, edits, validation and integration until handoff."
+        if fs.work_orchestrator
+        else "The main agent owns planning, edits, validation and final integration."
+    )
     refs: dict[str, str] = {}
 
     # tools.md
@@ -300,18 +317,29 @@ def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
     if fs.artifacts:
         tool_bullets.append("- `local_ai_artifact`: exact `E...` evidence or artifact slices.")
     if fs.coord:
-        tool_bullets.append("- `local_ai_coord`: edit leases and reusable investigation memos" + (", task contracts and durable memory" if fs.agent_os else "") + ".")
+        tool_bullets.append("- `local_ai_coord`: edit leases and reusable investigation memos" + (", Agent OS task lifecycle, scoped memory/relations, context, verification, negative knowledge, and coordination primitives" if fs.agent_os else "") + ".")
     if fs.status:
-        tool_bullets.append("- `local_ai_status`: bounded health/cache/telemetry inspection; no polling loops.")
+        status_detail_note = ", Agent OS task/incident state" if fs.agent_os else ""
+        tool_bullets.append(f"- `local_ai_status`: bounded health/cache/telemetry{status_detail_note} inspection; no polling loops.")
 
     tool_lines = "\n".join(tool_bullets) if tool_bullets else "- *(All tools disabled)*"
+    agent_os_reference = ""
+    if fs.agent_os:
+        agent_os_reference = """
+## Agent OS trigger and lifecycle
+
+Use this for non-trivial multi-step, long-running, delegated, or acceptance-criteria work, even when the main agent retains ownership. Create a task contract before edits, keep the returned task ID, checkpoint phase changes, compile context when resuming or when state is scattered, and attach validation receipts. Run `verify_completion` before `task_complete`. Trivial one-step lookups can skip this workflow.
+"""
+
     refs["tools.md"] = f"""# MCP routing card
 
 The active tool surface reflects your configuration:
 
 {tool_lines}
 
-Keep assignments bounded. The main agent retains final acceptance; a `local_ai_work` order may own planning and integration only inside its declared repository task and permissions.
+{agent_os_reference}
+
+    Keep assignments bounded. The main agent retains final acceptance; {work_owner_note}
 """
 
     # workflows.md
@@ -373,14 +401,16 @@ Use `local_ai_work(action="submit", root=ABS_ROOT, task="...", response_profile=
         if (fs.tasks and fs.has_any_model())
         else "Local AI Hub operates in deterministic/indexed mode (local inference disabled)"
     )
+    agent_os_multi_agent_note = " Agent OS through `local_ai_coord` handles non-trivial multi-step, long-running, delegated, or acceptance-criteria work: create a task contract, checkpoint phases, and verify receipts before completion." if fs.agent_os else ""
     refs["multi-agent.md"] = f"""# Multi-agent coordination
 
 {multi_agent_desc}. External cloud agents (Codex, Claude, Gemini, Cursor, Copilot) remain the principal orchestrators.
+{agent_os_multi_agent_note}
 
 Rules:
 - Never duplicate the same scope across agents.
 - {"Use `local_ai_coord` leases to guard overlapping files before editing." if fs.coord else "Avoid concurrent edits on the same files across sessions."}
-- Main agent owns final acceptance and user response. A bounded `local_ai_work` order owns only its declared transactional workspace task through verified handoff.
+- Main agent owns final acceptance and user response. {work_owner_note}
 """
 
     # preprocessing.md
@@ -412,10 +442,9 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     model_default = ""
     if fs.tasks and fs.has_any_model():
         model_default = (
-            f"\nLocal model default: when generation is needed, use `{fs.fast_model}` for ordinary"
-            f" `local_ai_task` delegate/reason/review/second-opinion/compress work."
-            f" Escalate to `{fs.smart_model}` only for complex or high-risk work;"
-            " deterministic and indexed Hub actions run first."
+            f"\nLocal model policy: `{fs.background_model}` is preprocessing-only, `{fs.fast_model}` handles quick tasks,"
+            f" `{fs.smart_model}` handles complex work, and `{fs.reasoning_model}` handles the hardest reasoning."
+            " Use deterministic and indexed Hub actions first when sufficient."
         )
 
     repo_task_first = ""
@@ -640,14 +669,19 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
     schemas: dict[str, dict[str, Any]] = {}
 
     if fs.status:
+        status_description = "Health, queue, and token-saving status. detail: brief, cache, telemetry, full, agent_state."
+        if fs.agent_os:
+            status_description += " `agent_state` summarizes durable Agent OS task state."
+        status_description += _actions_note(["brief", "cache", "telemetry", "full", "agent_state"])
         schemas["local_ai_status"] = {
             "name": "local_ai_status",
-            "description": "Health, queue, and token-saving status.",
+            "description": status_description,
             "parameters": {
                 "type": "object",
                 "properties": {
                     "detail": {"type": "string", "enum": ["brief", "cache", "telemetry", "full", "agent_state"], "default": "brief"},
                     "scope": {"type": "string", "enum": ["process", "window"], "default": "process"},
+                    "extra_fields": {"type": "array", "items": {"type": "string"}},
                 },
             },
         }
@@ -656,7 +690,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         repo_actions = fs.supported_repo_actions()
         schemas["local_ai_repo"] = {
             "name": "local_ai_repo",
-            "description": "Primary bounded repository worker; use review_diff/security_audit before model inference.",
+            "description": "Primary bounded repository worker; use deterministic/indexed evidence first, then semantic/graph as enabled; use review_diff/security_audit before model inference." + _actions_note(repo_actions),
             "parameters": {
                 "type": "object",
                 "required": ["action"],
@@ -674,6 +708,11 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "relation": {"type": "string", "default": ""},
                     "profile": {"type": "string", "default": ""},
                     "max_tokens": {"type": "integer", "default": 0},
+                    "diff": {"type": "string", "default": ""},
+                    "workspace": {"type": "string", "default": ""},
+                    "evidence": {"type": "array", "items": {"type": "object"}},
+                    "receipt": {"type": "object"},
+                    "extra_fields": {"type": "array", "items": {"type": "string"}},
                 },
             },
         }
@@ -682,7 +721,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         task_actions = fs.supported_task_actions()
         schemas["local_ai_task"] = {
             "name": "local_ai_task",
-            "description": f"Bounded local-model work ({fs.fast_model}) for the main agent.",
+            "description": f"Bounded local-model work ({fs.fast_model}) for the main agent, including enabled image/audio, benchmark, evaluation, candidate, and asynchronous-job workflows." + _actions_note(task_actions),
             "parameters": {
                 "type": "object",
                 "required": ["action"],
@@ -697,65 +736,112 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "max_tokens": {"type": "integer", "default": 0},
                     "conversation": {"type": "boolean", "default": False},
                     "conversation_id": {"type": "string", "default": ""},
+                    "prompt": {"type": "string", "default": ""},
+                    "model": {"type": "string", "default": ""},
+                    "candidate": {"type": "string", "default": ""},
+                    "tasks": {"type": "array", "items": {"type": "object"}},
+                    "latency_budget_ms": {"type": "number", "default": 0},
+                    "job_action": {"type": "string", "default": "reason"},
+                    "job_id": {"type": "string", "default": ""},
+                    "timeout_seconds": {"type": "number", "default": 90},
+                    "evaluation_task_id": {"type": "string", "default": ""},
+                    "evaluation_cohort": {"type": "string", "default": ""},
+                    "quality_pass": {"type": ["boolean", "null"]},
+                    "test_pass": {"type": ["boolean", "null"]},
+                    "evaluation_duration_ms": {"type": "number", "default": 0},
+                    "evaluation_days": {"type": "integer", "default": 30},
+                    "workspace": {"type": "string", "default": ""},
+                    "approver": {"type": "string", "default": ""},
+                    "candidate_data": {"type": "object"},
+                    "format": {"type": ["string", "object"]},
+                    "json_schema": {"type": "object"},
+                    "extra_fields": {"type": "array", "items": {"type": "string"}},
                 },
             },
         }
 
     if fs.rag:
+        rag_actions = fs.supported_rag_actions()
         schemas["local_ai_rag"] = {
             "name": "local_ai_rag",
-            "description": "Fallback semantic retrieval for the main agent after indexed repository paths are insufficient.",
+            "description": "Fallback semantic retrieval after indexed evidence is insufficient; also supports managed docsets and document/diagram ingestion." + _actions_note(rag_actions),
             "parameters": {
                 "type": "object",
                 "required": ["action"],
                 "properties": {
-                    "action": {"type": "string", "enum": ["index", "search", "list"]},
+                    "action": {"type": "string", "enum": rag_actions},
                     "query": {"type": "string", "default": ""},
                     "root": {"type": "string", "default": "."},
                     "top_k": {"type": "integer", "default": 6},
+                    "workspace": {"type": "string", "default": ""},
+                    "extra_fields": {"type": "array", "items": {"type": "string"}},
                 },
             },
         }
 
     if fs.commands:
+        command_actions = fs.supported_command_actions()
         schemas["local_ai_command"] = {
             "name": "local_ai_command",
-            "description": "Safe CLI command execution broker.",
+            "description": "Safe CLI broker for validation and enabled repair, affected-test, format/lint-fix, mock, and replay workflows." + _actions_note(command_actions),
             "parameters": {
                 "type": "object",
                 "required": ["action"],
                 "properties": {
-                    "action": {"type": "string", "enum": fs.supported_command_actions()},
+                    "action": {"type": "string", "enum": command_actions},
                     "command": {"type": "string", "default": ""},
-                    "root": {"type": "string", "default": "."},
+                    "cwd": {"type": "string", "default": "."},
                     "task_id": {"type": "string", "default": ""},
                     "criterion": {"type": "string", "default": ""},
                     "timeout": {"type": "integer", "default": 0},
                     "stream": {"type": "boolean", "default": False},
                     "stream_id": {"type": "string", "default": ""},
+                    "force": {"type": "boolean", "default": False},
+                    "auto_fix": {"type": "boolean", "default": False},
+                    "max_attempts": {"type": "integer", "default": 3},
+                    "snapshot": {"type": "boolean", "default": False},
+                    "rollback_on_failure": {"type": "boolean", "default": False},
+                    "extra_fields": {"type": "array", "items": {"type": "string"}},
                 },
             },
         }
 
     if fs.coord:
         coord_actions = fs.supported_coord_actions()
+        coord_description = "Coordination, leases, and reusable memos."
+        if fs.agent_os:
+            coord_description += " For non-trivial multi-step, long-running, delegated, or acceptance-criteria work, create an Agent OS task, checkpoint progress, compile context when needed, call `verify_completion`, then `task_complete` only when receipts satisfy every criterion. Enabled families include task lifecycle, scoped memory/relations, context, verification, negative knowledge/incidents, blackboard, swarm, worktree leases, pub/sub, merge simulation, and dataset curation."
+        coord_description += _actions_note(coord_actions)
         schemas["local_ai_coord"] = {
             "name": "local_ai_coord",
-            "description": "Coordination, leases, memos, and agent operating system durable state.",
+            "description": coord_description,
             "parameters": {
                 "type": "object",
                 "required": ["action"],
                 "properties": {
                     "action": {"type": "string", "enum": coord_actions},
+                    "root": {"type": "string", "default": "."},
                     "paths": {"type": "array", "items": {"type": "string"}},
+                    "lease_id": {"type": "string", "default": ""},
                     "task_id": {"type": "string", "default": ""},
-                    "goal": {"type": "string", "default": ""},
-                    "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
                     "key": {"type": "string", "default": ""},
                     "value": {"type": "string", "default": ""},
                     "query": {"type": "string", "default": ""},
+                    "command": {"type": "string", "default": ""},
+                    "ttl_seconds": {"type": "integer", "default": 0},
+                    "max_tokens": {"type": "integer", "default": 0},
+                    "task": {"type": "string", "default": ""},
+                    "contract": {"type": "object"},
+                    "checkpoint": {"type": "object"},
                     "status": {"type": "string", "default": ""},
                     "reason": {"type": "string", "default": ""},
+                    "record": {"type": "object"},
+                    "record_id": {"type": "string", "default": ""},
+                    "target_scope": {"type": "string", "default": ""},
+                    "approver": {"type": "string", "default": ""},
+                    "fingerprint": {"type": "object"},
+                    "tool_outcome": {"type": "object"},
+                    "extra_fields": {"type": "array", "items": {"type": "string"}},
                 },
             },
         }
@@ -793,12 +879,13 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "description": "Exact evidence or artifact slice fetcher.",
             "parameters": {
                 "type": "object",
-                "required": ["id"],
+                "required": ["artifact_id"],
                 "properties": {
-                    "id": {"type": "string"},
+                    "artifact_id": {"type": "string"},
                     "section": {"type": "string", "default": ""},
-                    "start_line": {"type": "integer", "default": 1},
-                    "end_line": {"type": "integer", "default": 0},
+                    "offset": {"type": "integer", "default": 0},
+                    "max_chars": {"type": "integer", "default": 4000},
+                    "extra_fields": {"type": "array", "items": {"type": "string"}},
                 },
             },
         }

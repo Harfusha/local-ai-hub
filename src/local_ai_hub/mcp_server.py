@@ -102,11 +102,25 @@ mcp = FastMCP("Local AI Hub (compact)") if FastMCP is not None else _MissingMCP(
 # time so tool schemas reflect only the active backends.
 # ---------------------------------------------------------------------------
 
+def _actions_note(actions: list[str]) -> str:
+    """Expose the action surface supported by this installation's feature gates."""
+    return f" Supported actions: {', '.join(actions)}." if actions else " No actions are enabled."
+
+
+def _specialized_note(tool_name: str) -> str:
+    """Expose enabled feature-specific triggers alongside compact tool names."""
+    notes = [line[2:] for line in FEATURES.specialized_trigger_lines() if f"`{tool_name}" in line]
+    return f" Specialized triggers: {'; '.join(notes)}." if notes else ""
+
+
 def _desc_status() -> str:
     ollama_note = " ollama_online," if FEATURES.ollama else ""
+    agent_state_note = " With Agent OS enabled, `detail=agent_state` summarizes durable task state." if FEATURES.agent_os else ""
     return (
-        "Health/queue/token-saving status. detail: brief, cache, telemetry, full. scope: process (default) or window."
+        "Health/queue/token-saving status. detail: brief, cache, telemetry, full, agent_state. scope: process (default) or window."
         f" Telemetry is metadata-only.{ollama_note}"
+        f"{agent_state_note}"
+        f"{_specialized_note('local_ai_status')}"
         " Do not poll status during normal repository work or while preprocessing/model startup is in progress;"
         " one bounded health check is enough before native fallback."
         " Use when: make one bounded health, cache, or telemetry check."
@@ -131,14 +145,14 @@ def _desc_task() -> str:
         )
     return (
         f"Bounded local-model worker for the main agent."
-        f" Use 0.5B for preprocessing, `{FEATURES.fast_model}` for quick tasks, `{FEATURES.smart_model}` for complex work, and `{FEATURES.reasoning_model}` for the hardest reasoning."
+        f" Route preprocessing through `{FEATURES.background_model}`, quick tasks through `{FEATURES.fast_model}`, complex tasks through `{FEATURES.smart_model}`, and the hardest reasoning through `{FEATURES.reasoning_model}`."
         f" Explicit model overrides must match a configured model tag."
         f"{profile_note}"
         " Deterministic compression and repository evidence run first when sufficient."
         " Use it for one bounded local-model worker, review or second opinion after indexed evidence."
         " It is not the orchestrator for native Codex subagents; those are managed directly by Codex outside Local AI Hub."
-        " Actions: delegate, reason, continue, review, second_opinion, compress, route, batch,"
-        " benchmark, evaluation_record, evaluation_report, submit, status, wait, result, cancel."
+        f"{_actions_note(FEATURES.supported_task_actions())}"
+        f"{_specialized_note('local_ai_task')}"
         " `delivery=sync` preserves the foreground contract; `async` returns a durable job now;"
         " `auto` requires a positive `latency_budget_ms` and only defers after sufficient endpoint history shows p95 above it."
         " Evaluation stores only opaque ids, booleans, and numeric metadata; it never stores prompts or source text."
@@ -179,6 +193,8 @@ def _desc_repo() -> str:
         " Always pass the stable absolute project root; never rely on MCP cwd. Never loop or increase timeouts indefinitely."
         " Use when: every non-trivial repository task needs indexed evidence or a bounded Hub operation."
         " Skip when: the task is not repository-scoped or fresh evidence already answers it and no independent Hub scope exists."
+        f"{_actions_note(FEATURES.supported_repo_actions())}"
+        f"{_specialized_note('local_ai_repo')}"
     )
 
 
@@ -193,7 +209,9 @@ def _desc_rag() -> str:
         "Fallback semantic retrieval for the main agent only after deterministic, code_index, search"
         " and preprocessed evidence are insufficient."
         " Keep queries bounded and use it only for bounded semantic retrieval, not open-ended agent orchestration."
-        " Actions: index, search, list. Index is file-incremental and query-cached."
+        f"{_actions_note(FEATURES.supported_rag_actions())}"
+        f"{_specialized_note('local_ai_rag')}"
+        " Index is file-incremental and query-cached."
         " Do not trigger index repeatedly for a fresh stable workspace."
         " Use when: cheaper indexed repository paths cannot answer a bounded semantic retrieval question."
         " Skip when: deterministic/indexed evidence is sufficient or Codex-owned subagent orchestration is the right owner."
@@ -204,7 +222,9 @@ def _desc_command() -> str:
     agent_os_note = " Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts." if FEATURES.agent_os else ""
     return (
         "Bounded command broker for the main agent. MANDATORY for repeatable test/lint/typecheck/static-analysis/build/read-only commands whenever possible."
-        " Shared safe CLI broker. Actions: run, cancel, classify, discover, stats."
+        " Shared safe CLI broker."
+        f"{_actions_note(FEATURES.supported_command_actions())}"
+        f"{_specialized_note('local_ai_command')}"
         f"{agent_os_note}"
         " Results are keyed by command + bounded repo state and duplicate runs coalesce across agents. Reuse fresh results."
         " If run returns in_progress=true, DO NOT start the command natively or with force; continue independent work and retry later so the owner can populate the cache."
@@ -215,15 +235,30 @@ def _desc_command() -> str:
 
 
 def _desc_coord() -> str:
-    agent_os_note = " task_create, task_get, task_checkpoint, task_transition, task_resume, task_list, memory_record, memory_get, memory_find, memory_promote, incident_decision," if FEATURES.agent_os else ""
+    if FEATURES.agent_os:
+        agent_os_note = (
+            " For non-trivial multi-step, long-running, delegated, or acceptance-criteria work, create an Agent OS task first;"
+            " checkpoint meaningful phases, search/record durable memory as useful, compile context when resuming,"
+            " and gate task completion on verification receipts."
+        )
+        usage_note = (
+            " Use when: any non-trivial task benefits from durable state/verification, or Hub workers share edit paths or reusable findings."
+            " Skip when: task is a trivial one-step lookup with no shared state to preserve."
+        )
+    else:
+        agent_os_note = ""
+        usage_note = (
+            " Use when: Hub workers share edit paths, leases, or reusable findings."
+            " Skip when: work is isolated and no shared Hub state or memo is involved."
+        )
     return (
-        "Cross-agent coordination for the main agent and bounded Hub workers. Actions: claim, release, leases, memo_put, memo_get, memo_search, memo_delete,"
+        "Cross-agent coordination for the main agent and bounded Hub workers."
+        f"{_actions_note(FEATURES.supported_coord_actions())}"
         f"{agent_os_note}"
         " Claim overlapping edit paths before concurrent Hub work."
         " Search/get memos before repeating expensive investigation and store concise reusable findings after discovery."
         " Native peer subagents are coordinated by Codex rather than by this Hub tool."
-        " Use when: Hub workers share edit paths, leases, or reusable findings."
-        " Skip when: work is isolated and no shared Hub state or memo is involved."
+        f"{usage_note}"
     )
 
 
