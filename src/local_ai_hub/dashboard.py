@@ -655,6 +655,7 @@ function setupTraceInspector(){
 setupTraceInspector();
 if($('traceSidebarList')&&!$('traceHistorySearch')){$('traceSidebarList').insertAdjacentHTML('beforebegin','<div class="trace-sidebar-controls"><input id="traceHistorySearch" type="search" placeholder="Search history…" autocomplete="off"><select id="traceHistoryState" aria-label="History state"><option value="useful">Live + completed</option><option value="">All history</option><option value="interrupted">Interrupted</option><option value="failed">Failed</option></select></div>')}
 
+let statusPollInFlight=false,hasLiveStatus=false;
 let sloScope=$('sloScope').value;
 $('sloScope').onchange=()=>{sloScope=$('sloScope').value;pollStatus()};
 $('saveToken').onclick=()=>{apiToken=$('apiToken').value.trim();pollStatus()};
@@ -1010,14 +1011,14 @@ if($('cmdJsonViewBtn'))$('cmdJsonViewBtn').onclick=()=>{
   $('cmdTermViewBtn').classList.remove('active');
 };
 
-$('cmdClassify').onclick=async()=>{
+if($('cmdClassify'))$('cmdClassify').onclick=async()=>{
   const command=$('cmdInput').value.trim();
   if(!command)return;
   const res=await post('/api/command',{action:'classify',command});
   renderCmdResult(res);
 };
 
-$('cmdRun').onclick=async()=>{
+if($('cmdRun'))$('cmdRun').onclick=async()=>{
   const command=$('cmdInput').value.trim(),cwd=$('cmdRoot').value.trim();
   if(!command||!cwd){
     renderCmdResult({error:'Repository root and command are required.'});
@@ -1141,8 +1142,8 @@ async function openGitDiffModal(defaultRoot,defaultPath,defaultStaged){
 
 if($('cmdGitDiffBtn'))$('cmdGitDiffBtn').onclick=()=>openGitDiffModal($('cmdRoot')?.value?.trim());
 
-$('intelRediscover').onclick=async()=>{$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'rediscover'});$('intelControlStatus').textContent=r.success?'rediscovery complete':'error: '+(r.error||'failed');pollStatus()};
-$('intelReset').onclick=async()=>{if(!confirm('Reset all managed Serena/CodeGraph MCP sessions?'))return;$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'reset',backend:'all'});$('intelControlStatus').textContent=r.success?'sessions reset':'error: '+(r.error||'failed');pollStatus()};
+if($('intelRediscover'))$('intelRediscover').onclick=async()=>{$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'rediscover'});$('intelControlStatus').textContent=r.success?'rediscovery complete':'error: '+(r.error||'failed');pollStatus()};
+if($('intelReset'))$('intelReset').onclick=async()=>{if(!confirm('Reset all managed Serena/CodeGraph MCP sessions?'))return;$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'reset',backend:'all'});$('intelControlStatus').textContent=r.success?'sessions reset':'error: '+(r.error||'failed');pollStatus()};
 
 async function loadArchGraph(){
   try{
@@ -4113,7 +4114,6 @@ async function pollTraces(){try{const kind=$('traceKind')?.value||'',suffix=kind
 $('traceRefresh')?.addEventListener('click',pollTraces);$('traceKind')?.addEventListener('change',()=>renderTraceList(lastTraces));
 $('traceHistorySearch')?.addEventListener('input',()=>renderTraceList(lastTraces));$('traceHistoryState')?.addEventListener('change',()=>renderTraceList(lastTraces));
 
-let statusPollInFlight=false,hasLiveStatus=false;
 async function probeHealth(){
   try{
     const r=await nativeFetch('/health',{cache:'no-store'});
