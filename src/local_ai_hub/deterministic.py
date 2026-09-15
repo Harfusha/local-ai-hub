@@ -98,6 +98,8 @@ class DeterministicEngine:
         self.max_query_results = int(cfg.get("max_query_results", 24))
         self.max_evidence = int(cfg.get("max_evidence", 12))
         self.max_manifest_bytes = int(cfg.get("max_manifest_bytes", 1_500_000))
+        workspace_cache = config.get("workspace_cache", {})
+        self.git_status_timeout = max(0.5, float(workspace_cache.get("git_status_timeout_seconds", 2.5)))
         self.db_path = configured_state_dir(config) / "deterministic.sqlite3"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -4616,6 +4618,7 @@ def test_{sym}_regression_edge_cases():
                     capture_output=True,
                     text=True,
                     check=False,
+                    timeout=self.git_status_timeout,
                     **hidden_run_kwargs(),
                 )
                 if cp.returncode == 0:

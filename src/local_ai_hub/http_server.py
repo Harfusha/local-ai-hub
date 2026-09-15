@@ -987,27 +987,30 @@ class Handler(BaseHTTPRequestHandler):
             self._finish_stream_request(False, error="client disconnected before headers")
             return
 
-        last_seq = after_seq
-        if stream_id and after_seq >= 0:
-            past = APP.agent_state.events(stream_id=stream_id, after_seq=after_seq, limit=1000)
-            for ev in past:
-                if kind and ev.kind != kind:
-                    continue
-                last_seq = max(last_seq, ev.seq or 0)
-                payload = json.dumps(ev.to_dict(), separators=(",", ":"))
-                msg = f"id: {ev.seq}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
-                try:
-                    self.wfile.write(msg)
-                    self.wfile.flush()
-                except OSError:
-                    self._finish_stream_request(True)
-                    return
-
         q = APP.agent_state.subscribe(maxsize=200)
-        start_time = time.time()
         try:
+            # Subscribe before fetching history. An event appended in the replay
+            # window is then either replayed or queued; duplicate queued events
+            # are discarded by the sequence check below.
+            last_seq = after_seq
+            if stream_id and after_seq >= 0:
+                past = APP.agent_state.events(stream_id=stream_id, after_seq=after_seq, limit=1000)
+                for ev in past:
+                    if kind and ev.kind != kind:
+                        continue
+                    last_seq = max(last_seq, ev.seq or 0)
+                    payload = json.dumps(ev.to_dict(), separators=(",", ":"))
+                    msg = f"id: {ev.seq}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
+                    try:
+                        self.wfile.write(msg)
+                        self.wfile.flush()
+                    except OSError:
+                        return
+
+            start_time = time.monotonic()
             while True:
-                if (time.time() - start_time) >= timeout:
+                remaining = timeout - (time.monotonic() - start_time)
+                if remaining <= 0:
                     try:
                         timeout_msg = f"event: stream_timeout\ndata: {{\"reconnect\":true,\"last_seq\":{last_seq}}}\n\n".encode("utf-8")
                         self.wfile.write(timeout_msg)
@@ -1016,7 +1019,7 @@ class Handler(BaseHTTPRequestHandler):
                         pass
                     break
                 try:
-                    ev = q.get(timeout=1.0)
+                    ev = q.get(timeout=min(1.0, remaining))
                     if ev.seq is not None and ev.seq <= last_seq:
                         continue
                     if stream_id and ev.stream_id != stream_id:

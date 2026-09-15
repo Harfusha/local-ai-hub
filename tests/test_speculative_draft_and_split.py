@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 from unittest.mock import MagicMock
+from local_ai_hub import deterministic as deterministic_module
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.services import LocalAIServices
 from local_ai_hub.token_accounting import finalize_tool_accounting
@@ -28,6 +30,27 @@ def test_split_changes(tmp_path: Path) -> None:
     assert "api_or_services" in categories
     assert "tests" in categories
     assert "docs" in categories
+
+
+def test_split_changes_bounds_git_status(tmp_path: Path, monkeypatch) -> None:
+    engine = DeterministicEngine(
+        {
+            "server": {"state_dir": str(tmp_path)},
+            "workspace_cache": {"git_status_timeout_seconds": 0.7},
+        }
+    )
+    timeouts = []
+
+    def fake_run(argv, **kwargs):
+        timeouts.append(kwargs.get("timeout"))
+        return subprocess.CompletedProcess(argv, 0, " M source.py\n", "")
+
+    monkeypatch.setattr(deterministic_module.subprocess, "run", fake_run)
+
+    result = engine.split_changes(str(tmp_path))
+
+    assert result["total_files"] == 1
+    assert timeouts == [0.7]
 
 
 def test_synthesize_rules(tmp_path: Path) -> None:

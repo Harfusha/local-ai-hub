@@ -146,6 +146,7 @@ class AsyncJobManager:
     def _dispatch(self, job_id: str) -> None:
         if self._shutdown.is_set():
             return
+        completion = self._event(job_id)
         with self._lock, closing(self._connect()) as con:
             con.row_factory = sqlite3.Row
             row = con.execute("SELECT * FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
@@ -154,6 +155,7 @@ class AsyncJobManager:
             con.execute("UPDATE async_jobs SET lease_until=?,updated_at=? WHERE job_id=? AND state='queued'", (time.time() + self.lease_seconds, time.time(), job_id))
             con.commit()
             tenant = str(row["tenant"])
+        completion.clear()
         try:
             model = str(getattr(self.scheduler, "config", {}).get("models", {}).get("heavy_code", ""))
             queued = self.scheduler.enqueue(model, tenant, "async-job", lambda: self._execute(job_id), priority=1, background=True)
@@ -248,6 +250,12 @@ class AsyncJobManager:
         observer_token = set_observer(observer)
         try:
             result = self.executor(action, payload, tenant)
+            if not isinstance(result, dict):
+                result = {
+                    "success": False,
+                    "error": "async executor returned a non-object result",
+                    "retryable": False,
+                }
         except Exception as exc:
             result = {"success": False, "error": str(exc), "retryable": True}
         finally:
@@ -301,7 +309,7 @@ class AsyncJobManager:
                 con.row_factory = sqlite3.Row
                 cur_row = con.execute("SELECT attempts FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
                 attempts = int(cur_row["attempts"] if cur_row else 1)
-                if attempts < self.max_attempts:
+                if attempts < self.max_attempts and bool(result.get("retryable", True)):
                     con.execute("UPDATE async_jobs SET state='queued',result_json=?,error=?,lease_until=0,updated_at=? WHERE job_id=?", (json.dumps(result, ensure_ascii=False, separators=(",", ":")), str(result.get("error", "async job failed"))[:500], time.time(), job_id))
                     final = result
                 else:

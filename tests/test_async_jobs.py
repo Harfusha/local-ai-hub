@@ -115,6 +115,26 @@ def test_completed_job_returns_artifact_backed_result(tmp_path):
     manager.close()
 
 
+def test_malformed_executor_result_fails_job_without_retry(tmp_path):
+    scheduler = _Scheduler()
+    manager = AsyncJobManager(
+        {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}},
+        scheduler,
+        _Artifacts(),
+        lambda _action, _payload, _tenant: "not a result object",
+    )
+    try:
+        submitted = manager.submit("tenant-a", "reason", {"task": "bad result"})
+
+        result = manager._execute(submitted["job_id"])
+
+        assert result["success"] is False
+        assert result["retryable"] is False
+        assert manager.status("tenant-a", submitted["job_id"])["state"] == "failed"
+    finally:
+        manager.close()
+
+
 def test_async_job_trace_links_prompt_scheduler_and_terminal_state(tmp_path):
     config = {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}, "debug_traces": {"enabled": True}}
     store = DebugTraceStore(config)

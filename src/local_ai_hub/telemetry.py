@@ -134,7 +134,7 @@ class TelemetryStore:
         self._queue: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue(maxsize=max(100, int(queue_size)))
         self._stop = threading.Event()
         self._stats_lock = threading.Lock()
-        self._stats = {"queued": 0, "written": 0, "dropped": 0, "writer_errors": 0, "batches": 0}
+        self._stats = {"queued": 0, "processed": 0, "written": 0, "dropped": 0, "writer_errors": 0, "batches": 0}
         self._live_lock = threading.Lock()
         self._live_seq = 0
         self._live_events: deque[dict[str, Any]] = deque(maxlen=max(100, int(live_buffer_size)))
@@ -968,6 +968,7 @@ class TelemetryStore:
                 )
             con.commit()
         with self._stats_lock:
+            self._stats["processed"] += len(batch)
             self._stats["written"] += len(batch)
             self._stats["batches"] += 1
 
@@ -1011,6 +1012,7 @@ class TelemetryStore:
                 with self._stats_lock:
                     self._stats["writer_errors"] += 1
                     if not is_busy_error(exc):
+                        self._stats["processed"] += len(batch)
                         self._stats["dropped"] += len(batch)
                         batch.clear()
                 time.sleep(min(1.0, self.flush_interval_seconds * 2))
@@ -1023,12 +1025,12 @@ class TelemetryStore:
         deadline = time.monotonic() + max(0.05, float(timeout))
         while time.monotonic() < deadline:
             with self._stats_lock:
-                completed = int(self._stats["written"]) + int(self._stats["dropped"])
+                completed = int(self._stats["processed"])
             if completed >= target:
                 return True
             time.sleep(0.02)
         with self._stats_lock:
-            return int(self._stats["written"]) + int(self._stats["dropped"]) >= target
+            return int(self._stats["processed"]) >= target
 
     def _cutoff(self, days: int) -> float:
         return time.time() - max(1, int(days)) * 86400

@@ -57,3 +57,19 @@ def test_process_scope_exposes_per_agent_tail_slo(tmp_path):
     agents = {item["agent"]: item for item in report["agent_slo"]}
     assert agents["cloud-a"]["p99_duration_ms"] == 1_000.0
     assert agents["cloud-a"]["failure_rate"] == 0.5
+
+
+def test_flush_does_not_count_prior_queue_overflow_as_completed_work(tmp_path):
+    store = TelemetryStore(tmp_path / "telemetry", enabled=True, flush_interval_seconds=0.01)
+    try:
+        store._stop.set()
+        assert store._thread is not None
+        store._thread.join(timeout=1)
+        with store._stats_lock:
+            store._stats.update(queued=100, written=100, dropped=1, processed=100)
+
+        store.record_http(action="/pending", duration_ms=1)
+
+        assert store.flush(0.05) is False
+    finally:
+        store.close()
