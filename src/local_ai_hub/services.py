@@ -2546,9 +2546,6 @@ class LocalAIServices:
     def _record_symbol_focus(self, tenant: str, symbols: list[str]) -> None:
         if not symbols:
             return
-        if not hasattr(self, "_focus_lock"):
-            self._focus_lock = threading.Lock()
-            self._recent_focus_symbols = {}
         with self._focus_lock:
             current = self._recent_focus_symbols.setdefault(tenant, [])
             for s in symbols:
@@ -2573,9 +2570,6 @@ class LocalAIServices:
                 synonyms.extend(self.DOMAIN_SYNONYMS[t])
         
         # Multi-turn context bonus: if query is brief/contextual, add recently investigated AST symbols
-        if not hasattr(self, "_focus_lock"):
-            self._focus_lock = threading.Lock()
-            self._recent_focus_symbols = {}
         with self._focus_lock:
             recent = list(self._recent_focus_symbols.get(tenant, []))
         if recent and len(terms) <= 4:

@@ -59,6 +59,11 @@ from .benchmark import HardwareBenchmarkRunner
 from .work_orchestrator import WorkOrchestrator
 
 
+# Table whitelists for bundle import/restore — created once at module level.
+_PREPROCESS_TABLES = frozenset({"file_refs", "module_cards", "project_cards", "external_index_state"})
+_DET_TABLES = frozenset({"files", "facts", "dependencies", "scripts", "project_state", "query_cache"})
+
+
 class BundleValidationError(ValueError):
     """Raised when bundle validation or scope verification fails."""
 
@@ -869,7 +874,6 @@ class LocalAIApp:
 
         # Restore root-scoped preprocessor state transactionally. Derived content
         # cards are content-addressed and therefore safe to upsert globally.
-        _PREPROCESS_TABLES = frozenset({"file_refs", "module_cards", "project_cards", "external_index_state"})
         with self.preprocessor._db_lock, closing(self.preprocessor._connect()) as con:
             con.execute("BEGIN IMMEDIATE")
             for table in ("file_refs", "module_cards", "project_cards", "external_index_state"):
@@ -910,7 +914,6 @@ class LocalAIApp:
             con.commit()
 
         if self.deterministic is not None:
-            _DET_TABLES = frozenset({"files", "facts", "dependencies", "scripts", "project_state", "query_cache"})
             with self.deterministic._lock, closing(self.deterministic._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
                 for table in ("files", "facts", "dependencies", "scripts", "project_state", "query_cache"):

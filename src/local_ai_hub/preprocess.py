@@ -1313,11 +1313,21 @@ class ProjectPreprocessor:
         self._status_cache[key] = {"time": now_mono, "data": dict(res)}
         return res
 
+    _PROJECT_COLUMNS = frozenset({
+        "workspace", "status", "phase", "generation", "force_refresh",
+        "inventory_hash", "structural_hash", "registered_at", "updated_at",
+        "last_complete_at", "next_check_at", "retry_after", "last_error",
+        "stats_json", "paused", "last_requested_at", "registration_source",
+    })
+
     def _set_project(self, root: str, **values: Any) -> None:
         if not values:
             return
         root = self._root(root)
         values["updated_at"] = time.time()
+        if not set(values) <= self._PROJECT_COLUMNS:
+            bad = set(values) - self._PROJECT_COLUMNS
+            raise ValueError(f"_set_project: invalid column(s): {bad}")
         columns = ",".join(f"{key}=?" for key in values)
         params = [*values.values(), root]
         self._write_retry(lambda con: con.execute(f"UPDATE projects SET {columns} WHERE root=?", params))
