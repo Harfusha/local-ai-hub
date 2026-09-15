@@ -73,6 +73,26 @@ def test_async_jobs_retry_on_execution_failure(tmp_path: Path):
     manager.close()
 
 
+def test_async_retry_dispatch_clears_stale_completion_event(tmp_path: Path):
+    manager = AsyncJobManager(
+        {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"max_attempts": 2}},
+        _Scheduler(),
+        _Artifacts(),
+        lambda _action, _payload, _tenant: {"success": False, "retryable": True, "error": "retry"},
+    )
+    try:
+        submitted = manager.submit("tenant-a", "reason", {"task": "retry-event"})
+        job_id = submitted["job_id"]
+        manager._execute(job_id)
+        assert manager._event(job_id).is_set()
+
+        manager.tick()
+
+        assert not manager._event(job_id).is_set()
+    finally:
+        manager.close()
+
+
 def test_async_jobs_tick_reclaims_stuck_running_job(tmp_path: Path):
     manager = AsyncJobManager(
         {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"max_attempts": 2, "lease_seconds": 10}},

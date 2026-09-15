@@ -145,6 +145,8 @@ class CommandBroker:
         self.coalesce_wait_seconds = max(1.0, float(cfg.get("coalesced_wait_seconds", 90.0)))
         self.terminate_grace_seconds = max(0.1, float(cfg.get("terminate_grace_seconds", 2.0)))
         self.post_kill_drain_seconds = max(0.1, float(cfg.get("post_kill_drain_seconds", 2.0)))
+        workspace_cache = config.get("workspace_cache", {})
+        self.git_snapshot_timeout = max(0.5, float(workspace_cache.get("git_status_timeout_seconds", 2.5)))
         state_dir = configured_state_dir(config)
         l1_entries = int(cfg.get("l1_entries", 128))
         self.success_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite3", "command:success", int(cfg.get("success_ttl_seconds", 43200)), int(cfg.get("max_entries", 5000))), l1_entries, int(cfg.get("l1_ttl_seconds", 900)))
@@ -1121,12 +1123,14 @@ class CommandBroker:
             try:
                 cp_rev = subprocess.run(
                     ["git", "rev-parse", "--is-inside-work-tree"],
-                    cwd=cwd, capture_output=True, text=True, check=False, **hidden_run_kwargs()
+                    cwd=cwd, capture_output=True, text=True, check=False,
+                    timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
                 )
                 if cp_rev.returncode == 0:
                     cp_untracked = subprocess.run(
                         ["git", "ls-files", "--others", "--exclude-standard"],
-                        cwd=cwd, capture_output=True, text=True, check=False, **hidden_run_kwargs()
+                        cwd=cwd, capture_output=True, text=True, check=False,
+                        timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
                     )
                     git_snapshot = {
                         "cwd": cwd,
@@ -1141,11 +1145,13 @@ class CommandBroker:
                     try:
                         subprocess.run(
                             ["git", "checkout", "--", "."],
-                            cwd=cwd, capture_output=True, text=True, check=False, **hidden_run_kwargs()
+                            cwd=cwd, capture_output=True, text=True, check=False,
+                            timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
                         )
                         cp_cur_untracked = subprocess.run(
                             ["git", "ls-files", "--others", "--exclude-standard"],
-                            cwd=cwd, capture_output=True, text=True, check=False, **hidden_run_kwargs()
+                            cwd=cwd, capture_output=True, text=True, check=False,
+                            timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
                         )
                         current_untracked = set(cp_cur_untracked.stdout.splitlines())
                         new_untracked = current_untracked - git_snapshot["untracked"]
@@ -1914,7 +1920,7 @@ class CommandBroker:
         started = time.perf_counter()
         try:
             with urlopen(req, timeout=max(0.1, float(timeout))) as resp:
-                resp_body = resp.read().decode("utf-8", errors="replace")
+                resp_body = resp.read(65_536).decode("utf-8", errors="replace")
                 dur = round((time.perf_counter() - started) * 1000, 1)
                 return {
                     "success": True,
@@ -1924,7 +1930,7 @@ class CommandBroker:
                     "headers": {k.lower(): v for k, v in list(resp.headers.items())[:10]},
                 }
         except HTTPError as exc:
-            resp_body = exc.read().decode("utf-8", errors="replace")
+            resp_body = exc.read(65_536).decode("utf-8", errors="replace")
             return {
                 "success": False,
                 "status_code": exc.code,

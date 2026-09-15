@@ -110,6 +110,23 @@ def test_client_does_not_spawn_when_hub_port_is_already_owned(tmp_path, monkeypa
     assert client.ensure_server() is False
 
 
+def test_client_cleans_failed_start_lock_write(tmp_path, monkeypatch):
+    config = tmp_path / "config.toml"
+    state = tmp_path / "state"
+    config.write_text(
+        "[server]\nport=11435\nstate_dir='" + state.as_posix() + "'\n"
+        "[headless]\nrespect_disabled_marker=true\n",
+        encoding="utf-8",
+    )
+    client = HubClient(tenant="test", config_path=str(config))
+    monkeypatch.setattr(client, "_online", lambda: False)
+    monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: 0)
+    monkeypatch.setattr(client_module.os, "write", lambda *_args: (_ for _ in ()).throw(OSError("write failed")))
+
+    assert client.ensure_server() is False
+    assert not (state / "hub.start.lock").exists()
+
+
 def test_client_does_not_bypass_live_managed_supervisor(tmp_path, monkeypatch):
     config = tmp_path / "config.toml"
     state = tmp_path / "state"

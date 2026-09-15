@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from local_ai_hub import commands as commands_module
 from local_ai_hub.commands import CommandBroker
 from local_ai_hub.process_utils import hidden_run_kwargs
 
@@ -62,3 +63,31 @@ def test_command_snapshot_on_success(tmp_path: Path) -> None:
     assert result["success"] is True
     assert result.get("snapshot_taken") is True
     assert result.get("rolled_back") is None
+
+
+def test_snapshot_git_operations_use_configured_timeout(tmp_path: Path, monkeypatch) -> None:
+    class _RepoState:
+        @staticmethod
+        def fingerprint(_cwd: str) -> dict[str, str]:
+            return {"fingerprint": "test"}
+
+    broker = CommandBroker(
+        {
+            "server": {"state_dir": str(tmp_path)},
+            "workspace_cache": {"git_status_timeout_seconds": 0.7},
+        },
+        repo_state=_RepoState(),
+    )
+    timeouts = []
+
+    def fake_run(argv, **kwargs):
+        timeouts.append(kwargs.get("timeout"))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(commands_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(broker, "_execute", lambda *_args, **_kwargs: {"success": True, "exit_code": 0, "stdout": "", "stderr": ""})
+
+    result = broker.run("python -c \"print('ok')\"", str(tmp_path), force=True, snapshot=True)
+
+    assert result["success"] is True
+    assert timeouts == [0.7, 0.7]

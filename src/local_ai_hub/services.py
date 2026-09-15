@@ -71,6 +71,56 @@ def _review_model_identity(value: Any) -> str:
     return re.sub(r"-(?:instruct|q\d+).*?$", "", model)
 
 
+def _merge_review_segment_results(
+    segment_results: list[dict[str, Any]],
+    *,
+    label: str,
+    task_type: str,
+    chunked: bool,
+    synthesis_context_budget: int,
+    synthesis_task: str,
+    max_output_tokens: int,
+    complexity: str,
+    tenant: str,
+    delegate: Any,
+) -> tuple[str, dict[str, Any]]:
+    """Return raw review output or a bounded synthesis of chunked results."""
+    raw_text = "\n\n".join(
+        f"### {label} {index}/{len(segment_results)}\n{str(item.get('text', '')).strip()}"
+        for index, item in enumerate(segment_results, start=1)
+    )
+    if not chunked:
+        return str(segment_results[0].get("text", "")), {"enabled": False}
+
+    if estimate_tokens(raw_text) > synthesis_context_budget:
+        return raw_text, {"enabled": True, "degraded": True, "error": "Segment findings exceed synthesis budget."}
+    try:
+        merged = delegate(
+            {
+                "task_type": task_type,
+                "task": synthesis_task,
+                "context": raw_text,
+                "complexity": complexity,
+                "max_tokens": min(max_output_tokens, 1800),
+            },
+            tenant,
+        )
+        if isinstance(merged, dict) and merged.get("success") is not False:
+            output_error = _review_text_error(merged.get("text"))
+            if output_error is None:
+                return str(merged["text"]), {
+                    "enabled": True,
+                    "degraded": False,
+                    "model": merged.get("model"),
+                }
+            error = f"Synthesis returned unusable output: {output_error}"
+        else:
+            error = merged.get("error", "Synthesis returned no text.") if isinstance(merged, dict) else "Synthesis returned no result."
+        return raw_text, {"enabled": True, "degraded": True, "error": str(error)}
+    except Exception as exc:
+        return raw_text, {"enabled": True, "degraded": True, "error": str(exc)}
+
+
 def _split_review_diff(diff_text: str, max_tokens: int) -> list[str]:
     """Split a unified diff into bounded, file/hunk-aligned review inputs."""
     budget = max(_REVIEW_DIFF_MIN_CHUNK_TOKENS, int(max_tokens))
@@ -2331,45 +2381,17 @@ class LocalAIServices:
             result["degraded"] = True
             result["format_recoveries"] = format_recoveries
 
-        def merge_segment_results(segment_results, *, label: str, task_type: str):
-            raw_text = "\n\n".join(
-                f"### {label} {index}/{len(segment_results)}\n{str(item.get('text', '')).strip()}"
-                for index, item in enumerate(segment_results, start=1)
-            )
-            if not chunked:
-                return str(segment_results[0].get("text", "")), {"enabled": False}
-
-            context = raw_text
-            if estimate_tokens(context) > synthesis_context_budget:
-                return raw_text, {"enabled": True, "degraded": True, "error": "Segment findings exceed synthesis budget."}
-            try:
-                merged = self.delegate(
-                    {
-                        "task_type": task_type,
-                        "task": synthesis_task,
-                        "context": context,
-                        "complexity": complexity,
-                        "max_tokens": min(max_output_tokens, 1800),
-                    },
-                    tenant,
-                )
-                if isinstance(merged, dict) and merged.get("success") is not False:
-                    output_error = _review_text_error(merged.get("text"))
-                    if output_error is None:
-                        return str(merged["text"]), {
-                            "enabled": True,
-                            "degraded": False,
-                            "model": merged.get("model"),
-                        }
-                    error = f"Synthesis returned unusable output: {output_error}"
-                else:
-                    error = merged.get("error", "Synthesis returned no text.") if isinstance(merged, dict) else "Synthesis returned no result."
-                return raw_text, {"enabled": True, "degraded": True, "error": str(error)}
-            except Exception as exc:
-                return raw_text, {"enabled": True, "degraded": True, "error": str(exc)}
-
-        result["text"], result["review_synthesis"] = merge_segment_results(
-            primary_results, label="Review segment", task_type="review"
+        merge_options = {
+            "chunked": chunked,
+            "synthesis_context_budget": synthesis_context_budget,
+            "synthesis_task": synthesis_task,
+            "max_output_tokens": max_output_tokens,
+            "complexity": complexity,
+            "tenant": tenant,
+            "delegate": self.delegate,
+        }
+        result["text"], result["review_synthesis"] = _merge_review_segment_results(
+            primary_results, label="Review segment", task_type="review", **merge_options
         )
         if result["review_synthesis"].get("model"):
             result["model"] = result["review_synthesis"]["model"]
@@ -2400,8 +2422,11 @@ class LocalAIServices:
                         )
                     secondary_results.append(sec_result)
                 if secondary_results:
-                    secondary_text, secondary_synthesis = merge_segment_results(
-                        secondary_results, label="Counter-review segment", task_type="reasoning"
+                    secondary_text, secondary_synthesis = _merge_review_segment_results(
+                        secondary_results,
+                        label="Counter-review segment",
+                        task_type="reasoning",
+                        **merge_options,
                     )
                     result["consensus"] = {
                         "enabled": True,

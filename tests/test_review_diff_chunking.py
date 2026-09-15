@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from local_ai_hub.budget import estimate_tokens
 from local_ai_hub.model_policy import ModelExecutionPolicy
 from local_ai_hub.router import ModelRouter
-from local_ai_hub.services import LocalAIServices, _split_review_diff
+from local_ai_hub.services import LocalAIServices, _merge_review_segment_results, _split_review_diff
 
 
 class ReviewDiffChunkingTests(unittest.TestCase):
@@ -48,6 +48,26 @@ class ReviewDiffChunkingTests(unittest.TestCase):
             "original_estimated_tokens": estimated_tokens,
         }
         return services
+
+    def test_unchunked_segment_merge_preserves_review_without_synthesis(self):
+        calls = []
+
+        text, metadata = _merge_review_segment_results(
+            [{"text": "SUMMARY: No findings."}],
+            label="Review segment",
+            task_type="review",
+            chunked=False,
+            synthesis_context_budget=100,
+            synthesis_task="unused",
+            max_output_tokens=100,
+            complexity="fast",
+            tenant="test",
+            delegate=lambda payload, tenant: calls.append((payload, tenant)),
+        )
+
+        self.assertEqual(text, "SUMMARY: No findings.")
+        self.assertEqual(metadata, {"enabled": False})
+        self.assertEqual(calls, [])
 
     def test_small_diff_stays_single_request(self):
         diff_text = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
