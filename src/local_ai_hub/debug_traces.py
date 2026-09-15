@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -310,6 +311,27 @@ class DebugTraceStore:
         result["response"] = result.get("response") or {}
         return result
 
+    @staticmethod
+    def _request_summary(action: str, request_action: Any, command: Any) -> str:
+        if action != "/api/command":
+            return ""
+        operation = re.sub(r"[^A-Za-z0-9_.-]", "", str(request_action or ""))[:32]
+        preview = " ".join(command.split()) if isinstance(command, str) else ""
+        if preview:
+            preview = re.sub(
+                r"(?i)(--?[A-Za-z0-9_.-]*(?:TOKEN|PASSWORD|SECRET|PASSWD|API[-_]?KEY|ACCESS[-_]?KEY|AUTHORIZATION|CREDENTIAL)[A-Za-z0-9_.-]*(?:=|\s+))(?:(?:\"[^\"]*\")|(?:'[^']*')|\S+)",
+                r"\1[redacted]",
+                preview,
+            )
+            preview = re.sub(
+                r"(?i)\b([A-Z0-9_.-]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|ACCESS[_-]?KEY|AUTHORIZATION|CREDENTIAL)[A-Z0-9_.-]*\s*=\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+                r"\1[redacted]",
+                preview,
+            )
+            preview = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [redacted]", preview)
+            preview = preview[:160]
+        return " · ".join(part for part in (operation, preview) if part)
+
     def detail(self, trace_id: str, *, since_seq: int = 0) -> dict[str, Any]:
         if not trace_id:
             return {"success": False, "error": "trace not found", "terminal": True}
@@ -340,8 +362,16 @@ class DebugTraceStore:
             with closing(self._connect()) as con:
                 con.row_factory = sqlite3.Row
                 total = int(con.execute(f"SELECT COUNT(*) FROM traces{clause}", values).fetchone()[0])
-                rows = con.execute(f"SELECT trace_id,kind,tenant,agent,action,source,model,request_id,async_job_id,scheduler_job_id,state,created_at,updated_at,finished_at,error FROM traces{clause} ORDER BY updated_at DESC LIMIT ? OFFSET ?", [*values, limit, offset]).fetchall()
-                return {"success": True, "items": [dict(row) for row in rows], "total": total, "limit": limit, "offset": offset}
+                rows = con.execute(f"""SELECT trace_id,kind,tenant,agent,action,source,model,request_id,async_job_id,scheduler_job_id,state,created_at,updated_at,finished_at,error,
+                    CASE WHEN json_valid(request_json) THEN substr(json_extract(request_json, '$.action'), 1, 48) END AS request_action,
+                    CASE WHEN json_valid(request_json) THEN substr(json_extract(request_json, '$.command'), 1, 512) END AS request_command
+                    FROM traces{clause} ORDER BY updated_at DESC LIMIT ? OFFSET ?""", [*values, limit, offset]).fetchall()
+                items = []
+                for row in rows:
+                    item = dict(row)
+                    item["request_summary"] = self._request_summary(item["action"], item.pop("request_action", None), item.pop("request_command", None))
+                    items.append(item)
+                return {"success": True, "items": items, "total": total, "limit": limit, "offset": offset}
         except sqlite3.Error:
             return {"success": False, "error": "trace store unavailable", "retryable": True}
 

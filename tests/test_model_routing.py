@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from local_ai_hub.router import ModelRouter, review_diff_complexity
+from local_ai_hub.services import LocalAIServices
 
 
 class ReviewDiffRoutingTests(unittest.TestCase):
@@ -42,6 +43,41 @@ class ReviewDiffRoutingTests(unittest.TestCase):
             router.apply_model_override(route, "qwen2.5-coder:9b")
         with self.assertRaisesRegex(ValueError, "configured model tier"):
             router.apply_model_override(route, "qwen2.5-coder:0.5b")
+
+    def test_delegate_applies_only_configured_foreground_model_overrides(self):
+        config = {
+            "models": {
+                "background_code": "qwen2.5-coder:0.5b",
+                "fast_code": "qwen2.5-coder:1.5b",
+                "heavy_code": "qwen2.5-coder:3b",
+                "reasoning": "qwen2.5-coder:7b",
+                "general": "qwen2.5-coder:1.5b",
+            }
+        }
+        services = object.__new__(LocalAIServices)
+        services.router = ModelRouter(config)
+        services._resident_optimize = lambda route, _task_type, _complexity: route
+        generated_models = []
+
+        def generate(model, *_args, **_kwargs):
+            generated_models.append(model)
+            return {"success": True, "model": model, "text": "SUMMARY: Completed request."}
+
+        services._generate = generate
+        allowed = LocalAIServices.delegate(
+            services, {"task": "Explain this function", "model": "qwen2.5-coder:7b"}, "test"
+        )
+        self.assertTrue(allowed["success"])
+        self.assertEqual(generated_models, ["qwen2.5-coder:7b"])
+
+        for invalid_model in ("qwen2.5-coder:0.5b", "qwen2.5-coder:9b"):
+            rejected = LocalAIServices.delegate(
+                services, {"task": "Explain this function", "model": invalid_model}, "test"
+            )
+            self.assertFalse(rejected["success"])
+            self.assertTrue(rejected["terminal"])
+            self.assertFalse(rejected["retryable"])
+        self.assertEqual(generated_models, ["qwen2.5-coder:7b"])
 
     def test_high_risk_metadata_escalates_to_heavy_model(self):
         complexity = review_diff_complexity(

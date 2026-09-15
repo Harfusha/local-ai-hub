@@ -463,7 +463,17 @@ class ToolAwareLocalAgent:
                 if "error" in response or response.get("_lah_repetition_loop_detected"):
                     self.failures += 1
                     error = str(response.get("error") or "model output repetition loop detected")
-                    return {"success": False, "unsupported": "tool" in error.lower(), "error": error, "model": model, "_lah_repetition_loop_detected": bool(response.get("_lah_repetition_loop_detected"))}
+                    loop_detected = bool(response.get("_lah_repetition_loop_detected"))
+                    return {
+                        "success": False,
+                        "unsupported": "tool" in error.lower(),
+                        "error": error,
+                        "model": model,
+                        "terminal": loop_detected,
+                        "retryable": not loop_detected,
+                        "repetition_loop_detected": loop_detected,
+                        "_lah_repetition_loop_detected": loop_detected,
+                    }
                 message = response.get("message", {}) if isinstance(response.get("message"), dict) else {}
                 calls = message.get("tool_calls", []) if isinstance(message, dict) else []
                 if direct or not isinstance(calls, list) or not calls:
