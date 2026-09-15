@@ -1,0 +1,107 @@
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from local_ai_hub.features import FeatureSet
+from local_ai_hub.generator import (
+    generate_global_policy,
+    generate_mcp_tool_schemas,
+    generate_skill_markdown,
+    generate_skill_references,
+)
+
+
+def _config(*, agent_os: bool = True, work_orchestrator: bool = False) -> dict:
+    return {
+        "features": {
+            "agent_os": agent_os,
+            "work_orchestrator": work_orchestrator,
+            "tasks": True,
+            "rag": True,
+            "commands": True,
+            "code_intelligence": True,
+            "dashboard": True,
+        },
+        "server": {"auto_start_ollama": True},
+        "commands": {"enabled": True},
+        "coord": {"enabled": True},
+        "work_orchestrator": {"enabled": work_orchestrator},
+    }
+
+
+def _actions(schema: dict) -> list[str]:
+    return schema["parameters"]["properties"]["action"]["enum"]
+
+
+def test_enabled_agent_os_and_tool_actions_are_discoverable():
+    cfg = _config()
+    features = FeatureSet.from_config(cfg)
+    policy = generate_global_policy(cfg)
+    skill = generate_skill_markdown(cfg)
+    references = generate_skill_references(cfg)
+    schemas = generate_mcp_tool_schemas(cfg)
+
+    assert features.agent_os
+    assert "Recipe — Durable execution" in policy
+    assert "Create a task contract before edits" in skill
+    assert "verify_completion" in skill
+    assert "Agent OS trigger and lifecycle" in references["tools.md"]
+    assert "Agent OS through `local_ai_coord`" in references["multi-agent.md"]
+    assert "create an Agent OS task" in schemas["local_ai_coord"]["description"]
+
+    expected_actions = {
+        "local_ai_repo": features.supported_repo_actions(),
+        "local_ai_task": features.supported_task_actions(),
+        "local_ai_rag": features.supported_rag_actions(),
+        "local_ai_command": features.supported_command_actions(),
+        "local_ai_coord": features.supported_coord_actions(),
+    }
+    for name, expected in expected_actions.items():
+        assert _actions(schemas[name]) == expected
+        assert all(action in schemas[name]["description"] for action in expected)
+
+    task_properties = schemas["local_ai_task"]["parameters"]["properties"]
+    assert {"prompt", "model", "format", "json_schema", "candidate_data", "evaluation_cohort", "job_id", "latency_budget_ms", "timeout_seconds", "extra_fields"}.issubset(task_properties)
+    assert {"docset_index", "docset_search", "ingest_document", "ingest_diagram"}.issubset(_actions(schemas["local_ai_rag"]))
+    assert {"contract", "checkpoint", "record", "tool_outcome", "target_scope"}.issubset(schemas["local_ai_coord"]["parameters"]["properties"])
+    assert schemas["local_ai_artifact"]["parameters"]["required"] == ["artifact_id"]
+    assert "id" not in schemas["local_ai_artifact"]["parameters"]["properties"]
+    assert "agent_state" in schemas["local_ai_status"]["description"]
+    assert "local_ai_work" not in schemas
+
+
+def test_disabled_agent_os_is_omitted_from_generated_surfaces():
+    cfg = _config(agent_os=False)
+    features = FeatureSet.from_config(cfg)
+    policy = generate_global_policy(cfg)
+    skill = generate_skill_markdown(cfg)
+    references = generate_skill_references(cfg)
+    schemas = generate_mcp_tool_schemas(cfg)
+
+    assert not features.agent_os
+    assert "task_create" not in features.supported_coord_actions()
+    assert "Agent OS" not in policy
+    assert "Agent Operating System & Durable Execution" not in skill
+    assert "Agent OS trigger and lifecycle" not in references["tools.md"]
+    assert "Agent OS" not in references["multi-agent.md"]
+    assert "Agent OS" not in schemas["local_ai_coord"]["description"]
+    assert "task_create" not in _actions(schemas["local_ai_coord"])
+
+
+def test_whole_task_tool_obeys_its_feature_gate():
+    disabled = _config(work_orchestrator=False)
+    enabled = _config(work_orchestrator=True)
+
+    disabled_refs = generate_skill_references(disabled)
+    disabled_schemas = generate_mcp_tool_schemas(disabled)
+    enabled_refs = generate_skill_references(enabled)
+    enabled_schemas = generate_mcp_tool_schemas(enabled)
+
+    assert "local_ai_work" not in disabled_refs["tools.md"]
+    assert "local_ai_work" not in disabled_refs["multi-agent.md"]
+    assert "local_ai_work" not in disabled_schemas
+    assert "local_ai_work" in enabled_refs["tools.md"]
+    assert "local_ai_work" in enabled_refs["multi-agent.md"]
+    assert "local_ai_work" in enabled_schemas

@@ -10,6 +10,24 @@ from .cache import SQLiteCache, SingleFlightCache, TieredCache, stable_hash
 from .planner import AdaptivePlanner
 
 
+def _is_repetition_loop(response: Any) -> bool:
+    return isinstance(response, dict) and bool(
+        response.get("repetition_loop_detected") or response.get("_lah_repetition_loop_detected")
+    )
+
+
+def _repetition_loop_failure(response: dict[str, Any], *, stage: str, mode: str) -> dict[str, Any]:
+    return {
+        "success": False,
+        "error": str(response.get("error") or "local reasoning stopped after repetitive model output"),
+        "model": response.get("model"),
+        "terminal": True,
+        "retryable": False,
+        "repetition_loop_detected": True,
+        "pipeline": {"mode": mode, "degraded": True, "failed_stage": stage},
+}
+
+
 class LocalAgentPipeline:
     """Adaptive local explorer -> worker -> critic pipeline.
 
@@ -226,7 +244,7 @@ class LocalAgentPipeline:
                 "success": True, "model": "deterministic", "text": "", "stage_cache_hit": True,
                 "structured": {"role": "explorer", "summary": "deterministic evidence/graph sufficient for exploration", "confidence": plan.get("confidence"), "evidence_ids": [str(x.get("evidence_id")) for x in packed.get("evidence", []) if x.get("evidence_id")][:10], "candidate_files": [str(x.get("path")) for x in packed.get("evidence", []) if x.get("path")][:12], "missing_evidence": []},
             }
-        if bool(plan.get("explorer")) and not explorer.get("success") and self.tool_agent is not None:
+        if bool(plan.get("explorer")) and not explorer.get("success") and self.tool_agent is not None and not _is_repetition_loop(explorer):
             # Tool-calling support varies by local model/template. Retry the exact same
             # bounded stage without tools before degrading the whole pipeline.
             explorer = self.services._generate(
@@ -237,6 +255,8 @@ class LocalAgentPipeline:
                 semantic_query=task, semantic_context_fingerprint=semantic_context_fp, internal=True,
             )
         if not explorer.get("success"):
+            if _is_repetition_loop(explorer):
+                return _repetition_loop_failure(explorer, stage="explorer", mode=mode)
             # A failed explorer must not make the entire repo tool unusable; return the
             # single-model path which has its own runtime recovery/fallbacks.
             fallback = self.services.delegate_repo(args, tenant)
@@ -277,6 +297,8 @@ class LocalAgentPipeline:
                     )
                     if tool_result.get("success"):
                         return tool_result
+                    if _is_repetition_loop(tool_result):
+                        return tool_result
                     # Tool calling is an acceleration/quality path, never a hard dependency.
                     # Tool calling is optional; models without a usable tool-call response fall back to a plain prompt.
                 return self.services._generate(
@@ -292,6 +314,8 @@ class LocalAgentPipeline:
                 compute_worker,
             )
             if not worker.get("success"):
+                if _is_repetition_loop(worker):
+                    return _repetition_loop_failure(worker, stage="worker", mode=mode)
                 fallback = self.services.delegate_repo(args, tenant)
                 fallback["pipeline"] = {"mode": mode, "degraded": True, "failed_stage": "worker"}
                 return fallback
@@ -315,6 +339,8 @@ class LocalAgentPipeline:
                             system_suffix="Second pass: independently verify the first fast-tier result, correct concrete mistakes, remove unsupported claims, and return only the improved final actions/risks/validation as a concise flat list without nested bullets or repeating headers.",
                         )
                         if refined.get("success"):
+                            return refined
+                        if _is_repetition_loop(refined):
                             return refined
                     return self.services._generate(
                         worker_model,
@@ -358,6 +384,8 @@ class LocalAgentPipeline:
                     )
                     if tool_result.get("success"):
                         return tool_result
+                    if _is_repetition_loop(tool_result):
+                        return tool_result
                 return self.services._generate(
                     critic_model,
                     f"TASK:\n{task}\n\nCANDIDATE STATE:\n{json.dumps(worker.get('structured') or {'summary': worker.get('text','')}, ensure_ascii=False, separators=(',',':'))}\n\nEVIDENCE:\n{packed.get('context','')}",
@@ -370,6 +398,8 @@ class LocalAgentPipeline:
                 {"app_version": __version__, "execution": self.execution_policy_fp, "role": "critic", "task": task, "context": context_fp, "candidate": stable_hash(worker.get("structured") or worker.get("text", "")), "model": critic_model},
                 compute_critic,
             )
+            if _is_repetition_loop(critic):
+                return _repetition_loop_failure(critic, stage="critic", mode=mode)
 
         worker_structured = worker.get("structured") if isinstance(worker.get("structured"), dict) else None
         canonical_text = str(worker_structured.get("summary", "") if worker_structured else worker.get("text", ""))

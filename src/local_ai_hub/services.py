@@ -65,6 +65,12 @@ def _review_text_error(value: Any) -> str | None:
     return None
 
 
+def _review_model_identity(value: Any) -> str:
+    """Normalize Ollama quantization/instruct tags for tier comparisons."""
+    model = str(value or "").strip().casefold()
+    return re.sub(r"-(?:instruct|q\d+).*?$", "", model)
+
+
 def _split_review_diff(diff_text: str, max_tokens: int) -> list[str]:
     """Split a unified diff into bounded, file/hunk-aligned review inputs."""
     budget = max(_REVIEW_DIFF_MIN_CHUNK_TOKENS, int(max_tokens))
@@ -597,6 +603,9 @@ class LocalAIServices:
                             "success": False,
                             "error": str(response.get("error") or "model output repetition loop detected"),
                             "model": candidate_model,
+                            "terminal": True,
+                            "retryable": False,
+                            "repetition_loop_detected": True,
                             "_lah_repetition_loop_detected": True,
                             "_lah_retry_count": int(response.get("_lah_retry_count", 0) or 0),
                         }
@@ -869,12 +878,16 @@ class LocalAIServices:
                 return self._conversation_error("", "conversations require delivery=sync")
         if str(args.get("profile", "")).strip():
             return self.delegate_profile(args, tenant)
-        task = str(args.get("task", ""))
+        task = str(args.get("task") or args.get("prompt") or "")
         context = str(args.get("context", ""))
         task_type_override = str(args.get("task_type", "auto"))
         complexity_override = str(args.get("complexity", "auto"))
         route = self.router.classify(task, context, task_type_override, complexity_override)
         route = self._resident_optimize(route, task_type_override, complexity_override)
+        try:
+            route = self.router.apply_model_override(route, str(args.get("model", "")))
+        except ValueError as exc:
+            return {"success": False, "error": str(exc), "terminal": True, "retryable": False}
         task_type = route["task_type"]
         system = {
             "code": (
@@ -1027,7 +1040,7 @@ class LocalAIServices:
         if not task:
             return {"success": False, "error": "task or prompt is required"}
 
-        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b"))
+        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
         prompt = (
             f"TASK:\n{task}\n\n"
             f"FILE: {file_path}\n\n"
@@ -2212,6 +2225,8 @@ class LocalAIServices:
             per_chunk_output_tokens = max_output_tokens
         review_payloads: list[dict[str, Any]] = []
         primary_results: list[dict[str, Any]] = []
+        format_recovery_used = False
+        format_recoveries: list[dict[str, Any]] = []
         for index, review_code in enumerate(review_chunks, start=1):
             task = review_task
             if chunked:
@@ -2240,17 +2255,81 @@ class LocalAIServices:
                 }
             output_error = _review_text_error(response.get("text"))
             if output_error:
-                return {
-                    "success": False,
-                    "error": f"Review segment {index}/{len(review_chunks)} returned unusable output: {output_error}",
-                    "failed_segment": index,
-                    "model": response.get("model"),
-                    "invalid_model_output": True,
-                    "partial_reviews": [str(item.get("text", "")) for item in primary_results],
-                }
+                if format_recovery_used:
+                    return {
+                        "success": False,
+                        "error": f"Review segment {index}/{len(review_chunks)} returned unusable output after the single format-recovery attempt: {output_error}",
+                        "failed_segment": index,
+                        "model": response.get("model"),
+                        "attempted_models": [str(response.get("model") or "")],
+                        "invalid_model_output": True,
+                        "partial_reviews": [str(item.get("text", "")) for item in primary_results],
+                    }
+                format_recovery_used = True
+                primary_model = str(response.get("model") or "").strip()
+                models = self.config.get("models", {})
+                fast_model = str(models.get("fast_code") or "").strip() if isinstance(models, dict) else ""
+                heavy_model = str(models.get("heavy_code") or "").strip() if isinstance(models, dict) else ""
+                retry_model = fast_model or heavy_model or primary_model
+                if (
+                    fast_model
+                    and heavy_model
+                    and primary_model
+                    and _review_model_identity(primary_model) == _review_model_identity(fast_model)
+                ):
+                    retry_model = heavy_model
+                retry_payload = dict(review_payload)
+                if retry_model:
+                    retry_payload["model"] = retry_model
+                retry_payload["task"] = (
+                    f"{review_payload.get('task', review_task)}\n\nFORMAT RECOVERY: The previous response was unusable ({output_error}). "
+                    "Review this diff again. Return plain text whose first line begins `SUMMARY:` followed by at least two words. "
+                    "Then list only actionable defects, or write `- None.` when there are none. Do not emit fragments or markdown fences."
+                )
+                try:
+                    retry_response = self.delegate(retry_payload, tenant)
+                except Exception as exc:
+                    return {
+                        "success": False,
+                        "error": f"Review segment {index}/{len(review_chunks)} format recovery failed: {exc}",
+                        "failed_segment": index,
+                        "model": retry_model or primary_model or None,
+                        "attempted_models": [model for model in (primary_model, retry_model) if model],
+                        "invalid_model_output": True,
+                        "partial_reviews": [str(item.get("text", "")) for item in primary_results],
+                    }
+                retry_error = (
+                    _review_text_error(retry_response.get("text"))
+                    if isinstance(retry_response, dict) and retry_response.get("success") is not False
+                    else "fallback model did not return a successful review"
+                )
+                if retry_error:
+                    retry_model_returned = (
+                        str(retry_response.get("model") or retry_model or "").strip()
+                        if isinstance(retry_response, dict)
+                        else retry_model
+                    )
+                    return {
+                        "success": False,
+                        "error": f"Review segment {index}/{len(review_chunks)} remained unusable after format recovery: {retry_error}",
+                        "failed_segment": index,
+                        "model": retry_model_returned or primary_model or None,
+                        "attempted_models": [model for model in (primary_model, retry_model_returned) if model],
+                        "invalid_model_output": True,
+                        "partial_reviews": [str(item.get("text", "")) for item in primary_results],
+                    }
+                response = retry_response
+                format_recoveries.append({
+                    "segment": index,
+                    "from_model": primary_model or None,
+                    "to_model": str(response.get("model") or retry_model or "").strip() or None,
+                })
             primary_results.append(response)
 
         result = dict(primary_results[0])
+        if format_recoveries:
+            result["degraded"] = True
+            result["format_recoveries"] = format_recoveries
 
         def merge_segment_results(segment_results, *, label: str, task_type: str):
             raw_text = "\n\n".join(
@@ -2382,7 +2461,7 @@ class LocalAIServices:
         chunks = [text[i:i + chunk_chars] for i in range(0, len(text), chunk_chars)]
         summaries: list[str] = []
         per_chunk_out = max(180, min(700, target_tokens // max(1, len(chunks)) + 120))
-        general_model = str(self.config.get("models", {}).get("general", self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b")))
+        general_model = str(self.config.get("models", {}).get("general", self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b")))
         for index, chunk in enumerate(chunks):
             prompt = f"INSTRUCTION:\n{instruction}\n\nCHUNK {index + 1}/{len(chunks)}:\n{chunk}"
             result = self._generate(
@@ -2569,7 +2648,7 @@ class LocalAIServices:
             f"3. Return ONLY clean source code inside a code block, no chat."
         )
 
-        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b"))
+        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
         res = self._generate(
             fast_model,
             prompt,
@@ -2814,7 +2893,7 @@ class LocalAIServices:
         rem = failure_result.get("remediation") or {}
         if rem.get("verified_fix") and isinstance(rem["verified_fix"], dict):
             return {str(k): str(v) for k, v in rem["verified_fix"].items()}
-        model = self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b")
+        model = self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b")
         diag = failure_result.get("diagnostics", [])
         stderr = str(failure_result.get("stderr", "") or failure_result.get("error", ""))[:2000]
         prompt = (
@@ -2837,7 +2916,7 @@ class LocalAIServices:
     def proxy_request(self, endpoint: str, payload: dict[str, Any], tenant: str, source: str) -> dict[str, Any]:
         if payload.get("stream") is True:
             return {"success": False, "error": "streaming is intentionally disabled through the affinity queue"}
-        model = str(payload.get("model") or self.config.get("models", {}).get("general", "qwen2.5-coder:7b"))
+        model = str(payload.get("model") or self.config.get("models", {}).get("general", "qwen2.5-coder:1.5b"))
         clean = dict(payload)
         clean["stream"] = False
         clean.setdefault("keep_alive", self.config.get("ollama", {}).get("keep_alive", "-1"))

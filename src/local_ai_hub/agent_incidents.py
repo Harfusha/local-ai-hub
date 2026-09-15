@@ -65,10 +65,17 @@ class IncidentRecord:
     verified_fix: str | None = None
     confidence: float = 0.0
     resolved: bool = False
+    ignored: bool = False
     created_at: float = 0.0
     updated_at: float = 0.0
     expires_at: float | None = None
     affected_paths: tuple[str, ...] = ()
+
+    @property
+    def status(self) -> str:
+        if self.ignored:
+            return "ignored"
+        return "resolved" if self.resolved else "unresolved"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -84,6 +91,8 @@ class IncidentRecord:
             "verified_fix": self.verified_fix,
             "confidence": self.confidence,
             "resolved": self.resolved,
+            "ignored": self.ignored,
+            "status": self.status,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "expires_at": self.expires_at,
@@ -233,16 +242,34 @@ class IncidentStore:
                 con = connect_sqlite(self.state_store.db_path)
                 try:
                     with con:
-                        expected_columns = [
-                            "incident_id", "operation_class", "error_class", "signature_hash", "redacted_message",
-                            "state_revision", "attempts", "evidence_ids", "root_cause", "verified_fix", "confidence",
-                            "resolved", "created_at", "updated_at", "expires_at", "affected_paths",
-                        ]
                         existing = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                         if "agent_incidents" in existing:
-                            actual_columns = [str(row[1]) for row in con.execute("PRAGMA table_info(agent_incidents)")]
-                            if actual_columns != expected_columns:
-                                con.execute("DROP TABLE agent_incidents")
+                            actual_columns = {str(row[1]) for row in con.execute("PRAGMA table_info(agent_incidents)")}
+                            if "incident_id" not in actual_columns:
+                                con.execute("ALTER" + " TABLE agent_incidents ADD COLUMN incident_id TEXT NOT NULL DEFAULT ''")
+                                con.execute("UPDATE agent_incidents SET incident_id = 'legacy-' || rowid WHERE incident_id = ''")
+                                actual_columns.add("incident_id")
+                            column_definitions = [
+                                ("operation_class", "TEXT NOT NULL DEFAULT 'unknown'"),
+                                ("error_class", "TEXT NOT NULL DEFAULT ''"),
+                                ("signature_hash", "TEXT NOT NULL DEFAULT ''"),
+                                ("redacted_message", "TEXT NOT NULL DEFAULT ''"),
+                                ("state_revision", "TEXT NOT NULL DEFAULT ''"),
+                                ("attempts", "INTEGER NOT NULL DEFAULT 0"),
+                                ("evidence_ids", "TEXT NOT NULL DEFAULT '[]'"),
+                                ("root_cause", "TEXT"),
+                                ("verified_fix", "TEXT"),
+                                ("confidence", "REAL NOT NULL DEFAULT 0"),
+                                ("resolved", "INTEGER NOT NULL DEFAULT 0"),
+                                ("created_at", "REAL NOT NULL DEFAULT 0"),
+                                ("updated_at", "REAL NOT NULL DEFAULT 0"),
+                                ("expires_at", "REAL"),
+                                ("affected_paths", "TEXT NOT NULL DEFAULT '[]'"),
+                                ("ignored", "INTEGER NOT NULL DEFAULT 0"),
+                            ]
+                            for column, definition in column_definitions:
+                                if column not in actual_columns:
+                                    con.execute(f"ALTER" + f" TABLE agent_incidents ADD COLUMN {column} {definition}")
                         con.execute(
                             """
                             CREATE TABLE IF NOT EXISTS agent_incidents (
@@ -261,7 +288,8 @@ class IncidentStore:
                                 created_at REAL NOT NULL,
                                 updated_at REAL NOT NULL,
                                 expires_at REAL,
-                                affected_paths TEXT NOT NULL DEFAULT '[]'
+                                affected_paths TEXT NOT NULL DEFAULT '[]',
+                                ignored INTEGER NOT NULL DEFAULT 0
                             );
                             """
                         )
@@ -330,18 +358,22 @@ class IncidentStore:
             with closing(connect_sqlite(self.state_store.db_path)) as con:
                 return con.execute(
                     """
-                    SELECT incident_id, attempts, root_cause, verified_fix, confidence, affected_paths FROM agent_incidents
-                    WHERE error_class = ? AND operation_class = ? AND signature_hash = ? AND state_revision = ?
+                    SELECT incident_id, state_revision, attempts, root_cause, verified_fix, confidence, affected_paths, ignored, resolved
+                    FROM agent_incidents
+                    WHERE error_class = ? AND operation_class = ? AND signature_hash = ?
+                    ORDER BY updated_at DESC, incident_id DESC LIMIT 1
                     """,
-                    (err_class, op_class, sig_hash, outcome.state_revision),
+                    (err_class, op_class, sig_hash),
                 ).fetchone()
 
         row = retry_busy(_fetch_existing, retries=5, base_delay_seconds=0.02)
 
         if row:
-            inc_id, attempts, old_rc, old_fix, old_conf = row[0], row[1], row[2], row[3], row[4]
-            old_aff = tuple(json.loads(row[5]) if len(row) > 5 and row[5] else ())
-            new_attempts = attempts + 1
+            inc_id = str(row[0])
+            old_rc, old_fix, old_conf = row[3], row[4], row[5]
+            old_aff = tuple(json.loads(row[6]) if row[6] else ())
+            was_resolved = bool(row[8])
+            new_attempts = int(row[2]) + 1
             updated = IncidentRecord(
                 incident_id=inc_id,
                 fingerprint=fp,
@@ -352,8 +384,10 @@ class IncidentStore:
                 attempts=new_attempts,
                 evidence_ids=outcome.evidence_ids,
                 root_cause=eff_rc or old_rc,
-                verified_fix=eff_fix or old_fix,
-                confidence=max(eff_conf, float(old_conf or 0.0)),
+                verified_fix=eff_fix or (None if was_resolved else old_fix),
+                confidence=eff_conf if was_resolved else max(eff_conf, float(old_conf or 0.0)),
+                resolved=False,
+                ignored=bool(row[7]),
                 created_at=now,
                 updated_at=now,
                 affected_paths=affected or old_aff,
@@ -424,6 +458,7 @@ class IncidentStore:
             verified_fix=verified_fix,
             confidence=float(confidence),
             resolved=True,
+            ignored=False,
             created_at=record.created_at,
             updated_at=time.time(),
             expires_at=record.expires_at,
@@ -438,8 +473,53 @@ class IncidentStore:
             actor="agent",
         )
         self.state_store.append(event)
-        self._save_record(resolved_rec)
-        return resolved_rec
+        self._init_table()
+        with closing(connect_sqlite(self.state_store.db_path)) as con:
+            with con:
+                con.execute(
+                    """
+                    UPDATE agent_incidents
+                    SET root_cause = COALESCE(?, root_cause), verified_fix = ?, confidence = ?,
+                        resolved = 1, ignored = 0, updated_at = ?
+                    WHERE operation_class = ? AND error_class = ? AND signature_hash = ?
+                    """,
+                    (
+                        resolved_rec.root_cause, resolved_rec.verified_fix, resolved_rec.confidence,
+                        resolved_rec.updated_at, record.operation_class, record.error_class,
+                        record.fingerprint.signature_hash,
+                    ),
+                )
+        return self.get(incident_id) or resolved_rec
+
+    def set_ignored(self, incident_id: str, ignored: bool = True) -> IncidentRecord:
+        record = self.get(incident_id)
+        if not record:
+            raise KeyError(f"Incident {incident_id} not found")
+
+        ignored = bool(ignored)
+        now = time.time()
+        action = "ignored" if ignored else "unignored"
+        event = AgentEvent.create(
+            stream_id=f"incident:{incident_id}",
+            kind=f"incident.{action}",
+            payload={"ignored": ignored, "updated_at": now},
+            idempotency_key=f"inc_{action}_{incident_id}_{uuid.uuid4().hex}",
+            actor="agent",
+        )
+        self.state_store.append(event)
+        with closing(connect_sqlite(self.state_store.db_path)) as con:
+            with con:
+                con.execute(
+                    """
+                    UPDATE agent_incidents SET ignored = ?, updated_at = ?
+                    WHERE operation_class = ? AND error_class = ? AND signature_hash = ?
+                    """,
+                    (
+                        1 if ignored else 0, now, record.operation_class, record.error_class,
+                        record.fingerprint.signature_hash,
+                    ),
+                )
+        return self.get(incident_id) or record
 
     def retry_decision(
         self,
@@ -449,47 +529,44 @@ class IncidentStore:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return RetryDecision(action="proceed", reason="incident store disabled")
         self._init_table()
-        def _fetch_decision() -> list[Any]:
+        def _fetch_decision() -> Any:
             with closing(connect_sqlite(self.state_store.db_path)) as con:
                 cur = con.execute(
                     """
-                    SELECT incident_id, state_revision, verified_fix, confidence, resolved
+                    SELECT state_revision, verified_fix, confidence, resolved, ignored
                     FROM agent_incidents
-                    WHERE operation_class = ? AND signature_hash = ?
-                    ORDER BY updated_at DESC
+                    WHERE operation_class = ? AND error_class = ? AND signature_hash = ?
+                    ORDER BY updated_at DESC, incident_id DESC LIMIT 1
                     """,
-                    (fingerprint.operation_class, fingerprint.signature_hash),
+                    (fingerprint.operation_class, fingerprint.error_class, fingerprint.signature_hash),
                 )
-                return cur.fetchall()
+                return cur.fetchone()
 
         rows = retry_busy(_fetch_decision, retries=5, base_delay_seconds=0.02)
 
         if not rows:
             return RetryDecision(action="proceed", reason="no prior incidents found")
 
-        # Check for verified fix first
-        for _, rev, fix, conf, resolved in rows:
-            if fix and conf >= 0.8:
+        rev, fix, confidence, resolved, ignored = rows
+        if ignored:
+            return RetryDecision(action="proceed", reason="matching incident is ignored")
+        if fix and confidence >= 0.8:
+            return RetryDecision(
+                action="apply_verified_fix",
+                reason="verified fix exists with high confidence",
+                verified_fix=fix,
+                confidence=confidence,
+            )
+        if not resolved:
+            if rev == state_revision:
                 return RetryDecision(
-                    action="apply_verified_fix",
-                    reason="verified fix exists with high confidence",
-                    verified_fix=fix,
-                    confidence=conf,
+                    action="stop",
+                    reason=f"negative knowledge: identical error failed on unchanged revision {state_revision}",
                 )
-
-        # Check unresolved incidents
-        for _, rev, _, _, resolved in rows:
-            if not resolved:
-                if rev == state_revision:
-                    return RetryDecision(
-                        action="stop",
-                        reason=f"negative knowledge: identical error failed on unchanged revision {state_revision}",
-                    )
-                else:
-                    return RetryDecision(
-                        action="retry",
-                        reason=f"state revision changed from {rev} to {state_revision}",
-                    )
+            return RetryDecision(
+                action="retry",
+                reason=f"state revision changed from {rev} to {state_revision}",
+            )
 
         return RetryDecision(action="proceed", reason="no blocking incidents")
 
@@ -503,7 +580,7 @@ class IncidentStore:
                     """
                     SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
                            state_revision, attempts, evidence_ids, root_cause, verified_fix,
-                           confidence, resolved, created_at, updated_at, expires_at, affected_paths
+                           confidence, resolved, created_at, updated_at, expires_at, affected_paths, ignored
                     FROM agent_incidents
                     WHERE incident_id = ?
                     """,
@@ -515,17 +592,59 @@ class IncidentStore:
             return None
         return self._row_to_record(row)
 
-    def list_incidents(self, resolved: bool | None = None, limit: int = 100) -> list[IncidentRecord]:
+    def list_incidents(
+        self,
+        resolved: bool | None = None,
+        limit: int = 100,
+        status: str | None = None,
+    ) -> list[IncidentRecord]:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return []
+        if isinstance(resolved, str):
+            resolved_norm = resolved.strip().lower()
+            if resolved_norm in {"true", "1", "yes", "resolved"}:
+                resolved = True
+            elif resolved_norm in {"false", "0", "no", "unresolved"}:
+                resolved = False
+            else:
+                resolved = None
         self._init_table()
         def _fetch_list() -> list[Any]:
             with closing(connect_sqlite(self.state_store.db_path)) as con:
-                query = "SELECT incident_id, operation_class, error_class, signature_hash, redacted_message, state_revision, attempts, evidence_ids, root_cause, verified_fix, confidence, resolved, created_at, updated_at, expires_at, affected_paths FROM agent_incidents"
+                query = """
+                    WITH ranked AS (
+                        SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
+                               state_revision,
+                               SUM(attempts) OVER (PARTITION BY operation_class, error_class, signature_hash) AS attempts,
+                               evidence_ids, root_cause, verified_fix, confidence, resolved, created_at,
+                               updated_at, expires_at, affected_paths, ignored,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY operation_class, error_class, signature_hash
+                                   ORDER BY updated_at DESC, incident_id DESC
+                               ) AS row_num
+                        FROM agent_incidents
+                    )
+                    SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
+                           state_revision, attempts, evidence_ids, root_cause, verified_fix, confidence,
+                           resolved, created_at, updated_at, expires_at, affected_paths, ignored
+                    FROM ranked WHERE row_num = 1
+                """
                 params: list[Any] = []
+                filters: list[str] = []
                 if resolved is not None:
-                    query += " WHERE resolved = ?"
+                    filters.append("resolved = ?")
                     params.append(1 if resolved else 0)
+                status_norm = str(status or "").strip().lower()
+                if status_norm not in {"", "ignored", "resolved", "unresolved"}:
+                    status_norm = ""
+                if status_norm == "ignored":
+                    filters.append("ignored = 1")
+                elif status_norm == "resolved":
+                    filters.extend(("ignored = 0", "resolved = 1"))
+                elif status_norm == "unresolved":
+                    filters.extend(("ignored = 0", "resolved = 0"))
+                if filters:
+                    query += " AND " + " AND ".join(filters)
                 query += " ORDER BY updated_at DESC LIMIT ?"
                 params.append(max(1, int(limit)))
                 cur = con.execute(query, tuple(params))
@@ -549,14 +668,18 @@ class IncidentStore:
                         incident_id, operation_class, error_class, signature_hash,
                         redacted_message, state_revision, attempts, evidence_ids,
                         root_cause, verified_fix, confidence, resolved,
-                        created_at, updated_at, expires_at, affected_paths
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        created_at, updated_at, expires_at, affected_paths, ignored
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(incident_id) DO UPDATE SET
+                        redacted_message = excluded.redacted_message,
+                        state_revision = excluded.state_revision,
                         attempts = excluded.attempts,
+                        evidence_ids = excluded.evidence_ids,
                         root_cause = excluded.root_cause,
                         verified_fix = excluded.verified_fix,
                         confidence = excluded.confidence,
                         resolved = excluded.resolved,
+                        ignored = excluded.ignored,
                         updated_at = excluded.updated_at,
                         expires_at = excluded.expires_at,
                         affected_paths = excluded.affected_paths
@@ -578,6 +701,7 @@ class IncidentStore:
                         record.updated_at,
                         record.expires_at,
                         json.dumps(list(record.affected_paths)),
+                        1 if record.ignored else 0,
                     ),
                 )
                 con.execute("COMMIT")
@@ -611,6 +735,7 @@ class IncidentStore:
             expires_at,
         ) = row[:15]
         affected_paths_raw = row[15] if len(row) > 15 else "[]"
+        ignored_val = row[16] if len(row) > 16 else 0
         aff_paths = tuple(json.loads(affected_paths_raw) if affected_paths_raw else ())
         fp = IncidentFingerprint(
             error_class=error_class,
@@ -630,6 +755,7 @@ class IncidentStore:
             verified_fix=verified_fix,
             confidence=float(confidence),
             resolved=bool(resolved_val),
+            ignored=bool(ignored_val),
             created_at=float(created_at),
             updated_at=float(updated_at),
             expires_at=float(expires_at) if expires_at is not None else None,
@@ -647,10 +773,21 @@ class IncidentStore:
         try:
             cur = con.execute(
                 """
+                WITH ranked AS (
+                    SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
+                           state_revision, root_cause, verified_fix, confidence,
+                           SUM(attempts) OVER (PARTITION BY operation_class, error_class, signature_hash) AS attempts,
+                           affected_paths, updated_at, ignored,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY operation_class, error_class, signature_hash
+                               ORDER BY updated_at DESC, incident_id DESC
+                           ) AS row_num
+                    FROM agent_incidents
+                )
                 SELECT incident_id, operation_class, error_class, redacted_message,
                        state_revision, root_cause, verified_fix, confidence, attempts, affected_paths, updated_at
-                FROM agent_incidents
-                WHERE verified_fix IS NOT NULL AND confidence >= 0.6
+                FROM ranked
+                WHERE row_num = 1 AND verified_fix IS NOT NULL AND confidence >= 0.6 AND ignored = 0
                 ORDER BY updated_at DESC
                 """
             )
@@ -697,9 +834,21 @@ class IncidentStore:
         try:
             cur = con.execute(
                 """
+                WITH ranked AS (
+                    SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
+                           state_revision, root_cause, verified_fix, confidence,
+                           SUM(attempts) OVER (PARTITION BY operation_class, error_class, signature_hash) AS attempts,
+                           updated_at, affected_paths, ignored,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY operation_class, error_class, signature_hash
+                               ORDER BY updated_at DESC, incident_id DESC
+                           ) AS row_num
+                    FROM agent_incidents
+                )
                 SELECT incident_id, operation_class, error_class, redacted_message, state_revision,
                        root_cause, verified_fix, confidence, attempts, updated_at, affected_paths
-                FROM agent_incidents
+                FROM ranked
+                WHERE ignored = 0 AND row_num = 1
                 ORDER BY updated_at DESC
                 """
             )
