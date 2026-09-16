@@ -192,3 +192,13 @@ def test_dashboard_onclick_handlers_use_safe_escaping() -> None:
     assert "id=\"confirmDeleteProjectBtn\"" in DASHBOARD_HTML
     assert "confirmDeleteProject(${escJs(root)})" in DASHBOARD_HTML
     assert "confirmBtn.onclick=()=>confirmDeleteProject(root)" in DASHBOARD_HTML
+
+
+def test_dashboard_display_state_helpers_defined() -> None:
+    expected_helpers = [
+        "function dashboardHealth(",
+        "function dashboardFreshness(",
+        "function redactDiagnostic(",
+    ]
+    for helper in expected_helpers:
+        assert helper in DASHBOARD_HTML, f"Expected dashboard helper {helper} missing"
