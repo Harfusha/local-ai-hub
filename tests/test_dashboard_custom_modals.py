@@ -251,6 +251,39 @@ def test_overview_health_summary_has_alert_first_rendering_contract() -> None:
     assert "switchTab(" in overview_source
 
 
+def test_overview_health_uses_live_observability_and_accessible_status_contract() -> None:
+    """Dropped live failure signals, receive time, or canvas summary must fail."""
+    health_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function dashboardHealth(") : DASHBOARD_HTML.index(
+            "function dashboardFreshness("
+        )
+    ]
+    for signal in [
+        "agent_http",
+        "policy_rejection",
+        "degraded_count",
+        "retry_count",
+        "restarts",
+        "hub_online",
+        "ollama_online",
+    ]:
+        assert signal in health_source, f"Health ignores live signal {signal}"
+
+    overview_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderOverviewHealth(") : DASHBOARD_HTML.index(
+            "function redactDiagnostic("
+        )
+    ]
+    assert "receivedAt" in overview_source
+    assert "lastOverviewAnnouncement" in overview_source
+    assert "overviewAnnouncement" in DASHBOARD_HTML
+    assert 'aria-live="polite"' in DASHBOARD_HTML
+    assert 'id="liveChartSummary"' in DASHBOARD_HTML
+    assert "aria-label" in DASHBOARD_HTML
+    assert "lastOverviewReceivedAt" in DASHBOARD_HTML
+    assert "renderOverviewHealth(last,lastOverviewReceivedAt)" in DASHBOARD_HTML
+
+
 def test_dashboard_redacts_diagnostic_secrets_and_absolute_paths() -> None:
     source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function redactDiagnostic(") : DASHBOARD_HTML.index(
