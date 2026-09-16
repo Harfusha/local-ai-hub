@@ -532,7 +532,11 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         " If an optional backend degrades, accept the hub's deterministic/index fallback."
         " If the hub itself is unavailable, make one bounded health/retry attempt, then fall back to native tools."
         " Never loop on health, status, preprocessing, model startup, a failing backend, or an identical command.\n\n"
-        f"{fs.selection_guide()}\n"
+        + ("Batch repository replacement: use `local_ai_repo(action=\"batch_replace\", edits=[...], dry_run=true)` for preview. "
+           "`staged` is not batch dry-run and is never forwarded. Each edit must exact-match once. "
+           "The engine preflights all edits, rolls back write failures, and performs no auto-commit. "
+           "Set `dry_run=false` only after review.\n\n" if fs.repo else "")
+        + f"{fs.selection_guide()}\n"
         f"{model_default}\n"
         "<!-- END LOCAL AI HUB TOOL POLICY -->"
     )
@@ -714,6 +718,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "task_id": {"type": "string", "default": ""},
                     "base": {"type": "string", "default": "HEAD"},
                     "staged": {"type": "boolean", "default": False},
+                    "dry_run": {"type": "boolean", "default": False},
                     "mode": {"type": "string", "default": "adaptive"},
                     "language": {"type": "string", "default": "auto"},
                     "relation": {"type": "string", "default": ""},
@@ -721,6 +726,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "max_tokens": {"type": "integer", "default": 0},
                     "diff": {"type": "string", "default": ""},
                     "workspace": {"type": "string", "default": ""},
+                    "edits": {"type": "array", "items": {"type": "object"}},
                     "evidence": {"type": "array", "items": {"type": "object"}},
                     "receipt": {"type": "object"},
                     "extra_fields": {"type": "array", "items": {"type": "string"}},
