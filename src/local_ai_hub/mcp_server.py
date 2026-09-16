@@ -141,10 +141,7 @@ def _normalize_deterministic(val: Any) -> Any:
     if isinstance(val, dict):
         out = {}
         for k in sorted(val.keys()):
-            v = val[k]
-            if k in {"timestamp", "created_at", "updated_at"} and isinstance(v, float):
-                v = round(v, 1)
-            out[k] = _normalize_deterministic(v)
+            out[k] = _normalize_deterministic(val[k])
         return out
     if isinstance(val, list):
         return [_normalize_deterministic(x) for x in val]
@@ -379,7 +376,7 @@ RepoAction: TypeAlias = Literal[
     "structural_search", "context_budget",
     "git_diff", "git_history_search", "hotspots", "generate_tests_for_diff", "cross_repo_contract",
     "reachability_dead_code", "mutation_test", "type_stubs", "skeletonize", "investigate",
-    "diagnose", "briefing",
+    "diagnose", "briefing", "batch_replace",
 ]
 RagAction: TypeAlias = Literal["index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram"]
 CommandAction: TypeAlias = Literal[
@@ -863,6 +860,7 @@ def local_ai_repo(
     receipt: dict[str, Any] | None = None,
     task_id: str = "",
     include_code: bool = False,
+    edits: list[dict[str, Any]] | None = None,
     extra_fields: list[str] | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent. CALL THIS BEFORE broad repository reads/searches for any non-trivial repo task. MANDATORY GATE. Use deterministic, code_index/search, semantic/graph, context and solve for bounded evidence and implementation support. For implementation, diagnosis, refactoring or complex review, call solve after evidence and before native edits. When generation is needed, seed the basic fast tier before smart escalation. review_diff and security_audit are targeted local checks. After indexed evidence, use local_ai_task for one bounded local-model worker/review/second opinion. Codex separately decides whether to use native Codex subagents; Local AI Hub does not route or manage those agents. On first use of a stable absolute root call action=preprocess exactly once and continue immediately; never poll/wait/force-refresh preprocessing. Cheapest sufficient path: deterministic -> code_index/search -> semantic/graph for relationships -> context/solve -> RAG -> local model last; STOP as soon as a cheaper layer is sufficient and never fan out overlapping retrieval layers for the same question. Reuse fresh evidence/artifact slices and never repeat an identical root/query/action while repo state is unchanged. in_progress means another owner is doing identical work; retryable/429/503 means back off; degraded/stale means verify only the affected slice. Always pass the stable absolute project root; never rely on MCP cwd. Never loop or increase timeouts indefinitely. Use when: every non-trivial repository task needs indexed evidence or a bounded Hub operation. Skip when: the task is not repository-scoped or fresh evidence already answers it and no independent Hub scope exists."""
@@ -889,8 +887,20 @@ def local_ai_repo(
         return _compact(CLIENT.post("/api/repo/briefing", {
             "root": root,
         }, timeout=_timeout("quick")), "architecture")
+    if action == "batch_replace":
+        if not isinstance(edits, list) or not edits:
+            return {"success": False, "error": "batch_replace requires a non-empty edits list"}
+        return _compact(CLIENT.post("/api/code/batch_replace", {
+            "root": root, "edits": edits, "dry_run": bool(staged),
+        }, timeout=_timeout("quick")), "verify")
     if action == "search":
-        return _compact(CLIENT.post("/api/search", {"root": root, "query": query or task, "top_k": 12}, timeout=_timeout("quick")), "search")
+        enrich = bool(include_code)
+        extra = list(extra_fields or [])
+        if enrich:
+            extra.extend(["text", "raw"])
+        return _compact(CLIENT.post("/api/search", {
+            "root": root, "query": query or task, "top_k": 12, "enrich": enrich,
+        }, timeout=_timeout("quick")), "search", extra_fields=extra if extra else None)
     if action == "map":
         return _compact(CLIENT.post("/api/repo/map", {"root": root, "max_symbols": 100}, timeout=_timeout("quick")), "architecture")
     if action == "code_index":

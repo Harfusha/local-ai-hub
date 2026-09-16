@@ -193,6 +193,7 @@ class CommandBroker:
         self.incident_store: Any = None
         self.verification_store: Any = None
         self.policy_engine: Any = None
+        self.error_distiller: Any = None
 
     def set_policy_engine(self, policy_engine: Any) -> None:
         self.policy_engine = policy_engine
@@ -202,6 +203,10 @@ class CommandBroker:
 
     def set_verification_store(self, verification_store: Any) -> None:
         self.verification_store = verification_store
+
+    def set_error_distiller(self, error_distiller: Any) -> None:
+        """Set the optional local-model fallback for unstructured command failures."""
+        self.error_distiller = error_distiller
 
     @staticmethod
     def _tokens(command: str) -> list[str]:
@@ -1023,6 +1028,29 @@ class CommandBroker:
             return lines[-1][:240]
         return f"Command failed with exit code {result.get('exit_code', 1)}"
 
+    @staticmethod
+    def _needs_model_error_distillation(result: dict[str, Any]) -> bool:
+        if result.get("diagnostics"):
+            return False
+        text = (str(result.get("stderr", "")) + "\n" + str(result.get("stdout", ""))).strip()
+        return bool(text)
+
+    def _distill_error_with_model(self, result: dict[str, Any]) -> str:
+        if not callable(self.error_distiller):
+            return ""
+        payload = {
+            "exit_code": int(result.get("exit_code", 1) or 1),
+            "summary": str(result.get("summary", ""))[:4000],
+            "diagnostics": list(result.get("diagnostics", []))[:2],
+        }
+        try:
+            distilled = self.error_distiller(payload)
+        except Exception:
+            return ""
+        if isinstance(distilled, dict):
+            distilled = distilled.get("text", distilled.get("summary", ""))
+        return str(distilled or "").strip()[:300]
+
     def run(
         self,
         command: str,
@@ -1246,6 +1274,12 @@ class CommandBroker:
             result["diagnostics"] = self._extract_diagnostics(result)
             if not result.get("success") and not result.get("cancelled"):
                 result["error_distillation"] = self._distill_error(result)
+                result["error_distillation_source"] = "deterministic"
+                if self._needs_model_error_distillation(result):
+                    model_distillation = self._distill_error_with_model(result)
+                    if model_distillation:
+                        result["error_distillation"] = model_distillation
+                        result["error_distillation_source"] = "local_model"
             diag_paths = [d["path"] for d in result.get("diagnostics", []) if d.get("path")]
             if not result.get("success") and not result.get("cancelled") and self.incident_store is not None:
                 try:
@@ -2504,12 +2538,16 @@ class CommandBroker:
                     "message": f"Remediation guidance: {fix_msg}",
                 })
         result["diagnostics"] = diagnostics
-        if combined_chars > self.inline_chars:
-            full = f"$ {command}\n\nSTDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
-            result["artifact_id"] = self.artifacts.put(full, tenant, "command")
-            result["stdout"] = stdout[: self.inline_chars // 2]
-            result["stderr"] = stderr[-self.inline_chars // 2:]
-            result["output_truncated"] = True
+        if combined_chars > self.inline_chars or not result.get("success", False):
+            if self.artifacts is not None:
+                full = f"$ {command}\n\nSTDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
+                result["artifact_id"] = self.artifacts.put(full, tenant, "command")
+            if combined_chars > self.inline_chars:
+                result["stdout"] = stdout[: self.inline_chars // 2]
+                result["stderr"] = stderr[-self.inline_chars // 2:]
+                result["output_truncated"] = True
+            else:
+                result["output_truncated"] = False
         else:
             result["output_truncated"] = False
         return result
