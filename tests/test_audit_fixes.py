@@ -1,3 +1,4 @@
+from contextlib import closing
 import io
 import os
 import shutil
@@ -304,5 +305,128 @@ def test_command_broker_last_bounded():
                 broker._last.pop(k, None)
     
     assert len(broker._last) <= 128
+
+
+def test_swarm_connect_sqlite_and_wal():
+    from local_ai_hub.swarm import SwarmCoordinator
+    tmp = tempfile.mkdtemp()
+    try:
+        tmp_path = Path(tmp)
+        db_path = tmp_path / "swarms.sqlite3"
+        coord = SwarmCoordinator(db_path)
+        with closing(coord._connect()) as con:
+            mode = con.execute("PRAGMA journal_mode").fetchone()[0]
+            assert str(mode).lower() == "wal"
+            # Verify table exists
+            tables = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+            assert "agent_swarms" in tables
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_deterministic_schema_and_query_explain_safety():
+    from contextlib import closing
+    import sqlite3
+    from local_ai_hub.deterministic import DeterministicEngine
+    tmp = tempfile.mkdtemp()
+    try:
+        tmp_path = Path(tmp)
+        db_file = tmp_path / "test.db"
+        with closing(sqlite3.connect(db_file)) as con:
+            con.execute('CREATE TABLE "order-items" (id INTEGER PRIMARY KEY, item TEXT)')
+            con.commit()
+
+        det = DeterministicEngine({"deterministic": {"enabled": True}, "server": {"state_dir": str(tmp_path)}}, MagicMock(), MagicMock(), MagicMock())
+        # Schema inspection with hyphen in table name
+        schema_res = det.schema_inspect(str(tmp_path), db_path=str(db_file))
+        assert schema_res["success"] is True
+        assert "order-items" in schema_res["tables"]
+
+        # Explain query with multiple statements rejected
+        multi_res = det.explain_query(str(tmp_path), "SELECT * FROM [order-items]; DROP TABLE [order-items];", db_path=str(db_file))
+        assert multi_res["success"] is False
+        assert "multiple statements" in multi_res["error"]
+
+        # Explain valid query
+        valid_res = det.explain_query(str(tmp_path), "SELECT * FROM [order-items] WHERE id = 1", db_path=str(db_file))
+        assert valid_res["success"] is True
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_agent_memory_reap_cleans_embeddings_and_fts():
+    import sqlite3
+    from local_ai_hub.agent_memory import MemoryStore, MemoryRecord, MemoryKind
+    from local_ai_hub.agent_identity import AgentScope
+    from local_ai_hub.agent_events import AgentStateStore
+    tmp = tempfile.mkdtemp()
+    try:
+        tmp_path = Path(tmp)
+        state_store = AgentStateStore(tmp_path / "state.db", enabled=True)
+        store = MemoryStore(state_store)
+        
+        # Record memory expiring in the past
+        rec = MemoryRecord.create(
+            kind=MemoryKind.FACT,
+            scope=AgentScope.SESSION,
+            key="temp_key",
+            value="temp_val",
+            expires_at=time.time() - 10,
+        )
+        saved = store.record(rec)
+        store.set_embedding(saved.record_id, [0.1, 0.2, 0.3, 0.4])
+
+        # Verify embedding exists
+        with closing(store._connect()) if hasattr(store, "_connect") else closing(sqlite3.connect(state_store.db_path)) as con:
+            emb_count = con.execute("SELECT COUNT(1) FROM agent_memory_embeddings").fetchone()[0]
+            assert emb_count == 1
+
+        # Reap expired records
+        reaped = store.reap_expired(time.time())
+        assert reaped == 1
+
+        # Verify embedding was cleaned up
+        with closing(store._connect()) if hasattr(store, "_connect") else closing(sqlite3.connect(state_store.db_path)) as con:
+            emb_count_after = con.execute("SELECT COUNT(1) FROM agent_memory_embeddings").fetchone()[0]
+            assert emb_count_after == 0
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_agent_context_batch_invalidation():
+    from local_ai_hub.agent_context import ContextCompiler
+    from local_ai_hub.agent_events import AgentStateStore
+    tmp = tempfile.mkdtemp()
+    try:
+        tmp_path = Path(tmp)
+        state_store = AgentStateStore(tmp_path / "state.db", enabled=True)
+        cc = ContextCompiler(state_store)
+        
+        # Link 3 files
+        cc.link("task-1", "mem-1", "evidence", path="src/a.py")
+        cc.link("task-1", "mem-2", "evidence", path="src/b.py")
+        cc.link("task-1", "mem-3", "evidence", path="src/c.py")
+
+        # Invalidate batch of 2 paths
+        count = cc.invalidate(["src/a.py", "src/b.py"], revision="rev-2")
+        assert count == 2
+
+        # Check remaining active link
+        active_c = cc.get_active_links("src/c.py")
+        assert len(active_c) == 1
+        active_a = cc.get_active_links("src/a.py")
+        assert len(active_a) == 0
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_agent_policy_budgets_bounded():
+    from local_ai_hub.agent_policy import PolicyEngine
+    engine = PolicyEngine()
+    for i in range(600):
+        engine.get_budget(f"task_{i}")
+    
+    assert len(engine._budgets) <= 512
+
 
 

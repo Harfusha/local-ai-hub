@@ -12,6 +12,7 @@ from uuid import uuid4
 from .agent_blackboard import BlackboardStore
 from .agent_verification import VerificationStore
 from .leases import ScopeLeaseStore
+from .sqlite_support import connect_sqlite, initialize_wal
 
 
 class SwarmState(str, Enum):
@@ -43,15 +44,12 @@ class SwarmCoordinator:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        con = sqlite3.connect(str(self.db_path), timeout=10.0)
-        con.execute("PRAGMA journal_mode=WAL")
-        con.execute("PRAGMA synchronous=NORMAL")
-        con.execute("PRAGMA busy_timeout=5000")
-        return con
+        return connect_sqlite(self.db_path, timeout_seconds=5.0)
 
     def _init_db(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as con, con:
+            initialize_wal(con)
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS agent_swarms (

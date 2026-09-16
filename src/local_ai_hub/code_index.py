@@ -47,11 +47,9 @@ class CodeIndex:
         try:
             con.execute("PRAGMA cache_size=-65536")
             con.execute("PRAGMA mmap_size=536870912")
-            con.execute("PRAGMA synchronous=NORMAL")
-            return con
-        except Exception:
-            con.close()
-            raise
+        except sqlite3.OperationalError:
+            pass
+        return con
 
     def _schema(self, con: sqlite3.Connection) -> None:
         con.executescript("""

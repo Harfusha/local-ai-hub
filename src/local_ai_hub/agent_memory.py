@@ -534,7 +534,7 @@ class MemoryStore:
                     emb_res = embed_fn([query], tenant="agent")
                     q_vec = emb_res.get("embeddings", [[]])[0]
                     if q_vec:
-                        cur_emb = con.execute("SELECT record_id, embedding FROM agent_memory_embeddings")
+                        cur_emb = con.execute("SELECT record_id, embedding FROM agent_memory_embeddings ORDER BY created_at DESC LIMIT 500")
                         for r_id, emb_json in cur_emb.fetchall():
                             rec_vec = json.loads(emb_json)
                             sim = self._cosine_similarity(q_vec, rec_vec)
@@ -568,29 +568,19 @@ class MemoryStore:
                 v_s = vec_scores.get(rec.record_id, 0.0)
                 f_s = fts_scores.get(rec.record_id, 0.0)
                 base = 1.0 + (v_s * 0.5 + f_s * 0.3)
-                scored.append((base + float(rec.confidence) * 0.2, rec))
+                scored.append((base, rec))
 
             for rec in cand_records:
-                if rec.record_id in seen_ids:
-                    continue
-                v_s = vec_scores.get(rec.record_id, 0.0)
-                f_s = fts_scores.get(rec.record_id, 0.0)
-                if v_s > 0 or f_s > 0:
-                    hybrid_s = (v_s * 0.65 + f_s * 0.35) * 0.8 + float(rec.confidence) * 0.2
-                    scored.append((hybrid_s, rec))
+                if rec.record_id not in seen_ids:
                     seen_ids.add(rec.record_id)
-                elif clean_terms:
-                    content = f"{rec.key} {json.dumps(rec.value, default=str)}".lower()
-                    matches = sum(1 for term in clean_terms if term in content)
-                    if matches > 0:
-                        term_score = matches / len(clean_terms)
-                        if term_score >= min_score:
-                            combined_score = term_score * 0.8 + float(rec.confidence) * 0.2
-                            scored.append((combined_score, rec))
-                            seen_ids.add(rec.record_id)
+                    v_s = vec_scores.get(rec.record_id, 0.0)
+                    f_s = fts_scores.get(rec.record_id, 0.0)
+                    score = v_s * 0.7 + f_s * 0.3
+                    if score >= min_score:
+                        scored.append((score, rec))
 
-            scored.sort(key=lambda item: (-item[0], -item[1].updated_at))
-            return [item[1] for item in scored[:max(1, int(limit))]]
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return [rec for _, rec in scored[:limit]]
         finally:
             con.close()
 
@@ -603,30 +593,33 @@ class MemoryStore:
         nb = math.sqrt(sum(y * y for y in b))
         return dot / (na * nb) if na and nb else 0.0
 
-    def store_embedding(self, record_id: str, embedding: list[float]) -> bool:
-        if not self.state_store.enabled or not embedding:
+    def set_embedding(self, record_id: str, embedding: list[float]) -> bool:
+        if not self.state_store.enabled or not self.state_store.db_path.exists():
             return False
         self._init_table()
         now = time.time()
-        emb_json = json.dumps([float(x) for x in embedding])
-        def _insert():
-            con = connect_sqlite(self.state_store.db_path)
-            try:
-                with con:
-                    con.execute(
-                        """
-                        INSERT INTO agent_memory_embeddings (record_id, embedding, created_at)
-                        VALUES (?, ?, ?)
-                        ON CONFLICT(record_id) DO UPDATE SET
-                            embedding = excluded.embedding,
-                            created_at = excluded.created_at
-                        """,
-                        (record_id, emb_json, now),
-                    )
-            finally:
-                con.close()
-        retry_busy(_insert, retries=5, base_delay_seconds=0.02)
+        emb_json = json.dumps([round(float(x), 5) for x in embedding])
+        with self._lock:
+            def _insert():
+                con = connect_sqlite(self.state_store.db_path)
+                try:
+                    with con:
+                        con.execute(
+                            """
+                            INSERT INTO agent_memory_embeddings(record_id, embedding, created_at)
+                            VALUES (?, ?, ?)
+                            ON CONFLICT(record_id) DO UPDATE SET
+                                embedding = excluded.embedding,
+                                created_at = excluded.created_at
+                            """,
+                            (record_id, emb_json, now),
+                        )
+                finally:
+                    con.close()
+            retry_busy(_insert, retries=5, base_delay_seconds=0.02)
         return True
+
+    store_embedding = set_embedding
 
     def reap_expired(self, now: float | None = None) -> int:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
@@ -642,7 +635,18 @@ class MemoryStore:
                             "DELETE FROM agent_memory_records WHERE expires_at IS NOT NULL AND expires_at <= ?",
                             (cutoff,),
                         )
-                        return int(cur.rowcount)
+                        count = int(cur.rowcount)
+                        if count > 0:
+                            con.execute(
+                                "DELETE FROM agent_memory_embeddings WHERE record_id NOT IN (SELECT record_id FROM agent_memory_records)"
+                            )
+                            try:
+                                con.execute(
+                                    "DELETE FROM agent_memory_fts WHERE record_id NOT IN (SELECT record_id FROM agent_memory_records)"
+                                )
+                            except Exception:
+                                pass
+                        return count
                 finally:
                     con.close()
             return retry_busy(_do_reap, retries=5, base_delay_seconds=0.02)

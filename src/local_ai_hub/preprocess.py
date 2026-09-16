@@ -201,10 +201,11 @@ class ProjectPreprocessor:
             timeout_seconds=self._sqlite_busy_seconds,
             row_factory=sqlite3.Row,
         )
-        # Preprocessing has larger bounded scans than the small coordination stores.
-        # Keep its larger cache/mmap hints while sharing all common SQLite tuning.
-        con.execute("PRAGMA cache_size=-65536")
-        con.execute("PRAGMA mmap_size=536870912")
+        try:
+            con.execute("PRAGMA cache_size=-65536")
+            con.execute("PRAGMA mmap_size=536870912")
+        except sqlite3.OperationalError:
+            pass
         return con
 
     @staticmethod
@@ -2284,6 +2285,7 @@ class ProjectPreprocessor:
         if generation_key not in self._missing_refs_checked_generations:
             self._prune_missing_file_refs(root)
             self._missing_refs_checked_generations.add(generation_key)
+            self._missing_refs_checked_generations = self._bound_generation_set(self._missing_refs_checked_generations)
         with self._db_lock, closing(self._connect()) as con:
             refs = [(str(r["path"]), str(r["content_hash"])) for r in con.execute("SELECT path,content_hash FROM file_refs WHERE root=? AND needs_hash=0 AND content_hash<>'' ORDER BY path", (root,)).fetchall()]
         pruned_generations = getattr(self, "_code_index_pruned_generations", set())
@@ -2291,7 +2293,7 @@ class ProjectPreprocessor:
             try:
                 self.code_index.prune(root, [p for p,_ in refs])
                 pruned_generations.add(generation_key)
-                self._code_index_pruned_generations = pruned_generations
+                self._code_index_pruned_generations = self._bound_generation_set(pruned_generations)
             except Exception:
                 pass
         try:
@@ -2319,6 +2321,12 @@ class ProjectPreprocessor:
         self._record_progress(root, len(pending))
         return True
 
+    @staticmethod
+    def _bound_generation_set(s: set[tuple[str, int]], max_size: int = 512) -> set[tuple[str, int]]:
+        if len(s) > max_size:
+            return set(sorted(s, key=lambda item: item[1])[-max_size // 2:])
+        return s
+
     def _step_deterministic(self, row: dict[str, Any]) -> bool:
         root = str(row["root"])
         if self.deterministic is None:
@@ -2329,6 +2337,7 @@ class ProjectPreprocessor:
         if generation_key not in self._missing_refs_checked_generations:
             self._prune_missing_file_refs(root)
             self._missing_refs_checked_generations.add(generation_key)
+            self._missing_refs_checked_generations = self._bound_generation_set(self._missing_refs_checked_generations)
         with self._db_lock, closing(self._connect()) as con:
             refs = [(str(r["path"]), str(r["content_hash"])) for r in con.execute(
                 "SELECT path,content_hash FROM file_refs WHERE root=? AND needs_hash=0 AND content_hash<>'' ORDER BY path", (root,)
@@ -2339,7 +2348,7 @@ class ProjectPreprocessor:
             try:
                 self.deterministic.prune(root, [p for p, _ in refs])
                 pruned_generations.add(generation_key)
-                self._deterministic_pruned_generations = pruned_generations
+                self._deterministic_pruned_generations = self._bound_generation_set(pruned_generations)
             except Exception:
                 pass
         try:
