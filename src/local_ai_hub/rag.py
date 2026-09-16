@@ -142,8 +142,11 @@ class RAGStore:
 
     def _connect(self) -> sqlite3.Connection:
         con = connect_sqlite(self.db_path, timeout_seconds=0.75)
-        con.execute("PRAGMA cache_size=-64000")
-        con.execute("PRAGMA mmap_size=268435456")
+        try:
+            con.execute("PRAGMA cache_size=-64000")
+            con.execute("PRAGMA mmap_size=268435456")
+        except sqlite3.OperationalError:
+            pass
         return con
 
     def _init_db(self) -> None:
@@ -1140,6 +1143,10 @@ class RAGStore:
             ).fetchall()
         rev = stable_hash({"index": self.index_fingerprint, "files": rows})
         with self._rev_lock:
+            if len(self._rev_cache) > 256:
+                oldest_keys = sorted(self._rev_cache.keys(), key=lambda k: self._rev_cache[k][0])[:128]
+                for k in oldest_keys:
+                    self._rev_cache.pop(k, None)
             self._rev_cache[(scope_key, workspace)] = (now, rev)
         return rev
 
@@ -1396,18 +1403,20 @@ class RAGStore:
             candidates = candidates[:max(16, int(self.config.get("rag", {}).get("rerank_candidates", 16)))]
 
         # Hydrate text for winning candidates from DB
-        needed_keys = [(c["path"], c["chunk_no"]) for c in candidates if "text" not in c or not c.get("text")]
-        if needed_keys:
+        needed_map: dict[tuple[str, int], list[dict[str, Any]]] = {}
+        for c in candidates:
+            if "text" not in c or not c.get("text"):
+                needed_map.setdefault((c["path"], c["chunk_no"]), []).append(c)
+        if needed_map:
             with closing(self._connect()) as con:
-                for chunk_path, chunk_no in needed_keys:
+                for (chunk_path, chunk_no), target_candidates in needed_map.items():
                     txt_row = con.execute(
                         "SELECT text FROM chunks WHERE tenant=? AND workspace=? AND path=? AND chunk_no=?",
                         (scope_key, workspace, chunk_path, chunk_no),
                     ).fetchone()
                     chunk_text = str(txt_row[0]) if txt_row else ""
-                    for c in candidates:
-                        if c["path"] == chunk_path and c["chunk_no"] == chunk_no:
-                            c["text"] = chunk_text
+                    for c in target_candidates:
+                        c["text"] = chunk_text
 
         reranked = False
         if use_reranker and candidates:

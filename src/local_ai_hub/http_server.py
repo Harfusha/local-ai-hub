@@ -355,10 +355,20 @@ class Handler(BaseHTTPRequestHandler):
         if not target_db or not target_db.is_file():
             return {"success": False, "error": f"Database not found: {db_name}"}
 
+        def _readonly_authorizer(action: int, *_args: str | None) -> int:
+            """SQLite authorizer that permits only read operations."""
+            _ALLOWED = {
+                sqlite3.SQLITE_SELECT,  # SELECT statements
+                sqlite3.SQLITE_READ,    # Reading a column
+                sqlite3.SQLITE_FUNCTION,  # Calling a function
+            }
+            return sqlite3.SQLITE_OK if action in _ALLOWED else sqlite3.SQLITE_DENY
+
         try:
             uri = f"file:{target_db.as_posix()}?mode=ro"
             con = sqlite3.connect(uri, uri=True, timeout=3.0)
             try:
+                con.set_authorizer(_readonly_authorizer)
                 cur = con.cursor()
                 cur.execute(sql_clean)
                 col_names = [d[0] for d in cur.description] if cur.description else []
@@ -375,8 +385,14 @@ class Handler(BaseHTTPRequestHandler):
                 }
             finally:
                 con.close()
-        except Exception as exc:
-            return {"success": False, "error": str(exc)}
+        except sqlite3.DatabaseError as exc:
+            # Sanitize error to avoid leaking internal paths
+            msg = str(exc)
+            if state_dir.as_posix() in msg or str(state_dir) in msg:
+                msg = "query execution failed"
+            return {"success": False, "error": msg}
+        except Exception:
+            return {"success": False, "error": "query execution failed"}
 
     def _handle_models_list(self) -> dict[str, Any]:
         if APP is None:
@@ -971,27 +987,30 @@ class Handler(BaseHTTPRequestHandler):
             self._finish_stream_request(False, error="client disconnected before headers")
             return
 
-        last_seq = after_seq
-        if stream_id and after_seq >= 0:
-            past = APP.agent_state.events(stream_id=stream_id, after_seq=after_seq, limit=1000)
-            for ev in past:
-                if kind and ev.kind != kind:
-                    continue
-                last_seq = max(last_seq, ev.seq or 0)
-                payload = json.dumps(ev.to_dict(), separators=(",", ":"))
-                msg = f"id: {ev.seq}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
-                try:
-                    self.wfile.write(msg)
-                    self.wfile.flush()
-                except OSError:
-                    self._finish_stream_request(True)
-                    return
-
         q = APP.agent_state.subscribe(maxsize=200)
-        start_time = time.time()
         try:
+            # Subscribe before fetching history. An event appended in the replay
+            # window is then either replayed or queued; duplicate queued events
+            # are discarded by the sequence check below.
+            last_seq = after_seq
+            if stream_id and after_seq >= 0:
+                past = APP.agent_state.events(stream_id=stream_id, after_seq=after_seq, limit=1000)
+                for ev in past:
+                    if kind and ev.kind != kind:
+                        continue
+                    last_seq = max(last_seq, ev.seq or 0)
+                    payload = json.dumps(ev.to_dict(), separators=(",", ":"))
+                    msg = f"id: {ev.seq}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
+                    try:
+                        self.wfile.write(msg)
+                        self.wfile.flush()
+                    except OSError:
+                        return
+
+            start_time = time.monotonic()
             while True:
-                if (time.time() - start_time) >= timeout:
+                remaining = timeout - (time.monotonic() - start_time)
+                if remaining <= 0:
                     try:
                         timeout_msg = f"event: stream_timeout\ndata: {{\"reconnect\":true,\"last_seq\":{last_seq}}}\n\n".encode("utf-8")
                         self.wfile.write(timeout_msg)
@@ -1000,7 +1019,7 @@ class Handler(BaseHTTPRequestHandler):
                         pass
                     break
                 try:
-                    ev = q.get(timeout=1.0)
+                    ev = q.get(timeout=min(1.0, remaining))
                     if ev.seq is not None and ev.seq <= last_seq:
                         continue
                     if stream_id and ev.stream_id != stream_id:
@@ -1111,12 +1130,7 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
                     self._send(200, {"success": True, "record": rec.to_dict()}); return
                 scope_raw = (query.get("scope") or [None])[0]
-                scope_val = None
-                if scope_raw:
-                    try:
-                        scope_val = AgentScope(str(scope_raw).lower())
-                    except ValueError:
-                        pass
+                scope_val = AgentScope.parse(scope_raw, default=None) if scope_raw else None
                 key_val = (query.get("key") or [None])[0]
                 query_val = (query.get("query") or [None])[0]
                 status_raw = (query.get("status") or [None])[0]
@@ -1143,6 +1157,12 @@ class Handler(BaseHTTPRequestHandler):
                 board_id = (query.get("board_id") or ["default"])[0]
                 section = (query.get("section") or [None])[0]
                 self._send(200, APP.agent_blackboard.get(board_id, section=section)); return
+            if path == "/api/agent-state/swarm":
+                if not getattr(APP, "swarm", None):
+                    self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
+                st = (query.get("state") or [None])[0]
+                lim = int((query.get("limit") or [50])[0])
+                self._send(200, APP.swarm.list_swarms(state=st, limit=lim)); return
             if path.startswith("/api/agent-state/swarm/"):
                 swarm_id = path.split("/api/agent-state/swarm/", 1)[1].strip()
                 if not getattr(APP, "swarm", None):
@@ -1819,10 +1839,7 @@ class Handler(BaseHTTPRequestHandler):
                         except ValueError:
                             kind_val = MemoryKind.FACT
                         raw_scope = str(rec_data.get("scope", AgentScope.TASK.value)).lower()
-                        try:
-                            scope_val = AgentScope(raw_scope)
-                        except ValueError:
-                            scope_val = AgentScope.TASK
+                        scope_val = AgentScope.parse(raw_scope, default=AgentScope.TASK)
                         raw_status = rec_data.get("status")
                         status_val = None
                         if raw_status:
@@ -1853,7 +1870,7 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
                     self._send(200, {"success": True, "record": rec.to_dict()}); return
                 if action == "find":
-                    scope_val = AgentScope(str(payload["scope"])) if payload.get("scope") else None
+                    scope_val = AgentScope.parse(payload["scope"], default=None) if payload.get("scope") else None
                     key_val = str(payload["key"]) if payload.get("key") else None
                     query_val = str(payload["query"]) if payload.get("query") else None
                     status_val = MemoryStatus(str(payload["status"])) if payload.get("status") else None
@@ -1862,9 +1879,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, {"success": True, "records": [r.to_dict() for r in records]}); return
                 if action == "promote":
                     target_scope_str = str(payload.get("target_scope", "")).strip().lower()
-                    try:
-                        target_scope = AgentScope(target_scope_str)
-                    except ValueError:
+                    target_scope = AgentScope.parse(target_scope_str, default=None)
+                    if not target_scope:
                         self._send(400, {"success": False, "error": f"invalid target scope '{target_scope_str}'", "terminal": True, "retryable": False}); return
                     approver = str(payload.get("approver", actor))
                     try:
@@ -2165,6 +2181,13 @@ class Handler(BaseHTTPRequestHandler):
                 action = str(payload.get("action", "submit_patch"))
                 step_payload = payload.get("payload", payload.get("content", {}))
                 res = APP.swarm.step(swarm_id=swarm_id, role=role, action=action, payload=step_payload)
+                self._send(200, res); return
+            if path == "/api/agent-state/swarm/cancel":
+                if not getattr(APP, "swarm", None):
+                    self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
+                swarm_id = str(payload.get("swarm_id", payload.get("task_id", "")))
+                reason = str(payload.get("reason", ""))
+                res = APP.swarm.cancel(swarm_id=swarm_id, reason=reason)
                 self._send(200, res); return
             if path == "/api/benchmark/run":
                 if not getattr(APP, "benchmark_runner", None):

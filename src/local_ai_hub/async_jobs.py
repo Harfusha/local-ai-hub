@@ -146,6 +146,7 @@ class AsyncJobManager:
     def _dispatch(self, job_id: str) -> None:
         if self._shutdown.is_set():
             return
+        completion = self._event(job_id)
         with self._lock, closing(self._connect()) as con:
             con.row_factory = sqlite3.Row
             row = con.execute("SELECT * FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
@@ -154,6 +155,7 @@ class AsyncJobManager:
             con.execute("UPDATE async_jobs SET lease_until=?,updated_at=? WHERE job_id=? AND state='queued'", (time.time() + self.lease_seconds, time.time(), job_id))
             con.commit()
             tenant = str(row["tenant"])
+        completion.clear()
         try:
             model = str(getattr(self.scheduler, "config", {}).get("models", {}).get("heavy_code", ""))
             queued = self.scheduler.enqueue(model, tenant, "async-job", lambda: self._execute(job_id), priority=1, background=True)
@@ -198,27 +200,24 @@ class AsyncJobManager:
                 self._watchers.discard(threading.current_thread())
 
     def _release_for_retry(self, job_id: str, error: str) -> None:
+        trace_id = ""
         with self._lock, closing(self._connect()) as con:
-            row = con.execute("SELECT attempts,cancel_requested FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
+            row = con.execute("SELECT attempts,cancel_requested,trace_id FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
             if not row:
                 return
             attempts, cancelled = int(row[0] or 0) + 1, bool(row[1])
+            trace_id = str(row[2] or "") if len(row) > 2 and row[2] else ""
             state = "cancelled" if cancelled else "failed" if attempts >= self.max_attempts else "queued"
             con.execute("UPDATE async_jobs SET state=?,attempts=?,lease_until=0,error=?,updated_at=? WHERE job_id=?", (state, attempts, error[:500], time.time(), job_id))
             con.commit()
             if state == "failed": self._stats["failed"] += 1
             if state == "cancelled": self._stats["cancelled"] += 1
         self._event(job_id).set()
-        if self.debug_traces is not None:
+        if self.debug_traces is not None and trace_id:
             try:
-                with closing(self._connect()) as trace_con:
-                    trace_con.row_factory = sqlite3.Row
-                    row = trace_con.execute("SELECT trace_id FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
-                trace_id = str(row["trace_id"] or "") if row else ""
-                if trace_id:
-                    self.debug_traces.event(trace_id, "retry" if state == "queued" else state, {"error": error, "attempts": attempts})
-                    if state in {"failed", "cancelled"}:
-                        self.debug_traces.finish(trace_id, state=state, error=error)
+                self.debug_traces.event(trace_id, "retry" if state == "queued" else state, {"error": error, "attempts": attempts})
+                if state in {"failed", "cancelled"}:
+                    self.debug_traces.finish(trace_id, state=state, error=error)
             except Exception:
                 pass
 
@@ -248,6 +247,12 @@ class AsyncJobManager:
         observer_token = set_observer(observer)
         try:
             result = self.executor(action, payload, tenant)
+            if not isinstance(result, dict):
+                result = {
+                    "success": False,
+                    "error": "async executor returned a non-object result",
+                    "retryable": False,
+                }
         except Exception as exc:
             result = {"success": False, "error": str(exc), "retryable": True}
         finally:
@@ -301,7 +306,7 @@ class AsyncJobManager:
                 con.row_factory = sqlite3.Row
                 cur_row = con.execute("SELECT attempts FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
                 attempts = int(cur_row["attempts"] if cur_row else 1)
-                if attempts < self.max_attempts:
+                if attempts < self.max_attempts and bool(result.get("retryable", True)):
                     con.execute("UPDATE async_jobs SET state='queued',result_json=?,error=?,lease_until=0,updated_at=? WHERE job_id=?", (json.dumps(result, ensure_ascii=False, separators=(",", ":")), str(result.get("error", "async job failed"))[:500], time.time(), job_id))
                     final = result
                 else:

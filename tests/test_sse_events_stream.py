@@ -16,9 +16,16 @@ class MockWfile(io.BytesIO):
     def __init__(self):
         super().__init__()
         self.flushed = False
+        self.disconnect_after: bytes | None = None
 
     def flush(self):
         self.flushed = True
+
+    def write(self, b: bytes) -> int:
+        res = super().write(b)
+        if self.disconnect_after and self.disconnect_after in self.getvalue():
+            raise OSError("client disconnected")
+        return res
 
 
 class DummyHandler:
@@ -73,16 +80,20 @@ def test_sse_stream_replays_and_receives_live_events(tmp_path: Path):
     http_server.APP = DummyApp()
     try:
         handler = DummyHandler(DummyApp())
+        handler.wfile.disconnect_after = b"task.updated"
 
         def _publish_delayed():
-            time.sleep(0.1)
+            for _ in range(200):
+                if b"event: task.created" in handler.wfile.getvalue():
+                    break
+                time.sleep(0.01)
             store.append(AgentEvent.create("task-1", "task.updated", {"step": 2}, "k2"))
 
         t = threading.Thread(target=_publish_delayed)
         t.start()
 
-        # Stream for 0.5 seconds
-        handler._stream_agent_events(stream_id="task-1", after_seq=0, timeout=0.5)
+        # Stream with sufficient timeout headroom (disconnects immediately on live event)
+        handler._stream_agent_events(stream_id="task-1", after_seq=0, timeout=3.0)
         t.join()
 
         output = handler.wfile.getvalue().decode("utf-8")
@@ -92,6 +103,45 @@ def test_sse_stream_replays_and_receives_live_events(tmp_path: Path):
         assert '"step":2' in output
     finally:
         http_server.APP = orig_app
+
+
+def test_sse_stream_does_not_lose_event_between_replay_and_subscribe(tmp_path: Path, monkeypatch):
+    store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    store.append(AgentEvent.create("task-1", "task.created", {"step": 1}, "k1"))
+    original_events = store.events
+
+    def events_then_publish(*args, **kwargs):
+        replay = original_events(*args, **kwargs)
+        store.append(AgentEvent.create("task-1", "task.updated", {"step": 2}, "k2"))
+        return replay
+
+    monkeypatch.setattr(store, "events", events_then_publish)
+
+    class DummyApp:
+        agent_state = store
+
+    monkeypatch.setattr(http_server, "APP", DummyApp())
+    handler = DummyHandler(DummyApp())
+    handler._stream_agent_events(stream_id="task-1", after_seq=0, timeout=0.1)
+
+    output = handler.wfile.getvalue().decode("utf-8")
+    assert "event: task.updated" in output
+    assert '"step":2' in output
+
+
+def test_sse_stream_timeout_bounds_queue_wait(tmp_path: Path, monkeypatch):
+    store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+
+    class DummyApp:
+        agent_state = store
+
+    monkeypatch.setattr(http_server, "APP", DummyApp())
+    handler = DummyHandler(DummyApp())
+    started = time.monotonic()
+    handler._stream_agent_events(stream_id="task-1", after_seq=0, timeout=0.05)
+
+    assert time.monotonic() - started < 0.5
+    assert "event: stream_timeout" in handler.wfile.getvalue().decode("utf-8")
 
 
 def test_client_stream_events_parsing(monkeypatch):
@@ -124,4 +174,3 @@ def test_client_stream_events_parsing(monkeypatch):
     assert events[0][1]["step"] == 1
     assert events[1][0] == "task.completed"
     assert events[1][1]["ok"] is True
-

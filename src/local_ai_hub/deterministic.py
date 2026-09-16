@@ -98,6 +98,8 @@ class DeterministicEngine:
         self.max_query_results = int(cfg.get("max_query_results", 24))
         self.max_evidence = int(cfg.get("max_evidence", 12))
         self.max_manifest_bytes = int(cfg.get("max_manifest_bytes", 1_500_000))
+        workspace_cache = config.get("workspace_cache", {})
+        self.git_status_timeout = max(0.5, float(workspace_cache.get("git_status_timeout_seconds", 2.5)))
         self.db_path = configured_state_dir(config) / "deterministic.sqlite3"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -120,9 +122,11 @@ class DeterministicEngine:
 
     def _connect(self) -> sqlite3.Connection:
         con = connect_sqlite(self.db_path, timeout_seconds=0.75, row_factory=sqlite3.Row)
-        con.execute("PRAGMA cache_size=-65536")
-        con.execute("PRAGMA mmap_size=536870912")
-        con.execute("PRAGMA synchronous=NORMAL")
+        try:
+            con.execute("PRAGMA cache_size=-65536")
+            con.execute("PRAGMA mmap_size=536870912")
+        except sqlite3.OperationalError:
+            pass
         return con
 
     def _schema(self, con: sqlite3.Connection) -> None:
@@ -1750,9 +1754,11 @@ class DeterministicEngine:
                             ).fetchall()
                             for r in f_rows:
                                 fact_map[(r["path"], r["kind"], r["name"], r["value"])] = dict(r)
+                        seen_keys: set[tuple[str, str, str, str]] = set()
                         for item in fts_rows:
                             k = (item["path"], item["kind"], item["name"], item["value"])
-                            if k in fact_map and fact_map[k] not in rows:
+                            if k in fact_map and k not in seen_keys:
+                                seen_keys.add(k)
                                 rows.append(fact_map[k])
                 self._stats["fact_fts_hits"] += 1
             except sqlite3.OperationalError:
@@ -3679,22 +3685,41 @@ class DeterministicEngine:
         if not clean_query:
             return {"success": False, "error": "query is required", "root": resolved}
 
+        git_timeout = 15.0
         try:
-            res_msg = subprocess.run(
-                [git_exe, "-C", resolved, "log", f"-n{max_commits}", f"--grep={clean_query}", "-i", "--format=%H|%an|%ad|%s", "--date=short"],
-                capture_output=True, text=True, timeout=5.0, check=False,
-                encoding="utf-8", errors="replace",
-                **hidden_run_kwargs(),
-            )
-            res_code = subprocess.run(
-                [git_exe, "-C", resolved, "log", f"-n{max_commits}", f"-S{clean_query}", "-i", "--format=%H|%an|%ad|%s", "--date=short"],
-                capture_output=True, text=True, timeout=5.0, check=False,
-                encoding="utf-8", errors="replace",
-                **hidden_run_kwargs(),
-            )
+            res_msg = None
+            try:
+                res_msg = subprocess.run(
+                    [git_exe, "-C", resolved, "log", f"-n{max_commits}", f"--grep={clean_query}", "-i", "--format=%H|%an|%ad|%s", "--date=short"],
+                    capture_output=True, text=True, timeout=git_timeout, check=False,
+                    encoding="utf-8", errors="replace",
+                    **hidden_run_kwargs(),
+                )
+            except subprocess.TimeoutExpired:
+                res_msg = None
+
+            res_code = None
+            try:
+                res_code = subprocess.run(
+                    [git_exe, "-C", resolved, "log", f"-n{max_commits}", f"-S{clean_query}", "-i", "--format=%H|%an|%ad|%s", "--date=short"],
+                    capture_output=True, text=True, timeout=git_timeout, check=False,
+                    encoding="utf-8", errors="replace",
+                    **hidden_run_kwargs(),
+                )
+            except subprocess.TimeoutExpired:
+                res_code = None
+
+            if res_msg is None and res_code is None:
+                return {"success": False, "error": f"git log timed out after {git_timeout}s", "root": resolved}
 
             commits: dict[str, dict[str, Any]] = {}
-            for out, match_type in [(res_msg.stdout, "message"), (res_code.stdout, "diff_content")]:
+            sources = []
+            if res_msg is not None and getattr(res_msg, "stdout", None):
+                sources.append((res_msg.stdout, "message"))
+            if res_code is not None and getattr(res_code, "stdout", None):
+                sources.append((res_code.stdout, "diff_content"))
+
+            for out, match_type in sources:
                 for line in out.splitlines():
                     parts = line.split("|", 3)
                     if len(parts) >= 4:
@@ -4614,6 +4639,7 @@ def test_{sym}_regression_edge_cases():
                     capture_output=True,
                     text=True,
                     check=False,
+                    timeout=self.git_status_timeout,
                     **hidden_run_kwargs(),
                 )
                 if cp.returncode == 0:
@@ -5040,6 +5066,16 @@ def test_{sym}_regression_edge_cases():
 
     def find_dead_code(self, root: str, limit: int = 50) -> dict[str, Any]:
         """Detect potentially dead/uncalled functions and classes in repository."""
+        if self.code_index is not None:
+            try:
+                st = self.code_index.status(root)
+                if st.get("symbols", 0) > 0:
+                    res = self.code_index.find_dead_code(root, limit=limit)
+                    if res.get("success"):
+                        return res
+            except Exception:
+                pass
+
         p_root = Path(self._root(root))
         if not p_root.is_dir():
             return {"success": False, "error": f"root not found: {root}"}
@@ -5088,6 +5124,57 @@ def test_{sym}_regression_edge_cases():
             "dead_code": dead_candidates,
             "dead_symbols": dead_candidates,
         }
+
+    @staticmethod
+    def fold_brace_blocks(code: str, target_symbols: set[str] | None = None) -> str:
+        """Fold function/method bodies in brace-based languages (Go, Rust, TS, JS, C#, Java)."""
+        lines = code.splitlines()
+        out: list[str] = []
+        targets = target_symbols or set()
+
+        in_func = False
+        func_brace_depth = 0
+        current_brace_depth = 0
+
+        FUNC_PAT = re.compile(
+            r"^\s*(?:(?:pub(?:lic)?|priv(?:ate)?|prot(?:ected)?|internal|static|async|export|default|override|virtual|final)\s+)*"
+            r"(?:(?:func|fn|function|def)\b|(?:[A-Za-z_$][\w.<>,\[\]]*\s+)+[A-Za-z_$][\w$]*\s*\()|"
+            r"^\s*(?:func\s*\([^)]*\)\s*)?[A-Za-z_$][\w$]*\s*\([^)]*\)\s*(?:[^{;]*\{|=>)"
+        )
+        STRUCT_PAT = re.compile(r"^\s*(?:(?:pub(?:lic)?|export)\s+)*(?:struct|interface|enum|type|trait|class)\b")
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith(("//", "#", "/*", "*")):
+                if not in_func:
+                    out.append(line)
+                continue
+
+            if not in_func:
+                if FUNC_PAT.search(line) and not STRUCT_PAT.search(line) and ("{" in line or "=>" in line):
+                    is_target = any(sym in line for sym in targets) if targets else False
+                    if not is_target and "{" in line:
+                        in_func = True
+                        func_brace_depth = current_brace_depth
+                        idx = line.find("{")
+                        out.append(line[:idx + 1])
+                        out.append("    /* ... */")
+                        current_brace_depth += line.count("{") - line.count("}")
+                        if current_brace_depth <= func_brace_depth:
+                            in_func = False
+                            out.append("}")
+                        continue
+
+                out.append(line)
+                current_brace_depth += line.count("{") - line.count("}")
+            else:
+                current_brace_depth += line.count("{") - line.count("}")
+                if current_brace_depth <= func_brace_depth:
+                    in_func = False
+                    indent = " " * (len(line) - len(line.lstrip()))
+                    out.append(f"{indent}}}")
+
+        return "\n".join(out)
 
     def ast_outline(self, root: str, path: str) -> dict[str, Any]:
         """Generate a token-compact structural interface outline collapsing function/method bodies."""
@@ -5140,6 +5227,19 @@ def test_{sym}_regression_edge_cases():
                 "reduction_pct": token_savings_pct,
             }
         except Exception:
+            if "{" in content and "}" in content:
+                outlined = self.fold_brace_blocks(content)
+                char_savings = max(0, len(content) - len(outlined))
+                token_savings_pct = round((char_savings / max(1, len(content))) * 100, 1)
+                return {
+                    "success": True,
+                    "path": str(target.relative_to(p_root)).replace("\\", "/"),
+                    "outline": outlined,
+                    "original_chars": len(content),
+                    "outline_chars": len(outlined),
+                    "reduction_pct": token_savings_pct,
+                    "polyglot": True,
+                }
             out_lines = []
             for line in content.splitlines():
                 if re.match(r"^\s*(?:def|class|async def|public|private|function|fn|func|interface|struct)\b", line):
@@ -5367,9 +5467,10 @@ def test_{sym}_regression_edge_cases():
             with closing(sqlite3.connect(f"file:{target_db}?mode=ro", uri=True)) as con:
                 tbl_rows = con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
                 for (tbl_name,) in tbl_rows:
-                    cols = con.execute(f"PRAGMA table_info('{tbl_name}')").fetchall()
-                    indexes = con.execute(f"PRAGMA index_list('{tbl_name}')").fetchall()
-                    fks = con.execute(f"PRAGMA foreign_key_list('{tbl_name}')").fetchall()
+                    safe_tbl = tbl_name.replace('"', '""')
+                    cols = con.execute(f'PRAGMA table_info("{safe_tbl}")').fetchall()
+                    indexes = con.execute(f'PRAGMA index_list("{safe_tbl}")').fetchall()
+                    fks = con.execute(f'PRAGMA foreign_key_list("{safe_tbl}")').fetchall()
                     tables[tbl_name] = {
                         "columns": [{"name": c[1], "type": c[2], "notnull": bool(c[3]), "pk": bool(c[5])} for c in cols],
                         "indexes": [idx[1] for idx in indexes],
@@ -5409,6 +5510,8 @@ def test_{sym}_regression_edge_cases():
         clean_query = query.strip()
         if not clean_query.lower().startswith("select"):
             return {"success": False, "error": "only SELECT queries are allowed for explain_query"}
+        if ";" in clean_query.rstrip(";"):
+            return {"success": False, "error": "multiple statements are not permitted"}
 
         try:
             with closing(sqlite3.connect(f"file:{target_db}?mode=ro", uri=True)) as con:
@@ -5498,6 +5601,10 @@ def test_{sym}_regression_edge_cases():
                     "scripts": int(con.execute(f"SELECT COUNT(*) FROM scripts{where}", args).fetchone()[0]),
                 }
             res = {"success": True, "healthy": True, **counts, "stats": dict(self._stats)}
+            if len(self._status_cache) > 64:
+                oldest = sorted(self._status_cache.items(), key=lambda x: x[1].get("time", 0))[:32]
+                for k, _ in oldest:
+                    self._status_cache.pop(k, None)
             self._status_cache[key] = {"time": now, "data": res}
             return res
         except Exception as exc:
@@ -5518,19 +5625,38 @@ def test_{sym}_regression_edge_cases():
             if any(part in skip_dirs for part in p.parts):
                 continue
             py_files.append(p)
-            rel = p.relative_to(p_root)
-            mod_parts = list(rel.parts)
-            if mod_parts[-1] == "__init__.py":
-                mod_parts.pop()
-            else:
-                mod_parts[-1] = mod_parts[-1][:-3]
-            mod_name = ".".join(mod_parts)
-            if mod_name:
-                mod_to_file[mod_name] = p
-                file_to_mod[p] = mod_name
 
-        graph: dict[str, set[str]] = defaultdict(set)
-        for p, mod_name in file_to_mod.items():
+        for p in py_files:
+            rel = p.relative_to(p_root)
+            parts = list(rel.parts)
+            if parts[-1].endswith(".py"):
+                parts[-1] = parts[-1][:-3]
+            if parts and parts[-1] == "__init__":
+                parts.pop()
+            if not parts:
+                continue
+            mod_name = ".".join(parts)
+            mod_to_file[mod_name] = p
+            file_to_mod[p] = mod_name
+
+        def _find_matches(target: str) -> list[str]:
+            matches: list[str] = []
+            cur = target
+            while cur:
+                if cur in mod_to_file:
+                    matches.append(cur)
+                if "." in cur:
+                    cur = cur.rsplit(".", 1)[0]
+                else:
+                    break
+            return matches
+
+        graph: dict[str, set[str]] = {m: set() for m in mod_to_file}
+
+        for p in py_files:
+            mod_name = file_to_mod.get(p)
+            if not mod_name:
+                continue
             try:
                 content = p.read_text(encoding="utf-8", errors="replace")
                 tree = ast.parse(content, filename=str(p))
@@ -5540,11 +5666,9 @@ def test_{sym}_regression_edge_cases():
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
-                        target = alias.name
-                        for known in mod_to_file:
-                            if target == known or target.startswith(known + "."):
-                                if known != mod_name:
-                                    graph[mod_name].add(known)
+                        for known in _find_matches(alias.name):
+                            if known != mod_name:
+                                graph[mod_name].add(known)
                 elif isinstance(node, ast.ImportFrom):
                     base = ""
                     if node.level and node.level > 0:
@@ -5562,10 +5686,9 @@ def test_{sym}_regression_edge_cases():
                         if base:
                             candidates.append(base)
                         for target in candidates:
-                            for known in mod_to_file:
-                                if target == known or target.startswith(known + "."):
-                                    if known != mod_name:
-                                        graph[mod_name].add(known)
+                            for known in _find_matches(target):
+                                if known != mod_name:
+                                    graph[mod_name].add(known)
 
         cycles: list[list[str]] = []
         visited: set[str] = set()
@@ -6084,12 +6207,12 @@ def test_{sym}_regression_edge_cases():
 
         db_tables: dict[str, set[str]] = {}
         try:
-            con = sqlite3.connect(db_file)
-            tables = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
-            for tbl in tables:
-                cols = {r[1] for r in con.execute(f"PRAGMA table_info({tbl})").fetchall()}
-                db_tables[tbl] = cols
-            con.close()
+            with closing(sqlite3.connect(db_file)) as con:
+                tables = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
+                for tbl in tables:
+                    safe_tbl = tbl.replace('"', '""')
+                    cols = {r[1] for r in con.execute(f'PRAGMA table_info("{safe_tbl}")').fetchall()}
+                    db_tables[tbl] = cols
         except Exception as exc:
             return {"success": False, "error": f"failed to inspect SQLite schema: {exc}"}
 
@@ -6852,6 +6975,19 @@ def test_{sym}_regression_edge_cases():
         try:
             tree = ast.parse(code)
         except Exception:
+            if "{" in code and "}" in code:
+                skeleton = self.fold_brace_blocks(code, set(target_symbols or []))
+                orig_len = len(code)
+                skel_len = len(skeleton)
+                ratio = round((orig_len - skel_len) / max(1, orig_len), 3)
+                return {
+                    "success": True,
+                    "original_chars": orig_len,
+                    "skeleton_chars": skel_len,
+                    "savings_ratio": max(0.0, ratio),
+                    "skeleton_code": skeleton,
+                    "polyglot": True,
+                }
             return {"success": True, "skeleton_code": code, "original_chars": len(code), "skeleton_chars": len(code), "savings_ratio": 0.0}
 
         targets = set(target_symbols or [])

@@ -77,9 +77,9 @@ class RepositoryTools:
         self.max_snippets_per_file = int(search.get("max_snippets_per_file", 3))
         self.prefer_git = bool(search.get("prefer_git_files", True))
         self.use_ripgrep = bool(search.get("use_ripgrep_if_available", True))
-        self.ripgrep_timeout = max(0.5, float(search.get("ripgrep_timeout_seconds", 8.0)))
-        self.git_grep_timeout = max(0.5, float(search.get("git_grep_timeout_seconds", min(4.0, self.ripgrep_timeout))))
-        self.git_files_timeout = max(0.5, float(search.get("git_files_timeout_seconds", 3.0)))
+        self.ripgrep_timeout = max(0.5, float(search.get("ripgrep_timeout_seconds", 15.0)))
+        self.git_grep_timeout = max(0.5, float(search.get("git_grep_timeout_seconds", min(10.0, self.ripgrep_timeout))))
+        self.git_files_timeout = max(0.5, float(search.get("git_files_timeout_seconds", 5.0)))
         self.git_files_cache_ttl = max(0.0, float(search.get("git_files_cache_ttl_seconds", 3.0)))
         self.git_files_slow_cooldown = max(1.0, float(search.get("git_files_slow_cooldown_seconds", 15.0)))
         self.use_git_grep = bool(search.get("use_git_grep_fallback", True))
@@ -98,6 +98,8 @@ class RepositoryTools:
         self.snapshot_max_bytes = max(8_000_000, int(snap.get("max_bytes", 256_000_000)))
         self._snapshot_lock = threading.RLock()
         self._snapshots: OrderedDict[str, tuple[int, int, int, int, str, list[str], int]] = OrderedDict()
+        self._hash_only_cache: OrderedDict[str, tuple[int, int, int, int, str]] = OrderedDict()
+        self._hash_only_max_entries = 8192
         self._snapshot_bytes = 0
         self.snapshot_hits = 0
         self.snapshot_misses = 0
@@ -275,6 +277,9 @@ class RepositoryTools:
                 self._snapshot_bytes -= old[6]
             self._snapshots[key] = (int(stat.st_mtime_ns), int(stat.st_size), int(getattr(stat, "st_ctime_ns", 0)), int(getattr(stat, "st_ino", 0)), digest, lines, size)
             self._snapshot_bytes += size
+            self._hash_only_cache[key] = (int(stat.st_mtime_ns), int(stat.st_size), int(getattr(stat, "st_ctime_ns", 0)), int(getattr(stat, "st_ino", 0)), digest)
+            if len(self._hash_only_cache) > self._hash_only_max_entries:
+                self._hash_only_cache.popitem(last=False)
             self.snapshot_misses += 1
             while self._snapshots and (len(self._snapshots) > self.snapshot_max_entries or self._snapshot_bytes > self.snapshot_max_bytes):
                 _k, evicted = self._snapshots.popitem(last=False)
@@ -296,6 +301,11 @@ class RepositoryTools:
                 self._snapshots.move_to_end(key)
                 self.snapshot_hits += 1
                 return item[4]
+            h_item = self._hash_only_cache.get(key)
+            if h_item is not None and h_item[:4] == identity:
+                self._hash_only_cache.move_to_end(key)
+                self.snapshot_hits += 1
+                return h_item[4]
         h = hashlib.sha256()
         with path.open("rb") as fh:
             while True:
@@ -303,7 +313,12 @@ class RepositoryTools:
                 if not chunk:
                     break
                 h.update(chunk)
-        return h.hexdigest()
+        digest = h.hexdigest()
+        with self._snapshot_lock:
+            self._hash_only_cache[key] = (identity[0], identity[1], identity[2], identity[3], digest)
+            if len(self._hash_only_cache) > self._hash_only_max_entries:
+                self._hash_only_cache.popitem(last=False)
+        return digest
 
     @staticmethod
     def _git_empty_snapshot(root: str, error: str) -> GitSnapshot:

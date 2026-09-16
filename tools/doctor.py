@@ -202,6 +202,13 @@ if isinstance(background_gpu, dict) and background_gpu.get("enabled"):
         if offload > bg_limit:
             warnings.append(f"{background_model} background CPU offload is {offload:.0%}, above the configured {bg_limit:.0%} target; reduce background concurrency/context only if measured throughput is poor")
 
+state_dir = Path(cfg.get("server", {}).get("state_dir", ""))
+if state_dir.is_dir():
+    corrupt_files = list(state_dir.glob("*.corrupt-*"))
+    if corrupt_files:
+        total_sz = sum(f.stat().st_size for f in corrupt_files if f.is_file())
+        warnings.append(f"Found {len(corrupt_files)} quarantined database file(s) in {state_dir} ({total_sz} bytes). Clean via clean_quarantined_files.")
+
 report = {
     "version": status.get("version") if isinstance(status, dict) else None,
     "python": sys.version.split()[0],

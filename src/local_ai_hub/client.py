@@ -221,10 +221,14 @@ class HubClient:
         # Cross-process startup lock: several CLI agents often connect at once. Only
         # one should spawn the singleton; the others wait for its cheap /health.
         for _ in range(2):
+            acquired_lock = False
             try:
                 fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(fd, f"{os.getpid()} {time.time()}".encode("ascii", errors="ignore"))
-                os.close(fd)
+                acquired_lock = True
+                try:
+                    os.write(fd, f"{os.getpid()} {time.time()}".encode("ascii", errors="ignore"))
+                finally:
+                    os.close(fd)
                 owner = True
                 break
             except FileExistsError:
@@ -248,6 +252,13 @@ class HubClient:
                     time.sleep(self.startup_poll)
                 else:
                     return self._online()
+                continue
+            except OSError:
+                if acquired_lock:
+                    try:
+                        lock_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
                 continue
 
         if not owner:

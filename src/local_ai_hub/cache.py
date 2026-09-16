@@ -249,9 +249,11 @@ class SQLiteCache:
 
     def _connect(self) -> sqlite3.Connection:
         con = connect_sqlite(self.path, timeout_seconds=self.busy_timeout_seconds)
-        con.execute("PRAGMA cache_size=-65536")
-        con.execute("PRAGMA mmap_size=536870912")
-        con.execute("PRAGMA synchronous=NORMAL")
+        try:
+            con.execute("PRAGMA cache_size=-65536")
+            con.execute("PRAGMA mmap_size=536870912")
+        except sqlite3.OperationalError:
+            pass
         return con
 
     def _create_schema(self) -> None:

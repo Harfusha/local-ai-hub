@@ -60,6 +60,8 @@ class _BoundedStreamBuffer:
         if not chunk:
             return
         cleaned = _redact_secrets(chunk) if self.redact else chunk
+        if len(cleaned) > self.max_chars:
+            cleaned = cleaned[-self.max_chars:]
         with self.lock:
             self.chunks.append(cleaned)
             self.total_chars += len(cleaned)
@@ -76,8 +78,20 @@ class _BoundedStreamBuffer:
         self.append(chunk)
 
     def peek(self, chars: int = 500) -> str:
+        if chars <= 0:
+            return ""
         with self.lock:
-            return "".join(self.chunks)[:chars]
+            if not self.chunks:
+                return ""
+            collected: list[str] = []
+            collected_len = 0
+            for chunk in reversed(self.chunks):
+                collected.append(chunk)
+                collected_len += len(chunk)
+                if collected_len >= chars:
+                    break
+            joined = "".join(reversed(collected))
+            return joined[-chars:]
 
 
 _INTERACTIVE_PATTERNS = [
@@ -145,6 +159,8 @@ class CommandBroker:
         self.coalesce_wait_seconds = max(1.0, float(cfg.get("coalesced_wait_seconds", 90.0)))
         self.terminate_grace_seconds = max(0.1, float(cfg.get("terminate_grace_seconds", 2.0)))
         self.post_kill_drain_seconds = max(0.1, float(cfg.get("post_kill_drain_seconds", 2.0)))
+        workspace_cache = config.get("workspace_cache", {})
+        self.git_snapshot_timeout = max(0.5, float(workspace_cache.get("git_status_timeout_seconds", 2.5)))
         state_dir = configured_state_dir(config)
         l1_entries = int(cfg.get("l1_entries", 128))
         self.success_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite3", "command:success", int(cfg.get("success_ttl_seconds", 43200)), int(cfg.get("max_entries", 5000))), l1_entries, int(cfg.get("l1_ttl_seconds", 900)))
@@ -1121,12 +1137,14 @@ class CommandBroker:
             try:
                 cp_rev = subprocess.run(
                     ["git", "rev-parse", "--is-inside-work-tree"],
-                    cwd=cwd, capture_output=True, text=True, check=False, **hidden_run_kwargs()
+                    cwd=cwd, capture_output=True, text=True, check=False,
+                    timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
                 )
                 if cp_rev.returncode == 0:
                     cp_untracked = subprocess.run(
                         ["git", "ls-files", "--others", "--exclude-standard"],
-                        cwd=cwd, capture_output=True, text=True, check=False, **hidden_run_kwargs()
+                        cwd=cwd, capture_output=True, text=True, check=False,
+                        timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
                     )
                     git_snapshot = {
                         "cwd": cwd,
@@ -1141,16 +1159,24 @@ class CommandBroker:
                     try:
                         subprocess.run(
                             ["git", "checkout", "--", "."],
-                            cwd=cwd, capture_output=True, text=True, check=False, **hidden_run_kwargs()
+                            cwd=cwd, capture_output=True, text=True, check=False,
+                            timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
                         )
                         cp_cur_untracked = subprocess.run(
                             ["git", "ls-files", "--others", "--exclude-standard"],
-                            cwd=cwd, capture_output=True, text=True, check=False, **hidden_run_kwargs()
+                            cwd=cwd, capture_output=True, text=True, check=False,
+                            timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
                         )
                         current_untracked = set(cp_cur_untracked.stdout.splitlines())
                         new_untracked = current_untracked - git_snapshot["untracked"]
+                        resolved_cwd = Path(cwd).resolve()
                         for new_f in new_untracked:
-                            p = Path(cwd) / new_f
+                            p = (Path(cwd) / new_f).resolve()
+                            try:
+                                if not p.is_relative_to(resolved_cwd) or p == resolved_cwd:
+                                    continue
+                            except (ValueError, TypeError):
+                                continue
                             if p.is_file():
                                 p.unlink(missing_ok=True)
                             elif p.is_dir():
@@ -1227,6 +1253,10 @@ class CommandBroker:
                 raw.update({"terminal": True, "retryable": False})
                 self.suppression_cache.set(attempt_key, raw)
             with self._lock:
+                if len(self._last) > 128:
+                    old_keys = list(self._last.keys())[:64]
+                    for k in old_keys:
+                        self._last.pop(k, None)
                 self._last[key] = raw
             result.update({"cache_hit": False, "coalesced": False, "classification": classification, "repo_state": state, "repository_revision": str(state.get("fingerprint", ""))})
         except subprocess.TimeoutExpired:
@@ -1331,7 +1361,7 @@ class CommandBroker:
                         except ValueError:
                             continue
                     if target not in original_files:
-                        original_files[target] = target.read_text(encoding="utf-8") if target.is_file() else None
+                        original_files[target] = target.read_text(encoding="utf-8", errors="replace") if target.is_file() else None
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text(new_content, encoding="utf-8")
                     if target.suffix.lower() in {".py", ".pyw"}:
@@ -1594,6 +1624,16 @@ class CommandBroker:
             return {"success": False, "error": f"failed to spawn daemon: {exc}"}
 
         with self._daemons_lock:
+            if len(self._daemons) > 50:
+                dead = [d for d, inf in self._daemons.items() if inf["process"].poll() is not None]
+                if len(dead) > 20:
+                    dead.sort(key=lambda d: float(self._daemons[d].get("stopped_at", self._daemons[d].get("started_at", 0))))
+                    for old_d in dead[:len(dead) - 20]:
+                        try:
+                            self._daemons[old_d]["log_fh"].close()
+                        except Exception:
+                            pass
+                        self._daemons.pop(old_d, None)
             self._daemons[daemon_id] = {
                 "daemon_id": daemon_id,
                 "process": process,
@@ -1688,6 +1728,17 @@ class CommandBroker:
                 info["log_fh"].close()
             except Exception:
                 pass
+            info["stopped_at"] = time.time()
+            if len(self._daemons) > 50:
+                dead = [d for d, inf in self._daemons.items() if inf["process"].poll() is not None]
+                if len(dead) > 20:
+                    dead.sort(key=lambda d: float(self._daemons[d].get("stopped_at", self._daemons[d].get("started_at", 0))))
+                    for old_d in dead[:len(dead) - 20]:
+                        try:
+                            self._daemons[old_d]["log_fh"].close()
+                        except Exception:
+                            pass
+                        self._daemons.pop(old_d, None)
             return {
                 "success": True,
                 "daemon_id": daemon_id,
@@ -1914,7 +1965,7 @@ class CommandBroker:
         started = time.perf_counter()
         try:
             with urlopen(req, timeout=max(0.1, float(timeout))) as resp:
-                resp_body = resp.read().decode("utf-8", errors="replace")
+                resp_body = resp.read(65_536).decode("utf-8", errors="replace")
                 dur = round((time.perf_counter() - started) * 1000, 1)
                 return {
                     "success": True,
@@ -1924,7 +1975,7 @@ class CommandBroker:
                     "headers": {k.lower(): v for k, v in list(resp.headers.items())[:10]},
                 }
         except HTTPError as exc:
-            resp_body = exc.read().decode("utf-8", errors="replace")
+            resp_body = exc.read(65_536).decode("utf-8", errors="replace")
             return {
                 "success": False,
                 "status_code": exc.code,
@@ -2065,6 +2116,10 @@ class CommandBroker:
                 srv_info["server"].shutdown()
                 srv_info["server"].server_close()
                 srv_info["alive"] = False
+                if len(self._mock_servers) > 32:
+                    dead = [p for p, info in self._mock_servers.items() if not info.get("alive")]
+                    for p in dead:
+                        self._mock_servers.pop(p, None)
                 return {"success": True, "stopped": True, "port": target_port}
             except Exception as exc:
                 return {"success": False, "error": str(exc), "port": target_port}

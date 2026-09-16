@@ -1,9 +1,11 @@
+import io
 import json
 import os
 import sqlite3
 import tempfile
 import time
 from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
 
@@ -136,6 +138,50 @@ def test_command_broker_webhook_replay(tmp_path: Path):
     )
     assert res["success"] is False
     assert "error" in res
+
+
+def test_command_broker_webhook_replay_bounds_response_body(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    class Response:
+        status = 200
+        headers: dict[str, str] = {}
+
+        def read(self, size: int = -1) -> bytes:
+            assert size == 65_536
+            return b"ok"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: Response())
+    broker = CommandBroker({"server": {"state_dir": str(tmp_path)}, "commands": {"enabled": True}})
+
+    result = broker.webhook_replay("http://127.0.0.1/webhook", {"event": "ping"})
+
+    assert result["success"] is True
+    assert result["body_preview"] == "ok"
+
+
+def test_command_broker_webhook_replay_bounds_error_response_body(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    class ErrorBody(io.BytesIO):
+        read_size: int | None = None
+
+        def read(self, size: int = -1) -> bytes:
+            self.read_size = size
+            return super().read(size)
+
+    body = ErrorBody(b"error")
+    error = HTTPError("http://127.0.0.1/webhook", 413, "payload too large", {}, body)
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(error))
+    broker = CommandBroker({"server": {"state_dir": str(tmp_path)}, "commands": {"enabled": True}})
+
+    result = broker.webhook_replay("http://127.0.0.1/webhook", {"event": "ping"})
+
+    assert body.read_size == 65_536
+    assert result["status_code"] == 413
+    assert result["body_preview"] == "error"
 
 
 def test_deterministic_find_circular_dependencies(tmp_path: Path):

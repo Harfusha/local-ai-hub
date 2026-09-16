@@ -29,7 +29,7 @@ STOP_TOKENS_RE = re.compile(
 # Language-agnostic structural preamble pattern:
 # A short introductory line (< 140 chars) ending with a colon or newline directly preceding a code block or list
 STRUCTURAL_PREAMBLE_RE = re.compile(
-    r"^[^\n`#]{1,140}:\s*\n+(?=(?:```|~~~|[-*+]\s|\d+\.\s))",
+    r"^(?!\*{0,2}SUMMARY\*{0,2}:[ \t]*\n)[^\n`#]{1,140}:[ \t]*\n+(?=(?:```|~~~|[-*+]\s|\d+\.\s))",
     re.DOTALL,
 )
 
@@ -158,6 +158,11 @@ def postprocess_model_output(
     
     thinking: str | None = "\n\n".join(thinking_parts) if thinking_parts else None
     cleaned = GENERIC_TAG_RE.sub("", raw).strip()
+
+    # Some runtimes prepend BOM/zero-width format characters. They are invisible
+    # in the dashboard but can break strict response-header validators.
+    while cleaned and unicodedata.category(cleaned[0]) == "Cf":
+        cleaned = cleaned[1:]
 
     # 2. Strip runtime stop tokens
     cleaned = STOP_TOKENS_RE.sub("", cleaned).strip()

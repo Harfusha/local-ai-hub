@@ -284,7 +284,7 @@ TaskAction: TypeAlias = Literal[
     "delegate", "reason", "continue", "review", "second_opinion", "compress", "route", "batch",
     "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait",
     "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe",
-    "eval_suite", "prompt_eval", "eval_drift",
+    "eval_suite", "prompt_eval", "eval_drift", "complete_code",
 ]
 RepoAction: TypeAlias = Literal[
     "profile", "search", "map", "code_index", "semantic", "graph", "intelligence",
@@ -322,7 +322,7 @@ CoordAction: TypeAlias = Literal[
     "context_compile", "verify_receipt", "verify_completion",
     "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
     "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_merge", "blackboard_delete",
-    "swarm_dispatch", "swarm_step", "swarm_status",
+    "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel",
     "worktree_lease", "worktree_release",
     "pubsub_publish", "pubsub_poll", "simulate_merge",
     "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree",
@@ -753,6 +753,10 @@ def local_ai_task(
         return _compact(CLIENT.post("/api/task/eval_drift", {
             "suite_name": task or prompt or "default",
         }, timeout=_timeout("long")), "status")
+    if action == "complete_code":
+        return _compact(CLIENT.post("/api/complete", {
+            "prefix": prompt or context or "", "suffix": task or candidate or "", "max_tokens": max_tokens or 80,
+        }, timeout=_timeout("quick")), "status")
     return _invalid_action("local_ai_task", action, tuple(TaskAction.__args__), "Use Local AI Hub only for bounded local-model work; use Codex-owned orchestration for peer subagents.")
 
 
@@ -1155,11 +1159,29 @@ def local_ai_coord(
     tool_outcome: dict[str, Any] | None = None,
     extra_fields: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Cross-agent coordination for the main agent and bounded Hub workers. Actions: claim, release, leases, memo_put, memo_get, memo_search, memo_delete, task_create, task_get, task_checkpoint, task_rollback, task_transition, task_resume, task_list, task_complete, task_fail, task_heartbeat, memory_record, memory_get, memory_find, memory_promote, memory_reap, context_compile, verify_receipt, verify_completion, negative_knowledge_record, negative_knowledge_find, incident_decision, blackboard_update, blackboard_get, blackboard_list, blackboard_merge, blackboard_delete. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool. Use when: Hub workers share edit paths, leases, or reusable findings. Skip when: work is isolated and no shared Hub state or memo is involved."""
+    """Cross-agent coordination for the main agent and bounded Hub workers. Actions: claim, release, leases, memo_put, memo_get, memo_search, memo_delete, task_create, task_get, task_checkpoint, task_rollback, task_transition, task_resume, task_list, task_complete, task_fail, task_heartbeat, memory_record, memory_get, memory_find, memory_promote, memory_reap, context_compile, verify_receipt, verify_completion, negative_knowledge_record, negative_knowledge_find, incident_decision, blackboard_update, blackboard_get, blackboard_list, blackboard_merge, blackboard_delete, swarm_dispatch, swarm_step, swarm_status, swarm_list, swarm_cancel. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool. Use when: Hub workers share edit paths, leases, or reusable findings. Skip when: work is isolated and no shared Hub state or memo is involved."""
     if not FEATURES.coord:
         return {"success": False, "unsupported": True, "error": "local_ai_coord is disabled in configuration"}
     action = action.strip().lower().replace("-", "_")
     root = _client_root(root)
+    if action == "task_sync":
+        sync_act = status.lower() if status in ("export", "import") else "export"
+        if sync_act == "export":
+            return _compact(CLIENT.post("/api/agent-state/events/delta", {
+                "action": "export", "stream_id": key or task_id or "", "after_seq": int(ttl_seconds or 0), "limit": max_tokens or 1000,
+            }, timeout=_timeout("quick")), "status")
+        else:
+            return _compact(CLIENT.post("/api/agent-state/events/delta", {
+                "action": "import", "events": record or [],
+            }, timeout=_timeout("quick")), "status")
+    if action == "task_zombie_reap":
+        return _compact(CLIENT.post("/api/agent-state/tasks", {
+            "action": "reap_expired", "auto_recover": True,
+        }, timeout=_timeout("quick")), "status")
+    if action == "task_cleanup_worktree":
+        return _compact(CLIENT.post("/api/agent-state/tasks", {
+            "action": "cleanup_worktree", "task_id": task_id or key or "",
+        }, timeout=_timeout("quick")), "status")
     if action.startswith("task_"):
         return _compact(CLIENT.coord(
             action=action, task_id=task_id, contract=contract,
@@ -1270,6 +1292,12 @@ def local_ai_coord(
     if action == "swarm_status":
         sid = task_id or key or ""
         return _compact(CLIENT.get(f"/api/agent-state/swarm/{quote(sid)}", timeout=_timeout("quick")), "status")
+    if action == "swarm_list":
+        st_param = f"?state={quote(status)}" if status else ""
+        return _compact(CLIENT.get(f"/api/agent-state/swarm{st_param}", timeout=_timeout("quick")), "status")
+    if action == "swarm_cancel":
+        sid = task_id or key or ""
+        return _compact(CLIENT.post("/api/agent-state/swarm/cancel", {"swarm_id": sid, "reason": reason or value or "cancelled by agent"}, timeout=_timeout("quick")), "status")
     if action == "worktree_lease":
         return _compact(CLIENT.coord(action="worktree_lease", root=root, branch=key or task or task_id or None), "status")
     if action == "worktree_release":
@@ -1287,24 +1315,6 @@ def local_ai_coord(
             "output_path": key or value or query or "training_dataset.jsonl",
             "min_receipts": int(status) if (status and status.isdigit()) else 1,
             "format": target_scope or "jsonl",
-        }, timeout=_timeout("quick")), "status")
-    if action == "task_sync":
-        sync_act = status.lower() if status in ("export", "import") else "export"
-        if sync_act == "export":
-            return _compact(CLIENT.post("/api/agent-state/events/delta", {
-                "action": "export", "stream_id": key or task_id or "", "after_seq": int(ttl_seconds or 0), "limit": max_tokens or 1000,
-            }, timeout=_timeout("quick")), "status")
-        else:
-            return _compact(CLIENT.post("/api/agent-state/events/delta", {
-                "action": "import", "events": record or [],
-            }, timeout=_timeout("quick")), "status")
-    if action == "task_zombie_reap":
-        return _compact(CLIENT.post("/api/agent-state/tasks", {
-            "action": "reap_expired", "auto_recover": True,
-        }, timeout=_timeout("quick")), "status")
-    if action == "task_cleanup_worktree":
-        return _compact(CLIENT.post("/api/agent-state/tasks", {
-            "action": "cleanup_worktree", "task_id": task_id or key or "",
         }, timeout=_timeout("quick")), "status")
     return _invalid_action("local_ai_coord", action, tuple(CoordAction.__args__), "Use coordination for bounded shared state; the main agent remains the owner of final integration.")
 

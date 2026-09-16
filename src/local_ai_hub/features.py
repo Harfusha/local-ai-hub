@@ -152,6 +152,7 @@ class FeatureSet:
             "generate_types", "complexity", "api_spec", "dependency_slice",
             "migration_drift", "package_audit", "structural_search", "context_budget",
             "git_diff", "git_history_search", "hotspots", "generate_tests_for_diff", "cross_repo_contract",
+            "reachability_dead_code", "mutation_test", "type_stubs", "skeletonize",
         ]
         if self.serena:
             actions.append("semantic")
@@ -183,7 +184,7 @@ class FeatureSet:
             "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report",
             "submit", "status", "wait", "result", "cancel", "candidate_create",
             "candidate_promote", "speculative_draft", "vision", "transcribe",
-            "eval_suite", "prompt_eval", "eval_drift",
+            "eval_suite", "prompt_eval", "eval_drift", "complete_code",
         ]
 
     def supported_coord_actions(self) -> list[str]:
@@ -202,9 +203,9 @@ class FeatureSet:
                 "context_compile", "verify_receipt", "verify_completion",
                 "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
                 "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge",
-                "swarm_dispatch", "swarm_step", "swarm_status",
+                "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel",
                 "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge",
-                "curate_dataset",
+                "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree",
             ])
         return actions
 

@@ -56,11 +56,22 @@ def _review_text_error(value: Any) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return "Model returned empty review output."
     text = value.strip()
-    match = re.match(r"^(?:\*\*)?SUMMARY(?:\*\*)?:\s*(.*)$", text, re.IGNORECASE | re.DOTALL)
-    if match is None:
+    if text.startswith("```") and text.endswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 3:
+            text = "\n".join(lines[1:-1]).strip()
+
+    # Match SUMMARY: with tolerance for markdown headers (#, ##), bullet points (- , * ),
+    # bolding (**SUMMARY:** or **SUMMARY**), backticks (`SUMMARY:`), or 1 introductory line.
+    match = re.search(
+        r"(?:^|\n)(?:#{1,6}\s*)?(?:[-*+]\s+)?(?:\*{1,2}|`{1,3})?SUMMARY(?:\*{1,2}|`{1,3})?:?[ \t]*(.*)$",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if match is None or match.start() > 250:
         return "Model output did not start with the required SUMMARY: header."
     words = re.findall(r"[^\W\d_]+", match.group(1), flags=re.UNICODE)
-    if len(words) < 2:
+    if len(words) < 1:
         return "Model returned an incomplete or malformed review summary."
     return None
 
@@ -69,6 +80,56 @@ def _review_model_identity(value: Any) -> str:
     """Normalize Ollama quantization/instruct tags for tier comparisons."""
     model = str(value or "").strip().casefold()
     return re.sub(r"-(?:instruct|q\d+).*?$", "", model)
+
+
+def _merge_review_segment_results(
+    segment_results: list[dict[str, Any]],
+    *,
+    label: str,
+    task_type: str,
+    chunked: bool,
+    synthesis_context_budget: int,
+    synthesis_task: str,
+    max_output_tokens: int,
+    complexity: str,
+    tenant: str,
+    delegate: Any,
+) -> tuple[str, dict[str, Any]]:
+    """Return raw review output or a bounded synthesis of chunked results."""
+    raw_text = "\n\n".join(
+        f"### {label} {index}/{len(segment_results)}\n{str(item.get('text', '')).strip()}"
+        for index, item in enumerate(segment_results, start=1)
+    )
+    if not chunked:
+        return str(segment_results[0].get("text", "")), {"enabled": False}
+
+    if estimate_tokens(raw_text) > synthesis_context_budget:
+        return raw_text, {"enabled": True, "degraded": True, "error": "Segment findings exceed synthesis budget."}
+    try:
+        merged = delegate(
+            {
+                "task_type": task_type,
+                "task": synthesis_task,
+                "context": raw_text,
+                "complexity": complexity,
+                "max_tokens": min(max_output_tokens, 1800),
+            },
+            tenant,
+        )
+        if isinstance(merged, dict) and merged.get("success") is not False:
+            output_error = _review_text_error(merged.get("text"))
+            if output_error is None:
+                return str(merged["text"]), {
+                    "enabled": True,
+                    "degraded": False,
+                    "model": merged.get("model"),
+                }
+            error = f"Synthesis returned unusable output: {output_error}"
+        else:
+            error = merged.get("error", "Synthesis returned no text.") if isinstance(merged, dict) else "Synthesis returned no result."
+        return raw_text, {"enabled": True, "degraded": True, "error": str(error)}
+    except Exception as exc:
+        return raw_text, {"enabled": True, "degraded": True, "error": str(exc)}
 
 
 def _split_review_diff(diff_text: str, max_tokens: int) -> list[str]:
@@ -280,6 +341,7 @@ class LocalAIServices:
         self.preprocessor: Any | None = None
         self.tool_agent: Any | None = None
         self.swarm: Any | None = None
+        self.blackboard: Any | None = None
         self.agent_state: Any | None = None
         self.flight_group = SingleFlightGroup(shards=32, default_timeout_seconds=60.0)
 
@@ -699,11 +761,17 @@ class LocalAIServices:
             cache_layer = "ollama"
             if semantic_query and isinstance(raw, dict) and raw.get("success", "error" not in raw):
                 clean = {k: v for k, v in raw.items() if not str(k).startswith("_lah_")}
-                self.semantic_cache.set(semantic_scope, semantic_query, clean)
+                try:
+                    self.semantic_cache.set(semantic_scope, semantic_query, clean)
+                except Exception:
+                    pass
 
         if use_cache and isinstance(raw, dict) and raw.get("success", "error" not in raw) and origin != "stale" and not raw.get("fallback_used", False):
             clean_stale = {k: v for k, v in raw.items() if not str(k).startswith("_lah_")}
-            self.stale_generation_cache.set(cache_key, clean_stale)
+            try:
+                self.stale_generation_cache.set(cache_key, clean_stale)
+            except Exception:
+                pass
 
         result = copy.deepcopy(raw)
         queue_wait_ms = float(result.get("_lah_scheduler_queue_wait_ms", 0) or 0) if cache_layer == "ollama" else 0.0
@@ -1059,7 +1127,7 @@ class LocalAIServices:
             priority=5,
         )
 
-        draft_code = gen_result.get("response", "")
+        draft_code = gen_result.get("text") or gen_result.get("response") or ""
         verification: dict[str, Any] = {"syntax_valid": True}
         if file_path.endswith(".py") and draft_code:
             import ast
@@ -1092,10 +1160,11 @@ class LocalAIServices:
                 "speculative-review",
                 priority=6,
             )
+            review_text = review_res.get("text") or review_res.get("response") or ""
             verification["smart_review"] = {
                 "model": smart_model,
-                "response": review_res.get("response", ""),
-                "approved": "true" in review_res.get("response", "").lower(),
+                "response": review_text,
+                "approved": "true" in review_text.lower(),
             }
 
         return {
@@ -1954,6 +2023,7 @@ class LocalAIServices:
                 # optional preprocessing failure must not force a full repository scan.
                 pass
         if candidate_paths:
+            candidate_paths = list(dict.fromkeys(candidate_paths))
             lexical = self.repo_tools.context_pack_paths(
                 root, query, candidate_paths, max_tokens=lexical_tokens,
                 top_k=int(search_cfg.get("context_top_k", 14)),
@@ -2331,45 +2401,17 @@ class LocalAIServices:
             result["degraded"] = True
             result["format_recoveries"] = format_recoveries
 
-        def merge_segment_results(segment_results, *, label: str, task_type: str):
-            raw_text = "\n\n".join(
-                f"### {label} {index}/{len(segment_results)}\n{str(item.get('text', '')).strip()}"
-                for index, item in enumerate(segment_results, start=1)
-            )
-            if not chunked:
-                return str(segment_results[0].get("text", "")), {"enabled": False}
-
-            context = raw_text
-            if estimate_tokens(context) > synthesis_context_budget:
-                return raw_text, {"enabled": True, "degraded": True, "error": "Segment findings exceed synthesis budget."}
-            try:
-                merged = self.delegate(
-                    {
-                        "task_type": task_type,
-                        "task": synthesis_task,
-                        "context": context,
-                        "complexity": complexity,
-                        "max_tokens": min(max_output_tokens, 1800),
-                    },
-                    tenant,
-                )
-                if isinstance(merged, dict) and merged.get("success") is not False:
-                    output_error = _review_text_error(merged.get("text"))
-                    if output_error is None:
-                        return str(merged["text"]), {
-                            "enabled": True,
-                            "degraded": False,
-                            "model": merged.get("model"),
-                        }
-                    error = f"Synthesis returned unusable output: {output_error}"
-                else:
-                    error = merged.get("error", "Synthesis returned no text.") if isinstance(merged, dict) else "Synthesis returned no result."
-                return raw_text, {"enabled": True, "degraded": True, "error": str(error)}
-            except Exception as exc:
-                return raw_text, {"enabled": True, "degraded": True, "error": str(exc)}
-
-        result["text"], result["review_synthesis"] = merge_segment_results(
-            primary_results, label="Review segment", task_type="review"
+        merge_options = {
+            "chunked": chunked,
+            "synthesis_context_budget": synthesis_context_budget,
+            "synthesis_task": synthesis_task,
+            "max_output_tokens": max_output_tokens,
+            "complexity": complexity,
+            "tenant": tenant,
+            "delegate": self.delegate,
+        }
+        result["text"], result["review_synthesis"] = _merge_review_segment_results(
+            primary_results, label="Review segment", task_type="review", **merge_options
         )
         if result["review_synthesis"].get("model"):
             result["model"] = result["review_synthesis"]["model"]
@@ -2400,8 +2442,11 @@ class LocalAIServices:
                         )
                     secondary_results.append(sec_result)
                 if secondary_results:
-                    secondary_text, secondary_synthesis = merge_segment_results(
-                        secondary_results, label="Counter-review segment", task_type="reasoning"
+                    secondary_text, secondary_synthesis = _merge_review_segment_results(
+                        secondary_results,
+                        label="Counter-review segment",
+                        task_type="reasoning",
+                        **merge_options,
                     )
                     result["consensus"] = {
                         "enabled": True,
@@ -2524,31 +2569,21 @@ class LocalAIServices:
         return result
 
     DOMAIN_SYNONYMS = {
-        "jump": ["PlayerController", "Jump", "AddForce", "isGrounded", "velocity.y"],
-        "shoot": ["PlayerCombat", "Shoot", "FireWeapon", "InstantiateProjectile", "Raycast"],
-        "save": ["SaveManager", "SaveData", "PlayerPrefs", "JsonUtility", "File.WriteAllText"],
-        "load": ["LoadManager", "LoadData", "PlayerPrefs", "JsonUtility", "File.ReadAllText"],
-        "health": ["Health", "TakeDamage", "Die", "currentHealth", "maxHealth"],
-        "damage": ["TakeDamage", "ApplyDamage", "DamageSource", "HitPoint"],
-        "inventory": ["Inventory", "Item", "Slot", "AddItem", "RemoveItem", "ItemStack"],
-        "audio": ["AudioSource", "AudioClip", "PlaySound", "SoundManager", "AudioManager"],
-        "sound": ["AudioSource", "AudioClip", "PlayOneShot", "SoundManager"],
-        "ui": ["Canvas", "Button", "Text", "TMP_Text", "OnClick", "UIController"],
-        "movement": ["Move", "MovePosition", "CharacterController", "Rigidbody", "velocity"],
-        "input": ["Input", "InputAction", "InputSystem", "KeyCode", "GetKeyDown"],
-        "animation": ["Animator", "SetTrigger", "SetBool", "SetFloat", "Animation"],
-        "camera": ["Camera", "Cinemachine", "FollowTarget", "LookAt", "Transform"],
-        "network": ["NetworkManager", "Rpc", "Cmd", "SyncVar", "ClientRpc", "ServerRpc"],
-        "database": ["SQLite", "Database", "ExecuteQuery", "Connection", "Transaction"],
-        "auth": ["Auth", "Login", "Token", "User", "Session", "Authenticate"],
+        "save": ["Save", "Store", "Persist", "Write", "Dump"],
+        "load": ["Load", "Read", "Fetch", "Get", "Parse"],
+        "database": ["SQLite", "Database", "ExecuteQuery", "Connection", "Transaction", "Query"],
+        "auth": ["Auth", "Login", "Token", "User", "Session", "Authenticate", "Permission"],
+        "api": ["Endpoint", "Route", "Handler", "Request", "Response", "Client"],
+        "cache": ["Cache", "LRU", "Evict", "TTL", "Hit", "Miss"],
+        "config": ["Config", "Settings", "Options", "Environment", "Params"],
+        "test": ["Test", "Assert", "Fixture", "Mock", "Suite"],
+        "logging": ["Logger", "Log", "Info", "Warning", "Error", "Debug"],
+        "event": ["Event", "Emit", "Subscribe", "Publish", "Listener", "Handler"],
     }
 
     def _record_symbol_focus(self, tenant: str, symbols: list[str]) -> None:
         if not symbols:
             return
-        if not hasattr(self, "_focus_lock"):
-            self._focus_lock = threading.Lock()
-            self._recent_focus_symbols = {}
         with self._focus_lock:
             current = self._recent_focus_symbols.setdefault(tenant, [])
             for s in symbols:
@@ -2573,9 +2608,6 @@ class LocalAIServices:
                 synonyms.extend(self.DOMAIN_SYNONYMS[t])
         
         # Multi-turn context bonus: if query is brief/contextual, add recently investigated AST symbols
-        if not hasattr(self, "_focus_lock"):
-            self._focus_lock = threading.Lock()
-            self._recent_focus_symbols = {}
         with self._focus_lock:
             recent = list(self._recent_focus_symbols.get(tenant, []))
         if recent and len(terms) <= 4:

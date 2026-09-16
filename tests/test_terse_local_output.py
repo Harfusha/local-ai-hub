@@ -46,6 +46,14 @@ def test_postprocess_preserves_substantive_code_and_text() -> None:
     assert cleaned_tech == pure_technical
 
 
+def test_postprocess_preserves_summary_header_before_findings() -> None:
+    raw = "\ufeff\u200bSUMMARY:\n- registry handling is inconsistent\n- add a regression test"
+
+    cleaned, _ = postprocess_model_output(raw, role="review")
+
+    assert cleaned == "SUMMARY:\n- registry handling is inconsistent\n- add a regression test"
+
+
 def test_subagent_system_contract_contains_terse_directive() -> None:
     catalog = OllamaSubagentCatalog({
         "models": {"fast_code": "qwen2.5-coder:7b"},
