@@ -149,6 +149,8 @@ Route test/lint/typecheck/build/read-only commands through `local_ai_command` be
 
 Selection guide: `local_ai_repo` for bounded repository facts and checks (including `review_diff` and `security_audit`), `local_ai_command` for bounded repeatable commands, `local_ai_task` for small local-model work and second opinions, `local_ai_work` for a complete bounded repository task with planning, edits, validation and handoff, `local_ai_rag` only after cheaper indexed evidence, `local_ai_artifact` for exact slices, `local_ai_coord` for leases/memos.
 
+Batch edits: use `local_ai_repo(action="batch_replace", edits=[...], dry_run=true)` for preview. `staged` is not batch dry-run and is never forwarded. Each edit needs exact target text that matches once. The engine preflights all edits, rolls back write failures, and never auto-commits. Set `dry_run=false` only after review.
+
 Local model policy: use `qwen2.5-coder:0.5b` only for preprocessing, `qwen2.5-coder:1.5b` only for quick/simple requests, `qwen2.5-coder:3b` for ordinary and more involved work, and `qwen2.5-coder:7b` for the hardest reasoning. Deterministic and indexed Hub actions run first.
 <!-- END LOCAL AI HUB TOOL POLICY -->
 

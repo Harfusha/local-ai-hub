@@ -296,7 +296,7 @@ def test_batch_replace_preflight_does_not_write_bytecode(tmp_path, monkeypatch):
     assert target.read_text(encoding="utf-8") == "value = 1\n"
 
 
-def test_batch_replace_is_atomic_on_later_invalid_edit(tmp_path):
+def test_batch_replace_is_atomic_on_later_syntax_error(tmp_path):
     first = tmp_path / "first.py"
     second = tmp_path / "second.py"
     first.write_text("first = 1\n", encoding="utf-8")
@@ -307,11 +307,12 @@ def test_batch_replace_is_atomic_on_later_invalid_edit(tmp_path):
         str(tmp_path),
         [
             {"path": "first.py", "old": "first = 1", "new": "first = 2"},
-            {"path": "second.py", "old": "missing", "new": "second = 2"},
+            {"path": "second.py", "old": "second = 1", "new": "second = ("},
         ],
     )
 
     assert result["success"] is False
+    assert "Syntax error" in result["error"]
     assert first.read_text(encoding="utf-8") == "first = 1\n"
     assert second.read_text(encoding="utf-8") == "second = 1\n"
 

@@ -854,6 +854,7 @@ def local_ai_repo(
     path: str = "",
     base: str = "HEAD",
     staged: bool = False,
+    dry_run: bool = False,
     max_tokens: int = 0,
     evidence: list[dict[str, Any]] | None = None,
     mode: str = "adaptive",
@@ -894,7 +895,7 @@ def local_ai_repo(
         if not isinstance(edits, list) or not edits:
             return {"success": False, "error": "batch_replace requires a non-empty edits list"}
         return _compact(CLIENT.post("/api/code/batch_replace", {
-            "root": root, "edits": edits, "dry_run": bool(staged),
+            "root": root, "edits": edits, "dry_run": dry_run,
         }, timeout=_timeout("quick")), "verify")
     if action == "search":
         enrich = bool(include_code)

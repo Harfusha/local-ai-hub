@@ -53,7 +53,7 @@ def test_invalid_repo_action_lists_next_bounded_actions() -> None:
     assert "security_audit" in result["error"]
 
 
-def test_local_ai_repo_forwards_canonical_batch_replacements(monkeypatch) -> None:
+def test_local_ai_repo_forwards_explicit_batch_replace_dry_run(monkeypatch) -> None:
     captured = {}
     edits = [{"path": "example.py", "old": "before", "new": "after"}]
 
@@ -66,13 +66,35 @@ def test_local_ai_repo_forwards_canonical_batch_replacements(monkeypatch) -> Non
         action="batch_replace",
         root=str(ROOT),
         edits=edits,
-        staged=True,
+        dry_run=True,
     )
 
     assert result["success"] is True
     assert captured["path"] == "/api/code/batch_replace"
     assert captured["edits"] == edits
     assert captured["dry_run"] is True
+    assert "staged" not in captured
+
+
+def test_local_ai_repo_batch_replace_does_not_use_staged_as_dry_run(monkeypatch) -> None:
+    captured = {}
+    edits = [{"path": "example.py", "old": "before", "new": "after"}]
+
+    def fake_post(path, payload, **kwargs):
+        captured.update({"path": path, **payload})
+        return {"success": True, "applied": True, "dry_run": False}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    result = local_ai_mcp.local_ai_repo(
+        action="batch_replace",
+        root=str(ROOT),
+        edits=edits,
+        staged=True,
+    )
+
+    assert result["success"] is True
+    assert captured["dry_run"] is False
+    assert "staged" not in captured
 
 
 def test_local_ai_repo_batch_replacements_require_explicit_edits(monkeypatch) -> None:
