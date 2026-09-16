@@ -44,6 +44,8 @@ class Supervisor:
         self.status_path = self.state_dir / "supervisor.status.json"
         self.disabled_path = self.state_dir / "service.disabled"
         self.log_path = self.state_dir / "supervisor.log"
+        self.child_log_path = self.state_dir / "hub-process.log"
+        self.child_log_handle: Any | None = None
         self.runtime = OllamaRuntime(self.config)
         self.child: subprocess.Popen[Any] | None = None
         self.stopping = False
@@ -175,13 +177,28 @@ class Supervisor:
             pyw_candidate = Path(sys.executable).parent / "pythonw.exe"
             if pyw_candidate.exists():
                 py_exe = str(pyw_candidate)
+        child_log_path = getattr(self, "child_log_path", self.state_dir / "hub-process.log")
+        self.child_log_path = child_log_path
+        if child_log_path.exists() and child_log_path.stat().st_size > 1_000_000:
+            child_log_path.replace(child_log_path.with_name("hub-process.log.1"))
+        try:
+            self.child_log_handle = child_log_path.open("a", encoding="utf-8", buffering=1)
+        except OSError:
+            self.child_log_handle = None
+        output = self.child_log_handle if self.child_log_handle is not None else subprocess.DEVNULL
         kwargs: dict[str, Any] = {
-            "env": env, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
+            "env": env, "stdin": subprocess.DEVNULL, "stdout": output, "stderr": subprocess.STDOUT,
             **hidden_run_kwargs(detached=True),
         }
         if os.name != "nt":
             kwargs["start_new_session"] = True
-        return subprocess.Popen([py_exe, "-X", "utf8", "-m", "local_ai_hub.http_server"], **kwargs)
+        try:
+            return subprocess.Popen([py_exe, "-X", "utf8", "-m", "local_ai_hub.http_server"], **kwargs)
+        except Exception:
+            if self.child_log_handle is not None:
+                self.child_log_handle.close()
+                self.child_log_handle = None
+            raise
 
     def terminate_child(self) -> None:
         target_pids: set[int] = set()
@@ -223,6 +240,14 @@ class Supervisor:
                 except Exception:
                     pass
             self.child = None
+
+        child_log_handle = getattr(self, "child_log_handle", None)
+        if child_log_handle is not None:
+            try:
+                child_log_handle.close()
+            except OSError:
+                pass
+            self.child_log_handle = None
 
         try:
             pid_file.unlink(missing_ok=True)
@@ -309,6 +334,10 @@ class Supervisor:
                         break
                     time.sleep(0.25)
                 if not self.hub_online():
+                    if self.child is not None:
+                        exit_code = self.child.poll()
+                        if exit_code is not None:
+                            self.log(f"hub process exited code={exit_code}")
                     self.log("hub failed startup health check; recycling after backoff")
                     self.terminate_child()
                     unhealthy_since = 0.0

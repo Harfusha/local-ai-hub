@@ -28,3 +28,19 @@ def test_denied_scheduler_keeps_user_logon_startup(tmp_path, monkeypatch):
     start.assert_called_once()
     assert service.set_windows_user_startup(False)
     registry.DeleteValue.assert_called_once()
+
+
+def test_normalize_status_clears_stale_running_state():
+    from tools import service
+
+    stale = {
+        "state": "running",
+        "pid": 38580,
+        "hub_pid": 34944,
+        "last_error": "",
+    }
+    normalized = service.normalize_status(stale, supervisor_alive=False, hub_alive=False)
+    assert normalized["state"] == "stopped"
+    assert normalized["pid"] == 0
+    assert normalized["hub_pid"] == 0
+    assert normalized["last_error"] == "supervisor process not running"

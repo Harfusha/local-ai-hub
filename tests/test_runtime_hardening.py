@@ -136,10 +136,56 @@ def test_client_does_not_direct_spawn_during_managed_restart(tmp_path, monkeypat
         encoding="utf-8",
     )
     (state / "service.managed").write_text("managed", encoding="utf-8")
+    (state / "supervisor.pid").write_text(str(os.getpid()), encoding="utf-8")
     client = HubClient(tenant="test", config_path=str(config))
     monkeypatch.setattr(client, "_online", lambda: False)
     monkeypatch.setattr(client_module.subprocess, "Popen", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not spawn")))
     assert client.ensure_server() is False
+
+
+def test_client_recovers_stale_managed_service_with_supervisor(tmp_path, monkeypatch):
+    config = tmp_path / "config.toml"
+    state = tmp_path / "state"
+    state.mkdir()
+    config.write_text(
+        "[server]\nport=11435\nstate_dir='" + state.as_posix() + "'\n"
+        "[headless]\nrespect_disabled_marker=true\n",
+        encoding="utf-8",
+    )
+    (state / "service.managed").write_text("managed", encoding="utf-8")
+    client = HubClient(tenant="test", config_path=str(config))
+    online = iter((False, False, True))
+    monkeypatch.setattr(client, "_online", lambda: next(online, True))
+    commands = []
+
+    class _Child:
+        pid = os.getpid()
+
+    monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: None)
+    monkeypatch.setattr(client_module.subprocess, "Popen", lambda cmd, **kwargs: (commands.append(cmd) or _Child()))
+    assert client.ensure_server() is True
+    assert "local_ai_hub.supervisor" in commands[0]
+
+
+def test_supervisor_captures_child_output_in_state_log(tmp_path, monkeypatch):
+    supervisor = Supervisor.__new__(Supervisor)
+    supervisor.config = {"server": {"port": 11435}}
+    supervisor.config_path = str(tmp_path / "config.toml")
+    supervisor.state_dir = tmp_path
+    captured = {}
+
+    class _Child:
+        pid = os.getpid()
+
+    def _popen(cmd, **kwargs):
+        captured.update(kwargs)
+        return _Child()
+
+    monkeypatch.setattr(supervisor_module.subprocess, "Popen", _popen)
+    supervisor.spawn_hub()
+    assert captured["stderr"] == supervisor_module.subprocess.STDOUT
+    assert str(getattr(captured["stdout"], "name", "")).endswith("hub-process.log")
+    captured["stdout"].close()
 
 
 def test_supervisor_status_replaces_stale_hub_pid_with_owned_child(tmp_path):

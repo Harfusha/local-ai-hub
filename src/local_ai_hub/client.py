@@ -199,8 +199,7 @@ class HubClient:
         # during a managed restart; treating that window as an invitation for every
         # MCP client to spawn its own pythonw tree causes duplicate processes and an
         # unpredictable port owner.
-        if (state_dir / "service.managed").exists():
-            return False
+        managed_mode = (state_dir / "service.managed").exists()
         # Managed mode has one supervisor responsible for startup/recovery. During
         # its cold-start interval MCP clients must not bypass it with direct pythonw
         # spawns, otherwise every client can create a competing hub tree.
@@ -265,7 +264,12 @@ class HubClient:
                 pyw_candidate = Path(sys.executable).parent / "pythonw.exe"
                 if pyw_candidate.exists():
                     py_exe = str(pyw_candidate)
-            cmd = [py_exe, "-m", "local_ai_hub", "--config", config_path]
+            if managed_mode:
+                # A stale managed marker means the installed supervisor died.
+                # Restart the supervisor; it owns the singleton hub process.
+                cmd = [py_exe, "-X", "utf8", "-m", "local_ai_hub.supervisor"]
+            else:
+                cmd = [py_exe, "-m", "local_ai_hub", "--config", config_path]
             try:
                 from .process_utils import hidden_run_kwargs
                 kwargs = hidden_run_kwargs(detached=True)
