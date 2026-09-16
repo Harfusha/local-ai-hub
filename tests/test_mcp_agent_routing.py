@@ -20,7 +20,7 @@ def isolated_profile_catalog(monkeypatch):
 def test_public_action_parameters_are_explicit_literals() -> None:
     expected = {
         "local_ai_task": {"delegate", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait", "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe", "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold"},
-        "local_ai_repo": {"profile", "deterministic", "search", "map", "code_index", "semantic", "graph", "intelligence", "context", "route", "delegate", "solve", "review_diff", "impact", "refactor_impact", "resolve_imports", "generate_tests", "validate_patch", "audit_dependencies", "ast_outline", "test_matrix", "security_audit", "git_status", "repo_state", "synthesize_commit", "verify", "preprocess", "preprocess_status", "preprocess_refresh", "preprocess_pause", "preprocess_resume", "preprocess_cancel", "preprocess_unregister", "context_compile", "verify_receipt", "verify_completion", "cross_project_graph", "cross_project_symbols", "cross_project_impact", "cross_repo_graph", "cross_repo_symbols", "cross_repo_impact", "call_graph_diff", "semantic_diff", "affected_tests", "topology", "ast_refactor", "generate_mocks", "split_changes", "synthesize_rules", "code_invariants", "generate_dataset", "profile_digest", "callers", "dead_code", "secret_scan", "schema_inspect", "explain_query", "env_compat", "circular_dependencies", "generate_types", "complexity", "api_spec", "dependency_slice", "migration_drift", "package_audit", "structural_search", "context_budget", "git_diff", "git_history_search", "hotspots", "generate_tests_for_diff", "cross_repo_contract", "reachability_dead_code", "mutation_test", "type_stubs", "skeletonize", "investigate", "diagnose", "briefing"},
+        "local_ai_repo": {"profile", "deterministic", "search", "map", "code_index", "semantic", "graph", "intelligence", "context", "route", "delegate", "solve", "review_diff", "impact", "refactor_impact", "resolve_imports", "generate_tests", "validate_patch", "audit_dependencies", "ast_outline", "test_matrix", "security_audit", "git_status", "repo_state", "synthesize_commit", "verify", "preprocess", "preprocess_status", "preprocess_refresh", "preprocess_pause", "preprocess_resume", "preprocess_cancel", "preprocess_unregister", "context_compile", "verify_receipt", "verify_completion", "cross_project_graph", "cross_project_symbols", "cross_project_impact", "cross_repo_graph", "cross_repo_symbols", "cross_repo_impact", "call_graph_diff", "semantic_diff", "affected_tests", "topology", "ast_refactor", "generate_mocks", "split_changes", "synthesize_rules", "code_invariants", "generate_dataset", "profile_digest", "callers", "dead_code", "secret_scan", "schema_inspect", "explain_query", "env_compat", "circular_dependencies", "generate_types", "complexity", "api_spec", "dependency_slice", "migration_drift", "package_audit", "structural_search", "context_budget", "git_diff", "git_history_search", "hotspots", "generate_tests_for_diff", "cross_repo_contract", "reachability_dead_code", "mutation_test", "type_stubs", "skeletonize", "investigate", "diagnose", "briefing", "batch_replace"},
         "local_ai_rag": {"index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram"},
         "local_ai_coord": {"claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat", "memory_record", "memory_get", "memory_find", "memory_promote", "memory_reap", "context_compile", "verify_receipt", "verify_completion", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "relation_record", "relation_find", "relation_traverse", "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree"},
         "local_ai_command": {"run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix", "run_affected", "format", "lint_fix", "spawn_daemon", "daemon_status", "stop_daemon", "http_probe", "stash_save", "stash_restore", "record_mock", "replay_mock", "diff_hunk_stage", "flaky_detect", "webhook_replay", "mock_server", "mock_server_start", "mock_server_stop", "mock_server_status", "patch_and_verify", "preflight"},
@@ -51,6 +51,64 @@ def test_invalid_repo_action_lists_next_bounded_actions() -> None:
     assert "Valid actions:" in result["error"]
     assert "review_diff" in result["error"]
     assert "security_audit" in result["error"]
+
+
+def test_local_ai_repo_forwards_canonical_batch_replacements(monkeypatch) -> None:
+    captured = {}
+    edits = [{"path": "example.py", "old": "before", "new": "after"}]
+
+    def fake_post(path, payload, **kwargs):
+        captured.update({"path": path, **payload})
+        return {"success": True, "applied": False, "dry_run": True}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    result = local_ai_mcp.local_ai_repo(
+        action="batch_replace",
+        root=str(ROOT),
+        edits=edits,
+        staged=True,
+    )
+
+    assert result["success"] is True
+    assert captured["path"] == "/api/code/batch_replace"
+    assert captured["edits"] == edits
+    assert captured["dry_run"] is True
+
+
+def test_local_ai_repo_batch_replacements_require_explicit_edits(monkeypatch) -> None:
+    def unexpected_post(*_args, **_kwargs):
+        pytest.fail("batch replacement must not reuse generic evidence payloads")
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", unexpected_post)
+    result = local_ai_mcp.local_ai_repo(
+        action="batch_replace",
+        root=str(ROOT),
+        evidence=[{"path": "example.py", "old": "before", "new": "after"}],
+    )
+
+    assert result["success"] is False
+    assert "edits" in result["error"]
+
+
+def test_local_ai_repo_enriches_search_when_source_requested(monkeypatch) -> None:
+    captured = {}
+
+    def fake_post(path, payload, **kwargs):
+        captured.update({"path": path, **payload})
+        return {"success": True, "results": []}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    result = local_ai_mcp.local_ai_repo(
+        action="search",
+        root=str(ROOT),
+        query="target symbol",
+        include_code=True,
+    )
+
+    assert result["success"] is True
+    assert captured["path"] == "/api/search"
+    assert captured["query"] == "target symbol"
+    assert captured["enrich"] is True
 
 
 def test_invalid_task_action_excludes_orchestration() -> None:

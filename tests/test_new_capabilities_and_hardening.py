@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import py_compile
 import sqlite3
 import subprocess
 import threading
@@ -274,6 +275,60 @@ def test_ast_outline_rejects_paths_outside_root(tmp_path):
     result = engine.ast_outline(str(root), "../outside.py")
     assert result["success"] is False
     assert 'outside' in result["error"]
+
+
+def test_batch_replace_preflight_does_not_write_bytecode(tmp_path, monkeypatch):
+    target = tmp_path / "module.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
+
+    def bytecode_write_forbidden(*_args, **_kwargs):
+        raise AssertionError("batch preflight must not call py_compile.compile")
+
+    monkeypatch.setattr(py_compile, "compile", bytecode_write_forbidden)
+    result = engine.batch_replace(
+        str(tmp_path),
+        [{"path": "module.py", "old": "value = 1", "new": "value = 2"}],
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+
+def test_batch_replace_is_atomic_on_later_invalid_edit(tmp_path):
+    first = tmp_path / "first.py"
+    second = tmp_path / "second.py"
+    first.write_text("first = 1\n", encoding="utf-8")
+    second.write_text("second = 1\n", encoding="utf-8")
+    engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
+
+    result = engine.batch_replace(
+        str(tmp_path),
+        [
+            {"path": "first.py", "old": "first = 1", "new": "first = 2"},
+            {"path": "second.py", "old": "missing", "new": "second = 2"},
+        ],
+    )
+
+    assert result["success"] is False
+    assert first.read_text(encoding="utf-8") == "first = 1\n"
+    assert second.read_text(encoding="utf-8") == "second = 1\n"
+
+
+def test_batch_replace_rejects_ambiguous_match(tmp_path):
+    target = tmp_path / "module.py"
+    target.write_text("value = 1\nvalue = 1\n", encoding="utf-8")
+    engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
+
+    result = engine.batch_replace(
+        str(tmp_path),
+        [{"path": "module.py", "old": "value = 1", "new": "value = 2"}],
+    )
+
+    assert result["success"] is False
+    assert "multiple times" in result["error"]
+    assert target.read_text(encoding="utf-8") == "value = 1\nvalue = 1\n"
 
 
 def test_15_prompt_eval():

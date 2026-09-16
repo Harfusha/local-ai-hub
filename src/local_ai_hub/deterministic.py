@@ -6973,17 +6973,11 @@ def test_{sym}_regression_edge_cases():
             file_contents[fpath] = current_text.replace(old_str, new_str, 1)
 
         # 4. Syntax preflight on modified Python files
-        import py_compile
-        import tempfile
         for fpath, new_text in file_contents.items():
             if fpath.suffix == ".py":
-                with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode="w", encoding="utf-8") as tmp:
-                    tmp.write(new_text)
-                    tmp_name = tmp.name
                 try:
-                    py_compile.compile(tmp_name, doraise=True)
-                except py_compile.PyCompileError as syn_err:
-                    Path(tmp_name).unlink(missing_ok=True)
+                    compile(new_text, str(fpath), "exec")
+                except SyntaxError as syn_err:
                     rel = str(fpath.relative_to(p_root)).replace("\\", "/")
                     return {
                         "success": False,
@@ -6991,8 +6985,6 @@ def test_{sym}_regression_edge_cases():
                         "error": f"Syntax error in {rel} after replacement: {syn_err.msg}",
                         "path": rel,
                     }
-                finally:
-                    Path(tmp_name).unlink(missing_ok=True)
 
         if dry_run:
             return {
