@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import socket
 import sqlite3
 import subprocess
@@ -112,10 +114,46 @@ def test_watcher_edit_uses_incremental_inventory_and_invalidates_fast_fingerprin
         monkeypatch.setattr(tools, "file_inventory", lambda *a, **k: (_ for _ in ()).throw(AssertionError("full inventory must not run")))
         assert pre._step_inventory(dict(pre._project_row(str(repo)))) is True
         with closing(pre._connect()) as con:
-            row = con.execute("SELECT needs_hash FROM file_refs WHERE root=? AND path='a.py'", (str(repo),)).fetchone()
+            row = con.execute("SELECT content_hash,needs_hash FROM file_refs WHERE root=? AND path='a.py'", (str(repo),)).fetchone()
             stats = con.execute("SELECT stats_json FROM projects WHERE root=?", (str(repo),)).fetchone()[0]
-        assert row[0] == 1
+        assert row[0]
+        assert row[1] == 0
         assert '"incremental_watcher": true' in stats
+    finally:
+        pre.close()
+
+
+def test_watcher_metadata_only_event_does_not_requeue_preprocessing(tmp_path: Path):
+    config = _config(tmp_path)
+    repo = tmp_path / "repo"; repo.mkdir(); source = repo / "a.py"; source.write_text("x=1\n", encoding="utf-8")
+    tools = RepositoryTools(config)
+    pre = ProjectPreprocessor(config, _Noop(), _Rag(), _Scheduler(), _Noop(), tools)
+    try:
+        _insert_project(pre, repo)
+        assert pre._step_inventory(dict(pre._project_row(str(repo))))
+        assert pre._step_hash(dict(pre._project_row(str(repo))))
+        with closing(pre._connect()) as con:
+            con.execute(
+                "UPDATE projects SET phase='complete',status='complete',generation=4,last_complete_at=?,next_check_at=? WHERE root=?",
+                (time.time(), time.time() + 1800, str(repo)),
+            )
+            con.commit()
+        pre._watcher_active = True
+        stat = source.stat()
+        os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000))
+        assert pre.notify_path_changed(str(source)) is True
+
+        assert pre._step_inventory(dict(pre._project_row(str(repo)))) is True
+        with closing(pre._connect()) as con:
+            row = con.execute(
+                "SELECT status,phase,generation,next_check_at,stats_json FROM projects WHERE root=?",
+                (str(repo),),
+            ).fetchone()
+        assert row[0:3] == ("complete", "complete", 4)
+        assert row[3] > time.time()
+        stats = json.loads(row[4])
+        assert stats["changed_files"] == 0
+        assert stats["ignored_metadata_events"] == 1
     finally:
         pre.close()
 
