@@ -122,9 +122,11 @@ class DeterministicEngine:
 
     def _connect(self) -> sqlite3.Connection:
         con = connect_sqlite(self.db_path, timeout_seconds=0.75, row_factory=sqlite3.Row)
-        con.execute("PRAGMA cache_size=-65536")
-        con.execute("PRAGMA mmap_size=536870912")
-        con.execute("PRAGMA synchronous=NORMAL")
+        try:
+            con.execute("PRAGMA cache_size=-65536")
+            con.execute("PRAGMA mmap_size=536870912")
+        except sqlite3.OperationalError:
+            pass
         return con
 
     def _schema(self, con: sqlite3.Connection) -> None:
@@ -5372,9 +5374,10 @@ def test_{sym}_regression_edge_cases():
             with closing(sqlite3.connect(f"file:{target_db}?mode=ro", uri=True)) as con:
                 tbl_rows = con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
                 for (tbl_name,) in tbl_rows:
-                    cols = con.execute(f"PRAGMA table_info('{tbl_name}')").fetchall()
-                    indexes = con.execute(f"PRAGMA index_list('{tbl_name}')").fetchall()
-                    fks = con.execute(f"PRAGMA foreign_key_list('{tbl_name}')").fetchall()
+                    safe_tbl = tbl_name.replace('"', '""')
+                    cols = con.execute(f'PRAGMA table_info("{safe_tbl}")').fetchall()
+                    indexes = con.execute(f'PRAGMA index_list("{safe_tbl}")').fetchall()
+                    fks = con.execute(f'PRAGMA foreign_key_list("{safe_tbl}")').fetchall()
                     tables[tbl_name] = {
                         "columns": [{"name": c[1], "type": c[2], "notnull": bool(c[3]), "pk": bool(c[5])} for c in cols],
                         "indexes": [idx[1] for idx in indexes],
@@ -5414,6 +5417,8 @@ def test_{sym}_regression_edge_cases():
         clean_query = query.strip()
         if not clean_query.lower().startswith("select"):
             return {"success": False, "error": "only SELECT queries are allowed for explain_query"}
+        if ";" in clean_query.rstrip(";"):
+            return {"success": False, "error": "multiple statements are not permitted"}
 
         try:
             with closing(sqlite3.connect(f"file:{target_db}?mode=ro", uri=True)) as con:

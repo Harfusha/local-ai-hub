@@ -209,23 +209,25 @@ class ContextCompiler:
     def invalidate(self, changed_paths: Collection[str], revision: str = "") -> int:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return 0
+        paths = [str(p) for p in changed_paths if p]
+        if not paths:
+            return 0
         self._init_table()
 
         def _do_invalidate() -> int:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
                 con.execute("BEGIN IMMEDIATE")
-                count = 0
-                for p in changed_paths:
-                    cur = con.execute(
-                        """
-                        UPDATE agent_knowledge_links
-                        SET valid = 0, revision = ?
-                        WHERE path = ? AND valid = 1
-                        """,
-                        (revision, p),
-                    )
-                    count += cur.rowcount
+                placeholders = ",".join("?" for _ in paths)
+                cur = con.execute(
+                    f"""
+                    UPDATE agent_knowledge_links
+                    SET valid = 0, revision = ?
+                    WHERE valid = 1 AND path IN ({placeholders})
+                    """,
+                    (revision, *paths),
+                )
+                count = int(cur.rowcount or 0)
                 con.execute("COMMIT")
                 return count
             except Exception:

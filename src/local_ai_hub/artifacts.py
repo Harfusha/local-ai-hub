@@ -29,8 +29,11 @@ class ArtifactStore:
 
     def _connect(self) -> sqlite3.Connection:
         con = connect_sqlite(self.path, timeout_seconds=0.75)
-        con.execute("PRAGMA cache_size=-32768")
-        con.execute("PRAGMA mmap_size=268435456")
+        try:
+            con.execute("PRAGMA cache_size=-32768")
+            con.execute("PRAGMA mmap_size=268435456")
+        except sqlite3.OperationalError:
+            pass
         return con
 
     def _init_db(self) -> None:

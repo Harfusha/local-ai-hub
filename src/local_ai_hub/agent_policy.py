@@ -262,9 +262,13 @@ class PolicyEngine:
             except Exception:
                 pass
 
-        if task_id not in self._budgets:
-            self._budgets[task_id] = Budget(task_id=task_id)
-        return self._budgets[task_id]
+        with self._lock:
+            if len(self._budgets) > 512:
+                for k in list(self._budgets.keys())[:256]:
+                    self._budgets.pop(k, None)
+            if task_id not in self._budgets:
+                self._budgets[task_id] = Budget(task_id=task_id)
+            return self._budgets[task_id]
 
     def set_budget(
         self,

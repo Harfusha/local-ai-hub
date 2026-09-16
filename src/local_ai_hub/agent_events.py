@@ -540,6 +540,10 @@ class SwarmPubSub:
         }
         with self._mu:
             if clean_topic not in self._topics:
+                if len(self._topics) > 128:
+                    empty = [t for t, ms in self._topics.items() if not ms or (now - ms[-1]["timestamp"] > self.max_age_seconds)]
+                    for t in empty:
+                        self._topics.pop(t, None)
                 self._topics[clean_topic] = []
             self._topics[clean_topic].append(event)
             if len(self._topics[clean_topic]) > 200:
