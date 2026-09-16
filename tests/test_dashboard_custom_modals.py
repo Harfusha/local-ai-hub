@@ -284,6 +284,21 @@ def test_overview_health_uses_live_observability_and_accessible_status_contract(
     assert "renderOverviewHealth(last,lastOverviewReceivedAt)" in DASHBOARD_HTML
 
 
+def test_dashboard_health_marks_stale_heartbeat_as_degraded() -> None:
+    """A dead heartbeat must never render as healthy runtime state."""
+    health_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function dashboardHealth(") : DASHBOARD_HTML.index(
+            "function dashboardFreshness("
+        )
+    ]
+    assert "heartbeat_stale" in health_source
+    assert "heartbeatStale" in health_source
+    assert "'stale'" in health_source
+    stale_guard = health_source[health_source.index("if(hubOnline===false") :]
+    assert "heartbeatStale" in stale_guard
+    assert "return {level:'degraded'" in stale_guard
+
+
 def test_dashboard_redacts_diagnostic_secrets_and_absolute_paths() -> None:
     source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function redactDiagnostic(") : DASHBOARD_HTML.index(

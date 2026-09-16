@@ -578,7 +578,7 @@ function dashboardHealth(snapshot={}){
   const observability=snapshot.observability||{},cohorts=observability.cohorts||{},agentHttp=cohorts.agent_http||{},policy=cohorts.policy_rejection||{},inference=cohorts.inference||{};
   const status=String(current.health||current.status||current.service_status||'').toLowerCase();
   const count=value=>Math.max(0,Number(value)||0);
-  const openIssues=count(current.open_incidents??current.active_errors??current.blocked_requests??0),agentFailures=count(agentHttp.failures),policyRejections=count(policy.events),degradedCount=count(inference.degraded_count),retryCount=count(inference.retry_count),restarts=count(current.restarts??snapshot.headless?.restarts),hubOnline=snapshot.hub_online??current.hub_online,ollamaOnline=snapshot.ollama_online??current.ollama_online;
+  const openIssues=count(current.open_incidents??current.active_errors??current.blocked_requests??0),agentFailures=count(agentHttp.failures),policyRejections=count(policy.events),degradedCount=count(inference.degraded_count),retryCount=count(inference.retry_count),restarts=count(current.restarts??snapshot.headless?.restarts),hubOnline=snapshot.hub_online??current.hub_online,ollamaOnline=snapshot.ollama_online??current.ollama_online,heartbeatStale=current.heartbeat_stale===true||snapshot.heartbeat_stale===true;
   const signals=[];
   if(agentFailures)signals.push(`${agentFailures} agent HTTP failure${agentFailures===1?'':'s'}`);
   if(policyRejections)signals.push(`${policyRejections} policy rejection${policyRejections===1?'':'s'}`);
@@ -587,8 +587,8 @@ function dashboardHealth(snapshot={}){
   if(restarts)signals.push(`${restarts} supervisor restart${restarts===1?'':'s'}`);
   const actionTab=openIssues||count(current.blocked_requests)?'work':'reliability';
   const actionLabel=actionTab==='work'?'Open queue and requests':'Open reliability details';
-  if(hubOnline===false||['degraded','down','offline','unavailable','crashed','stopped'].includes(status)||current.degraded===true){
-    const reason=hubOnline===false?'Hub is offline.':signals.length?`Current runtime is degraded: ${signals.join(', ')}.`:'Current runtime reports an unavailable service.';
+  if(hubOnline===false||heartbeatStale||['degraded','down','offline','unavailable','crashed','stopped','stale'].includes(status)||current.degraded===true){
+    const reason=hubOnline===false?'Hub is offline.':heartbeatStale||status==='stale'?'Runtime heartbeat is stale.':signals.length?`Current runtime is degraded: ${signals.join(', ')}.`:'Current runtime reports an unavailable service.';
     return {level:'degraded',label:'Degraded',reason,actionTab,actionLabel};
   }
   if(ollamaOnline===false)signals.push('Ollama is offline');
