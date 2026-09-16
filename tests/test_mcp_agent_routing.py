@@ -45,6 +45,27 @@ def test_mcp_descriptions_explain_agent_tier_boundaries() -> None:
     assert "security_audit" in descriptions
 
 
+def test_dynamic_descriptions_make_first_choice_routing_explicit() -> None:
+    descriptions = {
+        "task": local_ai_mcp._desc_task(),
+        "repo": local_ai_mcp._desc_repo(),
+        "command": local_ai_mcp._desc_command(),
+        "coord": local_ai_mcp._desc_coord(),
+        "work": local_ai_mcp._desc_work(),
+        "artifact": local_ai_mcp._desc_artifact(),
+    }
+
+    assert "repository navigation, symbols, and impact" in descriptions["repo"]
+    assert "exact source or log slice" in descriptions["artifact"]
+    assert "test, lint, typecheck, or build" in descriptions["command"]
+    assert "ownership, checkpoints, and verification receipts" in descriptions["coord"]
+    assert "local diagnosis, boilerplate, or second opinion" in descriptions["task"]
+    assert "closed, low-risk work" in descriptions["work"]
+    assert "terminal=true and retryable=false" in descriptions["repo"]
+    assert "terminal=true and retryable=false" in descriptions["command"]
+    assert "Mutations never cache or single-flight" in descriptions["command"]
+
+
 def test_invalid_repo_action_lists_next_bounded_actions() -> None:
     result = local_ai_mcp.local_ai_repo(action="not_a_real_action")
     assert result["success"] is False

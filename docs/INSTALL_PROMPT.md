@@ -102,13 +102,13 @@ Inspect current repository root for existing agent instruction files:
 ```markdown
 <!-- BEGIN LOCAL AI HUB TOOL POLICY -->
 Trigger map:
-- repository facts/files/symbols: `local_ai_repo`
-- tests/lint/typecheck/build: `local_ai_command`
-- exact source/evidence text: `local_ai_artifact`
-- shared findings or overlapping edits: `local_ai_coord`
+- repository navigation/symbols/impact: `local_ai_repo`
+- test/lint/typecheck/build commands: `local_ai_command`
+- exact source/log/evidence slice: `local_ai_artifact`
+- ownership/checkpoints/verification receipts: `local_ai_coord`
 - semantic retrieval after indexed paths are insufficient: `local_ai_rag`
-- bounded local generation or second opinion: `local_ai_task`
-- closed whole-task delegation with verified handoff: `local_ai_work`
+- local diagnosis/boilerplate/second opinion: `local_ai_task`
+- closed, low-risk work with verified handoff: `local_ai_work`
 
 Recipes (guidance, not gates):
 - Recipe — Explore: preprocess once, use the cheapest repository action, fetch only required evidence slices.
@@ -142,7 +142,7 @@ Cheapest path: deterministic -> code_index/search -> semantic/graph -> context/s
  Stop escalating as soon as a cheaper layer provides enough evidence. Do not fan out overlapping retrieval layers in parallel for the same question. Before native `find`/`rg`/`grep`/recursive glob/tree or opening more than two files for discovery, use that hub path first. Reuse fresh evidence IDs, artifact slices, memos and cache hits;
  do not repeat the same hub action with the same root/query while repository state is unchanged.
 
-Treat result state as a protocol: `cache_hit`/`coalesced` means reuse the result; `in_progress=true` means another owner is doing identical work, so never duplicate it; `retryable`/429/503 means back off and do independent work; `degraded`/`stale` means verify only the affected path/slice; a non-retryable failure permits one cheaper/native fallback. Never turn a transient result into larger timeouts, force refreshes, or polling loops.
+Treat result state as a protocol: `cache_hit`/`coalesced` means reuse the result; `in_progress=true` means another owner is doing identical work, so never duplicate it; `retryable`/429/503 means back off and do independent work; `degraded`/`stale` means verify only the affected path/slice; native fallback requires `terminal=true` and `retryable=false`. Mutations never cache or single-flight. Never turn a transient result into larger timeouts, force refreshes, or polling loops.
 
 Route test/lint/typecheck/build/read-only commands through `local_ai_command` before running them natively. If it returns `in_progress=true`, do not launch a duplicate command. Before an expensive `solve`/model call, search coordination memos for reusable findings. For overlapping multi-agent edits use `local_ai_coord` leases and store concise reusable discoveries as memos.
  After edits, use indexed impact/review plus targeted cached validation; do not rerun broad discovery merely because files changed. `force` and `preprocess_refresh` are recovery/admin controls, never retry buttons. If an optional backend degrades, accept the hub's deterministic/index fallback. If the hub itself is unavailable, make one bounded health/retry attempt, then fall back to native tools. Never loop on health, status, preprocessing, model startup, a failing backend, or an identical command.
