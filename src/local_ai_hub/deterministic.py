@@ -3685,22 +3685,41 @@ class DeterministicEngine:
         if not clean_query:
             return {"success": False, "error": "query is required", "root": resolved}
 
+        git_timeout = 15.0
         try:
-            res_msg = subprocess.run(
-                [git_exe, "-C", resolved, "log", f"-n{max_commits}", f"--grep={clean_query}", "-i", "--format=%H|%an|%ad|%s", "--date=short"],
-                capture_output=True, text=True, timeout=5.0, check=False,
-                encoding="utf-8", errors="replace",
-                **hidden_run_kwargs(),
-            )
-            res_code = subprocess.run(
-                [git_exe, "-C", resolved, "log", f"-n{max_commits}", f"-S{clean_query}", "-i", "--format=%H|%an|%ad|%s", "--date=short"],
-                capture_output=True, text=True, timeout=5.0, check=False,
-                encoding="utf-8", errors="replace",
-                **hidden_run_kwargs(),
-            )
+            res_msg = None
+            try:
+                res_msg = subprocess.run(
+                    [git_exe, "-C", resolved, "log", f"-n{max_commits}", f"--grep={clean_query}", "-i", "--format=%H|%an|%ad|%s", "--date=short"],
+                    capture_output=True, text=True, timeout=git_timeout, check=False,
+                    encoding="utf-8", errors="replace",
+                    **hidden_run_kwargs(),
+                )
+            except subprocess.TimeoutExpired:
+                res_msg = None
+
+            res_code = None
+            try:
+                res_code = subprocess.run(
+                    [git_exe, "-C", resolved, "log", f"-n{max_commits}", f"-S{clean_query}", "-i", "--format=%H|%an|%ad|%s", "--date=short"],
+                    capture_output=True, text=True, timeout=git_timeout, check=False,
+                    encoding="utf-8", errors="replace",
+                    **hidden_run_kwargs(),
+                )
+            except subprocess.TimeoutExpired:
+                res_code = None
+
+            if res_msg is None and res_code is None:
+                return {"success": False, "error": f"git log timed out after {git_timeout}s", "root": resolved}
 
             commits: dict[str, dict[str, Any]] = {}
-            for out, match_type in [(res_msg.stdout, "message"), (res_code.stdout, "diff_content")]:
+            sources = []
+            if res_msg is not None and getattr(res_msg, "stdout", None):
+                sources.append((res_msg.stdout, "message"))
+            if res_code is not None and getattr(res_code, "stdout", None):
+                sources.append((res_code.stdout, "diff_content"))
+
+            for out, match_type in sources:
                 for line in out.splitlines():
                     parts = line.split("|", 3)
                     if len(parts) >= 4:
