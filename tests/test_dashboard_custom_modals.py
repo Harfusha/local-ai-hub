@@ -230,6 +230,27 @@ def test_dashboard_freshness_normalizes_timestamp_inputs_with_explicit_now() -> 
     assert "Clock unavailable" in freshness_source
 
 
+def test_overview_health_summary_has_alert_first_rendering_contract() -> None:
+    """Missing health summary must fail before alert-first Overview exists."""
+    expected_markup = [
+        'id="overviewHealthSummary"',
+        'id="overviewFreshness"',
+        'aria-live="polite"',
+    ]
+    for fragment in expected_markup:
+        assert fragment in DASHBOARD_HTML, f"Overview health summary missing {fragment}"
+
+    overview_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderOverviewHealth(") : DASHBOARD_HTML.index(
+            "function redactDiagnostic("
+        )
+    ]
+    assert "dashboardHealth(snapshot)" in overview_source
+    assert "dashboardFreshness(" in overview_source
+    assert "Needs attention" in overview_source
+    assert "switchTab(" in overview_source
+
+
 def test_dashboard_redacts_diagnostic_secrets_and_absolute_paths() -> None:
     source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function redactDiagnostic(") : DASHBOARD_HTML.index(
