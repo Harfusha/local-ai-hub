@@ -705,6 +705,7 @@ class WorkOrchestrator:
         return parsed
 
     def _snapshot(self, root: Path, paths: list[str]) -> list[_JournalEntry]:
+        root = root.resolve()
         entries=[]
         for rel in paths:
             raw_path = root / rel
@@ -724,6 +725,7 @@ class WorkOrchestrator:
 
     @staticmethod
     def _rollback(root: Path, journal: list[_JournalEntry]) -> None:
+        root = root.resolve()
         for entry in reversed(journal):
             p = root / entry.path
             if entry.existed:
@@ -749,6 +751,7 @@ class WorkOrchestrator:
         return True
 
     def _apply_patch(self, root: Path, patch: str, tenant: str, work_id: str, journal: list[_JournalEntry], *, permissions: dict[str, Any] | None = None, lease_ttl_seconds: int = 900) -> tuple[list[str], str]:
+        root = root.resolve()
         if not self.allow_edits: raise PermissionError("work orchestrator edits are disabled")
         permissions = permissions or {}
         raw=patch.encode("utf-8")

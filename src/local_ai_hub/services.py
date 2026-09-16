@@ -749,11 +749,17 @@ class LocalAIServices:
             cache_layer = "ollama"
             if semantic_query and isinstance(raw, dict) and raw.get("success", "error" not in raw):
                 clean = {k: v for k, v in raw.items() if not str(k).startswith("_lah_")}
-                self.semantic_cache.set(semantic_scope, semantic_query, clean)
+                try:
+                    self.semantic_cache.set(semantic_scope, semantic_query, clean)
+                except Exception:
+                    pass
 
         if use_cache and isinstance(raw, dict) and raw.get("success", "error" not in raw) and origin != "stale" and not raw.get("fallback_used", False):
             clean_stale = {k: v for k, v in raw.items() if not str(k).startswith("_lah_")}
-            self.stale_generation_cache.set(cache_key, clean_stale)
+            try:
+                self.stale_generation_cache.set(cache_key, clean_stale)
+            except Exception:
+                pass
 
         result = copy.deepcopy(raw)
         queue_wait_ms = float(result.get("_lah_scheduler_queue_wait_ms", 0) or 0) if cache_layer == "ollama" else 0.0
@@ -2004,6 +2010,7 @@ class LocalAIServices:
                 # optional preprocessing failure must not force a full repository scan.
                 pass
         if candidate_paths:
+            candidate_paths = list(dict.fromkeys(candidate_paths))
             lexical = self.repo_tools.context_pack_paths(
                 root, query, candidate_paths, max_tokens=lexical_tokens,
                 top_k=int(search_cfg.get("context_top_k", 14)),

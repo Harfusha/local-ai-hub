@@ -989,6 +989,7 @@ class TelemetryStore:
     def _writer_loop(self) -> None:
         last_prune = 0.0
         batch: list[tuple[str, dict[str, Any]]] = []
+        busy_retries = 0
         while not self._stop.is_set() or not self._queue.empty() or batch:
             try:
                 try:
@@ -1004,6 +1005,7 @@ class TelemetryStore:
                 if batch:
                     self._flush_batch(batch)
                     batch.clear()
+                    busy_retries = 0
                     self.session_heartbeat()
                 if time.monotonic() - last_prune > 60.0:
                     self._prune(); last_prune = time.monotonic()
@@ -1011,11 +1013,16 @@ class TelemetryStore:
             except Exception as exc:
                 with self._stats_lock:
                     self._stats["writer_errors"] += 1
-                    if not is_busy_error(exc):
+                    is_busy = is_busy_error(exc)
+                    if is_busy:
+                        busy_retries += 1
+                    if not is_busy or busy_retries > 10 or (self._stop.is_set() and busy_retries > 2):
                         self._stats["processed"] += len(batch)
                         self._stats["dropped"] += len(batch)
                         batch.clear()
-                time.sleep(min(1.0, self.flush_interval_seconds * 2))
+                        busy_retries = 0
+                sleep_dur = 0.05 if self._stop.is_set() else min(1.0, self.flush_interval_seconds * 2)
+                time.sleep(sleep_dur)
 
     def flush(self, timeout: float = 3.0) -> bool:
         if not self.enabled:

@@ -60,6 +60,8 @@ class _BoundedStreamBuffer:
         if not chunk:
             return
         cleaned = _redact_secrets(chunk) if self.redact else chunk
+        if len(cleaned) > self.max_chars:
+            cleaned = cleaned[-self.max_chars:]
         with self.lock:
             self.chunks.append(cleaned)
             self.total_chars += len(cleaned)
@@ -76,8 +78,20 @@ class _BoundedStreamBuffer:
         self.append(chunk)
 
     def peek(self, chars: int = 500) -> str:
+        if chars <= 0:
+            return ""
         with self.lock:
-            return "".join(self.chunks)[:chars]
+            if not self.chunks:
+                return ""
+            collected: list[str] = []
+            collected_len = 0
+            for chunk in reversed(self.chunks):
+                collected.append(chunk)
+                collected_len += len(chunk)
+                if collected_len >= chars:
+                    break
+            joined = "".join(reversed(collected))
+            return joined[-chars:]
 
 
 _INTERACTIVE_PATTERNS = [
@@ -1155,8 +1169,14 @@ class CommandBroker:
                         )
                         current_untracked = set(cp_cur_untracked.stdout.splitlines())
                         new_untracked = current_untracked - git_snapshot["untracked"]
+                        resolved_cwd = Path(cwd).resolve()
                         for new_f in new_untracked:
-                            p = Path(cwd) / new_f
+                            p = (Path(cwd) / new_f).resolve()
+                            try:
+                                if not p.is_relative_to(resolved_cwd) or p == resolved_cwd:
+                                    continue
+                            except (ValueError, TypeError):
+                                continue
                             if p.is_file():
                                 p.unlink(missing_ok=True)
                             elif p.is_dir():
@@ -1337,7 +1357,7 @@ class CommandBroker:
                         except ValueError:
                             continue
                     if target not in original_files:
-                        original_files[target] = target.read_text(encoding="utf-8") if target.is_file() else None
+                        original_files[target] = target.read_text(encoding="utf-8", errors="replace") if target.is_file() else None
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text(new_content, encoding="utf-8")
                     if target.suffix.lower() in {".py", ".pyw"}:
@@ -1600,6 +1620,16 @@ class CommandBroker:
             return {"success": False, "error": f"failed to spawn daemon: {exc}"}
 
         with self._daemons_lock:
+            if len(self._daemons) > 50:
+                dead = [d for d, inf in self._daemons.items() if inf["process"].poll() is not None]
+                if len(dead) > 20:
+                    dead.sort(key=lambda d: float(self._daemons[d].get("stopped_at", self._daemons[d].get("started_at", 0))))
+                    for old_d in dead[:len(dead) - 20]:
+                        try:
+                            self._daemons[old_d]["log_fh"].close()
+                        except Exception:
+                            pass
+                        self._daemons.pop(old_d, None)
             self._daemons[daemon_id] = {
                 "daemon_id": daemon_id,
                 "process": process,
@@ -1694,6 +1724,17 @@ class CommandBroker:
                 info["log_fh"].close()
             except Exception:
                 pass
+            info["stopped_at"] = time.time()
+            if len(self._daemons) > 50:
+                dead = [d for d, inf in self._daemons.items() if inf["process"].poll() is not None]
+                if len(dead) > 20:
+                    dead.sort(key=lambda d: float(self._daemons[d].get("stopped_at", self._daemons[d].get("started_at", 0))))
+                    for old_d in dead[:len(dead) - 20]:
+                        try:
+                            self._daemons[old_d]["log_fh"].close()
+                        except Exception:
+                            pass
+                        self._daemons.pop(old_d, None)
             return {
                 "success": True,
                 "daemon_id": daemon_id,

@@ -646,7 +646,7 @@ document.head.insertAdjacentHTML('beforeend','<style>.trace-main,.trace-step-bod
 
 const nativeFetch=window.fetch.bind(window);
 let apiToken='';
-$('apiToken').value='';
+if($('apiToken')) $('apiToken').value='';
 
 function setupTraceInspector(){
   if($('traceInspector'))return;
@@ -656,9 +656,9 @@ setupTraceInspector();
 if($('traceSidebarList')&&!$('traceHistorySearch')){$('traceSidebarList').insertAdjacentHTML('beforebegin','<div class="trace-sidebar-controls"><input id="traceHistorySearch" type="search" placeholder="Search history…" autocomplete="off"><select id="traceHistoryState" aria-label="History state"><option value="useful">Live + completed</option><option value="">All history</option><option value="interrupted">Interrupted</option><option value="failed">Failed</option></select></div>')}
 
 let statusPollInFlight=false,hasLiveStatus=false;
-let sloScope=$('sloScope').value;
-$('sloScope').onchange=()=>{sloScope=$('sloScope').value;pollStatus()};
-$('saveToken').onclick=()=>{apiToken=$('apiToken').value.trim();pollStatus()};
+let sloScope=$('sloScope')?$('sloScope').value:'1h';
+if($('sloScope')) $('sloScope').onchange=()=>{sloScope=$('sloScope').value;pollStatus()};
+if($('saveToken')) $('saveToken').onclick=()=>{if($('apiToken'))apiToken=$('apiToken').value.trim();pollStatus()};
 
 async function apiFetch(path,opts={}){
   opts={...opts};const h=new Headers(opts.headers||{});if(apiToken)h.set('X-LocalAI-Token',apiToken);opts.headers=h;
