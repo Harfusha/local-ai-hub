@@ -89,7 +89,7 @@ class GoalContract:
         return cls(
             goal=str(data.get("goal", "")),
             acceptance_criteria=tuple(data.get("acceptance_criteria") or ()),
-            scope=AgentScope(data.get("scope", AgentScope.TASK.value)),
+            scope=AgentScope.parse(data.get("scope", AgentScope.TASK.value)),
             non_goals=tuple(data.get("non_goals") or ()),
             constraints=tuple(data.get("constraints") or ()),
             risk_profile=str(data.get("risk_profile", "normal")),

@@ -14,8 +14,14 @@ from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
 from .process_utils import canonical_root
 
 
-def _norm_rel(value: str) -> str:
+def _norm_rel(value: str, root: str = "") -> str:
     raw = str(value or "").strip()
+    if root and (raw.startswith(("/", "\\")) or PureWindowsPath(raw).is_absolute() or bool(PureWindowsPath(raw).drive)):
+        try:
+            rel = Path(raw).resolve().relative_to(Path(root).resolve())
+            raw = str(rel)
+        except (ValueError, Exception):
+            pass
     if raw.startswith(("/", "\\")):
         raise ValueError(f"lease path must be repository-relative: {value}")
     wp = PureWindowsPath(raw)
@@ -99,8 +105,8 @@ class ScopeLeaseStore:
     def claim(self, tenant: str, root: str, paths: list[str], ttl_seconds: int = 900, purpose: str = "agent edit") -> dict[str, Any]:
         if not paths:
             return {"success": False, "error": "paths must not be empty"}
-        rels = sorted({_norm_rel(str(p)) for p in paths})
         root_path, root_id = self._root(root)
+        rels = sorted({_norm_rel(str(p), root=root_path) for p in paths})
         now = time.time()
         expires = now + max(30, min(int(ttl_seconds), 7200))
         lease_id = f"lease_{uuid.uuid4().hex[:20]}"
