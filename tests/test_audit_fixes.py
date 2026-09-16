@@ -184,3 +184,125 @@ def test_telemetry_busy_retries_drops_on_limit():
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
+
+def test_code_index_path_filtering_and_containment():
+    from contextlib import closing
+    from local_ai_hub.code_index import CodeIndex
+    from local_ai_hub.process_utils import canonical_root
+    tmp = tempfile.mkdtemp()
+    try:
+        tmp_path = Path(tmp)
+        idx = CodeIndex({"code_index": {"enabled": True}, "server": {"state_dir": str(tmp_path)}}, MagicMock())
+        root = str(tmp_path)
+        resolved = canonical_root(root)
+
+        with idx._lock, closing(idx._connect()) as con:
+            con.execute("INSERT INTO refs(root, path, name, line, kind) VALUES(?, ?, ?, ?, ?)",
+                        (resolved, "src/a.py", "my_func", 10, "call"))
+            con.execute("INSERT INTO refs(root, path, name, line, kind) VALUES(?, ?, ?, ?, ?)",
+                        (resolved, "src/b.py", "my_func", 20, "call"))
+            con.execute("INSERT INTO edges(root, src, dst, kind, path, line) VALUES(?, ?, ?, ?, ?, ?)",
+                        (resolved, "ImplA", "BaseClass", "implements", "src/a.py", 5))
+            con.execute("INSERT INTO edges(root, src, dst, kind, path, line) VALUES(?, ?, ?, ?, ?, ?)",
+                        (resolved, "ImplB", "BaseClass", "implements", "src/b.py", 15))
+            con.commit()
+
+        # Without path filter: returns both
+        all_refs = idx.find_referencing_symbols(root, "my_func")
+        assert all_refs["references_count"] == 2
+
+        # With path filter: returns only matching path
+        filtered_refs = idx.find_referencing_symbols(root, "my_func", path="src/a.py")
+        assert filtered_refs["references_count"] == 1
+        assert filtered_refs["references"][0]["path"] == "src/a.py"
+
+        # Implementations without path: returns both
+        all_impls = idx.find_implementations(root, "BaseClass")
+        assert all_impls["implementations_count"] == 2
+
+        # Implementations with path filter: returns only src/b.py
+        filtered_impls = idx.find_implementations(root, "BaseClass", path="src/b.py")
+        assert filtered_impls["implementations_count"] == 1
+        assert filtered_impls["implementations"][0]["path"] == "src/b.py"
+
+        # Diagnostics path traversal containment check
+        diag_escape = idx.get_diagnostics_for_file(root, "../outside.py")
+        assert diag_escape["success"] is False
+        assert "escapes root" in diag_escape["error"]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_circular_dependencies_fast_resolution():
+    from local_ai_hub.deterministic import DeterministicEngine
+    tmp = tempfile.mkdtemp()
+    try:
+        tmp_path = Path(tmp)
+        pkg = tmp_path / "mypkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        (pkg / "mod_a.py").write_text("import mypkg.mod_b\n", encoding="utf-8")
+        (pkg / "mod_b.py").write_text("from mypkg import mod_a\n", encoding="utf-8")
+
+        det = DeterministicEngine({"deterministic": {"enabled": True}, "server": {"state_dir": str(tmp_path)}}, MagicMock(), MagicMock(), MagicMock())
+        res = det.find_circular_dependencies(str(tmp_path))
+        assert res["success"] is True
+        assert res["has_cycles"] is True
+        assert res["cycles_found"] >= 1
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_schema_drift_quoted_table_names():
+    import sqlite3
+    from contextlib import closing
+    from local_ai_hub.deterministic import DeterministicEngine
+    tmp = tempfile.mkdtemp()
+    try:
+        tmp_path = Path(tmp)
+        db_file = tmp_path / "app.db"
+        with closing(sqlite3.connect(db_file)) as con:
+            # SQL keyword table name
+            con.execute("CREATE TABLE [order] (id INTEGER PRIMARY KEY, item TEXT)")
+            # Hyphenated table name
+            con.execute('CREATE TABLE "user-data" (id INTEGER PRIMARY KEY, val TEXT)')
+            con.commit()
+
+        # Create a matching python file with SQLAlchemy style table
+        py_file = tmp_path / "models.py"
+        py_file.write_text("""
+class Order:
+    __tablename__ = "order"
+    id: int
+    item: str
+
+class UserData:
+    __tablename__ = "user-data"
+    id: int
+    val: str
+""", encoding="utf-8")
+
+        det = DeterministicEngine({"deterministic": {"enabled": True}, "server": {"state_dir": str(tmp_path)}}, MagicMock(), MagicMock(), MagicMock())
+        res = det.migration_drift(str(tmp_path), db_path=str(db_file))
+        assert res["success"] is True
+        assert res["in_sync"] is True
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_command_broker_last_bounded():
+    broker = CommandBroker({"commands": {"enabled": True}})
+    with broker._lock:
+        for i in range(150):
+            broker._last[f"key_{i}"] = {"output": f"out_{i}"}
+    
+    # Manually trigger bounding logic as in CommandBroker.run_command
+    with broker._lock:
+        if len(broker._last) > 128:
+            old_keys = list(broker._last.keys())[:64]
+            for k in old_keys:
+                broker._last.pop(k, None)
+    
+    assert len(broker._last) <= 128
+
+

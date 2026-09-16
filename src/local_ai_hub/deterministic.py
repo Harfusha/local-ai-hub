@@ -5503,6 +5503,10 @@ def test_{sym}_regression_edge_cases():
                     "scripts": int(con.execute(f"SELECT COUNT(*) FROM scripts{where}", args).fetchone()[0]),
                 }
             res = {"success": True, "healthy": True, **counts, "stats": dict(self._stats)}
+            if len(self._status_cache) > 64:
+                oldest = sorted(self._status_cache.items(), key=lambda x: x[1].get("time", 0))[:32]
+                for k, _ in oldest:
+                    self._status_cache.pop(k, None)
             self._status_cache[key] = {"time": now, "data": res}
             return res
         except Exception as exc:
@@ -5523,19 +5527,38 @@ def test_{sym}_regression_edge_cases():
             if any(part in skip_dirs for part in p.parts):
                 continue
             py_files.append(p)
-            rel = p.relative_to(p_root)
-            mod_parts = list(rel.parts)
-            if mod_parts[-1] == "__init__.py":
-                mod_parts.pop()
-            else:
-                mod_parts[-1] = mod_parts[-1][:-3]
-            mod_name = ".".join(mod_parts)
-            if mod_name:
-                mod_to_file[mod_name] = p
-                file_to_mod[p] = mod_name
 
-        graph: dict[str, set[str]] = defaultdict(set)
-        for p, mod_name in file_to_mod.items():
+        for p in py_files:
+            rel = p.relative_to(p_root)
+            parts = list(rel.parts)
+            if parts[-1].endswith(".py"):
+                parts[-1] = parts[-1][:-3]
+            if parts and parts[-1] == "__init__":
+                parts.pop()
+            if not parts:
+                continue
+            mod_name = ".".join(parts)
+            mod_to_file[mod_name] = p
+            file_to_mod[p] = mod_name
+
+        def _find_matches(target: str) -> list[str]:
+            matches: list[str] = []
+            cur = target
+            while cur:
+                if cur in mod_to_file:
+                    matches.append(cur)
+                if "." in cur:
+                    cur = cur.rsplit(".", 1)[0]
+                else:
+                    break
+            return matches
+
+        graph: dict[str, set[str]] = {m: set() for m in mod_to_file}
+
+        for p in py_files:
+            mod_name = file_to_mod.get(p)
+            if not mod_name:
+                continue
             try:
                 content = p.read_text(encoding="utf-8", errors="replace")
                 tree = ast.parse(content, filename=str(p))
@@ -5545,11 +5568,9 @@ def test_{sym}_regression_edge_cases():
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
-                        target = alias.name
-                        for known in mod_to_file:
-                            if target == known or target.startswith(known + "."):
-                                if known != mod_name:
-                                    graph[mod_name].add(known)
+                        for known in _find_matches(alias.name):
+                            if known != mod_name:
+                                graph[mod_name].add(known)
                 elif isinstance(node, ast.ImportFrom):
                     base = ""
                     if node.level and node.level > 0:
@@ -5567,10 +5588,9 @@ def test_{sym}_regression_edge_cases():
                         if base:
                             candidates.append(base)
                         for target in candidates:
-                            for known in mod_to_file:
-                                if target == known or target.startswith(known + "."):
-                                    if known != mod_name:
-                                        graph[mod_name].add(known)
+                            for known in _find_matches(target):
+                                if known != mod_name:
+                                    graph[mod_name].add(known)
 
         cycles: list[list[str]] = []
         visited: set[str] = set()
@@ -6089,12 +6109,12 @@ def test_{sym}_regression_edge_cases():
 
         db_tables: dict[str, set[str]] = {}
         try:
-            con = sqlite3.connect(db_file)
-            tables = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
-            for tbl in tables:
-                cols = {r[1] for r in con.execute(f"PRAGMA table_info({tbl})").fetchall()}
-                db_tables[tbl] = cols
-            con.close()
+            with closing(sqlite3.connect(db_file)) as con:
+                tables = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
+                for tbl in tables:
+                    safe_tbl = tbl.replace('"', '""')
+                    cols = {r[1] for r in con.execute(f'PRAGMA table_info("{safe_tbl}")').fetchall()}
+                    db_tables[tbl] = cols
         except Exception as exc:
             return {"success": False, "error": f"failed to inspect SQLite schema: {exc}"}
 

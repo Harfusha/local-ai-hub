@@ -18,7 +18,7 @@ from typing import Any
 
 from .process_utils import hidden_run_kwargs, is_rooted_path
 from .response_protocol import project_response
-from .sqlite_support import connect_sqlite
+from .sqlite_support import connect_sqlite, retry_busy
 
 
 _TERMINAL = {"complete", "failed", "cancelled", "needs_agent", "partial"}
@@ -504,10 +504,12 @@ class WorkOrchestrator:
         return self._project({"success": True, "status": "queued", "work_id": work_id, "summary": "whole task accepted"}, normalized)
 
     def _row(self, work_id: str, tenant: str = "") -> sqlite3.Row | None:
-        with closing(self._connect()) as con:
-            if tenant and tenant not in {"admin", "system", "*"}:
-                return con.execute("SELECT * FROM work_orders WHERE work_id=? AND tenant=?", (work_id, tenant)).fetchone()
-            return con.execute("SELECT * FROM work_orders WHERE work_id=?", (work_id,)).fetchone()
+        def query() -> sqlite3.Row | None:
+            with closing(self._connect()) as con:
+                if tenant and tenant not in {"admin", "system", "*"}:
+                    return con.execute("SELECT * FROM work_orders WHERE work_id=? AND tenant=?", (work_id, tenant)).fetchone()
+                return con.execute("SELECT * FROM work_orders WHERE work_id=?", (work_id,)).fetchone()
+        return retry_busy(query, retries=5, base_delay_seconds=0.02)
 
     def _canonical(self, row: sqlite3.Row) -> dict[str, Any]:
         payload = json.loads(str(row["payload_json"] or "{}"))

@@ -40,15 +40,19 @@ def connect_sqlite(
     try:
         if row_factory is not None:
             con.row_factory = row_factory
+        con.execute(f"PRAGMA busy_timeout={max(1, int(timeout * 1000))}")
         # SQLite disables foreign-key enforcement per connection by default.
         # All Local AI Hub stores are application-owned, so enabling it here
         # preserves declared cascade/integrity rules consistently on every path.
         con.execute("PRAGMA foreign_keys=ON")
-        con.execute("PRAGMA synchronous=NORMAL")
-        con.execute(f"PRAGMA busy_timeout={max(1, int(timeout * 1000))}")
-        con.execute("PRAGMA temp_store=MEMORY")
-        con.execute("PRAGMA mmap_size=268435456")
-        con.execute("PRAGMA cache_size=-16000")
+        try:
+            con.execute("PRAGMA synchronous=NORMAL")
+            con.execute("PRAGMA temp_store=MEMORY")
+            con.execute("PRAGMA mmap_size=268435456")
+            con.execute("PRAGMA cache_size=-16000")
+        except sqlite3.OperationalError as exc:
+            if not is_busy_error(exc):
+                raise
         return con
     except Exception:
         con.close()
