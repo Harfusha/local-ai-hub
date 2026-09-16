@@ -1528,6 +1528,11 @@ class ProjectPreprocessor:
                 self._preprocessor = preprocessor
 
             def on_any_event(self, event: Any) -> None:
+                # Watchdog also reports access/close events on some backends. They
+                # are not repository mutations and treating them as edits makes
+                # sync tools such as Mutagen continuously requeue preprocessing.
+                if str(getattr(event, "event_type", "")) not in {"created", "deleted", "modified", "moved"}:
+                    return
                 if getattr(event, "is_directory", True):
                     return
                 src = str(getattr(event, "src_path", ""))
@@ -1634,7 +1639,6 @@ class ProjectPreprocessor:
             "requirements.txt", "Pipfile", "poetry.lock", "uv.lock", "Gemfile", "Gemfile.lock", "packages.lock.json", "global.json",
             "Directory.Build.props", "Directory.Build.targets", "Directory.Packages.props", "libs.versions.toml",
         }
-        changed_meta: list[tuple[str, int, int, bool]] = []
         present: dict[str, tuple[int, int]] = {}
         deleted: set[str] = set()
         topology_changed = False
@@ -1652,19 +1656,59 @@ class ProjectPreprocessor:
                 size, mtime_ns = int(stat.st_size), int(stat.st_mtime_ns)
                 present[rel] = (size, mtime_ns)
                 topology_changed = topology_changed or rel not in old
-                changed_meta.append((rel, size, mtime_ns, rel not in old))
             elif rel in old:
                 deleted.add(rel)
                 topology_changed = True
-                changed_meta.append((rel, 0, 0, True))
 
         if not present and not deleted:
             # Editors can emit transient create/delete events before the file is visible.
             # Keep the full periodic inventory as the fallback instead of spinning.
             return False
 
-        manifest_changed = any(Path(path).name in manifest_names for path in paths)
-        major = topology_changed or manifest_changed or len(paths) >= int(self.cfg.get("major_change_files", 60))
+        # A watcher event is only a candidate change. Mutagen and some editors can
+        # rewrite timestamps/metadata while preserving bytes, so verify content for
+        # the coalesced batch before invalidating indexes or bumping generation.
+        try:
+            git_hashes = self.repo_tools.git_blob_map(root)
+        except Exception:
+            git_hashes = {}
+
+        def _content_identity(rel: str) -> tuple[str, bool]:
+            existing = old.get(rel)
+            old_hash = str(existing["content_hash"] or "") if existing else ""
+            # Clean tracked files use Git blob identities in the durable index;
+            # files that were modified in-place use SHA-256 identities. Do not
+            # compare those two identity schemes across a later commit.
+            digest = str(git_hashes.get(rel) or "") if not old_hash or old_hash.startswith("git:") else ""
+            if not digest:
+                try:
+                    digest = str(self.repo_tools._hash_file_only(Path(root) / rel) or "")
+                except Exception:
+                    digest = ""
+            return digest, bool(digest)
+
+        content_hashes: dict[str, str] = {}
+        hash_ok: set[str] = set()
+        for rel in sorted(present):
+            digest, ok = _content_identity(rel)
+            if ok:
+                content_hashes[rel] = digest
+                hash_ok.add(rel)
+
+        content_changed = set(deleted)
+        for rel in present:
+            existing = old.get(rel)
+            old_hash = str(existing["content_hash"] or "") if existing else ""
+            if existing is None or rel not in hash_ok or content_hashes[rel] != old_hash:
+                content_changed.add(rel)
+
+        manifest_changed = any(Path(path).name in manifest_names for path in content_changed)
+        changed_count = len(content_changed)
+        major = topology_changed or manifest_changed or changed_count >= int(self.cfg.get("major_change_files", 60))
+        if changed_count and not topology_changed:
+            changed_ratio = changed_count / max(1, len(old))
+            ratio_min_files = max(2, int(self.cfg.get("major_change_ratio_min_files", 12)))
+            major = major or (changed_count >= ratio_min_files and changed_ratio >= float(self.cfg.get("major_change_ratio", 0.15)))
         generation = int(row.get("generation", 0)) + (1 if major else 0)
 
         def _apply(con: sqlite3.Connection) -> None:
@@ -1680,14 +1724,18 @@ class ProjectPreprocessor:
                 old_hash = str(existing["content_hash"] or "") if existing else ""
                 old_rag_hash = str(existing["rag_hash"] or "") if existing else ""
                 old_card = existing["card_key"] if existing else None
-                stat_changed = existing is None or int(existing["size"] or 0) != size or int(existing["mtime_ns"] or 0) != mtime_ns
+                digest = content_hashes.get(rel)
+                content_same = bool(existing is not None and digest and digest == old_hash)
+                stored_hash = digest or old_hash
+                needs_hash = int(not digest)
+                stored_card = old_card if content_same else None
                 con.execute(
                     """INSERT INTO file_refs(root,path,content_hash,size,mtime_ns,needs_hash,rag_hash,generation,card_key,updated_at)
                        VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(root,path) DO UPDATE SET
                        content_hash=excluded.content_hash,size=excluded.size,mtime_ns=excluded.mtime_ns,
                        needs_hash=excluded.needs_hash,rag_hash=excluded.rag_hash,generation=excluded.generation,
                        card_key=excluded.card_key,updated_at=excluded.updated_at""",
-                    (root, rel, old_hash, size, mtime_ns, int(stat_changed), old_rag_hash, generation, old_card, now),
+                    (root, rel, stored_hash, size, mtime_ns, needs_hash, old_rag_hash, generation, stored_card, now),
                 )
             if major:
                 con.execute("DELETE FROM module_cards WHERE root=?", (root,))
@@ -1705,13 +1753,29 @@ class ProjectPreprocessor:
                 "models": {k: self.config.get("models", {}).get(k) for k in ("fast_code", "heavy_code", "reasoning")},
                 "analyzer": __version__,
             })
-        inventory_hash = stable_hash({"previous": row.get("inventory_hash"), "dirty": changed_meta})
+        inventory_hash = stable_hash({"previous": row.get("inventory_hash"), "dirty": sorted(content_changed)})
+        if not content_changed:
+            interval = max(30, int(self.cfg.get("auto_recheck_seconds", 1800)))
+            self._set_project(
+                root, phase="complete", status="complete", force_refresh=0,
+                next_check_at=now + interval, last_error=None, retry_after=0,
+                inventory_hash=row.get("inventory_hash"), structural_hash=structural_hash,
+                stats_json=json.dumps({
+                    "changed_files": 0, "changed_paths": [], "major_change": False,
+                    "incremental_watcher": True, "ignored_metadata_events": len(paths),
+                }),
+            )
+            with self._stats_lock:
+                self._stats["watcher_noop_events"] = self._stats.get("watcher_noop_events", 0) + len(paths)
+                self._stats["watcher_incremental_runs"] = self._stats.get("watcher_incremental_runs", 0) + 1
+                self._stats["watcher_incremental_files"] = self._stats.get("watcher_incremental_files", 0) + len(paths)
+            return True
         self._set_project(
             root, phase="hash", status="running", generation=generation, force_refresh=0,
             inventory_hash=inventory_hash, structural_hash=structural_hash,
             last_error=None, retry_after=0,
             stats_json=json.dumps({
-                "changed_files": len(paths), "changed_paths": paths[:256], "major_change": major,
+                "changed_files": len(content_changed), "changed_paths": sorted(content_changed)[:256], "major_change": major,
                 "incremental_watcher": True,
             }),
         )
@@ -1720,7 +1784,7 @@ class ProjectPreprocessor:
                 self._stats["major_invalidations"] += 1
         with self._stats_lock:
             self._stats["watcher_incremental_runs"] = self._stats.get("watcher_incremental_runs", 0) + 1
-            self._stats["watcher_incremental_files"] = self._stats.get("watcher_incremental_files", 0) + len(paths)
+            self._stats["watcher_incremental_files"] = self._stats.get("watcher_incremental_files", 0) + len(content_changed)
         return True
 
     def _step_inventory(self, row: dict[str, Any]) -> bool:
