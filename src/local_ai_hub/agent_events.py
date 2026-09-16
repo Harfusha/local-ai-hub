@@ -565,7 +565,7 @@ class SwarmPubSub:
 
         if self.state_store and self.state_store.enabled:
             try:
-                self.state_store.append_event(
+                self.state_store.append(
                     AgentEvent.create(
                         stream_id=f"pubsub:{clean_topic}",
                         kind="pubsub_message",

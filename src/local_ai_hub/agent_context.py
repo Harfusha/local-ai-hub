@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 import uuid
@@ -103,6 +104,7 @@ class ContextCompiler:
         memory_store: Any | None = None,
         incident_store: Any | None = None,
         lease_store: Any | None = None,
+        blackboard: Any | None = None,
     ) -> None:
         self.state_store = state_store
         self.task_store = task_store
@@ -110,6 +112,7 @@ class ContextCompiler:
         self.memory_store = memory_store
         self.incident_store = incident_store
         self.lease_store = lease_store
+        self.blackboard = blackboard
         self._lock = threading.RLock()
         self._initialized = False
         self._init_table()
@@ -412,6 +415,36 @@ class ContextCompiler:
                         freshness=expires_at,
                     ),
                 ))
+
+        # 6. Blackboard state (priority: 65)
+        if getattr(self, "blackboard", None) is not None:
+            boards_to_check: list[str] = []
+            if request.task_id:
+                boards_to_check.extend([request.task_id, f"task:{request.task_id}", f"swarm:{request.task_id}"])
+            boards_to_check.append("global")
+            for b_id in boards_to_check:
+                try:
+                    res = self.blackboard.get(b_id)
+                    if isinstance(res, dict) and res.get("success") and "sections" in res:
+                        for s_name, s_data in res["sections"].items():
+                            s_dict = s_data if isinstance(s_data, dict) else (s_data.to_dict() if hasattr(s_data, "to_dict") else {})
+                            raw_cnt = s_dict.get("content", "")
+                            content_str = json.dumps(raw_cnt) if not isinstance(raw_cnt, str) else raw_cnt
+                            bb_content = f"[BLACKBOARD {b_id}:{s_name}] {content_str}"
+                            candidates.append((
+                                65,
+                                ContextElement(
+                                    element_id=f"bb_{b_id}_{s_name}",
+                                    source_kind="blackboard",
+                                    content=bb_content,
+                                    estimated_tokens=_estimate_tokens(bb_content),
+                                    reason=f"shared blackboard state on board '{b_id}'",
+                                    confidence=1.0,
+                                    freshness=float(s_dict.get("timestamp", 0.0) or 0.0),
+                                ),
+                            ))
+                except Exception:
+                    pass
 
         if request.include_kinds:
             allowed_kinds = {str(kind).strip().lower() for kind in request.include_kinds if str(kind).strip()}

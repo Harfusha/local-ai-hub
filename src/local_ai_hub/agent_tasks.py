@@ -422,11 +422,34 @@ class TaskStore:
             )
 
         if target == TaskStatus.COMPLETED:
+            now_check = time.time()
             for criterion in current.contract.acceptance_criteria:
                 if criterion not in current.verification_receipts:
                     raise CompletionGateError(
                         f"Cannot transition to COMPLETED: criterion '{criterion}' has no verified receipt"
                     )
+                rcpt_id = current.verification_receipts[criterion]
+                if self.state_store.enabled and self.state_store.db_path.exists():
+                    try:
+                        with closing(connect_sqlite(self.state_store.db_path)) as con:
+                            row = con.execute(
+                                "SELECT passed, expires_at FROM agent_verification_receipts WHERE receipt_id = ?",
+                                (rcpt_id,),
+                            ).fetchone()
+                            if row is not None:
+                                passed, expires_at = bool(row[0]), row[1]
+                                if not passed:
+                                    raise CompletionGateError(
+                                        f"Cannot transition to COMPLETED: receipt '{rcpt_id}' for criterion '{criterion}' is marked failed"
+                                    )
+                                if expires_at is not None and float(expires_at) < now_check:
+                                    raise CompletionGateError(
+                                        f"Cannot transition to COMPLETED: receipt '{rcpt_id}' for criterion '{criterion}' is expired (stale)"
+                                    )
+                    except CompletionGateError:
+                        raise
+                    except Exception:
+                        pass
 
         now = time.time()
         heartbeat = (

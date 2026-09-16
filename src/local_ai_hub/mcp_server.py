@@ -284,7 +284,7 @@ TaskAction: TypeAlias = Literal[
     "delegate", "reason", "continue", "review", "second_opinion", "compress", "route", "batch",
     "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait",
     "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe",
-    "eval_suite", "prompt_eval", "eval_drift",
+    "eval_suite", "prompt_eval", "eval_drift", "complete_code",
 ]
 RepoAction: TypeAlias = Literal[
     "profile", "search", "map", "code_index", "semantic", "graph", "intelligence",
@@ -753,6 +753,10 @@ def local_ai_task(
         return _compact(CLIENT.post("/api/task/eval_drift", {
             "suite_name": task or prompt or "default",
         }, timeout=_timeout("long")), "status")
+    if action == "complete_code":
+        return _compact(CLIENT.post("/api/complete", {
+            "prefix": prompt or context or "", "suffix": task or candidate or "", "max_tokens": max_tokens or 80,
+        }, timeout=_timeout("quick")), "status")
     return _invalid_action("local_ai_task", action, tuple(TaskAction.__args__), "Use Local AI Hub only for bounded local-model work; use Codex-owned orchestration for peer subagents.")
 
 
@@ -1160,6 +1164,24 @@ def local_ai_coord(
         return {"success": False, "unsupported": True, "error": "local_ai_coord is disabled in configuration"}
     action = action.strip().lower().replace("-", "_")
     root = _client_root(root)
+    if action == "task_sync":
+        sync_act = status.lower() if status in ("export", "import") else "export"
+        if sync_act == "export":
+            return _compact(CLIENT.post("/api/agent-state/events/delta", {
+                "action": "export", "stream_id": key or task_id or "", "after_seq": int(ttl_seconds or 0), "limit": max_tokens or 1000,
+            }, timeout=_timeout("quick")), "status")
+        else:
+            return _compact(CLIENT.post("/api/agent-state/events/delta", {
+                "action": "import", "events": record or [],
+            }, timeout=_timeout("quick")), "status")
+    if action == "task_zombie_reap":
+        return _compact(CLIENT.post("/api/agent-state/tasks", {
+            "action": "reap_expired", "auto_recover": True,
+        }, timeout=_timeout("quick")), "status")
+    if action == "task_cleanup_worktree":
+        return _compact(CLIENT.post("/api/agent-state/tasks", {
+            "action": "cleanup_worktree", "task_id": task_id or key or "",
+        }, timeout=_timeout("quick")), "status")
     if action.startswith("task_"):
         return _compact(CLIENT.coord(
             action=action, task_id=task_id, contract=contract,
@@ -1293,24 +1315,6 @@ def local_ai_coord(
             "output_path": key or value or query or "training_dataset.jsonl",
             "min_receipts": int(status) if (status and status.isdigit()) else 1,
             "format": target_scope or "jsonl",
-        }, timeout=_timeout("quick")), "status")
-    if action == "task_sync":
-        sync_act = status.lower() if status in ("export", "import") else "export"
-        if sync_act == "export":
-            return _compact(CLIENT.post("/api/agent-state/events/delta", {
-                "action": "export", "stream_id": key or task_id or "", "after_seq": int(ttl_seconds or 0), "limit": max_tokens or 1000,
-            }, timeout=_timeout("quick")), "status")
-        else:
-            return _compact(CLIENT.post("/api/agent-state/events/delta", {
-                "action": "import", "events": record or [],
-            }, timeout=_timeout("quick")), "status")
-    if action == "task_zombie_reap":
-        return _compact(CLIENT.post("/api/agent-state/tasks", {
-            "action": "reap_expired", "auto_recover": True,
-        }, timeout=_timeout("quick")), "status")
-    if action == "task_cleanup_worktree":
-        return _compact(CLIENT.post("/api/agent-state/tasks", {
-            "action": "cleanup_worktree", "task_id": task_id or key or "",
         }, timeout=_timeout("quick")), "status")
     return _invalid_action("local_ai_coord", action, tuple(CoordAction.__args__), "Use coordination for bounded shared state; the main agent remains the owner of final integration.")
 

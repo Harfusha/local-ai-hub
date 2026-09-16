@@ -330,6 +330,7 @@ class LocalAIServices:
         self.preprocessor: Any | None = None
         self.tool_agent: Any | None = None
         self.swarm: Any | None = None
+        self.blackboard: Any | None = None
         self.agent_state: Any | None = None
         self.flight_group = SingleFlightGroup(shards=32, default_timeout_seconds=60.0)
 
@@ -1115,7 +1116,7 @@ class LocalAIServices:
             priority=5,
         )
 
-        draft_code = gen_result.get("response", "")
+        draft_code = gen_result.get("text") or gen_result.get("response") or ""
         verification: dict[str, Any] = {"syntax_valid": True}
         if file_path.endswith(".py") and draft_code:
             import ast
@@ -1148,10 +1149,11 @@ class LocalAIServices:
                 "speculative-review",
                 priority=6,
             )
+            review_text = review_res.get("text") or review_res.get("response") or ""
             verification["smart_review"] = {
                 "model": smart_model,
-                "response": review_res.get("response", ""),
-                "approved": "true" in review_res.get("response", "").lower(),
+                "response": review_text,
+                "approved": "true" in review_text.lower(),
             }
 
         return {
@@ -2556,23 +2558,16 @@ class LocalAIServices:
         return result
 
     DOMAIN_SYNONYMS = {
-        "jump": ["PlayerController", "Jump", "AddForce", "isGrounded", "velocity.y"],
-        "shoot": ["PlayerCombat", "Shoot", "FireWeapon", "InstantiateProjectile", "Raycast"],
-        "save": ["SaveManager", "SaveData", "PlayerPrefs", "JsonUtility", "File.WriteAllText"],
-        "load": ["LoadManager", "LoadData", "PlayerPrefs", "JsonUtility", "File.ReadAllText"],
-        "health": ["Health", "TakeDamage", "Die", "currentHealth", "maxHealth"],
-        "damage": ["TakeDamage", "ApplyDamage", "DamageSource", "HitPoint"],
-        "inventory": ["Inventory", "Item", "Slot", "AddItem", "RemoveItem", "ItemStack"],
-        "audio": ["AudioSource", "AudioClip", "PlaySound", "SoundManager", "AudioManager"],
-        "sound": ["AudioSource", "AudioClip", "PlayOneShot", "SoundManager"],
-        "ui": ["Canvas", "Button", "Text", "TMP_Text", "OnClick", "UIController"],
-        "movement": ["Move", "MovePosition", "CharacterController", "Rigidbody", "velocity"],
-        "input": ["Input", "InputAction", "InputSystem", "KeyCode", "GetKeyDown"],
-        "animation": ["Animator", "SetTrigger", "SetBool", "SetFloat", "Animation"],
-        "camera": ["Camera", "Cinemachine", "FollowTarget", "LookAt", "Transform"],
-        "network": ["NetworkManager", "Rpc", "Cmd", "SyncVar", "ClientRpc", "ServerRpc"],
-        "database": ["SQLite", "Database", "ExecuteQuery", "Connection", "Transaction"],
-        "auth": ["Auth", "Login", "Token", "User", "Session", "Authenticate"],
+        "save": ["Save", "Store", "Persist", "Write", "Dump"],
+        "load": ["Load", "Read", "Fetch", "Get", "Parse"],
+        "database": ["SQLite", "Database", "ExecuteQuery", "Connection", "Transaction", "Query"],
+        "auth": ["Auth", "Login", "Token", "User", "Session", "Authenticate", "Permission"],
+        "api": ["Endpoint", "Route", "Handler", "Request", "Response", "Client"],
+        "cache": ["Cache", "LRU", "Evict", "TTL", "Hit", "Miss"],
+        "config": ["Config", "Settings", "Options", "Environment", "Params"],
+        "test": ["Test", "Assert", "Fixture", "Mock", "Suite"],
+        "logging": ["Logger", "Log", "Info", "Warning", "Error", "Debug"],
+        "event": ["Event", "Emit", "Subscribe", "Publish", "Listener", "Handler"],
     }
 
     def _record_symbol_focus(self, tenant: str, symbols: list[str]) -> None:
