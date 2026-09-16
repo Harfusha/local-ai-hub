@@ -295,12 +295,13 @@ tbody tr.click:hover{background:#162338}
 </div>
 
 <div id="overview" class="page active">
-  <section id="overviewHealthSummary" class="section" aria-live="polite" style="margin-bottom:12px;padding:14px;border-left:4px solid var(--accent)">
+  <section id="overviewHealthSummary" class="section" style="margin-bottom:12px;padding:14px;border-left:4px solid var(--accent)">
     <div class="label">Operational summary</div>
     <div class="value primary-metric" id="overviewHealthLevel">Loading runtime health…</div>
     <div class="sub" id="overviewHealthEvidence">Waiting for live status.</div>
     <div class="tiny muted" id="overviewFreshness">Timestamp unavailable</div>
     <button type="button" class="btn" id="overviewHealthAction" style="margin-top:10px">Open details</button>
+    <div id="overviewAnnouncement" aria-live="polite" aria-atomic="true" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0"></div>
   </section>
   <div class="dash-group">
     <div class="group-title"><span>Host &amp; System Health</span><span class="tiny muted">Core runtime state, capacity and supervisory control</span></div>
@@ -465,8 +466,9 @@ tbody tr.click:hover{background:#162338}
         <span><span class="chip" style="border-color:#38bdf8;color:#38bdf8">● Latency p95</span> <span class="chip" style="border-color:#34d399;color:#34d399">● Queue Wait</span></span>
         <span class="tiny muted">30 rolling sample ticks</span>
       </div>
-      <canvas id="liveChartCanvas" width="800" height="150" style="width:100%;height:150px;background:#080c13;border-radius:6px;border:1px solid #1e293b;display:block"></canvas>
+      <canvas id="liveChartCanvas" role="img" aria-label="Live telemetry graph. Waiting for samples." width="800" height="150" style="width:100%;height:150px;background:#080c13;border-radius:6px;border:1px solid #1e293b;display:block"></canvas>
       <div id="liveChartEmpty" class="tiny muted" style="display:none;padding-top:8px">No latency or queue samples yet.</div>
+      <div id="liveChartSummary" class="tiny muted" style="padding-top:8px">Waiting for telemetry samples.</div>
     </div>
   </section>
 
@@ -561,7 +563,7 @@ tbody tr.click:hover{background:#162338}
 <div id="modalBg" class="modal-bg"><div class="modal"><div class="modal-head"><strong id="modalTitle">Details</strong><span id="modalLive" class="tiny" style="margin-left:10px"></span><button class="btn spacer" id="modalClose">Close</button></div><div id="modalBody"></div></div></div>
 
 <script>
-let cursor=0,paused=false,last=null,lastTraces=[];
+let cursor=0,paused=false,last=null,lastTraces=[],lastOverviewAnnouncement='',lastOverviewReceivedAt=0;
 const latencySparkData=[], throughputSparkData=[], liveChartLatency=[], liveChartQueue=[];
 
 const traceStyles=document.createElement('style');
@@ -573,15 +575,28 @@ const n=v=>Number(v||0).toLocaleString(), ms=v=>{v=Number(v||0);return v>=1000?(
 
 function dashboardHealth(snapshot={}){
   const current=snapshot.current||snapshot.live||snapshot.headless||snapshot;
+  const observability=snapshot.observability||{},cohorts=observability.cohorts||{},agentHttp=cohorts.agent_http||{},policy=cohorts.policy_rejection||{},inference=cohorts.inference||{};
   const status=String(current.health||current.status||current.service_status||'').toLowerCase();
-  const openIssues=Number(current.open_incidents??current.active_errors??current.blocked_requests??0);
-  if(['degraded','down','offline','unavailable','crashed','stopped'].includes(status)||current.degraded===true){
-    return {level:'degraded',label:'Degraded',reason:'Current runtime reports an unavailable service.'};
+  const count=value=>Math.max(0,Number(value)||0);
+  const openIssues=count(current.open_incidents??current.active_errors??current.blocked_requests??0),agentFailures=count(agentHttp.failures),policyRejections=count(policy.events),degradedCount=count(inference.degraded_count),retryCount=count(inference.retry_count),restarts=count(current.restarts??snapshot.headless?.restarts),hubOnline=snapshot.hub_online??current.hub_online,ollamaOnline=snapshot.ollama_online??current.ollama_online;
+  const signals=[];
+  if(agentFailures)signals.push(`${agentFailures} agent HTTP failure${agentFailures===1?'':'s'}`);
+  if(policyRejections)signals.push(`${policyRejections} policy rejection${policyRejections===1?'':'s'}`);
+  if(degradedCount)signals.push(`${degradedCount} degraded inference${degradedCount===1?'':'s'}`);
+  if(retryCount)signals.push(`${retryCount} retr${retryCount===1?'y':'ies'}`);
+  if(restarts)signals.push(`${restarts} supervisor restart${restarts===1?'':'s'}`);
+  const actionTab=openIssues||count(current.blocked_requests)?'work':'reliability';
+  const actionLabel=actionTab==='work'?'Open queue and requests':'Open reliability details';
+  if(hubOnline===false||['degraded','down','offline','unavailable','crashed','stopped'].includes(status)||current.degraded===true){
+    const reason=hubOnline===false?'Hub is offline.':signals.length?`Current runtime is degraded: ${signals.join(', ')}.`:'Current runtime reports an unavailable service.';
+    return {level:'degraded',label:'Degraded',reason,actionTab,actionLabel};
   }
-  if(['attention','warning','warn','partial'].includes(status)||openIssues>0){
-    return {level:'attention',label:'Needs attention',reason:openIssues?'Current runtime has open issues.':'Current runtime reports a warning state.'};
+  if(ollamaOnline===false)signals.push('Ollama is offline');
+  if(['attention','warning','warn','partial'].includes(status)||openIssues||signals.length){
+    const reason=openIssues?`Current runtime has ${openIssues} open issue${openIssues===1?'':'s'}${signals.length?`; ${signals.join(', ')}`:''}.`:signals.length?`Current runtime needs attention: ${signals.join(', ')}.`:'Current runtime reports a warning state.';
+    return {level:'attention',label:'Needs attention',reason,actionTab,actionLabel};
   }
-  return {level:'healthy',label:'Healthy',reason:'Current runtime reports no active issue.'};
+  return {level:'healthy',label:'Healthy',reason:'Current runtime reports no active issue.',actionTab:'reliability',actionLabel:'Open reliability details'};
 }
 
 function dashboardFreshness(timestamp,now=Date.now(),staleAfterMs=120000){
@@ -594,17 +609,18 @@ function dashboardFreshness(timestamp,now=Date.now(),staleAfterMs=120000){
   return {state:ageMs>threshold?'stale':'fresh',label:ageMs>threshold?'Stale':'Fresh',ageMs};
 }
 
-function renderOverviewHealth(snapshot={}){
+function renderOverviewHealth(snapshot={},receivedAt=Date.now(),now=Date.now()){
   const runtime=snapshot.headless||{};
   const current={...runtime,health:runtime.health||runtime.state||snapshot.health||snapshot.status||snapshot.service_status};
   const health=dashboardHealth(snapshot);
   const timestamp=snapshot.updated_at??snapshot.generated_at??snapshot.timestamp??snapshot.observability?.updated_at??runtime.updated_at;
-  const freshness=dashboardFreshness(timestamp);
-  const level=$('overviewHealthLevel'),evidence=$('overviewHealthEvidence'),freshnessEl=$('overviewFreshness'),action=$('overviewHealthAction'),summary=$('overviewHealthSummary');
+  let freshness=dashboardFreshness(timestamp,now);
+  if(freshness.state==='unknown'&&Number.isFinite(Number(receivedAt)))freshness=dashboardFreshness(receivedAt,now);
+  const level=$('overviewHealthLevel'),evidence=$('overviewHealthEvidence'),freshnessEl=$('overviewFreshness'),action=$('overviewHealthAction'),summary=$('overviewHealthSummary'),announcement=$('overviewAnnouncement');
   if(!level||!evidence||!freshnessEl||!action||!summary)return;
   const label=health.level==='attention'?'Needs attention':health.label;
-  const target=health.level==='attention'&&Number(snapshot.scheduler?.foreground_queued||0)>0?'work':'reliability';
-  const targetLabel=target==='work'?'Open queue and requests':'Open reliability details';
+  const target=health.actionTab||'reliability';
+  const targetLabel=health.actionLabel||'Open reliability details';
   const stateText=current.health||current.status||current.service_status||'unreported';
   const activeRequests=Array.isArray(snapshot.observability?.active_requests)?snapshot.observability.active_requests.length:0;
   const evidenceText=`${health.reason} Runtime state: ${stateText}. ${activeRequests} active API request${activeRequests===1?'':'s'}.`;
@@ -616,6 +632,8 @@ function renderOverviewHealth(snapshot={}){
   summary.style.borderLeftColor=health.level==='healthy'?'var(--ok)':health.level==='attention'?'var(--warn)':'var(--bad)';
   action.textContent=targetLabel;
   action.onclick=()=>switchTab(target);
+  const announcementText=`${label}. ${freshness.label}.`;
+  if(announcement&&announcementText!==lastOverviewAnnouncement){announcement.textContent=announcementText;lastOverviewAnnouncement=announcementText;}
 }
 
 function redactDiagnostic(value){
@@ -3966,9 +3984,11 @@ function workRecentRequestRow(request){const trace=requestTrace(request),failed=
 
 function render(s){
   last=s;
+  const receivedAt=Date.now();
+  lastOverviewReceivedAt=receivedAt;
   const q=s.scheduler||{},o=s.observability||{},p=s.preprocessing||{},bg=s.background_gpu||{},h=s.headless||{},r=s.runtime_stats||{},ss=q.stats||{},rp=s.runtime_profile||{},cmd=r.commands||{};
   ensureHttpTailTable();setupWorkLayout();
-  renderOverviewHealth(s);
+  renderOverviewHealth(s,receivedAt);
 
   (function renderFeaturePills(){
     const feat=s.features||{};
@@ -4074,7 +4094,11 @@ function render(s){
   drawSpark('throughputSpark', throughputSparkData, '#34d399', 'rgba(52,211,153,0.12)');
   drawDualChart('liveChartCanvas', liveChartLatency, liveChartQueue);
   const liveChartEmpty=$('liveChartEmpty');
-  if(liveChartEmpty)liveChartEmpty.style.display=agentHttp.events||curP95||curWait?'none':'block';
+  const hasLiveChartSamples=Boolean(agentHttp.events||curP95||curWait),liveChartCanvas=$('liveChartCanvas'),liveChartSummary=$('liveChartSummary');
+  if(liveChartEmpty)liveChartEmpty.style.display=hasLiveChartSamples?'none':'block';
+  const liveChartLabel=hasLiveChartSamples?`Live telemetry graph. Current p95 latency ${ms(curP95)}. Current queue wait ${ms(curWait)}. ${liveChartLatency.length} rolling samples.`:'Live telemetry graph. No latency or queue samples yet.';
+  if(liveChartCanvas)liveChartCanvas.setAttribute('aria-label',liveChartLabel);
+  if(liveChartSummary)liveChartSummary.textContent=hasLiveChartSamples?`Current p95 latency ${ms(curP95)} · queue wait ${ms(curWait)} · ${liveChartLatency.length} rolling samples`:'No latency or queue samples yet.';
 
   const agState=s.agent_state||{};
   if($('agentStateVal')){
@@ -4228,7 +4252,7 @@ async function pollStatus(){
         $('sysSub').textContent=`RAM ${ram.used_gb||0} / ${ram.total_gb||0} GB (${ramPct}%)${vram}${accel}`;
       }
     }catch{}
-  }catch(e){console.error('dashboard status refresh failed',e);$('conn').textContent=hasLiveStatus?'stale':'offline';$('conn').className=hasLiveStatus?'pill warn-t':'pill bad-t'}
+  }catch(e){console.error('dashboard status refresh failed',e);if(last&&lastOverviewReceivedAt)renderOverviewHealth(last,lastOverviewReceivedAt);$('conn').textContent=hasLiveStatus?'stale':'offline';$('conn').className=hasLiveStatus?'pill warn-t':'pill bad-t'}
   finally{statusPollInFlight=false}
 }
 function renderEvents(events){if(paused||!events.length)return;const box=$('eventList');const html=events.slice(-120).reverse().map(e=>{const id='d'+(++seq);dataStore.set(id,{data:e,type:'event'});if(dataStore.size>5000){dataStore.delete(dataStore.keys().next().value);}return `<div class="event click" data-detail="${id}" data-type="event"><span>${new Date((e.created_at||0)*1000).toLocaleTimeString()}</span><span>${esc(e.agent||e.kind||'')}</span><span>${esc(e.event_type||'')}</span><span>${esc(e.action||e.stage||'')}</span><span class="hide-sm">${esc(e.model||e.tenant||'')}</span><span>${e.duration_ms?ms(e.duration_ms):''}</span><span class="${e.success===false?'bad-t':''}">${e.success===false?'FAIL':''}</span></div>`}).join('');box.innerHTML=html||'<div class="empty">no events</div>'}
