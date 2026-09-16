@@ -563,6 +563,40 @@ document.head.append(traceStyles);
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])), escJs=v=>esc(JSON.stringify(v));
 const n=v=>Number(v||0).toLocaleString(), ms=v=>{v=Number(v||0);return v>=1000?(v/1000).toFixed(v>=10000?1:2)+' s':Math.round(v)+' ms'}, durSec=s=>{s=Number(s||0);if(s<60)return Math.round(s)+'s';if(s<3600)return Math.floor(s/60)+'m '+Math.round(s%60)+'s';if(s<86400)return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';return Math.floor(s/86400)+'d '+Math.floor((s%86400)/3600)+'h'}, age=msv=>durSec(Number(msv||0)/1000);
 
+function dashboardHealth(snapshot={}){
+  const current=snapshot.current||snapshot.live||snapshot;
+  const status=String(current.health||current.status||current.service_status||'').toLowerCase();
+  const openIssues=Number(current.open_incidents??current.active_errors??current.blocked_requests??0);
+  if(['degraded','down','offline','unavailable','crashed','stopped'].includes(status)||current.degraded===true){
+    return {level:'degraded',label:'Degraded',reason:'Current runtime reports an unavailable service.'};
+  }
+  if(['attention','warning','warn','partial'].includes(status)||openIssues>0){
+    return {level:'attention',label:'Needs attention',reason:openIssues?'Current runtime has open issues.':'Current runtime reports a warning state.'};
+  }
+  return {level:'healthy',label:'Healthy',reason:'Current runtime reports no active issue.'};
+}
+
+function dashboardFreshness(timestamp,now=Date.now(),staleAfterMs=60000){
+  let value=typeof timestamp==='number'?timestamp:Date.parse(timestamp||'');
+  if(!Number.isFinite(value))return {state:'unknown',label:'Timestamp unavailable',ageMs:null};
+  if(value>0&&value<100000000000)value*=1000;
+  const ageMs=Math.max(0,Number(now)-value);
+  return {state:ageMs>Math.max(0,Number(staleAfterMs)||0)?'stale':'fresh',label:ageMs>Math.max(0,Number(staleAfterMs)||0)?'Stale':'Fresh',ageMs};
+}
+
+function redactDiagnostic(value){
+  const maskPath=path=>{
+    const parts=path.replace(/\\/g,'/').split('/').filter(Boolean);
+    return parts.length?`${/^[a-z]:/i.test(parts[0])?parts[0]+'/':'/'}…/${parts.at(-1)}`:'<path>';
+  };
+  return String(value??'')
+    .replace(/\b(Bearer\s+)[^\s,;]+/gi,'$1<redacted>')
+    .replace(/\b((?:api[_-]?key|token|secret|password|authorization)\b\s*(?:=|:)\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,'$1<redacted>')
+    .replace(/\b((?:--(?:api[-_]?key|token|secret|password)|-(?:k|t))(?:\s+|=))(?:"[^"]*"|'[^']*'|\S+)/gi,'$1<redacted>')
+    .replace(/[A-Za-z]:[\\/](?:[^\s"'`\\/]+[\\/])*[^\s"'`\\/]*/g,maskPath)
+    .replace(/(?<![:\w])\/(?:[^\s"'`/]+\/)+[^\s"'`/]+/g,maskPath);
+}
+
 // Lightweight pure-canvas chart renderer
 function drawSpark(canvasId, points, strokeColor, fillColor){
   const cv=$(canvasId);if(!cv||!points.length)return;
