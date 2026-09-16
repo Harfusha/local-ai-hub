@@ -30,6 +30,38 @@ class AgentScope(str, Enum):
         }
         return _RANKS[self]
 
+    @classmethod
+    def parse(cls, value: Any, default: AgentScope = TASK) -> AgentScope:
+        if isinstance(value, cls):
+            return value
+        if not value:
+            return default
+        raw = str(value).strip().lower()
+        _ALIASES: dict[str, AgentScope] = {
+            "code": cls.TASK,
+            "task": cls.TASK,
+            "tasks": cls.TASK,
+            "repo": cls.REPOSITORY,
+            "repository": cls.REPOSITORY,
+            "project": cls.REPOSITORY,
+            "workspace": cls.WORKTREE,
+            "worktree": cls.WORKTREE,
+            "worktrees": cls.WORKTREE,
+            "clone": cls.CLONE,
+            "branch": cls.BRANCH,
+            "branches": cls.BRANCH,
+            "session": cls.SESSION,
+            "sessions": cls.SESSION,
+            "global": cls.GLOBAL,
+            "user": cls.GLOBAL,
+        }
+        if raw in _ALIASES:
+            return _ALIASES[raw]
+        try:
+            return cls(raw)
+        except ValueError:
+            return default
+
 
 @dataclass(frozen=True)
 class ScopeContext:

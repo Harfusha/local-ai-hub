@@ -245,7 +245,7 @@ class Supervisor:
 
         interval = max(0.5, float(self.cfg.get("health_check_interval_seconds", 2.0)))
         unhealthy_grace = max(interval, float(self.cfg.get("unhealthy_grace_seconds", 20.0)))
-        startup_grace = max(unhealthy_grace, float(self.cfg.get("startup_grace_seconds", 60.0)))
+        startup_grace = max(unhealthy_grace, float(self.cfg.get("startup_grace_seconds", 120.0)))
         initial_backoff = max(0.25, float(self.cfg.get("restart_backoff_initial_seconds", 1.0)))
         max_backoff = max(initial_backoff, float(self.cfg.get("restart_backoff_max_seconds", 30.0)))
         rapid_window = max(10.0, float(self.cfg.get("rapid_crash_window_seconds", 60.0)))

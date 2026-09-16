@@ -184,3 +184,31 @@ def test_blackboard_in_compiled_context(tmp_path: Path):
     element_sources = [el.source_kind for el in res.elements]
     assert "blackboard" in element_sources
     assert any("system_status" in el.content for el in res.elements)
+
+
+def test_agent_scope_parse_and_contract_tolerance():
+    """AgentScope.parse handles aliases and never crashes GoalContract.from_dict."""
+    assert AgentScope.parse("code") == AgentScope.TASK
+    assert AgentScope.parse("project") == AgentScope.REPOSITORY
+    assert AgentScope.parse("repo") == AgentScope.REPOSITORY
+    assert AgentScope.parse("workspace") == AgentScope.WORKTREE
+    assert AgentScope.parse("user") == AgentScope.GLOBAL
+    assert AgentScope.parse("UNKNOWN_RANDOM", default=AgentScope.TASK) == AgentScope.TASK
+
+    # GoalContract accepts 'code' scope gracefully
+    contract = GoalContract.from_dict({"goal": "Refactor parser", "scope": "code"})
+    assert contract.scope == AgentScope.TASK
+
+
+def test_lease_claim_auto_resolves_absolute_paths(tmp_path: Path):
+    """ScopeLeaseStore.claim seamlessly converts absolute paths within root to relative paths."""
+    leases = ScopeLeaseStore(state_dir=tmp_path)
+    file_path = tmp_path / "src" / "worker.py"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text("# worker", encoding="utf-8")
+
+    # Claiming with an absolute path must succeed and store relative path
+    claim_res = leases.claim("agent_worker", str(tmp_path), [str(file_path)])
+    assert claim_res["success"] is True
+    assert claim_res["paths"] == ["src/worker.py"]
+

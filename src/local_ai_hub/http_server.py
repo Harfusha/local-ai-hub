@@ -1130,12 +1130,7 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
                     self._send(200, {"success": True, "record": rec.to_dict()}); return
                 scope_raw = (query.get("scope") or [None])[0]
-                scope_val = None
-                if scope_raw:
-                    try:
-                        scope_val = AgentScope(str(scope_raw).lower())
-                    except ValueError:
-                        pass
+                scope_val = AgentScope.parse(scope_raw, default=None) if scope_raw else None
                 key_val = (query.get("key") or [None])[0]
                 query_val = (query.get("query") or [None])[0]
                 status_raw = (query.get("status") or [None])[0]
@@ -1844,10 +1839,7 @@ class Handler(BaseHTTPRequestHandler):
                         except ValueError:
                             kind_val = MemoryKind.FACT
                         raw_scope = str(rec_data.get("scope", AgentScope.TASK.value)).lower()
-                        try:
-                            scope_val = AgentScope(raw_scope)
-                        except ValueError:
-                            scope_val = AgentScope.TASK
+                        scope_val = AgentScope.parse(raw_scope, default=AgentScope.TASK)
                         raw_status = rec_data.get("status")
                         status_val = None
                         if raw_status:
@@ -1878,7 +1870,7 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
                     self._send(200, {"success": True, "record": rec.to_dict()}); return
                 if action == "find":
-                    scope_val = AgentScope(str(payload["scope"])) if payload.get("scope") else None
+                    scope_val = AgentScope.parse(payload["scope"], default=None) if payload.get("scope") else None
                     key_val = str(payload["key"]) if payload.get("key") else None
                     query_val = str(payload["query"]) if payload.get("query") else None
                     status_val = MemoryStatus(str(payload["status"])) if payload.get("status") else None
@@ -1887,9 +1879,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, {"success": True, "records": [r.to_dict() for r in records]}); return
                 if action == "promote":
                     target_scope_str = str(payload.get("target_scope", "")).strip().lower()
-                    try:
-                        target_scope = AgentScope(target_scope_str)
-                    except ValueError:
+                    target_scope = AgentScope.parse(target_scope_str, default=None)
+                    if not target_scope:
                         self._send(400, {"success": False, "error": f"invalid target scope '{target_scope_str}'", "terminal": True, "retryable": False}); return
                     approver = str(payload.get("approver", actor))
                     try:
