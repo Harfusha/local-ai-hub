@@ -253,6 +253,25 @@ class AgentProjector:
                 if not data.get("stdout") and "stdout" not in extra:
                     data.pop("stdout", None)
 
+        # Optimize context outputs
+        if task_kind == "context" or "context" in data:
+            ctx = data.get("context")
+            if isinstance(ctx, dict) and isinstance(ctx.get("elements"), list):
+                new_els = []
+                for el in ctx["elements"]:
+                    if isinstance(el, dict):
+                        clean_el = {
+                            k: el[k] for k in ("element_id", "source_kind", "content", "reason")
+                            if k in el and el[k] not in (None, "")
+                        }
+                        new_els.append(clean_el)
+                    else:
+                        new_els.append(el)
+                ctx["elements"] = new_els
+                for k in ("value_density", "packed_ratio"):
+                    if k not in extra:
+                        ctx.pop(k, None)
+
         if self.prune_stacktraces and "raw_trace" not in extra and "full_trace" not in extra:
             for k in ("stderr", "stdout", "summary", "text", "error"):
                 if isinstance(data.get(k), str):

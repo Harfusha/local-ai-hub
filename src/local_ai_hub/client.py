@@ -552,13 +552,17 @@ class HubClient:
             })
         return {"success": False, "error": f"unknown coord action '{action}'"}
 
-    def context_compile(self, task_id: str, token_budget: int = 4000, changed_paths: list[str] | None = None) -> dict[str, Any]:
-        return self.post("/api/agent-state/context", {
+    def context_compile(self, task_id: str, token_budget: int = 4000, changed_paths: list[str] | None = None, since_hash: str = "", compact: bool = False) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "action": "compile",
             "task_id": task_id,
             "token_budget": token_budget,
             "changed_paths": changed_paths or [],
-        })
+            "compact": compact,
+        }
+        if since_hash:
+            payload["since_hash"] = since_hash
+        return self.post("/api/agent-state/context", payload)
 
     def verify_receipt(self, task_id: str, criterion: str, passed: bool = True, command_id: str = "", evidence_id: str = "", details: dict[str, Any] | None = None) -> dict[str, Any]:
         return self.post("/api/agent-state/verification", {

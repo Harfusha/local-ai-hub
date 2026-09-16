@@ -16,7 +16,7 @@ from .process_utils import hidden_run_kwargs
 def _run(cmd: list[str], timeout: float = 2.5) -> subprocess.CompletedProcess[str] | None:
     try:
         return subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, check=False,
+            cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout, check=False,
             encoding="utf-8", errors="replace", **hidden_run_kwargs(),
         )
     except Exception:

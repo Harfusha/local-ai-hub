@@ -751,12 +751,13 @@ class RepositoryTools:
                 break
         return out, False
 
-    def search(self, root: str, query: str, top_k: int = 12) -> dict[str, Any]:
+    def search(self, root: str, query: str, top_k: int = 12, context_lines: int | None = None) -> dict[str, Any]:
         base = self._root(root)
         terms = self._terms(query)
         phrase = query.strip().lower()
         if not terms and not phrase:
             return {"success": True, "root": str(base), "results": []}
+        effective_snippet_lines = max(1, min(int(context_lines), 40)) if context_lines is not None else self.snippet_lines
         hits: list[dict[str, Any]] = []
         scanned = 0
         candidate_engine = "python"
@@ -790,7 +791,7 @@ class RepositoryTools:
                     path_matches = sum(1 for t in terms if t in path_lower)
                     score = float(len(matched) * 3 + path_matches * 2 + sum(min(low.count(t), 3) * 0.5 for t in matched))
                     if phrase and len(phrase) <= 120 and phrase in low: score += 8
-                    start = max(0, idx - self.snippet_lines); end = min(len(lines), idx + self.snippet_lines + 1)
+                    start = max(0, idx - effective_snippet_lines); end = min(len(lines), idx + effective_snippet_lines + 1)
                     snippet = "\n".join(f"{n + 1}: {lines[n]}" for n in range(start, end))
                     hits.append({"path": rel, "start_line": start + 1, "end_line": end, "score": round(score, 3), "text": snippet, "file_sha256": file_hash})
         # A timeout/error from both bounded accelerators must not trigger an
@@ -1309,11 +1310,12 @@ class RepositoryTools:
 
 
 
-    def search_paths(self, root: str, query: str, paths: list[str], top_k: int = 10) -> dict[str, Any]:
+    def search_paths(self, root: str, query: str, paths: list[str], top_k: int = 10, context_lines: int | None = None) -> dict[str, Any]:
         """Search only preselected files. Used with preprocessed semantic cards to avoid full-repo scans."""
         base = self._root(root)
         terms = self._terms(query)
         phrase = query.strip().lower()
+        effective_snippet_lines = max(1, min(int(context_lines), 40)) if context_lines is not None else self.snippet_lines
         hits: list[dict[str, Any]] = []
         scanned = 0
         seen_paths: set[str] = set()
@@ -1345,8 +1347,8 @@ class RepositoryTools:
                 if phrase and len(phrase) <= 120 and phrase in low:
                     score += 8
                 score += sum(min(low.count(t), 3) * 0.5 for t in matched)
-                start = max(0, idx - self.snippet_lines)
-                end = min(len(lines), idx + self.snippet_lines + 1)
+                start = max(0, idx - effective_snippet_lines)
+                end = min(len(lines), idx + effective_snippet_lines + 1)
                 snippet = "\n".join(f"{n + 1}: {lines[n]}" for n in range(start, end))
                 hits.append({
                     "path": rel, "start_line": start + 1, "end_line": end,

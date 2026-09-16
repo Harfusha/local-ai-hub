@@ -21,7 +21,7 @@ def _broker(tmp_path):
     return CommandBroker(
         {
             "server": {"state_dir": str(tmp_path / "state")},
-            "commands": {"enabled": True, "allow_read": True, "allow_validation": True},
+            "commands": {"enabled": True, "allow_read": True, "allow_validation": True, "policy_blocking": True},
         },
         _Artifacts(),
         _RepoState(),

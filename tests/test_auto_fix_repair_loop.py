@@ -212,6 +212,15 @@ def test_classify_python_c_dangerous_patterns(temp_dir: Path):
     assert res6["class"] == "validation"
     assert res6["allowed"] is True
 
+    # Word-boundary check: 'latest' contains 'test' but should NOT be classified as validation
+    res7 = broker.classify("python -c \"latest = 123; print(latest)\"")
+    assert res7["class"] == "read", f"word containing 'test' substring should be read: {res7}"
+
+    # Dangerous functions blocked by AST/pattern
+    res8 = broker.classify("python -c \"import os; os.remove('some_file')\"")
+    assert res8["class"] == "unknown"
+    assert res8["allowed"] is False
+
 
 def test_broadened_command_classification(tmp_path: Path):
     broker = CommandBroker({

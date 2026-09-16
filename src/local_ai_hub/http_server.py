@@ -776,7 +776,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise RequestBodyError(f"{name} must be an object")
             if "response_profile" in payload:
                 text(payload["response_profile"], "response_profile", 16)
-        elif path in {"/api/preprocess", "/api/repo/profile", "/api/repo/map", "/api/repo/code-index", "/api/repo/deterministic", "/api/search"}:
+        elif path in {"/api/preprocess", "/api/repo/profile", "/api/repo/map", "/api/repo/code-index", "/api/repo/investigate", "/api/repo/diagnose", "/api/repo/briefing", "/api/command/preflight", "/api/repo/deterministic", "/api/search"}:
             if "root" in payload:
                 text(payload["root"], "root", 4096)
         elif path == "/api/memory/put":
@@ -801,6 +801,10 @@ class Handler(BaseHTTPRequestHandler):
             required_text("symbol", "name", maximum=1024)
         elif path in {"/api/code/ast_outline", "/api/code/symbols_overview", "/api/code/diagnostics"}:
             required_text("path", "file", maximum=4096)
+        elif path in {"/api/code/batch_replace", "/api/repo/batch_replace"}:
+            edits = payload.get("edits") or payload.get("replacements")
+            if not isinstance(edits, list) or not edits:
+                raise RequestBodyError("edits must be a non-empty list of replacement operations")
         elif path == "/api/code-intelligence/query":
             action = text(payload.get("action", "search"), "action", 80).strip().lower().replace("-", "_")
             if action not in {"dead_code", "dead", "stats", "repository_stats"}:
@@ -2076,7 +2080,12 @@ class Handler(BaseHTTPRequestHandler):
                         tenant=tenant,
                     )
                     compiled = APP.agent_context.compile(req)
-                    self._send(200, {"success": True, "context": compiled.to_dict(), "text": compiled.text()}); return
+                    etag = compiled.etag()
+                    since_hash = str(payload.get("since_hash") or payload.get("etag") or "").strip()
+                    if since_hash and since_hash == etag:
+                        self._send(200, {"success": True, "unchanged": True, "etag": etag, "estimated_tokens": 10}); return
+                    compact_mode = bool(payload.get("compact", False))
+                    self._send(200, {"success": True, "etag": etag, "context": compiled.to_dict(compact=compact_mode), "text": compiled.text()}); return
                 self._send(400, {"success": False, "error": f"unknown context action '{action}'", "terminal": True, "retryable": False}); return
             if path == "/api/agent-state/learning":
                 if not getattr(APP, "agent_learning", None) or not APP.agent_learning.state_store.enabled:
@@ -2393,6 +2402,12 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
+            if path in {"/api/code/batch_replace", "/api/repo/batch_replace"}:
+                root = str(payload.get("root", "."))
+                edits = payload.get("edits") or payload.get("replacements") or []
+                dry_run = bool(payload.get("dry_run", False))
+                self._send(200, APP.services.batch_replace(root, edits if isinstance(edits, list) else [], dry_run=dry_run))
+                return
             if path == "/api/maintenance/optimize_db":
                 self._send(200, APP.services.optimize_databases())
                 return
@@ -2535,7 +2550,31 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/repo/map":
                 self._send(200, APP.services.repo_map(str(payload.get("root", ".")), int(payload.get("max_symbols", 120)))); return
             if path == "/api/repo/code-index":
-                self._send(200, APP.services.code_query(str(payload.get("root", ".")), str(payload.get("query", "")), int(payload.get("limit", 20)))); return
+                self._send(200, APP.services.code_query(str(payload.get("root", ".")), str(payload.get("query", "")), int(payload.get("limit", 20)), bool(payload.get("include_code", False)))); return
+            if path == "/api/repo/investigate":
+                self._send(200, APP.services.repo_investigate(
+                    str(payload.get("root", ".")),
+                    str(payload.get("query", "")),
+                    str(payload.get("path", "")),
+                    bool(payload.get("include_code", True)),
+                    int(payload.get("limit", 10)),
+                )); return
+            if path == "/api/repo/diagnose":
+                self._send(200, APP.services.repo_diagnose(
+                    str(payload.get("root", ".")),
+                    str(payload.get("text", payload.get("query", ""))),
+                )); return
+            if path == "/api/repo/briefing":
+                self._send(200, APP.services.repo_briefing(str(payload.get("root", ".")))); return
+            if path == "/api/command/preflight":
+                raw_paths = payload.get("paths") or payload.get("files")
+                paths_list = [str(p) for p in raw_paths] if isinstance(raw_paths, list) else ([str(raw_paths)] if raw_paths else None)
+                self._send(200, APP.services.commands.preflight(
+                    str(payload.get("cwd", payload.get("root", "."))),
+                    str(payload.get("tenant", "default")),
+                    paths=paths_list,
+                    timeout=int(payload.get("timeout", 10) or 10),
+                )); return
             if path == "/api/repo/deterministic":
                 self._send(200, APP.services.deterministic_query(str(payload.get("root", ".")), str(payload.get("query", "")), int(payload.get("limit", 24)))); return
             if path == "/api/repo/impact":
@@ -2545,7 +2584,13 @@ class Handler(BaseHTTPRequestHandler):
                     int(payload.get("max_dependents", APP.config.get("workflow", {}).get("impact_max_dependents", 30))),
                 )); return
             if path == "/api/search":
-                self._send(200, APP.services.repo_search(str(payload.get("root", ".")), str(payload.get("query", "")), int(payload.get("top_k", 12)))); return
+                self._send(200, APP.services.repo_search(
+                    str(payload.get("root", ".")),
+                    str(payload.get("query", "")),
+                    int(payload.get("top_k", 12)),
+                    context_lines=int(payload["context_lines"]) if payload.get("context_lines") is not None else None,
+                    enrich=bool(payload.get("enrich", False)),
+                )); return
             if path == "/api/context/pack":
                 root = str(payload.get("root", ".")); query_text = str(payload.get("query", ""))
                 max_tokens = int(payload.get("max_tokens", APP.config.get("token_saving", {}).get("default_repo_context_tokens", 4200)))
@@ -2602,6 +2647,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, APP.rag.search(str(payload.get("query", "")), tenant, workspace, int(payload.get("top_k", 8)), bool(payload.get("use_reranker", True)))); return
             if path in {"/api/task/speculative_draft", "/api/speculative_draft"}:
                 self._send(200, APP.services.speculative_draft(payload, tenant)); return
+            if path in {"/api/task/scaffold", "/api/scaffold"}:
+                self._send(200, APP.services.task_scaffold(payload, tenant)); return
             if path in {"/api/db/query"}:
                 db_name = str(payload.get("db", "agent_state"))
                 sql_q = str(payload.get("query", "SELECT name FROM sqlite_master WHERE type='table'"))

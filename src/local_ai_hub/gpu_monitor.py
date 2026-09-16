@@ -55,6 +55,7 @@ def _refresh_windows_sample() -> None:
     try:
         completed = subprocess.run(
             ["powershell", "-NoProfile", "-Command", script],
+            stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=4.0, check=False,
             encoding="utf-8", errors="replace", **hidden_run_kwargs(),
         )
@@ -134,6 +135,7 @@ def _nvidia_live() -> dict[str, Any] | None:
     try:
         completed = subprocess.run(
             [smi, "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw", "--format=csv,noheader,nounits"],
+            stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=2.0, check=False, encoding="utf-8", errors="replace", **hidden_run_kwargs(),
         )
         if completed.returncode != 0 or not completed.stdout.strip():
@@ -161,6 +163,7 @@ def _rocm_live() -> dict[str, Any] | None:
         import json
         completed = subprocess.run(
             [smi, "--showuse", "--showmeminfo", "vram", "--json"],
+            stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=2.0, check=False, encoding="utf-8", errors="replace", **hidden_run_kwargs(),
         )
         if completed.returncode == 0 and completed.stdout.strip():

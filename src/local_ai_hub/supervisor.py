@@ -132,28 +132,29 @@ class Supervisor:
     def write_status(self, state: str, error: str = "", ollama_online: bool | None = None) -> None:
         hub_pid = 0
         p = self.state_dir / "hub.pid"
-        port_owner = find_listening_pid(int(self.config.get("server", {}).get("port", 11435)))
-        if port_owner:
-            hub_pid = int(port_owner)
-            try:
-                p.write_text(str(hub_pid), encoding="utf-8")
-            except OSError:
-                pass
-        elif self.child is not None and self.child.poll() is None:
+        if self.child is not None and self.child.poll() is None:
             hub_pid = int(self.child.pid)
             try:
                 p.write_text(str(hub_pid), encoding="utf-8")
             except OSError:
                 pass
         else:
-            try:
-                candidate = int(p.read_text(encoding="utf-8").strip() or 0)
-                if pid_alive(candidate):
-                    hub_pid = candidate
-                else:
-                    p.unlink(missing_ok=True)
-            except Exception:
-                pass
+            port_owner = find_listening_pid(int(self.config.get("server", {}).get("port", 11435)))
+            if port_owner:
+                hub_pid = int(port_owner)
+                try:
+                    p.write_text(str(hub_pid), encoding="utf-8")
+                except OSError:
+                    pass
+            else:
+                try:
+                    candidate = int(p.read_text(encoding="utf-8").strip() or 0)
+                    if pid_alive(candidate):
+                        hub_pid = candidate
+                    else:
+                        p.unlink(missing_ok=True)
+                except Exception:
+                    pass
         atomic_json(self.status_path, {
             "state": state,
             "pid": os.getpid(),

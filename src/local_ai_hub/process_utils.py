@@ -234,13 +234,82 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
     return subprocess.run([str(x) for x in argv], **opts)
 
 
+def _find_listening_pid_win32(port: int) -> int | None:
+    if port <= 0:
+        return None
+    try:
+        import ctypes
+        import socket
+        from ctypes import wintypes
+
+        class MIB_TCPROW_OWNER_PID(ctypes.Structure):
+            _fields_ = [
+                ("dwState", wintypes.DWORD),
+                ("dwLocalAddr", wintypes.DWORD),
+                ("dwLocalPort", wintypes.DWORD),
+                ("dwRemoteAddr", wintypes.DWORD),
+                ("dwRemotePort", wintypes.DWORD),
+                ("dwOwningPid", wintypes.DWORD),
+            ]
+
+        iphlpapi = ctypes.windll.iphlpapi
+        # IPv4 (AF_INET = 2, TCP_TABLE_OWNER_PID_LISTENER = 3)
+        size = wintypes.DWORD(0)
+        iphlpapi.GetExtendedTcpTable(None, ctypes.byref(size), False, 2, 3, 0)
+        if size.value > 0:
+            buf = ctypes.create_string_buffer(size.value)
+            if iphlpapi.GetExtendedTcpTable(buf, ctypes.byref(size), False, 2, 3, 0) == 0:
+                num_entries = wintypes.DWORD.from_buffer_copy(buf[:4]).value
+                row_size = ctypes.sizeof(MIB_TCPROW_OWNER_PID)
+                offset = 4
+                for _ in range(num_entries):
+                    row = MIB_TCPROW_OWNER_PID.from_buffer_copy(buf[offset : offset + row_size])
+                    offset += row_size
+                    if socket.ntohs(row.dwLocalPort & 0xFFFF) == port:
+                        return int(row.dwOwningPid)
+
+        # IPv6 (AF_INET6 = 23, TCP_TABLE_OWNER_PID_LISTENER = 3)
+        class MIB_TCP6ROW_OWNER_PID(ctypes.Structure):
+            _fields_ = [
+                ("ucLocalAddr", wintypes.BYTE * 16),
+                ("dwLocalScopeId", wintypes.DWORD),
+                ("dwLocalPort", wintypes.DWORD),
+                ("ucRemoteAddr", wintypes.BYTE * 16),
+                ("dwRemoteScopeId", wintypes.DWORD),
+                ("dwRemotePort", wintypes.DWORD),
+                ("dwState", wintypes.DWORD),
+                ("dwOwningPid", wintypes.DWORD),
+            ]
+
+        size6 = wintypes.DWORD(0)
+        iphlpapi.GetExtendedTcpTable(None, ctypes.byref(size6), False, 23, 3, 0)
+        if size6.value > 0:
+            buf6 = ctypes.create_string_buffer(size6.value)
+            if iphlpapi.GetExtendedTcpTable(buf6, ctypes.byref(size6), False, 23, 3, 0) == 0:
+                num_entries = wintypes.DWORD.from_buffer_copy(buf6[:4]).value
+                row_size = ctypes.sizeof(MIB_TCP6ROW_OWNER_PID)
+                offset = 4
+                for _ in range(num_entries):
+                    row = MIB_TCP6ROW_OWNER_PID.from_buffer_copy(buf6[offset : offset + row_size])
+                    offset += row_size
+                    if socket.ntohs(row.dwLocalPort & 0xFFFF) == port:
+                        return int(row.dwOwningPid)
+    except Exception:
+        pass
+    return None
+
+
 def find_listening_pid(port: int) -> int | None:
     if port <= 0:
         return None
     if os.name == "nt":
+        pid = _find_listening_pid_win32(port)
+        if pid is not None:
+            return pid
         try:
             cp = subprocess.run(
                 ["netstat", "-ano", "-p", "tcp"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3.0, check=False,
                 **hidden_run_kwargs(),
             )
@@ -256,6 +325,7 @@ def find_listening_pid(port: int) -> int | None:
                             pass
         except Exception:
             return None
+        return None
     else:
         # Prefer lsof because its terse PID output is stable on macOS and common
         # Linux distributions. Fall back to ss on Linux. Both probes are optional,
