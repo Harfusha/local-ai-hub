@@ -10,9 +10,9 @@ The change covers Overview, Queue & requests, Agent OS, Projects, Commands, Mode
 
 ## Information Architecture
 
-Overview becomes the primary operational summary. It shows one derived health state (`healthy`, `attention`, or `degraded`), its evidence, freshness, and a link to the relevant detail view. Secondary metrics remain available but no longer compete with active failures.
+Overview and Trace Inspector are the two priority surfaces. Overview becomes the primary operational summary. It shows one derived health state (`healthy`, `attention`, or `degraded`), its evidence, freshness, and a link to the relevant detail view. Secondary metrics remain available but no longer compete with active failures.
 
-Queue owns HTTP request history and trace inspection. Agent OS owns durable task contracts, memories, incidents, and task-run inspection. A trace record without captured agent data states that explicitly and does not expose empty prompt or output panels as if data were missing accidentally.
+Queue owns HTTP request history and trace inspection. Agent OS owns durable task contracts, memories, incidents, and task-run inspection. Trace Inspector is request-type aware: it always shows identity, lifecycle, timing, status, route, actor, tenant, correlations, and retained-byte state; it additionally renders structured input, output, errors, model execution, tool calls, and task events when that request type recorded them. A trace record without captured agent data states that explicitly and does not expose empty prompt or output panels as if data were missing accidentally.
 
 Projects, Bundles, and RAG use a stable repository identity: display name, canonical root, and short identifier. Views group related worktrees and use filters before long raw lists.
 
@@ -28,8 +28,8 @@ Default tables redact local roots, executable paths, command arguments, tokens, 
 
 ## Section Changes
 
-- Overview: alert-first summary, compact supporting metrics, meaningful graphs with labels and empty states.
-- Queue: clear active/history separation, trace availability indicator, actionable empty trace details.
+- Overview: alert-first summary, compact supporting metrics, meaningful graphs with labels and empty states. It receives the strongest visual hierarchy and clearest next-action links.
+- Queue and Trace Inspector: clear active/history separation, trace availability indicator, actionable empty trace details, and type-specific input/output panels. Non-agent HTTP traces retain a useful universal request summary instead of an agent-shaped empty layout.
 - Agent OS: task-only run history; incidents grouped by fingerprint with recurrence and remediation state.
 - Projects: grouped repository/worktree rows, readable progress, text actions, filter for non-ready work.
 - Models & RAG: searchable workspace list with owner/path/state; arena describes inputs and compares returned dimensions.
@@ -44,4 +44,4 @@ Every asynchronous load renders a bounded loading state, then either usable data
 
 ## Testing
 
-Add regression tests for health projection, freshness and stale handling, redaction, trace availability, repository deduplication, action metadata, and rendering contracts. Preserve existing dashboard API and browser tests. Verify the full test suite and manually inspect the refreshed dashboard in Chrome.
+Add regression tests for health projection, freshness and stale handling, redaction, trace availability, universal trace summaries, type-specific input/output rendering, repository deduplication, action metadata, and rendering contracts. Preserve existing dashboard API and browser tests. Verify the full test suite and manually inspect Overview and Trace Inspector in Chrome.
