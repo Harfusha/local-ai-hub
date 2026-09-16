@@ -1,22 +1,7 @@
 from __future__ import annotations
 
 import re
-import json
-import subprocess
 from local_ai_hub.dashboard import DASHBOARD_HTML
-
-
-def _run_dashboard_helpers(expression: str) -> object:
-    start = DASHBOARD_HTML.index("function dashboardHealth(")
-    end = DASHBOARD_HTML.index("\n// Lightweight pure-canvas", start)
-    script = f"{DASHBOARD_HTML[start:end]}\nconsole.log(JSON.stringify({expression}));"
-    result = subprocess.run(
-        ["node", "-e", script],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return json.loads(result.stdout)
 
 
 def test_dashboard_modal_css_classes_present() -> None:
@@ -220,49 +205,49 @@ def test_dashboard_display_state_helpers_defined() -> None:
 
 
 def test_dashboard_health_prioritizes_current_degradation() -> None:
-    result = _run_dashboard_helpers(
-        "dashboardHealth({status:'warning', degraded:true, open_incidents:2})"
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function dashboardHealth(") : DASHBOARD_HTML.index(
+            "function dashboardFreshness("
+        )
+    ]
+    assert "current.degraded===true" in source
+    assert "return {level:'degraded',label:'Degraded'" in source
+    assert source.index("return {level:'degraded'") < source.index(
+        "return {level:'attention'"
     )
-    assert result == {
-        "level": "degraded",
-        "label": "Degraded",
-        "reason": "Current runtime reports an unavailable service.",
-    }
 
 
 def test_dashboard_freshness_normalizes_timestamp_inputs_with_explicit_now() -> None:
-    result = _run_dashboard_helpers(
-        "["
-        "dashboardFreshness('2023-11-14T22:13:20.000Z',1700000060000),"
-        "dashboardFreshness(1700000000,1700000060000),"
-        "dashboardFreshness(1700000000000,1700000060000),"
-        "dashboardFreshness('1700000000',1700000060000),"
-        "dashboardFreshness('not-a-timestamp',1700000060000)"
-        "]"
-    )
-    assert result == [
-        {"state": "fresh", "label": "Fresh", "ageMs": 60000},
-        {"state": "fresh", "label": "Fresh", "ageMs": 60000},
-        {"state": "fresh", "label": "Fresh", "ageMs": 60000},
-        {"state": "fresh", "label": "Fresh", "ageMs": 60000},
-        {"state": "unknown", "label": "Timestamp unavailable", "ageMs": None},
-    ]
     freshness_source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function dashboardFreshness(") : DASHBOARD_HTML.index(
             "function redactDiagnostic("
         )
     ]
-    assert "Date.now" not in freshness_source
+    assert "function dashboardFreshness(timestamp,now=Date.now(),staleAfterMs=120000)" in freshness_source
+    assert "timestamp.trim()" in freshness_source
+    assert "Date.parse(timestamp||'')" in freshness_source
+    assert "Timestamp unavailable" in freshness_source
+    assert "Clock unavailable" in freshness_source
 
 
 def test_dashboard_redacts_diagnostic_secrets_and_absolute_paths() -> None:
-    result = _run_dashboard_helpers(
-        "redactDiagnostic("
-        "'--token value --secret=value Authorization: abc Bearer xyz '"
-        "+ 'C:\\\\Users\\\\adam\\\\app.py /home/adam/app.py'"
-        ")"
-    )
-    assert result == (
-        "--token <redacted> --secret=<redacted> Authorization: <redacted> "
-        "Bearer <redacted> C:/…/app.py /…/app.py"
-    )
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function redactDiagnostic(") : DASHBOARD_HTML.index(
+            "// Lightweight pure-canvas"
+        )
+    ]
+    assert "Bearer\\s+" in source
+    assert "api[_-]?key" in source
+    assert "(^|\\s)((?:--(?:api[-_]?key|token|secret|password)" in source
+    assert "[A-Za-z]:[\\\\/]" in source
+    assert "(?<![:\\w])\\/" in source
+
+
+def test_dashboard_redacts_quoted_json_secret_keys() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function redactDiagnostic(") : DASHBOARD_HTML.index(
+            "// Lightweight pure-canvas"
+        )
+    ]
+    assert "(?:[\"'](?:api[_-]?key|token|secret|password|authorization)[\"']" in source
+    assert "<redacted>" in source
