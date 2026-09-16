@@ -25,7 +25,7 @@ class DebugTraceStore:
         self.terminal_ttl_seconds = max(1.0, float(cfg.get("terminal_ttl_seconds", config.get("async_jobs", {}).get("result_ttl_seconds", 259200))))
         self.max_bytes = max(1024, int(cfg.get("max_bytes", 268435456)))
         self.max_sessions = max(1, int(cfg.get("max_sessions", 1000)))
-        self.max_events_per_session = max(2, int(cfg.get("max_events_per_session", 2000)))
+        self.max_events_per_session = max(2, int(cfg.get("max_events_per_session", 20000)))
         self.max_event_bytes = max(256, int(cfg.get("max_event_bytes", 65536)))
         self.max_session_text_bytes = max(1024, int(cfg.get("max_session_text_bytes", 8388608)))
         self.cleanup_batch_size = max(1, int(cfg.get("cleanup_batch_size", 50)))
