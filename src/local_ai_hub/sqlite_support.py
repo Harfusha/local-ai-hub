@@ -240,3 +240,46 @@ def auto_checkpoint_wal(
         return {"success": False, "error": str(exc), "path": str(path)}
 
 
+def clean_quarantined_files(
+    state_dir: Path | str,
+    *,
+    max_age_seconds: float = 86400 * 7,
+    remove_empty: bool = True,
+) -> dict[str, Any]:
+    """Prune abandoned .corrupt-* SQLite quarantine files in state_dir."""
+    p_state = Path(state_dir)
+    if not p_state.is_dir():
+        return {"success": True, "pruned_count": 0, "pruned_bytes": 0, "files": []}
+
+    now = time.time()
+    pruned_count = 0
+    pruned_bytes = 0
+    pruned_files = []
+
+    try:
+        for p in p_state.glob("*.corrupt-*"):
+            if not p.is_file():
+                continue
+            try:
+                st = p.stat()
+                age = now - st.st_mtime
+                is_empty = st.st_size == 0
+                if (remove_empty and is_empty) or age >= max_age_seconds:
+                    size = st.st_size
+                    p.unlink(missing_ok=True)
+                    pruned_count += 1
+                    pruned_bytes += size
+                    pruned_files.append(p.name)
+            except Exception:
+                continue
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "pruned_count": pruned_count, "pruned_bytes": pruned_bytes}
+
+    return {
+        "success": True,
+        "pruned_count": pruned_count,
+        "pruned_bytes": pruned_bytes,
+        "files": pruned_files,
+    }
+
+

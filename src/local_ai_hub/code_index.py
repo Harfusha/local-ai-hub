@@ -1255,6 +1255,52 @@ class CodeIndex:
             }
         return {"success": False, "error": f"Symbol '{symbol_name}' not found"}
 
+    def find_dead_code(self, root: str, limit: int = 50) -> dict[str, Any]:
+        """Detect unreferenced symbols using the precomputed symbols and refs tables."""
+        resolved_root = canonical_root(root)
+        try:
+            with self._lock, closing(self._connect()) as con:
+                sql = """
+                SELECT s.path, s.name, s.kind, s.line, s.end_line, s.container, s.name_path, s.access
+                FROM symbols s
+                LEFT JOIN refs r ON s.root = r.root AND s.name = r.name
+                WHERE s.root = ?
+                  AND r.name IS NULL
+                  AND s.name NOT IN (
+                      'main', 'run', 'cli', 'app', 'handler', '__init__', '__str__', '__repr__',
+                      'setUp', 'tearDown', 'setUpClass', 'tearDownClass', 'test'
+                  )
+                  AND NOT s.name LIKE 'test_%'
+                  AND NOT s.path LIKE '%test%'
+                ORDER BY s.path, s.line
+                LIMIT ?
+                """
+                rows = con.execute(sql, (resolved_root, max(1, int(limit)))).fetchall()
+
+            dead_symbols = []
+            for r in rows:
+                dead_symbols.append({
+                    "file": r["path"],
+                    "path": r["path"],
+                    "name": r["name"],
+                    "kind": r["kind"],
+                    "line": r["line"],
+                    "end_line": r["end_line"],
+                    "container": r["container"] or "",
+                    "name_path": r["name_path"] or r["name"],
+                    "access": r["access"] or "public",
+                    "reason": "no indexed references found",
+                })
+            return {
+                "success": True,
+                "candidate_count": len(dead_symbols),
+                "dead_code": dead_symbols,
+                "dead_symbols": dead_symbols,
+                "indexed": True,
+            }
+        except Exception as exc:
+            return {"success": False, "error": str(exc), "candidate_count": 0, "dead_code": [], "dead_symbols": []}
+
     def status(self, root: str | None = None) -> dict[str, Any]:
         now = time.monotonic()
         key = str(root or "__all__")

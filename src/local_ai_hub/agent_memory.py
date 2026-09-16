@@ -382,7 +382,53 @@ class MemoryStore:
         )
         self.state_store.append(event)
         self._save_record(target_record)
+        self._auto_link_record(target_record, actor=actor)
         return target_record
+
+    def _auto_link_record(self, record: MemoryRecord, actor: str = "agent") -> None:
+        """Automatically create entity relations for recorded memory items."""
+        try:
+            if record.key:
+                self.record_relation(
+                    source=record.record_id,
+                    relation="defines",
+                    target=record.key,
+                    weight=record.confidence,
+                    actor=actor,
+                )
+            if record.scope_id:
+                self.record_relation(
+                    source=record.record_id,
+                    relation="scoped_in",
+                    target=record.scope_id,
+                    weight=1.0,
+                    actor=actor,
+                )
+            text_corpus = f"{record.key or ''} {record.value or ''}"
+            matches = set(re.findall(r"\b[\w\-./\\]+\.(?:py|js|ts|tsx|jsx|go|rs|cs|java|cpp|h|json|toml|yaml|md)\b", text_corpus))
+            source_ent = record.key or record.record_id
+            for target_path in list(matches)[:10]:
+                norm_path = target_path.replace("\\", "/").strip("./")
+                if norm_path and norm_path != source_ent:
+                    self.record_relation(
+                        source=source_ent,
+                        relation="targets",
+                        target=norm_path,
+                        weight=0.8,
+                        actor=actor,
+                    )
+            if isinstance(record.provenance, dict) and "relations" in record.provenance:
+                for rel in record.provenance["relations"]:
+                    if isinstance(rel, dict) and "target" in rel and "relation" in rel:
+                        self.record_relation(
+                            source=rel.get("source", source_ent),
+                            relation=rel["relation"],
+                            target=rel["target"],
+                            weight=float(rel.get("weight", 1.0)),
+                            actor=actor,
+                        )
+        except Exception:
+            pass
 
     def promote(
         self,

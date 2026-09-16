@@ -202,7 +202,7 @@ class FeatureSet:
                 "context_compile", "verify_receipt", "verify_completion",
                 "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
                 "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge",
-                "swarm_dispatch", "swarm_step", "swarm_status",
+                "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel",
                 "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge",
                 "curate_dataset",
             ])

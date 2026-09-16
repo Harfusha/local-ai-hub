@@ -5047,6 +5047,16 @@ def test_{sym}_regression_edge_cases():
 
     def find_dead_code(self, root: str, limit: int = 50) -> dict[str, Any]:
         """Detect potentially dead/uncalled functions and classes in repository."""
+        if self.code_index is not None:
+            try:
+                st = self.code_index.status(root)
+                if st.get("symbols", 0) > 0:
+                    res = self.code_index.find_dead_code(root, limit=limit)
+                    if res.get("success"):
+                        return res
+            except Exception:
+                pass
+
         p_root = Path(self._root(root))
         if not p_root.is_dir():
             return {"success": False, "error": f"root not found: {root}"}
@@ -5095,6 +5105,57 @@ def test_{sym}_regression_edge_cases():
             "dead_code": dead_candidates,
             "dead_symbols": dead_candidates,
         }
+
+    @staticmethod
+    def fold_brace_blocks(code: str, target_symbols: set[str] | None = None) -> str:
+        """Fold function/method bodies in brace-based languages (Go, Rust, TS, JS, C#, Java)."""
+        lines = code.splitlines()
+        out: list[str] = []
+        targets = target_symbols or set()
+
+        in_func = False
+        func_brace_depth = 0
+        current_brace_depth = 0
+
+        FUNC_PAT = re.compile(
+            r"^\s*(?:(?:pub(?:lic)?|priv(?:ate)?|prot(?:ected)?|internal|static|async|export|default|override|virtual|final)\s+)*"
+            r"(?:(?:func|fn|function|def)\b|(?:[A-Za-z_$][\w.<>,\[\]]*\s+)+[A-Za-z_$][\w$]*\s*\()|"
+            r"^\s*(?:func\s*\([^)]*\)\s*)?[A-Za-z_$][\w$]*\s*\([^)]*\)\s*(?:[^{;]*\{|=>)"
+        )
+        STRUCT_PAT = re.compile(r"^\s*(?:(?:pub(?:lic)?|export)\s+)*(?:struct|interface|enum|type|trait|class)\b")
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith(("//", "#", "/*", "*")):
+                if not in_func:
+                    out.append(line)
+                continue
+
+            if not in_func:
+                if FUNC_PAT.search(line) and not STRUCT_PAT.search(line) and ("{" in line or "=>" in line):
+                    is_target = any(sym in line for sym in targets) if targets else False
+                    if not is_target and "{" in line:
+                        in_func = True
+                        func_brace_depth = current_brace_depth
+                        idx = line.find("{")
+                        out.append(line[:idx + 1])
+                        out.append("    /* ... */")
+                        current_brace_depth += line.count("{") - line.count("}")
+                        if current_brace_depth <= func_brace_depth:
+                            in_func = False
+                            out.append("}")
+                        continue
+
+                out.append(line)
+                current_brace_depth += line.count("{") - line.count("}")
+            else:
+                current_brace_depth += line.count("{") - line.count("}")
+                if current_brace_depth <= func_brace_depth:
+                    in_func = False
+                    indent = " " * (len(line) - len(line.lstrip()))
+                    out.append(f"{indent}}}")
+
+        return "\n".join(out)
 
     def ast_outline(self, root: str, path: str) -> dict[str, Any]:
         """Generate a token-compact structural interface outline collapsing function/method bodies."""
@@ -5147,6 +5208,19 @@ def test_{sym}_regression_edge_cases():
                 "reduction_pct": token_savings_pct,
             }
         except Exception:
+            if "{" in content and "}" in content:
+                outlined = self.fold_brace_blocks(content)
+                char_savings = max(0, len(content) - len(outlined))
+                token_savings_pct = round((char_savings / max(1, len(content))) * 100, 1)
+                return {
+                    "success": True,
+                    "path": str(target.relative_to(p_root)).replace("\\", "/"),
+                    "outline": outlined,
+                    "original_chars": len(content),
+                    "outline_chars": len(outlined),
+                    "reduction_pct": token_savings_pct,
+                    "polyglot": True,
+                }
             out_lines = []
             for line in content.splitlines():
                 if re.match(r"^\s*(?:def|class|async def|public|private|function|fn|func|interface|struct)\b", line):
@@ -6882,6 +6956,19 @@ def test_{sym}_regression_edge_cases():
         try:
             tree = ast.parse(code)
         except Exception:
+            if "{" in code and "}" in code:
+                skeleton = self.fold_brace_blocks(code, set(target_symbols or []))
+                orig_len = len(code)
+                skel_len = len(skeleton)
+                ratio = round((orig_len - skel_len) / max(1, orig_len), 3)
+                return {
+                    "success": True,
+                    "original_chars": orig_len,
+                    "skeleton_chars": skel_len,
+                    "savings_ratio": max(0.0, ratio),
+                    "skeleton_code": skeleton,
+                    "polyglot": True,
+                }
             return {"success": True, "skeleton_code": code, "original_chars": len(code), "skeleton_chars": len(code), "savings_ratio": 0.0}
 
         targets = set(target_symbols or [])
