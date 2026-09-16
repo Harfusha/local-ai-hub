@@ -141,10 +141,7 @@ def _normalize_deterministic(val: Any) -> Any:
     if isinstance(val, dict):
         out = {}
         for k in sorted(val.keys()):
-            v = val[k]
-            if k in {"timestamp", "created_at", "updated_at"} and isinstance(v, float):
-                v = round(v, 1)
-            out[k] = _normalize_deterministic(v)
+            out[k] = _normalize_deterministic(val[k])
         return out
     if isinstance(val, list):
         return [_normalize_deterministic(x) for x in val]
