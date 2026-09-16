@@ -282,3 +282,58 @@ class SwarmCoordinator:
         if receipt_id:
             res["receipt_id"] = receipt_id
         return res
+
+    def list_swarms(self, state: str | None = None, limit: int = 50) -> dict[str, Any]:
+        with closing(self._connect()) as con:
+            sql = "SELECT swarm_id, goal, target_paths, test_command, author, state, receipt_id, created_at, updated_at FROM agent_swarms"
+            params: list[Any] = []
+            if state:
+                sql += " WHERE state = ?"
+                params.append(state)
+            sql += " ORDER BY updated_at DESC LIMIT ?"
+            params.append(max(1, int(limit)))
+            rows = con.execute(sql, tuple(params)).fetchall()
+
+        swarms = []
+        for r in rows:
+            swarms.append({
+                "swarm_id": r[0],
+                "goal": r[1],
+                "target_paths": json.loads(r[2]),
+                "test_command": r[3],
+                "author": r[4],
+                "state": r[5],
+                "receipt_id": r[6],
+                "created_at": r[7],
+                "updated_at": r[8],
+            })
+        return {"success": True, "swarms": swarms, "count": len(swarms)}
+
+    def cancel(self, swarm_id: str, reason: str = "") -> dict[str, Any]:
+        info = self.get_status(swarm_id)
+        if not info.get("success"):
+            return info
+        current_state = info["state"]
+        if current_state in (SwarmState.COMPLETED.value, SwarmState.FAILED.value):
+            return {"success": False, "error": f"Swarm '{swarm_id}' already terminated ({current_state})"}
+
+        now = time.time()
+        history = info["history"]
+        history.append({
+            "timestamp": now,
+            "role": "Coordinator",
+            "action": "cancel",
+            "payload": {"reason": reason or "cancelled by agent"},
+            "resulting_state": SwarmState.FAILED.value,
+        })
+        self._release_all_leases(swarm_id)
+        with closing(self._connect()) as con, con:
+            con.execute(
+                """
+                UPDATE agent_swarms
+                SET state = ?, history = ?, updated_at = ?
+                WHERE swarm_id = ?
+                """,
+                (SwarmState.FAILED.value, json.dumps(history), now, swarm_id),
+            )
+        return {"success": True, "swarm_id": swarm_id, "state": SwarmState.FAILED.value, "cancelled": True}

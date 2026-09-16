@@ -1162,6 +1162,12 @@ class Handler(BaseHTTPRequestHandler):
                 board_id = (query.get("board_id") or ["default"])[0]
                 section = (query.get("section") or [None])[0]
                 self._send(200, APP.agent_blackboard.get(board_id, section=section)); return
+            if path == "/api/agent-state/swarm":
+                if not getattr(APP, "swarm", None):
+                    self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
+                st = (query.get("state") or [None])[0]
+                lim = int((query.get("limit") or [50])[0])
+                self._send(200, APP.swarm.list_swarms(state=st, limit=lim)); return
             if path.startswith("/api/agent-state/swarm/"):
                 swarm_id = path.split("/api/agent-state/swarm/", 1)[1].strip()
                 if not getattr(APP, "swarm", None):
@@ -2184,6 +2190,13 @@ class Handler(BaseHTTPRequestHandler):
                 action = str(payload.get("action", "submit_patch"))
                 step_payload = payload.get("payload", payload.get("content", {}))
                 res = APP.swarm.step(swarm_id=swarm_id, role=role, action=action, payload=step_payload)
+                self._send(200, res); return
+            if path == "/api/agent-state/swarm/cancel":
+                if not getattr(APP, "swarm", None):
+                    self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
+                swarm_id = str(payload.get("swarm_id", payload.get("task_id", "")))
+                reason = str(payload.get("reason", ""))
+                res = APP.swarm.cancel(swarm_id=swarm_id, reason=reason)
                 self._send(200, res); return
             if path == "/api/benchmark/run":
                 if not getattr(APP, "benchmark_runner", None):
