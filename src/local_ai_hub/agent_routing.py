@@ -137,12 +137,14 @@ class RoutingEngine:
             base = normalized.split("/")[-1]
             name = base.rsplit(".", 1)[0]
             test_target = f"tests/test_{name}.py"
-            selected.append(test_target)
+            if test_target not in selected:
+                selected.append(test_target)
 
             # Check if any known flakes match this test target
             for flake in self._known_flakes:
                 if flake.startswith(test_target) or test_target.startswith(flake.split("::")[0]):
-                    flaky.append(flake)
+                    if flake not in flaky:
+                        flaky.append(flake)
 
         return TestSelection(
             selected_tests=tuple(selected),

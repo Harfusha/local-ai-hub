@@ -1396,18 +1396,20 @@ class RAGStore:
             candidates = candidates[:max(16, int(self.config.get("rag", {}).get("rerank_candidates", 16)))]
 
         # Hydrate text for winning candidates from DB
-        needed_keys = [(c["path"], c["chunk_no"]) for c in candidates if "text" not in c or not c.get("text")]
-        if needed_keys:
+        needed_map: dict[tuple[str, int], list[dict[str, Any]]] = {}
+        for c in candidates:
+            if "text" not in c or not c.get("text"):
+                needed_map.setdefault((c["path"], c["chunk_no"]), []).append(c)
+        if needed_map:
             with closing(self._connect()) as con:
-                for chunk_path, chunk_no in needed_keys:
+                for (chunk_path, chunk_no), target_candidates in needed_map.items():
                     txt_row = con.execute(
                         "SELECT text FROM chunks WHERE tenant=? AND workspace=? AND path=? AND chunk_no=?",
                         (scope_key, workspace, chunk_path, chunk_no),
                     ).fetchone()
                     chunk_text = str(txt_row[0]) if txt_row else ""
-                    for c in candidates:
-                        if c["path"] == chunk_path and c["chunk_no"] == chunk_no:
-                            c["text"] = chunk_text
+                    for c in target_candidates:
+                        c["text"] = chunk_text
 
         reranked = False
         if use_reranker and candidates:
