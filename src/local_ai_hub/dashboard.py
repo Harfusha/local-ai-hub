@@ -295,6 +295,13 @@ tbody tr.click:hover{background:#162338}
 </div>
 
 <div id="overview" class="page active">
+  <section id="overviewHealthSummary" class="section" aria-live="polite" style="margin-bottom:12px;padding:14px;border-left:4px solid var(--accent)">
+    <div class="label">Operational summary</div>
+    <div class="value primary-metric" id="overviewHealthLevel">Loading runtime health…</div>
+    <div class="sub" id="overviewHealthEvidence">Waiting for live status.</div>
+    <div class="tiny muted" id="overviewFreshness">Timestamp unavailable</div>
+    <button type="button" class="btn" id="overviewHealthAction" style="margin-top:10px">Open details</button>
+  </section>
   <div class="dash-group">
     <div class="group-title"><span>Host &amp; System Health</span><span class="tiny muted">Core runtime state, capacity and supervisory control</span></div>
     <div class="grid grid-3">
@@ -452,13 +459,14 @@ tbody tr.click:hover{background:#162338}
 
 <div id="performance" class="page">
   <section class="section">
-    <h2>Live Telemetry Waves <span class="tiny">Real-time p95 latency &amp; queue wait (HTML5 Canvas · zero external CDN)</span></h2>
+    <h2>Live Telemetry Waves <span class="tiny">p95 latency (ms) &amp; queue wait (ms) · HTML5 Canvas</span></h2>
     <div style="padding:12px">
       <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:11px">
         <span><span class="chip" style="border-color:#38bdf8;color:#38bdf8">● Latency p95</span> <span class="chip" style="border-color:#34d399;color:#34d399">● Queue Wait</span></span>
         <span class="tiny muted">30 rolling sample ticks</span>
       </div>
       <canvas id="liveChartCanvas" width="800" height="150" style="width:100%;height:150px;background:#080c13;border-radius:6px;border:1px solid #1e293b;display:block"></canvas>
+      <div id="liveChartEmpty" class="tiny muted" style="display:none;padding-top:8px">No latency or queue samples yet.</div>
     </div>
   </section>
 
@@ -564,7 +572,7 @@ const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g
 const n=v=>Number(v||0).toLocaleString(), ms=v=>{v=Number(v||0);return v>=1000?(v/1000).toFixed(v>=10000?1:2)+' s':Math.round(v)+' ms'}, durSec=s=>{s=Number(s||0);if(s<60)return Math.round(s)+'s';if(s<3600)return Math.floor(s/60)+'m '+Math.round(s%60)+'s';if(s<86400)return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';return Math.floor(s/86400)+'d '+Math.floor((s%86400)/3600)+'h'}, age=msv=>durSec(Number(msv||0)/1000);
 
 function dashboardHealth(snapshot={}){
-  const current=snapshot.current||snapshot.live||snapshot;
+  const current=snapshot.current||snapshot.live||snapshot.headless||snapshot;
   const status=String(current.health||current.status||current.service_status||'').toLowerCase();
   const openIssues=Number(current.open_incidents??current.active_errors??current.blocked_requests??0);
   if(['degraded','down','offline','unavailable','crashed','stopped'].includes(status)||current.degraded===true){
@@ -584,6 +592,30 @@ function dashboardFreshness(timestamp,now=Date.now(),staleAfterMs=120000){
   if(!Number.isFinite(current))return {state:'unknown',label:'Clock unavailable',ageMs:null};
   const ageMs=Math.max(0,current-value),configuredThreshold=Number(staleAfterMs),threshold=Number.isFinite(configuredThreshold)?Math.max(0,configuredThreshold):60000;
   return {state:ageMs>threshold?'stale':'fresh',label:ageMs>threshold?'Stale':'Fresh',ageMs};
+}
+
+function renderOverviewHealth(snapshot={}){
+  const runtime=snapshot.headless||{};
+  const current={...runtime,health:runtime.health||runtime.state||snapshot.health||snapshot.status||snapshot.service_status};
+  const health=dashboardHealth(snapshot);
+  const timestamp=snapshot.updated_at??snapshot.generated_at??snapshot.timestamp??snapshot.observability?.updated_at??runtime.updated_at;
+  const freshness=dashboardFreshness(timestamp);
+  const level=$('overviewHealthLevel'),evidence=$('overviewHealthEvidence'),freshnessEl=$('overviewFreshness'),action=$('overviewHealthAction'),summary=$('overviewHealthSummary');
+  if(!level||!evidence||!freshnessEl||!action||!summary)return;
+  const label=health.level==='attention'?'Needs attention':health.label;
+  const target=health.level==='attention'&&Number(snapshot.scheduler?.foreground_queued||0)>0?'work':'reliability';
+  const targetLabel=target==='work'?'Open queue and requests':'Open reliability details';
+  const stateText=current.health||current.status||current.service_status||'unreported';
+  const activeRequests=Array.isArray(snapshot.observability?.active_requests)?snapshot.observability.active_requests.length:0;
+  const evidenceText=`${health.reason} Runtime state: ${stateText}. ${activeRequests} active API request${activeRequests===1?'':'s'}.`;
+  level.textContent=label;
+  level.className='value primary-metric '+(health.level==='healthy'?'ok':health.level==='attention'?'warn-t':'bad-t');
+  evidence.textContent=evidenceText;
+  freshnessEl.textContent=freshness.ageMs===null?freshness.label:`${freshness.label} · updated ${age(freshness.ageMs)} ago`;
+  freshnessEl.className='tiny '+(freshness.state==='stale'?'warn-t':'muted');
+  summary.style.borderLeftColor=health.level==='healthy'?'var(--ok)':health.level==='attention'?'var(--warn)':'var(--bad)';
+  action.textContent=targetLabel;
+  action.onclick=()=>switchTab(target);
 }
 
 function redactDiagnostic(value){
@@ -3936,6 +3968,7 @@ function render(s){
   last=s;
   const q=s.scheduler||{},o=s.observability||{},p=s.preprocessing||{},bg=s.background_gpu||{},h=s.headless||{},r=s.runtime_stats||{},ss=q.stats||{},rp=s.runtime_profile||{},cmd=r.commands||{};
   ensureHttpTailTable();setupWorkLayout();
+  renderOverviewHealth(s);
 
   (function renderFeaturePills(){
     const feat=s.features||{};
@@ -4040,6 +4073,8 @@ function render(s){
   drawSpark('latencySpark', latencySparkData, '#38bdf8', 'rgba(56,189,248,0.12)');
   drawSpark('throughputSpark', throughputSparkData, '#34d399', 'rgba(52,211,153,0.12)');
   drawDualChart('liveChartCanvas', liveChartLatency, liveChartQueue);
+  const liveChartEmpty=$('liveChartEmpty');
+  if(liveChartEmpty)liveChartEmpty.style.display=agentHttp.events||curP95||curWait?'none':'block';
 
   const agState=s.agent_state||{};
   if($('agentStateVal')){
