@@ -14,7 +14,7 @@ def test_unmatched_evaluation_is_not_claimed_as_quality_gain(tmp_path):
             test_pass=True,
             duration_ms=8,
         )
-        store.flush(1)
+        assert store.flush(5.0)
         report = store.report(1)
     finally:
         store.close()
@@ -28,7 +28,7 @@ def test_matched_evaluation_compares_hub_on_and_off(tmp_path):
     try:
         store.record_evaluation(task_id="case-2", cohort="hub_on", quality_pass=True, test_pass=True, duration_ms=8)
         store.record_evaluation(task_id="case-2", cohort="hub_off", quality_pass=True, test_pass=True, duration_ms=12)
-        store.flush(1)
+        assert store.flush(5.0)
         report = store.report(1)
     finally:
         store.close()
@@ -46,7 +46,7 @@ def test_evaluation_gate_promotes_only_after_ten_matched_quality_safe_faster_tas
             task_id = f"case-{index}"
             store.record_evaluation(task_id=task_id, cohort="hub_on", quality_pass=True, test_pass=True, duration_ms=8)
             store.record_evaluation(task_id=task_id, cohort="hub_off", quality_pass=True, test_pass=True, duration_ms=12)
-        store.flush(1)
+        assert store.flush(5.0)
         gate = store.report(1)["evaluation"]["gate"]
     finally:
         store.close()
@@ -67,7 +67,7 @@ def test_evaluation_service_exposes_existing_task_surface(tmp_path):
             "test_pass": True,
             "duration_ms": 5,
         })
-        store.flush(1)
+        assert store.flush(5.0)
         reported = service.evaluation({"action": "report", "days": 1})
     finally:
         store.close()

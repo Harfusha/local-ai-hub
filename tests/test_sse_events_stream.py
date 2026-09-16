@@ -16,9 +16,16 @@ class MockWfile(io.BytesIO):
     def __init__(self):
         super().__init__()
         self.flushed = False
+        self.disconnect_after: bytes | None = None
 
     def flush(self):
         self.flushed = True
+
+    def write(self, b: bytes) -> int:
+        res = super().write(b)
+        if self.disconnect_after and self.disconnect_after in self.getvalue():
+            raise OSError("client disconnected")
+        return res
 
 
 class DummyHandler:
@@ -73,16 +80,20 @@ def test_sse_stream_replays_and_receives_live_events(tmp_path: Path):
     http_server.APP = DummyApp()
     try:
         handler = DummyHandler(DummyApp())
+        handler.wfile.disconnect_after = b"task.updated"
 
         def _publish_delayed():
-            time.sleep(0.1)
+            for _ in range(200):
+                if b"event: task.created" in handler.wfile.getvalue():
+                    break
+                time.sleep(0.01)
             store.append(AgentEvent.create("task-1", "task.updated", {"step": 2}, "k2"))
 
         t = threading.Thread(target=_publish_delayed)
         t.start()
 
-        # Stream for 0.5 seconds
-        handler._stream_agent_events(stream_id="task-1", after_seq=0, timeout=0.5)
+        # Stream with sufficient timeout headroom (disconnects immediately on live event)
+        handler._stream_agent_events(stream_id="task-1", after_seq=0, timeout=3.0)
         t.join()
 
         output = handler.wfile.getvalue().decode("utf-8")

@@ -56,11 +56,22 @@ def _review_text_error(value: Any) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return "Model returned empty review output."
     text = value.strip()
-    match = re.match(r"^(?:\*\*)?SUMMARY(?:\*\*)?:\s*(.*)$", text, re.IGNORECASE | re.DOTALL)
-    if match is None:
+    if text.startswith("```") and text.endswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 3:
+            text = "\n".join(lines[1:-1]).strip()
+
+    # Match SUMMARY: with tolerance for markdown headers (#, ##), bullet points (- , * ),
+    # bolding (**SUMMARY:** or **SUMMARY**), backticks (`SUMMARY:`), or 1 introductory line.
+    match = re.search(
+        r"(?:^|\n)(?:#{1,6}\s*)?(?:[-*+]\s+)?(?:\*{1,2}|`{1,3})?SUMMARY(?:\*{1,2}|`{1,3})?:?[ \t]*(.*)$",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if match is None or match.start() > 250:
         return "Model output did not start with the required SUMMARY: header."
     words = re.findall(r"[^\W\d_]+", match.group(1), flags=re.UNICODE)
-    if len(words) < 2:
+    if len(words) < 1:
         return "Model returned an incomplete or malformed review summary."
     return None
 
