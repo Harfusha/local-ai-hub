@@ -748,6 +748,10 @@ class ProjectPreprocessor:
             roots = []
         related = [item for item in roots if item != root][:self.max_discovered_worktrees]
         with self._worktree_lock:
+            if len(self._worktree_cache) > 256:
+                oldest_roots = sorted(self._worktree_cache.keys(), key=lambda k: self._worktree_cache[k][0])[:128]
+                for k in oldest_roots:
+                    self._worktree_cache.pop(k, None)
             self._worktree_cache[root] = (now, related)
         return related
 

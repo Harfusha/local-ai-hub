@@ -1140,6 +1140,10 @@ class RAGStore:
             ).fetchall()
         rev = stable_hash({"index": self.index_fingerprint, "files": rows})
         with self._rev_lock:
+            if len(self._rev_cache) > 256:
+                oldest_keys = sorted(self._rev_cache.keys(), key=lambda k: self._rev_cache[k][0])[:128]
+                for k in oldest_keys:
+                    self._rev_cache.pop(k, None)
             self._rev_cache[(scope_key, workspace)] = (now, rev)
         return rev
 

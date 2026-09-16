@@ -879,10 +879,15 @@ class CodeIndex:
 
     def find_implementations(self, root: str, symbol_name: str, path: str | None = None) -> dict[str, Any]:
         resolved_root = canonical_root(root)
+        where = "root=? AND (lower(dst)=lower(?) OR dst LIKE ?) AND kind IN ('inherits', 'implements')"
+        args: list[Any] = [resolved_root, symbol_name, f"%{symbol_name}%"]
+        if path:
+            where += " AND path=?"
+            args.append(path.replace("\\", "/").strip("/"))
         with self._lock, closing(self._connect()) as con:
             edges = con.execute(
-                "SELECT src, dst, kind, path, line FROM edges WHERE root=? AND (lower(dst)=lower(?) OR dst LIKE ?) AND kind IN ('inherits', 'implements') LIMIT 50",
-                (resolved_root, symbol_name, f"%{symbol_name}%"),
+                f"SELECT src, dst, kind, path, line FROM edges WHERE {where} LIMIT 50",
+                tuple(args),
             ).fetchall()
 
         implementations: list[dict[str, Any]] = []
@@ -907,10 +912,15 @@ class CodeIndex:
 
     def find_referencing_symbols(self, root: str, symbol_name: str, path: str | None = None) -> dict[str, Any]:
         resolved_root = canonical_root(root)
+        where = "root=? AND (lower(name)=lower(?) OR name LIKE ?)"
+        args: list[Any] = [resolved_root, symbol_name, f"%{symbol_name}%"]
+        if path:
+            where += " AND path=?"
+            args.append(path.replace("\\", "/").strip("/"))
         with self._lock, closing(self._connect()) as con:
             rows = con.execute(
-                "SELECT path, name, line, kind FROM refs WHERE root=? AND (lower(name)=lower(?) OR name LIKE ?) ORDER BY path, line LIMIT 100",
-                (resolved_root, symbol_name, f"%{symbol_name}%"),
+                f"SELECT path, name, line, kind FROM refs WHERE {where} ORDER BY path, line LIMIT 100",
+                tuple(args),
             ).fetchall()
 
         references = [
@@ -956,8 +966,12 @@ class CodeIndex:
         }
 
     def get_diagnostics_for_file(self, root: str, path: str) -> dict[str, Any]:
-        resolved_root = Path(canonical_root(root))
+        resolved_root = Path(canonical_root(root)).resolve()
         target = (resolved_root / path).resolve()
+        try:
+            target.relative_to(resolved_root)
+        except ValueError:
+            return {"success": False, "error": f"path escapes root: {path}"}
         if not target.is_file():
             return {"success": False, "error": f"file not found: {path}"}
 

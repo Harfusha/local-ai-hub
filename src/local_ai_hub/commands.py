@@ -1253,6 +1253,10 @@ class CommandBroker:
                 raw.update({"terminal": True, "retryable": False})
                 self.suppression_cache.set(attempt_key, raw)
             with self._lock:
+                if len(self._last) > 128:
+                    old_keys = list(self._last.keys())[:64]
+                    for k in old_keys:
+                        self._last.pop(k, None)
                 self._last[key] = raw
             result.update({"cache_hit": False, "coalesced": False, "classification": classification, "repo_state": state, "repository_revision": str(state.get("fingerprint", ""))})
         except subprocess.TimeoutExpired:
@@ -2112,6 +2116,10 @@ class CommandBroker:
                 srv_info["server"].shutdown()
                 srv_info["server"].server_close()
                 srv_info["alive"] = False
+                if len(self._mock_servers) > 32:
+                    dead = [p for p, info in self._mock_servers.items() if not info.get("alive")]
+                    for p in dead:
+                        self._mock_servers.pop(p, None)
                 return {"success": True, "stopped": True, "port": target_port}
             except Exception as exc:
                 return {"success": False, "error": str(exc), "port": target_port}
