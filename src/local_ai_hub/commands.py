@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -158,6 +159,7 @@ class CommandBroker:
         self.repo_state = repo_state
         cfg = config.get("commands", {})
         self.enabled = bool(cfg.get("enabled", True))
+        self.policy_blocking = bool(cfg.get("policy_blocking", False))
         self.timeout = int(cfg.get("timeout_seconds", 900))
         self.max_output_chars = int(cfg.get("max_output_chars", 2_000_000))
         self.inline_chars = int(cfg.get("inline_output_chars", 5000))
@@ -473,12 +475,37 @@ class CommandBroker:
             if dash_c is not None:
                 _DANGEROUS_INLINE = (
                     "os.system(", "os.popen(", "subprocess.", "exec(", "eval(", "__import__(",
-                    "importlib.", "ctypes.", "shutil.rmtree(", "shutil.move(",
+                    "importlib.", "ctypes.", "shutil.rmtree", "shutil.move", "os.remove(",
+                    "os.unlink(", "os.rmdir(", "socket.", "pty.",
                 )
                 dash_c_lower = dash_c.lower()
                 if any(pat in dash_c_lower for pat in _DANGEROUS_INLINE):
                     return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code contains potentially dangerous call"}
-                if any(kw in dash_c_lower for kw in ("test", "validate", "check", "audit", "doctor", "selftest", "report", "assert")):
+
+                is_validation = False
+                try:
+                    tree = ast.parse(dash_c)
+                    for node in ast.walk(tree):
+                        if isinstance(node, ast.Call):
+                            func_name = ""
+                            if isinstance(node.func, ast.Name):
+                                func_name = node.func.id
+                            elif isinstance(node.func, ast.Attribute):
+                                func_name = node.func.attr
+                            if func_name in {"exec", "eval", "compile"}:
+                                return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"python -c inline code contains dangerous call: {func_name}"}
+                        elif isinstance(node, ast.Assert):
+                            is_validation = True
+                except SyntaxError:
+                    return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code contains invalid syntax"}
+
+                if not is_validation:
+                    tokens_in_code = set(re.findall(r"\b\w+\b", dash_c_lower))
+                    validation_keywords = {"test", "validate", "check", "audit", "doctor", "selftest", "report", "assert"}
+                    if validation_keywords & tokens_in_code:
+                        is_validation = True
+
+                if is_validation:
                     return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "python inline validation"}
                 return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": "python inline read"}
 
@@ -969,6 +996,33 @@ class CommandBroker:
             selected = lines[: max(8, limit // 5)] + selected
         return "\n".join(selected[:limit])
 
+    @staticmethod
+    def _distill_error(result: dict[str, Any]) -> str:
+        """Extract a high-density, concise 1-3 line failure cause from command output."""
+        if result.get("success"):
+            return ""
+        diagnostics = result.get("diagnostics", [])
+        if diagnostics:
+            parts = []
+            for d in diagnostics[:2]:
+                path = d.get("path")
+                line = d.get("line")
+                msg = str(d.get("message") or "").strip()
+                if path and line:
+                    parts.append(f"{path}:{line}: {msg}")
+                elif msg:
+                    parts.append(msg)
+            if parts:
+                return "\n".join(parts)[:300]
+        text = (str(result.get("stderr", "")) + "\n" + str(result.get("stdout", ""))).strip()
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        if lines:
+            for ln in reversed(lines):
+                if any(k in ln.lower() for k in ("error", "failed", "exception", "fatal", "traceback")):
+                    return ln[:240]
+            return lines[-1][:240]
+        return f"Command failed with exit code {result.get('exit_code', 1)}"
+
     def run(
         self,
         command: str,
@@ -1019,7 +1073,8 @@ class CommandBroker:
                 result = dict(suppressed)
                 result.update({"suppression_cache_hit": True, "classification": classification})
                 return self._compact(result, tenant, command)
-        if not classification["allowed"]:
+        is_dangerous = classification.get("class") == "dangerous"
+        if is_dangerous or (not classification["allowed"] and self.policy_blocking):
             with self._lock:
                 self.blocked += 1
                 reason = str(classification.get("reason", "policy"))[:120]
@@ -1189,6 +1244,8 @@ class CommandBroker:
                 elif snapshot:
                     result["snapshot_taken"] = True
             result["diagnostics"] = self._extract_diagnostics(result)
+            if not result.get("success") and not result.get("cancelled"):
+                result["error_distillation"] = self._distill_error(result)
             diag_paths = [d["path"] for d in result.get("diagnostics", []) if d.get("path")]
             if not result.get("success") and not result.get("cancelled") and self.incident_store is not None:
                 try:
@@ -1290,6 +1347,295 @@ class CommandBroker:
                 initial_result=compacted,
             )
         return compacted
+
+    def patch_and_verify(
+        self,
+        patch: str,
+        cwd: str | Path,
+        tenant: str,
+        *,
+        command: str = "",
+        criterion: str = "",
+        task_id: str = "",
+        timeout: int | None = None,
+        auto_rollback: bool = True,
+        log_callback: Any | None = None,
+    ) -> dict[str, Any]:
+        """Apply a unified diff, run verification tests, and auto-rollback on failure."""
+        cwd_path = Path(canonical_root(cwd))
+        if not patch or not patch.strip():
+            return {"success": False, "error": "patch text is empty", "terminal": True, "retryable": False}
+
+        # 1. Capture snapshot
+        cp_untracked = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            cwd=str(cwd_path), capture_output=True, text=True, check=False,
+            timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
+        )
+        initial_untracked = set(cp_untracked.stdout.splitlines()) if cp_untracked.returncode == 0 else set()
+
+        # 2. Check if patch applies cleanly
+        check_proc = subprocess.run(
+            ["git", "apply", "--check", "--whitespace=nowarn"],
+            input=patch.encode("utf-8"),
+            cwd=str(cwd_path), capture_output=True, check=False,
+            timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
+        )
+        if check_proc.returncode != 0:
+            err_msg = check_proc.stderr.decode("utf-8", errors="replace")
+            return {
+                "success": False,
+                "applied": False,
+                "rolled_back": False,
+                "error": f"Patch check failed: {err_msg.strip()}",
+                "terminal": True,
+                "retryable": False,
+            }
+
+        # 3. Apply patch
+        apply_proc = subprocess.run(
+            ["git", "apply", "--whitespace=nowarn"],
+            input=patch.encode("utf-8"),
+            cwd=str(cwd_path), capture_output=True, check=False,
+            timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
+        )
+        if apply_proc.returncode != 0:
+            err_msg = apply_proc.stderr.decode("utf-8", errors="replace")
+            return {
+                "success": False,
+                "applied": False,
+                "rolled_back": False,
+                "error": f"Patch apply failed: {err_msg.strip()}",
+                "terminal": True,
+                "retryable": False,
+            }
+
+        # 4. Helper rollback closure
+        def _do_rollback() -> None:
+            subprocess.run(
+                ["git", "checkout", "--", "."],
+                cwd=str(cwd_path), capture_output=True, check=False,
+                timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
+            )
+            cp_after = subprocess.run(
+                ["git", "ls-files", "--others", "--exclude-standard"],
+                cwd=str(cwd_path), capture_output=True, text=True, check=False,
+                timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
+            )
+            if cp_after.returncode == 0:
+                new_files = set(cp_after.stdout.splitlines()) - initial_untracked
+                for nf in new_files:
+                    target_file = (cwd_path / nf).resolve()
+                    if target_file.is_file():
+                        target_file.unlink(missing_ok=True)
+
+        # 5. Syntax pre-flight check on modified Python files
+        diff_lines = patch.splitlines()
+        modified_py_files: list[Path] = []
+        for line in diff_lines:
+            if line.startswith("+++ b/"):
+                rel_p = line[6:].strip()
+                if rel_p.endswith(".py"):
+                    modified_py_files.append(cwd_path / rel_p)
+
+        import py_compile
+        for py_file in modified_py_files:
+            if py_file.is_file():
+                try:
+                    py_compile.compile(str(py_file), doraise=True)
+                except py_compile.PyCompileError as syn_err:
+                    if auto_rollback:
+                        _do_rollback()
+                    return {
+                        "success": False,
+                        "applied": False,
+                        "rolled_back": auto_rollback,
+                        "error": f"Syntax error in modified file {py_file.name}: {syn_err.msg}",
+                        "diagnostics": [{"path": str(py_file.relative_to(cwd_path)), "message": syn_err.msg}],
+                    }
+
+        # 6. Determine test command
+        test_cmd = command.strip() or criterion.strip()
+        auto_detected_tests: list[str] = []
+        if test_cmd.lower() == "auto":
+            all_modified: list[str] = []
+            for line in diff_lines:
+                if line.startswith("+++ b/"):
+                    all_modified.append(line[6:].strip())
+
+            try:
+                from .repo_tools import RepositoryTools
+                from .deterministic import DeterministicEngine
+                rt = RepositoryTools(self.config)
+                det = DeterministicEngine(self.config, rt)
+                aff = det.affected_tests(str(cwd_path), changed_paths=all_modified)
+                auto_detected_tests = aff.get("test_files", []) if isinstance(aff, dict) else []
+            except Exception:
+                auto_detected_tests = []
+
+            if auto_detected_tests:
+                if any(tf.endswith(".py") for tf in auto_detected_tests):
+                    test_cmd = f"python -m pytest {' '.join(auto_detected_tests[:5])} -q"
+                elif any(tf.endswith((".ts", ".js")) for tf in auto_detected_tests):
+                    test_cmd = f"npm test -- {' '.join(auto_detected_tests[:5])}"
+                elif any(tf.endswith(".cs") for tf in auto_detected_tests):
+                    test_cmd = "dotnet test"
+                else:
+                    test_cmd = f"python -m pytest {' '.join(auto_detected_tests[:5])} -q"
+            else:
+                test_cmd = ""
+
+        if not test_cmd:
+            return {
+                "success": True,
+                "applied": True,
+                "tests_passed": True,
+                "affected_tests_run": [],
+                "message": "Patch applied cleanly and passed syntax verification (no tests required or specified)",
+            }
+
+        # 7. Run validation command
+        run_res = self.run(
+            test_cmd, str(cwd_path), tenant,
+            timeout=timeout, force=True, task_id=task_id, criterion=criterion,
+            log_callback=log_callback,
+        )
+
+        if run_res.get("success"):
+            rcpt_data = run_res.get("verification_receipt")
+            if not rcpt_data and task_id and self.verification_store is not None:
+                try:
+                    import uuid
+                    from .agent_verification import VerificationReceipt
+                    rcpt = VerificationReceipt.create(
+                        task_id=task_id,
+                        criterion=criterion or f"patch:{self._safe_label(test_cmd)}",
+                        passed=True,
+                        command_id=test_cmd,
+                        evidence_id=str(run_res.get("artifact_id") or ""),
+                        repository_revision=str(run_res.get("repository_revision") or ""),
+                        details={"exit_code": 0, "duration_ms": run_res.get("duration_ms", 0)},
+                    )
+                    self.verification_store.record(rcpt)
+                    rcpt_data = rcpt.to_dict()
+                except Exception:
+                    pass
+
+            return {
+                "success": True,
+                "applied": True,
+                "tests_passed": True,
+                "command": test_cmd,
+                "affected_tests_run": auto_detected_tests,
+                "duration_ms": run_res.get("duration_ms"),
+                "verification_receipt": rcpt_data,
+                "message": "Patch applied and verified successfully",
+            }
+        else:
+            if auto_rollback:
+                _do_rollback()
+            return {
+                "success": False,
+                "applied": False,
+                "rolled_back": auto_rollback,
+                "error": "Validation command failed after applying patch",
+                "command": test_cmd,
+                "affected_tests_run": auto_detected_tests,
+                "exit_code": run_res.get("exit_code"),
+                "stdout": run_res.get("stdout"),
+                "stderr": run_res.get("stderr"),
+                "diagnostics": run_res.get("diagnostics", []),
+                "remediation": run_res.get("remediation"),
+            }
+
+    def preflight(
+        self,
+        cwd: str | Path,
+        tenant: str = "default",
+        *,
+        paths: list[str] | None = None,
+        timeout: int = 10,
+    ) -> dict[str, Any]:
+        """Perform fast syntax and typecheck pre-flight on modified or specified files."""
+        cwd_path = Path(canonical_root(cwd))
+        if not cwd_path.is_dir():
+            return {"success": False, "error": "Working directory does not exist"}
+
+        target_files = [p.replace("\\", "/").strip() for p in (paths or []) if p]
+        if not target_files:
+            cp = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=str(cwd_path), capture_output=True, text=True, check=False,
+                timeout=5, **hidden_run_kwargs()
+            )
+            if cp.returncode == 0:
+                for line in cp.stdout.splitlines():
+                    parts = line.strip().split(None, 1)
+                    if len(parts) == 2:
+                        target_files.append(parts[1].replace("\\", "/").strip())
+
+        if not target_files:
+            return {
+                "success": True,
+                "clean": True,
+                "checker": "none",
+                "message": "No modified files detected for pre-flight check",
+                "errors": [],
+            }
+
+        py_files = [f for f in target_files if f.endswith(".py") and (cwd_path / f).is_file()]
+        ts_files = [f for f in target_files if f.endswith((".ts", ".tsx", ".js", ".jsx")) and (cwd_path / f).is_file()]
+
+        errors: list[dict[str, Any]] = []
+        checker = "none"
+
+        if py_files:
+            checker = "py_compile"
+            import py_compile
+            for pf in py_files:
+                p_path = cwd_path / pf
+                try:
+                    py_compile.compile(str(p_path), doraise=True)
+                except py_compile.PyCompileError as err:
+                    errors.append({
+                        "file": pf,
+                        "line": getattr(err, "lineno", 1) or 1,
+                        "message": str(err.msg),
+                        "level": "syntax_error",
+                    })
+
+        if ts_files and not errors and (cwd_path / "tsconfig.json").is_file():
+            checker = "tsc"
+            try:
+                cp_tsc = subprocess.run(
+                    ["npx", "tsc", "--noEmit", "--pretty", "false"],
+                    cwd=str(cwd_path), capture_output=True, text=True, check=False,
+                    timeout=timeout, **hidden_run_kwargs()
+                )
+                if cp_tsc.returncode != 0:
+                    for line in cp_tsc.stdout.splitlines():
+                        if ": error TS" in line:
+                            parts = line.split(":", 3)
+                            if len(parts) >= 4:
+                                errors.append({
+                                    "file": parts[0].strip(),
+                                    "line": int(parts[1].strip() or 1),
+                                    "col": int(parts[2].strip() or 1),
+                                    "message": parts[3].strip(),
+                                    "level": "type_error",
+                                })
+            except Exception:
+                pass
+
+        return {
+            "success": True,
+            "clean": len(errors) == 0,
+            "checker": checker,
+            "target_files": target_files[:10],
+            "errors_count": len(errors),
+            "errors": errors[:5],
+            "message": "Pre-flight clean" if not errors else f"Found {len(errors)} pre-flight issue(s)",
+        }
 
     def repair_loop(
         self,

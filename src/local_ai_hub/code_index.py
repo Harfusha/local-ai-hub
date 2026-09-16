@@ -484,6 +484,14 @@ class CodeIndex:
         return syms, refs, edges
 
     def _parse_file_content(self, text: str, lang: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        try:
+            from .treesitter_parser import parse_treesitter
+            ts_res = parse_treesitter(text, lang)
+            if ts_res is not None and (ts_res[0] or ts_res[2]):
+                return ts_res
+        except Exception:
+            pass
+
         if lang == "python":
             return self._parse_python(text)
         elif lang == "csharp":
@@ -562,8 +570,8 @@ class CodeIndex:
                 "INSERT OR REPLACE INTO symbols(root, path, name, kind, line, end_line, container, name_path, signature, access, docstring) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 [(str(base), path, s["name"], s["kind"], s["line"], s["end_line"], s.get("container", ""), s.get("name_path", s["name"]), s.get("signature", ""), s.get("access", "public"), s.get("docstring", "")) for s in syms],
             )
-            con.executemany("INSERT INTO refs(root, path, name, line, kind) VALUES(?,?,?,?,?)", [(str(base), path, r["name"], r["line"], r["kind"]) for r in refs])
-            con.executemany("INSERT INTO edges(root, src, dst, kind, path, line) VALUES(?,?,?,?,?,?)", [(str(base), e["src"], e["dst"], e["kind"], path, e["line"]) for e in edges])
+            con.executemany("INSERT INTO refs(root, path, name, line, kind) VALUES(?,?,?,?,?)", [(str(base), path, r["name"], r["line"], r.get("kind", "call")) for r in refs])
+            con.executemany("INSERT INTO edges(root, src, dst, kind, path, line) VALUES(?,?,?,?,?,?)", [(str(base), e["src"], e["dst"], e.get("kind", "reference"), path, e["line"]) for e in edges])
             con.commit()
 
         return {"success": True, "cached": False, "path": path, "symbols": len(syms), "refs": len(refs), "edges": len(edges)}
@@ -649,8 +657,8 @@ class CodeIndex:
             paths_to_clean.append((str(base), path))
             files_to_insert.append((str(base), path, content_hash, lang, now))
             syms_to_insert.extend((str(base), path, x["name"], x["kind"], x["line"], x["end_line"], x.get("container", ""), x.get("name_path", x["name"]), x.get("signature", ""), x.get("access", "public"), x.get("docstring", "")) for x in syms)
-            refs_to_insert.extend((str(base), path, x["name"], x["line"], x["kind"]) for x in refs)
-            edges_to_insert.extend((str(base), x["src"], x["dst"], x["kind"], path, x["line"]) for x in edges)
+            refs_to_insert.extend((str(base), path, x["name"], x["line"], x.get("kind", "call")) for x in refs)
+            edges_to_insert.extend((str(base), x["src"], x["dst"], x.get("kind", "reference"), path, x["line"]) for x in edges)
 
         if files_to_insert:
             with self._lock, closing(self._connect()) as con:

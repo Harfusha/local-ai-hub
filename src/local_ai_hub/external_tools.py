@@ -412,10 +412,12 @@ class ExternalCodeIntelligence:
         try:
             probe = subprocess.run(
                 ["git", "-C", root, "rev-parse", "--show-toplevel"],
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 check=False,
                 timeout=2,
+                **hidden_run_kwargs(),
             )
             if probe.returncode != 0:
                 return set()
@@ -428,10 +430,12 @@ class ExternalCodeIntelligence:
         try:
             listed = subprocess.run(
                 ["git", "-C", root, "ls-files", "-z", "--", ".gitignore", "**/.gitignore"],
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 check=False,
                 timeout=3,
+                **hidden_run_kwargs(),
             )
             raw_listed = listed.stdout.decode("utf-8", "replace") if isinstance(listed.stdout, bytes) else str(listed.stdout or "")
             ignore_files.extend(git_root / item for item in raw_listed.split("\0") if item)

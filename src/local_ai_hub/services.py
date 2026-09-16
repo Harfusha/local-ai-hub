@@ -20,8 +20,10 @@ from .normalizer import normalize_query, postprocess_model_output
 from .semantic_cache import SemanticGenerationCache
 from .model_policy import ModelExecutionPolicy
 from .ollama_subagents import OllamaSubagentCatalog
+from .process_utils import canonical_root
 from .repo_tools import RepositoryTools
 from .router import ModelRouter, review_diff_complexity
+from .sqlite_support import connect_sqlite
 from .telemetry import TelemetryStore
 from .trace_context import observer
 
@@ -1175,6 +1177,51 @@ class LocalAIServices:
             "duration_ms": gen_result.get("duration_ms", 0),
         }
 
+    def task_scaffold(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+        """Generate boilerplate code, DTOs, interfaces, or unit test scaffolds using local model."""
+        spec = str(args.get("spec", args.get("prompt", args.get("task", ""))))
+        context = str(args.get("context", ""))
+        language = str(args.get("language", "python"))
+        max_tokens = int(args.get("max_tokens", 1500))
+
+        if not spec:
+            return {"success": False, "error": "spec or prompt is required"}
+
+        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b"))
+        prompt = (
+            f"You are a fast code scaffolder. Generate clean, idiomatic {language} code implementing the following specification:\n\n"
+            f"SPECIFICATION:\n{spec}\n\n"
+        )
+        if context:
+            prompt += f"CONTEXT / EXISTING CODE:\n{context}\n\n"
+        prompt += (
+            "REQUIREMENTS:\n"
+            "- Emit ONLY valid code with minimal necessary docstrings.\n"
+            "- Implement all requested types, data structures, constructors, and method signatures.\n"
+            "- Do not include markdown conversational preamble or apologies.\n"
+        )
+        gen_result = self._generate(
+            fast_model,
+            prompt,
+            "You are a precise code scaffolder. Emit only valid source code.",
+            max_tokens,
+            float(args.get("temperature", 0.1)),
+            tenant,
+            "scaffold",
+            priority=5,
+        )
+        draft_code = gen_result.get("text") or gen_result.get("response") or ""
+        clean_code = re.sub(r"^```[\w]*\n", "", draft_code.strip())
+        clean_code = re.sub(r"\n```$", "", clean_code)
+
+        return {
+            "success": True,
+            "code": clean_code,
+            "language": language,
+            "model": gen_result.get("model", fast_model),
+            "tokens_generated": gen_result.get("tokens", 0),
+        }
+
     def vision(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         """Multimodal image understanding via local vision model."""
         image_path = str(args.get("image", args.get("image_path", "")))
@@ -1360,10 +1407,11 @@ class LocalAIServices:
     def repo_profile(self, root: str) -> dict[str, Any]:
         return self._repo_cached("profile", root, {}, lambda: self.repo_tools.project_profile(root))
 
-    def repo_search(self, root: str, query: str, top_k: int = 12) -> dict[str, Any]:
+    def repo_search(self, root: str, query: str, top_k: int = 12, context_lines: int | None = None, enrich: bool = False) -> dict[str, Any]:
         # Search itself is case-insensitive and whitespace-tolerant. Use the same
         # canonical form for cache identity so equivalent agent queries reuse work.
         query = normalize_query(query).casefold()
+        eff_ctx_lines = int(context_lines) if context_lines is not None else (8 if enrich else None)
         if self.learner is not None:
             try: self.learner.record(root, query)
             except Exception: pass
@@ -1388,10 +1436,12 @@ class LocalAIServices:
             except Exception:
                 pass
         def compute() -> dict[str, Any]:
-            targeted = self.repo_tools.search_paths(root, query, paths, top_k) if paths else {"results": []}
+            targeted = self.repo_tools.search_paths(root, query, paths, top_k, context_lines=eff_ctx_lines) if paths else {"results": []}
             used_preprocessed = bool(paths and targeted.get("results"))
-            result = targeted if targeted.get("results") else self.repo_tools.search(root, query, top_k)
+            result = targeted if targeted.get("results") else self.repo_tools.search(root, query, top_k, context_lines=eff_ctx_lines)
             result["preprocessed_hit"] = used_preprocessed
+            if enrich:
+                result["enriched"] = True
             # Exact search snippets become immutable evidence so agent projections can
             # send coordinates first and raw source only for the top few hits.
             if self.evidence_store is not None and isinstance(result.get("results"), list):
@@ -1402,7 +1452,7 @@ class LocalAIServices:
                 except Exception:
                     pass
             return result
-        return self._repo_cached("search", root, {"query": query, "top_k": top_k, "ci": paths[:24]}, compute)
+        return self._repo_cached("search", root, {"query": query, "top_k": top_k, "ci": paths[:24], "ctx": eff_ctx_lines}, compute)
 
     def _refresh_changed_intelligence(self, root: str) -> None:
         """Synchronize only Git-changed files before serving a cache-miss intelligence query.
@@ -1486,23 +1536,283 @@ class LocalAIServices:
             return self.deterministic.query(root, query, limit)
         return self._repo_cached("deterministic", root, canonical, compute)
 
-    def code_query(self, root: str, query: str, limit: int = 20) -> dict[str, Any]:
+    def code_query(self, root: str, query: str, limit: int = 20, include_code: bool = False) -> dict[str, Any]:
         if self.code_index is None:
             return {"success": False, "error": "code index unavailable"}
         if self.learner is not None:
             try: self.learner.record(root, query)
             except Exception: pass
         try:
-            canonical = {"terms": sorted(set(self.code_index._query_terms(query))), "limit": limit}
+            canonical = {"terms": sorted(set(self.code_index._query_terms(query))), "limit": limit, "include_code": include_code}
         except Exception:
-            canonical = {"query": " ".join(query.lower().split()), "limit": limit}
+            canonical = {"query": " ".join(query.lower().split()), "limit": limit, "include_code": include_code}
         def compute() -> dict[str, Any]:
             self._refresh_changed_intelligence(root)
             res = self.code_index.query(root, query, limit)
             if isinstance(res, dict):
                 res["preprocessed_hit"] = bool(res.get("success") and res.get("symbols"))
+                if include_code and res.get("symbols") and self.repo_tools is not None:
+                    for sym in res["symbols"][:5]:
+                        fp = sym.get("file") or sym.get("path")
+                        sl = int(sym.get("line") or 1)
+                        el = int(sym.get("end_line") or (sl + 30))
+                        if fp:
+                            slice_res = self.repo_tools.file_slice(root, fp, start_line=sl, end_line=min(el, sl + 60), max_chars=2500)
+                            if slice_res.get("success"):
+                                sym["code"] = slice_res.get("text")
             return res
         return self._repo_cached("code-index", root, canonical, compute)
+
+    def repo_investigate(
+        self,
+        root: str,
+        query: str,
+        path: str = "",
+        include_code: bool = True,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """Single-roundtrip smart investigation for cloud models."""
+        cq_res = self.code_query(root, query, limit=limit, include_code=include_code)
+        symbols = cq_res.get("symbols", []) if isinstance(cq_res, dict) else []
+
+        search_hits = []
+        if len(symbols) < 2:
+            s_res = self.repo_search(root, query, top_k=limit)
+            if isinstance(s_res, dict):
+                search_hits = s_res.get("results", []) or s_res.get("hits", [])
+                if include_code and self.repo_tools is not None:
+                    for hit in search_hits[:3]:
+                        h_path = hit.get("path") or hit.get("file")
+                        h_line = int(hit.get("line") or 1)
+                        if h_path:
+                            sl_res = self.repo_tools.file_slice(root, h_path, start_line=max(1, h_line - 5), end_line=h_line + 30, max_chars=2000)
+                            if sl_res.get("success"):
+                                hit["code"] = sl_res.get("text")
+
+        primary_sym = symbols[0].get("name", "") if symbols else (search_hits[0].get("name", "") if search_hits else query)
+        callers: list[dict[str, Any]] = []
+        if primary_sym and self.code_index is not None:
+            try:
+                ref_res = self.code_index.find_referencing_symbols(root, primary_sym)
+                if isinstance(ref_res, dict) and ref_res.get("success"):
+                    callers = ref_res.get("references", [])[:10]
+            except Exception:
+                pass
+
+        related_tests: list[str] = []
+        try:
+            target_files = [s.get("file") for s in symbols if s.get("file")]
+            if target_files:
+                aff_res = self.affected_tests(root, changed_paths=target_files)
+                if isinstance(aff_res, dict):
+                    related_tests = aff_res.get("test_files", [])[:5]
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "query": query,
+            "root": root,
+            "primary_symbol": primary_sym,
+            "symbols": symbols[:limit],
+            "search_hits": search_hits[:limit] if not symbols else [],
+            "callers": callers[:10],
+            "related_tests": related_tests,
+            "cascade_layers": ["code_index", "code_graph", "tests"] if symbols else ["search", "tests"],
+        }
+
+    def repo_diagnose(self, root: str, text: str) -> dict[str, Any]:
+        """Parse stack traces / crash logs and fetch inline code snippets for each frame."""
+        resolved_root = canonical_root(root)
+        if not Path(resolved_root).is_dir():
+            return {"success": False, "error": "Root directory does not exist"}
+
+        if not text or not text.strip():
+            return {"success": False, "error": "No traceback or error log text provided"}
+
+        py_pat = re.compile(r'File "(?P<file>[^"]+)", line (?P<line>\d+)(?:, in (?P<func>\w+))?')
+        js_pat = re.compile(r'at\s+(?:(?P<func>[^\s(]+)\s+\()?(?P<file>[^:()\s]+):(?P<line>\d+):(?P<col>\d+)\)?')
+        cs_pat = re.compile(r'at\s+(?P<func>[^\s]+)\s+in\s+(?P<file>[^:]+):line\s+(?P<line>\d+)')
+        go_pat = re.compile(r'(?P<file>[^\s:]+\.go):(?P<line>\d+)(?:\s+\+0x[0-9a-f]+)?')
+        rs_pat = re.compile(r'at\s+(?P<file>[^:]+\.rs):(?P<line>\d+):(?P<col>\d+)')
+        gen_pat = re.compile(r'(?P<file>[a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9_]+):(?P<line>\d+)')
+
+        raw_frames: list[dict[str, Any]] = []
+        lines = text.splitlines()
+
+        error_type = ""
+        error_message = ""
+        for line in reversed(lines):
+            line_str = line.strip()
+            if not line_str:
+                continue
+            err_m = re.search(r'\b(?P<type>[A-Z][A-Za-z0-9_]*(?:Error|Exception|Panic|Failure))\s*:\s*(?P<msg>.*)', line_str)
+            if err_m:
+                error_type = err_m.group("type")
+                error_message = err_m.group("msg").strip()
+                break
+            if line_str.startswith("AssertionError") or line_str.startswith("FAILED") or line_str.startswith("panic:"):
+                parts = line_str.split(":", 1)
+                error_type = parts[0].strip()
+                error_message = parts[1].strip() if len(parts) > 1 else ""
+                break
+
+        for line in lines:
+            m = py_pat.search(line) or js_pat.search(line) or cs_pat.search(line) or rs_pat.search(line) or go_pat.search(line) or gen_pat.search(line)
+            if m:
+                d = m.groupdict()
+                raw_frames.append({
+                    "file": d.get("file", "").replace("\\", "/").strip(),
+                    "line": int(d.get("line", 1)),
+                    "function": d.get("func", ""),
+                })
+
+        base_path = Path(resolved_root)
+        processed_frames: list[dict[str, Any]] = []
+        seen = set()
+
+        for f in raw_frames:
+            f_str = f["file"]
+            ln = f["line"]
+            target = (base_path / f_str).resolve(strict=False)
+            if not target.is_file() and Path(f_str).is_file():
+                target = Path(f_str).resolve(strict=False)
+
+            try:
+                rel = target.relative_to(base_path).as_posix()
+            except ValueError:
+                rel = f_str
+
+            key = (rel, ln)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            snippet = ""
+            if target.is_file():
+                slice_res = self.repo_tools.file_slice(resolved_root, rel, start_line=max(1, ln - 4), end_line=ln + 4, max_chars=1200)
+                if slice_res.get("success"):
+                    snippet = slice_res.get("text", "")
+
+            processed_frames.append({
+                "file": rel,
+                "line": ln,
+                "function": f.get("function", ""),
+                "in_project": target.is_file(),
+                "snippet": snippet,
+            })
+
+        project_frames = [pf for pf in processed_frames if pf["in_project"]]
+        root_cause = project_frames[-1] if project_frames else (processed_frames[-1] if processed_frames else None)
+
+        return {
+            "success": True,
+            "root": resolved_root,
+            "error_type": error_type or "UnknownError",
+            "error_message": error_message,
+            "frames_count": len(processed_frames),
+            "project_frames_count": len(project_frames),
+            "frames": processed_frames,
+            "root_cause": root_cause,
+        }
+
+    def repo_briefing(self, root: str) -> dict[str, Any]:
+        """Produce an ultra-compact (<300 token) project orientation snapshot for cloud models."""
+        resolved_root = canonical_root(root)
+        base = Path(resolved_root)
+        if not base.is_dir():
+            return {"success": False, "error": "Root directory does not exist"}
+
+        manifests: list[str] = []
+        stack_types: list[str] = []
+        test_commands: list[str] = []
+
+        if (base / "pyproject.toml").is_file() or (base / "setup.py").is_file() or (base / "requirements.txt").is_file():
+            stack_types.append("Python")
+            manifests.extend([m for m in ("pyproject.toml", "setup.py", "requirements.txt") if (base / m).is_file()])
+            test_commands.append("pytest")
+        if (base / "package.json").is_file():
+            stack_types.append("TypeScript/JavaScript")
+            manifests.append("package.json")
+            test_commands.append("npm test")
+        if any(base.glob("*.csproj")) or any(base.glob("*.sln")):
+            stack_types.append("C# / .NET")
+            test_commands.append("dotnet test")
+        if (base / "Cargo.toml").is_file():
+            stack_types.append("Rust")
+            manifests.append("Cargo.toml")
+            test_commands.append("cargo test")
+        if (base / "go.mod").is_file():
+            stack_types.append("Go")
+            manifests.append("go.mod")
+            test_commands.append("go test ./...")
+
+        common_entries = [
+            "src/main.py", "main.py", "app.py", "src/index.ts", "src/index.js",
+            "Program.cs", "main.go", "src/main.rs"
+        ]
+        entry_points = [e for e in common_entries if (base / e).is_file()]
+
+        branch = "unknown"
+        dirty_files = 0
+        recent_commits: list[str] = []
+        try:
+            from .process_utils import hidden_run_kwargs
+            cp_branch = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=str(base), capture_output=True, text=True, check=False, timeout=2, **hidden_run_kwargs()
+            )
+            if cp_branch.returncode == 0:
+                branch = cp_branch.stdout.strip()
+
+            cp_status = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=str(base), capture_output=True, text=True, check=False, timeout=2, **hidden_run_kwargs()
+            )
+            if cp_status.returncode == 0:
+                dirty_files = len([l for l in cp_status.stdout.splitlines() if l.strip()])
+
+            cp_log = subprocess.run(
+                ["git", "log", "-n", "3", "--oneline"],
+                cwd=str(base), capture_output=True, text=True, check=False, timeout=2, **hidden_run_kwargs()
+            )
+            if cp_log.returncode == 0:
+                recent_commits = [l.strip() for l in cp_log.stdout.splitlines() if l.strip()]
+        except Exception:
+            pass
+
+        active_task = None
+        task_store = getattr(self, "task_store", None)
+        if task_store is not None:
+            try:
+                active_task = task_store.get_active_task()
+            except Exception:
+                active_task = None
+
+        brief_card = (
+            f"**Repo**: {base.name} | **Branch**: {branch} ({dirty_files} dirty)\n"
+            f"**Stack**: {', '.join(stack_types) or 'Generic'} | **Manifests**: {', '.join(manifests) or 'None'}\n"
+            f"**Test Runner**: {', '.join(test_commands) or 'None'}\n"
+            f"**Entrypoints**: {', '.join(entry_points) or 'None'}\n"
+            f"**Recent**: {recent_commits[0] if recent_commits else 'No git history'}"
+        )
+
+        return {
+            "success": True,
+            "root": resolved_root,
+            "repo_name": base.name,
+            "stack": stack_types,
+            "manifests": manifests,
+            "test_commands": test_commands,
+            "entry_points": entry_points,
+            "git": {
+                "branch": branch,
+                "dirty_files": dirty_files,
+                "recent_commits": recent_commits,
+            },
+            "active_task": active_task,
+            "markdown_card": brief_card,
+        }
 
     def repo_map(self, root: str, max_symbols: int = 120) -> dict[str, Any]:
         def compute() -> dict[str, Any]:
@@ -1616,6 +1926,11 @@ class LocalAIServices:
 
     def ast_outline(self, root: str, path: str) -> dict[str, Any]:
         return self.deterministic_operation("ast-outline", root, {"path": path}, lambda: self.deterministic.ast_outline(root, path))
+
+    def batch_replace(self, root: str, edits: list[dict[str, Any]], dry_run: bool = False) -> dict[str, Any]:
+        if not self.deterministic:
+            return {"success": False, "error": "deterministic engine disabled"}
+        return self.deterministic.batch_replace(root, edits, dry_run=dry_run)
 
     def refactor_impact(self, root: str, file_path: str, symbol: str) -> dict[str, Any]:
         return self.deterministic_operation("refactor-impact", root, {"file": file_path, "symbol": symbol}, lambda: self.deterministic.refactor_impact(root, file_path, symbol))
@@ -2186,6 +2501,17 @@ class LocalAIServices:
             for reg in regressions[:5]:
                 aff = ", ".join(reg.get("affected_paths", []))
                 det_hint += f"- [PRIOR VERIFIED FIX] {reg.get('error_class')} in {aff}: {reg.get('verified_fix')}\n"
+
+        if args.get("mode") == "ast" or str(args.get("instructions", "")).strip().lower() == "ast":
+            return {
+                "success": True,
+                "mode": "ast",
+                "changed_files": diff.get("changed_files", []),
+                "diff_facts": det_diff,
+                "breaking_changes": det_diff.get("breaking_changes", []),
+                "regressions": regressions,
+                "summary": f"AST Diff Summary: {len(diff.get('changed_files', []))} files, {det_diff.get('added_lines_count', 0)} additions, {det_diff.get('deleted_lines_count', 0)} deletions across {det_diff.get('hunks_count', 0)} hunks. {len(det_diff.get('breaking_changes', []))} potential breaking changes.",
+            }
 
         # Keep non-diff prompt material bounded too; metadata descriptions and custom
         # instructions can otherwise undo the per-segment input limit.
@@ -2827,6 +3153,27 @@ class LocalAIServices:
                     pass
             log_callback = _log_cb
 
+        if action == "patch_and_verify":
+            return self.commands.patch_and_verify(
+                str(args.get("patch", "")),
+                str(args.get("cwd", args.get("root", "."))),
+                tenant,
+                command=str(args.get("command", "")),
+                criterion=str(args.get("criterion", "")),
+                task_id=str(args.get("task_id", "")),
+                timeout=int(args.get("timeout", 0) or 0) or None,
+                auto_rollback=bool(args.get("auto_rollback", True)),
+                log_callback=log_callback,
+            )
+        if action == "preflight":
+            raw_paths = args.get("paths") or args.get("files")
+            paths_list = [str(p) for p in raw_paths] if isinstance(raw_paths, list) else ([str(raw_paths)] if raw_paths else None)
+            return self.commands.preflight(
+                str(args.get("cwd", args.get("root", "."))),
+                tenant,
+                paths=paths_list,
+                timeout=int(args.get("timeout", 10) or 10),
+            )
         if action in {"repair_loop", "auto_fix"}:
             return self.commands.repair_loop(
                 str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))), tenant,
@@ -3063,7 +3410,7 @@ class LocalAIServices:
         for db in db_files:
             try:
                 before_size = db.stat().st_size
-                with closing(sqlite3.connect(str(db), timeout=10.0)) as con:
+                with closing(connect_sqlite(db, timeout_seconds=10.0)) as con:
                     con.execute("PRAGMA wal_checkpoint(TRUNCATE);")
                     con.execute("PRAGMA optimize;")
                 after_size = db.stat().st_size
@@ -3081,14 +3428,13 @@ class LocalAIServices:
 
     def purge_stale_cache(self, days: int = 7) -> dict[str, Any]:
         """Purge cache entries older than N days to free disk space."""
-        import sqlite3
         state_dir = Path(self.config["server"]["state_dir"])
         cutoff = time.time() - (days * 86400)
         cache_db = state_dir / "cache.sqlite3"
         deleted_entries = 0
         if cache_db.is_file():
             try:
-                with closing(sqlite3.connect(str(cache_db), timeout=10.0)) as con:
+                with closing(connect_sqlite(cache_db, timeout_seconds=10.0)) as con:
                     cur = con.execute("DELETE FROM cache_entries WHERE accessed_at < ?", (cutoff,))
                     deleted_entries = cur.rowcount
                     con.commit()

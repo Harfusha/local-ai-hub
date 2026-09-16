@@ -283,12 +283,15 @@ class SQLiteCache:
             # Another cache instance may already have recovered the shared DB.
             try:
                 if self.path.exists():
-                    with closing(sqlite3.connect(self.path, timeout=1)) as con:
+                    with closing(connect_sqlite(self.path, timeout_seconds=5.0)) as con:
                         if quick_sanity_check(con):
                             self._create_schema()
                             return
-            except (sqlite3.DatabaseError, OSError):
-                pass
+            except Exception as exc:
+                if is_busy_error(exc):
+                    # Busy database is healthy; do not quarantine due to transient lock contention
+                    self._create_schema()
+                    return
 
             stamp = f"{int(time.time())}-{threading.get_ident()}"
             try:

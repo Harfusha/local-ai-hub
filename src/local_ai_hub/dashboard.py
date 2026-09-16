@@ -74,6 +74,7 @@ tbody tr.click:hover{background:#162338}
 .kv>div:nth-child(odd){color:var(--muted);font-weight:500}
 .kv>div:nth-child(even){overflow-wrap:anywhere;word-break:break-word;min-width:0}
 .split{display:grid;grid-template-columns:1.2fr .8fr;gap:12px}
+@media(max-width:860px){.split{grid-template-columns:1fr}.hide-sm{display:none}}
 .bar{height:5px;background:#202c3e;border-radius:4px;overflow:hidden;margin-top:6px}
 .bar>i{display:block;height:100%;background:#38bdf8}
 .event{display:grid;grid-template-columns:82px 72px 110px 130px minmax(180px,1fr) 90px 85px;gap:7px;border-bottom:1px solid #1a2538;padding:7px 10px;font-size:11px}
@@ -645,8 +646,15 @@ document.head.insertAdjacentHTML('beforeend','<style>.trace-sidebar-controls{dis
 document.head.insertAdjacentHTML('beforeend','<style>.trace-main,.trace-step-body,.trace-event,.human-section{min-width:0}.prompt-meta{display:flex;gap:5px;flex-wrap:wrap;padding:7px 8px;border-bottom:1px solid #202a35}.prompt-chip{border:1px solid #394758;border-radius:999px;padding:2px 7px;color:var(--muted);font-size:9px}.prompt-chip strong{color:var(--fg)}.prompt-messages{display:grid;gap:6px;padding:7px}.prompt-card{border:1px solid #2d3d4e;border-left:3px solid #5b8def;border-radius:6px;overflow:hidden}.prompt-card.role-system{border-left-color:#a78bfa}.prompt-card.role-user{border-left-color:#38bdf8}.prompt-card.role-assistant{border-left-color:#4ade80}.prompt-card-head{display:flex;align-items:center;gap:7px;padding:6px 8px;background:#151d26;color:var(--fg);font-size:10px;font-weight:700}.prompt-card-head .tiny{margin-left:auto}.prompt-pre{margin:0;padding:7px 8px;background:#0d1219;color:#d7e2ef;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.3;font-size:11px;max-height:150px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace}.prompt-context{margin:0 8px 8px;border:1px solid #334355;border-radius:5px;background:#111923}.prompt-context summary{cursor:pointer;padding:6px 8px;color:var(--muted);font-size:9px}.prompt-context .prompt-pre{max-height:180px;border-top:1px solid #273544}.prompt-fallback{padding:8px}</style>');
 
 const nativeFetch=window.fetch.bind(window);
-let apiToken='';
-if($('apiToken')) $('apiToken').value='';
+function getSavedToken(){
+  try{return localStorage.getItem('apiToken')||sessionStorage.getItem('localAiHubToken')||'';}catch{return '';}
+}
+function saveToken(val){
+  apiToken=val.trim();
+  try{localStorage.setItem('apiToken',apiToken);sessionStorage.setItem('localAiHubToken',apiToken);}catch{}
+}
+let apiToken=getSavedToken();
+if($('apiToken')) $('apiToken').value=apiToken;
 
 function setupTraceInspector(){
   if($('traceInspector'))return;
@@ -658,14 +666,14 @@ if($('traceSidebarList')&&!$('traceHistorySearch')){$('traceSidebarList').insert
 let statusPollInFlight=false,hasLiveStatus=false;
 let sloScope=$('sloScope')?$('sloScope').value:'1h';
 if($('sloScope')) $('sloScope').onchange=()=>{sloScope=$('sloScope').value;pollStatus()};
-if($('saveToken')) $('saveToken').onclick=()=>{if($('apiToken'))apiToken=$('apiToken').value.trim();pollStatus()};
+if($('saveToken')) $('saveToken').onclick=()=>{if($('apiToken'))saveToken($('apiToken').value);pollStatus()};
 
 async function apiFetch(path,opts={}){
   opts={...opts};const h=new Headers(opts.headers||{});if(apiToken)h.set('X-LocalAI-Token',apiToken);opts.headers=h;
   let r=await nativeFetch(path,opts);
   if(r.status===401&&!apiToken){
     const entered=prompt('Local AI Hub API token');
-    if(entered){apiToken=entered.trim();$('apiToken').value=apiToken;try{sessionStorage.setItem('localAiHubToken',apiToken)}catch{};h.set('X-LocalAI-Token',apiToken);r=await nativeFetch(path,{...opts,headers:h})}
+    if(entered){saveToken(entered);if($('apiToken'))$('apiToken').value=apiToken;h.set('X-LocalAI-Token',apiToken);r=await nativeFetch(path,{...opts,headers:h})}
   }
   return r;
 }
@@ -1456,7 +1464,7 @@ function connectAgentOsStream(){
   }
   const badge=$('sseStreamBadge');
   if(badge){ badge.className='badge-status badge-waiting'; badge.textContent='Connecting…'; }
-  const token=localStorage.getItem('apiToken')||'';
+  const token=getSavedToken()||apiToken;
   const url='/api/agent-state/events/stream'+(token?'?token='+encodeURIComponent(token):'');
   try{
     sseSource=new EventSource(url);
@@ -4155,7 +4163,15 @@ function renderEvents(events){if(paused||!events.length)return;const box=$('even
 async function pollEvents(){try{const r=await apiFetch('/api/live?after='+cursor+'&limit=200',{cache:'no-store'}),d=await r.json();cursor=Number(d.cursor||cursor);renderEvents(d.events||[])}catch{}}
 
 probeHealth();pollStatus();pollEvents();pollTraces();
-setInterval(probeHealth,5000);setInterval(pollStatus,1000);setInterval(pollEvents,1000);setInterval(pollTraces,2000);
+let isVisible=!document.hidden;
+document.addEventListener('visibilitychange',()=>{
+  isVisible=!document.hidden;
+  if(isVisible){probeHealth();pollStatus();pollEvents();pollTraces();}
+});
+setInterval(()=>{if(isVisible)probeHealth();},5000);
+setInterval(()=>{if(isVisible)pollStatus();},1000);
+setInterval(()=>{if(isVisible)pollEvents();},1000);
+setInterval(()=>{if(isVisible)pollTraces();},2000);
 
 // ── Bundles ────────────────────────────────────────────────────────────────────
 function renderBundles(s){

@@ -153,6 +153,7 @@ class FeatureSet:
             "migration_drift", "package_audit", "structural_search", "context_budget",
             "git_diff", "git_history_search", "hotspots", "generate_tests_for_diff", "cross_repo_contract",
             "reachability_dead_code", "mutation_test", "type_stubs", "skeletonize",
+            "investigate", "diagnose", "briefing", "batch_replace",
         ]
         if self.serena:
             actions.append("semantic")
@@ -184,7 +185,7 @@ class FeatureSet:
             "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report",
             "submit", "status", "wait", "result", "cancel", "candidate_create",
             "candidate_promote", "speculative_draft", "vision", "transcribe",
-            "eval_suite", "prompt_eval", "eval_drift", "complete_code",
+            "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold",
         ]
 
     def supported_coord_actions(self) -> list[str]:
@@ -226,6 +227,7 @@ class FeatureSet:
             "http_probe", "stash_save", "stash_restore", "record_mock", "replay_mock",
             "diff_hunk_stage", "flaky_detect", "webhook_replay",
             "mock_server", "mock_server_start", "mock_server_stop", "mock_server_status",
+            "patch_and_verify", "preflight",
         ]
 
     def semantic_hint(self) -> str:

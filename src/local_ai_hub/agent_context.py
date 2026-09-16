@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import time
@@ -31,7 +32,16 @@ class ContextElement:
     confidence: float = 1.0
     freshness: float = 0.0
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, compact: bool = False) -> dict[str, Any]:
+        if compact:
+            res: dict[str, Any] = {
+                "element_id": self.element_id,
+                "source_kind": self.source_kind,
+                "content": self.content,
+            }
+            if self.reason:
+                res["reason"] = self.reason
+            return res
         return {
             "element_id": self.element_id,
             "source_kind": self.source_kind,
@@ -55,15 +65,27 @@ class CompiledContext:
     def text(self) -> str:
         return "\n\n".join(el.content for el in self.elements)
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "elements": [el.to_dict() for el in self.elements],
+    def etag(self) -> str:
+        h = hashlib.sha1(usedforsecurity=False)
+        for el in self.elements:
+            h.update(el.element_id.encode("utf-8"))
+            h.update(el.content.encode("utf-8"))
+        return h.hexdigest()[:12]
+
+    def to_dict(self, compact: bool = False) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "elements": [el.to_dict(compact=compact) for el in self.elements],
             "estimated_tokens": self.estimated_tokens,
             "token_budget": self.token_budget,
-            "truncated": self.truncated,
-            "value_density": round(self.value_density, 4),
-            "packed_ratio": round(self.packed_ratio, 4),
+            "etag": self.etag(),
         }
+        if not compact:
+            d.update({
+                "truncated": self.truncated,
+                "value_density": round(self.value_density, 4),
+                "packed_ratio": round(self.packed_ratio, 4),
+            })
+        return d
 
 
 @dataclass(frozen=True)
