@@ -26,6 +26,7 @@ from .router import ModelRouter, review_diff_complexity
 from .sqlite_support import connect_sqlite
 from .telemetry import TelemetryStore
 from .trace_context import observer
+from .treesitter_parser import parse_treesitter
 
 
 def normalize_generation_cache_prompt(prompt: str) -> str:
@@ -45,6 +46,26 @@ def cache_decision_reason(cache_layer: str, *, semantic_query: str) -> str:
     if cache_layer == "ollama":
         return "new_exact_key"
     return "exact_reuse"
+
+
+def enclosing_symbol_at_line(source: str, path: str, line: int) -> dict[str, Any] | None:
+    """Return the smallest existing Tree-sitter symbol spanning one source line."""
+    language = Path(path).suffix.lower().lstrip(".")
+    parsed = parse_treesitter(source, language)
+    if not parsed:
+        return None
+    symbols, _, _ = parsed
+    matches = [
+        symbol for symbol in symbols
+        if int(symbol.get("line", 0) or 0) <= line <= int(symbol.get("end_line", 0) or 0)
+    ]
+    if not matches:
+        return None
+    symbol = min(matches, key=lambda item: int(item.get("end_line", 0) or 0) - int(item.get("line", 0) or 0))
+    return {
+        key: symbol[key] for key in ("name", "kind", "line", "end_line", "name_path")
+        if key in symbol
+    }
 
 
 _REVIEW_DIFF_MIN_CHUNK_TOKENS = 256
@@ -800,6 +821,13 @@ class LocalAIServices:
 
         full_text = str(result.get("text", ""))
         full_output_tokens = estimate_tokens(full_text)
+        provider_usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+        try:
+            cache_read_tokens = max(0, int(
+                result.get("cache_read_tokens", provider_usage.get("cache_read_tokens", 0)) or 0
+            ))
+        except (TypeError, ValueError, OverflowError):
+            cache_read_tokens = 0
         if (not internal) and bool(saving.get("compact_responses", True)):
             result = self.artifacts.compact(result, tenant, source)
         result["latency"] = {
@@ -828,7 +856,9 @@ class LocalAIServices:
         error_type = "" if success else "model_request_failed"
         self.telemetry.record(
             tenant=tenant, action=source, model=str(result.get("model", model)), cache_hit=effective_cache_hit, coalesced=coalesced,
-            cache_layer=cache_layer, input_tokens=prepared.estimated_tokens, output_tokens=full_output_tokens,
+            cache_layer=cache_layer, input_tokens=prepared.estimated_tokens,
+            cache_read_tokens=cache_read_tokens, output_tokens=full_output_tokens,
+            task_type=source.split(":", 1)[1] if source.startswith("delegate:") else source.split(":", 1)[0],
             avoided_cloud_tokens=max(0, int(measured_cloud_context_tokens)) + compact_saved,
             duration_ms=(time.perf_counter() - started) * 1000, queue_wait_ms=queue_wait_ms, service_ms=service_ms,
             load_duration_ms=float(result.get("load_duration_ns", 0) or 0) / 1_000_000,
@@ -1071,6 +1101,21 @@ class LocalAIServices:
         payload["task"] = str(args.get("problem", args.get("task", "")))
         payload.setdefault("max_tokens", 1700)
         return self.delegate(payload, tenant)
+
+    def distill_command_error(self, failure: dict[str, Any]) -> str:
+        """Use the local task route only when command parsing found no coordinates."""
+        summary = str(failure.get("summary", "")).strip()[:4000]
+        if not summary:
+            return ""
+        result = self.reason({
+            "problem": "Summarize this unstructured command failure in one actionable sentence. Do not invent a file, line, test, or fix.",
+            "context": summary,
+            "max_tokens": 120,
+            "complexity": "simple",
+        }, "command-error-distill")
+        if not result.get("success", "error" not in result):
+            return ""
+        return str(result.get("text", "")).strip()[:300]
 
     def second_opinion(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         question = str(args.get("question", ""))
@@ -1442,6 +1487,21 @@ class LocalAIServices:
             result["preprocessed_hit"] = used_preprocessed
             if enrich:
                 result["enriched"] = True
+                base = Path(root).expanduser().resolve()
+                for hit in result.get("results", [])[:top_k]:
+                    rel = str(hit.get("path") or "")
+                    target = (base / rel).resolve()
+                    try:
+                        target.relative_to(base)
+                        if target.is_file() and target.stat().st_size <= 512_000:
+                            symbol = enclosing_symbol_at_line(
+                                target.read_text(encoding="utf-8", errors="replace"), rel,
+                                int(hit.get("start_line", 0) or 0),
+                            )
+                            if symbol:
+                                hit["enclosing_symbol"] = symbol
+                    except (OSError, ValueError):
+                        continue
             # Exact search snippets become immutable evidence so agent projections can
             # send coordinates first and raw source only for the top few hits.
             if self.evidence_store is not None and isinstance(result.get("results"), list):

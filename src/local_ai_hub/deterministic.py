@@ -6936,6 +6936,21 @@ def test_{sym}_regression_edge_cases():
                 return {"success": False, "error": f"path '{p_str}' escapes project root"}
             if not p_candidate.is_file():
                 return {"success": False, "error": f"file not found: {p_str}"}
+            rel_candidate = str(p_candidate.relative_to(p_root)).replace("\\", "/")
+            try:
+                status = subprocess.run(
+                    ["git", "-C", str(p_root), "status", "--porcelain", "--", rel_candidate],
+                    capture_output=True, check=False, timeout=5, **hidden_run_kwargs(),
+                )
+                if status.returncode == 0 and status.stdout.strip():
+                    return {
+                        "success": False,
+                        "applied": False,
+                        "error": f"refusing dirty target file: {p_str}",
+                        "path": p_str,
+                    }
+            except (OSError, subprocess.SubprocessError):
+                pass
             resolved_files[p_str] = p_candidate
 
         # 2. Read and backup all target files in memory
@@ -6973,17 +6988,11 @@ def test_{sym}_regression_edge_cases():
             file_contents[fpath] = current_text.replace(old_str, new_str, 1)
 
         # 4. Syntax preflight on modified Python files
-        import py_compile
-        import tempfile
         for fpath, new_text in file_contents.items():
             if fpath.suffix == ".py":
-                with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode="w", encoding="utf-8") as tmp:
-                    tmp.write(new_text)
-                    tmp_name = tmp.name
                 try:
-                    py_compile.compile(tmp_name, doraise=True)
-                except py_compile.PyCompileError as syn_err:
-                    Path(tmp_name).unlink(missing_ok=True)
+                    compile(new_text, str(fpath), "exec")
+                except SyntaxError as syn_err:
                     rel = str(fpath.relative_to(p_root)).replace("\\", "/")
                     return {
                         "success": False,
@@ -6991,8 +7000,6 @@ def test_{sym}_regression_edge_cases():
                         "error": f"Syntax error in {rel} after replacement: {syn_err.msg}",
                         "path": rel,
                     }
-                finally:
-                    Path(tmp_name).unlink(missing_ok=True)
 
         if dry_run:
             return {
