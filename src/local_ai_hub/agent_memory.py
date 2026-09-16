@@ -692,6 +692,12 @@ class MemoryStore:
                                 )
                             except Exception:
                                 pass
+                            try:
+                                con.execute(
+                                    "DELETE FROM agent_entity_relations WHERE source_entity NOT IN (SELECT record_id FROM agent_memory_records) AND target_entity NOT IN (SELECT record_id FROM agent_memory_records)"
+                                )
+                            except Exception:
+                                pass
                         return count
                 finally:
                     con.close()
@@ -835,6 +841,11 @@ class MemoryStore:
             con.execute("BEGIN IMMEDIATE")
             cur = con.execute("DELETE FROM agent_memory_records WHERE record_id = ?", (record_id,))
             cnt = cur.rowcount
+            if cnt > 0:
+                con.execute(
+                    "DELETE FROM agent_entity_relations WHERE source_entity = ? OR target_entity = ?",
+                    (record_id, record_id),
+                )
             con.execute("COMMIT")
             return cnt > 0
         finally:
@@ -914,10 +925,18 @@ class MemoryStore:
             )
 
             self._save_record(digest_record)
+            self._auto_link_record(digest_record, actor=actor)
 
             for src_rec in grp_records:
                 superseded_rec = src_rec.with_superseded_by(digest_record.record_id)
                 self._save_record(superseded_rec)
+                self.record_relation(
+                    source=src_rec.record_id,
+                    relation="compacted_into",
+                    target=digest_record.record_id,
+                    weight=1.0,
+                    actor=actor,
+                )
                 total_compacted += 1
 
             event = AgentEvent.create(

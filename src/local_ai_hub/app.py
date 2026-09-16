@@ -140,6 +140,7 @@ class LocalAIApp:
         self.agent_verification = VerificationStore(self.agent_state, task_store=self.agent_tasks)
         self.agent_policy = PolicyEngine(self.agent_state)
         self.agent_tasks.set_policy_engine(self.agent_policy)
+        self.agent_blackboard = BlackboardStore(state_dir / "agent_state.sqlite3")
         self.agent_context = ContextCompiler(
             self.agent_state,
             task_store=self.agent_tasks,
@@ -147,6 +148,7 @@ class LocalAIApp:
             memory_store=self.agent_memory,
             incident_store=self.agent_incidents,
             lease_store=self.leases,
+            blackboard=self.agent_blackboard,
         )
         self.agent_routing = RoutingEngine(cfg=self.config, state_store=self.agent_state)
         self.agent_learning = LearningStore(self.agent_state)
@@ -171,7 +173,6 @@ class LocalAIApp:
         self.services.set_verification_store(self.agent_verification)
         self.services.set_incident_store(self.agent_incidents)
         self.services.set_agent_state(self.agent_state)
-        self.agent_blackboard = BlackboardStore(state_dir / "agent_state.sqlite3")
         self.services.set_blackboard(self.agent_blackboard)
         self.swarm = SwarmCoordinator(state_dir / "agent_state.sqlite3", leases=self.leases, blackboard=self.agent_blackboard, verifications=self.agent_verification)
         self.services.set_swarm(self.swarm)

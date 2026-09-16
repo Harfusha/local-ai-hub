@@ -201,7 +201,10 @@ class ScopeLeaseStore:
         def write() -> int:
             with closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
+                paths_released: list[str] = []
                 if lease_id:
+                    p_rows = con.execute("SELECT path FROM leases WHERE lease_id=?", (lease_id,)).fetchall()
+                    paths_released = [r[0] for r in p_rows]
                     if tenant in {"http-default", "system", "admin", "*"}:
                         cur = con.execute("DELETE FROM leases WHERE lease_id=?", (lease_id,))
                     else:
@@ -213,7 +216,14 @@ class ScopeLeaseStore:
                 count = int(cur.rowcount or 0)
                 # Clear wait dependencies involving this tenant when releasing leases
                 if tenant:
-                    con.execute("DELETE FROM lease_waits WHERE tenant=? OR blocked_by=?", (tenant, tenant))
+                    if lease_id and paths_released:
+                        placeholders = ",".join("?" for _ in paths_released)
+                        con.execute(
+                            f"DELETE FROM lease_waits WHERE blocked_by=? AND requested_path IN ({placeholders})",
+                            (tenant, *paths_released),
+                        )
+                    elif not lease_id:
+                        con.execute("DELETE FROM lease_waits WHERE tenant=? OR blocked_by=?", (tenant, tenant))
                 con.execute("COMMIT")
                 return count
         return {"success": True, "released_rows": retry_busy(write, retries=4)}
