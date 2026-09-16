@@ -6936,6 +6936,21 @@ def test_{sym}_regression_edge_cases():
                 return {"success": False, "error": f"path '{p_str}' escapes project root"}
             if not p_candidate.is_file():
                 return {"success": False, "error": f"file not found: {p_str}"}
+            rel_candidate = str(p_candidate.relative_to(p_root)).replace("\\", "/")
+            try:
+                status = subprocess.run(
+                    ["git", "-C", str(p_root), "status", "--porcelain", "--", rel_candidate],
+                    capture_output=True, check=False, timeout=5, **hidden_run_kwargs(),
+                )
+                if status.returncode == 0 and status.stdout.strip():
+                    return {
+                        "success": False,
+                        "applied": False,
+                        "error": f"refusing dirty target file: {p_str}",
+                        "path": p_str,
+                    }
+            except (OSError, subprocess.SubprocessError):
+                pass
             resolved_files[p_str] = p_candidate
 
         # 2. Read and backup all target files in memory

@@ -331,6 +331,27 @@ def test_batch_replace_rejects_ambiguous_match(tmp_path):
     assert target.read_text(encoding="utf-8") == "value = 1\nvalue = 1\n"
 
 
+def test_batch_replace_rejects_dirty_target_file(tmp_path):
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "Tester"], cwd=str(tmp_path), capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "tester@example.test"], cwd=str(tmp_path), capture_output=True, check=True)
+    target = tmp_path / "module.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "module.py"], cwd=str(tmp_path), capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "baseline"], cwd=str(tmp_path), capture_output=True, check=True)
+    target.write_text("value = 2\n", encoding="utf-8")
+    engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
+
+    result = engine.batch_replace(
+        str(tmp_path),
+        [{"path": "module.py", "old": "value = 2", "new": "value = 3"}],
+    )
+
+    assert result["success"] is False
+    assert "dirty" in result["error"]
+    assert target.read_text(encoding="utf-8") == "value = 2\n"
+
+
 def test_15_prompt_eval():
     services = LocalAIServices.__new__(LocalAIServices)
     template = "Fix the following error in {{language}}: {{error}}"

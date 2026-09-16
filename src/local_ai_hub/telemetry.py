@@ -83,7 +83,7 @@ class TelemetryStore:
     _EVENT_COLUMNS = (
         "created_at", "event_type", "tenant", "agent", "request_id", "trace_id",
         "action", "stage", "task_type", "complexity", "route", "model",
-        "cache_hit", "coalesced", "cache_layer", "input_tokens", "output_tokens",
+        "cache_hit", "coalesced", "cache_layer", "input_tokens", "cache_read_tokens", "output_tokens",
         "avoided_cloud_tokens", "duration_ms", "queue_wait_ms", "service_ms",
         "load_duration_ms", "success", "status_code", "degraded", "retry_count",
         "fallback_used", "error_type", "error_fingerprint", "tool_calls",
@@ -185,7 +185,7 @@ class TelemetryStore:
             "snapshots": {"id", "created_at", "name", "metrics_json"},
             "daily_rollups": {
                 "day", "event_type", "action", "agent", "model", "cache_layer", "success",
-                "events", "duration_ms", "queue_wait_ms", "input_tokens", "output_tokens",
+                "events", "duration_ms", "queue_wait_ms", "input_tokens", "cache_read_tokens", "output_tokens",
                 "avoided_cloud_tokens", "cache_hits", "fallback_count", "degraded_count",
                 "gross_avoided_cloud_tokens", "gross_input_tokens_avoided", "gross_output_tokens_avoided",
                 "agent_protocol_tokens", "tool_schema_tokens", "local_compute_tokens_avoided",
@@ -225,6 +225,7 @@ class TelemetryStore:
                     cache_hit INTEGER NOT NULL DEFAULT 0,
                     coalesced INTEGER NOT NULL DEFAULT 0,
                     input_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
                     output_tokens INTEGER NOT NULL DEFAULT 0,
                     avoided_cloud_tokens INTEGER NOT NULL DEFAULT 0,
                     duration_ms REAL NOT NULL DEFAULT 0,
@@ -320,6 +321,7 @@ class TelemetryStore:
                     duration_ms REAL NOT NULL DEFAULT 0,
                     queue_wait_ms REAL NOT NULL DEFAULT 0,
                     input_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
                     output_tokens INTEGER NOT NULL DEFAULT 0,
                     avoided_cloud_tokens INTEGER NOT NULL DEFAULT 0,
                     cache_hits INTEGER NOT NULL DEFAULT 0,
@@ -369,6 +371,7 @@ class TelemetryStore:
             "coalesced": 1 if event.get("coalesced") else 0,
             "cache_layer": str(event.get("cache_layer", ""))[:80],
             "input_tokens": max(0, int(event.get("input_tokens", 0) or 0)),
+            "cache_read_tokens": max(0, int(event.get("cache_read_tokens", 0) or 0)),
             "output_tokens": max(0, int(event.get("output_tokens", 0) or 0)),
             "avoided_cloud_tokens": max(0, int(event.get("avoided_cloud_tokens", 0) or 0)),
             "duration_ms": max(0.0, float(event.get("duration_ms", 0) or 0)),
@@ -915,23 +918,24 @@ class TelemetryStore:
         for e in events:
             day = datetime.fromtimestamp(e["created_at"], tz=timezone.utc).strftime("%Y-%m-%d")
             key = (day, e["event_type"], e["action"], e["agent"], e["model"], e["cache_layer"], e["success"])
-            agg = grouped.setdefault(key, [0, 0.0, 0.0] + [0] * 18)
+            agg = grouped.setdefault(key, [0, 0.0, 0.0] + [0] * 19)
             agg[0] += 1; agg[1] += e["duration_ms"]; agg[2] += e["queue_wait_ms"]
-            agg[3] += e["input_tokens"]; agg[4] += e["output_tokens"]; agg[5] += e["avoided_cloud_tokens"]
-            agg[6] += e["cache_hit"]; agg[7] += e["fallback_used"]; agg[8] += e["degraded"]
-            agg[9] += e["gross_avoided_cloud_tokens"]
-            agg[10] += e["gross_input_tokens_avoided"]; agg[11] += e["gross_output_tokens_avoided"]
-            agg[12] += e["agent_protocol_tokens"]; agg[13] += e["tool_schema_tokens"]
-            agg[14] += e["local_compute_tokens_avoided"]
-            agg[15] += e["tool_request_tokens"]; agg[16] += e["tool_response_tokens"]
-            agg[17] += e["net_cloud_token_delta"]; agg[18] += e["cloud_token_overhead"]
-            agg[19] += e["net_after_schema_token_delta"]; agg[20] += e["schema_adjusted_overhead"]
+            agg[3] += e["input_tokens"]; agg[4] += e["cache_read_tokens"]; agg[5] += e["output_tokens"]; agg[6] += e["avoided_cloud_tokens"]
+            agg[7] += e["cache_hit"]; agg[8] += e["fallback_used"]; agg[9] += e["degraded"]
+            agg[10] += e["gross_avoided_cloud_tokens"]
+            agg[11] += e["gross_input_tokens_avoided"]; agg[12] += e["gross_output_tokens_avoided"]
+            agg[13] += e["agent_protocol_tokens"]; agg[14] += e["tool_schema_tokens"]
+            agg[15] += e["local_compute_tokens_avoided"]
+            agg[16] += e["tool_request_tokens"]; agg[17] += e["tool_response_tokens"]
+            agg[18] += e["net_cloud_token_delta"]; agg[19] += e["cloud_token_overhead"]
+            agg[20] += e["net_after_schema_token_delta"]; agg[21] += e["schema_adjusted_overhead"]
         con.executemany(
-            """INSERT INTO daily_rollups(day,event_type,action,agent,model,cache_layer,success,events,duration_ms,queue_wait_ms,input_tokens,output_tokens,avoided_cloud_tokens,cache_hits,fallback_count,degraded_count,gross_avoided_cloud_tokens,gross_input_tokens_avoided,gross_output_tokens_avoided,agent_protocol_tokens,tool_schema_tokens,local_compute_tokens_avoided,tool_request_tokens,tool_response_tokens,net_cloud_token_delta,cloud_token_overhead,net_after_schema_token_delta,schema_adjusted_overhead)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """INSERT INTO daily_rollups(day,event_type,action,agent,model,cache_layer,success,events,duration_ms,queue_wait_ms,input_tokens,cache_read_tokens,output_tokens,avoided_cloud_tokens,cache_hits,fallback_count,degraded_count,gross_avoided_cloud_tokens,gross_input_tokens_avoided,gross_output_tokens_avoided,agent_protocol_tokens,tool_schema_tokens,local_compute_tokens_avoided,tool_request_tokens,tool_response_tokens,net_cloud_token_delta,cloud_token_overhead,net_after_schema_token_delta,schema_adjusted_overhead)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(day,event_type,action,agent,model,cache_layer,success) DO UPDATE SET
                  events=events+excluded.events, duration_ms=duration_ms+excluded.duration_ms,
                  queue_wait_ms=queue_wait_ms+excluded.queue_wait_ms, input_tokens=input_tokens+excluded.input_tokens,
+                 cache_read_tokens=cache_read_tokens+excluded.cache_read_tokens,
                  output_tokens=output_tokens+excluded.output_tokens, avoided_cloud_tokens=avoided_cloud_tokens+excluded.avoided_cloud_tokens,
                  cache_hits=cache_hits+excluded.cache_hits, fallback_count=fallback_count+excluded.fallback_count,
                  degraded_count=degraded_count+excluded.degraded_count,
@@ -1117,6 +1121,10 @@ class TelemetryStore:
                    FROM events WHERE created_at>=? AND event_type='inference'""",
                 (cutoff,),
             ).fetchone()
+            provider_cache_read_tokens = con.execute(
+                "SELECT COALESCE(SUM(cache_read_tokens),0) FROM events WHERE created_at>=? AND event_type='inference'",
+                (cutoff,),
+            ).fetchone()[0]
             by_action = con.execute(
                 """SELECT action,COUNT(*),COALESCE(SUM(avoided_cloud_tokens),0),COALESCE(AVG(duration_ms),0)
                    FROM events WHERE created_at>=? AND event_type='inference' GROUP BY action ORDER BY COUNT(*) DESC LIMIT 20""",
@@ -1277,6 +1285,7 @@ class TelemetryStore:
             "cache_domains": cache_domains,
             "http_outcomes": http_outcomes,
             "coalesced_waiters": int(row[2]), "local_input_tokens_est": int(row[3]),
+            "provider_cache_read_tokens": int(provider_cache_read_tokens),
             "local_output_tokens_est": int(row[4]),
             "context_tokens_avoided_est": int(row[5]),
             "net_cloud_token_delta_est": net_cloud_token_delta,
@@ -1352,6 +1361,13 @@ class TelemetryStore:
             by_model = con.execute(
                 """SELECT model,COUNT(*),COALESCE(AVG(duration_ms),0),COALESCE(AVG(load_duration_ms),0),COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0)
                    FROM events WHERE created_at>=? AND event_type='inference' AND model<>'' GROUP BY model ORDER BY COUNT(*) DESC""", (cutoff,)
+            ).fetchall()
+            provider_usage = con.execute(
+                """SELECT action,task_type,model,COALESCE(SUM(input_tokens),0),
+                          COALESCE(SUM(cache_read_tokens),0),COALESCE(SUM(output_tokens),0)
+                   FROM events WHERE created_at>=? AND event_type='inference'
+                   GROUP BY action,task_type,model ORDER BY COUNT(*) DESC,action,task_type,model LIMIT 50""",
+                (cutoff,),
             ).fetchall()
             actions = con.execute(
                 """SELECT action,event_type,COUNT(*),COALESCE(AVG(duration_ms),0),COALESCE(AVG(queue_wait_ms),0),
@@ -1470,6 +1486,11 @@ class TelemetryStore:
                 {"model": r[0], "calls": int(r[1]), "avg_ms": round(float(r[2]), 1), "avg_load_ms": round(float(r[3]), 1), "failures": int(r[4])}
                 for r in by_model
             ],
+            "provider_token_usage": [
+                {"action": r[0], "task_type": r[1], "model": r[2], "input_tokens": int(r[3]),
+                 "cache_read_tokens": int(r[4]), "output_tokens": int(r[5])}
+                for r in provider_usage
+            ],
             "by_operation": [
                 {"action": r[0], "event_type": r[1], "calls": int(r[2]), "avg_ms": round(float(r[3]), 1), "avg_queue_wait_ms": round(float(r[4]), 1), "failures": int(r[5]), "cache_hits": int(r[6]), "fallbacks": int(r[7]), "retries": int(r[8])}
                 for r in actions
@@ -1523,7 +1544,7 @@ class TelemetryStore:
         limit = max(1, min(int(limit), 100))
         with closing(self._connect()) as con:
             rows = con.execute(
-                """SELECT id,created_at,event_type,tenant,agent,request_id,action,stage,model,cache_hit,coalesced,input_tokens,output_tokens,
+                """SELECT id,created_at,event_type,tenant,agent,request_id,action,stage,model,cache_hit,coalesced,input_tokens,cache_read_tokens,output_tokens,
                           avoided_cloud_tokens,duration_ms,queue_wait_ms,success,status_code,cache_layer,fallback_used,degraded,error_type,error_fingerprint
                    FROM events ORDER BY id DESC LIMIT ?""", (limit,)
             ).fetchall()
@@ -1531,9 +1552,9 @@ class TelemetryStore:
             {
                 "id": r[0], "created_at": r[1], "event_type": r[2], "tenant": r[3], "agent": r[4], "request_id": r[5],
                 "action": r[6], "stage": r[7], "model": r[8], "cache_hit": bool(r[9]), "coalesced": bool(r[10]),
-                "input_tokens": r[11], "output_tokens": r[12], "net_cloud_token_delta_est": r[13], "duration_ms": r[14],
-                "queue_wait_ms": r[15], "success": bool(r[16]), "status_code": r[17], "cache_layer": r[18],
-                "fallback_used": bool(r[19]), "degraded": bool(r[20]), "error_type": r[21], "error_fingerprint": r[22],
+                "input_tokens": r[11], "cache_read_tokens": r[12], "output_tokens": r[13], "net_cloud_token_delta_est": r[14], "duration_ms": r[15],
+                "queue_wait_ms": r[16], "success": bool(r[17]), "status_code": r[18], "cache_layer": r[19],
+                "fallback_used": bool(r[20]), "degraded": bool(r[21]), "error_type": r[22], "error_fingerprint": r[23],
             }
             for r in rows
         ]

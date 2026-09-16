@@ -36,8 +36,8 @@ def test_normalize_deterministic_keys_and_timestamps():
     assert keys == ["a_key", "created_at", "nested", "z_key"]
     nested_keys = list(normalized["nested"].keys())
     assert nested_keys == ["b", "m"]
-    # Timestamp rounded to 1 decimal place
-    assert normalized["created_at"] == 1720000000.1
+    # Cache/debug payloads retain exact timestamps; only dict ordering is normalized.
+    assert normalized["created_at"] == 1720000000.123456
 
 
 def test_lean_schemas_concise_descriptions():
