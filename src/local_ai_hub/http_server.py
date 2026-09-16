@@ -192,10 +192,13 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
             if len(window) >= self._rate_limit_requests:
                 return False
             window.append(now)
-            # Evict stale tenants to prevent memory growth (keep at most 4096 entries)
+            # Evict stale tenants in batches to prevent per-request churn (keep at most 4096 entries)
             if len(self._rate_windows) > 4096:
-                oldest_tenant = next(iter(self._rate_windows))
-                del self._rate_windows[oldest_tenant]
+                stale = [t for t, w in self._rate_windows.items() if not w or w[-1] < cutoff]
+                if len(stale) < 512:
+                    stale = list(self._rate_windows.keys())[:512]
+                for t in stale:
+                    self._rate_windows.pop(t, None)
             return True
 
     def process_request(self, request: Any, client_address: Any) -> None:

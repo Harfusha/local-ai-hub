@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
+from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy, quick_sanity_check
 
 
 @dataclass
@@ -102,7 +102,7 @@ class RecoveryJournal:
         self.mark_interrupted_on_startup()
 
     def _connect(self) -> sqlite3.Connection:
-        return connect_sqlite(self.path, timeout_seconds=0.5)
+        return connect_sqlite(self.path, timeout_seconds=5.0)
 
     def _create_schema(self) -> None:
         with closing(self._connect()) as con:
@@ -114,7 +114,7 @@ class RecoveryJournal:
         try:
             self._create_schema()
             with closing(self._connect()) as con:
-                if con.execute("PRAGMA quick_check").fetchone()[0] != "ok": raise sqlite3.DatabaseError("recovery quick_check failed")
+                if not quick_sanity_check(con): raise sqlite3.DatabaseError("recovery sanity check failed")
         except sqlite3.DatabaseError as exc:
             # Lock contention is not corruption. Do not rename a valid journal just because
             # another process is finishing its final transaction during startup.

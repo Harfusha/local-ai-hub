@@ -7,7 +7,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
+from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check
 
 
 class UsageLearner:
@@ -38,7 +38,7 @@ class UsageLearner:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        return connect_sqlite(self.db_path, timeout_seconds=0.75, row_factory=sqlite3.Row)
+        return connect_sqlite(self.db_path, timeout_seconds=5.0, row_factory=sqlite3.Row)
 
     def _create_schema(self) -> None:
         with self._lock, closing(self._connect()) as con:
@@ -60,9 +60,8 @@ class UsageLearner:
         try:
             self._create_schema()
             with self._lock, closing(self._connect()) as con:
-                row = con.execute("PRAGMA quick_check").fetchone()
-                if row and row[0] != "ok":
-                    raise sqlite3.DatabaseError("learning quick_check failed")
+                if not quick_sanity_check(con):
+                    raise sqlite3.DatabaseError("learning sanity check failed")
         except sqlite3.DatabaseError as exc:
             if is_busy_error(exc):
                 return

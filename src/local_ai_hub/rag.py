@@ -15,7 +15,7 @@ from . import __version__
 from .cache import SQLiteCache, TieredCache, SingleFlightCache, stable_hash
 from .normalizer import normalize_query
 from .scheduler import QueueFullError
-from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
+from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy, quick_sanity_check
 from .process_utils import canonical_root
 
 
@@ -141,10 +141,10 @@ class RAGStore:
         retry_busy(self._init_db, retries=5, base_delay_seconds=0.02)
 
     def _connect(self) -> sqlite3.Connection:
-        con = connect_sqlite(self.db_path, timeout_seconds=0.75)
+        con = connect_sqlite(self.db_path, timeout_seconds=5.0)
         try:
-            con.execute("PRAGMA cache_size=-64000")
-            con.execute("PRAGMA mmap_size=268435456")
+            con.execute("PRAGMA cache_size=-16000")
+            con.execute("PRAGMA mmap_size=134217728")
         except sqlite3.OperationalError:
             pass
         return con
@@ -152,10 +152,8 @@ class RAGStore:
     def _init_db(self) -> None:
         with closing(self._connect()) as con:
             initialize_wal(con)
-            row = con.execute("PRAGMA quick_check").fetchone()
-            if row and row[0] != "ok":
-                import sqlite3
-                raise sqlite3.DatabaseError("rag quick_check failed")
+            if not quick_sanity_check(con):
+                raise sqlite3.DatabaseError("rag sanity check failed")
             con.execute(
                 """CREATE TABLE IF NOT EXISTS chunks (
                     tenant TEXT NOT NULL,

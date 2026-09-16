@@ -21,7 +21,7 @@ from typing import Any
 from . import __version__
 from .cache import MemoryLRUCache, SQLiteCache, stable_hash
 from .normalizer import tokenize_query_terms
-from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
+from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check
 from .process_utils import canonical_root, hidden_run_kwargs
 from .state_paths import configured_state_dir
 
@@ -53,6 +53,35 @@ SQL_RE = re.compile(r"\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM|CREATE\s+TABL
 CONCURRENCY_RE = re.compile(r"\b(async|await|thread|mutex|lock|semaphore|queue|channel|goroutine|tokio|Task\.Run|parallel|concurrent|atomic)\b", re.I)
 SECURITY_RE = re.compile(r"\b(auth|authentication|authorization|permission|role|token|jwt|oauth|csrf|xss|encrypt|decrypt|password|secret|credential|sanitize|escape)\b", re.I)
 TODO_RE = re.compile(r"\b(TODO|FIXME|XXX|HACK)\b[:\s-]*(.*)", re.I)
+
+_SECURITY_AUDIT_SECRETS: list[tuple[str, re.Pattern[str]]] = [
+    ("AWS Access Key", re.compile(r"\b(AKIA[0-9A-Z]{16})\b")),
+    ("GitHub Token", re.compile(r"\b(ghp_[0-9a-zA-Z]{36}|github_pat_[0-9a-zA-Z_]{82})\b")),
+    ("Slack Token", re.compile(r"\b(xox[baprs]-[0-9a-zA-Z]{10,48})\b")),
+    ("Private Key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
+    ("Hardcoded Password", re.compile(r"""(?:password|passwd|pwd|secret|api_key)\s*[:=]\s*["']([^"'\s]{6,})["']""", re.I)),
+]
+
+_SECURITY_AUDIT_SMELLS: list[tuple[str, re.Pattern[str]]] = [
+    ("Unsafe eval/exec", re.compile(r"\b(eval|exec)\s*\(")),
+    ("Unsafe Pickle", re.compile(r"\bpickle\.loads?\s*\(")),
+    ("Unsafe PyYAML", re.compile(r"\byaml\.load\s*\([^,]+(?:\)|,\s*Loader\s*=\s*(?:yaml\.)?(?:Unsafe|Full)?Loader\b)")),
+    ("Shell Injection Risk", re.compile(r"\bsubprocess\.(?:Popen|run|call)\s*\(.*shell\s*=\s*True", re.S)),
+]
+
+_SECRET_SCAN_PATTERNS: list[tuple[str, str, re.Pattern[str], str]] = [
+    ("openai_api_key", "OpenAI API Key", re.compile(r"(sk-(?:proj-|live-)?[A-Za-z0-9_-]{20,60})"), "CRITICAL"),
+    ("anthropic_api_key", "Anthropic API Key", re.compile(r"(sk-ant-api[0-9]{2}-[A-Za-z0-9_-]{20,80})"), "CRITICAL"),
+    ("aws_access_key", "AWS Access Key ID", re.compile(r"\b(AKIA[0-9A-Z]{16})\b"), "CRITICAL"),
+    ("github_pat", "GitHub Personal Access Token", re.compile(r"\b((?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36})\b"), "CRITICAL"),
+    ("slack_token", "Slack Token", re.compile(r"(xox[baprs]-[0-9A-Za-z-]{20,72})"), "HIGH"),
+    ("slack_webhook", "Slack Incoming Webhook", re.compile(r"(https:\/\/hooks\.slack\.com\/services\/T[0-9A-Z]+\/B[0-9A-Z]+\/[0-9A-Za-z]+)"), "HIGH"),
+    ("google_api_key", "Google Cloud / API Key", re.compile(r"\b(AIza[0-9A-Za-z-_]{35})\b"), "CRITICAL"),
+    ("stripe_secret_key", "Stripe Secret Key", re.compile(r"\b((?:sk|rk)_(?:live|test)_[0-9a-zA-Z]{24,})\b"), "CRITICAL"),
+    ("private_key", "Private Key Header", re.compile(r"(-----BEGIN (?:RSA|DSA|EC|OPENSSH|PGP) PRIVATE KEY-----)"), "CRITICAL"),
+    ("db_connection_uri", "Database Connection URI with Password", re.compile(r"\b((?:postgres|postgresql|mysql|mongodb|redis):\/\/[a-zA-Z0-9_\-\.]+:[a-zA-Z0-9_\-\.@#$%^&*!]+@[a-zA-Z0-9_\-\.]+)"), "HIGH"),
+    ("generic_secret_assignment", "Generic Hardcoded Secret", re.compile(r"(?:api_key|secret_key|auth_token|client_secret|access_token)\s*=\s*['\"]([A-Za-z0-9+/=_\-\.]{16,})['\"]", re.I), "HIGH"),
+]
 
 
 def _is_test_file(rel_path: str) -> bool:
@@ -121,10 +150,10 @@ class DeterministicEngine:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        con = connect_sqlite(self.db_path, timeout_seconds=0.75, row_factory=sqlite3.Row)
+        con = connect_sqlite(self.db_path, timeout_seconds=5.0, row_factory=sqlite3.Row)
         try:
-            con.execute("PRAGMA cache_size=-65536")
-            con.execute("PRAGMA mmap_size=536870912")
+            con.execute("PRAGMA cache_size=-16000")
+            con.execute("PRAGMA mmap_size=134217728")
         except sqlite3.OperationalError:
             pass
         return con
@@ -174,9 +203,8 @@ class DeterministicEngine:
         try:
             with self._lock, closing(self._connect()) as con:
                 initialize_wal(con)
-                ok = con.execute("PRAGMA quick_check").fetchone()[0]
-                if ok != "ok":
-                    raise sqlite3.DatabaseError(str(ok))
+                if not quick_sanity_check(con):
+                    raise sqlite3.DatabaseError("deterministic sanity check failed")
                 self._schema(con)
                 con.commit()
         except sqlite3.DatabaseError as exc:
@@ -4548,22 +4576,8 @@ def test_{sym}_regression_edge_cases():
     def security_audit(self, root: str, limit: int = 50) -> dict[str, Any]:
         """Deterministic static security analysis (hardcoded secrets, unsafe deserialization, SQL injection)."""
         resolved_root = Path(self._root(root))
-        import re
-
-        secret_patterns = [
-            ("AWS Access Key", re.compile(r"\b(AKIA[0-9A-Z]{16})\b")),
-            ("GitHub Token", re.compile(r"\b(ghp_[0-9a-zA-Z]{36}|github_pat_[0-9a-zA-Z_]{82})\b")),
-            ("Slack Token", re.compile(r"\b(xox[baprs]-[0-9a-zA-Z]{10,48})\b")),
-            ("Private Key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
-            ("Hardcoded Password", re.compile(r"""(?:password|passwd|pwd|secret|api_key)\s*[:=]\s*["']([^"'\s]{6,})["']""", re.I)),
-        ]
-
-        code_smell_patterns = [
-            ("Unsafe eval/exec", re.compile(r"\b(eval|exec)\s*\(")),
-            ("Unsafe Pickle", re.compile(r"\bpickle\.loads?\s*\(")),
-            ("Unsafe PyYAML", re.compile(r"\byaml\.load\s*\([^,]+(?:\)|,\s*Loader\s*=\s*(?:yaml\.)?(?:Unsafe|Full)?Loader\b)")),
-            ("Shell Injection Risk", re.compile(r"\bsubprocess\.(?:Popen|run|call)\s*\(.*shell\s*=\s*True", re.S)),
-        ]
+        secret_patterns = _SECURITY_AUDIT_SECRETS
+        code_smell_patterns = _SECURITY_AUDIT_SMELLS
 
         findings: list[dict[str, Any]] = []
         candidate_files = self.repo_tools.iter_files(str(resolved_root))
@@ -5299,19 +5313,7 @@ def test_{sym}_regression_edge_cases():
             )
             return any(p in t for p in placeholders)
 
-        patterns: list[tuple[str, str, re.Pattern[str], str]] = [
-            ("openai_api_key", "OpenAI API Key", re.compile(r"(sk-(?:proj-|live-)?[A-Za-z0-9_-]{20,60})"), "CRITICAL"),
-            ("anthropic_api_key", "Anthropic API Key", re.compile(r"(sk-ant-api[0-9]{2}-[A-Za-z0-9_-]{20,80})"), "CRITICAL"),
-            ("aws_access_key", "AWS Access Key ID", re.compile(r"\b(AKIA[0-9A-Z]{16})\b"), "CRITICAL"),
-            ("github_pat", "GitHub Personal Access Token", re.compile(r"\b((?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36})\b"), "CRITICAL"),
-            ("slack_token", "Slack Token", re.compile(r"(xox[baprs]-[0-9A-Za-z-]{20,72})"), "HIGH"),
-            ("slack_webhook", "Slack Incoming Webhook", re.compile(r"(https:\/\/hooks\.slack\.com\/services\/T[0-9A-Z]+\/B[0-9A-Z]+\/[0-9A-Za-z]+)"), "HIGH"),
-            ("google_api_key", "Google Cloud / API Key", re.compile(r"\b(AIza[0-9A-Za-z-_]{35})\b"), "CRITICAL"),
-            ("stripe_secret_key", "Stripe Secret Key", re.compile(r"\b((?:sk|rk)_(?:live|test)_[0-9a-zA-Z]{24,})\b"), "CRITICAL"),
-            ("private_key", "Private Key Header", re.compile(r"(-----BEGIN (?:RSA|DSA|EC|OPENSSH|PGP) PRIVATE KEY-----)"), "CRITICAL"),
-            ("db_connection_uri", "Database Connection URI with Password", re.compile(r"\b((?:postgres|postgresql|mysql|mongodb|redis):\/\/[a-zA-Z0-9_\-\.]+:[a-zA-Z0-9_\-\.@#$%^&*!]+@[a-zA-Z0-9_\-\.]+)"), "HIGH"),
-            ("generic_secret_assignment", "Generic Hardcoded Secret", re.compile(r"(?:api_key|secret_key|auth_token|client_secret|access_token)\s*=\s*['\"]([A-Za-z0-9+/=_\-\.]{16,})['\"]", re.I), "HIGH"),
-        ]
+        patterns = _SECRET_SCAN_PATTERNS
 
         findings: list[dict[str, Any]] = []
         if path:
