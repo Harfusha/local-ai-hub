@@ -576,7 +576,7 @@ function dashboardHealth(snapshot={}){
   return {level:'healthy',label:'Healthy',reason:'Current runtime reports no active issue.'};
 }
 
-function dashboardFreshness(timestamp,now,staleAfterMs=60000){
+function dashboardFreshness(timestamp,now=Date.now(),staleAfterMs=120000){
   let value=typeof timestamp==='number'?timestamp:(typeof timestamp==='string'&&/^[-+]?\d+(?:\.\d+)?$/.test(timestamp.trim())?Number(timestamp):Date.parse(timestamp||''));
   if(!Number.isFinite(value))return {state:'unknown',label:'Timestamp unavailable',ageMs:null};
   if(value>0&&value<100000000000)value*=1000;
@@ -593,6 +593,7 @@ function redactDiagnostic(value){
   };
   return String(value??'')
     .replace(/\b(Bearer\s+)[^\s,;]+/gi,'$1<redacted>')
+    .replace(/((?:["'](?:api[_-]?key|token|secret|password|authorization)["'])\s*:\s*)(?:"[^"]*"|'[^']*'|[^\s,;}]+)/gi,'$1"<redacted>"')
     .replace(/\b((?:api[_-]?key|token|secret|password|authorization)\b\s*(?:=|:)\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,'$1<redacted>')
     .replace(/(^|\s)((?:--(?:api[-_]?key|token|secret|password)|-(?:k|t))(?:\s+|=))(?:"[^"]*"|'[^']*'|\S+)/gi,'$1$2<redacted>')
     .replace(/[A-Za-z]:[\\/](?:[^\s"'`\\/]+[\\/])*[^\s"'`\\/]*/g,maskPath)
