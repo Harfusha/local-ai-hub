@@ -51,6 +51,21 @@ def mark_managed() -> None:
 
 
 def spawn_detached() -> None:
+    if os.name == "nt":
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        script_path = ROOT / "tools" / "service_entry.py"
+        if powershell and script_path.exists():
+            def psq(val: object) -> str:
+                return "'" + str(val).replace("'", "''") + "'"
+            cmdline = f'"{PYWIN}" "{script_path}"'
+            script = (
+                f"$proc = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
+                f"-Arguments @{{CommandLine = {psq(cmdline)}; CurrentDirectory = {psq(str(ROOT))}}}; "
+                f"exit [int]($proc.ReturnValue)"
+            )
+            cp = run([powershell, "-NoProfile", "-NonInteractive", "-Command", script], timeout=10.0)
+            if cp.returncode == 0:
+                return
     env = os.environ.copy()
     if _ACTIVE_CONFIG_ARG:
         env["LOCAL_AI_CONFIG"] = _ACTIVE_CONFIG_ARG
