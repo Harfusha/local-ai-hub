@@ -189,7 +189,7 @@ def _desc_status() -> str:
 
 def _desc_task() -> str:
     if LEAN_SCHEMAS:
-        return "Bounded local-model worker. Actions: ask, reason, review, delegate, generate, eval, benchmark."
+        return "Bounded local-model worker for local diagnosis, boilerplate, or second opinion. Actions: ask, reason, review, delegate, generate, eval, benchmark."
     if not FEATURES.has_any_model():
         return (
             "Local-model worker — disabled on this installation (no local model backend configured)."
@@ -210,7 +210,7 @@ def _desc_task() -> str:
         f" Explicit model overrides must match a configured model tag."
         f"{profile_note}"
         " Deterministic compression and repository evidence run first when sufficient."
-        " Use it for one bounded local-model worker, review or second opinion after indexed evidence."
+        " Use it for local diagnosis, boilerplate, or one bounded review/second opinion after indexed evidence."
         " It is not the orchestrator for native Codex subagents; those are managed directly by Codex outside Local AI Hub."
         f"{_actions_note(FEATURES.supported_task_actions())}"
         f"{_specialized_note('local_ai_task')}"
@@ -227,7 +227,7 @@ def _desc_task() -> str:
 
 def _desc_repo() -> str:
     if LEAN_SCHEMAS:
-        return "Primary repository inspection and search. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
+        return "Primary repository worker for repository navigation, symbols, and impact. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
     semantic_hint = ""
     if FEATURES.has_semantic():
         semantic_hint = f" -> {FEATURES.semantic_hint()} for relationships"
@@ -236,7 +236,7 @@ def _desc_repo() -> str:
         model_hint = f" -> {FEATURES.fast_model} -> smart model"
     rag_hint = " -> RAG" if FEATURES.rag else ""
     return (
-        "Primary bounded repository worker for the main agent."
+        "Primary bounded repository worker for repository navigation, symbols, and impact."
         " CALL THIS BEFORE broad repository reads/searches for any non-trivial repo task. MANDATORY GATE."
         f" Use deterministic, code_index/search,{' ' + FEATURES.semantic_hint() + ',' if FEATURES.has_semantic() else ''}"
         " context and solve for bounded evidence and implementation support."
@@ -253,6 +253,7 @@ def _desc_repo() -> str:
         " Reuse fresh evidence/artifact slices and never repeat an identical root/query/action while repo state is unchanged."
         " `in_progress` means another owner is doing identical work; retryable/429/503 means back off;"
         " degraded/stale means verify only the affected slice."
+        " Native fallback requires terminal=true and retryable=false."
         " Always pass the stable absolute project root; never rely on MCP cwd. Never loop or increase timeouts indefinitely."
         " Use when: every non-trivial repository task needs indexed evidence or a bounded Hub operation."
         " Skip when: the task is not repository-scoped or fresh evidence already answers it and no independent Hub scope exists."
@@ -286,16 +287,18 @@ def _desc_rag() -> str:
 
 def _desc_command() -> str:
     if LEAN_SCHEMAS:
-        return "Safe CLI command broker with output bounding and error distillation. Actions: run, auto_fix, format, patch_and_verify, repair_loop."
+        return "Safe CLI command broker for test, lint, typecheck, or build commands. Native fallback requires terminal=true and retryable=false. Mutations never cache or single-flight. Actions: run, auto_fix, format, patch_and_verify, repair_loop."
     agent_os_note = " Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts." if FEATURES.agent_os else ""
     return (
-        "Bounded command broker for the main agent. MANDATORY for repeatable test/lint/typecheck/static-analysis/build/read-only commands whenever possible."
+        "Bounded broker for test, lint, typecheck, or build commands; also repeatable analysis/read-only commands."
         " Shared safe CLI broker."
         f"{_actions_note(FEATURES.supported_command_actions())}"
         f"{_specialized_note('local_ai_command')}"
         f"{agent_os_note}"
         " Results are keyed by command + bounded repo state and duplicate runs coalesce across agents. Reuse fresh results."
+        " Mutations never cache or single-flight."
         " If run returns in_progress=true, DO NOT start the command natively or with force; continue independent work and retry later so the owner can populate the cache."
+        " Native fallback requires terminal=true and retryable=false."
         " cancel only stops an active matching command. force=true is exceptional recovery/admin behavior, never a retry button."
         " Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed."
         " Skip when: no command is needed or a fresh cached result already answers it."
@@ -304,7 +307,7 @@ def _desc_command() -> str:
 
 def _desc_coord() -> str:
     if LEAN_SCHEMAS:
-        return "Agent OS coordination, task lifecycle, memories, leases. Actions: claim, release, memory_record, memory_find, context_compile, task_create, task_checkpoint."
+        return "Agent OS coordination for ownership, checkpoints, and verification receipts. Actions: claim, release, memory_record, memory_find, context_compile, task_create, task_checkpoint."
     if FEATURES.agent_os:
         agent_os_note = (
             " For non-trivial multi-step, long-running, delegated, or acceptance-criteria work, create an Agent OS task first;"
@@ -322,7 +325,7 @@ def _desc_coord() -> str:
             " Skip when: work is isolated and no shared Hub state or memo is involved."
         )
     return (
-        "Cross-agent coordination for the main agent and bounded Hub workers."
+        "Cross-agent coordination for ownership, checkpoints, and verification receipts."
         f"{_actions_note(FEATURES.supported_coord_actions())}"
         f"{agent_os_note}"
         " Claim overlapping edit paths before concurrent Hub work."
@@ -334,9 +337,9 @@ def _desc_coord() -> str:
 
 def _desc_work() -> str:
     if LEAN_SCHEMAS:
-        return "Delegate closed repository task to local worker. Actions: submit, status, wait, get, cancel."
+        return "Delegate closed, low-risk work to local worker. Actions: submit, status, wait, get, cancel."
     return (
-        "Delegate one closed repository task to Local AI Hub: plan a bounded dependency DAG, execute the smallest independently verifiable steps, "
+        "Delegate one closed, low-risk work item to Local AI Hub: plan a bounded dependency DAG, execute the smallest independently verifiable steps, "
         "apply transactional leased edits, run safe validation, verify the integrated result against the original request, and return a compact handoff. "
         "Actions: submit, status, wait, get, cancel, continue. response_profile=minimal|compact|standard|debug; return_fields selects only needed top-level fields; "
         "max_output_tokens bounds the handoff while full details remain artifact-backed. Use when: the task can be delegated as a self-contained repository outcome. "
@@ -346,9 +349,9 @@ def _desc_work() -> str:
 
 def _desc_artifact() -> str:
     if LEAN_SCHEMAS:
-        return "Fetch artifact section or exact evidence slice. Actions: get, slice, list."
+        return "Fetch an exact source or log slice. Actions: get, slice, list."
     return (
-        "Fetch one needed artifact section or exact evidence slice. Evidence IDs start with E."
+        "Fetch one exact source or log slice. Evidence IDs start with E."
         " Use when: exact source or evidence text is required after indexed discovery."
         " Skip when: no source slice is needed or the existing compact result is sufficient."
     )

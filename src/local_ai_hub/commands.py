@@ -1044,6 +1044,9 @@ class CommandBroker:
     ) -> dict[str, Any]:
         if not self.enabled:
             return {"success": False, "error": "command broker disabled"}
+        original_command = command
+        classification = self.classify(original_command)
+        is_mutating = classification.get("class") == "mutating"
         if sandbox == "docker":
             if not shutil.which("docker"):
                 return {
@@ -1064,9 +1067,8 @@ class CommandBroker:
                     "retryable": False,
                     "budget_exhausted": True,
                 }
-        classification = self.classify(command)
         attempt_key = self._attempt_key(command, cwd)
-        if not force:
+        if not force and not is_mutating:
             suppressed = self.suppression_cache.get(attempt_key)
             if isinstance(suppressed, dict):
                 self.suppressed += 1
@@ -1083,7 +1085,7 @@ class CommandBroker:
                 "success": False, "error": f"command blocked: {classification['reason']}",
                 "classification": classification, "policy_blocked": True, "terminal": True, "retryable": False,
             }
-            if not force:
+            if not force and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return result
         cwd_path = Path(cwd).expanduser().resolve(strict=False)
@@ -1095,7 +1097,7 @@ class CommandBroker:
                 "terminal": True,
                 "retryable": False,
             }
-            if not force:
+            if not force and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return result
         unavailable = self._unavailable_executable(command, cwd)
@@ -1104,7 +1106,7 @@ class CommandBroker:
                 "success": False, "error": f"command executable is unavailable: {unavailable}",
                 "exit_code": 127, "classification": classification, "preflight": True, "terminal": True, "retryable": False,
             }
-            if not force:
+            if not force and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
         if not Path(cwd).is_dir():
@@ -1112,7 +1114,7 @@ class CommandBroker:
                 "success": False, "error": f"working directory does not exist: {cwd}",
                 "exit_code": 1, "classification": classification, "preflight": True, "terminal": True, "retryable": False,
             }
-            if not force:
+            if not force and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
         try:
@@ -1126,10 +1128,11 @@ class CommandBroker:
                 "terminal": True,
                 "retryable": False,
             }
-            if not force:
+            if not force and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
-        if classification["cacheable"] and not force:
+        cacheable = bool(classification["cacheable"]) and not is_mutating
+        if cacheable and not force:
             cached = self.success_cache.get(key) or self.failure_cache.get(key)
             if isinstance(cached, dict):
                 self.hits += 1
@@ -1153,13 +1156,16 @@ class CommandBroker:
                         pass
                 return self._compact(result, tenant, command)
 
-        with self._lock:
-            event = self._inflight.get(key)
-            if event is None:
-                event = threading.Event(); self._inflight[key] = event; owner = True
-            else:
-                owner = False; self.coalesced += 1
-        if not owner:
+        singleflight = not is_mutating
+        event: threading.Event | None = None
+        if singleflight:
+            with self._lock:
+                event = self._inflight.get(key)
+                if event is None:
+                    event = threading.Event(); self._inflight[key] = event; owner = True
+                else:
+                    owner = False; self.coalesced += 1
+        if singleflight and not owner:
             # A second agent should benefit from single-flight without being trapped
             # behind a very long build/test command. The owner keeps running and will
             # populate the cache; the waiter gets a bounded in-progress response.
@@ -1290,7 +1296,7 @@ class CommandBroker:
                     pass
 
             raw = dict(result)
-            if classification["cacheable"] and not result.get("cancelled"):
+            if cacheable and not result.get("cancelled"):
                 (self.success_cache if result.get("success") else self.failure_cache).set(key, raw)
             if result.get("success") and task_id and self.verification_store is not None:
                 try:
@@ -1308,25 +1314,28 @@ class CommandBroker:
                     result["verification_receipt"] = rcpt.to_dict()
                 except Exception:
                     pass
-            if not force and self._non_retryable_failure(raw):
+            if not force and not is_mutating and self._non_retryable_failure(raw):
                 raw.update({"terminal": True, "retryable": False})
                 self.suppression_cache.set(attempt_key, raw)
-            with self._lock:
-                if len(self._last) > 128:
-                    old_keys = list(self._last.keys())[:64]
-                    for k in old_keys:
-                        self._last.pop(k, None)
-                self._last[key] = raw
+            if singleflight:
+                with self._lock:
+                    if len(self._last) > 128:
+                        old_keys = list(self._last.keys())[:64]
+                        for k in old_keys:
+                            self._last.pop(k, None)
+                    self._last[key] = raw
             result.update({"cache_hit": False, "coalesced": False, "classification": classification, "repo_state": state, "repository_revision": str(state.get("fingerprint", ""))})
         except subprocess.TimeoutExpired:
             return {"success": False, "error": "command timed out", "classification": classification, "cache_hit": False}
         finally:
             with self._lock:
-                self._inflight.pop(key, None)
+                if singleflight:
+                    self._inflight.pop(key, None)
                 self._active_commands.pop(key, None)
                 self._cancel_events.pop(key, None)
                 self._active_cancel_keys.pop(key, None)
-                event.set()
+                if event is not None:
+                    event.set()
 
         if task_id and self.policy_engine:
             try:
