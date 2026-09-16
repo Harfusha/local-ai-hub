@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .trace_context import current as current_trace_context
-from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
+from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check
 
 
 _PATH_RE = re.compile(r"(?:(?:[A-Za-z]:\\\\|/)(?:[^\s:'\"<>|]+[/\\\\])+[^\s:'\"<>|]*)")
@@ -149,7 +149,7 @@ class TelemetryStore:
             self._thread.start()
 
     def _connect(self) -> sqlite3.Connection:
-        return connect_sqlite(self.path, timeout_seconds=0.75)
+        return connect_sqlite(self.path, timeout_seconds=5.0)
 
     def _init_db_with_recovery(self) -> None:
         try:
@@ -157,8 +157,8 @@ class TelemetryStore:
                 self._discard_state_files()
             self._init_db()
             with closing(self._connect()) as con:
-                if con.execute("PRAGMA quick_check").fetchone()[0] != "ok":
-                    raise sqlite3.DatabaseError("telemetry quick_check failed")
+                if not quick_sanity_check(con):
+                    raise sqlite3.DatabaseError("telemetry sanity check failed")
         except sqlite3.DatabaseError as exc:
             if is_busy_error(exc):
                 return

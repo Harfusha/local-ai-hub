@@ -15,7 +15,7 @@ from . import __version__
 from .cache import MemoryLRUCache, stable_hash
 from .normalizer import tokenize_query_terms
 from .process_utils import canonical_root
-from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
+from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check
 
 IDENT = re.compile(r"\b[A-Za-z_$][A-Za-z0-9_$]{2,}\b")
 GENERIC_DEF = re.compile(r"^\s*(?:(?:public|private|protected|internal|static|final|async|export|abstract|virtual|override|sealed|readonly)\s+)*(class|interface|trait|enum|struct|record|function|func|fn|def|type)\s+([A-Za-z_$][A-Za-z0-9_$]*)")
@@ -43,10 +43,10 @@ class CodeIndex:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        con = connect_sqlite(self.db_path, timeout_seconds=0.75, row_factory=sqlite3.Row)
+        con = connect_sqlite(self.db_path, timeout_seconds=5.0, row_factory=sqlite3.Row)
         try:
-            con.execute("PRAGMA cache_size=-65536")
-            con.execute("PRAGMA mmap_size=536870912")
+            con.execute("PRAGMA cache_size=-16000")
+            con.execute("PRAGMA mmap_size=134217728")
         except sqlite3.OperationalError:
             pass
         return con
@@ -120,9 +120,8 @@ class CodeIndex:
         try:
             with self._lock, closing(self._connect()) as con:
                 initialize_wal(con)
-                ok = con.execute("PRAGMA quick_check").fetchone()[0]
-                if ok != "ok":
-                    raise sqlite3.DatabaseError(str(ok))
+                if not quick_sanity_check(con):
+                    raise sqlite3.DatabaseError("code-index sanity check failed")
                 self._schema(con)
                 con.commit()
         except sqlite3.DatabaseError as exc:

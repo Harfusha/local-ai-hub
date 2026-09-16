@@ -30,6 +30,11 @@ _SECRET_PATTERNS = [
     re.compile(r"(?i)(aws_secret_access_key\s*=\s*)([^\s]+)"),
 ]
 
+_DIAGNOSTIC_PATTERNS = [
+    re.compile(r"^(?P<path>[^:\n]+):(?P<line>\d+)(?::(?P<col>\d+))?[:\s]+(?P<msg>.+)$"),
+    re.compile(r"^FAILED\s+(?P<path>[^:\s]+)(?:::(?P<msg>.+))?$"),
+]
+
 
 def _redact_secrets(text: str) -> str:
     if not text:
@@ -923,10 +928,7 @@ class CommandBroker:
     def _extract_diagnostics(result: dict[str, Any], limit: int = 30) -> list[dict[str, Any]]:
         text = (str(result.get("stdout", "")) + "\n" + str(result.get("stderr", ""))).strip()
         diagnostics: list[dict[str, Any]] = []
-        patterns = [
-            re.compile(r"^(?P<path>[^:\n]+):(?P<line>\d+)(?::(?P<col>\d+))?[:\s]+(?P<msg>.+)$"),
-            re.compile(r"^FAILED\s+(?P<path>[^:\s]+)(?:::(?P<msg>.+))?$"),
-        ]
+        patterns = _DIAGNOSTIC_PATTERNS
         for raw in text.splitlines():
             line = raw.strip()
             if not line:

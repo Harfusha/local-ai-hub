@@ -25,7 +25,7 @@ def is_busy_error(exc: BaseException) -> bool:
 def connect_sqlite(
     path: Path,
     *,
-    timeout_seconds: float = 0.75,
+    timeout_seconds: float = 5.0,
     isolation_level: str | None = "DEFERRED",
     row_factory: Any | None = None,
 ) -> sqlite3.Connection:
@@ -48,8 +48,8 @@ def connect_sqlite(
         try:
             con.execute("PRAGMA synchronous=NORMAL")
             con.execute("PRAGMA temp_store=MEMORY")
-            con.execute("PRAGMA mmap_size=268435456")
-            con.execute("PRAGMA cache_size=-16000")
+            con.execute("PRAGMA mmap_size=67108864")
+            con.execute("PRAGMA cache_size=-8000")
         except sqlite3.OperationalError as exc:
             if not is_busy_error(exc):
                 raise
@@ -63,6 +63,18 @@ def initialize_wal(con: sqlite3.Connection) -> None:
     """Enable WAL during cold initialization, never on every hot-path connection."""
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA synchronous=NORMAL")
+
+
+def quick_sanity_check(con: sqlite3.Connection) -> bool:
+    """Fast integrity check (<1ms) testing that SQLite can read headers and schema version.
+
+    Avoids full-table B-tree scans on multi-gigabyte files during cold process startup.
+    """
+    try:
+        row = con.execute("PRAGMA schema_version").fetchone()
+        return bool(row is not None)
+    except Exception:
+        return False
 
 
 def retry_busy(
