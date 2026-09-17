@@ -554,7 +554,7 @@ def test_trace_event_buffer_runtime_caps_events_and_preserves_server_total() -> 
     assert bounded["eventsTotal"] == 900
 
 
-def test_trace_inspector_has_model_chat_renderer_contract_and_two_column_layout() -> None:
+def test_trace_inspector_has_model_chat_renderer_contract_and_codex_timeline() -> None:
     assert "function renderModelChatPresentation(model)" in DASHBOARD_HTML
     source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function tracePresentationValue(value") : DASHBOARD_HTML.index(
@@ -568,13 +568,16 @@ def test_trace_inspector_has_model_chat_renderer_contract_and_two_column_layout(
         "model name",
         "step",
         "role",
-        "No model input captured",
         "No model output captured",
         "traceSanitizeValue",
         "esc(",
-        "trace-chat-columns",
-        "trace-chat-input",
-        "trace-chat-output",
+        "trace-codex-timeline",
+        "trace-timeline-event",
+        "trace-thinking",
+        "<details",
+        "tool call",
+        "tool result",
+        "assistant",
         "typeof input==='string'",
     ]:
         assert marker in source, f"Model chat renderer omits {marker}"
@@ -584,8 +587,8 @@ def test_trace_inspector_has_model_chat_renderer_contract_and_two_column_layout(
             "</style>", DASHBOARD_HTML.index(".trace-chat-columns")
         )
     ]
-    assert "grid-template-columns" in css_source
-    assert "minmax(0,1fr)" in css_source
+    assert "trace-tool-timeline" in css_source
+    assert "trace-tool-card" in css_source
 
 
 def test_trace_inspector_has_agent_loop_tool_cards_with_bounded_safe_fields() -> None:
@@ -597,7 +600,7 @@ def test_trace_inspector_has_agent_loop_tool_cards_with_bounded_safe_fields() ->
     ]
     for marker in [
         "Agent loop",
-        "trace-chat-columns",
+        "trace-codex-timeline",
         "trace-tool-card",
         "trace-tool-timeline",
         "tool name",
@@ -606,6 +609,8 @@ def test_trace_inspector_has_agent_loop_tool_cards_with_bounded_safe_fields() ->
         "error",
         "step",
         "call id",
+        "tool call",
+        "tool result",
         "traceSanitizeValue",
         "traceRawBoundValue",
         "esc(",
@@ -1037,6 +1042,45 @@ def test_trace_agent_loop_runtime_renders_nested_tool_errors_and_successes() -> 
     assert "&lt;failure&gt;" in html
     assert "success" in html
     assert "bad-1" in html and "ok-1" in html
+
+
+def test_trace_model_chat_runtime_renders_one_chronological_codex_timeline() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {"kind": "agent_loop", "chatTurns": [], "modelInput": {"messages": [{"role": "user", "content": "run"}]}, "modelOutput": "done"},
+        "events": [
+            {"seq": 1, "event_type": "model_request", "payload": {"step": 1, "messages": [{"role": "user", "content": "run"}], "model": "m"}},
+            {"seq": 2, "event_type": "assistant_thinking", "payload": {"step": 1, "content": "reason"}},
+            {"seq": 3, "event_type": "tool_call", "payload": {"step": 1, "call_id": "c1", "name": "shell", "arguments": {"cmd": "pwd"}}},
+            {"seq": 4, "event_type": "tool_result", "payload": {"step": 1, "call_id": "c1", "result": {"error": "failed"}}},
+            {"seq": 5, "event_type": "output_delta", "payload": {"step": 1, "text": "done"}},
+            {"seq": 6, "event_type": "turn_end", "payload": {"step": 1}},
+        ],
+        "session": {"model": "m"}, "actor": {}, "correlations": {}, "identity": {},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'').replace(/secret/gi,'<redacted>');} let traceRevealRedactedDetails=false;"
+        + source + f"console.log(JSON.stringify(renderAgentLoopPresentation({json.dumps(fixture)})));"
+    )
+    html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    markers = ["Model input", "Thinking", "Tool call", "Tool result", "Assistant output", "Turn boundary"]
+    assert [html.index(marker) for marker in markers] == sorted(html.index(marker) for marker in markers)
+    assert '<details class="trace-thinking"' in html
+    assert "run" in html and "failed" in html and "c1" in html
+
+
+def test_trace_model_chat_runtime_has_clear_empty_timeline_state() -> None:
+    source = _trace_presentation_runtime_source()
+    fixture = {"presentation": {"kind": "model_chat", "chatTurns": [], "modelInput": None, "modelOutput": None}, "session": {}, "actor": {}, "correlations": {}, "identity": {}}
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;" + source
+        + f"console.log(JSON.stringify(renderModelChatPresentation({json.dumps(fixture)})));"
+    )
+    html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    assert "No model events captured" in html
 
 
 def test_trace_model_chat_runtime_keeps_request_envelope_visible_and_bounded() -> None:
