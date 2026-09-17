@@ -433,6 +433,25 @@ def test_trace_inspector_prioritizes_input_output_and_demotes_technical_detail()
     assert "traceFirstRecorded(events,['output'" in model_source
 
 
+def test_trace_inspector_stacks_primary_and_model_chat_panels_full_width() -> None:
+    assert ".trace-primary-grid{display:grid;grid-template-columns:1fr" in DASHBOARD_HTML
+    assert ".trace-chat-columns{display:grid;grid-template-columns:1fr" in DASHBOARD_HTML
+    assert ".trace-optional-details{width:100%" in DASHBOARD_HTML
+
+
+def test_trace_inspector_formats_generic_model_objects_without_object_coercion() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function promptText(value)") : DASHBOARD_HTML.index(
+            "function promptBlock(text"
+        )
+    ]
+    script = source + "console.log(promptText({answer:'structured'}));"
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    assert "structured" in result.stdout
+    assert "[object Object]" not in result.stdout
+
+
 def test_trace_inspector_dispatches_primary_body_before_optional_technical_details() -> None:
     source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
