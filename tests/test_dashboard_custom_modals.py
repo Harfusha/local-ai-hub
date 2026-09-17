@@ -439,6 +439,12 @@ def test_trace_inspector_stacks_primary_and_model_chat_panels_full_width() -> No
     assert ".trace-optional-details{width:100%" in DASHBOARD_HTML
 
 
+def test_trace_inspector_separates_type_specific_field_labels_and_values() -> None:
+    assert ".trace-presentation-field{display:grid" in DASHBOARD_HTML
+    assert "grid-template-columns:minmax(150px,220px) minmax(0,1fr)" in DASHBOARD_HTML
+    assert ".trace-command-top{border:" in DASHBOARD_HTML
+
+
 def test_trace_inspector_formats_generic_model_objects_without_object_coercion() -> None:
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     source = DASHBOARD_HTML[
