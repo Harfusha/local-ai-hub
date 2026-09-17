@@ -382,3 +382,34 @@ def test_trace_inspector_uses_accessible_conditional_tabs_and_safe_trace_values(
     ]
     assert "model.panels.filter(panel=>panel.available)" in detail_source
     assert "traceSanitizeValue" in detail_source
+
+
+def test_trace_display_model_derives_http_identity_and_keeps_effective_payload() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceDisplayModel(detail)") : DASHBOARD_HTML.index(
+            "function traceAvailability("
+        )
+    ]
+    assert "event?.event_type==='request_received'" in source
+    assert "requestReceived?.payload" in source
+    assert "requestPayload.method" in source
+    assert "requestPayload.path" in source
+    assert "requestPayload.request_id" in source
+    assert "session.effective_payload" in source
+    assert "effectivePayload" in source
+
+
+def test_trace_inspector_has_keyboard_roving_tabs_and_explicit_reveal_control() -> None:
+    assert "function moveTraceTab(" in DASHBOARD_HTML
+    keyboard_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function moveTraceTab(") : DASHBOARD_HTML.index(
+            "async function openTrace("
+        )
+    ]
+    for key in ["ArrowLeft", "ArrowRight", "Home", "End"]:
+        assert key in keyboard_source
+    assert "requestAnimationFrame" in keyboard_source
+    assert "traceRevealRedactedDetails=false" in DASHBOARD_HTML
+    assert "data-trace-reveal" in DASHBOARD_HTML
+    assert 'aria-pressed="${traceRevealRedactedDetails}"' in DASHBOARD_HTML
+    assert "toggleTraceReveal" in DASHBOARD_HTML

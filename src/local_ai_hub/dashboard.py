@@ -1773,7 +1773,7 @@ function clickableRow(obj,html,type='',idAttr=''){
   return `<tr class="click" data-detail="${id}" data-type="${esc(resolvedType)}" ${entityId?`data-id="${esc(entityId)}"`:''}>${html}</tr>`;
 }
 
-let traceTimer=null,activeTraceId='',traceSeq=0,traceEvents=[],traceOpenSteps=new Set(),traceView='timeline',activeTraceData=null;
+let traceTimer=null,activeTraceId='',traceSeq=0,traceEvents=[],traceOpenSteps=new Set(),traceView='timeline',activeTraceData=null,traceRevealRedactedDetails=false;
 const humanLabel=k=>String(k||'').replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()).replace(/\bApi\b/g,'API').replace(/\bId\b/g,'ID').replace(/\bUrl\b/g,'URL').replace(/\bHttp\b/g,'HTTP');
 
 function renderAny(value){
@@ -1784,16 +1784,16 @@ function renderAny(value){
   if(typeof value==='object'){const entries=Object.entries(value);return entries.length?`<div class="human-grid">${entries.map(([k,v])=>`<div>${esc(humanLabel(k))}</div><div>${renderAny(v)}</div>`).join('')}</div>`:'<div class="empty-human">empty object</div>'}
   return `<span class="human-value">${esc(String(value))}</span>`;
 }
-function traceSanitizeValue(value,seen=new WeakSet()){
+function traceSanitizeValue(value,seen=new WeakSet(),reveal=traceRevealRedactedDetails){
   if(value===null||value===undefined||typeof value==='number'||typeof value==='boolean')return value;
-  if(typeof value==='string')return redactDiagnostic(value);
-  if(Array.isArray(value))return value.map(item=>traceSanitizeValue(item,seen));
+  if(typeof value==='string')return reveal?value:redactDiagnostic(value);
+  if(Array.isArray(value))return value.map(item=>traceSanitizeValue(item,seen,reveal));
   if(typeof value==='object'){
     if(seen.has(value))return '<cycle omitted>';
     seen.add(value);
-    return Object.fromEntries(Object.entries(value).map(([key,item])=>[redactDiagnostic(key),traceSanitizeValue(item,seen)]));
+    return Object.fromEntries(Object.entries(value).map(([key,item])=>[reveal?key:redactDiagnostic(key),traceSanitizeValue(item,seen,reveal)]));
   }
-  return redactDiagnostic(String(value));
+  return reveal?String(value):redactDiagnostic(String(value));
 }
 function traceRecorded(value){
   if(value===null||value===undefined)return false;
@@ -1981,8 +1981,11 @@ function traceUnavailable(label){return `${label} unavailable for this request t
 function traceDisplayModel(detail){
   const rawSession=detail?.session||{},rawEvents=Array.isArray(detail?.events)?detail.events:[];
   const session=traceSanitizeValue(rawSession),events=traceSanitizeValue(rawEvents);
-  const redactedTraceId=redactDiagnostic(rawSession.trace_id||'');
-  const input=traceRecorded(session.request)?session.request:traceFirstRecorded(events,['request','request_body','request_payload','body','input','payload']);
+  const requestReceived=events.find(event=>event?.event_type==='request_received');
+  const requestPayload=requestReceived?.payload&&typeof requestReceived.payload==='object'?requestReceived.payload:{};
+  const redactedTraceId=traceRevealRedactedDetails?String(rawSession.trace_id||''):redactDiagnostic(rawSession.trace_id||'');
+  const effectivePayload=session.effective_payload;
+  const input=traceRecorded(session.request)?session.request:traceRecorded(effectivePayload)?effectivePayload:traceFirstRecorded(events,['request','request_body','request_payload','body','input','payload']);
   const output=traceRecorded(session.output)?session.output:traceFirstRecorded(events,['output','output_text','generated_text','text']);
   const response=traceRecorded(session.response)?session.response:traceFirstRecorded(events,['response','response_body','result']);
   const eventErrors=events.filter(event=>traceRecorded(event?.payload?.error)||traceRecorded(event?.payload?.error_message)||event?.payload?.success===false).map(event=>event.payload);
@@ -1990,16 +1993,16 @@ function traceDisplayModel(detail){
   const modelExecutions=events.filter(event=>event?.event_type==='model_request'||event?.event_type==='output_stream'||event?.event_type==='output_delta');
   const toolCalls=events.filter(event=>event?.event_type==='tool_call'||event?.event_type==='tool_result');
   const timing={created_at:session.created_at,updated_at:session.updated_at,finished_at:session.finished_at,duration_ms:session.duration_ms,elapsed_ms:session.elapsed_ms};
-  const identity={trace_id:redactedTraceId||session.trace_id,kind:session.kind,action:session.action,source:session.source,method:session.method,path:session.path};
+  const identity={trace_id:redactedTraceId||session.trace_id,kind:session.kind,action:session.action,source:session.source,method:session.method||requestPayload.method,path:session.path||requestPayload.path||requestPayload.url||requestPayload.endpoint,request_id:session.request_id||requestPayload.request_id};
   const lifecycle={state:traceDisplayState(session),terminal:Boolean(detail?.terminal),status_code:session.status_code};
   const actor={agent:session.agent,tenant:session.tenant,owner:session.owner};
-  const correlations={request_id:session.request_id,async_job_id:session.async_job_id,scheduler_job_id:session.scheduler_job_id,job_id:session.job_id};
+  const correlations={request_id:session.request_id||requestPayload.request_id,async_job_id:session.async_job_id||requestPayload.async_job_id,scheduler_job_id:session.scheduler_job_id||requestPayload.scheduler_job_id,job_id:session.job_id||requestPayload.job_id};
   const retainedBytes=Number(session.text_bytes||session.retained_bytes||0);
   const availability={
     input:traceRecorded(input),output:traceRecorded(output),response:traceRecorded(response),errors:errors.length>0,
     events:events.length>0,modelExecutions:modelExecutions.length>0,toolCalls:toolCalls.length>0,
   };
-  const model={identity,lifecycle,timing,actor,correlations,retainedBytes,input,output,response,errors,events,modelExecutions,toolCalls,availability,session};
+  const model={identity,lifecycle,timing,actor,correlations,retainedBytes,input,output,response,errors,events,modelExecutions,toolCalls,effectivePayload,availability,session};
   model.panels=[
     tracePanel('summary','Summary','',true),
     tracePanel('input','Input',humanSection('Input',input),availability.input),
@@ -2008,9 +2011,10 @@ function traceDisplayModel(detail){
     tracePanel('errors','Errors',humanSection('Errors',errors),availability.errors),
     tracePanel('timeline','Timeline',traceTimeline(events),availability.events),
     tracePanel('model','Model execution',traceTimeline(modelExecutions),availability.modelExecutions),
+    tracePanel('agent_context','Agent context',humanSection('Agent context',effectivePayload),traceRecorded(effectivePayload)),
     tracePanel('tools','Tool calls',humanSection('Tool calls',toolCalls),availability.toolCalls),
     tracePanel('events','Events',humanSection('All events',events),availability.events),
-    tracePanel('raw','Raw',traceRaw({session,input,output,response,errors,events}),true),
+    tracePanel('raw','Raw',traceRaw({session,effective_payload:effectivePayload,input,output,response,errors,events}),true),
   ];
   return model;
 }
@@ -2027,14 +2031,28 @@ function renderTraceDetail(d){
   if(!model.panels.some(panel=>panel.available&&panel.id===traceView))traceView='summary';
   $('tracePageTitle').textContent=String(s.action||s.source||'Trace');$('tracePageLive').textContent=d?.terminal?'terminal · retained':'● live · auto-refresh';$('tracePageLive').className='tiny '+(d?.terminal?'ok':'trace-running');
   const state=model.lifecycle.state,displayState=traceStatus(s),stateClass=(displayState==='failed'||displayState==='error')?'bad':(displayState==='interrupted'?'warn':(d?.terminal?'ok':'warn'));
-  const header=`<div class="trace-inspector-head"><div><div class="trace-kicker">Request trace · Universal inspector</div><strong>${esc(redactDiagnostic(s.action||s.source||'Trace'))}</strong><div class="tiny">${esc(redactDiagnostic(s.agent||'unknown actor'))} · ${esc(redactDiagnostic(s.model||'model not recorded'))}</div></div><span class="badge ${stateClass}">${esc(state)}</span></div><div class="trace-metrics"><span>${events.length} events</span><span>${esc(redactDiagnostic(s.tenant||'no tenant'))}</span><span>${model.retainedBytes} bytes retained</span></div>`;
+  const revealLabel=traceRevealRedactedDetails?'Hide unredacted details':'Reveal redacted details',revealState=traceRevealRedactedDetails?'Unredacted trace details shown locally.':'Trace details are redacted by default.';
+  const header=`<div class="trace-inspector-head"><div><div class="trace-kicker">Request trace · Universal inspector</div><strong>${esc(s.action||s.source||'Trace')}</strong><div class="tiny">${esc(s.agent||'unknown actor')} · ${esc(s.model||'model not recorded')}</div></div><span class="badge ${stateClass}">${esc(state)}</span></div><div class="trace-metrics"><span>${events.length} events</span><span>${esc(s.tenant||'no tenant')}</span><span>${model.retainedBytes} bytes retained</span><button type="button" class="btn" data-trace-reveal aria-pressed="${traceRevealRedactedDetails}" aria-describedby="trace-reveal-status">${esc(revealLabel)}</button><span id="trace-reveal-status" class="tiny" aria-live="polite">${esc(revealState)}</span></div>`;
   const panels=model.panels.filter(panel=>panel.available),selected=panels.find(panel=>panel.id===traceView)||panels[0],universalSummary=traceSummary(model,unavailableCopy),content=selected?.id==='summary'?'<div class="empty-human">Summary shown above.</div>':selected?.content||'<div class="empty-human">Trace data unavailable</div>';
   // Universal request summary and Trace data availability are always rendered before tabs.
   $('tracePageBody').className='trace-page-body';$('tracePageBody').innerHTML=`<div class="human-shell">${header}${universalSummary}<nav class="trace-tabs" role="tablist" aria-label="Trace views">${panels.map(panel=>traceTab(panel.label,panel.id)).join('')}</nav><div id="trace-panel-${esc(traceView)}" class="trace-view" role="tabpanel" aria-labelledby="trace-tab-${esc(traceView)}">${content}</div></div>`;
 }
 function setTraceView(view){if(!activeTraceData)return;const model=traceDisplayModel(activeTraceData);if(!model.panels.some(panel=>panel.available&&panel.id===view))return;traceView=view;renderTraceDetail(activeTraceData)}
+function toggleTraceReveal(){if(!activeTraceData)return;traceRevealRedactedDetails=!traceRevealRedactedDetails;renderTraceDetail(activeTraceData)}
+function moveTraceTab(tab,key){
+  const tabs=Array.from(document.querySelectorAll('#tracePageBody [role="tab"]'));
+  const index=tabs.indexOf(tab);if(index<0)return;
+  let nextIndex=index;
+  if(key==='ArrowLeft')nextIndex=(index-1+tabs.length)%tabs.length;
+  else if(key==='ArrowRight')nextIndex=(index+1)%tabs.length;
+  else if(key==='Home')nextIndex=0;
+  else if(key==='End')nextIndex=tabs.length-1;
+  else return;
+  const view=tabs[nextIndex]?.dataset.traceView;if(!view)return;
+  setTraceView(view);requestAnimationFrame(()=>document.getElementById('trace-tab-'+view)?.focus());
+}
 async function openTrace(id){
-  activeTraceId=String(id||'');traceSeq=0;traceEvents=[];traceOpenSteps=new Set();traceView='summary';activeTraceData=null;
+  activeTraceId=String(id||'');traceSeq=0;traceEvents=[];traceOpenSteps=new Set();traceView='summary';activeTraceData=null;traceRevealRedactedDetails=false;
   renderTraceList(lastTraces);switchTab('traceInspector');
   if(traceTimer)clearInterval(traceTimer);
   const poll=async()=>{
@@ -3767,6 +3785,7 @@ document.addEventListener('click',e=>{
     $('modalClose').click();
     return;
   }
+  const reveal=e.target.closest?.('[data-trace-reveal]');if(reveal){toggleTraceReveal();return}
   const tab=e.target.closest?.('[data-trace-view]');if(tab){setTraceView(tab.dataset.traceView);return}
   const pageTrace=e.target.closest?.('[data-trace-page-id]');if(pageTrace){openTrace(pageTrace.dataset.tracePageId);return}
   const back=e.target.closest?.('[data-trace-back]');if(back){switchTab('work');return}
@@ -3792,6 +3811,11 @@ document.addEventListener('click',e=>{
       openModal(obj,'',type);
     }
   }
+});
+document.addEventListener('keydown',e=>{
+  const tab=e.target.closest?.('[data-trace-view]');
+  if(!tab||!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;
+  e.preventDefault();moveTraceTab(tab,e.key);
 });
 
 function switchTab(tabId){
