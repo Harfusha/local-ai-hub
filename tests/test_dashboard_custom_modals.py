@@ -1137,6 +1137,21 @@ def test_trace_codex_timeline_keeps_terminal_output_after_partial_stream() -> No
     assert html.count("Assistant output") == 2
 
 
+def test_trace_codex_timeline_retains_synthetic_final_after_event_cap() -> None:
+    source = _trace_presentation_runtime_source()
+    events = [{"seq": 1, "event_type": "assistant_output", "payload": {"content": "terminal answer"}}]
+    events.extend({"seq": index, "event_type": "turn_end", "payload": {"step": index}} for index in range(2, 112))
+    fixture = {"presentation": {"kind": "model_chat"}, "events": events, "session": {"output": "terminal answer"}, "actor": {}, "correlations": {}, "identity": {}}
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;" + source
+        + f"console.log(JSON.stringify(renderModelChatPresentation({json.dumps(fixture)})));"
+    )
+    html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    assert "terminal answer" in html
+    assert "Assistant output" in html
+
+
 def test_trace_malformed_non_object_event_payload_stays_visible() -> None:
     source = _trace_presentation_runtime_source()
     fixture = {"presentation": {"kind": "model_chat"}, "events": [{"seq": 1, "event_type": "event", "payload": "broken-payload"}], "session": {}, "actor": {}, "correlations": {}, "identity": {}}
