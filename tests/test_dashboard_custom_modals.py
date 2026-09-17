@@ -706,6 +706,48 @@ def test_trace_timeline_runtime_tolerates_malformed_events_and_caps_cumulative_p
     assert output["bounded"] <= 26000
 
 
+def test_trace_bounded_events_uses_one_shared_budget_for_wide_deep_events() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceBoundedEvents(") : DASHBOARD_HTML.index(
+            "function traceDisplaySession("
+        )
+    ]
+    assert "traceRawBoundValue(traceRawBoundValue" not in source
+    assert "traceRawBoundValue(event,2048,0,budget)" in source
+    assert "remaining:24000" in source
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    wide = {f"wide_{i}": {f"deep_{j}": "x" * 500 for j in range(20)} for i in range(80)}
+    script = (
+        source
+        + f"const bounded=traceBoundedEvents([{{event_type:'wide',payload:{json.dumps(wide)}}}]);"
+        + "console.log(JSON.stringify(bounded));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    bounded = json.loads(result.stdout)
+    assert len(json.dumps(bounded["events"])) <= 26000
+    assert bounded["eventsTruncated"] is True
+
+
+def test_trace_presentation_runtime_coerces_non_array_events_to_empty() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    models = [
+        {"events": "not events", "session": {}, "identity": {}},
+        {"events": {"event_type": "bad"}, "session": {}, "identity": {}},
+    ]
+    models_json = json.dumps(models)
+    script = (
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"const models={models_json};console.log(JSON.stringify(models.map(tracePresentationData)));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    presentations = json.loads(result.stdout)
+    assert [presentation["chatTurns"] for presentation in presentations] == [[], []]
+    assert [presentation.get("command") for presentation in presentations] == [None, None]
+
+
 def test_trace_review_severity_runtime_merges_counts_map_and_findings() -> None:
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     source = _trace_presentation_runtime_source()
@@ -1114,7 +1156,7 @@ def test_bounded_trace_events_retain_request_metadata_and_cap_each_event() -> No
         )
     ]
     assert "event_type==='request_received'" in source
-    assert "traceRawBoundValue(event,2048)" in source
+    assert "traceRawBoundValue(event,2048,0,budget)" in source
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     script = (
         source
