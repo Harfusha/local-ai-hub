@@ -43,7 +43,7 @@ For an honest deployment cohort, use `/api/metrics?scope=process` or `/api/telem
 
 ## Agent configuration
 
-Setup preserves unrelated user configuration and can install MCP entries for Codex, Claude, Gemini, Cursor, Windsurf and VS Code/Copilot. Portable generated manifests intentionally contain the Hub-only `local-ai` entry by default; direct Serena/CodeGraph entries remain opt-in via `code_intelligence.direct_agent_mcp`. `[agents].extra_mcp_json_paths` / `extra_vscode_mcp_paths` can write explicitly requested custom host configs. The `local-ai-orchestrator` skill and MCP tool descriptions intentionally repeat the same policy so hosts that do not load external skill files still receive the routing contract.
+Setup preserves unrelated user configuration and can install MCP entries for Codex, Claude, Gemini, Antigravity, Cursor, Windsurf and VS Code/Copilot. Antigravity's global manifest is `~/.gemini/config/mcp_config.json`; setup keeps its `local-ai` entry aligned with the Gemini profile and removes stale direct Serena/CodeGraph entries when direct MCP is disabled. Portable generated manifests intentionally contain the Hub-only `local-ai` entry by default; direct Serena/CodeGraph entries remain opt-in via `code_intelligence.direct_agent_mcp`. `[agents].extra_mcp_json_paths` / `extra_vscode_mcp_paths` can write explicitly requested custom host configs. The `local-ai-orchestrator` skill and MCP tool descriptions intentionally repeat the same policy so hosts that do not load external skill files still receive the routing contract.
 
 For concurrent agents, use `local_ai_coord` leases before overlapping edits and memos for reusable findings.
 
