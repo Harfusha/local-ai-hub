@@ -65,3 +65,24 @@ def test_native_start_does_not_spawn_duplicate_after_scheduler_race(monkeypatch)
     service.native_start()
 
     spawn.assert_not_called()
+
+
+def test_all_supervisor_pids_does_not_match_its_own_powershell_query(monkeypatch):
+    module = importlib.util.spec_from_file_location(
+        "test_hub_service_process_query", Path(__file__).parents[1] / "tools" / "service.py"
+    )
+    service = importlib.util.module_from_spec(module)
+    module.loader.exec_module(service)
+
+    commands = []
+    monkeypatch.setattr(service, "supervisor_pid", lambda: 0)
+    monkeypatch.setattr(
+        service.subprocess,
+        "run",
+        lambda cmd, **kwargs: commands.append(cmd) or subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
+
+    assert service.all_supervisor_pids() == []
+    script = commands[0][-1]
+    assert "-Filter" in script
+    assert "python.exe" in script
