@@ -481,6 +481,40 @@ def test_trace_inspector_polling_guards_stale_responses_and_bounds_client_buffer
         assert marker in source, f"Polling guard missing: {marker}"
 
 
+def test_trace_inspector_accepts_only_finite_numeric_next_sequence() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("async function openTrace(") : DASHBOARD_HTML.index(
+            "function openModal("
+        )
+    ]
+    assert "traceSeq=traceFiniteSequence(d.next_seq,traceSeq)" in source
+
+
+def test_trace_inspector_removes_unreachable_summary_panel_branch() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
+            "function setTraceView(view)"
+        )
+    ]
+    assert "panel.id==='summary'" not in source
+
+
+def test_trace_sequence_runtime_retains_prior_value_for_malformed_next_sequence() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceFiniteSequence(") : DASHBOARD_HTML.index(
+            "function traceBoundedEvents("
+        )
+    ]
+    script = (
+        source
+        + "console.log(JSON.stringify([traceFiniteSequence(4,2),traceFiniteSequence(null,2),"
+        + "traceFiniteSequence('5',2),traceFiniteSequence(NaN,2)]));"
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    assert json.loads(result.stdout) == [4, 2, 2, 2]
+
+
 def test_trace_inspector_keeps_optional_details_open_and_summary_visible() -> None:
     detail_source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
