@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import ast
 import copy
 import json
@@ -521,7 +523,7 @@ class CodeIndex:
         key = f"{content_hash}:{__version__}:{language}"
         self._parse_blob_l1.set(key, (syms, refs, edges))
         try:
-            payload = json.dumps({"symbols": syms, "refs": refs, "edges": edges}, ensure_ascii=False, separators=(",", ":"))
+            payload = json_dumps({"symbols": syms, "refs": refs, "edges": edges}, ensure_ascii=False, separators=(",", ":"))
             with self._lock, closing(self._connect()) as con:
                 con.execute("INSERT OR REPLACE INTO parse_blobs(content_hash, analyzer_version, language, payload_json, updated_at) VALUES(?,?,?,?,?)", (content_hash, __version__, language, payload, time.time()))
                 count = int(con.execute("SELECT COUNT(*) FROM parse_blobs").fetchone()[0])
@@ -651,7 +653,7 @@ class CodeIndex:
             parsed = blob_map.get((content_hash, lang))
             if parsed is None:
                 syms, refs, edges = self._parse_file_content("\n".join(lines), lang)
-                parse_blob_rows.append((content_hash, __version__, lang, json.dumps({"symbols": syms, "refs": refs, "edges": edges}, ensure_ascii=False, separators=(",", ":")), now))
+                parse_blob_rows.append((content_hash, __version__, lang, json_dumps({"symbols": syms, "refs": refs, "edges": edges}, ensure_ascii=False, separators=(",", ":")), now))
             else:
                 syms, refs, edges = parsed
             paths_to_clean.append((str(base), path))

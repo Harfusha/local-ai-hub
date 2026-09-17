@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import json
 import sqlite3
 import threading
@@ -146,7 +148,7 @@ class RecoveryJournal:
         response_json = ""
         if response is not None:
             try:
-                encoded = json.dumps(response, ensure_ascii=False, separators=(",", ":"))
+                encoded = json_dumps(response, ensure_ascii=False, separators=(",", ":"))
                 # Responses should already be compact/artifact-backed. Avoid turning the
                 # recovery journal into a second unbounded artifact store.
                 if len(encoded.encode("utf-8")) <= 2_000_000:

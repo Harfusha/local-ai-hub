@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import json
 import queue
 import threading
@@ -204,7 +206,7 @@ class AgentStateStore:
         if not self.enabled:
             return AppendResult(seq=0, duplicate=False, error="agent_state is disabled")
 
-        payload_bytes = json.dumps(event.payload, separators=(",", ":")).encode("utf-8")
+        payload_bytes = json_dumps(event.payload, separators=(",", ":")).encode("utf-8")
         if len(payload_bytes) > self.max_payload_bytes:
             raise ValueError(
                 f"payload exceeds maximum allowed {self.max_payload_bytes} bytes (got {len(payload_bytes)})"
@@ -337,7 +339,7 @@ class AgentStateStore:
         if not self.enabled:
             return 0
         self._ensure_schema()
-        raw_state = json.dumps(state, separators=(",", ":"))
+        raw_state = json_dumps(state, separators=(",", ":"))
 
         def _do_snapshot() -> int:
             con = connect_sqlite(self.db_path, isolation_level=None)

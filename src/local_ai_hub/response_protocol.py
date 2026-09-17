@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import copy
 import json
 from typing import Any, Iterable
@@ -77,7 +79,7 @@ def project_response(
     per_string = max(160, min(5000, char_budget // 2))
     bounded = _bound(selected, per_string)
     try:
-        raw = json.dumps(bounded, ensure_ascii=False, separators=(",", ":"))
+        raw = json_dumps(bounded, ensure_ascii=False, separators=(",", ":"))
     except Exception:
         return bounded
     if len(raw) <= char_budget:
@@ -92,7 +94,7 @@ def project_response(
         elif isinstance(out.get(key), dict) and key in {"plan", "verification"}:
             out[key] = {k: v for k, v in list(out[key].items())[:6]}
         try:
-            if len(json.dumps(out, ensure_ascii=False, separators=(",", ":"))) <= char_budget:
+            if len(json_dumps(out, ensure_ascii=False, separators=(",", ":"))) <= char_budget:
                 return out
         except Exception:
             pass
@@ -100,7 +102,7 @@ def project_response(
         out["summary"] = _dense(out["summary"], max(120, char_budget // 3))
     out["truncated"] = True
     try:
-        if len(json.dumps(out, ensure_ascii=False, separators=(",", ":"))) <= char_budget:
+        if len(json_dumps(out, ensure_ascii=False, separators=(",", ":"))) <= char_budget:
             return out
     except Exception:
         return out
@@ -117,7 +119,7 @@ def project_response(
         if key in out and key not in protected:
             out.pop(key, None)
             try:
-                if len(json.dumps(out, ensure_ascii=False, separators=(",", ":"))) <= char_budget:
+                if len(json_dumps(out, ensure_ascii=False, separators=(",", ":"))) <= char_budget:
                     return out
             except Exception:
                 return out

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import hashlib
 import json
 import sqlite3
@@ -100,7 +102,7 @@ class WorkspaceMemoryStore:
                 self._purge(con)
                 con.execute(
                     "INSERT OR REPLACE INTO memos(workspace,memo_key,value,tenant,metadata,updated_at,expires_at) VALUES(?,?,?,?,?,?,?)",
-                    (workspace, key, value, tenant, json.dumps(meta, ensure_ascii=False), now, now + ttl),
+                    (workspace, key, value, tenant, json_dumps(meta, ensure_ascii=False), now, now + ttl),
                 )
                 con.commit()
         retry_busy(write, retries=4)

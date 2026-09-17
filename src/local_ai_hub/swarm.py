@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import json
 import sqlite3
 import time
@@ -113,12 +115,12 @@ class SwarmCoordinator:
                 (
                     swarm_id,
                     goal,
-                    json.dumps(paths),
+                    json_dumps(paths),
                     test_command,
                     author,
                     state,
                     None,
-                    json.dumps(initial_history),
+                    json_dumps(initial_history),
                     now,
                     now,
                 ),
@@ -269,7 +271,7 @@ class SwarmCoordinator:
                 SET state = ?, receipt_id = COALESCE(?, receipt_id), history = ?, updated_at = ?
                 WHERE swarm_id = ?
                 """,
-                (new_state, receipt_id, json.dumps(history), now, swarm_id),
+                (new_state, receipt_id, json_dumps(history), now, swarm_id),
             )
 
         res: dict[str, Any] = {
@@ -334,6 +336,6 @@ class SwarmCoordinator:
                 SET state = ?, history = ?, updated_at = ?
                 WHERE swarm_id = ?
                 """,
-                (SwarmState.FAILED.value, json.dumps(history), now, swarm_id),
+                (SwarmState.FAILED.value, json_dumps(history), now, swarm_id),
             )
         return {"success": True, "swarm_id": swarm_id, "state": SwarmState.FAILED.value, "cancelled": True}

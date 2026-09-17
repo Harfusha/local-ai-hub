@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import json
 import time
 from pathlib import Path
@@ -112,7 +114,7 @@ class HardwareBenchmarkRunner:
             history.append(record)
             if len(history) > 50:
                 history = history[-50:]
-            self.benchmarks_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+            self.benchmarks_path.write_text(json_dumps(history, indent=2), encoding="utf-8")
         except Exception:
             pass
 

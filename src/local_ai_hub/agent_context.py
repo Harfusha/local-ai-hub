@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import hashlib
 import json
 import threading
@@ -451,7 +453,7 @@ class ContextCompiler:
                         for s_name, s_data in res["sections"].items():
                             s_dict = s_data if isinstance(s_data, dict) else (s_data.to_dict() if hasattr(s_data, "to_dict") else {})
                             raw_cnt = s_dict.get("content", "")
-                            content_str = json.dumps(raw_cnt) if not isinstance(raw_cnt, str) else raw_cnt
+                            content_str = json_dumps(raw_cnt) if not isinstance(raw_cnt, str) else raw_cnt
                             bb_content = f"[BLACKBOARD {b_id}:{s_name}] {content_str}"
                             candidates.append((
                                 65,

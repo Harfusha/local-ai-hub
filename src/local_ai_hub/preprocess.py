@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import copy
 import json
 import os
@@ -1355,7 +1357,7 @@ class ProjectPreprocessor:
             root,
             last_error=None,
             retry_after=0,
-            stats_json=json.dumps(stats, ensure_ascii=False, separators=(",", ":")),
+            stats_json=json_dumps(stats, ensure_ascii=False, separators=(",", ":")),
         )
 
     def _next_cpu_project(self) -> sqlite3.Row | None:
@@ -1455,7 +1457,7 @@ class ProjectPreprocessor:
                             pass
                     errors = prev + 1
                     backoff = min(float(self.cfg.get("max_error_backoff_seconds", 300)), 2 ** min(errors, 8))
-                    self._set_project(root, status="error", last_error=str(exc)[:1000], retry_after=time.time() + backoff, stats_json=json.dumps({"consecutive_errors": errors}))
+                    self._set_project(root, status="error", last_error=str(exc)[:1000], retry_after=time.time() + backoff, stats_json=json_dumps({"consecutive_errors": errors}))
                     if self.telemetry is not None:
                         try:
                             self.telemetry.record_error("preprocess", str((current or {}).get("phase") or "step"), exc, retryable=True, recovered=True)
@@ -1761,7 +1763,7 @@ class ProjectPreprocessor:
                 root, phase="complete", status="complete", force_refresh=0,
                 next_check_at=now + interval, last_error=None, retry_after=0,
                 inventory_hash=row.get("inventory_hash"), structural_hash=structural_hash,
-                stats_json=json.dumps({
+                stats_json=json_dumps({
                     "changed_files": 0, "changed_paths": [], "major_change": False,
                     "incremental_watcher": True, "ignored_metadata_events": len(paths),
                 }),
@@ -1775,7 +1777,7 @@ class ProjectPreprocessor:
             root, phase="hash", status="running", generation=generation, force_refresh=0,
             inventory_hash=inventory_hash, structural_hash=structural_hash,
             last_error=None, retry_after=0,
-            stats_json=json.dumps({
+            stats_json=json_dumps({
                 "changed_files": len(content_changed), "changed_paths": sorted(content_changed)[:256], "major_change": major,
                 "incremental_watcher": True,
             }),
@@ -1898,7 +1900,7 @@ class ProjectPreprocessor:
             root, phase="hash", status="running", generation=generation, force_refresh=int(force),
             inventory_hash=inventory_hash, structural_hash=structural_hash,
             last_error=None, retry_after=0,
-            stats_json=json.dumps({"changed_files": len(changed), "changed_paths": sorted(changed)[:256], "changed_ratio": round(changed_ratio, 4), "major_change": major, "incremental_watcher": False}),
+            stats_json=json_dumps({"changed_files": len(changed), "changed_paths": sorted(changed)[:256], "changed_ratio": round(changed_ratio, 4), "major_change": major, "incremental_watcher": False}),
         )
         return True
 
@@ -2575,7 +2577,7 @@ class ProjectPreprocessor:
         with self._db_lock, closing(self._connect()) as con:
             con.execute(
                 "INSERT OR REPLACE INTO content_cards(card_key,content_hash,model,analyzer_version,card_json,created_at,accessed_at,hits) VALUES(?,?,?,?,?,?,?,COALESCE((SELECT hits FROM content_cards WHERE card_key=?),0))",
-                (card_key, str(item["content_hash"]), model, __version__, json.dumps(data, ensure_ascii=False), now, now, card_key),
+                (card_key, str(item["content_hash"]), model, __version__, json_dumps(data, ensure_ascii=False), now, now, card_key),
             )
             con.execute("UPDATE file_refs SET card_key=?,updated_at=? WHERE root=? AND path=?", (card_key, now, root, item["path"]))
             con.commit()
@@ -2643,7 +2645,7 @@ class ProjectPreprocessor:
                     data = {"purpose": "oversized source file", "symbols": [], "dependencies": [], "side_effects": [], "risks": [], "tests": [], "keywords": []}
                     con.execute(
                         "INSERT OR REPLACE INTO content_cards(card_key,content_hash,model,analyzer_version,card_json,created_at,accessed_at,hits) VALUES(?,?,?,?,?,?,?,0)",
-                        (card_key, content_hash, "deterministic-oversized", __version__, json.dumps(data), time.time(), time.time()),
+                        (card_key, content_hash, "deterministic-oversized", __version__, json_dumps(data), time.time(), time.time()),
                     )
                     con.execute("UPDATE file_refs SET card_key=?,updated_at=? WHERE root=? AND path=?", (card_key, time.time(), root, item["path"]))
                 con.commit()
@@ -2794,7 +2796,7 @@ class ProjectPreprocessor:
         with self._db_lock, closing(self._connect()) as con:
             con.execute(
                 "INSERT OR REPLACE INTO module_cards(root,module,revision_hash,card_json,updated_at) VALUES(?,?,?,?,?)",
-                (root, module, revision, json.dumps(module_data, ensure_ascii=False), time.time()),
+                (root, module, revision, json_dumps(module_data, ensure_ascii=False), time.time()),
             )
             con.commit()
 
@@ -2832,7 +2834,7 @@ class ProjectPreprocessor:
 
             llm_cards = [{"path": x["path"], **x["card"]} for x in cards[: int(self.cfg.get("module_max_files", 80))]]
             pending_tasks.append({
-                "prompt": f"MODULE: {module}\nFILE CARDS:\n{json.dumps(llm_cards, ensure_ascii=False)[:30000]}",
+                "prompt": f"MODULE: {module}\nFILE CARDS:\n{json_dumps(llm_cards, ensure_ascii=False)[:30000]}",
                 "system": "Synthesize a compact module card from supplied factual file cards. Do not invent code. Optimize for future debugging/refactor/navigation queries.",
                 "schema": MODULE_SCHEMA,
                 "max_tokens": int(self.cfg.get("module_output_tokens", 420)),
@@ -2899,7 +2901,7 @@ class ProjectPreprocessor:
         if project_data is None:
             if self._gpu_yield():
                 return False
-            prompt = json.dumps({"profile": profile, "repo_map": repo_map, "modules": module_data}, ensure_ascii=False)[:40000]
+            prompt = json_dumps({"profile": profile, "repo_map": repo_map, "modules": module_data}, ensure_ascii=False)[:40000]
             generated = self._run_background_generate(
                 str(self.config.get("models", {}).get("background_code", "qwen2.5-coder:0.5b")), prompt,
                 "Build a compact factual project navigation card. Optimize it for future coding agents: architecture, entry points, tests, config, data flow, security/concurrency hot spots and validation. Do not invent unseen facts.",
@@ -2916,7 +2918,7 @@ class ProjectPreprocessor:
         with self._db_lock, closing(self._connect()) as con:
             con.execute(
                 "INSERT OR REPLACE INTO project_cards(root,revision_hash,card_json,updated_at) VALUES(?,?,?,?)",
-                (root, revision, json.dumps(project_data, ensure_ascii=False), time.time()),
+                (root, revision, json_dumps(project_data, ensure_ascii=False), time.time()),
             )
             con.commit()
         self._set_project(root, phase="hot_queries")
@@ -3001,7 +3003,7 @@ class ProjectPreprocessor:
             )
             con.execute(
                 "INSERT OR REPLACE INTO task_capsules(root,query,revision_hash,capsule_json,updated_at) VALUES(?,?,?,?,?)",
-                (root, query, revision, json.dumps(capsule, ensure_ascii=False), time.time()),
+                (root, query, revision, json_dumps(capsule, ensure_ascii=False), time.time()),
             )
             con.commit()
         with self._stats_lock:
@@ -3097,7 +3099,7 @@ class ProjectPreprocessor:
                 card = json.loads(row["card_json"] or "{}")
             except Exception:
                 continue
-            blob = (str(row["module"]) + " " + json.dumps(card, ensure_ascii=False)).lower()
+            blob = (str(row["module"]) + " " + json_dumps(card, ensure_ascii=False)).lower()
             score = sum(2 for t in terms if t in str(row["module"]).lower()) + sum(1 for t in terms if t in blob)
             scored_modules.append((score, {"module": row["module"], **card}))
         scored_modules.sort(key=lambda x: -x[0])
@@ -3107,7 +3109,7 @@ class ProjectPreprocessor:
                 card = json.loads(row["card_json"] or "{}")
             except Exception:
                 continue
-            blob = (str(row["path"]) + " " + json.dumps(card, ensure_ascii=False)).lower()
+            blob = (str(row["path"]) + " " + json_dumps(card, ensure_ascii=False)).lower()
             score = sum(3 for t in terms if t in str(row["path"]).lower()) + sum(1 for t in terms if t in blob)
             if score or not terms:
                 scored_files.append((score, {"path": row["path"], **card}))
@@ -3118,7 +3120,7 @@ class ProjectPreprocessor:
                 capsule = json.loads(row["capsule_json"] or "{}")
             except Exception:
                 continue
-            blob = (str(row["query"]) + " " + json.dumps(capsule, ensure_ascii=False)).lower()
+            blob = (str(row["query"]) + " " + json_dumps(capsule, ensure_ascii=False)).lower()
             score = sum(3 for t in terms if t in str(row["query"]).lower()) + sum(1 for t in terms if t in blob)
             if score:
                 scored_capsules.append((score, capsule))
@@ -3148,7 +3150,7 @@ class ProjectPreprocessor:
             "files": found.get("files", []),
             "capsules": found.get("capsules", []),
         }
-        text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        text = json_dumps(payload, ensure_ascii=False, separators=(",", ":"))
         return text[: max(256, int(max_chars))]
 
     def stats(self) -> dict[str, Any]:

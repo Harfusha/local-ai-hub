@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import json
 import math
 import sqlite3
@@ -206,7 +208,7 @@ class SemanticGenerationCache:
             import numpy as np
             vec_blob = sqlite3.Binary(np.array(vector, dtype=np.float32).tobytes())
         except Exception:
-            vec_blob = json.dumps(vector, separators=(",", ":"))
+            vec_blob = json_dumps(vector, separators=(",", ":"))
         with self._lock, closing(self._connect()) as con:
             def write() -> None:
                 con.execute(
@@ -214,7 +216,7 @@ class SemanticGenerationCache:
                        VALUES(?,?,?,?,?,?,?,0)
                        ON CONFLICT(scope_key,query_hash) DO UPDATE SET
                          vector_json=excluded.vector_json,value_json=excluded.value_json,created_at=excluded.created_at,accessed_at=excluded.accessed_at""",
-                    (scope, qhash, query_text, vec_blob, json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str), now, now),
+                    (scope, qhash, query_text, vec_blob, json_dumps(value, ensure_ascii=False, separators=(",", ":"), default=str), now, now),
                 )
                 count = int(con.execute("SELECT COUNT(*) FROM semantic_entries WHERE scope_key=?", (scope,)).fetchone()[0])
                 if count > self.max_entries:

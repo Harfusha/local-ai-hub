@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import hashlib
 import json
 import os
@@ -635,7 +637,7 @@ class TelemetryStore:
             savings_source=primary,
             input_savings_source=input_source,
             output_savings_source=output_source,
-            savings_breakdown_json=json.dumps(clean_breakdown, separators=(",", ":"), sort_keys=True),
+            savings_breakdown_json=json_dumps(clean_breakdown, separators=(",", ":"), sort_keys=True),
         )
 
     def record_system(self, action: str, *, success: bool = True, duration_ms: float = 0.0, **event: Any) -> None:
@@ -804,7 +806,7 @@ class TelemetryStore:
                 safe[str(key)[:80]] = value
             elif isinstance(value, str) and len(value) <= 160:
                 safe[str(key)[:80]] = value
-        self._enqueue("snapshot", {"created_at": time.time(), "name": str(name)[:80], "metrics_json": json.dumps(safe, separators=(",", ":"))[:8000]})
+        self._enqueue("snapshot", {"created_at": time.time(), "name": str(name)[:80], "metrics_json": json_dumps(safe, separators=(",", ":"))[:8000]})
 
     def record_evaluation(
         self,

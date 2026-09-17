@@ -503,7 +503,7 @@ class Handler(BaseHTTPRequestHandler):
 
         captured = redact(payload)
         try:
-            encoded = json.dumps(captured, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            encoded = json_dumps(captured, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         except (TypeError, ValueError):
             return {"capture_status": "omitted", "reason": "unserializable request body"}
         if len(encoded) > cls.DEBUG_TRACE_REQUEST_CAPTURE_BYTES:
@@ -1041,7 +1041,7 @@ class Handler(BaseHTTPRequestHandler):
                     if kind and ev.kind != kind:
                         continue
                     last_seq = max(last_seq, ev.seq or 0)
-                    payload = json.dumps(ev.to_dict(), separators=(",", ":"))
+                    payload = json_dumps(ev.to_dict(), separators=(",", ":"))
                     msg = f"id: {ev.seq}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
                     try:
                         self.wfile.write(msg)
@@ -1070,7 +1070,7 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     if ev.seq is not None:
                         last_seq = max(last_seq, ev.seq)
-                    payload = json.dumps(ev.to_dict(), separators=(",", ":"))
+                    payload = json_dumps(ev.to_dict(), separators=(",", ":"))
                     msg = f"id: {ev.seq or 0}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
                     self.wfile.write(msg)
                     self.wfile.flush()

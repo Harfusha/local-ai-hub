@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import hashlib
 import json
 import re
@@ -157,7 +159,7 @@ class ArtifactStore:
                 key = section[5:]
                 if key not in parsed:
                     return {"success": False, "error": "artifact section not found", "artifact_id": artifact_id, "sections": list(sections)[:50]}
-                value = json.dumps(parsed[key], ensure_ascii=False, indent=2) if not isinstance(parsed[key], str) else parsed[key]
+                value = json_dumps(parsed[key], ensure_ascii=False, indent=2) if not isinstance(parsed[key], str) else parsed[key]
                 piece = value[:max_chars]
                 return {"success": True, "artifact_id": artifact_id, "kind": row[0], "section": section, "text": piece,
                         "next_offset": len(piece) if len(piece) < len(value) else None, "total_chars": len(value), "sections": list(sections)[:50]}

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import json
 import os
 import hashlib
@@ -20,7 +22,7 @@ from .process_utils import find_listening_pid, pid_alive, terminate_tree, hidden
 def atomic_json(path: Path, data: dict[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
-        tmp.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        tmp.write_text(json_dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
         for attempt in range(4):
             try:
                 os.replace(tmp, path)

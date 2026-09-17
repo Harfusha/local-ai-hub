@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import io
 import json
 import sqlite3
@@ -676,7 +678,7 @@ class LocalAIApp:
                         raise BundleValidationError(f"record {rid} not found")
 
             if not root:
-                canonical = json.dumps(exported_agent_records, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                canonical = json_dumps(exported_agent_records, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
                 bundle_data: dict[str, Any] = {
                     "format": "local-ai-hub-agent-state-bundle",
                     "version": __version__,
@@ -684,7 +686,7 @@ class LocalAIApp:
                     "records_sha256": hashlib.sha256(canonical).hexdigest(),
                     "records": exported_agent_records,
                 }
-                raw_json = json.dumps(bundle_data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                raw_json = json_dumps(bundle_data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
                 buf = io.BytesIO()
                 with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
                     info = zipfile.ZipInfo("bundle.json")
@@ -735,7 +737,7 @@ class LocalAIApp:
                 tables["rag_chunks"] = checked("rag_chunks", [dict(r) for r in con.execute("SELECT * FROM chunks WHERE tenant=? AND workspace=?", (scope_key, workspace)).fetchall()])
 
         encoded_tables = self._bundle_encode(tables)
-        canonical = json.dumps(encoded_tables, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        canonical = json_dumps(encoded_tables, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         bundle_data: dict[str, Any] = {
             "format": "local-ai-hub-project-bundle",
             "version": __version__,
@@ -747,7 +749,7 @@ class LocalAIApp:
         }
         if exported_agent_records:
             bundle_data["agent_state_records"] = exported_agent_records
-        raw_json = json.dumps(bundle_data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        raw_json = json_dumps(bundle_data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         if len(raw_json) > max_json:
             raise ValueError(f"bundle.json exceeds configured limit ({max_json} bytes)")
         buf = io.BytesIO()
@@ -799,7 +801,7 @@ class LocalAIApp:
             records = data.get("records", [])
             if not isinstance(records, list):
                 return {"success": False, "error": "bundle records are missing"}
-            canonical = json.dumps(records, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            canonical = json_dumps(records, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
             expected = str(data.get("records_sha256", ""))
             if not expected or not hmac.compare_digest(hashlib.sha256(canonical).hexdigest(), expected):
                 return {"success": False, "error": "bundle integrity check failed"}
@@ -830,7 +832,7 @@ class LocalAIApp:
         encoded_tables: Any = data.get("tables")
         if not isinstance(encoded_tables, dict):
             return {"success": False, "error": "bundle tables are missing"}
-        canonical = json.dumps(encoded_tables, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        canonical = json_dumps(encoded_tables, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         expected = str(data.get("tables_sha256", ""))
         if not expected or not hmac.compare_digest(hashlib.sha256(canonical).hexdigest(), expected):
             return {"success": False, "error": "bundle integrity check failed"}
@@ -929,9 +931,9 @@ class LocalAIApp:
                 for ft in rows("deterministic_facts"):
                     extra = ft.get("extra_json")
                     if extra is None:
-                        extra = json.dumps({k: ft[k] for k in ("method", "source", "confidence") if k in ft}, separators=(",", ":"))
+                        extra = json_dumps({k: ft[k] for k in ("method", "source", "confidence") if k in ft}, separators=(",", ":"))
                     elif not isinstance(extra, str):
-                        extra = json.dumps(extra, ensure_ascii=False, separators=(",", ":"))
+                        extra = json_dumps(extra, ensure_ascii=False, separators=(",", ":"))
                     con.execute(
                         "INSERT INTO facts(root,path,kind,name,value,line,extra_json) VALUES(?,?,?,?,?,?,?)",
                         (root_path, str(ft.get("path", "")), str(ft.get("kind", "")), str(ft.get("name", "")), str(ft.get("value", "")), int(ft.get("line", 0) or 0), str(extra or "{}")),

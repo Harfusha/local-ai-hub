@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import json
 import hashlib
 import os
@@ -160,7 +162,7 @@ class MCPStdioClient:
         if not proc or proc.poll() is not None or not proc.stdin:
             raise MCPStdioError("MCP process is not running")
         try:
-            proc.stdin.write(json.dumps(message, separators=(",", ":"), ensure_ascii=False) + "\n")
+            proc.stdin.write(json_dumps(message, separators=(",", ":"), ensure_ascii=False) + "\n")
             proc.stdin.flush()
         except Exception as exc:
             raise MCPStdioError(f"MCP write failed: {type(exc).__name__}") from exc
@@ -827,7 +829,7 @@ class ExternalCodeIntelligence:
 
     def _trim(self, value: dict[str, Any]) -> dict[str, Any]:
         try:
-            encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            encoded = json_dumps(value, ensure_ascii=False, separators=(",", ":"))
         except Exception:
             return value
         if len(encoded) <= self.max_output_chars:
