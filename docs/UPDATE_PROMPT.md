@@ -33,7 +33,7 @@ Follow these execution phases:
 
 ### PHASE 2: RUN UPDATE / RE-SETUP
 
-Run the platform installer with the active hardware profile to apply dependency updates, regenerate MCP schemas/manifests, and update skills:
+Run the platform installer with the active hardware profile to apply dependency updates, regenerate MCP schemas/manifests, and update skills. The installer must inspect the active config first: install/start/pull Ollama only when `server.auto_start_ollama = true` and `llama_cpp.fallback_to_ollama = true`; when llama.cpp is exclusive (`llama_cpp.mode = "on"` and `fallback_to_ollama = false`), skip all Ollama installation and model pulls:
 
 - **Windows (PowerShell)**:
   ```powershell
