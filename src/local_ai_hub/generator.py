@@ -7,6 +7,8 @@ Inspects the active configuration via FeatureSet and generates:
 """
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import json
 import os
 from pathlib import Path
@@ -967,11 +969,11 @@ def write_all_generated(
     generic_mcp = generate_mcp_configs(cfg, target_root, python_bin, serena, codegraph, "generic")
     vscode_mcp = generate_mcp_configs(cfg, target_root, python_bin, serena, codegraph, "copilot")
     mcp_servers_path = gen_dir / "mcp-servers.json"
-    mcp_servers_path.write_text(json.dumps({"mcpServers": generic_mcp}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    mcp_servers_path.write_text(json_dumps({"mcpServers": generic_mcp}) + "\n", encoding="utf-8")
     results["mcp"].append(str(mcp_servers_path))
 
     vscode_mcp_path = gen_dir / "vscode-mcp.json"
-    vscode_mcp_path.write_text(json.dumps({"servers": {k: {"type": "stdio", **v} for k, v in vscode_mcp.items()}}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    vscode_mcp_path.write_text(json_dumps({"servers": {k: {"type": "stdio", **v} for k, v in vscode_mcp.items()}}) + "\n", encoding="utf-8")
     results["mcp"].append(str(vscode_mcp_path))
 
     # 4. Generated JSON tool schemas
@@ -986,7 +988,7 @@ def write_all_generated(
     tool_schemas = generate_mcp_tool_schemas(cfg)
     for tool_name, schema in tool_schemas.items():
         tool_file = schemas_dir / f"{tool_name}.json"
-        tool_file.write_text(json.dumps(schema, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        tool_file.write_text(json_dumps(schema) + "\n", encoding="utf-8")
         results["schemas"].append(str(tool_file))
 
     return results
