@@ -353,6 +353,49 @@ def test_trace_inspector_has_universal_redacted_display_model() -> None:
     assert "redactDiagnostic" in source
 
 
+def test_trace_inspector_classifies_stable_presentation_kinds() -> None:
+    assert "function tracePresentationKind(model)" in DASHBOARD_HTML
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function tracePresentationKind(model)") : DASHBOARD_HTML.index(
+            "function tracePresentationData(model)"
+        )
+    ]
+    for kind in [
+        "agent_loop",
+        "model_chat",
+        "command",
+        "review",
+        "repo_intelligence",
+        "rag_search",
+        "async_job",
+        "request_response",
+    ]:
+        assert f"'{kind}'" in source
+    assert source.index("if(hasModel&&hasTools)") < source.index(
+        "if(hasModel)return 'model_chat'"
+    )
+    assert "traceRecorded(model.input)" in source
+    assert "traceRecorded(model.output)" in source
+
+
+def test_trace_inspector_normalizes_bounded_sanitized_presentation_data() -> None:
+    assert "function traceChatTurns(events)" in DASHBOARD_HTML
+    assert "function tracePresentationData(model)" in DASHBOARD_HTML
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceChatTurns(events)") : DASHBOARD_HTML.index(
+            "function traceAvailability(model"
+        )
+    ]
+    assert "chatTurns" in source
+    assert "toolInteractions" in source
+    assert "turns.slice(-100)" in source
+    assert "traceSanitizeValue" in source
+    assert "type==='tool_call'" in source
+    assert "type==='tool_result'" in source
+    assert "match.result=payload" in source
+    assert "presentation=tracePresentationData(model)" in source
+
+
 def test_trace_inspector_renders_universal_summary_before_optional_panels() -> None:
     source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
