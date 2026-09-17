@@ -650,7 +650,10 @@ function redactDiagnostic(value){
     .replace(/\b(Bearer\s+)[^\s,;]+/gi,'$1<redacted>')
     .replace(/((?:["'](?:api[_-]?key|token|secret|password|authorization)["'])\s*:\s*)(?:"[^"]*"|'[^']*'|[^\s,;}]+)/gi,'$1"<redacted>"')
     .replace(/\b((?:api[_-]?key|token|secret|password|authorization)\b\s*(?:=|:)\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,'$1<redacted>')
+    .replace(/((?:["'](?:cookie|set-cookie|private[_-]?key|passphrase)["'])\s*:\s*)(?:"[^"]*"|'[^']*'|[^\s,;}]+)/gi,'$1"<redacted>"')
+    .replace(/\b((?:cookie|set-cookie|private[_-]?key|passphrase)\b\s*(?:=|:)\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,'$1<redacted>')
     .replace(/(^|\s)((?:--(?:api[-_]?key|token|secret|password)|-(?:k|t))(?:\s+|=))(?:"[^"]*"|'[^']*'|\S+)/gi,'$1$2<redacted>')
+    .replace(/(^|\s)((?:--(?:cookie|set-cookie|private[-_]?key|passphrase))(?:\s+|=))(?:"[^"]*"|'[^']*'|\S+)/gi,'$1$2<redacted>')
     .replace(/[A-Za-z]:[\\/](?:[^\s"'`\\/]+[\\/])*[^\s"'`\\/]*/g,maskPath)
     .replace(/(?<![:\w])\/(?:[^\s"'`/]+\/)+[^\s"'`/]+/g,maskPath);
 }
@@ -1790,7 +1793,7 @@ function renderAny(value){
   if(typeof value==='object'){const entries=Object.entries(value);return entries.length?`<div class="human-grid">${entries.map(([k,v])=>`<div>${esc(humanLabel(k))}</div><div>${renderAny(v)}</div>`).join('')}</div>`:'<div class="empty-human">empty object</div>'}
   return `<span class="human-value">${esc(String(value))}</span>`;
 }
-function traceSensitiveField(key){return /(api[_-]?key|authorization|token|secret|password|passwd|credential)/i.test(String(key||''));}
+function traceSensitiveField(key){return /(api[_-]?key|authorization|token|secret|password|passwd|credential|cookie|set[-_]?cookie|private[-_]?key|privatekey|passphrase|pem|ssh[-_]?key|certificate)/i.test(String(key||''));}
 function traceSanitizeValue(value,seen=new WeakSet(),reveal=traceRevealRedactedDetails){
   if(value===null||value===undefined||typeof value==='number'||typeof value==='boolean')return value;
   if(typeof value==='string')return reveal?value:redactDiagnostic(value);
@@ -2034,7 +2037,23 @@ function tracePresentationData(model){
   const events=model.events||[],turns=traceChatTurns(events);
   return {kind:tracePresentationKind(model),chatTurns:turns,toolInteractions:(model.toolCalls||[]).slice(-100),requestEnvelope:model.session?.request||{},modelInput:model.input,modelOutput:model.output,command:traceFirstRecorded(events,['command','cmd']),review:traceFirstRecorded(events,['diff','findings','recommendation']),repoOperation:traceFirstRecorded(events,['root','query','symbols','files']),retrieval:traceFirstRecorded(events,['sources','results','hits','answer']),lifecycle:model.lifecycle};
 }
-function tracePresentationValue(value,limit=12000){return traceSanitizeValue(traceRawBoundValue(value,limit));}
+function tracePresentationBound(value,budget,depth=0){
+  const marker='<payload budget truncated>';
+  if(!budget||budget.remaining<=0){if(budget)budget.truncated=true;return marker;}
+  if(value===null||value===undefined||typeof value==='number'||typeof value==='boolean'){budget.remaining-=Math.min(budget.remaining,String(value).length+1);return value;}
+  if(typeof value==='string'){const room=Math.max(0,budget.remaining),text=value.length>room?value.slice(0,room):value;budget.remaining-=text.length;if(text.length<value.length)budget.truncated=true;return text;}
+  if(depth>=4){budget.truncated=true;return marker;}
+  if(Array.isArray(value)){const result=[];for(const item of value.slice(0,50)){if(budget.remaining<=0){budget.truncated=true;break}result.push(tracePresentationBound(item,budget,depth+1))}if(value.length>result.length)result.push(marker);return result;}
+  if(typeof value==='object'){
+    const priority=['model','stream','options','request','headers','messages','prompt','content','system','developer','user'];
+    const entries=Object.entries(value).sort(([a],[b])=>{const ai=priority.indexOf(a.toLowerCase()),bi=priority.indexOf(b.toLowerCase());return (ai<0?priority.length:ai)-(bi<0?priority.length:bi)}).slice(0,50),result={};
+    for(const [key,item] of entries){if(budget.remaining<=0){budget.truncated=true;break}budget.remaining-=Math.min(budget.remaining,key.length+2);result[key]=tracePresentationBound(item,budget,depth+1)}
+    if(Object.keys(value).length>entries.length||budget.truncated)result['…']='payload budget truncated';
+    return result;
+  }
+  budget.remaining-=Math.min(budget.remaining,16);return String(value);
+}
+function tracePresentationValue(value,limit=12000,budget=null){const state=budget||{remaining:limit,truncated:false};state.remaining=Math.min(state.remaining,limit);return traceSanitizeValue(tracePresentationBound(value,state));}
 function traceModelInputMessages(input,turn){
   const p=input&&typeof input==='object'?input:{},messages=Array.isArray(p.messages)?p.messages:[],found=messages.map((message,index)=>({role:String(message?.role||'message'),step:turn?.step||index+1,content:message?.content??message?.text??message}));
   if(found.length)return found.slice(0,100);
@@ -2043,10 +2062,10 @@ function traceModelInputMessages(input,turn){
   return ['system','developer','user'].filter(role=>p[role]!==undefined).map(role=>({role,step:turn?.step||1,content:p[role]})).concat((p.prompt??p.content??p.input)!==undefined?[{role:'user',step:turn?.step||1,content:p.prompt??p.content??p.input}]:[]).slice(0,100);
 }
 function traceChatMessageMarkup(message,index){const role=String(message?.role||'message').toLowerCase(),text=tracePresentationValue(message?.content??message?.text??message,5000);return `<article class="trace-chat-message"><div class="trace-chat-role">${esc(role)} · step ${esc(message?.step||index+1)}</div>${promptBody(promptText(text))}</article>`;}
-function traceChatColumns(model,title='Model chat'){
-  const presentation=model.presentation||tracePresentationData(model),turns=presentation.chatTurns||[],lastTurn=turns[turns.length-1],requestEnvelope=presentation.requestEnvelope&&typeof presentation.requestEnvelope==='object'?presentation.requestEnvelope:{},turnInput=lastTurn?.input&&typeof lastTurn.input==='object'?lastTurn.input:{},modelInputObject=presentation.modelInput&&typeof presentation.modelInput==='object'?presentation.modelInput:{},envelope={...requestEnvelope,...turnInput,...modelInputObject};
+function traceChatColumns(model,title='Model chat',renderBudget=null){
+  const budget=renderBudget||{remaining:24000,truncated:false},presentation=model.presentation||tracePresentationData(model),turns=presentation.chatTurns||[],lastTurn=turns[turns.length-1],requestEnvelope=presentation.requestEnvelope&&typeof presentation.requestEnvelope==='object'?presentation.requestEnvelope:{},turnInput=lastTurn?.input&&typeof lastTurn.input==='object'?lastTurn.input:{},modelInputObject=presentation.modelInput&&typeof presentation.modelInput==='object'?presentation.modelInput:{},envelope={...requestEnvelope,...turnInput,...modelInputObject};
   if(typeof presentation.modelInput==='string')envelope.prompt=presentation.modelInput;
-  const input=tracePresentationValue(envelope,12000),messages=traceModelInputMessages(input,lastTurn),modelName=model.session?.model||model.actor?.model||input?.model||'model not recorded',metadata={model:modelName,step:lastTurn?.step||'—',role:lastTurn?.input?.role||'request',stream:input?.stream===undefined?'—':(input.stream?'on':'off'),request_id:model.correlations?.request_id||input?.request_id||'—',action:model.identity?.action||'—'},inputMetadata=input&&typeof input==='object'?Object.fromEntries(Object.entries(input).filter(([key])=>!['messages','prompt','content','input','system','developer','user','text'].includes(String(key).toLowerCase()))):{},outputTurns=turns.filter(turn=>traceRecorded(turn.output)),outputs=outputTurns.length?outputTurns.map((turn,index)=>`<article class="trace-chat-message"><div class="trace-chat-role">assistant · step ${esc(turn.step||index+1)}</div>${promptBody(traceSanitizeValue(traceRawBoundValue(turn.output,8000)))}</article>`).join(''):traceRecorded(presentation.modelOutput)?promptBody(tracePresentationValue(presentation.modelOutput,8000)):'<div class="trace-primary-empty">No model output captured</div>';
+  const input=tracePresentationValue(envelope,12000,budget),messages=traceModelInputMessages(input,lastTurn),modelName=model.session?.model||model.actor?.model||input?.model||'model not recorded',metadata={model:modelName,step:lastTurn?.step||'—',role:lastTurn?.input?.role||'request',stream:input?.stream===undefined?'—':(input.stream?'on':'off'),request_id:model.correlations?.request_id||input?.request_id||'—',action:model.identity?.action||'—'},inputMetadata=input&&typeof input==='object'?Object.fromEntries(Object.entries(input).filter(([key])=>!['messages','prompt','content','input','system','developer','user','text'].includes(String(key).toLowerCase()))):{},outputTurns=turns.filter(turn=>traceRecorded(turn.output)),outputs=outputTurns.length?outputTurns.map((turn,index)=>`<article class="trace-chat-message"><div class="trace-chat-role">assistant · step ${esc(turn.step||index+1)}</div>${promptBody(traceSanitizeValue(traceRawBoundValue(turn.output,8000)))}</article>`).join(''):traceRecorded(presentation.modelOutput)?promptBody(tracePresentationValue(presentation.modelOutput,8000,budget)):'<div class="trace-primary-empty">No model output captured</div>';
   const inputMarkup=messages.length?messages.map(traceChatMessageMarkup).join(''):'<div class="trace-primary-empty">No model input captured</div>';
   return `<section class="trace-primary trace-chat-presentation"><div class="trace-primary-head"><h2>${esc(title)}</h2><span class="tiny">${esc(String(modelName))}</span></div><div class="trace-chat-columns trace-primary-grid"><article class="trace-primary-card output trace-chat-output trace-chat-column"><h3>Model output</h3><div class="trace-primary-value"><div class="trace-chat-meta"><span>model name: ${esc(String(modelName))}</span><span>step: ${esc(String(lastTurn?.step||'—'))}</span><span>role: assistant</span></div>${outputs}</div></article><article class="trace-primary-card input trace-chat-input trace-chat-column"><h3>Model input</h3><div class="trace-primary-value"><div class="trace-chat-meta">${Object.entries(metadata).map(([key,value])=>`<span>${esc(key)}: ${esc(String(value))}</span>`).join('')}</div>${Object.keys(inputMetadata).length?`<div class="trace-chat-envelope">${renderAny(inputMetadata)}</div>`:''}${inputMarkup}<details class="trace-optional-details"><summary>Full request payload · bounded</summary><div class="trace-optional-body">${renderAny(input)}</div></details></div></article></div></section>`;
 }
@@ -2055,8 +2074,8 @@ function traceToolInteractions(model){
   turns.forEach(turn=>(turn.tools||[]).forEach(item=>items.push({step:turn.step,call:item.call||{},result:item.result||null})));
   return items.slice(-100);
 }
-function traceToolResultData(result){
-  const value=tracePresentationValue(result||{},5000),nested=value&&typeof value.result==='object'?value.result:null,failure=candidate=>candidate&&(candidate.error||candidate.error_message||candidate.exception||candidate.is_error||candidate.isError||candidate.success===false),error=failure(nested)||failure(value);
+function traceToolResultData(result,budget=null){
+  const value=tracePresentationValue(result||{},5000,budget),nested=value&&typeof value.result==='object'?value.result:null,failure=candidate=>candidate&&(candidate.error||candidate.error_message||candidate.exception||candidate.is_error||candidate.isError||candidate.success===false),error=failure(nested)||failure(value);
   return {value,error};
 }
 function renderModelChatPresentation(model){
@@ -2067,9 +2086,9 @@ function renderModelChatPresentation(model){
   return traceChatColumns(safeModel,esc('Model chat'));
 }
 function renderAgentLoopPresentation(model){
-  const safeModel={...model,presentation:traceSanitizeValue(model.presentation||{})},tools=traceToolInteractions(safeModel),cards=tools.length?tools.map((item,index)=>{const call=tracePresentationValue(item.call||{},5000),resultData=item.result?traceToolResultData(item.result):null,result=resultData?.value||null,error=Boolean(resultData?.error),name=call?.name||call?.tool||'tool';return `<article class="trace-tool-card ${error?'error':''}"><h4>Tool interaction · step ${esc(item.step||index+1)} · call id ${esc(call?.call_id||'—')}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(String(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(tracePresentationValue(call?.arguments??call?.args??call?.input??{},5000))}</div><div class="trace-tool-field"><strong>${error?'error':'result'}</strong>${result?renderAny(result):'<span class="trace-primary-empty">Waiting for tool result</span>'}</div></article>`}).join(''):'<div class="trace-primary-empty">No tool interactions captured</div>';
+  const renderBudget={remaining:24000,truncated:false},safeModel={...model,presentation:traceSanitizeValue(model.presentation||{})},tools=traceToolInteractions(safeModel),cards=tools.length?tools.map((item,index)=>{const call=tracePresentationValue(item.call||{},5000,renderBudget),resultData=item.result?traceToolResultData(item.result,renderBudget):null,result=resultData?.value||null,error=Boolean(resultData?.error),name=call?.name||call?.tool||'tool';return `<article class="trace-tool-card ${error?'error':''}"><h4>Tool interaction · step ${esc(item.step||index+1)} · call id ${esc(call?.call_id||'—')}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(String(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(tracePresentationValue(call?.arguments??call?.args??call?.input??{},5000,renderBudget))}</div><div class="trace-tool-field"><strong>${error?'error':'result'}</strong>${result?renderAny(result):'<span class="trace-primary-empty">Waiting for tool result</span>'}</div></article>`}).join(''):'<div class="trace-primary-empty">No tool interactions captured</div>';
   const columnsClass='trace-chat-columns',toolClass='trace-tool-timeline';
-  return `${traceChatColumns(safeModel,'Agent loop')}<section class="trace-primary"><div class="trace-primary-head"><h2>Tool interactions</h2><span class="tiny">${tools.length} shown</span></div><div class="${columnsClass}"><div class="${toolClass}">${cards}</div></div></section>`;
+  return `${traceChatColumns(safeModel,'Agent loop',renderBudget)}<section class="trace-primary"><div class="trace-primary-head"><h2>Tool interactions</h2><span class="tiny">${tools.length} shown</span></div><div class="${columnsClass}"><div class="${toolClass}">${cards}</div></div></section>`;
 }
 function renderTracePresentation(model){const kind=model.presentation?.kind||tracePresentationKind(model);if(kind==='agent_loop')return renderAgentLoopPresentation(model);if(kind==='model_chat')return renderModelChatPresentation(model);return '';}
 function traceDisplayModel(detail){

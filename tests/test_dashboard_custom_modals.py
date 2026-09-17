@@ -622,7 +622,7 @@ def test_trace_model_chat_runtime_keeps_request_envelope_visible_and_bounded() -
         "identity": {},
     }
     script = (
-        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));const n=v=>String(v??0);"
         "function redactDiagnostic(value){return String(value??'').replace(/secret/gi,'<redacted>');}"
         "let traceRevealRedactedDetails=false;"
         + source
@@ -635,7 +635,83 @@ def test_trace_model_chat_runtime_keeps_request_envelope_visible_and_bounded() -
     assert "system &lt;safe&gt;" in html
     assert "secret" not in html
     assert "No model output captured" in html
-    assert "truncated" in html
+
+
+def test_trace_model_chat_runtime_redacts_cookie_headers_and_private_key_fields() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    redact = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function redactDiagnostic(") : DASHBOARD_HTML.index(
+            "// Lightweight pure-canvas"
+        )
+    ]
+    fixture = {
+        "presentation": {
+            "kind": "model_chat",
+            "chatTurns": [],
+            "modelInput": {
+                "headers": {
+                    "cookie": "session=cookie-secret",
+                    "set-cookie": "session=set-cookie-secret",
+                    "private-key": "private-key-secret",
+                },
+                "messages": [{"role": "user", "content": "safe"}],
+            },
+            "modelOutput": "ok",
+        },
+        "session": {"model": "fixture-model"},
+        "actor": {},
+        "correlations": {},
+        "identity": {},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));const n=v=>String(v??0);"
+        + redact
+        + "let traceRevealRedactedDetails=false;"
+        + source
+        + f"console.log(JSON.stringify(renderModelChatPresentation({json.dumps(fixture)})));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    html = json.loads(result.stdout)
+    for secret in ["cookie-secret", "set-cookie-secret", "private-key-secret"]:
+        assert secret not in html
+    assert "redacted" in html.lower()
+
+
+def test_trace_model_chat_runtime_enforces_cumulative_payload_budget() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    redact = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function redactDiagnostic(") : DASHBOARD_HTML.index(
+            "// Lightweight pure-canvas"
+        )
+    ]
+    oversized = {f"oversized_key_{index}": "x" * 180 for index in range(240)}
+    oversized["messages"] = [{"role": "user", "content": "y" * 18000}]
+    fixture = {
+        "presentation": {
+            "kind": "model_chat",
+            "chatTurns": [],
+            "modelInput": oversized,
+            "modelOutput": "ok",
+        },
+        "session": {"model": "fixture-model"},
+        "actor": {},
+        "correlations": {},
+        "identity": {},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));const n=v=>String(v??0);"
+        + redact
+        + "let traceRevealRedactedDetails=false;"
+        + source
+        + f"console.log(JSON.stringify(renderModelChatPresentation({json.dumps(fixture)})));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    html = json.loads(result.stdout)
+    assert "payload budget" in html.lower()
+    assert "oversized_key_239" not in html
 
 
 def test_trace_raw_projection_bounds_events_before_sanitization() -> None:
