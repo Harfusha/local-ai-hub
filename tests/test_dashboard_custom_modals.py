@@ -584,6 +584,104 @@ def test_trace_inspector_dispatches_request_specific_renderers() -> None:
         assert f"{renderer}(model)" in dispatcher
 
 
+def test_trace_request_renderers_expose_reviewer_gap_contracts() -> None:
+    source = _trace_presentation_runtime_source()
+    for marker in [
+        "severity counts",
+        "critical",
+        "high",
+        "medium",
+        "low",
+        "Command and arguments",
+        "trace-command-top",
+        "rank",
+        "score",
+        "provider",
+        "trace-rag-ranked",
+        "trace-rag-source-details",
+        "traceMergeRecorded",
+    ]:
+        assert marker in source, f"Reviewer gap marker missing: {marker}"
+
+
+def test_trace_presentation_data_merges_sibling_event_fields() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "identity": {"action": "/api/command"},
+        "session": {"kind": "request"},
+        "events": [
+            {"payload": {"command": "pytest"}},
+            {"payload": {"args": ["-q"], "stdout": "ok"}},
+            {"payload": {"stderr": "", "exit_code": 0, "duration_ms": 12}},
+            {"payload": {"diff": "patch", "findings": [{"severity": "high"}]}},
+            {"payload": {"recommendation": "fix", "result": {"value": "kept"}}},
+        ],
+    }
+    script = (
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"console.log(JSON.stringify(tracePresentationData({json.dumps(fixture)})));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    presentation = json.loads(result.stdout)
+    command = presentation["command"]
+    for key in ["command", "args", "stdout", "stderr", "exit_code", "duration_ms"]:
+        assert key in command
+    review = presentation["review"]
+    for key in ["diff", "findings", "recommendation"]:
+        assert key in review
+
+
+def test_trace_request_renderers_runtime_show_severity_command_and_ranked_rag() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "review": {
+            "findings": [
+                {"severity": "critical", "message": "bad"},
+                {"severity": "high", "message": "warn"},
+            ],
+            "recommendation": "fix",
+        },
+        "command": {
+            "command": "pytest",
+            "args": ["-q"],
+            "stdout": "ok",
+            "stderr": "none",
+            "exit_code": 0,
+            "retries": 1,
+            "duration_ms": 12,
+        },
+        "retrieval": {
+            "query": "trace",
+            "sources": [
+                {"score": 0.2, "provider": "low", "content": "small"},
+                {"score": 0.9, "provider": "high", "content": "x" * 5000},
+            ],
+            "answer": "answer",
+        },
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"const m={{presentation:{json.dumps(fixture)},lifecycle:{{}},correlations:{{}},session:{{}},identity:{{}}}};"
+        + "console.log(JSON.stringify({review:renderReviewPresentation(m),command:renderCommandPresentation(m),rag:renderRagSearchPresentation(m)}));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    rendered = json.loads(result.stdout)
+    assert "severity counts" in rendered["review"].lower()
+    assert "critical" in rendered["review"].lower()
+    assert "Command and arguments" in rendered["command"]
+    assert "stdout" in rendered["command"] and "stderr" in rendered["command"]
+    assert "rank" in rendered["rag"].lower() and "score" in rendered["rag"].lower()
+    assert "<details" in rendered["rag"]
+    assert "answer" in rendered["rag"]
+
+
 def test_trace_inspector_shows_model_prompt_as_input() -> None:
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     source = DASHBOARD_HTML[
