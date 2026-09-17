@@ -6,7 +6,9 @@ and Python. Falls back gracefully when language grammars are missing.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import sys
 import threading
 from typing import Any
 
@@ -30,13 +32,17 @@ def _init_treesitter() -> bool:
         return False
 
     # C#
-    try:
-        import tree_sitter_c_sharp as tscs
-        lang = Language(tscs.language())
-        _LANGUAGES["csharp"] = lang
-        _PARSERS["csharp"] = Parser(lang)
-    except Exception as exc:
-        logger.debug("Tree-sitter C# grammar unavailable: %s", exc)
+    # The current Windows Python 3.13 tree-sitter C# binding can access-violate
+    # while walking Unity-sized syntax trees. Leave C# on the safe code-index
+    # fallback until that native compatibility issue is resolved.
+    if not (os.name == "nt" and sys.version_info >= (3, 13)):
+        try:
+            import tree_sitter_c_sharp as tscs
+            lang = Language(tscs.language())
+            _LANGUAGES["csharp"] = lang
+            _PARSERS["csharp"] = Parser(lang)
+        except Exception as exc:
+            logger.debug("Tree-sitter C# grammar unavailable: %s", exc)
 
     # TypeScript
     try:
