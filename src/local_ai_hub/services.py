@@ -16,6 +16,7 @@ from .artifacts import ArtifactStore
 from .budget import chars_for_tokens, estimate_tokens, fit_text
 from .cache import MemoryLRUCache, SQLiteCache, TieredCache, SingleFlightCache, SingleFlightGroup, stable_hash
 from .conversations import ConversationStore
+from .features import rollout_feature_enabled
 from .normalizer import normalize_query, postprocess_model_output
 from .semantic_cache import SemanticGenerationCache
 from .model_policy import ModelExecutionPolicy
@@ -24,6 +25,8 @@ from .process_utils import canonical_root
 from .repo_tools import RepositoryTools
 from .router import ModelRouter, review_diff_complexity
 from .sqlite_support import connect_sqlite
+from .adoption_metrics import AdoptionMetricsStore
+from .state_paths import configured_state_dir
 from .telemetry import TelemetryStore
 from .trace_context import observer
 from .treesitter_parser import parse_treesitter
@@ -309,6 +312,7 @@ class LocalAIServices:
     task_store: Any = None
     verification_store: Any = None
     incident_store: Any = None
+    adoption_metrics: Any = None
     rag: Any = None
     token_router: Any = None
     pipeline: Any = None
@@ -355,6 +359,7 @@ class LocalAIServices:
         self.task_store: Any | None = None
         self.verification_store: Any | None = None
         self.incident_store: Any | None = None
+        self.adoption_metrics = AdoptionMetricsStore(configured_state_dir(config))
         self.router = ModelRouter(config)
         self.model_policy = ModelExecutionPolicy(config)
         self.profile_catalog = OllamaSubagentCatalog(config)
@@ -1453,6 +1458,13 @@ class LocalAIServices:
         return self._repo_cached("profile", root, {}, lambda: self.repo_tools.project_profile(root))
 
     def repo_search(self, root: str, query: str, top_k: int = 12, context_lines: int | None = None, enrich: bool = False) -> dict[str, Any]:
+        if enrich and not rollout_feature_enabled(self.config, "enriched_search"):
+            return {
+                "success": False,
+                "unsupported": True,
+                "feature": "enriched_search",
+                "error": "enriched search is disabled (features.enriched_search=false)",
+            }
         # Search itself is case-insensitive and whitespace-tolerant. Use the same
         # canonical form for cache identity so equivalent agent queries reuse work.
         query = normalize_query(query).casefold()
@@ -1481,9 +1493,20 @@ class LocalAIServices:
             except Exception:
                 pass
         def compute() -> dict[str, Any]:
-            targeted = self.repo_tools.search_paths(root, query, paths, top_k, context_lines=eff_ctx_lines) if paths else {"results": []}
+            if paths:
+                targeted = (
+                    self.repo_tools.search_paths(root, query, paths, top_k, context_lines=eff_ctx_lines)
+                    if eff_ctx_lines is not None
+                    else self.repo_tools.search_paths(root, query, paths, top_k)
+                )
+            else:
+                targeted = {"results": []}
             used_preprocessed = bool(paths and targeted.get("results"))
-            result = targeted if targeted.get("results") else self.repo_tools.search(root, query, top_k, context_lines=eff_ctx_lines)
+            result = targeted if targeted.get("results") else (
+                self.repo_tools.search(root, query, top_k, context_lines=eff_ctx_lines)
+                if eff_ctx_lines is not None
+                else self.repo_tools.search(root, query, top_k)
+            )
             result["preprocessed_hit"] = used_preprocessed
             if enrich:
                 result["enriched"] = True
@@ -1988,6 +2011,13 @@ class LocalAIServices:
         return self.deterministic_operation("ast-outline", root, {"path": path}, lambda: self.deterministic.ast_outline(root, path))
 
     def batch_replace(self, root: str, edits: list[dict[str, Any]], dry_run: bool = False) -> dict[str, Any]:
+        if not rollout_feature_enabled(self.config, "batch_replacement"):
+            return {
+                "success": False,
+                "unsupported": True,
+                "feature": "batch_replacement",
+                "error": "batch replacement is disabled (features.batch_replacement=false)",
+            }
         if not self.deterministic:
             return {"success": False, "error": "deterministic engine disabled"}
         return self.deterministic.batch_replace(root, edits, dry_run=dry_run)
@@ -3281,6 +3311,7 @@ class LocalAIServices:
         if action == "cancel":
             return self.commands.cancel(
                 str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))), tenant,
+                execution_id=str(args.get("execution_id", "")),
             )
         if action == "classify":
             return {"success": True, "classification": self.commands.classify(str(args.get("command", "")))}
@@ -3326,37 +3357,113 @@ class LocalAIServices:
         return {"success": False, "error": f"unknown command action: {action}"}
 
     def _synthesize_repair_patch(self, command: str, cwd: str, failure_result: dict[str, Any]) -> dict[str, str] | None:
-        """Synthesize candidate code fix diffs/patches using local fast model or remediation."""
+        """Use verified remediation or one bounded local diagnostic for a failed command."""
         if not failure_result or failure_result.get("success"):
             return None
         rem = failure_result.get("remediation") or {}
         if rem.get("verified_fix") and isinstance(rem["verified_fix"], dict):
             return {str(k): str(v) for k, v in rem["verified_fix"].items()}
+        features = self.config.get("features", {})
+        if not isinstance(features, dict) or not bool(features.get("tasks", True)):
+            return None
+        if not rollout_feature_enabled(self.config, "local_diagnostic_dispatch"):
+            failure_result["local_diagnostic_dispatch"] = {
+                "available": False,
+                "unsupported": True,
+                "feature": "local_diagnostic_dispatch",
+                "error": "local diagnostic dispatch is disabled (features.local_diagnostic_dispatch=false)",
+            }
+            return None
+        summary = failure_result.get("failure_summary") or {}
+        if not isinstance(summary, dict):
+            summary = {}
+        confidence = 0.95 if summary.get("path") and summary.get("line") else 0.70 if summary.get("path") else 0.25
+        artifact_id = str(failure_result.get("artifact_id") or "")
+        preview = str(failure_result.get("preview") or "")[:800]
+        # Parsed failures are deterministic enough to avoid local inference. Local
+        # diagnosis is read-only and never returns a mutation candidate; repair still
+        # needs a verified deterministic fix.
+        if confidence >= 0.50 or not artifact_id or not preview or not self._is_bounded_diagnostic_command(command):
+            return None
         model = self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b")
-        diag = failure_result.get("diagnostics", [])
-        stderr = str(failure_result.get("stderr", "") or failure_result.get("error", ""))[:2000]
         prompt = (
-            f"Fix this command failure in {cwd}:\nCommand: {command}\nError:\n{stderr}\n"
-            f"Diagnostics:\n{json.dumps(diag[:5])}\n"
-            "Respond ONLY with a JSON object format: {\"relative_file_path\": \"full corrected file content\"}"
+            f"Investigate this low-confidence command failure in {cwd}:\nCommand: {command}\n"
+            f"Failure summary: {json.dumps(summary, sort_keys=True)}\n"
+            f"Artifact reference: {artifact_id}\nFailure preview:\n{preview}\n"
+            "Do not request or infer raw command logs; use only this bounded preview.\n"
+            "Return only a short JSON diagnosis. Do not propose edits, patches, commands, architecture, or security work."
         )
         try:
-            res = self.proxy_request("/api/generate", {"model": model, "prompt": prompt, "format": "json"}, "hub", "repair_loop")
+            res = self.proxy_request("/api/generate", {
+                "model": model,
+                "prompt": prompt,
+                "format": {
+                    "type": "object",
+                    "properties": {"diagnosis": {"type": "string"}},
+                    "required": ["diagnosis"],
+                    "additionalProperties": False,
+                },
+                "options": {"num_predict": 320},
+            }, "hub", "local_ai_task", diagnostic_timeout_seconds=20)
             raw_text = str(res.get("response", "")).strip()
             parsed = json.loads(raw_text)
-            if isinstance(parsed, dict) and "files" in parsed and isinstance(parsed["files"], dict):
-                return {str(k): str(v) for k, v in parsed["files"].items()}
-            if isinstance(parsed, dict):
-                return {str(k): str(v) for k, v in parsed.items() if isinstance(v, str)}
+            diagnosis = str(parsed.get("diagnosis", "")).strip()[:600] if isinstance(parsed, dict) else ""
+            if diagnosis:
+                failure_result["local_diagnostic"] = diagnosis
         except Exception:
             pass
         return None
 
-    def proxy_request(self, endpoint: str, payload: dict[str, Any], tenant: str, source: str) -> dict[str, Any]:
+    @staticmethod
+    def _is_bounded_diagnostic_command(command: str) -> bool:
+        """Allow only direct, non-mutating validation commands for L1 diagnosis."""
+        normalized = command.strip().lower()
+        if not normalized or any(char in normalized for char in "|&;><\n\r"):
+            return False
+        mutation = r"(?:fix|write|apply|update|install|delete)"
+        if re.search(rf"(?:^|\s)--{mutation}(?:[-_][a-z0-9]+)*(?:\s|=|$)", normalized):
+            return False
+        # `normalized` is lowercase, so this also rejects Jest's --updateSnapshot.
+        if re.search(r"(?:^|\s)--(?:snapshot[-_]?update|update(?:[-_]?snapshot)?s?)(?:\s|=|$)", normalized):
+            return False
+        if re.search(rf"(?:^|\s)--(?:snapshot|golden|inline[-_]?snapshot)[-_]{mutation}(?:[-_][a-z0-9]+)*(?:\s|=|$)", normalized):
+            return False
+        if re.search(rf"(?:^|\s)--(?:snapshots?|goldens?|inline[-_]?snapshot)(?:\s|=){mutation}(?:\s|$)", normalized):
+            return False
+        if re.search(r"(?:^|\s)-u(?:\s|=|$)", normalized):
+            return False
+        python = r"(?:python(?:\.exe)?|py(?:\.exe)?)"
+        patterns = (
+            rf"^{python}\s+(?:-[a-z0-9_-]+\s+)*-m\s+(?:pytest|unittest|mypy|pyright|ruff|flake8)(?:\s|$)",
+            r"^(?:pytest|unittest|mypy|pyright|ruff|flake8|eslint|tsc)(?:\s|$)",
+            r"^(?:npm|pnpm|yarn)\s+test(?:\s|$)",
+            r"^(?:go|cargo|dotnet|gradle|mvn)\s+test(?:\s|$)",
+        )
+        return any(re.match(pattern, normalized) is not None for pattern in patterns)
+
+    @staticmethod
+    def _proxy_timeout_seconds(config: dict[str, Any], diagnostic_timeout_seconds: float | None = None) -> float:
+        """Keep normal proxy timeouts intact; cap only explicit diagnostic calls."""
+        if diagnostic_timeout_seconds is not None:
+            return min(60.0, max(1.0, float(diagnostic_timeout_seconds)))
+        return max(1.0, float(config.get("server", {}).get("request_timeout_seconds", 300)))
+
+    def proxy_request(
+        self,
+        endpoint: str,
+        payload: dict[str, Any],
+        tenant: str,
+        source: str,
+        *,
+        diagnostic_timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         if payload.get("stream") is True:
             return {"success": False, "error": "streaming is intentionally disabled through the affinity queue"}
         model = str(payload.get("model") or self.config.get("models", {}).get("general", "qwen2.5-coder:1.5b"))
         clean = dict(payload)
+        clean.pop("_hub_timeout_seconds", None)
+        has_diagnostic_cap = diagnostic_timeout_seconds is not None
+        request_timeout = self._proxy_timeout_seconds(self.config, diagnostic_timeout_seconds)
         clean["stream"] = False
         clean.setdefault("keep_alive", self.config.get("ollama", {}).get("keep_alive", "-1"))
         clean.pop("priority", None)
@@ -3419,9 +3526,12 @@ class LocalAIServices:
         key = stable_hash({"proxy": endpoint, "payload": clean, "app_version": __version__})
 
         def compute() -> dict[str, Any]:
+            submit_kwargs: dict[str, Any] = {"priority": int(payload.get("priority", 5))}
+            if has_diagnostic_cap:
+                submit_kwargs["wait_timeout"] = request_timeout
             return self.scheduler.submit(
-                model, tenant, source, lambda: self.runtime.request(endpoint, clean),
-                priority=int(payload.get("priority", 5)),
+                model, tenant, source, lambda: self.runtime.request(endpoint, clean, timeout=request_timeout),
+                **submit_kwargs,
             )
 
         raw, hit, coalesced = self.generation_cache.get_or_compute(key, compute)

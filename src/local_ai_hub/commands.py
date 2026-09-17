@@ -11,11 +11,13 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections import deque
 from pathlib import Path
 from typing import Any
 
 from .cache import SQLiteCache, TieredCache, stable_hash
+from .features import rollout_feature_enabled
 from .process_utils import assign_process_to_job, canonical_root, create_job_object_kill_on_close, hidden_run_kwargs, terminate_tree
 from .state_paths import configured_state_dir
 
@@ -942,47 +944,122 @@ class CommandBroker:
     def _cancel_key(command: str, cwd: str) -> str:
         return stable_hash({"command": command.strip(), "cwd": str(Path(cwd).resolve())})
 
-    def cancel(self, command: str, cwd: str, tenant: str) -> dict[str, Any]:
+    @staticmethod
+    def _tenant_identity(tenant: str) -> str:
+        """Return collision-resistant tenant identity without retaining its raw value."""
+        return stable_hash({"tenant": str(tenant)})
+
+    @staticmethod
+    def _public_active(active: dict[str, Any]) -> dict[str, Any]:
+        """Expose bounded active-command metadata without tenant identity or raw tenant."""
+        return {key: value for key, value in active.items() if key not in {"tenant", "tenant_identity"}}
+
+    def cancel(self, command: str, cwd: str, tenant: str, *, execution_id: str = "") -> dict[str, Any]:
         """Request bounded cancellation of one currently running broker command."""
         lookup = self._cancel_key(command, cwd)
-        tenant_key = str(tenant)[:80]
+        tenant_key = self._tenant_identity(tenant)
         with self._lock:
-            key = next((item for item, value in self._active_cancel_keys.items() if value == (lookup, tenant_key)), "")
+            if execution_id:
+                matches = [
+                    item for item, active in self._active_commands.items()
+                    if active.get("execution_id") == execution_id and active.get("tenant_identity") == tenant_key
+                ]
+            else:
+                matches = [item for item, value in self._active_cancel_keys.items() if value == (lookup, tenant_key)]
+            if len(matches) > 1:
+                return {
+                    "success": False, "terminal": True, "retryable": False,
+                    "error": "multiple matching active commands; provide execution_id",
+                    "execution_ids": [str(self._active_commands[item].get("execution_id", "")) for item in matches],
+                }
+            key = matches[0] if matches else ""
             event = self._cancel_events.get(key) if key else None
-            active = dict(self._active_commands.get(key, {})) if key else {}
+            active = self._public_active(dict(self._active_commands.get(key, {}))) if key else {}
             if event is None:
                 return {"success": False, "terminal": True, "retryable": False, "error": "no matching active command"}
             event.set()
             self.cancelled += 1
-        return {"success": True, "cancellation_requested": True, "active": active}
+        return {"success": True, "cancellation_requested": True, "execution_id": active.get("execution_id", ""), "active": active}
 
     @staticmethod
     def _extract_diagnostics(result: dict[str, Any], limit: int = 30) -> list[dict[str, Any]]:
-        text = (str(result.get("stdout", "")) + "\n" + str(result.get("stderr", ""))).strip()
-        diagnostics: list[dict[str, Any]] = []
+        # stdout/stderr are captured independently, so their true interleaving is
+        # unavailable. Preserve each stream's order while preferring explicit
+        # failures over informational diagnostics and warnings from a failed run.
+        # This keeps an early stdout warning from masking the useful stderr error.
+        streams = (str(result.get("stdout", "")), str(result.get("stderr", "")))
+        failures: list[dict[str, Any]] = []
+        others: list[dict[str, Any]] = []
         patterns = _DIAGNOSTIC_PATTERNS
-        for raw in text.splitlines():
-            line = raw.strip()
-            if not line:
-                continue
-            matched = None
-            for pattern in patterns:
-                m = pattern.match(line)
-                if m:
-                    matched = m; break
-            if matched:
-                data = matched.groupdict()
-                diagnostics.append({
-                    "path": data.get("path", ""),
-                    "line": int(data.get("line") or 0),
-                    "column": int(data.get("col") or 0),
-                    "message": str(data.get("msg") or line)[:500],
-                })
-            elif any(x in line.lower() for x in ("error", "fatal", "exception", "traceback", "assertionerror", "panic")):
-                diagnostics.append({"path": "", "line": 0, "column": 0, "message": line[:500]})
-            if len(diagnostics) >= limit:
-                break
-        return diagnostics
+        failure_terms = ("error", "fatal", "exception", "traceback", "assertionerror", "panic", "failed", "failure")
+        for text in streams:
+            for raw in text.splitlines():
+                line = raw.strip()
+                if not line:
+                    continue
+                matched = None
+                matched_failure = False
+                for pattern_index, pattern in enumerate(patterns):
+                    m = pattern.match(line)
+                    if m:
+                        matched = m
+                        # The dedicated pytest `FAILED path::test` pattern keeps
+                        # the path but strips the word FAILED from its message.
+                        # Preserve its failure semantics from the original line.
+                        matched_failure = pattern_index == 1
+                        break
+                message = ""
+                diagnostic: dict[str, Any] | None = None
+                if matched:
+                    data = matched.groupdict()
+                    message = str(data.get("msg") or line)[:500]
+                    diagnostic = {
+                        "path": data.get("path", ""),
+                        "line": int(data.get("line") or 0),
+                        "column": int(data.get("col") or 0),
+                        "message": message,
+                    }
+                elif any(term in line.lower() for term in failure_terms):
+                    message = line[:500]
+                    diagnostic = {"path": "", "line": 0, "column": 0, "message": message}
+                if diagnostic is None:
+                    continue
+                target = failures if (
+                    matched_failure
+                    or any(term in line.lower() for term in failure_terms)
+                ) else others
+                if len(target) < limit:
+                    target.append(diagnostic)
+        return (failures + others)[:limit]
+
+    @classmethod
+    def _first_failure_summary(cls, result: dict[str, Any]) -> dict[str, Any]:
+        """Return first deterministic failure location without replaying verbose logs."""
+        diagnostics = list(result.get("diagnostics") or cls._extract_diagnostics(result, limit=1))
+        if diagnostics:
+            first = diagnostics[0]
+            return {
+                "path": str(first.get("path") or ""),
+                "line": int(first.get("line") or 0),
+                "message": str(first.get("message") or "").strip()[:500],
+            }
+        return {
+            "path": "",
+            "line": 0,
+            "message": cls._distill_error(result)[:500],
+        }
+
+    @staticmethod
+    def _failure_preview(summary: dict[str, Any]) -> str:
+        """Expose only the narrow first-failure slice in command results."""
+        path = str(summary.get("path") or "")
+        line = int(summary.get("line") or 0)
+        message = str(summary.get("message") or "").strip()
+        if path and line:
+            return f"{path}:{line}: {message}"[:800]
+        if path:
+            return f"{path}: {message}"[:800]
+        return message[:800]
 
     @staticmethod
     def _deterministic_summary(result: dict[str, Any], limit: int = 60) -> str:
@@ -1072,6 +1149,9 @@ class CommandBroker:
     ) -> dict[str, Any]:
         if not self.enabled:
             return {"success": False, "error": "command broker disabled"}
+        original_command = command
+        classification = self.classify(original_command)
+        is_mutating = classification.get("class") == "mutating"
         if sandbox == "docker":
             if not shutil.which("docker"):
                 return {
@@ -1092,9 +1172,8 @@ class CommandBroker:
                     "retryable": False,
                     "budget_exhausted": True,
                 }
-        classification = self.classify(command)
         attempt_key = self._attempt_key(command, cwd)
-        if not force:
+        if not force and not is_mutating:
             suppressed = self.suppression_cache.get(attempt_key)
             if isinstance(suppressed, dict):
                 self.suppressed += 1
@@ -1111,7 +1190,7 @@ class CommandBroker:
                 "success": False, "error": f"command blocked: {classification['reason']}",
                 "classification": classification, "policy_blocked": True, "terminal": True, "retryable": False,
             }
-            if not force:
+            if not force and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return result
         cwd_path = Path(cwd).expanduser().resolve(strict=False)
@@ -1123,7 +1202,7 @@ class CommandBroker:
                 "terminal": True,
                 "retryable": False,
             }
-            if not force:
+            if not force and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return result
         unavailable = self._unavailable_executable(command, cwd)
@@ -1132,7 +1211,7 @@ class CommandBroker:
                 "success": False, "error": f"command executable is unavailable: {unavailable}",
                 "exit_code": 127, "classification": classification, "preflight": True, "terminal": True, "retryable": False,
             }
-            if not force:
+            if not force and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
         if not Path(cwd).is_dir():
@@ -1140,7 +1219,7 @@ class CommandBroker:
                 "success": False, "error": f"working directory does not exist: {cwd}",
                 "exit_code": 1, "classification": classification, "preflight": True, "terminal": True, "retryable": False,
             }
-            if not force:
+            if not force and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
         try:
@@ -1154,10 +1233,11 @@ class CommandBroker:
                 "terminal": True,
                 "retryable": False,
             }
-            if not force:
+            if not force and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
-        if classification["cacheable"] and not force:
+        cacheable = bool(classification["cacheable"]) and not is_mutating
+        if cacheable and not force:
             cached = self.success_cache.get(key) or self.failure_cache.get(key)
             if isinstance(cached, dict):
                 self.hits += 1
@@ -1181,13 +1261,16 @@ class CommandBroker:
                         pass
                 return self._compact(result, tenant, command)
 
-        with self._lock:
-            event = self._inflight.get(key)
-            if event is None:
-                event = threading.Event(); self._inflight[key] = event; owner = True
-            else:
-                owner = False; self.coalesced += 1
-        if not owner:
+        singleflight = not is_mutating
+        event: threading.Event | None = None
+        if singleflight:
+            with self._lock:
+                event = self._inflight.get(key)
+                if event is None:
+                    event = threading.Event(); self._inflight[key] = event; owner = True
+                else:
+                    owner = False; self.coalesced += 1
+        if singleflight and not owner:
             # A second agent should benefit from single-flight without being trapped
             # behind a very long build/test command. The owner keeps running and will
             # populate the cache; the waiter gets a bounded in-progress response.
@@ -1195,7 +1278,7 @@ class CommandBroker:
             if not event.wait(wait_budget):
                 with self._lock:
                     self.coalesced_timeouts += 1
-                    active = dict(self._active_commands.get(key, {}))
+                    active = self._public_active(dict(self._active_commands.get(key, {})))
                 return {
                     "success": False, "in_progress": True, "retryable": True,
                     "error": "identical command is still running in another agent; do not start a duplicate",
@@ -1209,14 +1292,18 @@ class CommandBroker:
         self.misses += 1
         started_wall = time.time()
         cancel_event = threading.Event()
+        execution_id = uuid.uuid4().hex
+        execution_key = key if singleflight else f"mutation:{execution_id}"
+        tenant_identity = self._tenant_identity(tenant)
         with self._lock:
-            self._active_commands[key] = {
+            self._active_commands[execution_key] = {
                 "command": self._safe_label(command), "cwd": Path(cwd).name or str(Path(cwd)),
-                "tenant": str(tenant)[:80], "class": str(classification.get("class", "")),
-                "started_at": started_wall, "timeout_seconds": int(timeout or self.timeout),
+                "class": str(classification.get("class", "")),
+                "tenant_identity": tenant_identity, "started_at": started_wall,
+                "timeout_seconds": int(timeout or self.timeout), "execution_id": execution_id,
             }
-            self._cancel_events[key] = cancel_event
-            self._active_cancel_keys[key] = (self._cancel_key(command, cwd), str(tenant)[:80])
+            self._cancel_events[execution_key] = cancel_event
+            self._active_cancel_keys[execution_key] = (self._cancel_key(command, cwd), tenant_identity)
         git_snapshot = None
         if snapshot or rollback_on_failure:
             try:
@@ -1324,7 +1411,7 @@ class CommandBroker:
                     pass
 
             raw = dict(result)
-            if classification["cacheable"] and not result.get("cancelled"):
+            if cacheable and not result.get("cancelled"):
                 (self.success_cache if result.get("success") else self.failure_cache).set(key, raw)
             if result.get("success") and task_id and self.verification_store is not None:
                 try:
@@ -1342,25 +1429,28 @@ class CommandBroker:
                     result["verification_receipt"] = rcpt.to_dict()
                 except Exception:
                     pass
-            if not force and self._non_retryable_failure(raw):
+            if not force and not is_mutating and self._non_retryable_failure(raw):
                 raw.update({"terminal": True, "retryable": False})
                 self.suppression_cache.set(attempt_key, raw)
-            with self._lock:
-                if len(self._last) > 128:
-                    old_keys = list(self._last.keys())[:64]
-                    for k in old_keys:
-                        self._last.pop(k, None)
-                self._last[key] = raw
+            if singleflight:
+                with self._lock:
+                    if len(self._last) > 128:
+                        old_keys = list(self._last.keys())[:64]
+                        for k in old_keys:
+                            self._last.pop(k, None)
+                    self._last[key] = raw
             result.update({"cache_hit": False, "coalesced": False, "classification": classification, "repo_state": state, "repository_revision": str(state.get("fingerprint", ""))})
         except subprocess.TimeoutExpired:
             return {"success": False, "error": "command timed out", "classification": classification, "cache_hit": False}
         finally:
             with self._lock:
-                self._inflight.pop(key, None)
-                self._active_commands.pop(key, None)
-                self._cancel_events.pop(key, None)
-                self._active_cancel_keys.pop(key, None)
-                event.set()
+                if singleflight:
+                    self._inflight.pop(key, None)
+                self._active_commands.pop(execution_key, None)
+                self._cancel_events.pop(execution_key, None)
+                self._active_cancel_keys.pop(execution_key, None)
+                if event is not None:
+                    event.set()
 
         if task_id and self.policy_engine:
             try:
@@ -1371,8 +1461,9 @@ class CommandBroker:
                 pass
 
         compacted = self._compact(result, tenant, command)
+        compacted["execution_id"] = execution_id
         if auto_fix and not compacted.get("success") and not compacted.get("cancelled"):
-            return self.repair_loop(
+            repaired = self.repair_loop(
                 command, cwd, tenant,
                 max_attempts=max_repair_attempts,
                 task_id=task_id, criterion=criterion,
@@ -1380,6 +1471,8 @@ class CommandBroker:
                 fix_generator=fix_generator,
                 initial_result=compacted,
             )
+            repaired["execution_id"] = execution_id
+            return repaired
         return compacted
 
     def patch_and_verify(
@@ -1708,18 +1801,26 @@ class CommandBroker:
         original_files: dict[Path, str | None] = {}
         attempt_history: list[dict[str, Any]] = []
         last_result = initial
+        generated_patches: dict[str, str] | None = None
+        generator_invoked = False
 
         try:
             for attempt in range(1, max(1, max_attempts) + 1):
                 patches: dict[str, str] = {}
                 if callable(fix_generator):
-                    try:
-                        gen_res = fix_generator(command, str(cwd_path), last_result)
-                        if isinstance(gen_res, dict):
-                            patches = {str(k): str(v) for k, v in gen_res.items()}
-                    except Exception as exc:
-                        attempt_history.append({"attempt": attempt, "error": f"fix generator error: {exc}"})
-                        continue
+                    # A repair loop may retry applying the same bounded candidate,
+                    # but it must never amplify one failed command into repeated
+                    # local-model inference calls or send subsequent raw outputs.
+                    if not generator_invoked:
+                        generator_invoked = True
+                        try:
+                            gen_res = fix_generator(command, str(cwd_path), last_result)
+                            if isinstance(gen_res, dict):
+                                generated_patches = {str(k): str(v) for k, v in gen_res.items()}
+                        except Exception as exc:
+                            attempt_history.append({"attempt": attempt, "error": f"fix generator error: {exc}"})
+                            continue
+                    patches = dict(generated_patches or {})
                 elif self.incident_store is not None:
                     rem = last_result.get("remediation") or {}
                     fix = rem.get("verified_fix")
@@ -2525,8 +2626,17 @@ class CommandBroker:
     def _compact(self, result: dict[str, Any], tenant: str, command: str) -> dict[str, Any]:
         stdout = str(result.get("stdout", "")); stderr = str(result.get("stderr", ""))
         combined_chars = len(stdout) + len(stderr)
+        diagnostic_artifacts_enabled = rollout_feature_enabled(self.config, "diagnostic_artifacts")
+        local_diagnostic_dispatch_enabled = rollout_feature_enabled(self.config, "local_diagnostic_dispatch")
+        diagnostic_artifacts_unavailable = {
+            "available": False,
+            "unsupported": True,
+            "feature": "diagnostic_artifacts",
+            "error": "diagnostic artifacts are disabled (features.diagnostic_artifacts=false)",
+        }
         result["summary"] = self._deterministic_summary(result)
         diagnostics = list(result.get("diagnostics") or self._extract_diagnostics(result))
+        failure_summary = self._first_failure_summary({**result, "diagnostics": diagnostics})
         if result.get("remediation"):
             rem = result["remediation"]
             fix_msg = rem.get("verified_fix") or rem.get("root_cause")
@@ -2538,17 +2648,33 @@ class CommandBroker:
                     "message": f"Remediation guidance: {fix_msg}",
                 })
         result["diagnostics"] = diagnostics
-        min_artifact_chars = 300
-        if combined_chars > min_artifact_chars or not result.get("success", False):
-            if self.artifacts is not None:
-                full = f"$ {command}\n\nSTDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
+        if not result.get("success") and not result.get("cancelled"):
+            result["failure_summary"] = failure_summary
+            result["preview"] = self._failure_preview(failure_summary)
+            # Low-confidence short failures do not get the full-log artifact below.
+            # Retain only the already-bounded diagnostic so the repair gate receives
+            # a safe reference without persisting the raw command output.
+            if combined_chars <= self.inline_chars and not result.get("artifact_id") and not failure_summary.get("path"):
+                if local_diagnostic_dispatch_enabled and self.artifacts is not None:
+                    diagnostic = str(result["preview"])[:800]
+                    result["artifact_id"] = self.artifacts.put(diagnostic, tenant, "local_diagnostic_context")
+                elif not diagnostic_artifacts_enabled:
+                    result["diagnostic_artifacts"] = diagnostic_artifacts_unavailable
+                elif self.artifacts is not None:
+                    diagnostic = str(result["preview"])[:800]
+                    result["artifact_id"] = self.artifacts.put(diagnostic, tenant, "command_diagnostic")
+        if combined_chars > self.inline_chars:
+            full = f"$ {command}\n\nSTDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
+            if local_diagnostic_dispatch_enabled and not diagnostic_artifacts_enabled and self.artifacts is not None:
+                diagnostic = str(result.get("preview", ""))[:800]
+                result["artifact_id"] = self.artifacts.put(diagnostic, tenant, "local_diagnostic_context")
+            elif not diagnostic_artifacts_enabled:
+                result["diagnostic_artifacts"] = diagnostic_artifacts_unavailable
+            elif self.artifacts is not None:
                 result["artifact_id"] = self.artifacts.put(full, tenant, "command")
-            if combined_chars > self.inline_chars:
-                result["stdout"] = stdout[: self.inline_chars // 2]
-                result["stderr"] = stderr[-self.inline_chars // 2:]
-                result["output_truncated"] = True
-            else:
-                result["output_truncated"] = False
+            result["stdout"] = stdout[: self.inline_chars // 2]
+            result["stderr"] = stderr[-self.inline_chars // 2:]
+            result["output_truncated"] = True
         else:
             result["output_truncated"] = False
         return result
@@ -2556,7 +2682,10 @@ class CommandBroker:
     def stats(self) -> dict[str, Any]:
         now = time.time()
         with self._lock:
-            active = [dict(v, age_ms=max(0, int((now - float(v.get("started_at", now))) * 1000))) for v in self._active_commands.values()]
+            active = [
+                self._public_active(dict(v, age_ms=max(0, int((now - float(v.get("started_at", now))) * 1000))))
+                for v in self._active_commands.values()
+            ]
             blocked_by_reason = dict(sorted(self._blocked_by_reason.items(), key=lambda kv: (-kv[1], kv[0]))[:12])
         return {
             "enabled": self.enabled, "hits": self.hits, "misses": self.misses, "cancelled": self.cancelled,

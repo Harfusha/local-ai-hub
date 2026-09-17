@@ -87,6 +87,10 @@ allow_unknown = false
 
 [features]
 tasks = true              # local model inference worker (local_ai_task)
+local_diagnostic_dispatch = false # opt-in L1 failure diagnosis; direct non-mutating validation commands only
+enriched_search = false   # rollout only: source-enriched repository search
+batch_replacement = false # rollout only: atomic repository batch replacement
+diagnostic_artifacts = false # rollout only: persist command diagnostic artifacts
 rag = true                # semantic retrieval fallback (local_ai_rag)
 commands = true           # safe command execution broker (local_ai_command)
 coord = true              # coordination leases, memos, task contracts (local_ai_coord)
