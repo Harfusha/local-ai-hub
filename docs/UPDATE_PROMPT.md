@@ -123,3 +123,6 @@ Confirm:
 3. Summary of instruction files refreshed.
 4. Preprocessing status for current repository.
 ```
+### MCP response economy
+
+After updating, verify checked-in/generated schemas expose `max_response_tokens`, `response_profile`, and `reuse_key` on the existing Hub tools. Treat generator output and configuration as trusted repository inputs; never copy tool fields from untrusted model output. Keep aggregate response budgeting enabled, preserve artifact-backed exact detail, and verify telemetry reports raw/projected/saved response estimates without prompt or source retention.

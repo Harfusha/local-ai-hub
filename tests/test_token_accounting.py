@@ -87,6 +87,29 @@ def test_tool_accounting_subtracts_agent_call_and_read_cost():
     assert event["net_after_schema_token_delta_est"] == event["net_cloud_token_delta_est"] - 150
 
 
+def test_tool_accounting_attributes_response_budget_without_source_text():
+    event = finalize_tool_accounting(
+        tool_name="local_ai_repo",
+        arguments={"action": "search", "root": "C:/repo", "query": "private-secret"},
+        response={
+            "success": True,
+            "summary": "bounded",
+            "response_budget": {"requested_tokens": 700, "truncated": True},
+            "cache_hit": True,
+        },
+        measured={"raw_response_tokens_est": 5000, "projected_response_tokens_est": 700},
+    )
+
+    assert event["operation_category"] == "search"
+    assert event["raw_response_tokens_est"] == 5000
+    assert event["projected_response_tokens_est"] == 700
+    assert event["projected_response_saved_tokens_est"] == 4300
+    assert event["response_budget_requested_tokens"] == 700
+    assert event["response_budget_truncated"] is True
+    assert event["cache_outcome"] == "cache_hit"
+    assert "private-secret" not in str(event)
+
+
 def test_private_accounting_never_reaches_agent_payload():
     value = {
         "success": True,

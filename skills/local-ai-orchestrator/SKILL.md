@@ -1,82 +1,169 @@
 ---
 name: local-ai-orchestrator
-description: Local-first routing for coding agents. Main agent owns planning and integration; Local AI Hub handles bounded work.
+description: Local-first routing for Codex, Gemini, Claude, Cursor, Windsurf, VS Code/Copilot and MCP coding agents. Keeps the main agent as orchestrator and routes bounded work through Local AI Hub.
 ---
 
 # Local AI Hub routing
 
 Trigger map:
-
+- bounded health/cache/telemetry inspection (never poll): `local_ai_status`
 - repository facts/files/symbols: `local_ai_repo`
 - tests/lint/typecheck/build: `local_ai_command`
 - exact source/evidence text: `local_ai_artifact`
 - shared findings or overlapping edits: `local_ai_coord`
+- non-trivial multi-step, long-running, or acceptance-criteria work: `local_ai_coord` Agent OS task contracts, checkpoints, context, and verified completion
 - semantic retrieval after indexed paths are insufficient: `local_ai_rag`
 - bounded local generation or second opinion: `local_ai_task`
 - closed whole-task delegation with verified handoff: `local_ai_work`
+- symbol or code-relationship questions: `local_ai_repo` semantic/graph actions (Serena symbol navigation; CodeGraph relationship/call-graph analysis); indexed fallback remains available
+- Agent OS task and incident state: `local_ai_status(detail="agent_state")`
+- image understanding: `local_ai_task(action="vision")`
+- audio transcription: `local_ai_task(action="transcribe")`
+- local-model or device benchmarking: `local_ai_task` benchmark actions
+- model/prompt evaluation and drift checks: `local_ai_task` evaluation actions
+- model/prompt candidate and speculative-draft workflows: `local_ai_task` candidate actions
+- durable asynchronous local jobs: `local_ai_task` submit/status/wait/result/cancel; wait once, never poll
+- named read-only local advisory profiles: `local_ai_task(action="delegate", profile=...)`
+- curated knowledge sets and document/diagram ingestion: `local_ai_rag` docset and ingest actions
+- requested automated repair, affected-test selection, formatting, or lint fixes: `local_ai_command` specialized actions
+- local mock, replay, and flaky-test workflows: `local_ai_command` specialized actions
+- operator-facing live dashboard: `/dashboard` on the configured Hub server; use `local_ai_status` for bounded agent-side checks
 
 Recipes (guidance, not gates):
-
-- Recipe — Explore: preprocess once, use cheapest repository action, fetch only required evidence slices.
+- Recipe — Explore: preprocess once, use the cheapest repository action, fetch only required evidence slices.
 - Recipe — Change: gather indexed evidence, use `local_ai_repo(action="solve")` before edits, claim `local_ai_coord` leases for overlapping paths, then run indexed impact/review before validation.
 - Recipe — Validate: route repeatable commands through `local_ai_command`, reuse cached results, use `review_diff` or `security_audit` when relevant.
-- Recipe — Durable execution: create task contract, checkpoint phase changes, attach validation receipts, complete only after `verify_completion` passes.
-- Recipe — Retrieve: use `local_ai_rag` only after deterministic/indexed paths are insufficient.
+- Recipe — Durable execution: create a task contract before substantial work, checkpoint phase changes, attach validation receipts, and complete only after `verify_completion` passes.
+- Recipe — Retrieve: use `local_ai_rag` only after deterministic/indexed paths are exhausted.
+- A recipe step may be skipped when irrelevant; one bounded fallback is allowed when Hub is unavailable.
 
 Delegation is the default for any task with useful bounded independent work.
-
-- Use `local_ai_task` for bounded local-model work when local inference is the right fit.
+- Use `local_ai_task` for bounded local-model work when local inference is the right fit. Use `qwen2.5-coder:7b` only for quick/simple requests, `qwen2.5-coder:7b` for ordinary tasks, `qwen3.5:9b` for more involved work, and `qwen3.5:9b` for the hardest reasoning.
+- **Closed whole task:** prefer `local_ai_work(action="submit")` when the Hub can own planning, bounded edits, validation and handoff end-to-end. Use `response_profile="compact"` and request only decision-grade fields; fetch the artifact only when details are needed.
 - Use the native Codex `multi_agent_v1__spawn_agent` path only for useful independent bounded work or an explicit Codex-subagent request.
 - Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
-- Do not duplicate the same scope across agents.
+- Do not duplicate the same scope across agents. Keep final decisions, edits, and integration in Codex.
 - Skip delegation only for trivial tasks, pure evidence lookups, security/privacy constraints, or no useful independent scope.
-- Prefer `local_ai_work(action="submit")` for a closed, low-risk task with bounded edits, validation, and handoff.
 
 ## Ownership and tiering
 
-Main agent owns task boundaries, permissions, unresolved decisions, and final answer. Local AI Hub owns only submitted bounded work until handoff. Use deterministic and indexed evidence before a local model. Use configured local tiers: fast for quick tasks, general for ordinary tasks, smart for involved tasks, reasoning for highest risk.
+    The main agent owns task boundaries, permissions, unresolved decisions and the final user answer. A submitted `local_ai_work` order may own its bounded internal planning, edits, validation and integration until handoff.
 
-- Local AI Hub first: repository facts, indexed search, preprocess, semantic relationships through Serena or CodeGraphContext, impact, diff/security review, safe commands, compression, local-model synthesis, and second opinions.
-- Native Codex subagents: only useful independent bounded work. Codex controls write permission and integration.
-- RAG: only after deterministic/indexed evidence is insufficient.
+- **Local AI Hub first:** its own precise bounded microtasks, repository facts, indexed search, preprocess, impact, diff/security review, safe commands, compression, local-model synthesis and second opinions.
+- **Native Codex subagents:** use only for useful independent bounded work; Codex assigns scope, write permission, workspace/worktree, timeout, sandbox, cancellation and integration.
+- **Tiered local models:** `qwen2.5-coder:3b` for preprocessing, `qwen2.5-coder:7b` for quick/simple requests, `qwen2.5-coder:7b` for ordinary tasks, `qwen3.5:9b` for more involved work, and `qwen3.5:9b` for the hardest or highest-risk reasoning. Run deterministic/indexed Hub actions first when they suffice.
+- **RAG:** use only after deterministic/indexed evidence and the basic local model are insufficient. Do not invoke a model to restate facts already available from the hub.
 
 ## READ-ONLY AUDIT CONTRACT
 
-- Read-only means no Git writes, `git worktree add` or removal, dependency installation, builds/imports, generated artifacts, or workspace side effects.
-- Before native discovery or validation, retain preceding Hub result with action, absolute root, status, cache/in_progress state, and evidence IDs.
-- Native validation fallback is allowed only after `local_ai_command` returns `terminal=true` and `retryable=false`; run one bounded fallback.
-- Codex controls subagent permissions per task. Native Codex subagents may write only when Codex explicitly enables it.
-- Do not run parallel duplicate commands or scopes.
+- Read-only means no Git writes, `git worktree add` or removal, dependency installation, builds/imports, generated artifacts, or other workspace side effects. Never label such work read-only when any of these occur; split validation into a separately owned, explicitly side-effecting task.
+- Before native discovery or validation, retain preceding Hub result with action, absolute root, status, cache/in_progress state, and evidence IDs. Native discovery is fallback-only after one bounded terminal Hub failure.
+- Native validation fallback is allowed only after `local_ai_command` returns `terminal=true` and `retryable=false`; run one bounded fallback, state side effects/owner, and never repeat identical commands.
+- Codex controls subagent permissions per task. Native Codex subagents may write only when Codex explicitly enables it, and write work stays in the assigned workspace/worktree. Codex remains integrator.
+- Do not run parallel duplicate commands or scopes. Tool labels are not evidence; preserve exact action, arguments, result, and ownership in the audit record.
 
 ## Mandatory repository gate
 
-Use Local AI Hub before broad repository exploration for every non-trivial repository task unless fresh sufficient Hub evidence exists.
+For every non-trivial repository task, use Local AI Hub before broad repository exploration unless fresh sufficient hub evidence is already present.
 
-1. Establish one stable absolute project root.
-2. Call `local_ai_repo(action="preprocess", root=ABS_ROOT)` exactly once. Continue immediately; never poll, wait, refresh, or force preprocessing.
-3. Use `local_ai_repo` before `local_ai_command`. For implementation, diagnosis, refactoring, or complex review, call `local_ai_repo(action="solve")` after evidence and before edits.
-4. After edits, run indexed impact, review, or security evidence before validation.
+1. Establish one stable **absolute** project root.
+2. On the first task for that root call `local_ai_repo(action="preprocess", root=ABS_ROOT)` **exactly once**. Continue immediately; never poll, wait, refresh or force preprocessing.
+3. `local_ai_command` alone is never sufficient for a repository task: first use the cheapest applicable non-command Hub action, then use the command broker only for commands. For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence and before native edits. After edits, run the applicable indexed impact/review/security/evidence check before final validation.
+4. Use the cheapest sufficient action and reuse evidence IDs, artifact slices, command results and coordination memos.
 
-Use cheapest sufficient path: deterministic, code_index/search, semantic/graph, context/solve, RAG, then local model. Stop escalating when evidence is sufficient. Do not fan out overlapping retrieval layers. Reuse cache_hit/coalesced results. `in_progress=true` means another owner works. `retryable`/429/503 means back off. `degraded`/`stale` means verify affected slice. Hub unavailable: one bounded health/retry attempt, then native fallback. Never loop or inflate timeouts.
+Before native `find`, `rg`, `grep`, recursive glob/tree, or opening more than two files for discovery, call the hub first. Native broad discovery is fallback-only after one bounded hub failure.
+
+Stop escalating when evidence is sufficient; reuse cached results and bounded evidence instead of widening the search.
+
+## Context economy contract
+
+- Every Hub response is aggregate-bounded (default ≈1200 tokens); use `max_response_tokens` only when a different bounded size is needed.
+- Prefer `response_profile="minimal"`/`"compact"`; request only decision-grade fields.
+- Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls return a pointer, not missing data.
+- Use the existing `local_ai_task(action="batch")` for independent local tasks; keep each item bounded and consume compact per-item results.
+- The Hub keeps a bounded metadata-only context ledger; inspect it only with an explicit cache/status request, never by replaying the whole session.
+- Broad native shell reads are guarded by the optional host hook; use bounded limits or the Hub command/repository tools for discovery.
+- Fetch exact source, logs, or evidence only with `local_ai_artifact` slices. Never ask a broad tool for the same payload twice.
+- Commands return status, summary, changed paths, and failures; full stdout/stderr stays artifact-backed.
+- Do not bypass the budget with native broad reads unless Hub has one bounded terminal failure.
 
 ## Action routing
 
-1. `local_ai_repo(action="deterministic")` — manifests, config, entrypoints, tests, static facts.
-2. `local_ai_repo(action="code_index"|"search")` — symbols, imports, references, exact discovery.
-3. `local_ai_repo(action="semantic"|"graph")` — Serena/CodeGraphContext callers, callees, and impact.
-4. `local_ai_repo(action="context"|"solve")` — bounded mixed evidence and reasoning.
-5. `local_ai_repo(action="review_diff"|"security_audit"|"impact")` — targeted post-edit checks.
-6. `local_ai_command(action="run")` — tests, lint, typecheck, build, and repeatable commands.
-7. `local_ai_artifact` — exact bounded evidence slices.
-8. `local_ai_coord` — leases, task state, memories, and verification.
-9. `local_ai_task` — bounded local-model diagnosis or second opinion; never open-ended mutation, architecture, or security work.
-10. `local_ai_work` — self-contained task with verified handoff.
-11. `local_ai_rag` — last semantic fallback.
+1. `local_ai_repo(action="deterministic")` — manifests, config, dependencies, entrypoints, tests and static facts.
+2. `local_ai_repo(action="code_index")` — symbols, references and imports.
+3. `local_ai_repo(action="search")` — exact text/file discovery.
+4. `local_ai_repo(action="semantic/graph")` — language-aware relationships via Serena/CodeGraphContext, callers/callees and impact.
+5. `local_ai_repo(action="context"|"solve")` — compact mixed evidence or bounded repository reasoning.
+6. `local_ai_repo(action="review_diff"|"security_audit"|"impact")` — targeted checks after or around edits.
+7. `local_ai_work(action="submit")` — delegate one complete bounded repository task; Hub plans a DAG, edits transactionally, validates, verifies, and returns a compact handoff.
+8. `local_ai_rag` — semantic fallback only when indexed evidence is insufficient.
+9. `local_ai_task(action="delegate"|"reason"|"review"|"second_opinion"|"compress")` — use `qwen2.5-coder:7b` only for quick/simple requests, `qwen2.5-coder:7b` for ordinary tasks, `qwen3.5:9b` for more involved work, and `qwen3.5:9b` for the hardest reasoning.
+10. `local_ai_command(action="run")` — tests, lint, typecheck, builds and repeatable read-only commands before native execution.
+11. `local_ai_artifact` — exact evidence/artifact slices only.
+12. `local_ai_coord` — leases before overlapping edits; memos before repeating investigation.
+
+## Reuse and failure protocol
+
+- `cache_hit`/`coalesced`: reuse the result.
+- `in_progress=true`: do not duplicate the work.
+- `retryable`/429/503: back off and do independent work.
+- `degraded`/`stale`: verify only the affected slice.
+- Hub unavailable: one bounded health/retry attempt, then native fallback. Never loop or inflate timeouts.
+
+Do not fan out overlapping retrieval layers. Stop escalating when evidence is sufficient. Local AI Hub handles its own bounded work; Codex handles native-subagent design and integration.
 
 ## Ollama advisory subagents
 
-Use named advisory profiles only for bounded read-only second opinions: `qwen-explorer`, `qwen-drafter`, and `qwen-critic`. They may call `local_ai_repo` and `local_ai_artifact`; they never write files, run commands, create worktrees, or claim a proposal was applied.
+Use named profiles for bounded local second opinions:
 
-## Agent OS and durable execution
+- `qwen-explorer` — configured advisory profile
+- `qwen-drafter` — configured advisory profile
+- `qwen-critic` — configured advisory profile
 
-For non-trivial multi-step work, create `local_ai_coord(action="task_create")` before edits. Checkpoint phase changes. Pass `task_id` and criterion to validation. Run `local_ai_coord(action="verify_completion")` before `task_complete`. Record failed approaches with negative knowledge. Never poll durable jobs; wait once.
+All profiles call Local AI Hub read tooling directly. They never write files, run commands, create worktrees, or claim that a proposal was applied.
+
+Example:
+
+```text
+local_ai_task(action="delegate", profile="qwen-explorer", root="<absolute-root>", task="Find the smallest set of files relevant to ...")
+```
+
+Skip profiles when deterministic or indexed Hub evidence already answers the question.
+
+## Agent Operating System & Durable Execution
+
+Use Agent OS for every non-trivial multi-step, long-running, delegated, or acceptance-criteria task, even when the main agent keeps ownership. A trivial one-step lookup can skip it. Start before edits; keep the returned `task_id` for every later action.
+
+### 1. Goal Contracts & Resumption
+- **Create a task contract before edits:**
+  `local_ai_coord(action="task_create", task_id="task-1", contract={"goal": "Implement feature", "acceptance_criteria": ["All tests pass"]})`
+- **Checkpoint progress before context truncation:**
+  `local_ai_coord(action="task_checkpoint", task_id="task-1", checkpoint={"phase": "testing", "next_action": "run integration tests", "affected_paths": ["src/main.py"]})`
+- **Resume after session restart or interruption:**
+  `local_ai_coord(action="task_resume", task_id="task-1")`
+- **Complete only after `verify_completion` passes every acceptance criterion; otherwise fail with a reason:**
+  `local_ai_coord(action="verify_completion", task_id="task-1")`, then `local_ai_coord(action="task_complete", task_id="task-1")` or `local_ai_coord(action="task_fail", task_id="task-1", reason="reason")`
+
+### 2. Scoped Memory & Learnings
+- **Store durable findings and decisions:**
+  `local_ai_coord(action="memory_record", record={"kind": "decision", "scope": "repository", "key": "convention", "value": "Token format must follow HMAC-SHA256"})`
+- **Retrieve memories across turns:**
+  `local_ai_coord(action="memory_find", query="convention")`
+
+### 3. Exact Context Compilation
+- **Compile active task state, relevant memories, negative knowledge, and active edit leases into minimal tokens:**
+  `local_ai_coord(action="context_compile", task_id="task-1", max_tokens=4000)`
+
+### 4. Verification Receipts & Completion Gates
+- **Run validation commands with automatic receipt capture:**
+  `local_ai_command(action="run", command="pytest -q", task_id="task-1", criterion="All tests pass")`
+- **Check if all acceptance criteria are verified before completing:**
+  `local_ai_coord(action="verify_completion", task_id="task-1")`
+- **Record a direct receipt when command auto-capture is not used:**
+  `local_ai_coord(action="verify_receipt", checkpoint={"task_id": "task-1", "criterion": "All tests pass", "passed": True})`
+
+### 5. Negative Knowledge & Incident Avoidance
+- **Record failed approach or incident:**
+  `local_ai_coord(action="negative_knowledge_record", key="timeout", value="build timed out", reason="unindexed lock", status="add index")`
+- **Check before repeating a failed operation:**
+  `local_ai_coord(action="negative_knowledge_find", query="timeout")`

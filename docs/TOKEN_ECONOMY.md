@@ -153,3 +153,8 @@ When paired with an AI coding agent, the following rules are permanently active 
 - Local model delegation: Route routine microtasks, reviews, and second opinions to local models via `local_ai_task(model="qwen2.5-coder:7b")`.
 <!-- END TOKEN ECONOMY POLICY -->
 ```
+## MCP response economy
+
+The MCP boundary enforces an aggregate response budget, not only per-field truncation. Agents should use compact/minimal profiles, stable `reuse_key` values, `response_profile="delta"` for repeated changing queries, cached result reuse, and artifact slices for exact detail. Independent local tasks should use the existing batch action. Command responses keep status, summary, changed paths, and failures inline; full stdout/stderr remains artifact-backed.
+
+The telemetry ledger separates raw response estimate, projected response estimate, saved estimate, operation category, cache outcome, and budget reason. The bounded context ledger adds recent metadata-only pressure and cache summaries. This enables before/after analysis of Hub, search, command, validation, edit, artifact, and coordination context without persisting prompts or source content.

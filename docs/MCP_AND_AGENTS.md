@@ -65,3 +65,10 @@ When `[agent_state].enabled` is active, the compact MCP surface projects durable
 - `local_ai_task`: `candidate_create`, `candidate_promote`.
 - `local_ai_status`: `detail="agent_state"` for health and counts.
 - Privacy boundary: telemetry and agent state never store raw prompts, model outputs, secrets, or absolute file paths.
+## Aggregate response budgets
+
+Every public Hub tool now applies an aggregate agent-facing response budget after semantic projection. Use `max_response_tokens` for a bounded override, `response_profile="minimal"|"compact"|"standard"|"debug"|"delta"` for intent, and a stable `reuse_key` for repeated logical queries. `delta` returns changed fields only; unchanged repeated results return a pointer envelope with IDs and summary instead of repeating payload data. Independent local-model work uses the existing `local_ai_task(action="batch")` path.
+
+Telemetry records operation category plus raw/projected/saved response estimates, budget truncation, cache outcome, and projection reason. The bounded context ledger is visible only through an explicit `local_ai_status(detail="cache")` request and stores metadata only: no prompts, source text, secrets, or full paths. Hub command execution already caps captured/inline stdout and stderr; intercepting native Codex host `exec` requires a separate host hook and is not silently emulated by MCP.
+
+The installed user hook at `.cursor/hooks.json` blocks broad native `cat`/`type`/`Get-Content`/`rg`/`grep`/`tree` reads without an explicit bound. It fails open on hook errors. Use `-m`, `-First`, `head`, `local_ai_repo`, or `local_ai_artifact` when exact detail is needed.

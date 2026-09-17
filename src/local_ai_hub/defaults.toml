@@ -515,6 +515,16 @@ ignore_dirs = [
 # One compact public MCP surface; Serena/CodeGraph stay behind it by default.
 compact_max_text_chars = 1800
 compact_max_evidence = 10
+
+[mcp.response_budget]
+# Aggregate agent-facing budgets are enforced after semantic projection. Exact
+# source/log detail remains available through local_ai_artifact.
+enabled = true
+default_tokens = 1200
+max_tokens = 2400
+reuse_cache_size = 256
+ledger_size = 512
+tool_tokens = { local_ai_status = 500, local_ai_task = 1000, local_ai_repo = 1200, local_ai_rag = 900, local_ai_command = 700, local_ai_coord = 800, local_ai_artifact = 900, local_ai_work = 800 }
 # MCP calls are intentionally bounded. Preprocessing is asynchronous, so no normal
 # foreground tool should need an unbounded multi-hour socket wait.
 quick_timeout_seconds = 60

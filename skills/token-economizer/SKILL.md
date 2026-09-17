@@ -75,3 +75,8 @@ Load and follow this skill before any coding or repository task. Apply its disco
 ### 5. Concise Output (Caveman Protocol)
 - Omit conversational filler, decorative preambles, and post-execution summaries of obvious changes.
 - Focus strictly on file links, diff summaries, and failure diagnostics.
+
+### 6. MCP Response Economy
+- Hub responses are aggregate-bounded; use `max_response_tokens` only for a bounded exception.
+- Prefer compact/minimal profiles, stable `reuse_key` values, cache reuse, and artifact slices.
+- Keep command output at summary/status level; fetch exact logs only when needed.

@@ -224,3 +224,6 @@ Output concise confirmation with:
 4. Instruction files created/modified in this repo.
 5. Readiness confirmation.
 ```
+### MCP response economy
+
+Keep the generated MCP response contract enabled. Hub responses are aggregate-bounded by default; agents should prefer `response_profile="minimal"` or `"compact"`, pass a stable `reuse_key` for repeated logical queries, reuse cache-hit/pointer responses, and fetch exact detail only through `local_ai_artifact` slices. Do not weaken the budget to expose broad command output or repository text.
