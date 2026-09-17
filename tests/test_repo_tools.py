@@ -29,6 +29,23 @@ def test_generated_tool_metadata_never_enters_inventory(tmp_path: Path):
     assert all(not p.startswith((".serena/", ".codegraphcontext/", ".local-ai-hub/")) for p in rel)
 
 
+def test_unity_generated_directories_never_enter_inventory(tmp_path: Path):
+    repo = tmp_path / "repo"
+    (repo / "Assets").mkdir(parents=True)
+    (repo / "Assets" / "game.cs").write_text("class Game {}\n", encoding="utf-8")
+    for generated in ("Library", "Temp", "Logs", "UserSettings"):
+        d = repo / generated
+        d.mkdir()
+        (d / "generated.cs").write_text("class Generated {}\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+
+    files = RepositoryTools(_cfg(tmp_path)).iter_files(str(repo))
+    rel = {p.relative_to(repo).as_posix() for p in files}
+
+    assert "Assets/game.cs" in rel
+    assert all(not p.startswith(("Library/", "Temp/", "Logs/", "UserSettings/")) for p in rel)
+
+
 def test_path_escape_is_rejected(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()

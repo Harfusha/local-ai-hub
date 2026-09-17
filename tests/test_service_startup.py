@@ -46,3 +46,22 @@ def test_wmi_spawn_detached_passes_active_config(tmp_path, monkeypatch):
     script = " ".join(str(x) for x in called[0])
     assert "--config" in script
     assert "C:\\custom\\config.toml" in script
+
+
+def test_native_start_does_not_spawn_duplicate_after_scheduler_race(monkeypatch):
+    module = importlib.util.spec_from_file_location(
+        "test_hub_service_native_start", Path(__file__).parents[1] / "tools" / "service.py"
+    )
+    service = importlib.util.module_from_spec(module)
+    module.loader.exec_module(service)
+
+    monkeypatch.setattr(service, "mark_managed", lambda: None)
+    monkeypatch.setattr(service, "mark_disabled", lambda _disabled: None)
+    monkeypatch.setattr(service, "run", lambda *args, **kwargs: subprocess.CompletedProcess([], 1))
+    monkeypatch.setattr(service, "all_supervisor_pids", iter([[], [4321]]).__next__)
+    spawn = MagicMock()
+    monkeypatch.setattr(service, "spawn_detached", spawn)
+
+    service.native_start()
+
+    spawn.assert_not_called()

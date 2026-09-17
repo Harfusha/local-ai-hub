@@ -506,7 +506,8 @@ extensions = [
 ignore_dirs = [
   ".git", ".svn", ".hg", ".idea", ".vscode", ".venv", "venv", "node_modules",
   "vendor", "dist", "build", "bin", "obj", "coverage", ".next", ".cache",
-  ".serena", ".codegraphcontext", ".local-ai-hub", "tool-envs", "site-packages", "__pycache__"
+  ".serena", ".codegraphcontext", ".local-ai-hub", "tool-envs", "site-packages", "__pycache__",
+  "Library", "Temp", "Logs", "UserSettings"
 ]
 
 

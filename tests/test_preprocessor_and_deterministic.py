@@ -49,6 +49,21 @@ class _Noop:
         return lambda *a, **k: None
 
 
+class _RecordingCodeIndex:
+    def __init__(self):
+        self.pending = []
+
+    def prune(self, root, paths):
+        return None
+
+    def _connect(self):
+        return sqlite3.connect(":memory:")
+
+    def update_files_batch(self, root, pending):
+        self.pending.extend(pending)
+        return {"files_processed": len(pending), "cached": 0}
+
+
 class _IdleScheduler:
     def background_allowed(self):
         return True
@@ -649,6 +664,36 @@ def test_code_index_phase_removes_deleted_files_instead_of_spinning(tmp_path: Pa
                 "SELECT 1 FROM file_refs WHERE root=? AND path=?",
                 (str(repo), "deleted.py"),
             ).fetchone() is None
+    finally:
+        pre.close()
+
+
+def test_code_index_phase_skips_ignored_refs_left_by_previous_inventory(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    cfg["rag"]["ignore_dirs"] = ["Library"]
+    repo = tmp_path / "repo"
+    (repo / "Assets").mkdir(parents=True)
+    (repo / "Library").mkdir()
+    (repo / "Assets" / "main.cs").write_text("class Main {}\n", encoding="utf-8")
+    (repo / "Library" / "generated.cs").write_text("class Generated {}\n", encoding="utf-8")
+    tools = RepositoryTools(cfg)
+    code_index = _RecordingCodeIndex()
+    pre = ProjectPreprocessor(cfg, _Noop(), _Rag(), _Noop(), _Noop(), tools, code_index=code_index)
+    try:
+        now = time.time()
+        with closing(pre._connect()) as con:
+            con.execute(
+                "INSERT INTO file_refs(root,path,content_hash,size,mtime_ns,needs_hash,rag_hash,generation,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (str(repo), "Assets/main.cs", "main-hash", 10, 1, 0, None, 0, now),
+            )
+            con.execute(
+                "INSERT INTO file_refs(root,path,content_hash,size,mtime_ns,needs_hash,rag_hash,generation,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (str(repo), "Library/generated.cs", "generated-hash", 10, 1, 0, None, 0, now),
+            )
+            con.commit()
+
+        assert pre._step_code_index({"root": str(repo), "generation": 0}) is True
+        assert code_index.pending == [("Assets/main.cs", "main-hash")]
     finally:
         pre.close()
 
