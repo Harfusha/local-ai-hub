@@ -884,6 +884,34 @@ def test_trace_request_renderers_runtime_show_severity_command_and_ranked_rag() 
     assert "answer" in rendered["rag"]
 
 
+def test_trace_presentation_puts_model_input_output_before_specialized_review() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {
+            "kind": "review",
+            "review": {"request": "review request", "findings": []},
+        },
+        "input": "model prompt",
+        "output": "model answer",
+        "lifecycle": {"state": "done"},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"const model={json.dumps(fixture)};"
+        + "console.log(renderTracePresentation(model));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    rendered = result.stdout
+    assert "Input / output" in rendered
+    assert "model prompt" in rendered
+    assert "model answer" in rendered
+    assert rendered.index("Input / output") < rendered.index(">Review</h2>")
+
+
 def test_trace_timeline_runtime_tolerates_malformed_events_and_caps_cumulative_payload() -> None:
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     source = _trace_presentation_runtime_source()
