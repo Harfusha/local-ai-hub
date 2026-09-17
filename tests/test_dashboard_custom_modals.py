@@ -1124,6 +1124,40 @@ def test_trace_codex_timeline_appends_missing_final_assistant_output_once() -> N
     assert "final answer" in html
 
 
+def test_trace_codex_timeline_keeps_terminal_output_after_partial_stream() -> None:
+    source = _trace_presentation_runtime_source()
+    fixture = {"presentation": {"kind": "model_chat", "modelOutput": "partial plus final"}, "events": [{"seq": 1, "event_type": "output_delta", "payload": {"text": "partial"}}], "session": {"output": "partial plus final"}, "actor": {}, "correlations": {}, "identity": {}}
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;" + source
+        + f"console.log(JSON.stringify(renderModelChatPresentation({json.dumps(fixture)})));"
+    )
+    html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    assert "partial plus final" in html
+    assert html.count("Assistant output") == 2
+
+
+def test_trace_malformed_non_object_event_payload_stays_visible() -> None:
+    source = _trace_presentation_runtime_source()
+    fixture = {"presentation": {"kind": "model_chat"}, "events": [{"seq": 1, "event_type": "event", "payload": "broken-payload"}], "session": {}, "actor": {}, "correlations": {}, "identity": {}}
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;" + source
+        + f"console.log(JSON.stringify(renderModelChatPresentation({json.dumps(fixture)})));"
+    )
+    html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    assert "Malformed event payload" in html
+    assert "broken-payload" in html
+
+
+def test_trace_inspector_preserves_outer_technical_details_and_contains_timeline() -> None:
+    source = DASHBOARD_HTML[DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index("function setTraceView(view)")]
+    assert "#traceTechnicalDetails" in source
+    assert 'id="traceTechnicalDetails"' in source
+    assert "overflow-wrap:anywhere" in DASHBOARD_HTML
+    assert "word-break:break-word" in DASHBOARD_HTML
+
+
 def test_trace_model_chat_runtime_keeps_request_envelope_visible_and_bounded() -> None:
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     source = _trace_presentation_runtime_source()
