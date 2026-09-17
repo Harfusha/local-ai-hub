@@ -399,7 +399,7 @@ class RAGStore:
     @staticmethod
     def _get_ts_language(language: str) -> Any:
         """Load a tree-sitter Language object for the given language identifier."""
-        if os.name == "nt" and sys.version_info >= (3, 13) and language == "c_sharp":
+        if os.name == "nt" and sys.version_info >= (3, 13):
             return None
         try:
             from tree_sitter import Language
