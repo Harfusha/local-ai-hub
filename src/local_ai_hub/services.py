@@ -3276,12 +3276,22 @@ class LocalAIServices:
         rem = failure_result.get("remediation") or {}
         if rem.get("verified_fix") and isinstance(rem["verified_fix"], dict):
             return {str(k): str(v) for k, v in rem["verified_fix"].items()}
+        summary = failure_result.get("failure_summary") or {}
+        if not isinstance(summary, dict):
+            summary = {}
+        confidence = 0.95 if summary.get("path") and summary.get("line") else 0.70 if summary.get("path") else 0.25
+        artifact_id = str(failure_result.get("artifact_id") or "")
+        preview = str(failure_result.get("preview") or "")[:800]
+        # Parsed failures are deterministic enough to avoid speculative model repair.
+        # For ambiguous failures, pass an artifact reference plus a narrow preview only.
+        if confidence >= 0.50 or not artifact_id or not preview:
+            return None
         model = self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b")
-        diag = failure_result.get("diagnostics", [])
-        stderr = str(failure_result.get("stderr", "") or failure_result.get("error", ""))[:2000]
         prompt = (
-            f"Fix this command failure in {cwd}:\nCommand: {command}\nError:\n{stderr}\n"
-            f"Diagnostics:\n{json.dumps(diag[:5])}\n"
+            f"Investigate this low-confidence command failure in {cwd}:\nCommand: {command}\n"
+            f"Failure summary: {json.dumps(summary, sort_keys=True)}\n"
+            f"Artifact reference: {artifact_id}\nFailure preview:\n{preview}\n"
+            "Do not request or infer raw command logs; use only this bounded preview.\n"
             "Respond ONLY with a JSON object format: {\"relative_file_path\": \"full corrected file content\"}"
         )
         try:

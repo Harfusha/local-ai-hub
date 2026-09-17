@@ -953,31 +953,83 @@ class CommandBroker:
 
     @staticmethod
     def _extract_diagnostics(result: dict[str, Any], limit: int = 30) -> list[dict[str, Any]]:
-        text = (str(result.get("stdout", "")) + "\n" + str(result.get("stderr", ""))).strip()
-        diagnostics: list[dict[str, Any]] = []
+        # stdout/stderr are captured independently, so their true interleaving is
+        # unavailable. Preserve each stream's order while preferring explicit
+        # failures over informational diagnostics and warnings from a failed run.
+        # This keeps an early stdout warning from masking the useful stderr error.
+        streams = (str(result.get("stdout", "")), str(result.get("stderr", "")))
+        failures: list[dict[str, Any]] = []
+        others: list[dict[str, Any]] = []
         patterns = _DIAGNOSTIC_PATTERNS
-        for raw in text.splitlines():
-            line = raw.strip()
-            if not line:
-                continue
-            matched = None
-            for pattern in patterns:
-                m = pattern.match(line)
-                if m:
-                    matched = m; break
-            if matched:
-                data = matched.groupdict()
-                diagnostics.append({
-                    "path": data.get("path", ""),
-                    "line": int(data.get("line") or 0),
-                    "column": int(data.get("col") or 0),
-                    "message": str(data.get("msg") or line)[:500],
-                })
-            elif any(x in line.lower() for x in ("error", "fatal", "exception", "traceback", "assertionerror", "panic")):
-                diagnostics.append({"path": "", "line": 0, "column": 0, "message": line[:500]})
-            if len(diagnostics) >= limit:
-                break
-        return diagnostics
+        failure_terms = ("error", "fatal", "exception", "traceback", "assertionerror", "panic", "failed", "failure")
+        for text in streams:
+            for raw in text.splitlines():
+                line = raw.strip()
+                if not line:
+                    continue
+                matched = None
+                matched_failure = False
+                for pattern_index, pattern in enumerate(patterns):
+                    m = pattern.match(line)
+                    if m:
+                        matched = m
+                        # The dedicated pytest `FAILED path::test` pattern keeps
+                        # the path but strips the word FAILED from its message.
+                        # Preserve its failure semantics from the original line.
+                        matched_failure = pattern_index == 1
+                        break
+                message = ""
+                diagnostic: dict[str, Any] | None = None
+                if matched:
+                    data = matched.groupdict()
+                    message = str(data.get("msg") or line)[:500]
+                    diagnostic = {
+                        "path": data.get("path", ""),
+                        "line": int(data.get("line") or 0),
+                        "column": int(data.get("col") or 0),
+                        "message": message,
+                    }
+                elif any(term in line.lower() for term in failure_terms):
+                    message = line[:500]
+                    diagnostic = {"path": "", "line": 0, "column": 0, "message": message}
+                if diagnostic is None:
+                    continue
+                target = failures if (
+                    matched_failure
+                    or any(term in line.lower() for term in failure_terms)
+                ) else others
+                if len(target) < limit:
+                    target.append(diagnostic)
+        return (failures + others)[:limit]
+
+    @classmethod
+    def _first_failure_summary(cls, result: dict[str, Any]) -> dict[str, Any]:
+        """Return first deterministic failure location without replaying verbose logs."""
+        diagnostics = list(result.get("diagnostics") or cls._extract_diagnostics(result, limit=1))
+        if diagnostics:
+            first = diagnostics[0]
+            return {
+                "path": str(first.get("path") or ""),
+                "line": int(first.get("line") or 0),
+                "message": str(first.get("message") or "").strip()[:500],
+            }
+        return {
+            "path": "",
+            "line": 0,
+            "message": cls._distill_error(result)[:500],
+        }
+
+    @staticmethod
+    def _failure_preview(summary: dict[str, Any]) -> str:
+        """Expose only the narrow first-failure slice in command results."""
+        path = str(summary.get("path") or "")
+        line = int(summary.get("line") or 0)
+        message = str(summary.get("message") or "").strip()
+        if path and line:
+            return f"{path}:{line}: {message}"[:800]
+        if path:
+            return f"{path}: {message}"[:800]
+        return message[:800]
 
     @staticmethod
     def _deterministic_summary(result: dict[str, Any], limit: int = 60) -> str:
@@ -1683,18 +1735,26 @@ class CommandBroker:
         original_files: dict[Path, str | None] = {}
         attempt_history: list[dict[str, Any]] = []
         last_result = initial
+        generated_patches: dict[str, str] | None = None
+        generator_invoked = False
 
         try:
             for attempt in range(1, max(1, max_attempts) + 1):
                 patches: dict[str, str] = {}
                 if callable(fix_generator):
-                    try:
-                        gen_res = fix_generator(command, str(cwd_path), last_result)
-                        if isinstance(gen_res, dict):
-                            patches = {str(k): str(v) for k, v in gen_res.items()}
-                    except Exception as exc:
-                        attempt_history.append({"attempt": attempt, "error": f"fix generator error: {exc}"})
-                        continue
+                    # A repair loop may retry applying the same bounded candidate,
+                    # but it must never amplify one failed command into repeated
+                    # local-model inference calls or send subsequent raw outputs.
+                    if not generator_invoked:
+                        generator_invoked = True
+                        try:
+                            gen_res = fix_generator(command, str(cwd_path), last_result)
+                            if isinstance(gen_res, dict):
+                                generated_patches = {str(k): str(v) for k, v in gen_res.items()}
+                        except Exception as exc:
+                            attempt_history.append({"attempt": attempt, "error": f"fix generator error: {exc}"})
+                            continue
+                    patches = dict(generated_patches or {})
                 elif self.incident_store is not None:
                     rem = last_result.get("remediation") or {}
                     fix = rem.get("verified_fix")
@@ -2502,6 +2562,7 @@ class CommandBroker:
         combined_chars = len(stdout) + len(stderr)
         result["summary"] = self._deterministic_summary(result)
         diagnostics = list(result.get("diagnostics") or self._extract_diagnostics(result))
+        failure_summary = self._first_failure_summary({**result, "diagnostics": diagnostics})
         if result.get("remediation"):
             rem = result["remediation"]
             fix_msg = rem.get("verified_fix") or rem.get("root_cause")
@@ -2513,9 +2574,24 @@ class CommandBroker:
                     "message": f"Remediation guidance: {fix_msg}",
                 })
         result["diagnostics"] = diagnostics
+        if not result.get("success") and not result.get("cancelled"):
+            result["failure_summary"] = failure_summary
+            result["preview"] = self._failure_preview(failure_summary)
+            # Low-confidence short failures do not get the full-log artifact below.
+            # Retain only the already-bounded diagnostic so the repair gate receives
+            # a safe reference without persisting the raw command output.
+            if (
+                self.artifacts is not None
+                and combined_chars <= self.inline_chars
+                and not result.get("artifact_id")
+                and not failure_summary.get("path")
+            ):
+                diagnostic = str(result["preview"])[:800]
+                result["artifact_id"] = self.artifacts.put(diagnostic, tenant, "command_diagnostic")
         if combined_chars > self.inline_chars:
             full = f"$ {command}\n\nSTDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
-            result["artifact_id"] = self.artifacts.put(full, tenant, "command")
+            if self.artifacts is not None:
+                result["artifact_id"] = self.artifacts.put(full, tenant, "command")
             result["stdout"] = stdout[: self.inline_chars // 2]
             result["stderr"] = stderr[-self.inline_chars // 2:]
             result["output_truncated"] = True
