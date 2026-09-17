@@ -109,7 +109,7 @@ def test_repair_loop_rollback_on_failure(temp_dir: Path):
     assert test_file.read_text(encoding="utf-8") == initial_content
 
 
-def test_repair_loop_dispatches_low_confidence_local_repair_once(temp_dir: Path):
+def test_repair_loop_does_not_dispatch_local_diagnosis_for_arbitrary_interpreter(temp_dir: Path):
     broker = make_broker(temp_dir)
     script = temp_dir / "failing_command.py"
     script.write_text("raise SystemExit('unclassified failure')\n", encoding="utf-8")
@@ -127,10 +127,7 @@ def test_repair_loop_dispatches_low_confidence_local_repair_once(temp_dir: Path)
 
     assert result["success"] is False
     assert result["attempts"] == 3
-    assert services.proxy_request.call_count == 1
-    prompt = services.proxy_request.call_args.args[1]["prompt"]
-    assert "Artifact reference: art_" in prompt
-    assert "RAW" not in prompt
+    services.proxy_request.assert_not_called()
 
 
 def test_command_run_auto_fix_flag(temp_dir: Path):

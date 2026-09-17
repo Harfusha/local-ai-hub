@@ -66,6 +66,21 @@ def test_dynamic_descriptions_make_first_choice_routing_explicit() -> None:
     assert "Mutations never cache or single-flight" in descriptions["command"]
 
 
+def test_durable_routing_requires_checkpointed_contracts_and_closed_handoffs() -> None:
+    descriptions = {
+        "task": local_ai_mcp._desc_task(),
+        "coord": local_ai_mcp._desc_coord(),
+        "work": local_ai_mcp._desc_work(),
+    }
+
+    assert "deterministic command parsing" in descriptions["task"]
+    assert "task contracts" in descriptions["coord"]
+    assert "checkpoints" in descriptions["coord"]
+    assert "verified handoff" in descriptions["work"]
+    assert "micro-edits" in descriptions["work"]
+    assert "live discussion" in descriptions["work"]
+
+
 def test_invalid_repo_action_lists_next_bounded_actions() -> None:
     result = local_ai_mcp.local_ai_repo(action="not_a_real_action")
     assert result["success"] is False
