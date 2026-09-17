@@ -39,6 +39,23 @@ def _config(tmp_path: Path, extra: str = "") -> Path:
     return path
 
 
+def test_shutdown_logging_closes_file_handler(tmp_path: Path):
+    from local_ai_hub import logging_setup
+
+    logging_setup.shutdown_logging()
+    logger = logging_setup.configure_logging(tmp_path, {"logging": {"level": "INFO"}})
+    listener = logging_setup._listener
+    assert listener is not None
+    handler = listener.handlers[0]
+
+    try:
+        logger.info("shutdown test")
+    finally:
+        logging_setup.shutdown_logging()
+
+    assert handler.stream is None or handler.stream.closed
+
+
 def test_invalid_explicit_config_fails_fast(tmp_path: Path):
     bad = tmp_path / "bad.toml"
     bad.write_text("[server\nport=99999", encoding="utf-8")
