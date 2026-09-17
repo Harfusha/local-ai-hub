@@ -31,6 +31,7 @@ def make_broker(temp_dir: Path) -> CommandBroker:
     state_dir.mkdir(parents=True, exist_ok=True)
     artifacts = ArtifactStore(state_dir / "artifacts")
     config = {
+        "features": {"diagnostic_artifacts": True},
         "commands": {
             "allowed": True,
             "allow_unknown": True,
