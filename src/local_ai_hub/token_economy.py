@@ -7,7 +7,15 @@ Provides:
 """
 from __future__ import annotations
 
-from .json_utils import dumps as json_dumps
+try:
+    from .json_utils import dumps as json_dumps
+except ImportError:  # pragma: no cover - exercised when launched as a script
+    from json import dumps as _stdlib_dumps
+
+    def json_dumps(value, **kwargs):
+        kwargs.setdefault("ensure_ascii", False)
+        kwargs.setdefault("separators", (",", ":"))
+        return _stdlib_dumps(value, **kwargs)
 
 import argparse
 import os
