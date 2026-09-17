@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -62,3 +63,18 @@ def test_wmi_spawn_detached_passes_active_config(tmp_path, monkeypatch):
     script = " ".join(str(x) for x in called[0])
     assert "--config" in script
     assert "C:\\custom\\config.toml" in script
+
+
+def test_doctor_text_output_survives_cp1250_console():
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "cp1250"
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).parents[1] / "tools" / "doctor.py")],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert b"Traceback" not in result.stderr

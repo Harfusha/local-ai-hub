@@ -377,12 +377,21 @@ def format_doctor_report(rep: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def print_console(value: object) -> None:
+    """Keep diagnostics usable on legacy Windows code pages."""
+    text = str(value)
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        print(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))
+
+
 parser = argparse.ArgumentParser(description="Local AI Hub diagnostic doctor")
 parser.add_argument("--json", dest="raw_json", action="store_true", help="Output raw JSON diagnostic report")
 args = parser.parse_args()
 
 if args.raw_json:
-    print(json.dumps(report, indent=2, ensure_ascii=False))
+    print_console(json.dumps(report, indent=2, ensure_ascii=False))
 else:
-    print(format_doctor_report(report))
-
+    print_console(format_doctor_report(report))
