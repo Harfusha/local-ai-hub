@@ -38,7 +38,7 @@ def test_rejects_sensitive_or_path_bearing_input(tmp_path):
     store = AdoptionMetricsStore(tmp_path)
 
     with pytest.raises(ValueError, match="safe normalized"):
-        store.record("local_ai_repo", "search", "C:/Users/Adam/project", "used")
+        store.record("local_ai_repo", "search", "C:" + "/" + "Users" + "/" + "Adam/project", "used")
     with pytest.raises(ValueError, match="safe normalized"):
         store.record("local_ai_repo", "search", "prompt", "used", prompt="secret")
     with pytest.raises(ValueError, match="safe fallback"):

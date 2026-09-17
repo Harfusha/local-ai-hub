@@ -1448,9 +1448,20 @@ class LocalAIServices:
             except Exception:
                 pass
         def compute() -> dict[str, Any]:
-            targeted = self.repo_tools.search_paths(root, query, paths, top_k, context_lines=eff_ctx_lines) if paths else {"results": []}
+            if paths:
+                targeted = (
+                    self.repo_tools.search_paths(root, query, paths, top_k, context_lines=eff_ctx_lines)
+                    if eff_ctx_lines is not None
+                    else self.repo_tools.search_paths(root, query, paths, top_k)
+                )
+            else:
+                targeted = {"results": []}
             used_preprocessed = bool(paths and targeted.get("results"))
-            result = targeted if targeted.get("results") else self.repo_tools.search(root, query, top_k, context_lines=eff_ctx_lines)
+            result = targeted if targeted.get("results") else (
+                self.repo_tools.search(root, query, top_k, context_lines=eff_ctx_lines)
+                if eff_ctx_lines is not None
+                else self.repo_tools.search(root, query, top_k)
+            )
             result["preprocessed_hit"] = used_preprocessed
             if enrich:
                 result["enriched"] = True
@@ -3240,6 +3251,7 @@ class LocalAIServices:
         if action == "cancel":
             return self.commands.cancel(
                 str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))), tenant,
+                execution_id=str(args.get("execution_id", "")),
             )
         if action == "classify":
             return {"success": True, "classification": self.commands.classify(str(args.get("command", "")))}
@@ -3288,6 +3300,9 @@ class LocalAIServices:
         """Use verified remediation or one bounded local diagnostic for a failed command."""
         if not failure_result or failure_result.get("success"):
             return None
+        rem = failure_result.get("remediation") or {}
+        if rem.get("verified_fix") and isinstance(rem["verified_fix"], dict):
+            return {str(k): str(v) for k, v in rem["verified_fix"].items()}
         features = self.config.get("features", {})
         if not isinstance(features, dict) or not bool(features.get("tasks", True)):
             return None
@@ -3299,9 +3314,6 @@ class LocalAIServices:
                 "error": "local diagnostic dispatch is disabled (features.local_diagnostic_dispatch=false)",
             }
             return None
-        rem = failure_result.get("remediation") or {}
-        if rem.get("verified_fix") and isinstance(rem["verified_fix"], dict):
-            return {str(k): str(v) for k, v in rem["verified_fix"].items()}
         summary = failure_result.get("failure_summary") or {}
         if not isinstance(summary, dict):
             summary = {}

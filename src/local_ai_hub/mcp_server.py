@@ -1239,72 +1239,61 @@ def _local_ai_repo_impl(
     return _invalid_action("local_ai_repo", action, tuple(FEATURES.supported_repo_actions()), "Keep work bounded in Local AI Hub; use Codex-owned orchestration for peer subagents.")
 
 
-if FEATURES.batch_replacement:
-    @mcp.tool()
-    @_instrumented_tool()
-    def local_ai_repo(
-        action: RepoAction,
-        root: str = ".",
-        query: str = "",
-        diff: str = "",
-        task: str = "",
-        workspace: str = "",
-        path: str = "",
-        base: str = "HEAD",
-        staged: bool = False,
-        dry_run: bool = False,
-        max_tokens: int = 0,
-        evidence: list[dict[str, Any]] | None = None,
-        mode: str = "adaptive",
-        relation: str = "",
-        language: str = "auto",
-        profile: str = "",
-        receipt: dict[str, Any] | None = None,
-        task_id: str = "",
-        include_code: bool = False,
-        edits: list[dict[str, Any]] | None = None,
-        extra_fields: list[str] | None = None,
-    ) -> dict[str, Any]:
-        """Primary bounded repository worker. Batch replacement is enabled for this installation."""
-        return _local_ai_repo_impl(
-            action, root, query, diff, task, workspace, path, base, staged, dry_run,
-            max_tokens, evidence, mode, relation, language, profile, receipt, task_id,
-            include_code, edits, extra_fields,
-        )
-else:
-    @mcp.tool()
-    @_instrumented_tool()
-    def local_ai_repo(
-        action: RepoAction,
-        root: str = ".",
-        query: str = "",
-        diff: str = "",
-        task: str = "",
-        workspace: str = "",
-        path: str = "",
-        base: str = "HEAD",
-        staged: bool = False,
-        max_tokens: int = 0,
-        evidence: list[dict[str, Any]] | None = None,
-        mode: str = "adaptive",
-        relation: str = "",
-        language: str = "auto",
-        profile: str = "",
-        receipt: dict[str, Any] | None = None,
-        task_id: str = "",
-        include_code: bool = False,
-        extra_fields: list[str] | None = None,
-        **rollout: Any,
-    ) -> dict[str, Any]:
-        """Primary bounded repository worker. Rollout-only batch replacement is unavailable."""
-        return _local_ai_repo_impl(
-            action, root, query, diff, task, workspace, path, base, staged, bool(rollout.get("dry_run", False)),
-            max_tokens, evidence, mode, relation, language, profile, receipt, task_id,
-            include_code, rollout.get("edits"), extra_fields,
-        )
+@mcp.tool()
+@_instrumented_tool()
+def local_ai_repo(
+    action: RepoAction,
+    root: str = ".",
+    query: str = "",
+    diff: str = "",
+    task: str = "",
+    workspace: str = "",
+    path: str = "",
+    base: str = "HEAD",
+    staged: bool = False,
+    dry_run: bool = False,
+    max_tokens: int = 0,
+    evidence: list[dict[str, Any]] | None = None,
+    mode: str = "adaptive",
+    relation: str = "",
+    language: str = "auto",
+    profile: str = "",
+    receipt: dict[str, Any] | None = None,
+    task_id: str = "",
+    include_code: bool = False,
+    edits: list[dict[str, Any]] | None = None,
+    extra_fields: list[str] | None = None,
+) -> dict[str, Any]:
+    """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
+    return _local_ai_repo_impl(
+        action, root, query, diff, task, workspace, path, base, staged, dry_run,
+        max_tokens, evidence, mode, relation, language, profile, receipt, task_id,
+        include_code, edits, extra_fields,
+    )
 
 
 local_ai_repo.__doc__ = _local_ai_repo_impl.__doc__
+
+
+def _hide_disabled_batch_schema(mcp_runtime: Any, tool: Any) -> None:
+    """Project rollout-only repository fields out of optional FastMCP schemas."""
+    if hasattr(mcp_runtime, "_tool_manager") and hasattr(mcp_runtime._tool_manager, "_tools"):
+        repo_tool = mcp_runtime._tool_manager._tools.get("local_ai_repo")
+        if repo_tool is not None:
+            properties = repo_tool.parameters.get("properties", {})
+            properties.pop("edits", None)
+            properties.pop("dry_run", None)
+    tool.__signature__ = inspect.Signature([
+        parameter for parameter in inspect.signature(tool).parameters.values()
+        if parameter.name not in {"edits", "dry_run"}
+    ])
+
+
+# Keep one public MCP tool while exposing rollout fields only in enabled schemas.
+# FastMCP builds its schema at decoration time, so disabled fields need both a
+# runtime-schema and introspection-signature projection after registration.
+if not FEATURES.batch_replacement:
+    _hide_disabled_batch_schema(mcp, local_ai_repo)
 
 
 @mcp.tool()
@@ -1368,13 +1357,14 @@ def local_ai_command(
     max_attempts: int = 3,
     stream: bool = False,
     stream_id: str = "",
+    execution_id: str = "",
     snapshot: bool = False,
     rollback_on_failure: bool = False,
     patch: str = "",
     auto_rollback: bool = True,
     extra_fields: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Bounded command broker for the main agent. MANDATORY for repeatable test/lint/typecheck/static-analysis/build/read-only commands whenever possible. Shared safe CLI broker. Actions: run, cancel, classify, discover, stats, repair_loop, auto_fix, run_affected, format, patch_and_verify. Optional auto_fix=true or action=repair_loop runs autonomous self-healing test loop with safe rollback on failure. Action patch_and_verify applies a unified diff, verifies with test command, and rolls back cleanly on error. Optional snapshot=true or rollback_on_failure=true captures git state and automatically reverts dirty changes if validation commands fail. Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts. Optional stream=true or stream_id streams real-time stdout/stderr lines as command.log SSE events. Results are keyed by command + bounded repo state and duplicate runs coalesce across agents. Reuse fresh results. If run returns in_progress=true, DO NOT start the command natively or with force; continue independent work and retry later so the owner can populate the cache. cancel only stops an active matching command. force=true is exceptional recovery/admin behavior, never a retry button. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
+    """Bounded command broker for the main agent. MANDATORY for repeatable test/lint/typecheck/static-analysis/build/read-only commands whenever possible. Shared safe CLI broker. Actions: run, cancel, classify, discover, stats, repair_loop, auto_fix, run_affected, format, patch_and_verify. Optional auto_fix=true or action=repair_loop runs autonomous self-healing test loop with safe rollback on failure. Action patch_and_verify applies a unified diff, verifies with test command, and rolls back cleanly on error. Optional snapshot=true or rollback_on_failure=true captures git state and automatically reverts dirty changes if validation commands fail. Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts. Optional stream=true or stream_id streams real-time stdout/stderr lines as command.log SSE events. Results are keyed by command + bounded repo state and duplicate runs coalesce across agents. Reuse fresh results. If run returns in_progress=true, DO NOT start the command natively or with force; continue independent work and retry later so the owner can populate the cache. Cancel a concurrent mutation only with its opaque execution_id from stats or run results. force=true is exceptional recovery/admin behavior, never a retry button. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
     if not FEATURES.commands:
         return {"success": False, "unsupported": True, "error": "local_ai_command is disabled in configuration"}
     action = _resolve_action("command", action)
@@ -1400,7 +1390,7 @@ def local_ai_command(
         "timeout": effective_command_timeout, "force": force,
         "task_id": task_id, "criterion": criterion,
         "auto_fix": auto_fix, "max_attempts": max_attempts,
-        "stream": stream, "stream_id": stream_id,
+        "stream": stream, "stream_id": stream_id, "execution_id": execution_id,
         "snapshot": snapshot, "rollback_on_failure": rollback_on_failure,
         "paths": paths_payload,
         "patch": patch,
