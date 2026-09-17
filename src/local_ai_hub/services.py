@@ -3270,8 +3270,13 @@ class LocalAIServices:
         return {"success": False, "error": f"unknown command action: {action}"}
 
     def _synthesize_repair_patch(self, command: str, cwd: str, failure_result: dict[str, Any]) -> dict[str, str] | None:
-        """Synthesize candidate code fix diffs/patches using local fast model or remediation."""
+        """Use verified remediation or one bounded local diagnostic for a failed command."""
         if not failure_result or failure_result.get("success"):
+            return None
+        features = self.config.get("features", {})
+        if not isinstance(features, dict) or not bool(features.get("tasks", True)):
+            return None
+        if not bool(features.get("local_diagnostic_dispatch", False)):
             return None
         rem = failure_result.get("remediation") or {}
         if rem.get("verified_fix") and isinstance(rem["verified_fix"], dict):
@@ -3282,9 +3287,10 @@ class LocalAIServices:
         confidence = 0.95 if summary.get("path") and summary.get("line") else 0.70 if summary.get("path") else 0.25
         artifact_id = str(failure_result.get("artifact_id") or "")
         preview = str(failure_result.get("preview") or "")[:800]
-        # Parsed failures are deterministic enough to avoid speculative model repair.
-        # For ambiguous failures, pass an artifact reference plus a narrow preview only.
-        if confidence >= 0.50 or not artifact_id or not preview:
+        # Parsed failures are deterministic enough to avoid local inference. Local
+        # diagnosis is read-only and never returns a mutation candidate; repair still
+        # needs a verified deterministic fix.
+        if confidence >= 0.50 or not artifact_id or not preview or not self._is_bounded_diagnostic_command(command):
             return None
         model = self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b")
         prompt = (
@@ -3292,25 +3298,79 @@ class LocalAIServices:
             f"Failure summary: {json.dumps(summary, sort_keys=True)}\n"
             f"Artifact reference: {artifact_id}\nFailure preview:\n{preview}\n"
             "Do not request or infer raw command logs; use only this bounded preview.\n"
-            "Respond ONLY with a JSON object format: {\"relative_file_path\": \"full corrected file content\"}"
+            "Return only a short JSON diagnosis. Do not propose edits, patches, commands, architecture, or security work."
         )
         try:
-            res = self.proxy_request("/api/generate", {"model": model, "prompt": prompt, "format": "json"}, "hub", "repair_loop")
+            res = self.proxy_request("/api/generate", {
+                "model": model,
+                "prompt": prompt,
+                "format": {
+                    "type": "object",
+                    "properties": {"diagnosis": {"type": "string"}},
+                    "required": ["diagnosis"],
+                    "additionalProperties": False,
+                },
+                "options": {"num_predict": 320},
+            }, "hub", "local_ai_task", diagnostic_timeout_seconds=20)
             raw_text = str(res.get("response", "")).strip()
             parsed = json.loads(raw_text)
-            if isinstance(parsed, dict) and "files" in parsed and isinstance(parsed["files"], dict):
-                return {str(k): str(v) for k, v in parsed["files"].items()}
-            if isinstance(parsed, dict):
-                return {str(k): str(v) for k, v in parsed.items() if isinstance(v, str)}
+            diagnosis = str(parsed.get("diagnosis", "")).strip()[:600] if isinstance(parsed, dict) else ""
+            if diagnosis:
+                failure_result["local_diagnostic"] = diagnosis
         except Exception:
             pass
         return None
 
-    def proxy_request(self, endpoint: str, payload: dict[str, Any], tenant: str, source: str) -> dict[str, Any]:
+    @staticmethod
+    def _is_bounded_diagnostic_command(command: str) -> bool:
+        """Allow only direct, non-mutating validation commands for L1 diagnosis."""
+        normalized = command.strip().lower()
+        if not normalized or any(char in normalized for char in "|&;><\n\r"):
+            return False
+        mutation = r"(?:fix|write|apply|update|install|delete)"
+        if re.search(rf"(?:^|\s)--{mutation}(?:[-_][a-z0-9]+)*(?:\s|=|$)", normalized):
+            return False
+        # `normalized` is lowercase, so this also rejects Jest's --updateSnapshot.
+        if re.search(r"(?:^|\s)--(?:snapshot[-_]?update|update(?:[-_]?snapshot)?s?)(?:\s|=|$)", normalized):
+            return False
+        if re.search(rf"(?:^|\s)--(?:snapshot|golden|inline[-_]?snapshot)[-_]{mutation}(?:[-_][a-z0-9]+)*(?:\s|=|$)", normalized):
+            return False
+        if re.search(rf"(?:^|\s)--(?:snapshots?|goldens?|inline[-_]?snapshot)(?:\s|=){mutation}(?:\s|$)", normalized):
+            return False
+        if re.search(r"(?:^|\s)-u(?:\s|=|$)", normalized):
+            return False
+        python = r"(?:python(?:\.exe)?|py(?:\.exe)?)"
+        patterns = (
+            rf"^{python}\s+(?:-[a-z0-9_-]+\s+)*-m\s+(?:pytest|unittest|mypy|pyright|ruff|flake8)(?:\s|$)",
+            r"^(?:pytest|unittest|mypy|pyright|ruff|flake8|eslint|tsc)(?:\s|$)",
+            r"^(?:npm|pnpm|yarn)\s+test(?:\s|$)",
+            r"^(?:go|cargo|dotnet|gradle|mvn)\s+test(?:\s|$)",
+        )
+        return any(re.match(pattern, normalized) is not None for pattern in patterns)
+
+    @staticmethod
+    def _proxy_timeout_seconds(config: dict[str, Any], diagnostic_timeout_seconds: float | None = None) -> float:
+        """Keep normal proxy timeouts intact; cap only explicit diagnostic calls."""
+        if diagnostic_timeout_seconds is not None:
+            return min(60.0, max(1.0, float(diagnostic_timeout_seconds)))
+        return max(1.0, float(config.get("server", {}).get("request_timeout_seconds", 300)))
+
+    def proxy_request(
+        self,
+        endpoint: str,
+        payload: dict[str, Any],
+        tenant: str,
+        source: str,
+        *,
+        diagnostic_timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         if payload.get("stream") is True:
             return {"success": False, "error": "streaming is intentionally disabled through the affinity queue"}
         model = str(payload.get("model") or self.config.get("models", {}).get("general", "qwen2.5-coder:1.5b"))
         clean = dict(payload)
+        clean.pop("_hub_timeout_seconds", None)
+        has_diagnostic_cap = diagnostic_timeout_seconds is not None
+        request_timeout = self._proxy_timeout_seconds(self.config, diagnostic_timeout_seconds)
         clean["stream"] = False
         clean.setdefault("keep_alive", self.config.get("ollama", {}).get("keep_alive", "-1"))
         clean.pop("priority", None)
@@ -3373,9 +3433,12 @@ class LocalAIServices:
         key = stable_hash({"proxy": endpoint, "payload": clean, "app_version": __version__})
 
         def compute() -> dict[str, Any]:
+            submit_kwargs: dict[str, Any] = {"priority": int(payload.get("priority", 5))}
+            if has_diagnostic_cap:
+                submit_kwargs["wait_timeout"] = request_timeout
             return self.scheduler.submit(
-                model, tenant, source, lambda: self.runtime.request(endpoint, clean),
-                priority=int(payload.get("priority", 5)),
+                model, tenant, source, lambda: self.runtime.request(endpoint, clean, timeout=request_timeout),
+                **submit_kwargs,
             )
 
         raw, hit, coalesced = self.generation_cache.get_or_compute(key, compute)

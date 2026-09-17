@@ -193,7 +193,7 @@ def _desc_status() -> str:
 
 def _desc_task() -> str:
     if LEAN_SCHEMAS:
-        return "Bounded local-model worker for local diagnosis, boilerplate, or second opinion. Actions: ask, reason, review, delegate, generate, eval, benchmark."
+        return "Bounded local-model worker for local diagnosis, boilerplate, or second opinion. Command failure diagnosis is disabled by default; enable features.local_diagnostic_dispatch only after low-confidence deterministic command parsing with an artifact reference and narrow preview. Never raw logs, architecture, security, mutations, or open-ended coding. Actions: ask, reason, review, delegate, generate, eval, benchmark."
     if not FEATURES.has_any_model():
         return (
             "Local-model worker — disabled on this installation (no local model backend configured)."
@@ -214,6 +214,8 @@ def _desc_task() -> str:
         f" Explicit model overrides must match a configured model tag."
         f"{profile_note}"
         " Deterministic compression and repository evidence run first when sufficient."
+        " Command failure diagnosis is disabled by default; enable `features.local_diagnostic_dispatch=true` only for one local diagnostic after low-confidence deterministic command parsing with an artifact reference and narrow preview, never raw logs."
+        " Never automatically dispatch local inference for architecture, security, mutations, or open-ended coding."
         " Use it for local diagnosis, boilerplate, or one bounded review/second opinion after indexed evidence."
         " It is not the orchestrator for native Codex subagents; those are managed directly by Codex outside Local AI Hub."
         f"{_actions_note(FEATURES.supported_task_actions())}"
@@ -311,10 +313,10 @@ def _desc_command() -> str:
 
 def _desc_coord() -> str:
     if LEAN_SCHEMAS:
-        return "Agent OS coordination for ownership, checkpoints, and verification receipts. Actions: claim, release, memory_record, memory_find, context_compile, task_create, task_checkpoint."
+        return "Agent OS coordination for task contracts, ownership, checkpoints, and verification receipts. Actions: claim, release, memory_record, memory_find, context_compile, task_create, task_checkpoint."
     if FEATURES.agent_os:
         agent_os_note = (
-            " For non-trivial multi-step, long-running, delegated, or acceptance-criteria work, create an Agent OS task first;"
+            " For non-trivial multi-step, long-running, delegated, or acceptance-criteria work, create an Agent OS task contract first;"
             " checkpoint meaningful phases, search/record durable memory as useful, compile context when resuming,"
             " and gate task completion on verification receipts."
         )
@@ -341,13 +343,13 @@ def _desc_coord() -> str:
 
 def _desc_work() -> str:
     if LEAN_SCHEMAS:
-        return "Delegate closed, low-risk work to local worker. Actions: submit, status, wait, get, cancel."
+        return "Delegate closed, low-risk work with a verified handoff to local worker; skip micro-edits and live discussion. Actions: submit, status, wait, get, cancel."
     return (
-        "Delegate one closed, low-risk work item to Local AI Hub: plan a bounded dependency DAG, execute the smallest independently verifiable steps, "
+        "Delegate one closed, low-risk work item with a verified handoff to Local AI Hub: plan a bounded dependency DAG, execute the smallest independently verifiable steps, "
         "apply transactional leased edits, run safe validation, verify the integrated result against the original request, and return a compact handoff. "
         "Actions: submit, status, wait, get, cancel, continue. response_profile=minimal|compact|standard|debug; return_fields selects only needed top-level fields; "
         "max_output_tokens bounds the handoff while full details remain artifact-backed. Use when: the task can be delegated as a self-contained repository outcome. "
-        "Skip when: the agent must make an unresolved product decision, credentials/network are required, or only one tiny lookup is needed."
+        "Skip when: the agent must make an unresolved product decision, credentials/network are required, only one tiny lookup is needed, or work is micro-edits/live discussion."
     )
 
 

@@ -107,10 +107,10 @@ Trigger map:
 - repository navigation/symbols/impact: `local_ai_repo`
 - test/lint/typecheck/build commands: `local_ai_command`
 - exact source/log/evidence slice: `local_ai_artifact`
-- ownership/checkpoints/verification receipts: `local_ai_coord`
+- task contracts, ownership leases, checkpoints, verification receipts, and receipt-gated completion: `local_ai_coord`
 - semantic retrieval after indexed paths are insufficient: `local_ai_rag`
-- local diagnosis/boilerplate/second opinion: `local_ai_task` only after low-confidence deterministic command parsing; provide artifact reference plus narrow preview, never raw logs
-- closed, low-risk work with verified handoff: `local_ai_work`
+- local diagnosis/boilerplate/second opinion: `local_ai_task` failure diagnosis is disabled by default. Enable `features.local_diagnostic_dispatch=true` only after low-confidence deterministic command parsing; provide artifact reference plus narrow preview, never raw logs. Automatic local inference never handles architecture, security, mutations, or open-ended coding.
+- closed, verified handoff work: `local_ai_work`; skip micro-edits and live discussion
 
 Recipes (guidance, not gates):
 - Recipe — Explore: preprocess once, use the cheapest repository action, fetch only required evidence slices.
@@ -149,7 +149,9 @@ Treat result state as a protocol: `cache_hit`/`coalesced` means reuse the result
 Route test/lint/typecheck/build/read-only commands through `local_ai_command` before running them natively. If it returns `in_progress=true`, do not launch a duplicate command. Before an expensive `solve`/model call, search coordination memos for reusable findings. For overlapping multi-agent edits use `local_ai_coord` leases and store concise reusable discoveries as memos.
  After edits, use indexed impact/review plus targeted cached validation; do not rerun broad discovery merely because files changed. `force` and `preprocess_refresh` are recovery/admin controls, never retry buttons. If an optional backend degrades, accept the hub's deterministic/index fallback. If the hub itself is unavailable, make one bounded health/retry attempt, then fall back to native tools. Never loop on health, status, preprocessing, model startup, a failing backend, or an identical command.
 
-Selection guide: `local_ai_repo` for bounded repository facts and checks (including `review_diff` and `security_audit`), `local_ai_command` for bounded repeatable commands, `local_ai_task` for small local-model work and second opinions, `local_ai_work` for a complete bounded repository task with planning, edits, validation and handoff, `local_ai_rag` only after cheaper indexed evidence, `local_ai_artifact` for exact slices, `local_ai_coord` for leases/memos.
+Selection guide: `local_ai_repo` for bounded repository facts and checks (including `review_diff` and `security_audit`), `local_ai_command` for bounded repeatable commands, `local_ai_task` for small local-model work and second opinions, `local_ai_work` only for a complete closed task with verified handoff, `local_ai_rag` only after cheaper indexed evidence, `local_ai_artifact` for exact slices, `local_ai_coord` for task contracts, leases, checkpoints, and receipts.
+
+For non-trivial multi-step work, create a `local_ai_coord` task contract first, claim overlapping paths, checkpoint phase changes, attach validation receipts, and complete only after receipt verification passes.
 
 Batch edits: use `local_ai_repo(action="batch_replace", edits=[...], dry_run=true)` for preview. `staged` is not batch dry-run and is never forwarded. Each edit needs exact target text that matches once. The engine preflights all edits, rolls back write failures, and never auto-commits. Set `dry_run=false` only after review.
 
