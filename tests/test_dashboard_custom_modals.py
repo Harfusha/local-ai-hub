@@ -539,6 +539,105 @@ def test_trace_inspector_uses_accessible_conditional_tabs_and_safe_trace_values(
     assert "events.slice(-100)" in model_source
 
 
+def _trace_presentation_runtime_source() -> str:
+    return DASHBOARD_HTML[
+        DASHBOARD_HTML.index("const humanLabel=") : DASHBOARD_HTML.index(
+            "function traceDisplayModel(detail)"
+        )
+    ]
+
+
+def test_trace_agent_loop_runtime_renders_nested_tool_errors_and_successes() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {
+            "kind": "agent_loop",
+            "chatTurns": [
+                {
+                    "step": 3,
+                    "input": {"messages": [{"role": "user", "content": "run"}]},
+                    "output": "done",
+                    "tools": [
+                        {
+                            "call": {"call_id": "bad-1", "name": "shell", "arguments": {"cmd": "false"}},
+                            "result": {"call_id": "bad-1", "result": {"error": "<failure>"}},
+                        },
+                        {
+                            "call": {"call_id": "ok-1", "name": "read", "arguments": {"path": "x"}},
+                            "result": {"call_id": "ok-1", "result": {"value": "success"}},
+                        },
+                    ],
+                }
+            ],
+            "modelInput": {"messages": [{"role": "user", "content": "run"}]},
+            "modelOutput": "done",
+        },
+        "session": {"model": "fixture-model"},
+        "actor": {},
+        "correlations": {},
+        "identity": {},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'').replace(/secret/gi,'<redacted>');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"console.log(JSON.stringify(renderAgentLoopPresentation({json.dumps(fixture)})));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    html = json.loads(result.stdout)
+    assert "error" in html
+    assert "&lt;failure&gt;" in html
+    assert "success" in html
+    assert "bad-1" in html and "ok-1" in html
+
+
+def test_trace_model_chat_runtime_keeps_request_envelope_visible_and_bounded() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {
+            "kind": "model_chat",
+            "chatTurns": [],
+            "modelInput": {
+                "model": "fixture-model",
+                "stream": True,
+                "options": {"temperature": 0.2, "token": "secret"},
+                "request": {"request_id": "req-1", "path": "/chat"},
+                "messages": [
+                    {"role": "system", "content": "system <safe>"},
+                    {"role": "developer", "content": "developer"},
+                    {"role": "user", "content": "user"},
+                ],
+                "content": "fallback content",
+                "prompt": "fallback prompt " + ("x" * 13000),
+            },
+            "modelOutput": "",
+            "requestEnvelope": {"headers": {"x-request": "kept"}},
+        },
+        "session": {"model": "fixture-model"},
+        "actor": {},
+        "correlations": {},
+        "identity": {},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'').replace(/secret/gi,'<redacted>');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"console.log(JSON.stringify(renderModelChatPresentation({json.dumps(fixture)})));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    html = json.loads(result.stdout)
+    for value in ["fixture-model", "stream", "Options", "request_id", "system", "developer", "user"]:
+        assert value.lower() in html.lower()
+    assert "system &lt;safe&gt;" in html
+    assert "secret" not in html
+    assert "No model output captured" in html
+    assert "truncated" in html
+
+
 def test_trace_raw_projection_bounds_events_before_sanitization() -> None:
     bounded_events_source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function traceBoundedEvents(") : DASHBOARD_HTML.index(
