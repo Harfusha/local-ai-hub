@@ -1864,13 +1864,19 @@ function traceTab(label,id){return `<button class="trace-tab ${traceView===id?'a
 function traceStatus(item){const state=String(item?.state||'queued');return state==='failed'&&/hub restarted|service stopped|shutdown/i.test(String(item?.error||''))?'interrupted':state}
 function traceDisplayState(item){const state=traceStatus(item);return state==='interrupted'?'Interrupted':humanLabel(state)}
 function traceRaw(payload){let raw='';try{raw=JSON.stringify(payload,null,2)}catch(e){raw=String(e)}return `<section class="human-section trace-raw-panel"><h3>Raw JSON (fallback)</h3><pre class="human-pre">${esc(raw)}</pre></section>`}
+function traceScrollNodes(root){return Array.from(root?.querySelectorAll?.('.human-pre,.trace-output,.prompt-pre')||[])}
+function captureTraceScrollPositions(root){return traceScrollNodes(root).map((node,index)=>({index,top:node.scrollTop,left:node.scrollLeft}))}
+function restoreTraceScrollPositions(root,positions){traceScrollNodes(root).forEach((node,index)=>{const saved=positions[index];if(saved){node.scrollTop=saved.top;node.scrollLeft=saved.left}})}
 function renderTraceDetail(d){
+  const body=$('tracePageBody'),scrollPositions=captureTraceScrollPositions(body),traceMain=body?.closest('.trace-main'),mainScrollTop=traceMain?.scrollTop||0,mainScrollLeft=traceMain?.scrollLeft||0;
   activeTraceData=d;const s=d?.session||{},events=d?.events||[],payload={session:{trace_id:s.trace_id,kind:s.kind,state:s.state,tenant:s.tenant,agent:s.agent,action:s.action,source:s.source,model:s.model,request_id:s.request_id,async_job_id:s.async_job_id,scheduler_job_id:s.scheduler_job_id,created_at:s.created_at,updated_at:s.updated_at,finished_at:s.finished_at,error:s.error,text_bytes:s.text_bytes},main_agent_prompt:s.effective_payload||{},original_request:s.request||{},output:s.output||'',response:s.response||{},events};
   $('tracePageTitle').textContent=String(s.action||s.source||'Agent trace');$('tracePageLive').textContent=d?.terminal?'terminal · retained':'● live · auto-refresh';$('tracePageLive').className='tiny '+(d?.terminal?'ok':'trace-running');
   const state=traceDisplayState(s),displayState=traceStatus(s),stateClass=(displayState==='failed'||displayState==='error')?'bad':(displayState==='interrupted'?'warn':(d?.terminal?'ok':'warn'));
   const header=`<div class="trace-inspector-head"><div><div class="trace-kicker">Agent execution · Agent timeline</div><strong>${esc(s.action||s.source||'Trace')}</strong><div class="tiny">${esc(s.agent||'unknown agent')} · ${esc(s.model||'model not recorded')}</div></div><span class="badge ${stateClass}">${esc(state)}</span></div><div class="trace-metrics"><span>${events.length} events</span><span>${esc(s.tenant||'no tenant')}</span><span>${s.text_bytes||0} bytes retained</span></div>`;
   const timeline=`${traceTimeline(events)}`,prompt=renderModelPrompt(payload.main_agent_prompt)+humanSection('Original request',payload.original_request),output=humanSection('Output',payload.output),response=humanSection('Final response',payload.response),views={timeline, prompt:prompt, output:output+response, events:`<section class="human-section"><h3>All events</h3>${renderAny(events)}</section>`, raw:traceRaw(payload)},content=views[traceView]||timeline;
   $('tracePageBody').className='trace-page-body';$('tracePageBody').innerHTML=`<div class="human-shell">${header}<nav class="trace-tabs" aria-label="Trace views">${traceTab('Timeline','timeline')}${traceTab('Prompt','prompt')}${traceTab('Output','output')}${traceTab('Events','events')}${traceTab('Raw','raw')}</nav><div class="trace-view">${content}</div></div>`;
+  const restore=()=>{restoreTraceScrollPositions($('tracePageBody'),scrollPositions);const nextMain=$('tracePageBody')?.closest('.trace-main');if(nextMain){nextMain.scrollTop=mainScrollTop;nextMain.scrollLeft=mainScrollLeft}};
+  if(window.requestAnimationFrame)window.requestAnimationFrame(restore);else restore();
 }
 function setTraceView(view){if(!['timeline','prompt','output','events','raw'].includes(view))return;traceView=view;if(activeTraceData)renderTraceDetail(activeTraceData)}
 async function openTrace(id){
@@ -1884,6 +1890,7 @@ async function openTrace(id){
       if(d.success){
         traceSeq=Number(d.next_seq||traceSeq);traceEvents=traceEvents.concat(d.events||[]);renderTraceDetail({...d,events:traceEvents});
         if(d.terminal){clearInterval(traceTimer);traceTimer=null}
+      }else if(d.retryable){$('tracePageLive').textContent='● live · retrying…';$('tracePageLive').className='tiny trace-running';return
       }else{openModal(d,'Trace error');clearInterval(traceTimer);traceTimer=null}
     }catch(e){$('tracePageLive').textContent='refresh failed: '+e.message}
   };
