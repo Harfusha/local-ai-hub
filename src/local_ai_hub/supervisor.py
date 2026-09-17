@@ -49,6 +49,7 @@ class Supervisor:
         self.stopping = False
         self.started_at = time.time()
         self.restarts = 0
+        self.spawns = 0
         self.crashes: list[float] = []
         self._mutex_handle: int | None = None
 
@@ -305,9 +306,12 @@ class Supervisor:
                     self.crashes.clear()
                     continue
                 try:
+                    is_restart = self.spawns > 0
                     self.child = self.spawn_hub()
-                    self.restarts += 1
-                    self.crashes.append(now)
+                    self.spawns += 1
+                    if is_restart:
+                        self.restarts += 1
+                        self.crashes.append(now)
                     self.write_status("starting", ollama_online=ollama_online)
                 except Exception as exc:
                     self.log(f"hub spawn failed: {type(exc).__name__}: {exc}")

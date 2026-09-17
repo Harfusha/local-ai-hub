@@ -46,6 +46,20 @@ def test_reliability_summary_footer_padding_and_severity_contract() -> None:
     assert "failures||activeCrash?'attention':restarts?'warning':'healthy'" in DASHBOARD_HTML
 
 
+def test_operational_severity_resolve_errors_action() -> None:
+    assert 'id="resolveErrorsBtn"' in DASHBOARD_HTML
+    assert 'id="resolveAllErrorsBtn"' in DASHBOARD_HTML
+    assert 'function renderResolveErrorsModal(r)' in DASHBOARD_HTML
+    assert "/api/maintenance/resolve_errors" in DASHBOARD_HTML
+    assert "type==='resolve_errors'" in DASHBOARD_HTML
+    footer_idx = DASHBOARD_HTML.index('class="reliability-footer"')
+    trend_idx = DASHBOARD_HTML.index('id="reliabilityTrend"')
+    resolve_idx = DASHBOARD_HTML.index('id="resolveErrorsBtn"')
+    action_idx = DASHBOARD_HTML.index('id="reliabilityAction"')
+    assert footer_idx < trend_idx < resolve_idx < action_idx
+
+
+
 def test_dashboard_ux_refinements_and_empty_states() -> None:
     # 1. Control popover & buttons
     assert "Pause live events" in DASHBOARD_HTML

@@ -3613,6 +3613,43 @@ class LocalAIServices:
                 return {"success": False, "error": str(exc)}
         return {"success": True, "purged_entries": deleted_entries, "days_threshold": days}
 
+    def resolve_all_errors(self) -> dict[str, Any]:
+        """Acknowledge and resolve all operational failures, crashes, errors, and agent incidents."""
+        telemetry_res: dict[str, Any] = {}
+        if self.telemetry:
+            try:
+                telemetry_res = self.telemetry.resolve_errors()
+            except Exception as exc:
+                telemetry_res = {"error": str(exc)}
+
+        resolved_incidents = 0
+        if self.incident_store:
+            try:
+                resolved_incidents = self.incident_store.resolve_all(
+                    verified_fix="Resolved by operator",
+                    root_cause="Operator manual resolve",
+                )
+            except Exception as exc:
+                resolved_incidents = -1
+
+        try:
+            state_dir = Path(self.config["server"]["state_dir"])
+            sup_status_path = state_dir / "supervisor.status.json"
+            if sup_status_path.exists():
+                raw = json.loads(sup_status_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    raw["restarts"] = 0
+                    raw["last_error"] = ""
+                    sup_status_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "telemetry": telemetry_res,
+            "resolved_incidents": resolved_incidents,
+        }
+
     def run_doctor(self) -> dict[str, Any]:
         """Run comprehensive system, GPU, model, and database diagnostics."""
         from .gpu_monitor import get_gpu_telemetry
