@@ -489,6 +489,101 @@ def test_trace_inspector_has_agent_loop_tool_cards_with_bounded_safe_fields() ->
         assert marker in source, f"Agent-loop renderer omits {marker}"
 
 
+def test_trace_inspector_has_request_specific_renderer_contracts() -> None:
+    source = _trace_presentation_runtime_source()
+    contracts = {
+        "renderCommandPresentation(model)": [
+            "command",
+            "args",
+            "input",
+            "stdout",
+            "stderr",
+            "exit code",
+            "retries",
+            "duration",
+        ],
+        "renderReviewPresentation(model)": [
+            "request",
+            "context",
+            "diff",
+            "findings",
+            "recommendation",
+            "status",
+        ],
+        "renderRepoIntelligencePresentation(model)": [
+            "repository",
+            "root",
+            "operation",
+            "query",
+            "files",
+            "symbols",
+            "context",
+            "result",
+        ],
+        "renderRagSearchPresentation(model)": [
+            "query",
+            "sources",
+            "results",
+            "score",
+            "provider",
+            "answer",
+            "truncation",
+        ],
+        "renderAsyncJobPresentation(model)": [
+            "lifecycle",
+            "status",
+            "queue wait",
+            "retries",
+            "worker input",
+            "result",
+            "error",
+            "job id",
+            "correlation",
+        ],
+        "renderRequestResponsePresentation(model)": [
+            "request",
+            "input",
+            "response",
+            "output",
+            "status",
+            "timing",
+            "error",
+            "No request captured",
+            "No response captured",
+        ],
+    }
+    for function, markers in contracts.items():
+        assert f"function {function}" in source
+        renderer = source[source.index(f"function {function}") :]
+        for marker in markers:
+            assert marker in renderer, f"{function} omits {marker}"
+    assert "tracePresentationValue" in source
+    assert "traceBudgetMarkup" in source
+    assert "traceFinalizeMarkup" in source
+    assert "traceSanitizeValue" in source
+    assert "renderCommandPresentation(model)" in source
+    assert "renderReviewPresentation(model)" in source
+    assert "renderRepoIntelligencePresentation(model)" in source
+    assert "renderRagSearchPresentation(model)" in source
+    assert "renderAsyncJobPresentation(model)" in source
+    assert "renderRequestResponsePresentation(model)" in source
+
+
+def test_trace_inspector_dispatches_request_specific_renderers() -> None:
+    source = _trace_presentation_runtime_source()
+    dispatcher = source[source.index("function renderTracePresentation(model)") :]
+    for kind, renderer in [
+        ("command", "renderCommandPresentation"),
+        ("review", "renderReviewPresentation"),
+        ("repo_intelligence", "renderRepoIntelligencePresentation"),
+        ("rag_search", "renderRagSearchPresentation"),
+        ("async_job", "renderAsyncJobPresentation"),
+        ("request_response", "renderRequestResponsePresentation"),
+    ]:
+        assert f"kind==='{kind}'" in dispatcher
+        assert f"{renderer}(model)" in dispatcher
+
+
 def test_trace_inspector_shows_model_prompt_as_input() -> None:
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     source = DASHBOARD_HTML[
