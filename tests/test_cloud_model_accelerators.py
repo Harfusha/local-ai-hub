@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -81,6 +82,17 @@ export class AuthService {
     assert "verifyToken" in sym_map_ts
     assert any(e["dst"] == "./config" and e["kind"] == "imports" for e in edges_ts)
     assert any(r["name"] == "check" for r in refs_ts)
+
+
+def test_treesitter_shared_parser_is_safe_for_parallel_calls():
+    if not is_treesitter_available("csharp"):
+        pytest.skip("tree-sitter csharp grammar not installed")
+
+    source = "namespace Demo { public class Worker { public void Run() {} } }\n"
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(lambda _: parse_treesitter(source, "csharp"), range(16)))
+
+    assert all(result is not None and any(item["name"] == "Worker" for item in result[0]) for result in results)
 
 
 def test_include_code_in_code_query(tmp_path: Path):
