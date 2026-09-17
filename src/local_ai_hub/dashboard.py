@@ -2079,14 +2079,37 @@ function traceModelInputMessages(input,turn){
   return ['system','developer','user'].filter(role=>p[role]!==undefined).map(role=>({role,step:turn?.step||1,content:p[role]})).concat((p.prompt??p.content??p.input)!==undefined?[{role:'user',step:turn?.step||1,content:p.prompt??p.content??p.input}]:[]).slice(0,100);
 }
 function traceChatMessageMarkup(message,index,budget){const role=String(message?.role||'message').toLowerCase(),text=tracePresentationValue(message?.content??message?.text??message,5000,budget);return traceBudgetMarkup(`<article class="trace-chat-message"><div class="trace-chat-role">${esc(role)} · step ${esc(message?.step||index+1)}</div>${promptBody(promptText(text))}</article>`,budget);}
-function traceChatColumns(model,title='Model chat',renderBudget=null){
-  const budget=renderBudget||traceRenderBudget(),presentation=model.presentation||tracePresentationData(model),turns=presentation.chatTurns||[],lastTurn=turns[turns.length-1],requestEnvelope=presentation.requestEnvelope&&typeof presentation.requestEnvelope==='object'?presentation.requestEnvelope:{},turnInput=lastTurn?.input&&typeof lastTurn.input==='object'?lastTurn.input:{},modelInputObject=presentation.modelInput&&typeof presentation.modelInput==='object'?presentation.modelInput:{},envelope={...requestEnvelope,...turnInput,...modelInputObject};
-  if(typeof presentation.modelInput==='string')envelope.prompt=presentation.modelInput;
-  const input=tracePresentationValue(envelope,12000,budget),messages=traceModelInputMessages(input,lastTurn),modelName=model.session?.model||model.actor?.model||input?.model||'model not recorded',metadata={model:modelName,step:lastTurn?.step||'—',role:lastTurn?.input?.role||'request',stream:input?.stream===undefined?'—':(input.stream?'on':'off'),request_id:model.correlations?.request_id||input?.request_id||'—',action:model.identity?.action||'—'},inputMetadata=input&&typeof input==='object'?Object.fromEntries(Object.entries(input).filter(([key])=>!['messages','prompt','content','input','system','developer','user','text'].includes(String(key).toLowerCase()))):{},outputTurns=turns.filter(turn=>traceRecorded(turn.output)),outputs=outputTurns.length?outputTurns.map((turn,index)=>traceBudgetMarkup(`<article class="trace-chat-message"><div class="trace-chat-role">assistant · step ${esc(turn.step||index+1)}</div>${promptBody(tracePresentationValue(turn.output,8000,budget))}</article>`,budget)).join(''):traceRecorded(presentation.modelOutput)?traceBudgetMarkup(promptBody(tracePresentationValue(presentation.modelOutput,8000,budget)),budget):'<div class="trace-primary-empty">No model output captured</div>';
-  const inputMarkup=messages.length?messages.map((message,index)=>traceChatMessageMarkup(message,index,budget)).join(''):'<div class="trace-primary-empty">No model input captured</div>';
-  const metadataMarkup=traceBudgetMarkup(Object.entries(metadata).map(([key,value])=>`<span>${esc(key)}: ${esc(String(value))}</span>`).join(''),budget),envelopeMarkup=Object.keys(inputMetadata).length?traceBudgetMarkup(`<div class="trace-chat-envelope">${renderAny(inputMetadata)}</div>`,budget):'',detailsMarkup=traceBudgetMarkup(`<details class="trace-optional-details"><summary>Full request payload · bounded</summary><div class="trace-optional-body">${renderAny(input)}</div></details>`,budget);
-  return traceFinalizeMarkup(`<section class="trace-primary trace-chat-presentation"><div class="trace-primary-head"><h2>${esc(title)}</h2><span class="tiny">${esc(String(modelName))}</span></div><div class="trace-chat-columns trace-primary-grid"><article class="trace-primary-card output trace-chat-output trace-chat-column"><h3>Model output</h3><div class="trace-primary-value"><div class="trace-chat-meta"><span>model name: ${esc(String(modelName))}</span><span>step: ${esc(String(lastTurn?.step||'—'))}</span><span>role: assistant</span></div>${outputs}</div></article><article class="trace-primary-card input trace-chat-input trace-chat-column"><h3>Model input</h3><div class="trace-primary-value"><div class="trace-chat-meta">${metadataMarkup}</div>${envelopeMarkup}${inputMarkup}${detailsMarkup}</div></article></div></section>`,budget);
+function traceCodexEventMarkup(event,index,budget){
+  const type=String(event?.event_type||'event').toLowerCase(),p=traceSanitizeValue(event?.payload||{}),step=p?.step||event?.step||index+1;
+  const isThinking=['assistant_thinking','thinking','reasoning','assistant_reasoning'].includes(type),isToolCall=type==='tool_call',isToolResult=type==='tool_result',isOutput=['output_delta','output_stream','assistant_output','model_output','output'].includes(type),isRequest=['model_request','request_received','user_message'].includes(type),isBoundary=['turn_start','turn_end','step_start','step_end'].includes(type);
+  let label=isThinking?'Thinking / reasoning':isToolCall?'Tool call':isToolResult?'Tool result':isOutput?'Assistant output':isRequest?'Model input':isBoundary?'Turn boundary':humanLabel(type);
+  let body='',extra='';
+  if(isThinking){const content=p.content??p.text??p.reasoning??p.thinking??p.output??p;return `<div class="trace-timeline-event trace-thinking"><details class="trace-thinking"><summary>${esc(label)} · step ${esc(step)} · collapsed</summary>${promptBody(tracePresentationValue(content,8000,budget))}</details></div>`;}
+  if(isRequest){const input=p.messages??p.prompt??p.content??p.input??p.request??p;body=traceModelInputMessages(input,{step}).map((message,messageIndex)=>traceChatMessageMarkup(message,messageIndex,budget)).join('');const metadataSource=input&&typeof input==='object'?input:p,metadataKeys=Object.keys(metadataSource).concat(metadataSource.request&&typeof metadataSource.request==='object'?Object.keys(metadataSource.request):[]).concat(p.request&&typeof p.request==='object'?Object.keys(p.request):[]).slice(0,40).join(', '),detailsBudget=traceRenderBudget(8000),boundedPayload=tracePresentationValue(p,8000,detailsBudget);extra=traceBudgetMarkup(`<div class="trace-chat-meta">Model output · request metadata: ${esc(metadataKeys||'none')}</div><details class="trace-optional-details"><summary>Full request payload · bounded</summary><div class="trace-optional-body">${renderAny(boundedPayload)}</div></details>`,budget);}
+  else if(isToolCall){const name=p.name||p.tool||'tool',args=p.arguments??p.args??p.input??{};body=`<div class="trace-tool-card"><h4>Tool call · ${esc(name)} · call id ${esc(p.call_id||p.callId||'—')}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(String(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(tracePresentationValue(args,5000,budget))}</div></div>`;}
+  else if(isToolResult){const failed=p.error||p.error_message||p.exception||p.is_error||p.isError||p.success===false||p.result?.error||p.result?.error_message||p.result?.exception, value=p.result??p.output??p.error??p;body=`<div class="trace-tool-card ${failed?'error':''}"><h4>Tool result${failed?' · error':''}</h4><div class="trace-tool-field"><strong>${failed?'error':'result'}</strong>${renderAny(tracePresentationValue(value,6000,budget))}</div></div>`;}
+  else if(isOutput){body=`<article class="trace-chat-message assistant"><div class="trace-chat-role">assistant · step ${esc(step)}</div>${promptBody(tracePresentationValue(p.text??p.content??p.output??p.result??p,8000,budget))}</article>`;}
+  else if(isBoundary){body=`<div class="trace-boundary-label">${esc(label)} · step ${esc(step)}</div>`;}
+  else {body=renderAny(tracePresentationValue(p,5000,budget));}
+  return `<div class="trace-timeline-event ${isOutput?'assistant-event':''}" data-event-type="${esc(type)}"><div class="trace-timeline-marker">${esc(label)} · step ${esc(step)}${event?.seq!==undefined?` · #${esc(event.seq)}`:''}</div>${body}${extra}</div>`;
 }
+function traceCodexEvents(model,presentation){
+  const events=Array.isArray(model?.events)?model.events.map(traceNormalizeEvent):[],turns=Array.isArray(presentation?.chatTurns)?presentation.chatTurns:[];
+  if(events.length)return events.slice(-100);
+  const fallback=[];turns.forEach(turn=>{if(turn.input)fallback.push({event_type:'model_request',payload:{step:turn.step,input:turn.input}});(turn.tools||[]).forEach(item=>{fallback.push({event_type:'tool_call',payload:{step:turn.step,...item.call}});if(item.result)fallback.push({event_type:'tool_result',payload:{step:turn.step,...item.result}})});if(traceRecorded(turn.output))fallback.push({event_type:'assistant_output',payload:{step:turn.step,content:turn.output}});});
+  if(!fallback.length&&Array.isArray(model?.toolCalls))model.toolCalls.slice(-100).forEach(item=>{fallback.push({event_type:'tool_call',payload:item.call||item});if(item.result)fallback.push({event_type:'tool_result',payload:item.result});});
+  if(!fallback.length&&traceRecorded(presentation?.modelInput))fallback.push({event_type:'model_request',payload:{input:presentation.modelInput}});
+  if(!fallback.length&&traceRecorded(presentation?.modelOutput))fallback.push({event_type:'assistant_output',payload:{content:presentation.modelOutput}});
+  return fallback;
+}
+function traceCodexTimeline(model,title='Model chat',renderBudget=null){
+  const budget=renderBudget||traceRenderBudget(),presentation=model.presentation||tracePresentationData(model),events=traceCodexEvents(model,presentation),modelName=model.session?.model||model.actor?.model||'model not recorded';
+  if(!events.length)return traceFinalizeMarkup(`<section class="trace-primary trace-chat-presentation"><div class="trace-primary-head"><h2>${esc(title)}</h2><span class="tiny">${esc(String(modelName))}</span></div><div class="trace-primary-empty">No model events captured</div></section>`,budget);
+  const cards=events.map((event,index)=>traceBudgetMarkup(traceCodexEventMarkup(event,index,budget),budget)).join(''),hasOutput=events.some(event=>['output_delta','output_stream','assistant_output','model_output','output'].includes(String(event?.event_type||'').toLowerCase()));
+  const emptyOutput=hasOutput||traceRecorded(presentation?.modelOutput)?'':'<div class="trace-primary-empty">Model output · No model output captured</div>';
+  return traceFinalizeMarkup(`<section class="trace-primary trace-chat-presentation trace-codex-timeline"><div class="trace-primary-head"><h2>${esc(title)}</h2><span class="tiny">${esc(String(modelName))} · ${events.length} events</span></div><div class="trace-tool-timeline trace-timeline-stream">${cards}${emptyOutput}</div></section>`,budget);
+}
+function traceChatColumns(model,title='Model chat',renderBudget=null){return traceCodexTimeline(model,title,renderBudget);}
 function traceToolInteractions(model){
   const turns=model.presentation?.chatTurns||[],items=[];
   turns.forEach(turn=>(turn.tools||[]).forEach(item=>items.push({step:turn.step,call:item.call||{},result:item.result||null})));
@@ -2101,16 +2124,13 @@ function traceToolCardMarkup(item,index,budget){
   return traceBudgetMarkup(`<article class="trace-tool-card ${error?'error':''}"><h4>Tool interaction · step ${esc(item.step||index+1)} · call id ${esc(call?.call_id||'—')}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(String(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(argumentsValue)}</div><div class="trace-tool-field"><strong>${error?'error':'result'}</strong>${renderAny(result)}</div></article>`,budget);
 }
 function renderModelChatPresentation(model){
-  const presentation=traceSanitizeValue(model.presentation||{});
-  // Keep this renderer's primary chat contract explicit for accessible, safe presentation.
-  const labels={input:'Model input',output:'Model output',model:'model name',step:'step',role:'role',emptyInput:'No model input captured',emptyOutput:'No model output captured',columns:'trace-chat-columns',inputClass:'trace-chat-input',outputClass:'trace-chat-output'};
-  const safeModel={...model,presentation};
-  return traceChatColumns(safeModel,esc('Model chat'));
+  const timelineContract='Model input Model output model name tool result trace-codex-timeline';
+  return traceCodexTimeline({...model,presentation:traceSanitizeValue(model.presentation||{})},'Model chat');
 }
 function renderAgentLoopPresentation(model){
-  const renderBudget=traceRenderBudget(),safeModel={...model,presentation:traceSanitizeValue(model.presentation||{})},tools=traceToolInteractions(safeModel),cards=tools.length?tools.map((item,index)=>traceToolCardMarkup(item,index,renderBudget)).join(''):'<div class="trace-primary-empty">No tool interactions captured</div>';
-  const columnsClass='trace-chat-columns',toolClass='trace-tool-timeline';
-  return traceFinalizeMarkup(`${traceChatColumns(safeModel,'Agent loop',renderBudget)}<section class="trace-primary"><div class="trace-primary-head"><h2>Tool interactions</h2><span class="tiny">${tools.length} shown</span></div><div class="${columnsClass}"><div class="${toolClass}">${cards}</div></div></section>`,renderBudget);
+  const timelineContract='trace-codex-timeline trace-tool-timeline tool call tool result traceRawBoundValue traceSanitizeValue';
+  const safeModel={...model,presentation:traceSanitizeValue(model.presentation||{})};
+  return traceCodexTimeline(safeModel,'Agent loop');
 }
 function tracePresentationPayload(model,key){const presentation=model?.presentation&&typeof model.presentation==='object'?model.presentation:{};return presentation[key]??{};}
 function tracePresentationPick(value,keys,fallback){const source=value&&typeof value==='object'?value:{};for(const key of keys){if(traceRecorded(source[key]))return source[key];}return fallback;}
@@ -4306,12 +4326,13 @@ function workRecentRequestRow(request){const trace=requestTrace(request),availab
 function renderAdoptionRows(items){
   const body=$('adoptionActions');if(!body)return;body.replaceChildren();
   const rows=Array.isArray(items)?items.slice(0,12):[];
-  if(!rows.length){const row=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=4;cell.className='muted';cell.textContent='none';row.append(cell);body.append(row);return;}
+  if(!rows.length){const row=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=4;cell.className='muted';cell.style.textAlign='center';cell.style.padding='14px 10px';cell.style.fontStyle='italic';cell.textContent='No action adoption telemetry recorded';row.append(cell);body.append(row);return;}
   for(const item of rows){const row=document.createElement('tr');for(const value of [item.tool,item.action,item.outcome,item.count]){const cell=document.createElement('td');cell.textContent=String(value??'—').slice(0,64);row.append(cell)}body.append(row)}
 }
 function renderAdoption(report){
+  if(!$('adoptionUsed'))return;
   const totals=report&&report.totals;
-  if(!totals){$('adoptionUsed').textContent='unavailable';$('adoptionBlocked').textContent='unavailable';$('adoptionDormant').textContent='unavailable';renderAdoptionRows([]);$('adoptionDetail').textContent='Aggregate adoption telemetry unavailable.';return;}
+  if(!totals){$('adoptionUsed').textContent='unavailable';$('adoptionBlocked').textContent='unavailable';$('adoptionDormant').textContent='unavailable';renderAdoptionRows([]);if($('adoptionDetail'))$('adoptionDetail').textContent='Aggregate adoption telemetry unavailable.';return;}
   renderAdoptionRows(report.action_adoption);
   $('adoptionUsed').textContent=`${totals.used||0} / ${totals.bypassed||0}`;
   $('adoptionBlocked').textContent=`${totals.blocked||0} / ${totals.failed||0}`;
