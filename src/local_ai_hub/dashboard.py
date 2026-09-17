@@ -274,6 +274,7 @@ tbody tr.click:hover{background:#162338}
         <div class="token"><input type="password" id="apiToken" autocomplete="off" placeholder="API token (remote only)"><button class="btn" id="saveToken">Set token</button></div>
         <div class="tiny muted">Diagnostics</div>
         <button class="btn ok" id="optDbBtn">Optimize databases</button>
+        <button class="btn ok" id="resolveAllErrorsBtn">Resolve all errors</button>
         <button class="btn" id="doctorBtn">Run diagnostics</button>
         <button class="btn" id="pauseEvents">Pause live events</button>
         <div class="tiny muted">Runtime control</div>
@@ -514,7 +515,7 @@ tbody tr.click:hover{background:#162338}
 </div>
 
 <div id="reliability" class="page">
-  <section class="section" id="reliabilitySummary"><h2>Operational severity <span class="tiny">Aggregates current failures, restart history, and request health.</span></h2><div id="reliabilityHeadline" class="kv"></div><div class="reliability-footer" style="padding:10px 14px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div class="tiny muted" id="reliabilityTrend">Failure trend unavailable until telemetry arrives.</div><button class="btn" id="reliabilityAction">Open affected requests</button></div></section>
+  <section class="section" id="reliabilitySummary"><h2>Operational severity <span class="tiny">Aggregates current failures, restart history, and request health.</span></h2><div id="reliabilityHeadline" class="kv"></div><div class="reliability-footer" style="padding:10px 14px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div class="tiny muted" id="reliabilityTrend">Failure trend unavailable until telemetry arrives.</div><div style="display:flex;gap:8px;align-items:center"><button class="btn ok" id="resolveErrorsBtn" style="display:none;padding:4px 10px">Resolve all errors</button><button class="btn" id="reliabilityAction">Open affected requests</button></div></div></section>
   <div class="split">
     <section class="section"><h2>Recent error fingerprints</h2><div class="table-wrap"><table><thead><tr><th>Component</th><th>Operation</th><th>Count</th><th>Recovered</th><th>Last seen</th></tr></thead><tbody id="errors"></tbody></table></div></section>
     <section class="section"><h2>Runtime / scheduler counters</h2><div id="runtimeCounters" class="kv"></div></section>
@@ -3596,6 +3597,37 @@ function renderDbOptModal(r){
   `;
 }
 
+function renderResolveErrorsModal(r){
+  const tel=r?.telemetry||{};
+  $('modalBody').innerHTML=`
+    <div class="modal-hero">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div class="tiny muted mono">OPERATIONAL RECOVERY</div>
+          <h2 style="margin:2px 0 0;font-size:16px">Operational Errors &amp; Failures Resolved</h2>
+        </div>
+        <span class="badge-status badge-complete">HEALTHY</span>
+      </div>
+    </div>
+    <div class="modal-body-wrap">
+      <div class="modal-card">
+        <div class="modal-card-head"><span>Resolution Summary</span></div>
+        <div class="modal-card-body">
+          <div class="kv" style="padding:0">
+            <div>Resolved request failures</div><div>${n(tel.resolved_events||0)}</div>
+            <div>Cleared error records</div><div>${n(tel.cleared_errors||0)}</div>
+            <div>Cleaned process sessions</div><div>${n(tel.cleaned_sessions||0)}</div>
+            <div>Resolved agent incidents</div><div>${n(r?.resolved_incidents||0)}</div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions-bar" style="justify-content:flex-end">
+        <button class="btn ok" onclick="$('modalClose').click()">Done</button>
+      </div>
+    </div>
+  `;
+}
+
 function renderCachePurgeModal(r){
   $('modalBody').innerHTML=`
     <div class="modal-hero">
@@ -4260,6 +4292,7 @@ function openControlConfirmation(action){
 $('restartHub').onclick=()=>openControlConfirmation('restart_hub');
 $('stopService').onclick=()=>openControlConfirmation('stop_service');
 $('optDbBtn').onclick=async()=>{try{const r=await post('/api/maintenance/optimize_db',{});openModal(r,'Database Optimization & WAL Checkpoint Results','db_opt')}catch(e){openModal({error:String(e)},'Error')}};
+if($('resolveAllErrorsBtn'))$('resolveAllErrorsBtn').onclick=async()=>{try{const r=await post('/api/maintenance/resolve_errors',{});openModal(r,'Operational Errors Resolved','resolve_errors');await pollStatus();}catch(e){openModal({error:String(e)},'Resolution Error')}};
 $('purgeCacheBtn').onclick=()=>openControlConfirmation('purge_cache');
 $('doctorBtn').onclick=openDoctorModal;
 
@@ -4580,10 +4613,35 @@ function renderReliabilitySummary(snapshot){
   const activeCrash=Boolean(sessions[0]&&!['active','clean_stop'].includes(String(sessions[0].status||'')));
   const severity=failures||activeCrash?'attention':restarts?'warning':'healthy';
   const label=severity==='attention'?'Needs attention':severity==='warning'?'Monitor':'Healthy';
-  const headline=$('reliabilityHeadline'),trend=$('reliabilityTrend'),action=$('reliabilityAction');
+  const headline=$('reliabilityHeadline'),trend=$('reliabilityTrend'),action=$('reliabilityAction'),resolveBtn=$('resolveErrorsBtn');
   if(headline)headline.innerHTML=`<div>Current severity</div><div><span class="${severity==='healthy'?'ok':severity==='attention'?'bad-t':'warn-t'}"><b>${label}</b></span></div><div>Operational failures</div><div>${n(failures)}</div><div>Supervisor restarts</div><div>${n(restarts)}</div><div>Unclean sessions</div><div>${n(crashes)}</div>`;
   if(trend){const prior=sessions.slice(1),priorCrashes=prior.filter(x=>!['active','clean_stop'].includes(String(x.status||''))).length;trend.textContent=`Failure trend: ${failures?'active request failures need review':'no active request failures'}; ${crashes} unclean session${crashes===1?'':'s'} in retained history${priorCrashes?` (${priorCrashes} earlier)`:' '}.`;}
   if(action){action.textContent=failures?'Open failed request history':'Open restart history';action.onclick=()=>{if(failures){switchTab('work');}else{switchTab('reliability');$('sessionRows')?.closest('.section')?.scrollIntoView({behavior:'smooth'});}};}
+  if(resolveBtn){
+    if(failures>0||crashes>0||activeCrash){
+      resolveBtn.style.display='';
+      resolveBtn.onclick=async()=>{
+        resolveBtn.disabled=true;
+        resolveBtn.textContent='Resolving...';
+        try{
+          const r=await post('/api/maintenance/resolve_errors',{});
+          resolveBtn.textContent='Resolved!';
+          openModal(r,'Operational Errors Resolved','resolve_errors');
+          await pollStatus();
+        }catch(e){
+          resolveBtn.textContent='Error';
+          openModal({error:String(e)},'Resolution Error');
+        }finally{
+          setTimeout(()=>{
+            resolveBtn.disabled=false;
+            resolveBtn.textContent='Resolve all errors';
+          },1500);
+        }
+      };
+    }else{
+      resolveBtn.style.display='none';
+    }
+  }
 }
 
 function schedulerRow(job,html,cols){const linked=lastTraces.find(x=>String(x.scheduler_job_id||'')===String(job.job_id||''));const id=linked?.trace_id||job.trace_id;if(id)return `<tr class="click" data-trace-id="${esc(id)}">${html}</tr>`;return clickableRow(job,html,'scheduler_job');}

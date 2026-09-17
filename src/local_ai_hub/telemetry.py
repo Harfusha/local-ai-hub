@@ -990,6 +990,39 @@ class TelemetryStore:
             con.execute("DELETE FROM daily_rollups WHERE day<?", (rollup_cutoff,))
             con.commit()
 
+    def resolve_errors(self) -> dict[str, Any]:
+        """Acknowledge and clear all recorded operational failures, errors, crashes, and unclean sessions."""
+        if not self.enabled:
+            return {"enabled": False}
+        self.flush(1.0)
+        with closing(self._connect()) as con:
+            with con:
+                events_cur = con.execute("UPDATE events SET success=1, error_type='' WHERE success=0;")
+                resolved_events = events_cur.rowcount
+                errors_cur = con.execute("DELETE FROM errors;")
+                cleared_errors = errors_cur.rowcount
+                sessions_cur = con.execute("UPDATE process_sessions SET exit_clean=1 WHERE exit_clean=0;")
+                cleaned_sessions = sessions_cur.rowcount
+                con.execute("DELETE FROM daily_rollups WHERE success=0;")
+                try:
+                    con.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                except Exception:
+                    pass
+        if hasattr(self, "_summary_cache"):
+            self._summary_cache.clear()
+        with self._live_lock:
+            for ev in self._live_events:
+                if not ev.get("success", True):
+                    ev["success"] = True
+                    ev["error_type"] = ""
+                    ev["resolved"] = True
+        return {
+            "success": True,
+            "resolved_events": resolved_events,
+            "cleared_errors": cleared_errors,
+            "cleaned_sessions": cleaned_sessions,
+        }
+
     def _writer_loop(self) -> None:
         last_prune = 0.0
         batch: list[tuple[str, dict[str, Any]]] = []

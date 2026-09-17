@@ -491,6 +491,39 @@ class IncidentStore:
                 )
         return self.get(incident_id) or resolved_rec
 
+    def resolve_all(
+        self,
+        *,
+        verified_fix: str = "Resolved by operator",
+        root_cause: str | None = None,
+    ) -> int:
+        if not self.state_store.enabled or not self.state_store.db_path.exists():
+            return 0
+        self._init_table()
+        now = time.time()
+        with closing(connect_sqlite(self.state_store.db_path)) as con:
+            with con:
+                cur = con.execute(
+                    """
+                    UPDATE agent_incidents
+                    SET resolved = 1, ignored = 0, verified_fix = COALESCE(verified_fix, ?),
+                        root_cause = COALESCE(root_cause, ?), updated_at = ?
+                    WHERE resolved = 0
+                    """,
+                    (verified_fix, root_cause or "Operator cleared unresolved incidents", now),
+                )
+                count = cur.rowcount
+        if count > 0 and self.state_store.enabled:
+            event = AgentEvent.create(
+                stream_id="incident:all",
+                kind="incident.all_resolved",
+                payload={"verified_fix": verified_fix, "resolved_count": count},
+                idempotency_key=f"inc_res_all_{int(now)}",
+                actor="operator",
+            )
+            self.state_store.append(event)
+        return count
+
     def set_ignored(self, incident_id: str, ignored: bool = True) -> IncidentRecord:
         record = self.get(incident_id)
         if not record:

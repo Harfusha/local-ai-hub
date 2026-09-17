@@ -61,3 +61,26 @@ def test_realtime_summary_exposes_agent_and_inference_cohorts(tmp_path):
     assert set(live["cohorts"]) >= {"agent_http", "inference"}
     assert live["scope"] == "process"
     assert live["process_started_at"] == store.process_started_at
+
+
+def test_telemetry_resolve_errors_clears_failures_crashes_and_errors(tmp_path):
+    store = TelemetryStore(tmp_path / "telemetry", enabled=True, flush_interval_seconds=0.01)
+    try:
+        store.record_http(action="/api/repo/search", success=False, status_code=500, error_type="http_error")
+        store.record_error("repo", "search", RuntimeError("failed"))
+        store.flush(1)
+        summary_before = store.summary(1)
+        assert summary_before["cohorts"]["agent_http"]["failures"] == 1
+
+        res = store.resolve_errors()
+        assert res["success"] is True
+        assert res["resolved_events"] >= 1
+        assert res["cleared_errors"] >= 1
+
+        summary_after = store.summary(1)
+        assert summary_after["cohorts"]["agent_http"]["failures"] == 0
+        rep = store.report(1)
+        assert len(rep.get("recent_errors", [])) == 0
+    finally:
+        store.close()
+

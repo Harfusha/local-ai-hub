@@ -1367,6 +1367,9 @@ class Handler(BaseHTTPRequestHandler):
                 days = int((query.get("days") or [7])[0])
                 self._send(200, APP.services.purge_stale_cache(days))
                 return
+            if path == "/api/maintenance/resolve_errors":
+                self._send(200, APP.services.resolve_all_errors())
+                return
             if path == "/api/config":
                 view = json.loads(json.dumps(APP.config, ensure_ascii=False, default=str))
                 if isinstance(view.get("security"), dict) and view["security"].get("api_token"):
@@ -2469,6 +2472,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/maintenance/purge_cache":
                 days = int(payload.get("days", 7))
                 self._send(200, APP.services.purge_stale_cache(days))
+                return
+            if path == "/api/maintenance/resolve_errors":
+                self._send(200, APP.services.resolve_all_errors())
                 return
             if path == "/api/doctor":
                 self._send(200, APP.services.run_doctor())
