@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 _PARSERS: dict[str, Any] = {}
 _LANGUAGES: dict[str, Any] = {}
 _INIT_ATTEMPTED = False
+_PARSER_LOCK = threading.RLock()
 
 
 def _init_treesitter() -> bool:
@@ -138,7 +140,11 @@ def parse_treesitter(
     parser = _PARSERS[key]
     source_bytes = text.encode("utf-8", errors="replace")
     try:
-        tree = parser.parse(source_bytes)
+        # Parser instances are mutable in the native Tree-sitter bindings and are
+        # shared per language. Serialize calls so concurrent preprocessing cannot
+        # corrupt parser state and crash the Python process.
+        with _PARSER_LOCK:
+            tree = parser.parse(source_bytes)
     except Exception as exc:
         logger.debug("Tree-sitter parse failed for %s: %s", language, exc)
         return None
