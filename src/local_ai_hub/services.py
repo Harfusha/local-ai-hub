@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import copy
 import json
 import re
@@ -2571,7 +2573,7 @@ class LocalAIServices:
         instructions = str(args.get("instructions", "Review this git diff for actionable defects, regressions, security/concurrency issues and missing tests. Cite changed files/hunks."))
         det_hint = ""
         if det_diff:
-            det_hint = "\nDETERMINISTIC DIFF METADATA (facts only, verify semantics in the diff):\n" + json.dumps(det_diff, ensure_ascii=False, separators=(",", ":"))[:1800] + "\n"
+            det_hint = "\nDETERMINISTIC DIFF METADATA (facts only, verify semantics in the diff):\n" + json_dumps(det_diff, ensure_ascii=False, separators=(",", ":"))[:1800] + "\n"
             if det_diff.get("breaking_changes"):
                 det_hint += "\nPOTENTIAL BREAKING CHANGES DETECTED:\n"
                 for bc in det_diff["breaking_changes"][:10]:
@@ -3388,7 +3390,7 @@ class LocalAIServices:
         model = self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b")
         prompt = (
             f"Investigate this low-confidence command failure in {cwd}:\nCommand: {command}\n"
-            f"Failure summary: {json.dumps(summary, sort_keys=True)}\n"
+            f"Failure summary: {json_dumps(summary, sort_keys=True)}\n"
             f"Artifact reference: {artifact_id}\nFailure preview:\n{preview}\n"
             "Do not request or infer raw command logs; use only this bounded preview.\n"
             "Return only a short JSON diagnosis. Do not propose edits, patches, commands, architecture, or security work."
@@ -3478,7 +3480,7 @@ class LocalAIServices:
                 if isinstance(last_msg, dict) and isinstance(last_msg.get("content"), str):
                     semantic_query = last_msg.get("content", "").strip()
 
-            input_tokens = estimate_tokens(json.dumps(promptish, ensure_ascii=False, default=str) if not isinstance(promptish, str) else promptish)
+            input_tokens = estimate_tokens(json_dumps(promptish, ensure_ascii=False, default=str) if not isinstance(promptish, str) else promptish)
             opts = clean.get("options", {}) if isinstance(clean.get("options"), dict) else {}
             output_tokens = int(opts.get("num_predict", 0) or 0)
             clean, proxy_profile = self.model_policy.apply_payload(
@@ -3503,7 +3505,7 @@ class LocalAIServices:
                     msgs = list(clean["messages"])
                     system_msgs = [m for m in msgs if m.get("role") == "system"]
                     other_msgs = [m for m in msgs if m.get("role") != "system"]
-                    while other_msgs and estimate_tokens(json.dumps(system_msgs + other_msgs)) > budget:
+                    while other_msgs and estimate_tokens(json_dumps(system_msgs + other_msgs)) > budget:
                         if len(other_msgs) <= 1:
                             break
                         other_msgs.pop(0)
@@ -3640,7 +3642,7 @@ class LocalAIServices:
                 if isinstance(raw, dict):
                     raw["restarts"] = 0
                     raw["last_error"] = ""
-                    sup_status_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+                    sup_status_path.write_text(json_dumps(raw, ensure_ascii=False), encoding="utf-8")
         except Exception:
             pass
 
@@ -3776,7 +3778,7 @@ class LocalAIServices:
         }
         try:
             from .process_utils import atomic_write_file
-            atomic_write_file(history_file, json.dumps(history, indent=2))
+            atomic_write_file(history_file, json_dumps(history, indent=2))
         except Exception:
             pass
 

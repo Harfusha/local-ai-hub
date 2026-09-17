@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import copy
 import http.client
 import io
@@ -331,7 +333,7 @@ class HubClient:
         preflight = self._terminal_preflight(path, clean_payload)
         if preflight is not None:
             return preflight
-        body = json.dumps(clean_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str).encode("utf-8")
+        body = json_dumps(clean_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str).encode("utf-8")
         request_id = f"req_{uuid.uuid4().hex[:12]}"
 
         def once() -> dict[str, Any]:

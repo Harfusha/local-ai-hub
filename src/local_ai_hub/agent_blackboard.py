@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import json
 import sqlite3
 import threading
@@ -194,9 +196,9 @@ class BlackboardStore:
                     (
                         clean_board,
                         clean_section,
-                        json.dumps(content, ensure_ascii=False),
+                        json_dumps(content, ensure_ascii=False),
                         clean_author,
-                        json.dumps(new_clock),
+                        json_dumps(new_clock),
                         now,
                         sec.version,
                     ),
@@ -312,9 +314,9 @@ class BlackboardStore:
                         (
                             clean_board,
                             final_sec.section,
-                            json.dumps(final_sec.content, ensure_ascii=False),
+                            json_dumps(final_sec.content, ensure_ascii=False),
                             final_sec.author,
-                            json.dumps(final_sec.clock),
+                            json_dumps(final_sec.clock),
                             final_sec.timestamp,
                             final_sec.version,
                         ),

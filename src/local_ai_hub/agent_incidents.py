@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import hashlib
 import json
 import re
@@ -219,7 +221,7 @@ class IncidentStore:
             urls = list(self.webhook_urls)
         if not urls:
             return
-        payload = json.dumps(record_dict, default=str).encode("utf-8")
+        payload = json_dumps(record_dict, default=str).encode("utf-8")
         def _send() -> None:
             import urllib.request
             for u in urls:
@@ -725,7 +727,7 @@ class IncidentStore:
                         record.redacted_message,
                         record.state_revision,
                         record.attempts,
-                        json.dumps(list(record.evidence_ids)),
+                        json_dumps(list(record.evidence_ids)),
                         record.root_cause,
                         record.verified_fix,
                         record.confidence,
@@ -733,7 +735,7 @@ class IncidentStore:
                         record.created_at,
                         record.updated_at,
                         record.expires_at,
-                        json.dumps(list(record.affected_paths)),
+                        json_dumps(list(record.affected_paths)),
                         1 if record.ignored else 0,
                     ),
                 )

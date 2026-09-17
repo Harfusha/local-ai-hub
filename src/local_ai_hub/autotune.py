@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 from . import __version__
 import json
 import math
@@ -77,7 +79,7 @@ class RuntimeTuner:
         temporary = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
-            temporary.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+            temporary.write_text(json_dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8")
             temporary.replace(self._state_path)
             self._last_persist_seconds = now
         except OSError:

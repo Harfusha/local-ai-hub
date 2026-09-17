@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import hashlib
 import json
 import math
@@ -634,7 +636,7 @@ class RAGStore:
                     import numpy as np
                     embedding = sqlite3.Binary(np.array(vector, dtype=np.float32).tobytes())
                 except Exception:
-                    embedding = json.dumps(vector, separators=(",", ":"))
+                    embedding = json_dumps(vector, separators=(",", ":"))
                 for duplicate_idx in pending_by_hash[str(changed_records[idx]["hash"])]:
                     changed_records[duplicate_idx]["embedding"] = embedding
 
@@ -883,7 +885,7 @@ class RAGStore:
                         import numpy as np
                         file_data[f_idx]["records"][rec_idx]["embedding"] = sqlite3.Binary(np.array(vector, dtype=np.float32).tobytes())
                     except Exception:
-                        file_data[f_idx]["records"][rec_idx]["embedding"] = json.dumps(vector, separators=(",", ":"))
+                        file_data[f_idx]["records"][rec_idx]["embedding"] = json_dumps(vector, separators=(",", ":"))
                 embedded_chunks += len(all_missing_texts)
 
             # 5. Bulk SQLite transaction
@@ -1079,7 +1081,7 @@ class RAGStore:
                             import numpy as np
                             records[idx]["embedding"] = sqlite3.Binary(np.array(vector, dtype=np.float32).tobytes())
                         except Exception:
-                            records[idx]["embedding"] = json.dumps(vector, separators=(",", ":"))
+                            records[idx]["embedding"] = json_dumps(vector, separators=(",", ":"))
                     embedded_chunks += len(missing_idx)
 
                 with closing(self._connect()) as con:
@@ -1552,7 +1554,7 @@ class RAGStore:
                             import numpy as np
                             records[idx]["embedding"] = sqlite3.Binary(np.array(vec, dtype=np.float32).tobytes())
                         except Exception:
-                            records[idx]["embedding"] = json.dumps(vec, separators=(",", ":"))
+                            records[idx]["embedding"] = json_dumps(vec, separators=(",", ":"))
             except Exception:
                 pass
 
@@ -1627,7 +1629,7 @@ class RAGStore:
             file_size_kb = round(p_img.stat().st_size / 1024, 1)
             diagram_text = f"Architectural Diagram / Visual Asset: {p_img.name}\nFormat: {suffix.lstrip('.')}\nSize: {file_size_kb} KB\nCaption: {caption}\nFile path: {str(p_img)}"
             if metadata:
-                diagram_text += f"\nMetadata: {json.dumps(metadata, ensure_ascii=False)}"
+                diagram_text += f"\nMetadata: {json_dumps(metadata, ensure_ascii=False)}"
 
         res = self.ingest_document(
             workspace=clean_ws,

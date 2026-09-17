@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import json
 import threading
 import time
@@ -866,8 +868,8 @@ class TaskStore:
                         state.status.value,
                         state.owner,
                         state.lease_id,
-                        json.dumps(state.contract.to_dict()),
-                        json.dumps({
+                        json_dumps(state.contract.to_dict()),
+                        json_dumps({
                             "repository_id": state.context.repository_id,
                             "clone_id": state.context.clone_id,
                             "worktree_id": state.context.worktree_id,
@@ -875,8 +877,8 @@ class TaskStore:
                             "task_id": state.context.task_id,
                             "session_id": state.context.session_id,
                         }),
-                        json.dumps(state.checkpoint.to_dict()),
-                        json.dumps(state.verification_receipts),
+                        json_dumps(state.checkpoint.to_dict()),
+                        json_dumps(state.verification_receipts),
                         state.heartbeat_expires_at,
                         state.created_at,
                         state.updated_at,
@@ -971,11 +973,11 @@ class TaskStore:
         out_file.parent.mkdir(parents=True, exist_ok=True)
 
         if format.lower() == "json":
-            out_file.write_text(json.dumps(samples, indent=2, ensure_ascii=False), encoding="utf-8")
+            out_file.write_text(json_dumps(samples, indent=2, ensure_ascii=False), encoding="utf-8")
         else:
             with out_file.open("w", encoding="utf-8") as f:
                 for item in samples:
-                    f.write(json.dumps(item, ensure_ascii=False) + "\n")
+                    f.write(json_dumps(item, ensure_ascii=False) + "\n")
 
         return {
             "success": True,

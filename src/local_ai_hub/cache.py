@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import hashlib
 import json
 import sqlite3
@@ -19,7 +21,7 @@ _SQLITE_INITIALIZED_PATHS: set[str] = set()
 
 
 def stable_hash(value: Any) -> str:
-    raw = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
+    raw = json_dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -381,7 +383,7 @@ class SQLiteCache:
         return self._safe(op, None)
 
     def set(self, key: str, value: Any) -> None:
-        payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+        payload = json_dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
         def op() -> None:
             now = time.time()

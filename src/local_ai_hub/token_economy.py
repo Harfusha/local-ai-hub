@@ -7,6 +7,8 @@ Provides:
 """
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import argparse
 import os
 import re
@@ -84,7 +86,7 @@ def tokcount_main(argv: list[str] | None = None) -> int:
         lines, words, chars, o200k, cl100k = count_tokens(content)
         if args.json:
             import json
-            print(json.dumps({"source": "stdin", "lines": lines, "words": words, "chars": chars, "tokens_o200k": o200k, "tokens_cl100k": cl100k}, indent=2))
+            print(json_dumps({"source": "stdin", "lines": lines, "words": words, "chars": chars, "tokens_o200k": o200k, "tokens_cl100k": cl100k}, indent=2))
         elif args.quiet:
             print(o200k)
         else:
@@ -136,7 +138,7 @@ def tokcount_main(argv: list[str] | None = None) -> int:
 
     if args.json:
         import json
-        print(json.dumps({
+        print(json_dumps({
             "total_files": file_count,
             "lines": total_lines,
             "words": total_words,

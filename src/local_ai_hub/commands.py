@@ -2336,7 +2336,7 @@ class CommandBroker:
             "body": probe.get("body_preview", ""),
             "body_length": probe.get("body_length", 0),
         }
-        cassette_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        cassette_file.write_text(json_dumps(data, indent=2), encoding="utf-8")
         return {"success": True, "cassette": str(cassette_file), "url": url, "status_code": probe["status_code"]}
 
     def replay_mock(self, cassette_name: str, state_dir: str | None = None) -> dict[str, Any]:
