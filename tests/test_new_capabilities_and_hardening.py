@@ -22,6 +22,42 @@ from local_ai_hub.rag import _python_ast_chunks
 from local_ai_hub.services import LocalAIServices, vram_priority
 
 
+def test_repair_model_uses_only_low_confidence_artifact_preview():
+    services = object.__new__(LocalAIServices)
+    services.config = {"models": {"fast_code": "qwen2.5-coder:1.5b"}}
+    services.proxy_request = MagicMock(return_value={"response": '{"widget.py": "fixed"}'})
+    failure = {
+        "success": False,
+        "failure_summary": {"path": "", "line": 0, "message": "unclassified failure"},
+        "artifact_id": "art_failure_log",
+        "preview": "test command failed after setup",
+        "stderr": "RAW_LOG_MUST_NOT_REACH_MODEL" * 400,
+    }
+
+    result = services._synthesize_repair_patch("pytest -q", "C:/repo", failure)
+
+    assert result == {"widget.py": "fixed"}
+    prompt = services.proxy_request.call_args.args[1]["prompt"]
+    assert "art_failure_log" in prompt
+    assert "test command failed after setup" in prompt
+    assert "RAW_LOG_MUST_NOT_REACH_MODEL" not in prompt
+
+
+def test_repair_model_skips_high_confidence_failure():
+    services = object.__new__(LocalAIServices)
+    services.config = {"models": {"fast_code": "qwen2.5-coder:1.5b"}}
+    services.proxy_request = MagicMock()
+    failure = {
+        "success": False,
+        "failure_summary": {"path": "tests/test_widget.py", "line": 42, "message": "AssertionError"},
+        "artifact_id": "art_failure_log",
+        "preview": "tests/test_widget.py:42: AssertionError",
+    }
+
+    assert services._synthesize_repair_patch("pytest -q", "C:/repo", failure) is None
+    services.proxy_request.assert_not_called()
+
+
 def test_1_ast_aware_python_chunking(tmp_path: Path):
     code = '''"""Module docstring."""
 import os

@@ -109,7 +109,7 @@ Trigger map:
 - exact source/log/evidence slice: `local_ai_artifact`
 - ownership/checkpoints/verification receipts: `local_ai_coord`
 - semantic retrieval after indexed paths are insufficient: `local_ai_rag`
-- local diagnosis/boilerplate/second opinion: `local_ai_task`
+- local diagnosis/boilerplate/second opinion: `local_ai_task` only after low-confidence deterministic command parsing; provide artifact reference plus narrow preview, never raw logs
 - closed, low-risk work with verified handoff: `local_ai_work`
 
 Recipes (guidance, not gates):
