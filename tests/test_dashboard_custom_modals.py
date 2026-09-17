@@ -424,10 +424,39 @@ def test_trace_inspector_prioritizes_input_output_and_demotes_technical_detail()
             "function traceAvailability("
         )
     ]
-    assert "trace-primary-grid" in detail_source
+    assert "renderTracePresentation(model)" in detail_source
     assert "trace-optional-details" in detail_source
     assert "traceFirstRecorded(events,['prompt'" in model_source
     assert "traceFirstRecorded(events,['output'" in model_source
+
+
+def test_trace_inspector_dispatches_primary_body_before_optional_technical_details() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
+            "function setTraceView(view)"
+        )
+    ]
+    assert "const presentationMarkup=renderTracePresentation(model);" in source
+    assert "const optionalMarkup=`<details class=\"trace-optional-details\"" in source
+    assert source.index("renderTracePresentation(model)") < source.index(
+        "trace-optional-details"
+    )
+    assert "${header}${presentationMarkup}${optionalMarkup}" in source
+    assert "const primaryMarkup=" not in source
+
+
+def test_trace_inspector_keeps_tabs_and_raw_fallback_inside_optional_details() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
+            "function setTraceView(view)"
+        )
+    ]
+    optional_start = source.index('<details class="trace-optional-details">')
+    optional_end = source.index("</details>", optional_start)
+    optional_source = source[optional_start:optional_end]
+    assert '<nav class="trace-tabs" role="tablist" aria-label="Trace views">' in optional_source
+    assert "panelMarkup" in optional_source
+    assert "tracePanel('raw'" not in source[optional_start:]
 
 
 def test_trace_inspector_has_model_chat_renderer_contract_and_two_column_layout() -> None:
