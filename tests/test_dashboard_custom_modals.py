@@ -403,12 +403,15 @@ def test_trace_inspector_renders_universal_summary_before_optional_panels() -> N
         )
     ]
     assert "traceDisplayModel(d)" in source
-    assert "Universal request summary" in source
-    assert source.index("Universal request summary") < source.index("role=\"tablist\"")
-    assert "Input unavailable for this request type" in source
-    assert "Output unavailable for this request type" in source
-    assert "Response unavailable for this request type" in source
-    assert "Trace data availability" in source
+    assert "universalSummary=traceSummary(model,unavailableCopy)" in source
+    assert "${header}${universalSummary}${presentationMarkup}${optionalMarkup}" in source
+    for marker in [
+        "Input unavailable for this request type",
+        "Output unavailable for this request type",
+        "Response unavailable for this request type",
+        "Trace data availability",
+    ]:
+        assert marker in DASHBOARD_HTML
     assert "role=\"tabpanel\"" in source
     assert "function tracePanel(" in DASHBOARD_HTML
 
@@ -439,9 +442,9 @@ def test_trace_inspector_dispatches_primary_body_before_optional_technical_detai
     assert "const presentationMarkup=renderTracePresentation(model);" in source
     assert "const optionalMarkup=`<details class=\"trace-optional-details\"" in source
     assert source.index("renderTracePresentation(model)") < source.index(
-        "trace-optional-details"
+        "const optionalMarkup="
     )
-    assert "${header}${presentationMarkup}${optionalMarkup}" in source
+    assert "${header}${universalSummary}${presentationMarkup}${optionalMarkup}" in source
     assert "const primaryMarkup=" not in source
 
 
@@ -451,12 +454,70 @@ def test_trace_inspector_keeps_tabs_and_raw_fallback_inside_optional_details() -
             "function setTraceView(view)"
         )
     ]
-    optional_start = source.index('<details class="trace-optional-details">')
+    optional_start = source.index("const optionalMarkup=")
     optional_end = source.index("</details>", optional_start)
     optional_source = source[optional_start:optional_end]
     assert '<nav class="trace-tabs" role="tablist" aria-label="Trace views">' in optional_source
     assert "panelMarkup" in optional_source
     assert "tracePanel('raw'" not in source[optional_start:]
+
+
+def test_trace_inspector_polling_guards_stale_responses_and_bounds_client_buffer() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("async function openTrace(") : DASHBOARD_HTML.index(
+            "function openModal("
+        )
+    ]
+    for marker in [
+        "tracePollGeneration",
+        "tracePollInFlight",
+        "pollGeneration=++tracePollGeneration",
+        "tracePollInFlight=pollGeneration",
+        "tracePollInFlight=false",
+        "traceAppendEvents(traceEvents,d.events",
+        "pollGeneration!==tracePollGeneration",
+        "pollTraceId!==activeTraceId",
+    ]:
+        assert marker in source, f"Polling guard missing: {marker}"
+
+
+def test_trace_inspector_keeps_optional_details_open_and_summary_visible() -> None:
+    detail_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
+            "function setTraceView(view)"
+        )
+    ]
+    model_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceDisplayModel(detail)") : DASHBOARD_HTML.index(
+            "function traceAvailability("
+        )
+    ]
+    assert "traceOptionalDetailsOpen" in detail_source
+    assert "existingOptionalDetails.open" in detail_source
+    assert "traceOptionalDetailsOpen?' open':''" in detail_source
+    assert "${header}${universalSummary}${presentationMarkup}${optionalMarkup}" in detail_source
+    assert "${universalSummary}<nav" not in detail_source
+    assert "tracePanel('summary'" not in model_source
+
+
+def test_trace_event_buffer_runtime_caps_events_and_preserves_server_total() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("const traceEventBufferLimit=") : DASHBOARD_HTML.index(
+            "function traceBoundedEvents("
+        )
+    ]
+    script = (
+        source
+        + "const current=Array.from({length:200},(_,i)=>({seq:i}));"
+        + "const incoming=Array.from({length:25},(_,i)=>({seq:200+i}));"
+        + "console.log(JSON.stringify(traceAppendEvents(current,incoming,900)));"
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    bounded = json.loads(result.stdout)
+    assert len(bounded["events"]) == 200
+    assert bounded["events"][-1]["seq"] == 224
+    assert bounded["eventsTotal"] == 900
 
 
 def test_trace_inspector_has_model_chat_renderer_contract_and_two_column_layout() -> None:
