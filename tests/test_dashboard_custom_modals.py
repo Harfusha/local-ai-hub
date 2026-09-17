@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import re
+import json
+import subprocess
+from shutil import which
 from local_ai_hub.dashboard import DASHBOARD_HTML
 
 
@@ -192,3 +195,324 @@ def test_dashboard_onclick_handlers_use_safe_escaping() -> None:
     assert "id=\"confirmDeleteProjectBtn\"" in DASHBOARD_HTML
     assert "confirmDeleteProject(${escJs(root)})" in DASHBOARD_HTML
     assert "confirmBtn.onclick=()=>confirmDeleteProject(root)" in DASHBOARD_HTML
+
+
+def test_dashboard_display_state_helpers_defined() -> None:
+    expected_helpers = [
+        "function dashboardHealth(",
+        "function dashboardFreshness(",
+        "function redactDiagnostic(",
+    ]
+    for helper in expected_helpers:
+        assert helper in DASHBOARD_HTML, f"Expected dashboard helper {helper} missing"
+
+
+def test_dashboard_health_prioritizes_current_degradation() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function dashboardHealth(") : DASHBOARD_HTML.index(
+            "function dashboardFreshness("
+        )
+    ]
+    assert "current.degraded===true" in source
+    assert "return {level:'degraded',label:'Degraded'" in source
+    assert source.index("return {level:'degraded'") < source.index(
+        "return {level:'attention'"
+    )
+
+
+def test_dashboard_freshness_normalizes_timestamp_inputs_with_explicit_now() -> None:
+    freshness_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function dashboardFreshness(") : DASHBOARD_HTML.index(
+            "function redactDiagnostic("
+        )
+    ]
+    assert "function dashboardFreshness(timestamp,now=Date.now(),staleAfterMs=120000)" in freshness_source
+    assert "timestamp.trim()" in freshness_source
+    assert "Date.parse(timestamp||'')" in freshness_source
+    assert "Timestamp unavailable" in freshness_source
+    assert "Clock unavailable" in freshness_source
+
+
+def test_overview_health_summary_has_alert_first_rendering_contract() -> None:
+    """Missing health summary must fail before alert-first Overview exists."""
+    expected_markup = [
+        'id="overviewHealthSummary"',
+        'id="overviewFreshness"',
+        'aria-live="polite"',
+    ]
+    for fragment in expected_markup:
+        assert fragment in DASHBOARD_HTML, f"Overview health summary missing {fragment}"
+
+    overview_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderOverviewHealth(") : DASHBOARD_HTML.index(
+            "function redactDiagnostic("
+        )
+    ]
+    assert "dashboardHealth(snapshot)" in overview_source
+    assert "dashboardFreshness(" in overview_source
+    assert "Needs attention" in overview_source
+    assert "switchTab(" in overview_source
+
+
+def test_overview_health_uses_live_observability_and_accessible_status_contract() -> None:
+    """Dropped live failure signals, receive time, or canvas summary must fail."""
+    health_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function dashboardHealth(") : DASHBOARD_HTML.index(
+            "function dashboardFreshness("
+        )
+    ]
+    for signal in [
+        "agent_http",
+        "policy_rejection",
+        "degraded_count",
+        "retry_count",
+        "restarts",
+        "hub_online",
+        "ollama_online",
+    ]:
+        assert signal in health_source, f"Health ignores live signal {signal}"
+
+    overview_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderOverviewHealth(") : DASHBOARD_HTML.index(
+            "function redactDiagnostic("
+        )
+    ]
+    assert "receivedAt" in overview_source
+    assert "lastOverviewAnnouncement" in overview_source
+    assert "overviewAnnouncement" in DASHBOARD_HTML
+    assert 'aria-live="polite"' in DASHBOARD_HTML
+    assert 'id="liveChartSummary"' in DASHBOARD_HTML
+    assert "aria-label" in DASHBOARD_HTML
+    assert "lastOverviewReceivedAt" in DASHBOARD_HTML
+    assert "renderOverviewHealth(last,lastOverviewReceivedAt)" in DASHBOARD_HTML
+
+
+def test_dashboard_health_marks_stale_heartbeat_as_degraded() -> None:
+    """A dead heartbeat must never render as healthy runtime state."""
+    health_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function dashboardHealth(") : DASHBOARD_HTML.index(
+            "function dashboardFreshness("
+        )
+    ]
+    assert "heartbeat_stale" in health_source
+    assert "heartbeatStale" in health_source
+    assert "'stale'" in health_source
+    stale_guard = health_source[health_source.index("if(hubOnline===false") :]
+    assert "heartbeatStale" in stale_guard
+    assert "return {level:'degraded'" in stale_guard
+
+
+def test_dashboard_redacts_diagnostic_secrets_and_absolute_paths() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function redactDiagnostic(") : DASHBOARD_HTML.index(
+            "// Lightweight pure-canvas"
+        )
+    ]
+    assert "Bearer\\s+" in source
+    assert "api[_-]?key" in source
+    assert "(^|\\s)((?:--(?:api[-_]?key|token|secret|password)" in source
+    assert "[A-Za-z]:[\\\\/]" in source
+    assert "(?<![:\\w])\\/" in source
+
+
+def test_dashboard_redacts_quoted_json_secret_keys() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function redactDiagnostic(") : DASHBOARD_HTML.index(
+            "// Lightweight pure-canvas"
+        )
+    ]
+    assert "(?:[\"'](?:api[_-]?key|token|secret|password|authorization)[\"']" in source
+    assert "<redacted>" in source
+
+
+def test_trace_inspector_has_universal_redacted_display_model() -> None:
+    """Every retained trace needs a useful safe summary before optional detail panes."""
+    assert "function traceDisplayModel(detail)" in DASHBOARD_HTML
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceDisplayModel(detail)") : DASHBOARD_HTML.index(
+            "function renderTraceDetail(d)"
+        )
+    ]
+    for field in [
+        "identity",
+        "lifecycle",
+        "timing",
+        "actor",
+        "correlations",
+        "retainedBytes",
+        "input",
+        "output",
+        "response",
+        "errors",
+        "events",
+        "modelExecutions",
+        "toolCalls",
+    ]:
+        assert field in source, f"Trace display model omits {field}"
+    assert "traceSanitizeValue" in source
+    assert "redactDiagnostic" in source
+
+
+def test_trace_inspector_renders_universal_summary_before_optional_panels() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
+            "function setTraceView(view)"
+        )
+    ]
+    assert "traceDisplayModel(d)" in source
+    assert "Universal request summary" in source
+    assert source.index("Universal request summary") < source.index("role=\"tablist\"")
+    assert "Input unavailable for this request type" in source
+    assert "Output unavailable for this request type" in source
+    assert "Response unavailable for this request type" in source
+    assert "Trace data availability" in source
+    assert "role=\"tabpanel\"" in source
+    assert "function tracePanel(" in DASHBOARD_HTML
+
+
+def test_trace_inspector_uses_accessible_conditional_tabs_and_safe_trace_values() -> None:
+    tab_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceTab(") : DASHBOARD_HTML.index(
+            "function traceStatus("
+        )
+    ]
+    assert 'role="tab"' in tab_source
+    assert "aria-controls" in tab_source
+    detail_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
+            "function setTraceView(view)"
+        )
+    ]
+    assert "model.panels.filter(panel=>panel.available)" in detail_source
+    assert "traceSanitizeValue" in detail_source
+    assert "panelMarkup" in detail_source
+    assert "hidden" in detail_source
+    assert "panel.id===traceView" in detail_source
+    model_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceDisplayModel(detail)") : DASHBOARD_HTML.index(
+            "function traceAvailability("
+        )
+    ]
+    assert "tracePanel('events','Events',()=>traceEventList(events)" in model_source
+    assert "tracePanel('raw','Raw',()=>traceRaw" in model_source
+    assert "events.slice(-100)" in model_source
+
+
+def test_trace_raw_projection_bounds_events_before_sanitization() -> None:
+    bounded_events_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceBoundedEvents(") : DASHBOARD_HTML.index(
+            "function traceRawBoundValue("
+        )
+    ]
+    assert "list.slice(-eventLimit)" in bounded_events_source
+    projection_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceRawProjection(") : DASHBOARD_HTML.index(
+            "function traceRaw("
+        )
+    ]
+    assert "traceBoundedEvents(detail?.events,eventLimit)" in projection_source
+    assert "events_total" in projection_source
+    assert "events_truncated" in projection_source
+    model_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceDisplayModel(detail)") : DASHBOARD_HTML.index(
+            "function traceAvailability("
+        )
+    ]
+    assert "traceRaw(traceRawProjection(detail))" in model_source
+
+
+def test_trace_display_model_bounds_events_and_raw_fields_before_sanitization() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceDisplayModel(detail)") : DASHBOARD_HTML.index(
+            "function traceAvailability("
+        )
+    ]
+    assert "traceBoundedEvents(rawEvents)" in source
+    assert "traceSanitizeValue(rawEventProjection.events)" in source
+    assert "eventsTotal" in source
+    projection_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceRawBoundValue(") : DASHBOARD_HTML.index(
+            "function traceRaw("
+        )
+    ]
+    assert "value.slice(0,limit)" in projection_source
+    assert "traceRawBoundValue(rawSession.request)" in projection_source
+
+
+def test_bounded_trace_events_retain_request_metadata_and_cap_each_event() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceBoundedEvents(") : DASHBOARD_HTML.index(
+            "function traceDisplaySession("
+        )
+    ]
+    assert "event_type==='request_received'" in source
+    assert "traceRawBoundValue(event,2048)" in source
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    script = (
+        source
+        + "const events=[{event_type:'request_received',payload:{method:'POST',path:'/api/reason'}}]"
+        + ".concat(Array.from({length:101},(_,index)=>({event_type:'output_delta',payload:{text:String(index)}})));"
+        + "const bounded=traceBoundedEvents(events);console.log(JSON.stringify(bounded));"
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    bounded = json.loads(result.stdout)
+    assert bounded["eventsTotal"] == 102
+    assert any(event["event_type"] == "request_received" for event in bounded["events"])
+
+
+def test_trace_display_model_derives_http_identity_and_keeps_effective_payload() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceDisplayModel(detail)") : DASHBOARD_HTML.index(
+            "function traceAvailability("
+        )
+    ]
+    assert "event?.event_type==='request_received'" in source
+    assert "requestReceived?.payload" in source
+    assert "requestPayload.method" in source
+    assert "requestPayload.path" in source
+    assert "requestPayload.request_id" in source
+    assert "session.effective_payload" in source
+    assert "effectivePayload" in source
+
+
+def test_trace_inspector_has_keyboard_roving_tabs_and_explicit_reveal_control() -> None:
+    assert "function moveTraceTab(" in DASHBOARD_HTML
+    keyboard_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function moveTraceTab(") : DASHBOARD_HTML.index(
+            "async function openTrace("
+        )
+    ]
+    for key in ["ArrowLeft", "ArrowRight", "Home", "End"]:
+        assert key in keyboard_source
+    assert "requestAnimationFrame" in keyboard_source
+    assert "traceRevealRedactedDetails=false" in DASHBOARD_HTML
+    assert "data-trace-reveal" in DASHBOARD_HTML
+    assert 'aria-pressed="${traceRevealRedactedDetails}"' in DASHBOARD_HTML
+    assert "toggleTraceReveal" in DASHBOARD_HTML
+
+
+def test_trace_sanitizer_redacts_sensitive_object_values_by_key() -> None:
+    """Default inspector rendering must not expose values hidden behind sensitive keys."""
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    redact = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function redactDiagnostic(") : DASHBOARD_HTML.index(
+            "// Lightweight pure-canvas"
+        )
+    ]
+    sanitizer = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceSensitiveField(") : DASHBOARD_HTML.index(
+            "function traceRecorded("
+        )
+    ]
+    fixture = {
+        "api_key": "api-secret",
+        "authorization": "Bearer authorization-secret",
+        "nested": {"token": "token-secret", "safe": "kept"},
+    }
+    script = f"let traceRevealRedactedDetails=false;{redact}{sanitizer}console.log(JSON.stringify(traceSanitizeValue({json.dumps(fixture)})));"
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    sanitized = json.loads(result.stdout)
+    assert sanitized["api_key"] == "<redacted>"
+    assert sanitized["authorization"] == "<redacted>"
+    assert sanitized["nested"]["token"] == "<redacted>"
+    assert sanitized["nested"]["safe"] == "kept"

@@ -257,6 +257,10 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
+    DEBUG_TRACE_REQUEST_CAPTURE_BYTES = 8 * 1024
+    _DEBUG_TRACE_SENSITIVE_KEY = re.compile(
+        r"(?:api[_-]?key|authorization|token|secret|password|passwd|credential)", re.IGNORECASE
+    )
     protocol_version = "HTTP/1.1"
 
     def setup(self) -> None:
@@ -478,6 +482,36 @@ class Handler(BaseHTTPRequestHandler):
                             self._debug_observer_token = set_observer(DebugTraceObserver(trace_store, self._debug_trace_id))
         except Exception:
             pass
+
+    @classmethod
+    def _safe_debug_trace_request(cls, payload: Any) -> dict[str, Any]:
+        """Return a small redacted JSON/form payload suitable for durable trace storage."""
+        if not isinstance(payload, dict):
+            return {"capture_status": "omitted", "reason": "unsupported request body"}
+
+        def redact(value: Any, key: str = "") -> Any:
+            if cls._DEBUG_TRACE_SENSITIVE_KEY.search(key):
+                return "[redacted]"
+            if isinstance(value, dict):
+                return {str(child_key): redact(child_value, str(child_key)) for child_key, child_value in value.items()}
+            if isinstance(value, list):
+                return [redact(item) for item in value[:100]]
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                return value
+            return "[unsupported value]"
+
+        captured = redact(payload)
+        try:
+            encoded = json.dumps(captured, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        except (TypeError, ValueError):
+            return {"capture_status": "omitted", "reason": "unserializable request body"}
+        if len(encoded) > cls.DEBUG_TRACE_REQUEST_CAPTURE_BYTES:
+            return {
+                "capture_status": "omitted",
+                "reason": "request body exceeds trace capture limit",
+                "captured_limit_bytes": cls.DEBUG_TRACE_REQUEST_CAPTURE_BYTES,
+            }
+        return captured
 
     def _finish_debug_trace(self, status: int, data: Any, *, error: str = "") -> None:
         trace_id = str(getattr(self, "_debug_trace_id", "") or "")
@@ -1520,7 +1554,14 @@ class Handler(BaseHTTPRequestHandler):
         trace_store = getattr(APP, "debug_traces", None)
         api_trace_id = str(getattr(self, "_debug_trace_id", "") or "")
         if trace_store is not None and api_trace_id:
-            trace_store.update(api_trace_id, state="running", request=payload)
+            if not getattr(self, "_debug_trace_redacted", False):
+                captured_request = self._safe_debug_trace_request(payload)
+                trace_store.update(api_trace_id, state="running", request=captured_request)
+                trace_store.event(
+                    api_trace_id,
+                    "request_body_captured",
+                    {"content_type": content_type, "capture_status": captured_request.get("capture_status", "captured")},
+                )
             trace_store.event(api_trace_id, "handler_started", {"action": path, "payload_keys": sorted(str(key) for key in payload)})
         tenant = self._tenant()
         self._journal_request_id = str(getattr(self, "_trace_request_id", ""))
