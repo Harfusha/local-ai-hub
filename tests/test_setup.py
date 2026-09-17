@@ -172,6 +172,36 @@ def test_config_mergers_preserve_user_content(tmp_path: Path):
     assert "should-not-overwrite" not in text
 
 
+def test_ollama_setup_skips_exclusive_llama_cpp_configuration(monkeypatch, tmp_path: Path, capsys):
+    cfg = {
+        "server": {"auto_start_ollama": True},
+        "llama_cpp": {"mode": "on", "fallback_to_ollama": False},
+    }
+    monkeypatch.setattr(setup, "find_ollama_executable", lambda: pytest.fail("Ollama lookup must be skipped"))
+
+    assert setup.ollama_setup_required(cfg) is False
+    assert setup.ensure_ollama_for_setup(cfg, tmp_path, allow_install=True) is True
+    setup.pull_ollama_models(cfg)
+    assert "Skipping Ollama setup" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "cfg",
+    [
+        {"server": {"auto_start_ollama": False}, "llama_cpp": {"fallback_to_ollama": True}},
+        {"server": {"auto_start_ollama": True}, "llama_cpp": {"fallback_to_ollama": False}},
+    ],
+)
+def test_ollama_setup_requires_auto_start_and_fallback(cfg):
+    assert setup.ollama_setup_required(cfg) is False
+
+
+def test_ollama_setup_remains_enabled_for_fallback_configuration():
+    assert setup.ollama_setup_required(
+        {"server": {"auto_start_ollama": True}, "llama_cpp": {"mode": "auto", "fallback_to_ollama": True}}
+    ) is True
+
+
 def test_setup_rerun_preserves_installed_config_without_explicit_override(tmp_path: Path, monkeypatch):
     source = tmp_path / "source"
     install = tmp_path / "installed"
