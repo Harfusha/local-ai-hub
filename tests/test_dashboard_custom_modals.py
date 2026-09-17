@@ -399,12 +399,18 @@ def test_trace_inspector_uses_accessible_conditional_tabs_and_safe_trace_values(
 
 
 def test_trace_raw_projection_bounds_events_before_sanitization() -> None:
-    projection_source = DASHBOARD_HTML[
-        DASHBOARD_HTML.index("function traceRawProjection(") : DASHBOARD_HTML.index(
-            "function tracePanel("
+    bounded_events_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceBoundedEvents(") : DASHBOARD_HTML.index(
+            "function traceRawBoundValue("
         )
     ]
-    assert "events.slice(-eventLimit)" in projection_source
+    assert "list.slice(-eventLimit)" in bounded_events_source
+    projection_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceRawProjection(") : DASHBOARD_HTML.index(
+            "function traceRaw("
+        )
+    ]
+    assert "traceBoundedEvents(detail?.events,eventLimit)" in projection_source
     assert "events_total" in projection_source
     assert "events_truncated" in projection_source
     model_source = DASHBOARD_HTML[
@@ -413,6 +419,24 @@ def test_trace_raw_projection_bounds_events_before_sanitization() -> None:
         )
     ]
     assert "traceRaw(traceRawProjection(detail))" in model_source
+
+
+def test_trace_display_model_bounds_events_and_raw_fields_before_sanitization() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceDisplayModel(detail)") : DASHBOARD_HTML.index(
+            "function traceAvailability("
+        )
+    ]
+    assert "traceBoundedEvents(rawEvents)" in source
+    assert "traceSanitizeValue(rawEventProjection.events)" in source
+    assert "eventsTotal" in source
+    projection_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceRawBoundValue(") : DASHBOARD_HTML.index(
+            "function traceRaw("
+        )
+    ]
+    assert "value.slice(0,limit)" in projection_source
+    assert "traceRawBoundValue(rawSession.request)" in projection_source
 
 
 def test_trace_display_model_derives_http_identity_and_keeps_effective_payload() -> None:

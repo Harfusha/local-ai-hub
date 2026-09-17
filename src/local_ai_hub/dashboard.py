@@ -1976,10 +1976,19 @@ function renderHumanModal(obj){
 function traceTab(label,id){const selected=traceView===id;return `<button class="trace-tab ${selected?'active':''}" id="trace-tab-${esc(id)}" role="tab" data-trace-view="${esc(id)}" aria-selected="${selected}" aria-controls="trace-panel-${esc(id)}" tabindex="${selected?'0':'-1'}">${esc(label)}</button>`}
 function traceStatus(item){const state=String(item?.state||'queued');return state==='failed'&&/hub restarted|service stopped|shutdown/i.test(String(item?.error||''))?'interrupted':state}
 function traceDisplayState(item){const state=traceStatus(item);return state==='interrupted'?'Interrupted':humanLabel(state)}
+function traceBoundedEvents(events,eventLimit=100){const list=Array.isArray(events)?events:[];return {events:list.slice(-eventLimit),eventsTotal:list.length,eventsTruncated:list.length>eventLimit};}
+function traceRawBoundValue(value,limit=4096,depth=0){
+  if(value===null||value===undefined||typeof value==='number'||typeof value==='boolean')return value;
+  if(typeof value==='string')return value.length>limit?value.slice(0,limit)+'… truncated':value;
+  if(depth>=4)return '<nested value truncated>';
+  if(Array.isArray(value))return value.slice(0,50).map(item=>traceRawBoundValue(item,Math.max(128,Math.floor(limit/50)),depth+1));
+  if(typeof value==='object'){const entries=Object.entries(value).slice(0,50),childLimit=Math.max(128,Math.floor(limit/Math.max(entries.length,1)));return Object.fromEntries(entries.map(([key,item])=>[key,traceRawBoundValue(item,childLimit,depth+1)]));}
+  return String(value).slice(0,limit);
+}
+function traceDisplaySession(rawSession){return {trace_id:rawSession.trace_id,kind:rawSession.kind,state:rawSession.state,tenant:rawSession.tenant,agent:rawSession.agent,action:rawSession.action,source:rawSession.source,model:rawSession.model,request_id:rawSession.request_id,async_job_id:rawSession.async_job_id,scheduler_job_id:rawSession.scheduler_job_id,job_id:rawSession.job_id,owner:rawSession.owner,created_at:rawSession.created_at,updated_at:rawSession.updated_at,finished_at:rawSession.finished_at,duration_ms:rawSession.duration_ms,elapsed_ms:rawSession.elapsed_ms,status_code:rawSession.status_code,text_bytes:rawSession.text_bytes,retained_bytes:rawSession.retained_bytes,error:traceRawBoundValue(rawSession.error,1024),request:traceRawBoundValue(rawSession.request),effective_payload:traceRawBoundValue(rawSession.effective_payload),output:traceRawBoundValue(rawSession.output),response:traceRawBoundValue(rawSession.response)};}
 function traceRawProjection(detail,eventLimit=100){
-  const rawSession=detail?.session||{},events=Array.isArray(detail?.events)?detail.events:[];
-  const session={trace_id:rawSession.trace_id,kind:rawSession.kind,state:rawSession.state,tenant:rawSession.tenant,agent:rawSession.agent,action:rawSession.action,source:rawSession.source,model:rawSession.model,request_id:rawSession.request_id,async_job_id:rawSession.async_job_id,scheduler_job_id:rawSession.scheduler_job_id,created_at:rawSession.created_at,updated_at:rawSession.updated_at,finished_at:rawSession.finished_at,text_bytes:rawSession.text_bytes,error:rawSession.error};
-  return {session,effective_payload:rawSession.effective_payload||{},request:rawSession.request||{},output:rawSession.output||'',response:rawSession.response||{},events:events.slice(-eventLimit),events_total:events.length,events_truncated:events.length>eventLimit};
+  const rawSession=detail?.session||{},eventProjection=traceBoundedEvents(detail?.events,eventLimit),session=traceDisplaySession(rawSession);
+  return {session,effective_payload:traceRawBoundValue(rawSession.effective_payload),request:traceRawBoundValue(rawSession.request),output:traceRawBoundValue(rawSession.output),response:traceRawBoundValue(rawSession.response),events:eventProjection.events,events_total:eventProjection.eventsTotal,events_truncated:eventProjection.eventsTruncated};
 }
 function traceRaw(payload,limit=24000){let raw='';try{raw=JSON.stringify(traceSanitizeValue(payload),null,2)}catch(e){raw=redactDiagnostic(String(e))}const truncated=raw.length>limit;if(truncated)raw=raw.slice(0,limit)+'\n… raw output truncated';return `<section class="human-section trace-raw-panel"><h3>Raw JSON (redacted${truncated?' · truncated':''})</h3><pre class="human-pre">${esc(raw)}</pre></section>`}
 function traceEventList(events,limit=100){const shown=(events||[]).slice(-limit),prefix=(events||[]).length>shown.length?`<div class="empty-human">Showing latest ${shown.length} of ${(events||[]).length} events.</div>`:'';return `<section class="human-section"><h3>All events</h3>${prefix}${renderAny(shown)}</section>`}
@@ -1987,7 +1996,7 @@ function tracePanel(id,label,render,available=true){return {id,label,render,avai
 function traceUnavailable(label){return `${label} unavailable for this request type`;}
 function traceDisplayModel(detail){
   const rawSession=detail?.session||{},rawEvents=Array.isArray(detail?.events)?detail.events:[];
-  const session=traceSanitizeValue(rawSession),events=traceSanitizeValue(rawEvents);
+  const rawEventProjection=traceBoundedEvents(rawEvents),session=traceSanitizeValue(traceDisplaySession(rawSession)),events=traceSanitizeValue(rawEventProjection.events);
   const requestReceived=events.find(event=>event?.event_type==='request_received');
   const requestPayload=requestReceived?.payload&&typeof requestReceived.payload==='object'?requestReceived.payload:{};
   const redactedTraceId=traceRevealRedactedDetails?String(rawSession.trace_id||''):redactDiagnostic(rawSession.trace_id||'');
@@ -2009,7 +2018,7 @@ function traceDisplayModel(detail){
     input:traceRecorded(input),output:traceRecorded(output),response:traceRecorded(response),errors:errors.length>0,
     events:events.length>0,modelExecutions:modelExecutions.length>0,toolCalls:toolCalls.length>0,
   };
-  const model={identity,lifecycle,timing,actor,correlations,retainedBytes,input,output,response,errors,events,modelExecutions,toolCalls,effectivePayload,availability,session};
+  const eventsTotal=rawEventProjection.eventsTotal,eventsTruncated=rawEventProjection.eventsTruncated,model={identity,lifecycle,timing,actor,correlations,retainedBytes,input,output,response,errors,events,eventsTotal,eventsTruncated,modelExecutions,toolCalls,effectivePayload,availability,session};
   model.panels=[
     tracePanel('summary','Summary',()=>'',true),
     tracePanel('input','Input',()=>humanSection('Input',input),availability.input),
@@ -2039,7 +2048,7 @@ function renderTraceDetail(d){
   $('tracePageTitle').textContent=String(s.action||s.source||'Trace');$('tracePageLive').textContent=d?.terminal?'terminal · retained':'● live · auto-refresh';$('tracePageLive').className='tiny '+(d?.terminal?'ok':'trace-running');
   const state=model.lifecycle.state,displayState=traceStatus(s),stateClass=(displayState==='failed'||displayState==='error')?'bad':(displayState==='interrupted'?'warn':(d?.terminal?'ok':'warn'));
   const revealLabel=traceRevealRedactedDetails?'Hide unredacted details':'Reveal redacted details',revealState=traceRevealRedactedDetails?'Unredacted trace details shown locally.':'Trace details are redacted by default.';
-  const header=`<div class="trace-inspector-head"><div><div class="trace-kicker">Request trace · Universal inspector</div><strong>${esc(s.action||s.source||'Trace')}</strong><div class="tiny">${esc(s.agent||'unknown actor')} · ${esc(s.model||'model not recorded')}</div></div><span class="badge ${stateClass}">${esc(state)}</span></div><div class="trace-metrics"><span>${events.length} events</span><span>${esc(s.tenant||'no tenant')}</span><span>${model.retainedBytes} bytes retained</span><button type="button" class="btn" data-trace-reveal aria-pressed="${traceRevealRedactedDetails}" aria-describedby="trace-reveal-status">${esc(revealLabel)}</button><span id="trace-reveal-status" class="tiny" aria-live="polite">${esc(revealState)}</span></div>`;
+  const header=`<div class="trace-inspector-head"><div><div class="trace-kicker">Request trace · Universal inspector</div><strong>${esc(s.action||s.source||'Trace')}</strong><div class="tiny">${esc(s.agent||'unknown actor')} · ${esc(s.model||'model not recorded')}</div></div><span class="badge ${stateClass}">${esc(state)}</span></div><div class="trace-metrics"><span>${model.eventsTotal} events${model.eventsTruncated?' · latest retained view':''}</span><span>${esc(s.tenant||'no tenant')}</span><span>${model.retainedBytes} bytes retained</span><button type="button" class="btn" data-trace-reveal aria-pressed="${traceRevealRedactedDetails}" aria-describedby="trace-reveal-status">${esc(revealLabel)}</button><span id="trace-reveal-status" class="tiny" aria-live="polite">${esc(revealState)}</span></div>`;
   const panels=model.panels.filter(panel=>panel.available),universalSummary=traceSummary(model,unavailableCopy),panelMarkup=panels.map(panel=>{const selected=panel.id===traceView,content=selected?(panel.id==='summary'?'<div class="empty-human">Summary shown above.</div>':panel.render()):'';return `<div id="trace-panel-${esc(panel.id)}" class="trace-view" role="tabpanel" aria-labelledby="trace-tab-${esc(panel.id)}"${selected?'':' hidden'}>${content}</div>`}).join('');
   // Universal request summary and Trace data availability are always rendered before tabs.
   $('tracePageBody').className='trace-page-body';$('tracePageBody').innerHTML=`<div class="human-shell">${header}${universalSummary}<nav class="trace-tabs" role="tablist" aria-label="Trace views">${panels.map(panel=>traceTab(panel.label,panel.id)).join('')}</nav>${panelMarkup}</div>`;
