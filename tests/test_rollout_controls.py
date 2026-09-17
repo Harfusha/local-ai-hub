@@ -70,6 +70,16 @@ def test_disabled_mcp_rollout_features_do_not_call_server(monkeypatch) -> None:
     post.assert_not_called()
 
 
+def test_disabled_batch_schema_projection_tolerates_missing_optional_mcp_sdk() -> None:
+    def repo_tool(action: str, dry_run: bool = False, edits: list[dict] | None = None) -> None:
+        return None
+
+    mcp_server._hide_disabled_batch_schema(mcp_server._MissingMCP("test"), repo_tool)
+
+    assert "dry_run" not in __import__("inspect").signature(repo_tool).parameters
+    assert "edits" not in __import__("inspect").signature(repo_tool).parameters
+
+
 def test_disabled_diagnostic_artifacts_do_not_persist_command_output(tmp_path: Path) -> None:
     artifacts = ArtifactStore(tmp_path / "artifacts")
     broker = CommandBroker(
@@ -107,6 +117,22 @@ def test_malformed_local_diagnostic_flag_does_not_dispatch_model() -> None:
         "feature": "local_diagnostic_dispatch",
         "error": "local diagnostic dispatch is disabled (features.local_diagnostic_dispatch=false)",
     }
+    services.proxy_request.assert_not_called()
+
+
+def test_verified_remediation_bypasses_disabled_local_diagnostic_gate() -> None:
+    services = object.__new__(LocalAIServices)
+    services.config = {"features": {"tasks": False, "local_diagnostic_dispatch": False}}
+    services.proxy_request = MagicMock()
+    failure = {
+        "success": False,
+        "remediation": {"verified_fix": {"src/widget.py": "fixed\n"}},
+    }
+
+    assert services._synthesize_repair_patch("pytest -q", "C:/repo", failure) == {
+        "src/widget.py": "fixed\n",
+    }
+    assert "local_diagnostic_dispatch" not in failure
     services.proxy_request.assert_not_called()
 
 

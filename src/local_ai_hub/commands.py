@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -938,19 +939,42 @@ class CommandBroker:
     def _cancel_key(command: str, cwd: str) -> str:
         return stable_hash({"command": command.strip(), "cwd": str(Path(cwd).resolve())})
 
-    def cancel(self, command: str, cwd: str, tenant: str) -> dict[str, Any]:
+    @staticmethod
+    def _tenant_identity(tenant: str) -> str:
+        """Return collision-resistant tenant identity without retaining its raw value."""
+        return stable_hash({"tenant": str(tenant)})
+
+    @staticmethod
+    def _public_active(active: dict[str, Any]) -> dict[str, Any]:
+        """Expose bounded active-command metadata without tenant identity or raw tenant."""
+        return {key: value for key, value in active.items() if key not in {"tenant", "tenant_identity"}}
+
+    def cancel(self, command: str, cwd: str, tenant: str, *, execution_id: str = "") -> dict[str, Any]:
         """Request bounded cancellation of one currently running broker command."""
         lookup = self._cancel_key(command, cwd)
-        tenant_key = str(tenant)[:80]
+        tenant_key = self._tenant_identity(tenant)
         with self._lock:
-            key = next((item for item, value in self._active_cancel_keys.items() if value == (lookup, tenant_key)), "")
+            if execution_id:
+                matches = [
+                    item for item, active in self._active_commands.items()
+                    if active.get("execution_id") == execution_id and active.get("tenant_identity") == tenant_key
+                ]
+            else:
+                matches = [item for item, value in self._active_cancel_keys.items() if value == (lookup, tenant_key)]
+            if len(matches) > 1:
+                return {
+                    "success": False, "terminal": True, "retryable": False,
+                    "error": "multiple matching active commands; provide execution_id",
+                    "execution_ids": [str(self._active_commands[item].get("execution_id", "")) for item in matches],
+                }
+            key = matches[0] if matches else ""
             event = self._cancel_events.get(key) if key else None
-            active = dict(self._active_commands.get(key, {})) if key else {}
+            active = self._public_active(dict(self._active_commands.get(key, {}))) if key else {}
             if event is None:
                 return {"success": False, "terminal": True, "retryable": False, "error": "no matching active command"}
             event.set()
             self.cancelled += 1
-        return {"success": True, "cancellation_requested": True, "active": active}
+        return {"success": True, "cancellation_requested": True, "execution_id": active.get("execution_id", ""), "active": active}
 
     @staticmethod
     def _extract_diagnostics(result: dict[str, Any], limit: int = 30) -> list[dict[str, Any]]:
@@ -1226,7 +1250,7 @@ class CommandBroker:
             if not event.wait(wait_budget):
                 with self._lock:
                     self.coalesced_timeouts += 1
-                    active = dict(self._active_commands.get(key, {}))
+                    active = self._public_active(dict(self._active_commands.get(key, {})))
                 return {
                     "success": False, "in_progress": True, "retryable": True,
                     "error": "identical command is still running in another agent; do not start a duplicate",
@@ -1240,14 +1264,18 @@ class CommandBroker:
         self.misses += 1
         started_wall = time.time()
         cancel_event = threading.Event()
+        execution_id = uuid.uuid4().hex
+        execution_key = key if singleflight else f"mutation:{execution_id}"
+        tenant_identity = self._tenant_identity(tenant)
         with self._lock:
-            self._active_commands[key] = {
+            self._active_commands[execution_key] = {
                 "command": self._safe_label(command), "cwd": Path(cwd).name or str(Path(cwd)),
-                "tenant": str(tenant)[:80], "class": str(classification.get("class", "")),
-                "started_at": started_wall, "timeout_seconds": int(timeout or self.timeout),
+                "class": str(classification.get("class", "")),
+                "tenant_identity": tenant_identity, "started_at": started_wall,
+                "timeout_seconds": int(timeout or self.timeout), "execution_id": execution_id,
             }
-            self._cancel_events[key] = cancel_event
-            self._active_cancel_keys[key] = (self._cancel_key(command, cwd), str(tenant)[:80])
+            self._cancel_events[execution_key] = cancel_event
+            self._active_cancel_keys[execution_key] = (self._cancel_key(command, cwd), tenant_identity)
         git_snapshot = None
         if snapshot or rollback_on_failure:
             try:
@@ -1384,9 +1412,9 @@ class CommandBroker:
             with self._lock:
                 if singleflight:
                     self._inflight.pop(key, None)
-                self._active_commands.pop(key, None)
-                self._cancel_events.pop(key, None)
-                self._active_cancel_keys.pop(key, None)
+                self._active_commands.pop(execution_key, None)
+                self._cancel_events.pop(execution_key, None)
+                self._active_cancel_keys.pop(execution_key, None)
                 if event is not None:
                     event.set()
 
@@ -1399,8 +1427,9 @@ class CommandBroker:
                 pass
 
         compacted = self._compact(result, tenant, command)
+        compacted["execution_id"] = execution_id
         if auto_fix and not compacted.get("success") and not compacted.get("cancelled"):
-            return self.repair_loop(
+            repaired = self.repair_loop(
                 command, cwd, tenant,
                 max_attempts=max_repair_attempts,
                 task_id=task_id, criterion=criterion,
@@ -1408,6 +1437,8 @@ class CommandBroker:
                 fix_generator=fix_generator,
                 initial_result=compacted,
             )
+            repaired["execution_id"] = execution_id
+            return repaired
         return compacted
 
     def patch_and_verify(
@@ -2617,7 +2648,10 @@ class CommandBroker:
     def stats(self) -> dict[str, Any]:
         now = time.time()
         with self._lock:
-            active = [dict(v, age_ms=max(0, int((now - float(v.get("started_at", now))) * 1000))) for v in self._active_commands.values()]
+            active = [
+                self._public_active(dict(v, age_ms=max(0, int((now - float(v.get("started_at", now))) * 1000))))
+                for v in self._active_commands.values()
+            ]
             blocked_by_reason = dict(sorted(self._blocked_by_reason.items(), key=lambda kv: (-kv[1], kv[0]))[:12])
         return {
             "enabled": self.enabled, "hits": self.hits, "misses": self.misses, "cancelled": self.cancelled,
