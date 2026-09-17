@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import re
+import json
+import subprocess
+from shutil import which
 from local_ai_hub.dashboard import DASHBOARD_HTML
 
 
@@ -382,6 +385,17 @@ def test_trace_inspector_uses_accessible_conditional_tabs_and_safe_trace_values(
     ]
     assert "model.panels.filter(panel=>panel.available)" in detail_source
     assert "traceSanitizeValue" in detail_source
+    assert "panelMarkup" in detail_source
+    assert "hidden" in detail_source
+    assert "panel.id===traceView" in detail_source
+    model_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceDisplayModel(detail)") : DASHBOARD_HTML.index(
+            "function traceAvailability("
+        )
+    ]
+    assert "tracePanel('events','Events',()=>traceEventList(events)" in model_source
+    assert "tracePanel('raw','Raw',()=>traceRaw" in model_source
+    assert "events.slice(-100)" in model_source
 
 
 def test_trace_display_model_derives_http_identity_and_keeps_effective_payload() -> None:
@@ -413,3 +427,30 @@ def test_trace_inspector_has_keyboard_roving_tabs_and_explicit_reveal_control() 
     assert "data-trace-reveal" in DASHBOARD_HTML
     assert 'aria-pressed="${traceRevealRedactedDetails}"' in DASHBOARD_HTML
     assert "toggleTraceReveal" in DASHBOARD_HTML
+
+
+def test_trace_sanitizer_redacts_sensitive_object_values_by_key() -> None:
+    """Default inspector rendering must not expose values hidden behind sensitive keys."""
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    redact = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function redactDiagnostic(") : DASHBOARD_HTML.index(
+            "// Lightweight pure-canvas"
+        )
+    ]
+    sanitizer = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceSensitiveField(") : DASHBOARD_HTML.index(
+            "function traceRecorded("
+        )
+    ]
+    fixture = {
+        "api_key": "api-secret",
+        "authorization": "Bearer authorization-secret",
+        "nested": {"token": "token-secret", "safe": "kept"},
+    }
+    script = f"let traceRevealRedactedDetails=false;{redact}{sanitizer}console.log(JSON.stringify(traceSanitizeValue({json.dumps(fixture)})));"
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    sanitized = json.loads(result.stdout)
+    assert sanitized["api_key"] == "<redacted>"
+    assert sanitized["authorization"] == "<redacted>"
+    assert sanitized["nested"]["token"] == "<redacted>"
+    assert sanitized["nested"]["safe"] == "kept"
