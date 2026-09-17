@@ -16,6 +16,7 @@ from .artifacts import ArtifactStore
 from .budget import chars_for_tokens, estimate_tokens, fit_text
 from .cache import MemoryLRUCache, SQLiteCache, TieredCache, SingleFlightCache, SingleFlightGroup, stable_hash
 from .conversations import ConversationStore
+from .features import rollout_feature_enabled
 from .normalizer import normalize_query, postprocess_model_output
 from .semantic_cache import SemanticGenerationCache
 from .model_policy import ModelExecutionPolicy
@@ -1412,6 +1413,13 @@ class LocalAIServices:
         return self._repo_cached("profile", root, {}, lambda: self.repo_tools.project_profile(root))
 
     def repo_search(self, root: str, query: str, top_k: int = 12, context_lines: int | None = None, enrich: bool = False) -> dict[str, Any]:
+        if enrich and not rollout_feature_enabled(self.config, "enriched_search"):
+            return {
+                "success": False,
+                "unsupported": True,
+                "feature": "enriched_search",
+                "error": "enriched search is disabled (features.enriched_search=false)",
+            }
         # Search itself is case-insensitive and whitespace-tolerant. Use the same
         # canonical form for cache identity so equivalent agent queries reuse work.
         query = normalize_query(query).casefold()
@@ -1932,6 +1940,13 @@ class LocalAIServices:
         return self.deterministic_operation("ast-outline", root, {"path": path}, lambda: self.deterministic.ast_outline(root, path))
 
     def batch_replace(self, root: str, edits: list[dict[str, Any]], dry_run: bool = False) -> dict[str, Any]:
+        if not rollout_feature_enabled(self.config, "batch_replacement"):
+            return {
+                "success": False,
+                "unsupported": True,
+                "feature": "batch_replacement",
+                "error": "batch replacement is disabled (features.batch_replacement=false)",
+            }
         if not self.deterministic:
             return {"success": False, "error": "deterministic engine disabled"}
         return self.deterministic.batch_replace(root, edits, dry_run=dry_run)
@@ -3276,7 +3291,13 @@ class LocalAIServices:
         features = self.config.get("features", {})
         if not isinstance(features, dict) or not bool(features.get("tasks", True)):
             return None
-        if not bool(features.get("local_diagnostic_dispatch", False)):
+        if not rollout_feature_enabled(self.config, "local_diagnostic_dispatch"):
+            failure_result["local_diagnostic_dispatch"] = {
+                "available": False,
+                "unsupported": True,
+                "feature": "local_diagnostic_dispatch",
+                "error": "local diagnostic dispatch is disabled (features.local_diagnostic_dispatch=false)",
+            }
             return None
         rem = failure_result.get("remediation") or {}
         if rem.get("verified_fix") and isinstance(rem["verified_fix"], dict):

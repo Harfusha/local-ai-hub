@@ -369,7 +369,7 @@ TaskAction: TypeAlias = Literal[
     "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe",
     "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold",
 ]
-RepoAction: TypeAlias = Literal[
+_REPO_ACTIONS = (
     "profile", "search", "map", "code_index", "semantic", "graph", "intelligence",
     "deterministic", "context", "route", "delegate", "solve", "review_diff", "impact",
     "refactor_impact", "resolve_imports", "generate_tests", "validate_patch",
@@ -388,8 +388,9 @@ RepoAction: TypeAlias = Literal[
     "structural_search", "context_budget",
     "git_diff", "git_history_search", "hotspots", "generate_tests_for_diff", "cross_repo_contract",
     "reachability_dead_code", "mutation_test", "type_stubs", "skeletonize", "investigate",
-    "diagnose", "briefing", "batch_replace",
-]
+    "diagnose", "briefing",
+)
+RepoAction: TypeAlias = Literal.__getitem__(_REPO_ACTIONS + (("batch_replace",) if FEATURES.batch_replacement else ()))
 RagAction: TypeAlias = Literal["index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram"]
 CommandAction: TypeAlias = Literal[
     "run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix", "run_affected", "format",
@@ -631,7 +632,7 @@ _ADOPTION_TOOLS = {"local_ai_status", "local_ai_task", "local_ai_repo", "local_a
 _ADOPTION_ACTIONS = {
     "local_ai_status": set(StatusDetail.__args__),
     "local_ai_task": set(TaskAction.__args__),
-    "local_ai_repo": set(RepoAction.__args__),
+    "local_ai_repo": set(_REPO_ACTIONS) | {"batch_replace"},
     "local_ai_rag": set(RagAction.__args__),
     "local_ai_command": set(CommandAction.__args__),
     "local_ai_coord": set(CoordAction.__args__),
@@ -924,9 +925,7 @@ def local_ai_task(
     return _invalid_action("local_ai_task", action, tuple(TaskAction.__args__), "Use Local AI Hub only for bounded local-model work; use Codex-owned orchestration for peer subagents.")
 
 
-@mcp.tool()
-@_instrumented_tool()
-def local_ai_repo(
+def _local_ai_repo_impl(
     action: RepoAction,
     root: str = ".",
     query: str = "",
@@ -974,6 +973,13 @@ def local_ai_repo(
             "root": root,
         }, timeout=_timeout("quick")), "architecture")
     if action == "batch_replace":
+        if not FEATURES.batch_replacement:
+            return {
+                "success": False,
+                "unsupported": True,
+                "feature": "batch_replacement",
+                "error": "batch replacement is disabled (features.batch_replacement=false)",
+            }
         if not isinstance(edits, list) or not edits:
             return {"success": False, "error": "batch_replace requires a non-empty edits list"}
         return _compact(CLIENT.post("/api/code/batch_replace", {
@@ -981,6 +987,13 @@ def local_ai_repo(
         }, timeout=_timeout("quick")), "verify")
     if action == "search":
         enrich = bool(include_code)
+        if enrich and not FEATURES.enriched_search:
+            return {
+                "success": False,
+                "unsupported": True,
+                "feature": "enriched_search",
+                "error": "enriched search is disabled (features.enriched_search=false)",
+            }
         extra = list(extra_fields or [])
         if enrich:
             extra.extend(["text", "raw"])
@@ -1223,8 +1236,75 @@ def local_ai_repo(
         return _compact(CLIENT.post("/api/repo/skeletonize", {
             "code": query or diff, "targets": [path] if path else None,
         }, timeout=_timeout("quick")), "code")
-    return _invalid_action("local_ai_repo", action, tuple(RepoAction.__args__), "Keep work bounded in Local AI Hub; use Codex-owned orchestration for peer subagents.")
+    return _invalid_action("local_ai_repo", action, tuple(FEATURES.supported_repo_actions()), "Keep work bounded in Local AI Hub; use Codex-owned orchestration for peer subagents.")
 
+
+if FEATURES.batch_replacement:
+    @mcp.tool()
+    @_instrumented_tool()
+    def local_ai_repo(
+        action: RepoAction,
+        root: str = ".",
+        query: str = "",
+        diff: str = "",
+        task: str = "",
+        workspace: str = "",
+        path: str = "",
+        base: str = "HEAD",
+        staged: bool = False,
+        dry_run: bool = False,
+        max_tokens: int = 0,
+        evidence: list[dict[str, Any]] | None = None,
+        mode: str = "adaptive",
+        relation: str = "",
+        language: str = "auto",
+        profile: str = "",
+        receipt: dict[str, Any] | None = None,
+        task_id: str = "",
+        include_code: bool = False,
+        edits: list[dict[str, Any]] | None = None,
+        extra_fields: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Primary bounded repository worker. Batch replacement is enabled for this installation."""
+        return _local_ai_repo_impl(
+            action, root, query, diff, task, workspace, path, base, staged, dry_run,
+            max_tokens, evidence, mode, relation, language, profile, receipt, task_id,
+            include_code, edits, extra_fields,
+        )
+else:
+    @mcp.tool()
+    @_instrumented_tool()
+    def local_ai_repo(
+        action: RepoAction,
+        root: str = ".",
+        query: str = "",
+        diff: str = "",
+        task: str = "",
+        workspace: str = "",
+        path: str = "",
+        base: str = "HEAD",
+        staged: bool = False,
+        max_tokens: int = 0,
+        evidence: list[dict[str, Any]] | None = None,
+        mode: str = "adaptive",
+        relation: str = "",
+        language: str = "auto",
+        profile: str = "",
+        receipt: dict[str, Any] | None = None,
+        task_id: str = "",
+        include_code: bool = False,
+        extra_fields: list[str] | None = None,
+        **rollout: Any,
+    ) -> dict[str, Any]:
+        """Primary bounded repository worker. Rollout-only batch replacement is unavailable."""
+        return _local_ai_repo_impl(
+            action, root, query, diff, task, workspace, path, base, staged, bool(rollout.get("dry_run", False)),
+            max_tokens, evidence, mode, relation, language, profile, receipt, task_id,
+            include_code, rollout.get("edits"), extra_fields,
+        )
+
+
+local_ai_repo.__doc__ = _local_ai_repo_impl.__doc__
 
 
 @mcp.tool()
@@ -1572,6 +1652,7 @@ for _disabled in FEATURES.disabled_tools:
         mcp._tool_manager._tools.pop(_disabled, None)
     if hasattr(mcp, "tools") and isinstance(mcp.tools, list):
         mcp.tools = [t for t in mcp.tools if getattr(t, "__name__", "") != _disabled]
+
 
 # Ensure tool descriptions registered in FastMCP carry the complete dynamic guidance
 _all_desc_map = {

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .cache import SQLiteCache, TieredCache, stable_hash
+from .features import rollout_feature_enabled
 from .process_utils import assign_process_to_job, canonical_root, create_job_object_kill_on_close, hidden_run_kwargs, terminate_tree
 from .state_paths import configured_state_dir
 
@@ -2560,6 +2561,14 @@ class CommandBroker:
     def _compact(self, result: dict[str, Any], tenant: str, command: str) -> dict[str, Any]:
         stdout = str(result.get("stdout", "")); stderr = str(result.get("stderr", ""))
         combined_chars = len(stdout) + len(stderr)
+        diagnostic_artifacts_enabled = rollout_feature_enabled(self.config, "diagnostic_artifacts")
+        local_diagnostic_dispatch_enabled = rollout_feature_enabled(self.config, "local_diagnostic_dispatch")
+        diagnostic_artifacts_unavailable = {
+            "available": False,
+            "unsupported": True,
+            "feature": "diagnostic_artifacts",
+            "error": "diagnostic artifacts are disabled (features.diagnostic_artifacts=false)",
+        }
         result["summary"] = self._deterministic_summary(result)
         diagnostics = list(result.get("diagnostics") or self._extract_diagnostics(result))
         failure_summary = self._first_failure_summary({**result, "diagnostics": diagnostics})
@@ -2580,17 +2589,23 @@ class CommandBroker:
             # Low-confidence short failures do not get the full-log artifact below.
             # Retain only the already-bounded diagnostic so the repair gate receives
             # a safe reference without persisting the raw command output.
-            if (
-                self.artifacts is not None
-                and combined_chars <= self.inline_chars
-                and not result.get("artifact_id")
-                and not failure_summary.get("path")
-            ):
-                diagnostic = str(result["preview"])[:800]
-                result["artifact_id"] = self.artifacts.put(diagnostic, tenant, "command_diagnostic")
+            if combined_chars <= self.inline_chars and not result.get("artifact_id") and not failure_summary.get("path"):
+                if local_diagnostic_dispatch_enabled and self.artifacts is not None:
+                    diagnostic = str(result["preview"])[:800]
+                    result["artifact_id"] = self.artifacts.put(diagnostic, tenant, "local_diagnostic_context")
+                elif not diagnostic_artifacts_enabled:
+                    result["diagnostic_artifacts"] = diagnostic_artifacts_unavailable
+                elif self.artifacts is not None:
+                    diagnostic = str(result["preview"])[:800]
+                    result["artifact_id"] = self.artifacts.put(diagnostic, tenant, "command_diagnostic")
         if combined_chars > self.inline_chars:
             full = f"$ {command}\n\nSTDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
-            if self.artifacts is not None:
+            if local_diagnostic_dispatch_enabled and not diagnostic_artifacts_enabled and self.artifacts is not None:
+                diagnostic = str(result.get("preview", ""))[:800]
+                result["artifact_id"] = self.artifacts.put(diagnostic, tenant, "local_diagnostic_context")
+            elif not diagnostic_artifacts_enabled:
+                result["diagnostic_artifacts"] = diagnostic_artifacts_unavailable
+            elif self.artifacts is not None:
                 result["artifact_id"] = self.artifacts.put(full, tenant, "command")
             result["stdout"] = stdout[: self.inline_chars // 2]
             result["stderr"] = stderr[-self.inline_chars // 2:]

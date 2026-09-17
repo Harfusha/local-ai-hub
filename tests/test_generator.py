@@ -146,7 +146,7 @@ class TestGlobalPolicyGeneration:
         assert "local_ai_repo" in policy
 
     def test_policy_preserves_batch_replace_safety_rules(self):
-        policy = generate_global_policy({})
+        policy = generate_global_policy({"features": {"batch_replacement": True}})
         assert "batch_replace" in policy
         assert "dry_run=true" in policy
         assert "exact-match once" in policy
@@ -188,9 +188,19 @@ class TestMcpSchemasGeneration:
         assert "solve" in repo_actions_trimmed
 
     def test_repo_schema_exposes_batch_replace_edits_and_dry_run(self):
-        properties = generate_mcp_tool_schemas({})["local_ai_repo"]["parameters"]["properties"]
+        properties = generate_mcp_tool_schemas({"features": {"batch_replacement": True}})["local_ai_repo"]["parameters"]["properties"]
         assert properties["edits"] == {"type": "array", "items": {"type": "object"}}
         assert properties["dry_run"] == {"type": "boolean", "default": False}
+
+    def test_disabled_batch_replacement_is_omitted_from_policy_and_schema(self):
+        policy = generate_global_policy({})
+        properties = generate_mcp_tool_schemas({})["local_ai_repo"]["parameters"]["properties"]
+        actions = properties["action"]["enum"]
+
+        assert "batch_replace" not in policy
+        assert "batch_replace" not in actions
+        assert "edits" not in properties
+        assert "dry_run" not in properties
 
 
 class TestWriteAllGenerated:
