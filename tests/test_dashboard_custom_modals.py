@@ -620,7 +620,7 @@ def test_trace_presentation_data_merges_sibling_event_fields() -> None:
     }
     script = (
         "function redactDiagnostic(value){return String(value??'');}"
-        "let traceRevealRedactedDetails=false;"
+        "let traceRevealRedactedDetails=false;let traceOpenSteps=new Set();"
         + source
         + f"console.log(JSON.stringify(tracePresentationData({json.dumps(fixture)})));"
     )
@@ -680,6 +680,93 @@ def test_trace_request_renderers_runtime_show_severity_command_and_ranked_rag() 
     assert "rank" in rendered["rag"].lower() and "score" in rendered["rag"].lower()
     assert "<details" in rendered["rag"]
     assert "answer" in rendered["rag"]
+
+
+def test_trace_timeline_runtime_tolerates_malformed_events_and_caps_cumulative_payload() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    events = [None, "bad event", {"event_type": "tool_call", "payload": "bad payload"}]
+    events.extend(
+        {"event_type": "event", "payload": {f"field_{i}": "x" * 300}}
+        for i in range(140)
+    )
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;let traceOpenSteps=new Set();"
+        + source
+        + f"const events={json.dumps(events)};"
+        + "const compact=compactTimelineEvents(events);const timeline=traceTimeline(events);const bounded=traceBoundedEvents(events);"
+        + "console.log(JSON.stringify({compact:compact.length,timeline:timeline.length,bounded:JSON.stringify(bounded.events).length}));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    output = json.loads(result.stdout)
+    assert output["compact"] > 0
+    assert output["timeline"] > 0
+    assert output["bounded"] <= 26000
+
+
+def test_trace_review_severity_runtime_merges_counts_map_and_findings() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {
+            "review": {
+                "severity_counts": {"critical": 2, "high": 1, "medium": 3, "low": 4},
+                "findings": [{"severity": "critical"}, {"severity": "low"}],
+            }
+        },
+        "lifecycle": {},
+        "correlations": {},
+        "session": {},
+        "identity": {},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"console.log(JSON.stringify(renderReviewPresentation({json.dumps(fixture)})));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    html = json.loads(result.stdout)
+    for marker in ["critical: 2", "high: 1", "medium: 3", "low: 4"]:
+        assert marker in html
+
+
+def test_trace_rag_runtime_sorts_finite_scores_before_stable_unscored_items() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {
+            "retrieval": {
+                "query": "q",
+                "sources": [
+                    {"provider": "unscored-a", "score": "bad"},
+                    {"provider": "finite-low", "score": 0.2},
+                    {"provider": "unscored-b"},
+                    {"provider": "finite-high", "score": 0.9},
+                ],
+                "answer": "a",
+            }
+        },
+        "lifecycle": {},
+        "correlations": {},
+        "session": {},
+        "identity": {},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"console.log(JSON.stringify(renderRagSearchPresentation({json.dumps(fixture)})));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    html = json.loads(result.stdout)
+    assert html.index("finite-high") < html.index("finite-low")
+    assert html.index("unscored-a") < html.index("unscored-b")
+    assert html.index("finite-low") < html.index("unscored-a")
 
 
 def test_trace_inspector_shows_model_prompt_as_input() -> None:
