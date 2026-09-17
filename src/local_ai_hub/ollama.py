@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 from urllib.parse import urlparse
 
 from .llama_cpp import LlamaCppRouter
+from .json_utils import dumps as json_dumps
 
 
 def _normalise_keep_alive(payload: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -200,7 +201,7 @@ class OllamaRuntime:
                 ]}
             return {"error": "Ollama fallback is disabled and this endpoint is not provided by llama.cpp SYCL"}
         payload = _normalise_keep_alive(payload)
-        body = json.dumps(payload).encode("utf-8") if payload is not None else None
+        body = json_dumps(payload).encode("utf-8") if payload is not None else None
         headers = {"Content-Type": "application/json"} if body is not None else {}
         attempts = max(1, int(self.config.get("ollama", {}).get("request_attempts", 2)))
         retry_delay = max(0.0, float(self.config.get("ollama", {}).get("retry_delay_seconds", 0.6)))
@@ -257,7 +258,7 @@ class OllamaRuntime:
                 return {"error": "Ollama fallback is disabled and no llama.cpp SYCL route matches this model", "_lah_provider": "llama.cpp-sycl"}
         clean = dict(_normalise_keep_alive(payload) or {})
         clean["stream"] = True
-        body = json.dumps(clean, ensure_ascii=False).encode("utf-8")
+        body = json_dumps(clean).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         attempts = max(1, int(self.config.get("ollama", {}).get("request_attempts", 2)))
         retry_delay = max(0.0, float(self.config.get("ollama", {}).get("retry_delay_seconds", 0.6)))
@@ -396,7 +397,7 @@ class OllamaRuntime:
         clean = _normalise_keep_alive(payload) or {}
         clean = dict(clean)
         clean.setdefault("stream", True)
-        body = json.dumps(clean, ensure_ascii=False).encode("utf-8")
+        body = json_dumps(clean).encode("utf-8")
         req = Request(f"{self.base_url}{endpoint}", data=body, headers={"Content-Type": "application/json"})
         total_timeout = max(0.05, float(timeout if timeout is not None else self.timeout))
         deadline = time.monotonic() + total_timeout
