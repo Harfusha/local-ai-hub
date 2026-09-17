@@ -66,7 +66,7 @@ def test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources():
     skip_parts = {
         ".git", "__pycache__", ".pytest_cache", ".venv", "tool-envs", "state", "data", "generated",
         ".agents", ".serena", ".superpowers", "agy-contextless-workspace",
-        "backups", "migration-backups",
+        "backups", "migration-backups", ".worktrees",
     }
     skip_files = {"ORIGINAL_REQUEST.md", ".coverage"}
     for path in ROOT.rglob("*"):
@@ -127,3 +127,11 @@ def test_agent_policy_and_packaging_hardening_contracts():
     assert "zypper" in install_sh and "apk" in install_sh and "pacman" in install_sh
     install_ps1 = (ROOT / "install.ps1").read_text(encoding="utf-8")
     assert "Python314" in install_ps1
+
+
+def test_agent_prompts_require_durable_task_checkpoints_and_one_bounded_wait():
+    for name in ("INSTALL_PROMPT.md", "UPDATE_PROMPT.md"):
+        prompt = (ROOT / "docs" / name).read_text(encoding="utf-8")
+        assert "task_create" in prompt
+        assert "task_checkpoint" in prompt
+        assert "one bounded wait" in prompt

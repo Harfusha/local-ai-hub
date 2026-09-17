@@ -84,13 +84,28 @@ def stop() -> bool:
     return not c._online()
 
 
-def start() -> bool:
+def start(verbose: bool = True) -> bool:
     if _service("start"):
         deadline = time.time() + _startup_wait_seconds()
         c = client()
+        start_t = time.time()
+        is_tty = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+        last_feedback = 0.0
         while time.time() < deadline:
-            if c._online(): return True
+            if c._online():
+                if is_tty and verbose:
+                    sys.stdout.write(f"\rLocal AI Hub started in {time.time() - start_t:.1f}s.        \n")
+                    sys.stdout.flush()
+                return True
+            if is_tty and verbose and (time.time() - last_feedback >= 1.0):
+                last_feedback = time.time()
+                elapsed = int(last_feedback - start_t)
+                sys.stdout.write(f"\rWaiting for Local AI Hub cold start... ({elapsed}s)")
+                sys.stdout.flush()
             time.sleep(0.2)
+        if is_tty and verbose:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
         # A successfully launched managed supervisor owns startup. Do not make the
         # control client race it with a direct spawn after an ordinary cold start.
         return c._online()
@@ -114,6 +129,7 @@ def main() -> int:
     parser.add_argument("--compact", action="store_true", help="Compact older memory records into digest summaries")
     parser.add_argument("--vacuum", action="store_true", help="Run SQLite WAL checkpoint and VACUUM during cleanup")
     parser.add_argument("--ports", action="store_true", help="Also terminate orphaned background processes on ports 11436, 11437, 11439")
+    parser.add_argument("-f", "--follow", action="store_true", help="Stream log output continuously (like tail -f)")
     parser.add_argument("--json", dest="raw_json", action="store_true", help="Output raw JSON")
     args = parser.parse_args()
     if args.action == "generate":
@@ -272,16 +288,85 @@ def main() -> int:
     if args.action == "doctor":
         c = client()
         res = c.doctor()
-        print(json.dumps(res, indent=2, ensure_ascii=False))
+        if args.raw_json:
+            print(json.dumps(res, indent=2, ensure_ascii=False))
+            return 0 if res.get("success", True) else 1
+        checks = res.get("checks", [])
+        if checks:
+            print(f"{'STATUS':<8} {'COMPONENT':<25} {'DETAIL'}")
+            print("-" * 65)
+            for c_item in checks:
+                status_symbol = "[✓]" if c_item.get("status") == "OK" else f"[{c_item.get('status', 'WARN')}]"
+                comp = str(c_item.get("component", ""))[:24]
+                det = str(c_item.get("detail", ""))
+                print(f"{status_symbol:<8} {comp:<25} {det}")
+        else:
+            for k, v in res.items():
+                print(f"{k}: {v}")
         return 0 if res.get("success", True) else 1
     if args.action == "logs":
         c = client()
         res = c.logs(lines=args.limit or 200)
-        for line in res.get("lines", []):
+        lines = res.get("lines", [])
+        for line in lines:
             print(line)
-        return 0 if res.get("success", True) else 1
+        if not args.follow:
+            return 0 if res.get("success", True) else 1
+        last_seen = lines[-1] if lines else None
+        try:
+            while True:
+                time.sleep(1.0)
+                follow_res = c.logs(lines=50)
+                new_lines = follow_res.get("lines", [])
+                if not new_lines:
+                    continue
+                if last_seen and last_seen in new_lines:
+                    idx = len(new_lines) - 1 - new_lines[::-1].index(last_seen)
+                    to_print = new_lines[idx + 1:]
+                else:
+                    to_print = new_lines
+                for line in to_print:
+                    print(line)
+                if new_lines:
+                    last_seen = new_lines[-1]
+        except KeyboardInterrupt:
+            return 0
     if args.action == "status":
-        print(json.dumps(status(), indent=2, ensure_ascii=False))
+        st = status()
+        if args.raw_json:
+            print(json.dumps(st, indent=2, ensure_ascii=False))
+            return 0
+        if not st.get("running"):
+            print("Local AI Hub: Offline (stopped)")
+            return 0
+
+        pid = st.get("hub_pid", "N/A")
+        ver = st.get("version", "unknown")
+        ollama_ok = st.get("ollama_online", False)
+        active_model = (st.get("scheduler") or {}).get("active_model") or "None"
+        installed_models = st.get("installed_models", [])
+        gpus = st.get("hardware", {}).get("gpus", [])
+        gpu_name = gpus[0].get("name", "N/A") if gpus else "N/A"
+        vram_mb = gpus[0].get("vram_mb", 0) if gpus else 0
+
+        gen_cache = st.get("generation_cache", {})
+        cache_hits = gen_cache.get("hits", 0)
+        cache_misses = gen_cache.get("misses", 0)
+
+        agent_st = st.get("agent_state") or {}
+        tasks_cnt = len(agent_st.get("tasks", [])) if isinstance(agent_st.get("tasks"), list) else 0
+        leases_cnt = len(agent_st.get("leases", [])) if isinstance(agent_st.get("leases"), list) else 0
+
+        print(f"Local AI Hub v{ver} — Online (PID: {pid})")
+        print("=" * 55)
+        print(f"Ollama:       {'Online' if ollama_ok else 'Offline'} (Active: {active_model})")
+        model_sample = f" ({', '.join(installed_models[:3])}{'...' if len(installed_models) > 3 else ''})" if installed_models else ""
+        print(f"Models:       {len(installed_models)} installed{model_sample}")
+        if gpu_name != "N/A":
+            vram_str = f" ({vram_mb // 1024} GB)" if vram_mb else ""
+            print(f"GPU:          {gpu_name}{vram_str}")
+        print(f"Cache:        {cache_hits} hits, {cache_misses} misses")
+        print(f"Agent OS:     {tasks_cnt} tasks, {leases_cnt} leases active")
         return 0
     if args.action == "stop":
         ok = stop(); print("stopped" if ok else "stop failed"); return 0 if ok else 1

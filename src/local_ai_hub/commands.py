@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -10,11 +11,13 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections import deque
 from pathlib import Path
 from typing import Any
 
 from .cache import SQLiteCache, TieredCache, stable_hash
+from .features import rollout_feature_enabled
 from .process_utils import assign_process_to_job, canonical_root, create_job_object_kill_on_close, hidden_run_kwargs, terminate_tree
 from .state_paths import configured_state_dir
 
@@ -28,6 +31,11 @@ _SECRET_PATTERNS = [
     re.compile(r"ghp_[a-zA-Z0-9]{36}"),
     re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(r"(?i)(aws_secret_access_key\s*=\s*)([^\s]+)"),
+]
+
+_DIAGNOSTIC_PATTERNS = [
+    re.compile(r"^(?P<path>[^:\n]+):(?P<line>\d+)(?::(?P<col>\d+))?[:\s]+(?P<msg>.+)$"),
+    re.compile(r"^FAILED\s+(?P<path>[^:\s]+)(?:::(?P<msg>.+))?$"),
 ]
 
 
@@ -153,6 +161,7 @@ class CommandBroker:
         self.repo_state = repo_state
         cfg = config.get("commands", {})
         self.enabled = bool(cfg.get("enabled", True))
+        self.policy_blocking = bool(cfg.get("policy_blocking", False))
         self.timeout = int(cfg.get("timeout_seconds", 900))
         self.max_output_chars = int(cfg.get("max_output_chars", 2_000_000))
         self.inline_chars = int(cfg.get("inline_output_chars", 5000))
@@ -186,6 +195,7 @@ class CommandBroker:
         self.incident_store: Any = None
         self.verification_store: Any = None
         self.policy_engine: Any = None
+        self.error_distiller: Any = None
 
     def set_policy_engine(self, policy_engine: Any) -> None:
         self.policy_engine = policy_engine
@@ -195,6 +205,10 @@ class CommandBroker:
 
     def set_verification_store(self, verification_store: Any) -> None:
         self.verification_store = verification_store
+
+    def set_error_distiller(self, error_distiller: Any) -> None:
+        """Set the optional local-model fallback for unstructured command failures."""
+        self.error_distiller = error_distiller
 
     @staticmethod
     def _tokens(command: str) -> list[str]:
@@ -468,12 +482,37 @@ class CommandBroker:
             if dash_c is not None:
                 _DANGEROUS_INLINE = (
                     "os.system(", "os.popen(", "subprocess.", "exec(", "eval(", "__import__(",
-                    "importlib.", "ctypes.", "shutil.rmtree(", "shutil.move(",
+                    "importlib.", "ctypes.", "shutil.rmtree", "shutil.move", "os.remove(",
+                    "os.unlink(", "os.rmdir(", "socket.", "pty.",
                 )
                 dash_c_lower = dash_c.lower()
                 if any(pat in dash_c_lower for pat in _DANGEROUS_INLINE):
                     return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code contains potentially dangerous call"}
-                if any(kw in dash_c_lower for kw in ("test", "validate", "check", "audit", "doctor", "selftest", "report", "assert")):
+
+                is_validation = False
+                try:
+                    tree = ast.parse(dash_c)
+                    for node in ast.walk(tree):
+                        if isinstance(node, ast.Call):
+                            func_name = ""
+                            if isinstance(node.func, ast.Name):
+                                func_name = node.func.id
+                            elif isinstance(node.func, ast.Attribute):
+                                func_name = node.func.attr
+                            if func_name in {"exec", "eval", "compile"}:
+                                return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"python -c inline code contains dangerous call: {func_name}"}
+                        elif isinstance(node, ast.Assert):
+                            is_validation = True
+                except SyntaxError:
+                    return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code contains invalid syntax"}
+
+                if not is_validation:
+                    tokens_in_code = set(re.findall(r"\b\w+\b", dash_c_lower))
+                    validation_keywords = {"test", "validate", "check", "audit", "doctor", "selftest", "report", "assert"}
+                    if validation_keywords & tokens_in_code:
+                        is_validation = True
+
+                if is_validation:
                     return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "python inline validation"}
                 return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": "python inline read"}
 
@@ -905,50 +944,122 @@ class CommandBroker:
     def _cancel_key(command: str, cwd: str) -> str:
         return stable_hash({"command": command.strip(), "cwd": str(Path(cwd).resolve())})
 
-    def cancel(self, command: str, cwd: str, tenant: str) -> dict[str, Any]:
+    @staticmethod
+    def _tenant_identity(tenant: str) -> str:
+        """Return collision-resistant tenant identity without retaining its raw value."""
+        return stable_hash({"tenant": str(tenant)})
+
+    @staticmethod
+    def _public_active(active: dict[str, Any]) -> dict[str, Any]:
+        """Expose bounded active-command metadata without tenant identity or raw tenant."""
+        return {key: value for key, value in active.items() if key not in {"tenant", "tenant_identity"}}
+
+    def cancel(self, command: str, cwd: str, tenant: str, *, execution_id: str = "") -> dict[str, Any]:
         """Request bounded cancellation of one currently running broker command."""
         lookup = self._cancel_key(command, cwd)
-        tenant_key = str(tenant)[:80]
+        tenant_key = self._tenant_identity(tenant)
         with self._lock:
-            key = next((item for item, value in self._active_cancel_keys.items() if value == (lookup, tenant_key)), "")
+            if execution_id:
+                matches = [
+                    item for item, active in self._active_commands.items()
+                    if active.get("execution_id") == execution_id and active.get("tenant_identity") == tenant_key
+                ]
+            else:
+                matches = [item for item, value in self._active_cancel_keys.items() if value == (lookup, tenant_key)]
+            if len(matches) > 1:
+                return {
+                    "success": False, "terminal": True, "retryable": False,
+                    "error": "multiple matching active commands; provide execution_id",
+                    "execution_ids": [str(self._active_commands[item].get("execution_id", "")) for item in matches],
+                }
+            key = matches[0] if matches else ""
             event = self._cancel_events.get(key) if key else None
-            active = dict(self._active_commands.get(key, {})) if key else {}
+            active = self._public_active(dict(self._active_commands.get(key, {}))) if key else {}
             if event is None:
                 return {"success": False, "terminal": True, "retryable": False, "error": "no matching active command"}
             event.set()
             self.cancelled += 1
-        return {"success": True, "cancellation_requested": True, "active": active}
+        return {"success": True, "cancellation_requested": True, "execution_id": active.get("execution_id", ""), "active": active}
 
     @staticmethod
     def _extract_diagnostics(result: dict[str, Any], limit: int = 30) -> list[dict[str, Any]]:
-        text = (str(result.get("stdout", "")) + "\n" + str(result.get("stderr", ""))).strip()
-        diagnostics: list[dict[str, Any]] = []
-        patterns = [
-            re.compile(r"^(?P<path>[^:\n]+):(?P<line>\d+)(?::(?P<col>\d+))?[:\s]+(?P<msg>.+)$"),
-            re.compile(r"^FAILED\s+(?P<path>[^:\s]+)(?:::(?P<msg>.+))?$"),
-        ]
-        for raw in text.splitlines():
-            line = raw.strip()
-            if not line:
-                continue
-            matched = None
-            for pattern in patterns:
-                m = pattern.match(line)
-                if m:
-                    matched = m; break
-            if matched:
-                data = matched.groupdict()
-                diagnostics.append({
-                    "path": data.get("path", ""),
-                    "line": int(data.get("line") or 0),
-                    "column": int(data.get("col") or 0),
-                    "message": str(data.get("msg") or line)[:500],
-                })
-            elif any(x in line.lower() for x in ("error", "fatal", "exception", "traceback", "assertionerror", "panic")):
-                diagnostics.append({"path": "", "line": 0, "column": 0, "message": line[:500]})
-            if len(diagnostics) >= limit:
-                break
-        return diagnostics
+        # stdout/stderr are captured independently, so their true interleaving is
+        # unavailable. Preserve each stream's order while preferring explicit
+        # failures over informational diagnostics and warnings from a failed run.
+        # This keeps an early stdout warning from masking the useful stderr error.
+        streams = (str(result.get("stdout", "")), str(result.get("stderr", "")))
+        failures: list[dict[str, Any]] = []
+        others: list[dict[str, Any]] = []
+        patterns = _DIAGNOSTIC_PATTERNS
+        failure_terms = ("error", "fatal", "exception", "traceback", "assertionerror", "panic", "failed", "failure")
+        for text in streams:
+            for raw in text.splitlines():
+                line = raw.strip()
+                if not line:
+                    continue
+                matched = None
+                matched_failure = False
+                for pattern_index, pattern in enumerate(patterns):
+                    m = pattern.match(line)
+                    if m:
+                        matched = m
+                        # The dedicated pytest `FAILED path::test` pattern keeps
+                        # the path but strips the word FAILED from its message.
+                        # Preserve its failure semantics from the original line.
+                        matched_failure = pattern_index == 1
+                        break
+                message = ""
+                diagnostic: dict[str, Any] | None = None
+                if matched:
+                    data = matched.groupdict()
+                    message = str(data.get("msg") or line)[:500]
+                    diagnostic = {
+                        "path": data.get("path", ""),
+                        "line": int(data.get("line") or 0),
+                        "column": int(data.get("col") or 0),
+                        "message": message,
+                    }
+                elif any(term in line.lower() for term in failure_terms):
+                    message = line[:500]
+                    diagnostic = {"path": "", "line": 0, "column": 0, "message": message}
+                if diagnostic is None:
+                    continue
+                target = failures if (
+                    matched_failure
+                    or any(term in line.lower() for term in failure_terms)
+                ) else others
+                if len(target) < limit:
+                    target.append(diagnostic)
+        return (failures + others)[:limit]
+
+    @classmethod
+    def _first_failure_summary(cls, result: dict[str, Any]) -> dict[str, Any]:
+        """Return first deterministic failure location without replaying verbose logs."""
+        diagnostics = list(result.get("diagnostics") or cls._extract_diagnostics(result, limit=1))
+        if diagnostics:
+            first = diagnostics[0]
+            return {
+                "path": str(first.get("path") or ""),
+                "line": int(first.get("line") or 0),
+                "message": str(first.get("message") or "").strip()[:500],
+            }
+        return {
+            "path": "",
+            "line": 0,
+            "message": cls._distill_error(result)[:500],
+        }
+
+    @staticmethod
+    def _failure_preview(summary: dict[str, Any]) -> str:
+        """Expose only the narrow first-failure slice in command results."""
+        path = str(summary.get("path") or "")
+        line = int(summary.get("line") or 0)
+        message = str(summary.get("message") or "").strip()
+        if path and line:
+            return f"{path}:{line}: {message}"[:800]
+        if path:
+            return f"{path}: {message}"[:800]
+        return message[:800]
 
     @staticmethod
     def _deterministic_summary(result: dict[str, Any], limit: int = 60) -> str:
@@ -966,6 +1077,56 @@ class CommandBroker:
         if len(selected) < limit // 2:
             selected = lines[: max(8, limit // 5)] + selected
         return "\n".join(selected[:limit])
+
+    @staticmethod
+    def _distill_error(result: dict[str, Any]) -> str:
+        """Extract a high-density, concise 1-3 line failure cause from command output."""
+        if result.get("success"):
+            return ""
+        diagnostics = result.get("diagnostics", [])
+        if diagnostics:
+            parts = []
+            for d in diagnostics[:2]:
+                path = d.get("path")
+                line = d.get("line")
+                msg = str(d.get("message") or "").strip()
+                if path and line:
+                    parts.append(f"{path}:{line}: {msg}")
+                elif msg:
+                    parts.append(msg)
+            if parts:
+                return "\n".join(parts)[:300]
+        text = (str(result.get("stderr", "")) + "\n" + str(result.get("stdout", ""))).strip()
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        if lines:
+            for ln in reversed(lines):
+                if any(k in ln.lower() for k in ("error", "failed", "exception", "fatal", "traceback")):
+                    return ln[:240]
+            return lines[-1][:240]
+        return f"Command failed with exit code {result.get('exit_code', 1)}"
+
+    @staticmethod
+    def _needs_model_error_distillation(result: dict[str, Any]) -> bool:
+        if result.get("diagnostics"):
+            return False
+        text = (str(result.get("stderr", "")) + "\n" + str(result.get("stdout", ""))).strip()
+        return bool(text)
+
+    def _distill_error_with_model(self, result: dict[str, Any]) -> str:
+        if not callable(self.error_distiller):
+            return ""
+        payload = {
+            "exit_code": int(result.get("exit_code", 1) or 1),
+            "summary": str(result.get("summary", ""))[:4000],
+            "diagnostics": list(result.get("diagnostics", []))[:2],
+        }
+        try:
+            distilled = self.error_distiller(payload)
+        except Exception:
+            return ""
+        if isinstance(distilled, dict):
+            distilled = distilled.get("text", distilled.get("summary", ""))
+        return str(distilled or "").strip()[:300]
 
     def run(
         self,
@@ -988,6 +1149,9 @@ class CommandBroker:
     ) -> dict[str, Any]:
         if not self.enabled:
             return {"success": False, "error": "command broker disabled"}
+        original_command = command
+        classification = self.classify(original_command)
+        is_mutating = classification.get("class") == "mutating"
         if sandbox == "docker":
             if not shutil.which("docker"):
                 return {
@@ -1008,16 +1172,16 @@ class CommandBroker:
                     "retryable": False,
                     "budget_exhausted": True,
                 }
-        classification = self.classify(command)
         attempt_key = self._attempt_key(command, cwd)
-        if not force:
+        if not force and not is_mutating:
             suppressed = self.suppression_cache.get(attempt_key)
             if isinstance(suppressed, dict):
                 self.suppressed += 1
                 result = dict(suppressed)
                 result.update({"suppression_cache_hit": True, "classification": classification})
                 return self._compact(result, tenant, command)
-        if not classification["allowed"]:
+        is_dangerous = classification.get("class") == "dangerous"
+        if is_dangerous or (not classification["allowed"] and self.policy_blocking):
             with self._lock:
                 self.blocked += 1
                 reason = str(classification.get("reason", "policy"))[:120]
@@ -1026,7 +1190,7 @@ class CommandBroker:
                 "success": False, "error": f"command blocked: {classification['reason']}",
                 "classification": classification, "policy_blocked": True, "terminal": True, "retryable": False,
             }
-            if not force:
+            if not force and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return result
         cwd_path = Path(cwd).expanduser().resolve(strict=False)
@@ -1038,7 +1202,7 @@ class CommandBroker:
                 "terminal": True,
                 "retryable": False,
             }
-            if not force:
+            if not force and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return result
         unavailable = self._unavailable_executable(command, cwd)
@@ -1047,7 +1211,7 @@ class CommandBroker:
                 "success": False, "error": f"command executable is unavailable: {unavailable}",
                 "exit_code": 127, "classification": classification, "preflight": True, "terminal": True, "retryable": False,
             }
-            if not force:
+            if not force and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
         if not Path(cwd).is_dir():
@@ -1055,7 +1219,7 @@ class CommandBroker:
                 "success": False, "error": f"working directory does not exist: {cwd}",
                 "exit_code": 1, "classification": classification, "preflight": True, "terminal": True, "retryable": False,
             }
-            if not force:
+            if not force and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
         try:
@@ -1069,10 +1233,11 @@ class CommandBroker:
                 "terminal": True,
                 "retryable": False,
             }
-            if not force:
+            if not force and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
-        if classification["cacheable"] and not force:
+        cacheable = bool(classification["cacheable"]) and not is_mutating
+        if cacheable and not force:
             cached = self.success_cache.get(key) or self.failure_cache.get(key)
             if isinstance(cached, dict):
                 self.hits += 1
@@ -1096,13 +1261,16 @@ class CommandBroker:
                         pass
                 return self._compact(result, tenant, command)
 
-        with self._lock:
-            event = self._inflight.get(key)
-            if event is None:
-                event = threading.Event(); self._inflight[key] = event; owner = True
-            else:
-                owner = False; self.coalesced += 1
-        if not owner:
+        singleflight = not is_mutating
+        event: threading.Event | None = None
+        if singleflight:
+            with self._lock:
+                event = self._inflight.get(key)
+                if event is None:
+                    event = threading.Event(); self._inflight[key] = event; owner = True
+                else:
+                    owner = False; self.coalesced += 1
+        if singleflight and not owner:
             # A second agent should benefit from single-flight without being trapped
             # behind a very long build/test command. The owner keeps running and will
             # populate the cache; the waiter gets a bounded in-progress response.
@@ -1110,7 +1278,7 @@ class CommandBroker:
             if not event.wait(wait_budget):
                 with self._lock:
                     self.coalesced_timeouts += 1
-                    active = dict(self._active_commands.get(key, {}))
+                    active = self._public_active(dict(self._active_commands.get(key, {})))
                 return {
                     "success": False, "in_progress": True, "retryable": True,
                     "error": "identical command is still running in another agent; do not start a duplicate",
@@ -1124,14 +1292,18 @@ class CommandBroker:
         self.misses += 1
         started_wall = time.time()
         cancel_event = threading.Event()
+        execution_id = uuid.uuid4().hex
+        execution_key = key if singleflight else f"mutation:{execution_id}"
+        tenant_identity = self._tenant_identity(tenant)
         with self._lock:
-            self._active_commands[key] = {
+            self._active_commands[execution_key] = {
                 "command": self._safe_label(command), "cwd": Path(cwd).name or str(Path(cwd)),
-                "tenant": str(tenant)[:80], "class": str(classification.get("class", "")),
-                "started_at": started_wall, "timeout_seconds": int(timeout or self.timeout),
+                "class": str(classification.get("class", "")),
+                "tenant_identity": tenant_identity, "started_at": started_wall,
+                "timeout_seconds": int(timeout or self.timeout), "execution_id": execution_id,
             }
-            self._cancel_events[key] = cancel_event
-            self._active_cancel_keys[key] = (self._cancel_key(command, cwd), str(tenant)[:80])
+            self._cancel_events[execution_key] = cancel_event
+            self._active_cancel_keys[execution_key] = (self._cancel_key(command, cwd), tenant_identity)
         git_snapshot = None
         if snapshot or rollback_on_failure:
             try:
@@ -1187,6 +1359,14 @@ class CommandBroker:
                 elif snapshot:
                     result["snapshot_taken"] = True
             result["diagnostics"] = self._extract_diagnostics(result)
+            if not result.get("success") and not result.get("cancelled"):
+                result["error_distillation"] = self._distill_error(result)
+                result["error_distillation_source"] = "deterministic"
+                if self._needs_model_error_distillation(result):
+                    model_distillation = self._distill_error_with_model(result)
+                    if model_distillation:
+                        result["error_distillation"] = model_distillation
+                        result["error_distillation_source"] = "local_model"
             diag_paths = [d["path"] for d in result.get("diagnostics", []) if d.get("path")]
             if not result.get("success") and not result.get("cancelled") and self.incident_store is not None:
                 try:
@@ -1231,7 +1411,7 @@ class CommandBroker:
                     pass
 
             raw = dict(result)
-            if classification["cacheable"] and not result.get("cancelled"):
+            if cacheable and not result.get("cancelled"):
                 (self.success_cache if result.get("success") else self.failure_cache).set(key, raw)
             if result.get("success") and task_id and self.verification_store is not None:
                 try:
@@ -1249,25 +1429,28 @@ class CommandBroker:
                     result["verification_receipt"] = rcpt.to_dict()
                 except Exception:
                     pass
-            if not force and self._non_retryable_failure(raw):
+            if not force and not is_mutating and self._non_retryable_failure(raw):
                 raw.update({"terminal": True, "retryable": False})
                 self.suppression_cache.set(attempt_key, raw)
-            with self._lock:
-                if len(self._last) > 128:
-                    old_keys = list(self._last.keys())[:64]
-                    for k in old_keys:
-                        self._last.pop(k, None)
-                self._last[key] = raw
+            if singleflight:
+                with self._lock:
+                    if len(self._last) > 128:
+                        old_keys = list(self._last.keys())[:64]
+                        for k in old_keys:
+                            self._last.pop(k, None)
+                    self._last[key] = raw
             result.update({"cache_hit": False, "coalesced": False, "classification": classification, "repo_state": state, "repository_revision": str(state.get("fingerprint", ""))})
         except subprocess.TimeoutExpired:
             return {"success": False, "error": "command timed out", "classification": classification, "cache_hit": False}
         finally:
             with self._lock:
-                self._inflight.pop(key, None)
-                self._active_commands.pop(key, None)
-                self._cancel_events.pop(key, None)
-                self._active_cancel_keys.pop(key, None)
-                event.set()
+                if singleflight:
+                    self._inflight.pop(key, None)
+                self._active_commands.pop(execution_key, None)
+                self._cancel_events.pop(execution_key, None)
+                self._active_cancel_keys.pop(execution_key, None)
+                if event is not None:
+                    event.set()
 
         if task_id and self.policy_engine:
             try:
@@ -1278,8 +1461,9 @@ class CommandBroker:
                 pass
 
         compacted = self._compact(result, tenant, command)
+        compacted["execution_id"] = execution_id
         if auto_fix and not compacted.get("success") and not compacted.get("cancelled"):
-            return self.repair_loop(
+            repaired = self.repair_loop(
                 command, cwd, tenant,
                 max_attempts=max_repair_attempts,
                 task_id=task_id, criterion=criterion,
@@ -1287,7 +1471,298 @@ class CommandBroker:
                 fix_generator=fix_generator,
                 initial_result=compacted,
             )
+            repaired["execution_id"] = execution_id
+            return repaired
         return compacted
+
+    def patch_and_verify(
+        self,
+        patch: str,
+        cwd: str | Path,
+        tenant: str,
+        *,
+        command: str = "",
+        criterion: str = "",
+        task_id: str = "",
+        timeout: int | None = None,
+        auto_rollback: bool = True,
+        log_callback: Any | None = None,
+    ) -> dict[str, Any]:
+        """Apply a unified diff, run verification tests, and auto-rollback on failure."""
+        cwd_path = Path(canonical_root(cwd))
+        if not patch or not patch.strip():
+            return {"success": False, "error": "patch text is empty", "terminal": True, "retryable": False}
+
+        # 1. Capture snapshot
+        cp_untracked = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            cwd=str(cwd_path), capture_output=True, text=True, check=False,
+            timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
+        )
+        initial_untracked = set(cp_untracked.stdout.splitlines()) if cp_untracked.returncode == 0 else set()
+
+        # 2. Check if patch applies cleanly
+        check_proc = subprocess.run(
+            ["git", "apply", "--check", "--whitespace=nowarn"],
+            input=patch.encode("utf-8"),
+            cwd=str(cwd_path), capture_output=True, check=False,
+            timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
+        )
+        if check_proc.returncode != 0:
+            err_msg = check_proc.stderr.decode("utf-8", errors="replace")
+            return {
+                "success": False,
+                "applied": False,
+                "rolled_back": False,
+                "error": f"Patch check failed: {err_msg.strip()}",
+                "terminal": True,
+                "retryable": False,
+            }
+
+        # 3. Apply patch
+        apply_proc = subprocess.run(
+            ["git", "apply", "--whitespace=nowarn"],
+            input=patch.encode("utf-8"),
+            cwd=str(cwd_path), capture_output=True, check=False,
+            timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
+        )
+        if apply_proc.returncode != 0:
+            err_msg = apply_proc.stderr.decode("utf-8", errors="replace")
+            return {
+                "success": False,
+                "applied": False,
+                "rolled_back": False,
+                "error": f"Patch apply failed: {err_msg.strip()}",
+                "terminal": True,
+                "retryable": False,
+            }
+
+        # 4. Helper rollback closure
+        def _do_rollback() -> None:
+            subprocess.run(
+                ["git", "checkout", "--", "."],
+                cwd=str(cwd_path), capture_output=True, check=False,
+                timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
+            )
+            cp_after = subprocess.run(
+                ["git", "ls-files", "--others", "--exclude-standard"],
+                cwd=str(cwd_path), capture_output=True, text=True, check=False,
+                timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
+            )
+            if cp_after.returncode == 0:
+                new_files = set(cp_after.stdout.splitlines()) - initial_untracked
+                for nf in new_files:
+                    target_file = (cwd_path / nf).resolve()
+                    if target_file.is_file():
+                        target_file.unlink(missing_ok=True)
+
+        # 5. Syntax pre-flight check on modified Python files
+        diff_lines = patch.splitlines()
+        modified_py_files: list[Path] = []
+        for line in diff_lines:
+            if line.startswith("+++ b/"):
+                rel_p = line[6:].strip()
+                if rel_p.endswith(".py"):
+                    modified_py_files.append(cwd_path / rel_p)
+
+        import py_compile
+        for py_file in modified_py_files:
+            if py_file.is_file():
+                try:
+                    py_compile.compile(str(py_file), doraise=True)
+                except py_compile.PyCompileError as syn_err:
+                    if auto_rollback:
+                        _do_rollback()
+                    return {
+                        "success": False,
+                        "applied": False,
+                        "rolled_back": auto_rollback,
+                        "error": f"Syntax error in modified file {py_file.name}: {syn_err.msg}",
+                        "diagnostics": [{"path": str(py_file.relative_to(cwd_path)), "message": syn_err.msg}],
+                    }
+
+        # 6. Determine test command
+        test_cmd = command.strip() or criterion.strip()
+        auto_detected_tests: list[str] = []
+        if test_cmd.lower() == "auto":
+            all_modified: list[str] = []
+            for line in diff_lines:
+                if line.startswith("+++ b/"):
+                    all_modified.append(line[6:].strip())
+
+            try:
+                from .repo_tools import RepositoryTools
+                from .deterministic import DeterministicEngine
+                rt = RepositoryTools(self.config)
+                det = DeterministicEngine(self.config, rt)
+                aff = det.affected_tests(str(cwd_path), changed_paths=all_modified)
+                auto_detected_tests = aff.get("test_files", []) if isinstance(aff, dict) else []
+            except Exception:
+                auto_detected_tests = []
+
+            if auto_detected_tests:
+                if any(tf.endswith(".py") for tf in auto_detected_tests):
+                    test_cmd = f"python -m pytest {' '.join(auto_detected_tests[:5])} -q"
+                elif any(tf.endswith((".ts", ".js")) for tf in auto_detected_tests):
+                    test_cmd = f"npm test -- {' '.join(auto_detected_tests[:5])}"
+                elif any(tf.endswith(".cs") for tf in auto_detected_tests):
+                    test_cmd = "dotnet test"
+                else:
+                    test_cmd = f"python -m pytest {' '.join(auto_detected_tests[:5])} -q"
+            else:
+                test_cmd = ""
+
+        if not test_cmd:
+            return {
+                "success": True,
+                "applied": True,
+                "tests_passed": True,
+                "affected_tests_run": [],
+                "message": "Patch applied cleanly and passed syntax verification (no tests required or specified)",
+            }
+
+        # 7. Run validation command
+        run_res = self.run(
+            test_cmd, str(cwd_path), tenant,
+            timeout=timeout, force=True, task_id=task_id, criterion=criterion,
+            log_callback=log_callback,
+        )
+
+        if run_res.get("success"):
+            rcpt_data = run_res.get("verification_receipt")
+            if not rcpt_data and task_id and self.verification_store is not None:
+                try:
+                    import uuid
+                    from .agent_verification import VerificationReceipt
+                    rcpt = VerificationReceipt.create(
+                        task_id=task_id,
+                        criterion=criterion or f"patch:{self._safe_label(test_cmd)}",
+                        passed=True,
+                        command_id=test_cmd,
+                        evidence_id=str(run_res.get("artifact_id") or ""),
+                        repository_revision=str(run_res.get("repository_revision") or ""),
+                        details={"exit_code": 0, "duration_ms": run_res.get("duration_ms", 0)},
+                    )
+                    self.verification_store.record(rcpt)
+                    rcpt_data = rcpt.to_dict()
+                except Exception:
+                    pass
+
+            return {
+                "success": True,
+                "applied": True,
+                "tests_passed": True,
+                "command": test_cmd,
+                "affected_tests_run": auto_detected_tests,
+                "duration_ms": run_res.get("duration_ms"),
+                "verification_receipt": rcpt_data,
+                "message": "Patch applied and verified successfully",
+            }
+        else:
+            if auto_rollback:
+                _do_rollback()
+            return {
+                "success": False,
+                "applied": False,
+                "rolled_back": auto_rollback,
+                "error": "Validation command failed after applying patch",
+                "command": test_cmd,
+                "affected_tests_run": auto_detected_tests,
+                "exit_code": run_res.get("exit_code"),
+                "stdout": run_res.get("stdout"),
+                "stderr": run_res.get("stderr"),
+                "diagnostics": run_res.get("diagnostics", []),
+                "remediation": run_res.get("remediation"),
+            }
+
+    def preflight(
+        self,
+        cwd: str | Path,
+        tenant: str = "default",
+        *,
+        paths: list[str] | None = None,
+        timeout: int = 10,
+    ) -> dict[str, Any]:
+        """Perform fast syntax and typecheck pre-flight on modified or specified files."""
+        cwd_path = Path(canonical_root(cwd))
+        if not cwd_path.is_dir():
+            return {"success": False, "error": "Working directory does not exist"}
+
+        target_files = [p.replace("\\", "/").strip() for p in (paths or []) if p]
+        if not target_files:
+            cp = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=str(cwd_path), capture_output=True, text=True, check=False,
+                timeout=5, **hidden_run_kwargs()
+            )
+            if cp.returncode == 0:
+                for line in cp.stdout.splitlines():
+                    parts = line.strip().split(None, 1)
+                    if len(parts) == 2:
+                        target_files.append(parts[1].replace("\\", "/").strip())
+
+        if not target_files:
+            return {
+                "success": True,
+                "clean": True,
+                "checker": "none",
+                "message": "No modified files detected for pre-flight check",
+                "errors": [],
+            }
+
+        py_files = [f for f in target_files if f.endswith(".py") and (cwd_path / f).is_file()]
+        ts_files = [f for f in target_files if f.endswith((".ts", ".tsx", ".js", ".jsx")) and (cwd_path / f).is_file()]
+
+        errors: list[dict[str, Any]] = []
+        checker = "none"
+
+        if py_files:
+            checker = "py_compile"
+            import py_compile
+            for pf in py_files:
+                p_path = cwd_path / pf
+                try:
+                    py_compile.compile(str(p_path), doraise=True)
+                except py_compile.PyCompileError as err:
+                    errors.append({
+                        "file": pf,
+                        "line": getattr(err, "lineno", 1) or 1,
+                        "message": str(err.msg),
+                        "level": "syntax_error",
+                    })
+
+        if ts_files and not errors and (cwd_path / "tsconfig.json").is_file():
+            checker = "tsc"
+            try:
+                cp_tsc = subprocess.run(
+                    ["npx", "tsc", "--noEmit", "--pretty", "false"],
+                    cwd=str(cwd_path), capture_output=True, text=True, check=False,
+                    timeout=timeout, **hidden_run_kwargs()
+                )
+                if cp_tsc.returncode != 0:
+                    for line in cp_tsc.stdout.splitlines():
+                        if ": error TS" in line:
+                            parts = line.split(":", 3)
+                            if len(parts) >= 4:
+                                errors.append({
+                                    "file": parts[0].strip(),
+                                    "line": int(parts[1].strip() or 1),
+                                    "col": int(parts[2].strip() or 1),
+                                    "message": parts[3].strip(),
+                                    "level": "type_error",
+                                })
+            except Exception:
+                pass
+
+        return {
+            "success": True,
+            "clean": len(errors) == 0,
+            "checker": checker,
+            "target_files": target_files[:10],
+            "errors_count": len(errors),
+            "errors": errors[:5],
+            "message": "Pre-flight clean" if not errors else f"Found {len(errors)} pre-flight issue(s)",
+        }
 
     def repair_loop(
         self,
@@ -1326,18 +1801,26 @@ class CommandBroker:
         original_files: dict[Path, str | None] = {}
         attempt_history: list[dict[str, Any]] = []
         last_result = initial
+        generated_patches: dict[str, str] | None = None
+        generator_invoked = False
 
         try:
             for attempt in range(1, max(1, max_attempts) + 1):
                 patches: dict[str, str] = {}
                 if callable(fix_generator):
-                    try:
-                        gen_res = fix_generator(command, str(cwd_path), last_result)
-                        if isinstance(gen_res, dict):
-                            patches = {str(k): str(v) for k, v in gen_res.items()}
-                    except Exception as exc:
-                        attempt_history.append({"attempt": attempt, "error": f"fix generator error: {exc}"})
-                        continue
+                    # A repair loop may retry applying the same bounded candidate,
+                    # but it must never amplify one failed command into repeated
+                    # local-model inference calls or send subsequent raw outputs.
+                    if not generator_invoked:
+                        generator_invoked = True
+                        try:
+                            gen_res = fix_generator(command, str(cwd_path), last_result)
+                            if isinstance(gen_res, dict):
+                                generated_patches = {str(k): str(v) for k, v in gen_res.items()}
+                        except Exception as exc:
+                            attempt_history.append({"attempt": attempt, "error": f"fix generator error: {exc}"})
+                            continue
+                    patches = dict(generated_patches or {})
                 elif self.incident_store is not None:
                     rem = last_result.get("remediation") or {}
                     fix = rem.get("verified_fix")
@@ -2143,8 +2626,17 @@ class CommandBroker:
     def _compact(self, result: dict[str, Any], tenant: str, command: str) -> dict[str, Any]:
         stdout = str(result.get("stdout", "")); stderr = str(result.get("stderr", ""))
         combined_chars = len(stdout) + len(stderr)
+        diagnostic_artifacts_enabled = rollout_feature_enabled(self.config, "diagnostic_artifacts")
+        local_diagnostic_dispatch_enabled = rollout_feature_enabled(self.config, "local_diagnostic_dispatch")
+        diagnostic_artifacts_unavailable = {
+            "available": False,
+            "unsupported": True,
+            "feature": "diagnostic_artifacts",
+            "error": "diagnostic artifacts are disabled (features.diagnostic_artifacts=false)",
+        }
         result["summary"] = self._deterministic_summary(result)
         diagnostics = list(result.get("diagnostics") or self._extract_diagnostics(result))
+        failure_summary = self._first_failure_summary({**result, "diagnostics": diagnostics})
         if result.get("remediation"):
             rem = result["remediation"]
             fix_msg = rem.get("verified_fix") or rem.get("root_cause")
@@ -2156,9 +2648,30 @@ class CommandBroker:
                     "message": f"Remediation guidance: {fix_msg}",
                 })
         result["diagnostics"] = diagnostics
+        if not result.get("success") and not result.get("cancelled"):
+            result["failure_summary"] = failure_summary
+            result["preview"] = self._failure_preview(failure_summary)
+            # Low-confidence short failures do not get the full-log artifact below.
+            # Retain only the already-bounded diagnostic so the repair gate receives
+            # a safe reference without persisting the raw command output.
+            if combined_chars <= self.inline_chars and not result.get("artifact_id") and not failure_summary.get("path"):
+                if local_diagnostic_dispatch_enabled and self.artifacts is not None:
+                    diagnostic = str(result["preview"])[:800]
+                    result["artifact_id"] = self.artifacts.put(diagnostic, tenant, "local_diagnostic_context")
+                elif not diagnostic_artifacts_enabled:
+                    result["diagnostic_artifacts"] = diagnostic_artifacts_unavailable
+                elif self.artifacts is not None:
+                    diagnostic = str(result["preview"])[:800]
+                    result["artifact_id"] = self.artifacts.put(diagnostic, tenant, "command_diagnostic")
         if combined_chars > self.inline_chars:
             full = f"$ {command}\n\nSTDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
-            result["artifact_id"] = self.artifacts.put(full, tenant, "command")
+            if local_diagnostic_dispatch_enabled and not diagnostic_artifacts_enabled and self.artifacts is not None:
+                diagnostic = str(result.get("preview", ""))[:800]
+                result["artifact_id"] = self.artifacts.put(diagnostic, tenant, "local_diagnostic_context")
+            elif not diagnostic_artifacts_enabled:
+                result["diagnostic_artifacts"] = diagnostic_artifacts_unavailable
+            elif self.artifacts is not None:
+                result["artifact_id"] = self.artifacts.put(full, tenant, "command")
             result["stdout"] = stdout[: self.inline_chars // 2]
             result["stderr"] = stderr[-self.inline_chars // 2:]
             result["output_truncated"] = True
@@ -2169,7 +2682,10 @@ class CommandBroker:
     def stats(self) -> dict[str, Any]:
         now = time.time()
         with self._lock:
-            active = [dict(v, age_ms=max(0, int((now - float(v.get("started_at", now))) * 1000))) for v in self._active_commands.values()]
+            active = [
+                self._public_active(dict(v, age_ms=max(0, int((now - float(v.get("started_at", now))) * 1000))))
+                for v in self._active_commands.values()
+            ]
             blocked_by_reason = dict(sorted(self._blocked_by_reason.items(), key=lambda kv: (-kv[1], kv[0]))[:12])
         return {
             "enabled": self.enabled, "hits": self.hits, "misses": self.misses, "cancelled": self.cancelled,

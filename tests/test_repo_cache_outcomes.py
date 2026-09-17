@@ -12,6 +12,7 @@ class _Flight:
 
 def test_repo_cache_outcome_is_promoted_to_top_level_response():
     services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"features": {"enriched_search": True}}
     services.repo_flight = _Flight()
     services._touch_project = lambda _root: None
     services._repo_cache_state = lambda _root: {"fingerprint": "rev", "kind": "filesystem"}
@@ -36,10 +37,10 @@ def test_repo_search_reuses_cache_for_equivalent_query_whitespace_and_case(tmp_p
             return value, False, False
 
     class _Tools:
-        def search(self, _root, query, top_k):
+        def search(self, _root, query, top_k, context_lines=None):
             return {"success": True, "query": query, "results": [{"path": "a.py"}]}
 
-        def search_paths(self, _root, query, _paths, top_k):
+        def search_paths(self, _root, query, _paths, top_k, context_lines=None):
             return {"success": True, "query": query, "results": []}
 
     services = LocalAIServices.__new__(LocalAIServices)
@@ -58,6 +59,42 @@ def test_repo_search_reuses_cache_for_equivalent_query_whitespace_and_case(tmp_p
 
     assert first["cache_hit"] is False
     assert second["cache_hit"] is True
+
+
+def test_enriched_repo_search_returns_symbol_and_evidence_for_hit(tmp_path: Path, monkeypatch):
+    class _Tools:
+        def search(self, _root, _query, _top_k, context_lines=None):
+            assert context_lines == 8
+            return {"success": True, "results": [{"path": "module.py", "start_line": 2, "text": "def target():"}]}
+
+        def search_paths(self, *_args, **_kwargs):
+            return {"success": True, "results": []}
+
+    class _Evidence:
+        def put_many(self, _root, hits):
+            hits[0]["evidence_id"] = "E-search"
+            return hits
+
+    (tmp_path / "module.py").write_text("def target():\n    return 1\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "local_ai_hub.services.enclosing_symbol_at_line",
+        lambda _source, _path, _line: {"name": "target", "kind": "function", "line": 1, "end_line": 2, "name_path": "target"},
+    )
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"features": {"enriched_search": True}}
+    services.repo_flight = _Flight()
+    services._touch_project = lambda _root: None
+    services._repo_cache_state = lambda _root: {"fingerprint": "rev", "kind": "filesystem"}
+    services.repo_tools = _Tools()
+    services.learner = services.deterministic = services.code_index = services.preprocessor = None
+    services.evidence_store = _Evidence()
+
+    result = services.repo_search(str(tmp_path), "target", enrich=True)
+
+    assert result["enriched"] is True
+    assert result["progressive_disclosure"] is True
+    assert result["results"][0]["enclosing_symbol"]["name"] == "target"
+    assert result["results"][0]["evidence_id"] == "E-search"
 
 
 def test_foreground_refresh_skips_active_background_preprocessing(tmp_path: Path):

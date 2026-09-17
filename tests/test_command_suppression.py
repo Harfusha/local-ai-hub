@@ -21,18 +21,18 @@ def _broker(tmp_path):
     return CommandBroker(
         {
             "server": {"state_dir": str(tmp_path / "state")},
-            "commands": {"enabled": True, "allow_read": True, "allow_validation": True},
+            "commands": {"enabled": True, "allow_read": True, "allow_validation": True, "policy_blocking": True},
         },
         _Artifacts(),
         _RepoState(),
     )
 
 
-def test_policy_block_is_terminal_and_suppressed(tmp_path):
+def test_non_mutating_policy_block_is_terminal_and_suppressed(tmp_path):
     broker = _broker(tmp_path)
 
-    first = broker.run("npm install", str(tmp_path), "tenant")
-    second = broker.run("npm install", str(tmp_path), "tenant")
+    first = broker.run("unknown-tool", str(tmp_path), "tenant")
+    second = broker.run("unknown-tool", str(tmp_path), "tenant")
 
     assert first["policy_blocked"] is True
     assert first["terminal"] is True

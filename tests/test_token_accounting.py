@@ -7,6 +7,48 @@ from local_ai_hub.telemetry import TelemetryStore
 from local_ai_hub.token_accounting import finalize_tool_accounting, measure_savings, pop_accounting
 
 
+def test_telemetry_keeps_measured_provider_cache_reads_as_numeric_metadata():
+    event = TelemetryStore._clean_event({
+        "action": "local_ai_task",
+        "task_type": "review",
+        "input_tokens": 120,
+        "cache_read_tokens": 80,
+        "output_tokens": 25,
+    })
+
+    assert event["action"] == "local_ai_task"
+    assert event["task_type"] == "review"
+    assert event["cache_read_tokens"] == 80
+
+
+def test_telemetry_reports_provider_cache_reads_by_action_and_task_type(tmp_path: Path):
+    store = TelemetryStore(tmp_path, enabled=True, flush_interval_seconds=0.01)
+    try:
+        store.record(
+            event_type="inference",
+            action="local_ai_task",
+            task_type="review",
+            model="provider-a",
+            input_tokens=120,
+            cache_read_tokens=80,
+            output_tokens=25,
+        )
+        assert store.flush()
+
+        summary = store.summary(scope="process")
+        report = store.report(scope="process")
+        tail = store.tail(1)
+
+        assert summary["provider_cache_read_tokens"] == 80
+        assert tail[0]["cache_read_tokens"] == 80
+        assert report["provider_token_usage"] == [{
+            "action": "local_ai_task", "task_type": "review", "model": "provider-a",
+            "input_tokens": 120, "cache_read_tokens": 80, "output_tokens": 25,
+        }]
+    finally:
+        store.close()
+
+
 def test_savings_signals_do_not_double_count_overlapping_input_reductions():
     value = {
         "token_saving": {

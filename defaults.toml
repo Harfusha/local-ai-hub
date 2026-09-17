@@ -219,7 +219,7 @@ max_events_per_session = 20000
 max_event_bytes = 65536
 max_session_text_bytes = 8388608
 cleanup_batch_size = 50
-max_list_limit = 100
+max_list_limit = 200
 
 [ollama]
 num_parallel = 2
@@ -480,6 +480,10 @@ subagents = true # advisory local profiles (qwen-explorer, etc.)
 agent_os = true # durable execution: tasks, verification receipts, memory
 dashboard = true # realtime web dashboard at /dashboard
 work_orchestrator = true # whole-task DAG execution and verified handoff (local_ai_work)
+enriched_search = false # rollout only: source-enriched repository search
+batch_replacement = false # rollout only: atomic repository batch replacement
+diagnostic_artifacts = false # rollout only: persist command diagnostic artifacts
+local_diagnostic_dispatch = false # rollout only: bounded L1 local failure diagnosis
 reranker = true
 install_local_nlp_dependencies = true
 install_openvino_dependencies = true

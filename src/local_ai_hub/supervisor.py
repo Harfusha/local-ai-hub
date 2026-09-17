@@ -134,28 +134,29 @@ class Supervisor:
     def write_status(self, state: str, error: str = "", ollama_online: bool | None = None) -> None:
         hub_pid = 0
         p = self.state_dir / "hub.pid"
-        port_owner = find_listening_pid(int(self.config.get("server", {}).get("port", 11435)))
-        if port_owner:
-            hub_pid = int(port_owner)
-            try:
-                p.write_text(str(hub_pid), encoding="utf-8")
-            except OSError:
-                pass
-        elif self.child is not None and self.child.poll() is None:
+        if self.child is not None and self.child.poll() is None:
             hub_pid = int(self.child.pid)
             try:
                 p.write_text(str(hub_pid), encoding="utf-8")
             except OSError:
                 pass
         else:
-            try:
-                candidate = int(p.read_text(encoding="utf-8").strip() or 0)
-                if pid_alive(candidate):
-                    hub_pid = candidate
-                else:
-                    p.unlink(missing_ok=True)
-            except Exception:
-                pass
+            port_owner = find_listening_pid(int(self.config.get("server", {}).get("port", 11435)))
+            if port_owner:
+                hub_pid = int(port_owner)
+                try:
+                    p.write_text(str(hub_pid), encoding="utf-8")
+                except OSError:
+                    pass
+            else:
+                try:
+                    candidate = int(p.read_text(encoding="utf-8").strip() or 0)
+                    if pid_alive(candidate):
+                        hub_pid = candidate
+                    else:
+                        p.unlink(missing_ok=True)
+                except Exception:
+                    pass
         atomic_json(self.status_path, {
             "state": state,
             "pid": os.getpid(),
@@ -181,13 +182,20 @@ class Supervisor:
         self.child_log_path = child_log_path
         if child_log_path.exists() and child_log_path.stat().st_size > 1_000_000:
             child_log_path.replace(child_log_path.with_name("hub-process.log.1"))
+        logs_dir = self.state_dir / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
         try:
             self.child_log_handle = child_log_path.open("a", encoding="utf-8", buffering=1)
         except OSError:
             self.child_log_handle = None
+        try:
+            self.child_stderr_handle = (logs_dir / "hub_stderr.log").open("a", encoding="utf-8", buffering=1)
+        except OSError:
+            self.child_stderr_handle = None
         output = self.child_log_handle if self.child_log_handle is not None else subprocess.DEVNULL
+        error_output = self.child_stderr_handle if self.child_stderr_handle is not None else subprocess.DEVNULL
         kwargs: dict[str, Any] = {
-            "env": env, "stdin": subprocess.DEVNULL, "stdout": output, "stderr": subprocess.STDOUT,
+            "env": env, "stdin": subprocess.DEVNULL, "stdout": output, "stderr": error_output,
             **hidden_run_kwargs(detached=True),
         }
         if os.name != "nt":
@@ -195,10 +203,18 @@ class Supervisor:
         try:
             return subprocess.Popen([py_exe, "-X", "utf8", "-m", "local_ai_hub.http_server"], **kwargs)
         except Exception:
-            if self.child_log_handle is not None:
-                self.child_log_handle.close()
-                self.child_log_handle = None
+            self._close_child_logs()
             raise
+
+    def _close_child_logs(self) -> None:
+        for attr in ("child_log_handle", "child_stderr_handle"):
+            handle = getattr(self, attr, None)
+            if handle is not None:
+                try:
+                    handle.close()
+                except OSError:
+                    pass
+                setattr(self, attr, None)
 
     def terminate_child(self) -> None:
         target_pids: set[int] = set()
@@ -241,13 +257,7 @@ class Supervisor:
                     pass
             self.child = None
 
-        child_log_handle = getattr(self, "child_log_handle", None)
-        if child_log_handle is not None:
-            try:
-                child_log_handle.close()
-            except OSError:
-                pass
-            self.child_log_handle = None
+        self._close_child_logs()
 
         try:
             pid_file.unlink(missing_ok=True)

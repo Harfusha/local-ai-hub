@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -7,9 +8,11 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root / "src"))
+from local_ai_hub import __version__
 from local_ai_hub.client import HubClient
 from local_ai_hub.config import load_config
 from local_ai_hub.doctor_support import probe_hub_status
@@ -210,7 +213,7 @@ if state_dir.is_dir():
         warnings.append(f"Found {len(corrupt_files)} quarantined database file(s) in {state_dir} ({total_sz} bytes). Clean via clean_quarantined_files.")
 
 report = {
-    "version": status.get("version") if isinstance(status, dict) else None,
+    "version": (status.get("version") if isinstance(status, dict) else None) or __version__,
     "python": sys.version.split()[0],
     "config": {
         "user": cfg.get("_config_path"),
@@ -279,4 +282,107 @@ report = {
 }
 for key, value in report["skill_paths"].items():
     report["skill_paths"][key] = {"path": value, "exists": Path(value).exists()}
-print(json.dumps(report, indent=2, ensure_ascii=False))
+
+
+def format_doctor_report(rep: dict[str, Any]) -> str:
+    lines = []
+    lines.append("Local AI Hub Doctor Report")
+    lines.append("=" * 60)
+
+    rt = rep.get("runtime", {})
+    cfg_info = rep.get("config", {})
+    hw = rt.get("hardware", {})
+
+    hub_ok = rt.get("hub_online", False)
+    ver = rep.get("version") or __version__
+    py_ver = rep.get("python", sys.version.split()[0])
+    hub_sym = "[✓]" if hub_ok else "[✗]"
+    lines.append(f"{hub_sym} Hub Server:        {'Online' if hub_ok else 'Offline'} (v{ver}, Python {py_ver})")
+
+    ollama_ok = rt.get("ollama_online", False)
+    active_m = rt.get("active_model") or "None"
+    ollama_sym = "[✓]" if ollama_ok else "[✗]"
+    lines.append(f"{ollama_sym} Ollama Backend:     {'Online' if ollama_ok else 'Offline'} (Active: {active_m})")
+
+    mcp_count = cfg_info.get("mcp_tool_count", 0)
+    lines.append(f"[✓] MCP Surface:        {cfg_info.get('mcp_surface', 'compact')} ({mcp_count} tools)")
+    lines.append("")
+
+    lines.append("Hardware & Acceleration:")
+    gpus = hw.get("gpus", []) if isinstance(hw, dict) else []
+    if gpus:
+        for g in gpus:
+            if isinstance(g, dict):
+                name = g.get("name", "Unknown GPU")
+                vram = g.get("vram_mb", 0)
+                lines.append(f"  • GPU:                {name} ({vram // 1024} GB)")
+    else:
+        lines.append("  • GPU:                No dedicated GPU detected")
+    ov = rt.get("openvino", {}) if isinstance(rt, dict) else {}
+    ov_status = "Installed" if ov.get("installed") else "Not installed"
+    lines.append(f"  • OpenVINO:           {ov_status}")
+    st_status = "Installed" if rt.get("sentence_transformers") else "Not installed"
+    lines.append(f"  • SentenceTransf:     {st_status}")
+    lines.append("")
+
+    lines.append("Models:")
+    cfg_models = rt.get("configured_generation_models", [])
+    missing = rt.get("missing_generation_models", [])
+    if missing:
+        lines.append(f"  [✗] Missing Models:   {', '.join(missing)}")
+    else:
+        lines.append(f"  [✓] Configured:       {', '.join(cfg_models) if cfg_models else 'None'}")
+    lines.append("")
+
+    lines.append("CLI Tools:")
+    cli_tools = [
+        ("ripgrep (rg)", rt.get("ripgrep_command")),
+        ("fd", rt.get("fd_command")),
+        ("ast-grep", rt.get("ast_grep_command")),
+        ("repomix", rt.get("repomix_command")),
+        ("jq", rt.get("jq_command")),
+        ("tokcount", rt.get("tokcount_command")),
+        ("trim-run", rt.get("trim_run_command")),
+    ]
+    for name, cmd in cli_tools:
+        sym = "[✓]" if cmd else "[ ]"
+        val = Path(cmd).name if cmd else "not found (optional)"
+        lines.append(f"  {sym} {name:<17} {val}")
+    lines.append("")
+
+    lines.append("Databases & State:")
+    st_info = rep.get("state", {})
+    db_keys = [
+        ("Cache", "shared_cache"),
+        ("Agent OS", "agent_state"),
+        ("Evidence", "evidence"),
+        ("Preprocessing", "preprocessing"),
+        ("Code Index", "code_index"),
+        ("Deterministic", "deterministic"),
+    ]
+    for label, k in db_keys:
+        exists = st_info.get(k, False)
+        sym = "[✓]" if exists else "[ ]"
+        lines.append(f"  {sym} {label:<17} {'present' if exists else 'not created'}")
+    lines.append("")
+
+    warnings_list = rep.get("warnings", [])
+    if warnings_list:
+        lines.append(f"Warnings ({len(warnings_list)}):")
+        for w in warnings_list:
+            lines.append(f"  [!] {w}")
+    else:
+        lines.append("Warnings: None (all checks passed)")
+    lines.append("=" * 60)
+    return "\n".join(lines)
+
+
+parser = argparse.ArgumentParser(description="Local AI Hub diagnostic doctor")
+parser.add_argument("--json", dest="raw_json", action="store_true", help="Output raw JSON diagnostic report")
+args = parser.parse_args()
+
+if args.raw_json:
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+else:
+    print(format_doctor_report(report))
+

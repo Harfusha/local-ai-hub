@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from local_ai_hub.services import cache_decision_reason, generation_cache_key, normalize_generation_cache_prompt
+from local_ai_hub.services import cache_decision_reason, enclosing_symbol_at_line, generation_cache_key, normalize_generation_cache_prompt
 
 
 def test_generation_cache_prompt_normalizes_only_line_endings():
@@ -30,3 +30,17 @@ def test_exact_generation_cache_key_normalizes_system_line_endings():
     unix = generation_cache_key(system="Use evidence.\nBe concise.\n", **common)
 
     assert windows == unix
+
+
+def test_enriched_search_uses_existing_tree_sitter_symbols(monkeypatch):
+    monkeypatch.setattr(
+        "local_ai_hub.services.parse_treesitter",
+        lambda _source, _language: ([
+            {"name": "outer", "kind": "function", "line": 1, "end_line": 12, "name_path": "outer"},
+            {"name": "inner", "kind": "function", "line": 4, "end_line": 7, "name_path": "outer/inner"},
+        ], [], []),
+    )
+
+    assert enclosing_symbol_at_line("def outer():\n", "module.py", 5) == {
+        "name": "inner", "kind": "function", "line": 4, "end_line": 7, "name_path": "outer/inner",
+    }

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import __version__
-from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
+from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy, quick_sanity_check
 
 
 _SQLITE_RECOVERY_LOCK = threading.RLock()
@@ -283,12 +283,15 @@ class SQLiteCache:
             # Another cache instance may already have recovered the shared DB.
             try:
                 if self.path.exists():
-                    with closing(sqlite3.connect(self.path, timeout=1)) as con:
-                        if con.execute("PRAGMA quick_check").fetchone()[0] == "ok":
+                    with closing(connect_sqlite(self.path, timeout_seconds=5.0)) as con:
+                        if quick_sanity_check(con):
                             self._create_schema()
                             return
-            except (sqlite3.DatabaseError, OSError):
-                pass
+            except Exception as exc:
+                if is_busy_error(exc):
+                    # Busy database is healthy; do not quarantine due to transient lock contention
+                    self._create_schema()
+                    return
 
             stamp = f"{int(time.time())}-{threading.get_ident()}"
             try:
@@ -306,7 +309,7 @@ class SQLiteCache:
 
     def _init_db(self) -> None:
         # Several cache namespaces share one derived-data database. Schema creation +
-        # quick_check once per SQLite path is sufficient for this process and avoids
+        # sanity check once per SQLite path is sufficient for this process and avoids
         # repeating synchronous integrity work during hub construction. The lock also
         # keeps concurrent constructors from racing the one-time initialization.
         identity = str(self.path.resolve(strict=False))
@@ -316,8 +319,7 @@ class SQLiteCache:
             try:
                 self._create_schema()
                 with closing(self._connect()) as con:
-                    row = con.execute("PRAGMA quick_check").fetchone()
-                    if not row or row[0] != "ok":
+                    if not quick_sanity_check(con):
                         raise sqlite3.DatabaseError("quick_check failed")
             except sqlite3.DatabaseError as exc:
                 if is_busy_error(exc):

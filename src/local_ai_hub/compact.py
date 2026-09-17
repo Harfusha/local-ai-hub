@@ -3,6 +3,23 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 
+def syntax_aware_truncate(text: str, max_chars: int, marker: str = "\n[... compact MCP projection ...]") -> str:
+    """Truncate text/code cleanly on line boundaries and avoid breaking JSON or code syntax."""
+    if not isinstance(text, str) or len(text) <= max_chars:
+        return text
+    budget = max(64, max_chars - len(marker))
+    prefix = text[:budget]
+    last_nl = prefix.rfind("\n")
+    if last_nl > int(budget * 0.7):
+        prefix = prefix[:last_nl]
+    trimmed = prefix.strip()
+    if trimmed.startswith("{") and not trimmed.endswith("}"):
+        return prefix + "\n  // ... remaining structure omitted ...\n}"
+    if trimmed.startswith("[") and not trimmed.endswith("]"):
+        return prefix + "\n  // ... remaining items omitted ...\n]"
+    return prefix + marker
+
+
 def compact_result(
     value: Any,
     *,
@@ -36,11 +53,11 @@ def compact_result(
             data.pop(key, None)
 
     if isinstance(data.get("text"), str) and len(data["text"]) > max_text_chars:
-        data["text"] = data["text"][:max_text_chars] + "\n[... compact MCP projection ...]"
+        data["text"] = syntax_aware_truncate(data["text"], max_text_chars)
 
     # Command output is aggressively bounded because full stdout/stderr is artifact-backed.
     if isinstance(data.get("summary"), str) and len(data["summary"]) > max_text_chars:
-        data["summary"] = data["summary"][:max_text_chars] + "\n[... summary truncated ...]"
+        data["summary"] = syntax_aware_truncate(data["summary"], max_text_chars, marker="\n[... summary truncated ...]")
     stream_budget = max(256, max_text_chars // 3)
     if isinstance(data.get("stdout"), str) and len(data["stdout"]) > stream_budget:
         data["stdout"] = data["stdout"][:stream_budget] + "\n[... stdout truncated; use artifact ...]"
@@ -82,6 +99,6 @@ def compact_result(
 
     for key in ("output", "content", "raw", "preview"):
         if isinstance(data.get(key), str) and len(data[key]) > max_text_chars:
-            data[key] = data[key][:max_text_chars] + "\n[... compact MCP projection ...]"
+            data[key] = syntax_aware_truncate(data[key], max_text_chars)
 
     return data

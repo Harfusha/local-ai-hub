@@ -135,3 +135,27 @@ def test_stores_schema_initialized_flag(tmp_path: Path):
     assert inc._initialized is True
     assert ls._initialized is True
 
+
+def test_goal_contract_normalizes_scope_string_and_serializes_without_error():
+    # Constructing with string scope directly
+    c1 = GoalContract(goal="test 1", scope="task")
+    assert isinstance(c1.scope, AgentScope)
+    assert c1.scope == AgentScope.TASK
+    assert c1.to_dict()["scope"] == "task"
+
+    # Constructing with alias string
+    c2 = GoalContract(goal="test 2", scope="code")
+    assert isinstance(c2.scope, AgentScope)
+    assert c2.scope == AgentScope.TASK
+    assert c2.to_dict()["scope"] == "task"
+
+    # Constructing via from_dict with empty/None scope
+    c3 = GoalContract.from_dict({"goal": "test 3", "scope": None})
+    assert isinstance(c3.scope, AgentScope)
+    assert c3.scope == AgentScope.TASK
+    assert c3.to_dict()["scope"] == "task"
+
+    c4 = GoalContract.from_dict({"goal": "test 4", "scope": ""})
+    assert isinstance(c4.scope, AgentScope)
+    assert c4.scope == AgentScope.TASK
+    assert c4.to_dict()["scope"] == "task"

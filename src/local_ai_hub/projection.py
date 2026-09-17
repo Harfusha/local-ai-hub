@@ -36,7 +36,7 @@ def _normalize_agent(agent: str | None) -> str:
     return "generic"
 
 
-def _dense_text(text: str, max_chars: int) -> str:
+def _dense_text(text: str, max_chars: int, *, artifact_backed: bool = True) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text.strip())
     if len(text) <= max_chars:
         return text
@@ -44,7 +44,9 @@ def _dense_text(text: str, max_chars: int) -> str:
     newline = cut.rfind("\n")
     if newline > max_chars * 0.65:
         cut = cut[:newline]
-    return cut + "\n[…more available via artifact…]"
+    if artifact_backed:
+        return cut + "\n[…more available via artifact…]"
+    return cut + "\n[…truncated…]"
 
 
 class AgentProjector:
@@ -253,6 +255,25 @@ class AgentProjector:
                 if not data.get("stdout") and "stdout" not in extra:
                     data.pop("stdout", None)
 
+        # Optimize context outputs
+        if task_kind == "context" or "context" in data:
+            ctx = data.get("context")
+            if isinstance(ctx, dict) and isinstance(ctx.get("elements"), list):
+                new_els = []
+                for el in ctx["elements"]:
+                    if isinstance(el, dict):
+                        clean_el = {
+                            k: el[k] for k in ("element_id", "source_kind", "content", "reason")
+                            if k in el and el[k] not in (None, "")
+                        }
+                        new_els.append(clean_el)
+                    else:
+                        new_els.append(el)
+                ctx["elements"] = new_els
+                for k in ("value_density", "packed_ratio"):
+                    if k not in extra:
+                        ctx.pop(k, None)
+
         if self.prune_stacktraces and "raw_trace" not in extra and "full_trace" not in extra:
             for k in ("stderr", "stdout", "summary", "text", "error"):
                 if isinstance(data.get(k), str):
@@ -272,9 +293,10 @@ class AgentProjector:
             data["summary"] = _dense_text(data["summary"], min(max_text, 1000))
 
         # Raw command streams are intentionally tiny. Full content is artifact-backed.
+        has_artifact = bool(data.get("artifact_id"))
         stream_limit = max(160, min(650, max_text // 3))
         if isinstance(data.get("stdout"), str):
-            data["stdout"] = _dense_text(data["stdout"], stream_limit)
+            data["stdout"] = _dense_text(data["stdout"], stream_limit, artifact_backed=has_artifact)
         if isinstance(data.get("stderr"), str) and len(data["stderr"]) > stream_limit:
             data["stderr"] = "[…head omitted…]\n" + data["stderr"][-stream_limit:]
 

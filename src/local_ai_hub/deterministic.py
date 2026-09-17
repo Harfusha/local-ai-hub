@@ -21,7 +21,14 @@ from typing import Any
 from . import __version__
 from .cache import MemoryLRUCache, SQLiteCache, stable_hash
 from .normalizer import tokenize_query_terms
-from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
+from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check
+from .diff_parsers import (
+    extract_cs_diff_defs,
+    extract_go_diff_defs,
+    extract_py_diff_defs,
+    extract_rust_diff_defs,
+    extract_ts_diff_defs,
+)
 from .process_utils import canonical_root, hidden_run_kwargs
 from .state_paths import configured_state_dir
 
@@ -53,6 +60,35 @@ SQL_RE = re.compile(r"\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM|CREATE\s+TABL
 CONCURRENCY_RE = re.compile(r"\b(async|await|thread|mutex|lock|semaphore|queue|channel|goroutine|tokio|Task\.Run|parallel|concurrent|atomic)\b", re.I)
 SECURITY_RE = re.compile(r"\b(auth|authentication|authorization|permission|role|token|jwt|oauth|csrf|xss|encrypt|decrypt|password|secret|credential|sanitize|escape)\b", re.I)
 TODO_RE = re.compile(r"\b(TODO|FIXME|XXX|HACK)\b[:\s-]*(.*)", re.I)
+
+_SECURITY_AUDIT_SECRETS: list[tuple[str, re.Pattern[str]]] = [
+    ("AWS Access Key", re.compile(r"\b(AKIA[0-9A-Z]{16})\b")),
+    ("GitHub Token", re.compile(r"\b(ghp_[0-9a-zA-Z]{36}|github_pat_[0-9a-zA-Z_]{82})\b")),
+    ("Slack Token", re.compile(r"\b(xox[baprs]-[0-9a-zA-Z]{10,48})\b")),
+    ("Private Key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
+    ("Hardcoded Password", re.compile(r"""(?:password|passwd|pwd|secret|api_key)\s*[:=]\s*["']([^"'\s]{6,})["']""", re.I)),
+]
+
+_SECURITY_AUDIT_SMELLS: list[tuple[str, re.Pattern[str]]] = [
+    ("Unsafe eval/exec", re.compile(r"\b(eval|exec)\s*\(")),
+    ("Unsafe Pickle", re.compile(r"\bpickle\.loads?\s*\(")),
+    ("Unsafe PyYAML", re.compile(r"\byaml\.load\s*\([^,]+(?:\)|,\s*Loader\s*=\s*(?:yaml\.)?(?:Unsafe|Full)?Loader\b)")),
+    ("Shell Injection Risk", re.compile(r"\bsubprocess\.(?:Popen|run|call)\s*\(.*shell\s*=\s*True", re.S)),
+]
+
+_SECRET_SCAN_PATTERNS: list[tuple[str, str, re.Pattern[str], str]] = [
+    ("openai_api_key", "OpenAI API Key", re.compile(r"(sk-(?:proj-|live-)?[A-Za-z0-9_-]{20,60})"), "CRITICAL"),
+    ("anthropic_api_key", "Anthropic API Key", re.compile(r"(sk-ant-api[0-9]{2}-[A-Za-z0-9_-]{20,80})"), "CRITICAL"),
+    ("aws_access_key", "AWS Access Key ID", re.compile(r"\b(AKIA[0-9A-Z]{16})\b"), "CRITICAL"),
+    ("github_pat", "GitHub Personal Access Token", re.compile(r"\b((?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36})\b"), "CRITICAL"),
+    ("slack_token", "Slack Token", re.compile(r"(xox[baprs]-[0-9A-Za-z-]{20,72})"), "HIGH"),
+    ("slack_webhook", "Slack Incoming Webhook", re.compile(r"(https:\/\/hooks\.slack\.com\/services\/T[0-9A-Z]+\/B[0-9A-Z]+\/[0-9A-Za-z]+)"), "HIGH"),
+    ("google_api_key", "Google Cloud / API Key", re.compile(r"\b(AIza[0-9A-Za-z-_]{35})\b"), "CRITICAL"),
+    ("stripe_secret_key", "Stripe Secret Key", re.compile(r"\b((?:sk|rk)_(?:live|test)_[0-9a-zA-Z]{24,})\b"), "CRITICAL"),
+    ("private_key", "Private Key Header", re.compile(r"(-----BEGIN (?:RSA|DSA|EC|OPENSSH|PGP) PRIVATE KEY-----)"), "CRITICAL"),
+    ("db_connection_uri", "Database Connection URI with Password", re.compile(r"\b((?:postgres|postgresql|mysql|mongodb|redis):\/\/[a-zA-Z0-9_\-\.]+:[a-zA-Z0-9_\-\.@#$%^&*!]+@[a-zA-Z0-9_\-\.]+)"), "HIGH"),
+    ("generic_secret_assignment", "Generic Hardcoded Secret", re.compile(r"(?:api_key|secret_key|auth_token|client_secret|access_token)\s*=\s*['\"]([A-Za-z0-9+/=_\-\.]{16,})['\"]", re.I), "HIGH"),
+]
 
 
 def _is_test_file(rel_path: str) -> bool:
@@ -121,10 +157,10 @@ class DeterministicEngine:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        con = connect_sqlite(self.db_path, timeout_seconds=0.75, row_factory=sqlite3.Row)
+        con = connect_sqlite(self.db_path, timeout_seconds=5.0, row_factory=sqlite3.Row)
         try:
-            con.execute("PRAGMA cache_size=-65536")
-            con.execute("PRAGMA mmap_size=536870912")
+            con.execute("PRAGMA cache_size=-16000")
+            con.execute("PRAGMA mmap_size=134217728")
         except sqlite3.OperationalError:
             pass
         return con
@@ -174,9 +210,8 @@ class DeterministicEngine:
         try:
             with self._lock, closing(self._connect()) as con:
                 initialize_wal(con)
-                ok = con.execute("PRAGMA quick_check").fetchone()[0]
-                if ok != "ok":
-                    raise sqlite3.DatabaseError(str(ok))
+                if not quick_sanity_check(con):
+                    raise sqlite3.DatabaseError("deterministic sanity check failed")
                 self._schema(con)
                 con.commit()
         except sqlite3.DatabaseError as exc:
@@ -2302,165 +2337,11 @@ class DeterministicEngine:
         }
         return {"success": True, "deterministic": True, "confidence": round(confidence, 4), "card": card}
 
-    @staticmethod
-    def _extract_py_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
-        defs: dict[str, dict[str, Any]] = {}
-        i = 0
-        n = len(lines)
-        while i < n:
-            raw = lines[i]
-            s = raw.strip()
-            if s.startswith(("def ", "async def ", "class ")):
-                stmt = s
-                paren_count = stmt.count("(") - stmt.count(")")
-                while paren_count > 0 and i + 1 < n:
-                    i += 1
-                    stmt += " " + lines[i].strip()
-                    paren_count = stmt.count("(") - stmt.count(")")
-                try:
-                    to_parse = stmt
-                    if not to_parse.endswith(":"):
-                        to_parse += ":"
-                    to_parse += "\n    pass"
-                    tree = ast.parse(to_parse)
-                    for node in tree.body:
-                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                            if node.name.startswith("_") and node.name not in ("__init__", "__call__", "__getitem__", "__enter__", "__exit__"):
-                                continue
-                            pos_args = [a.arg for a in node.args.args]
-                            clean_args = [a for a in pos_args if a not in ("self", "cls")]
-                            defaults_count = len(node.args.defaults)
-                            req_total = len(pos_args) - defaults_count
-                            clean_req = max(0, req_total - (1 if pos_args and pos_args[0] in ("self", "cls") else 0))
-                            defs[node.name] = {
-                                "name": node.name,
-                                "kind": "function",
-                                "pos_args": clean_args,
-                                "required_count": clean_req,
-                                "sig": stmt,
-                            }
-                        elif isinstance(node, ast.ClassDef):
-                            if node.name.startswith("_"):
-                                continue
-                            defs[node.name] = {
-                                "name": node.name,
-                                "kind": "class",
-                                "sig": stmt,
-                            }
-                except Exception:
-                    m = re.match(r"(?:async\s+)?def\s+([A-Za-z0-9_]+)\s*\((.*?)\)", stmt)
-                    if m:
-                        name, args_part = m.group(1), m.group(2)
-                        if not name.startswith("_") or name in ("__init__", "__call__"):
-                            raw_args = [a.strip() for a in args_part.split(",") if a.strip()]
-                            clean_args = [a.split(":")[0].split("=")[0].strip() for a in raw_args if a.split(":")[0].strip() not in ("self", "cls")]
-                            req_args = [a for a in raw_args if "=" not in a and a.split(":")[0].strip() not in ("self", "cls")]
-                            defs[name] = {
-                                "name": name,
-                                "kind": "function",
-                                "pos_args": clean_args,
-                                "required_count": len(req_args),
-                                "sig": stmt,
-                            }
-                    else:
-                        m = re.match(r"class\s+([A-Za-z0-9_]+)", stmt)
-                        if m:
-                            name = m.group(1)
-                            if not name.startswith("_"):
-                                defs[name] = {"name": name, "kind": "class", "sig": stmt}
-            i += 1
-        return defs
-
-    @staticmethod
-    def _extract_ts_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
-        defs: dict[str, dict[str, Any]] = {}
-        ts_pattern = re.compile(
-            r"^\s*export\s+(?:default\s+)?(?:async\s+)?(function|class|interface|type|const|let|var)\s+([A-Za-z0-9_$]+)(?:\s*<.*?>)?(?:\s*\((.*?)\))?",
-        )
-        for raw in lines:
-            line = raw.strip()
-            m = ts_pattern.search(line)
-            if m:
-                kind = m.group(1)
-                name = m.group(2)
-                params_raw = m.group(3)
-                if kind in ("let", "var"):
-                    continue
-                d: dict[str, Any] = {"name": name, "kind": kind, "sig": line}
-                if params_raw is not None and kind == "function":
-                    parts = []
-                    depth = 0
-                    cur = ""
-                    for ch in params_raw:
-                        if ch in "({[<": depth += 1; cur += ch
-                        elif ch in ")}]>": depth -= 1; cur += ch
-                        elif ch == "," and depth == 0:
-                            if cur.strip(): parts.append(cur.strip())
-                            cur = ""
-                        else: cur += ch
-                    if cur.strip(): parts.append(cur.strip())
-                    req_count = 0
-                    param_names = []
-                    for p in parts:
-                        p_name = p.split(":")[0].strip()
-                        is_opt = "?" in p_name or "=" in p
-                        clean_p = p_name.rstrip("?").strip()
-                        if not is_opt:
-                            req_count += 1
-                        param_names.append(clean_p)
-                    d["params"] = param_names
-                    d["required_count"] = req_count
-                defs[name] = d
-        return defs
-
-    @staticmethod
-    def _extract_cs_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
-        defs: dict[str, dict[str, Any]] = {}
-        class_re = re.compile(r"^\s*public\s+(?:static\s+|sealed\s+|abstract\s+|partial\s+)*(class|interface|struct|record|enum)\s+([A-Za-z0-9_]+)")
-        method_re = re.compile(r"^\s*public\s+(?:static\s+|virtual\s+|override\s+|async\s+|sealed\s+|abstract\s+)*([\w<>\[\],\s\?]+?)\s+([A-Za-z0-9_]+)\s*\((.*?)\)")
-        for raw in lines:
-            line = raw.strip()
-            cm = class_re.search(line)
-            if cm:
-                defs[cm.group(2)] = {"name": cm.group(2), "kind": cm.group(1), "sig": line}
-                continue
-            mm = method_re.search(line)
-            if mm:
-                name, params_raw = mm.group(2), mm.group(3)
-                parts = [p.strip() for p in params_raw.split(",") if p.strip()]
-                req_count = sum(1 for p in parts if "=" not in p)
-                defs[name] = {"name": name, "kind": "method", "required_count": req_count, "sig": line}
-        return defs
-
-    @staticmethod
-    def _extract_go_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
-        defs: dict[str, dict[str, Any]] = {}
-        func_re = re.compile(r"^\s*func\s+(?:\([^)]+\)\s+)?([A-Z][A-Za-z0-9_]*)\s*\((.*?)\)")
-        type_re = re.compile(r"^\s*type\s+([A-Z][A-Za-z0-9_]*)\s+(struct|interface)")
-        for raw in lines:
-            line = raw.strip()
-            fm = func_re.search(line)
-            if fm:
-                name = fm.group(1)
-                defs[name] = {"name": name, "kind": "function", "sig": line}
-                continue
-            tm = type_re.search(line)
-            if tm:
-                name, kind = tm.group(1), tm.group(2)
-                defs[name] = {"name": name, "kind": kind, "sig": line}
-        return defs
-
-    @staticmethod
-    def _extract_rust_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
-        defs: dict[str, dict[str, Any]] = {}
-        rust_re = re.compile(r"^\s*pub(?:\(.*?\))?\s+(fn|struct|enum|trait|type)\s+([A-Za-z0-9_]+)")
-        for raw in lines:
-            line = raw.strip()
-            rm = rust_re.search(line)
-            if rm:
-                kind, name = rm.group(1), rm.group(2)
-                defs[name] = {"name": name, "kind": kind, "sig": line}
-        return defs
+    _extract_py_diff_defs = staticmethod(extract_py_diff_defs)
+    _extract_ts_diff_defs = staticmethod(extract_ts_diff_defs)
+    _extract_cs_diff_defs = staticmethod(extract_cs_diff_defs)
+    _extract_go_diff_defs = staticmethod(extract_go_diff_defs)
+    _extract_rust_diff_defs = staticmethod(extract_rust_diff_defs)
 
     def _detect_breaking_changes(self, file_path: str, deleted_lines: list[str], added_lines: list[str]) -> list[dict[str, Any]]:
         if self._is_test(file_path):
@@ -4369,12 +4250,14 @@ def test_{sym}_regression_edge_cases():
             return {"success": False, "error": "Invalid old or new symbol"}
         
         resolved_root = Path(self._root(root))
-        norm_target = target_file.replace("\\", "/").lstrip("./")
-        target_path = resolved_root / norm_target
-        if not target_path.is_file():
-            return {"success": False, "error": f"Target file not found: {norm_target}"}
+        affected_files: set[str] = set()
+        if target_file and target_file not in (".", "*", "repo", "all"):
+            norm_target = target_file.replace("\\", "/").lstrip("./")
+            target_path = resolved_root / norm_target
+            if not target_path.is_file():
+                return {"success": False, "error": f"Target file not found: {norm_target}"}
+            affected_files.add(norm_target)
 
-        affected_files: set[str] = {norm_target}
         code_exts = {".py", ".ts", ".tsx", ".js", ".jsx", ".cs", ".go", ".rs", ".java", ".cpp", ".c", ".h", ".hpp", ".rb", ".php"}
         all_code_files = [
             str(p.relative_to(resolved_root)).replace("\\", "/")
@@ -4414,8 +4297,24 @@ def test_{sym}_regression_edge_cases():
                 return {"success": False, "error": f"Error processing {rel}: {e}"}
 
         if apply_changes:
+            originals = {rel: (resolved_root / rel).read_text(encoding="utf-8", errors="replace") for rel in modified_contents}
             for rel, new_txt in modified_contents.items():
                 (resolved_root / rel).write_text(new_txt, encoding="utf-8")
+
+            import py_compile
+            for rel in modified_contents:
+                if rel.endswith(".py"):
+                    try:
+                        py_compile.compile(str(resolved_root / rel), doraise=True)
+                    except py_compile.PyCompileError as syn_err:
+                        for r_rel, orig_txt in originals.items():
+                            (resolved_root / r_rel).write_text(orig_txt, encoding="utf-8")
+                        return {
+                            "success": False,
+                            "applied": False,
+                            "rolled_back": True,
+                            "error": f"Syntax error in {rel} after rename: {syn_err.msg}",
+                        }
 
         return {
             "success": True,
@@ -4548,22 +4447,8 @@ def test_{sym}_regression_edge_cases():
     def security_audit(self, root: str, limit: int = 50) -> dict[str, Any]:
         """Deterministic static security analysis (hardcoded secrets, unsafe deserialization, SQL injection)."""
         resolved_root = Path(self._root(root))
-        import re
-
-        secret_patterns = [
-            ("AWS Access Key", re.compile(r"\b(AKIA[0-9A-Z]{16})\b")),
-            ("GitHub Token", re.compile(r"\b(ghp_[0-9a-zA-Z]{36}|github_pat_[0-9a-zA-Z_]{82})\b")),
-            ("Slack Token", re.compile(r"\b(xox[baprs]-[0-9a-zA-Z]{10,48})\b")),
-            ("Private Key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
-            ("Hardcoded Password", re.compile(r"""(?:password|passwd|pwd|secret|api_key)\s*[:=]\s*["']([^"'\s]{6,})["']""", re.I)),
-        ]
-
-        code_smell_patterns = [
-            ("Unsafe eval/exec", re.compile(r"\b(eval|exec)\s*\(")),
-            ("Unsafe Pickle", re.compile(r"\bpickle\.loads?\s*\(")),
-            ("Unsafe PyYAML", re.compile(r"\byaml\.load\s*\([^,]+(?:\)|,\s*Loader\s*=\s*(?:yaml\.)?(?:Unsafe|Full)?Loader\b)")),
-            ("Shell Injection Risk", re.compile(r"\bsubprocess\.(?:Popen|run|call)\s*\(.*shell\s*=\s*True", re.S)),
-        ]
+        secret_patterns = _SECURITY_AUDIT_SECRETS
+        code_smell_patterns = _SECURITY_AUDIT_SMELLS
 
         findings: list[dict[str, Any]] = []
         candidate_files = self.repo_tools.iter_files(str(resolved_root))
@@ -5299,19 +5184,7 @@ def test_{sym}_regression_edge_cases():
             )
             return any(p in t for p in placeholders)
 
-        patterns: list[tuple[str, str, re.Pattern[str], str]] = [
-            ("openai_api_key", "OpenAI API Key", re.compile(r"(sk-(?:proj-|live-)?[A-Za-z0-9_-]{20,60})"), "CRITICAL"),
-            ("anthropic_api_key", "Anthropic API Key", re.compile(r"(sk-ant-api[0-9]{2}-[A-Za-z0-9_-]{20,80})"), "CRITICAL"),
-            ("aws_access_key", "AWS Access Key ID", re.compile(r"\b(AKIA[0-9A-Z]{16})\b"), "CRITICAL"),
-            ("github_pat", "GitHub Personal Access Token", re.compile(r"\b((?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36})\b"), "CRITICAL"),
-            ("slack_token", "Slack Token", re.compile(r"(xox[baprs]-[0-9A-Za-z-]{20,72})"), "HIGH"),
-            ("slack_webhook", "Slack Incoming Webhook", re.compile(r"(https:\/\/hooks\.slack\.com\/services\/T[0-9A-Z]+\/B[0-9A-Z]+\/[0-9A-Za-z]+)"), "HIGH"),
-            ("google_api_key", "Google Cloud / API Key", re.compile(r"\b(AIza[0-9A-Za-z-_]{35})\b"), "CRITICAL"),
-            ("stripe_secret_key", "Stripe Secret Key", re.compile(r"\b((?:sk|rk)_(?:live|test)_[0-9a-zA-Z]{24,})\b"), "CRITICAL"),
-            ("private_key", "Private Key Header", re.compile(r"(-----BEGIN (?:RSA|DSA|EC|OPENSSH|PGP) PRIVATE KEY-----)"), "CRITICAL"),
-            ("db_connection_uri", "Database Connection URI with Password", re.compile(r"\b((?:postgres|postgresql|mysql|mongodb|redis):\/\/[a-zA-Z0-9_\-\.]+:[a-zA-Z0-9_\-\.@#$%^&*!]+@[a-zA-Z0-9_\-\.]+)"), "HIGH"),
-            ("generic_secret_assignment", "Generic Hardcoded Secret", re.compile(r"(?:api_key|secret_key|auth_token|client_secret|access_token)\s*=\s*['\"]([A-Za-z0-9+/=_\-\.]{16,})['\"]", re.I), "HIGH"),
-        ]
+        patterns = _SECRET_SCAN_PATTERNS
 
         findings: list[dict[str, Any]] = []
         if path:
@@ -7035,3 +6908,123 @@ def test_{sym}_regression_edge_cases():
             "savings_ratio": max(0.0, ratio),
             "skeleton_code": skeleton,
         }
+
+    def batch_replace(
+        self,
+        root: str,
+        edits: list[dict[str, Any]],
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Apply multiple surgical string replacements across one or more files atomically with rollback."""
+        p_root = Path(self._root(root)).resolve()
+        if not edits or not isinstance(edits, list):
+            return {"success": False, "error": "edits must be a non-empty list of replacement operations"}
+
+        # 1. Validate edit structures and resolve target files
+        resolved_files: dict[str, Path] = {}
+        for idx, edit in enumerate(edits):
+            if not isinstance(edit, dict):
+                return {"success": False, "error": f"edit #{idx} is not an object"}
+            p_str = edit.get("path") or edit.get("file")
+            old_str = edit.get("old") or edit.get("target") or edit.get("target_content")
+            new_str = edit.get("new") if "new" in edit else (edit.get("replacement") or edit.get("replacement_content"))
+            if not p_str or old_str is None or new_str is None:
+                return {"success": False, "error": f"edit #{idx} missing path, old, or new"}
+            
+            p_candidate = (p_root / p_str).resolve()
+            if not p_candidate.is_relative_to(p_root):
+                return {"success": False, "error": f"path '{p_str}' escapes project root"}
+            if not p_candidate.is_file():
+                return {"success": False, "error": f"file not found: {p_str}"}
+            rel_candidate = str(p_candidate.relative_to(p_root)).replace("\\", "/")
+            try:
+                status = subprocess.run(
+                    ["git", "-C", str(p_root), "status", "--porcelain", "--", rel_candidate],
+                    capture_output=True, check=False, timeout=5, **hidden_run_kwargs(),
+                )
+                if status.returncode == 0 and status.stdout.strip():
+                    return {
+                        "success": False,
+                        "applied": False,
+                        "error": f"refusing dirty target file: {p_str}",
+                        "path": p_str,
+                    }
+            except (OSError, subprocess.SubprocessError):
+                pass
+            resolved_files[p_str] = p_candidate
+
+        # 2. Read and backup all target files in memory
+        backups: dict[Path, str] = {}
+        file_contents: dict[Path, str] = {}
+        for rel_path, fpath in resolved_files.items():
+            if fpath not in backups:
+                content = fpath.read_text(encoding="utf-8", errors="replace")
+                backups[fpath] = content
+                file_contents[fpath] = content
+
+        # 3. Apply edits in-memory and verify uniqueness
+        for idx, edit in enumerate(edits):
+            p_str = edit.get("path") or edit.get("file")
+            old_str = edit.get("old") or edit.get("target") or edit.get("target_content")
+            new_str = edit.get("new") if "new" in edit else (edit.get("replacement") or edit.get("replacement_content"))
+            fpath = resolved_files[p_str]
+            current_text = file_contents[fpath]
+
+            count = current_text.count(old_str)
+            if count == 0:
+                return {
+                    "success": False,
+                    "applied": False,
+                    "error": f"edit #{idx}: target text not found in {p_str}",
+                    "path": p_str,
+                }
+            if count > 1:
+                return {
+                    "success": False,
+                    "applied": False,
+                    "error": f"edit #{idx}: target text found multiple times ({count}) in {p_str}. Must be unique.",
+                    "path": p_str,
+                }
+            file_contents[fpath] = current_text.replace(old_str, new_str, 1)
+
+        # 4. Syntax preflight on modified Python files
+        for fpath, new_text in file_contents.items():
+            if fpath.suffix == ".py":
+                try:
+                    compile(new_text, str(fpath), "exec")
+                except SyntaxError as syn_err:
+                    rel = str(fpath.relative_to(p_root)).replace("\\", "/")
+                    return {
+                        "success": False,
+                        "applied": False,
+                        "error": f"Syntax error in {rel} after replacement: {syn_err.msg}",
+                        "path": rel,
+                    }
+
+        if dry_run:
+            return {
+                "success": True,
+                "applied": False,
+                "dry_run": True,
+                "edits_count": len(edits),
+                "modified_files": [str(p.relative_to(p_root)).replace("\\", "/") for p in file_contents],
+            }
+
+        # 5. Commit writes atomically
+        written_files: list[Path] = []
+        try:
+            for fpath, new_text in file_contents.items():
+                fpath.write_text(new_text, encoding="utf-8")
+                written_files.append(fpath)
+        except Exception as exc:
+            for written in written_files:
+                written.write_text(backups[written], encoding="utf-8")
+            return {"success": False, "applied": False, "error": f"Failed during disk write, rolled back: {exc}"}
+
+        return {
+            "success": True,
+            "applied": True,
+            "edits_count": len(edits),
+            "modified_files": [str(p.relative_to(p_root)).replace("\\", "/") for p in file_contents],
+        }
+

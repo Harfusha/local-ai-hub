@@ -44,3 +44,21 @@ def test_normalize_status_clears_stale_running_state():
     assert normalized["pid"] == 0
     assert normalized["hub_pid"] == 0
     assert normalized["last_error"] == "supervisor process not running"
+
+
+def test_wmi_spawn_detached_passes_active_config(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location('test_hub_service_wmi', Path(__file__).parents[1] / 'tools' / 'service.py')
+    service = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(service)
+
+    called = []
+    monkeypatch.setattr(service, "_ACTIVE_CONFIG_ARG", "C:\\custom\\config.toml")
+    monkeypatch.setattr(service.shutil, "which", lambda name: "powershell.exe")
+    monkeypatch.setattr(service, "run", lambda cmd, **kwargs: called.append(cmd) or subprocess.CompletedProcess([], 0))
+
+    service.spawn_detached()
+
+    assert len(called) == 1
+    script = " ".join(str(x) for x in called[0])
+    assert "--config" in script
+    assert "C:\\custom\\config.toml" in script

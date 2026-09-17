@@ -12,7 +12,7 @@ import time
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 import urllib.request
 from urllib.parse import parse_qs, urlparse
 
@@ -44,7 +44,7 @@ APP: LocalAIApp | None = None
 # independent of user config so a dashboard refresh cannot create immortal active jobs.
 MONITOR_PATHS = {
     "/health", "/dashboard", "/favicon.ico", "/api/live", "/api/live/status",
-    "/api/status", "/api/capabilities", "/api/metrics", "/api/telemetry/report", "/api/telemetry/tool-accounting", "/api/telemetry/timeline", "/api/audit/tail", "/api/control",
+    "/api/status", "/api/capabilities", "/api/metrics", "/api/adoption", "/api/telemetry/report", "/api/telemetry/tool-accounting", "/api/telemetry/timeline", "/api/audit/tail", "/api/control",
     "/api/config", "/api/logs/tail", "/api/hardware/system", "/api/hardware/gpu",
     "/api/debug-traces",
 }
@@ -192,10 +192,13 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
             if len(window) >= self._rate_limit_requests:
                 return False
             window.append(now)
-            # Evict stale tenants to prevent memory growth (keep at most 4096 entries)
+            # Evict stale tenants in batches to prevent per-request churn (keep at most 4096 entries)
             if len(self._rate_windows) > 4096:
-                oldest_tenant = next(iter(self._rate_windows))
-                del self._rate_windows[oldest_tenant]
+                stale = [t for t, w in self._rate_windows.items() if not w or w[-1] < cutoff]
+                if len(stale) < 512:
+                    stale = list(self._rate_windows.keys())[:512]
+                for t in stale:
+                    self._rate_windows.pop(t, None)
             return True
 
     def process_request(self, request: Any, client_address: Any) -> None:
@@ -254,6 +257,10 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
+    DEBUG_TRACE_REQUEST_CAPTURE_BYTES = 8 * 1024
+    _DEBUG_TRACE_SENSITIVE_KEY = re.compile(
+        r"(?:api[_-]?key|authorization|token|secret|password|passwd|credential)", re.IGNORECASE
+    )
     protocol_version = "HTTP/1.1"
 
     def setup(self) -> None:
@@ -475,6 +482,36 @@ class Handler(BaseHTTPRequestHandler):
                             self._debug_observer_token = set_observer(DebugTraceObserver(trace_store, self._debug_trace_id))
         except Exception:
             pass
+
+    @classmethod
+    def _safe_debug_trace_request(cls, payload: Any) -> dict[str, Any]:
+        """Return a small redacted JSON/form payload suitable for durable trace storage."""
+        if not isinstance(payload, dict):
+            return {"capture_status": "omitted", "reason": "unsupported request body"}
+
+        def redact(value: Any, key: str = "") -> Any:
+            if cls._DEBUG_TRACE_SENSITIVE_KEY.search(key):
+                return "[redacted]"
+            if isinstance(value, dict):
+                return {str(child_key): redact(child_value, str(child_key)) for child_key, child_value in value.items()}
+            if isinstance(value, list):
+                return [redact(item) for item in value[:100]]
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                return value
+            return "[unsupported value]"
+
+        captured = redact(payload)
+        try:
+            encoded = json.dumps(captured, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        except (TypeError, ValueError):
+            return {"capture_status": "omitted", "reason": "unserializable request body"}
+        if len(encoded) > cls.DEBUG_TRACE_REQUEST_CAPTURE_BYTES:
+            return {
+                "capture_status": "omitted",
+                "reason": "request body exceeds trace capture limit",
+                "captured_limit_bytes": cls.DEBUG_TRACE_REQUEST_CAPTURE_BYTES,
+            }
+        return captured
 
     def _finish_debug_trace(self, status: int, data: Any, *, error: str = "") -> None:
         trace_id = str(getattr(self, "_debug_trace_id", "") or "")
@@ -773,7 +810,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise RequestBodyError(f"{name} must be an object")
             if "response_profile" in payload:
                 text(payload["response_profile"], "response_profile", 16)
-        elif path in {"/api/preprocess", "/api/repo/profile", "/api/repo/map", "/api/repo/code-index", "/api/repo/deterministic", "/api/search"}:
+        elif path in {"/api/preprocess", "/api/repo/profile", "/api/repo/map", "/api/repo/code-index", "/api/repo/investigate", "/api/repo/diagnose", "/api/repo/briefing", "/api/command/preflight", "/api/repo/deterministic", "/api/search"}:
             if "root" in payload:
                 text(payload["root"], "root", 4096)
         elif path == "/api/memory/put":
@@ -798,6 +835,10 @@ class Handler(BaseHTTPRequestHandler):
             required_text("symbol", "name", maximum=1024)
         elif path in {"/api/code/ast_outline", "/api/code/symbols_overview", "/api/code/diagnostics"}:
             required_text("path", "file", maximum=4096)
+        elif path in {"/api/code/batch_replace", "/api/repo/batch_replace"}:
+            edits = payload.get("edits") or payload.get("replacements")
+            if not isinstance(edits, list) or not edits:
+                raise RequestBodyError("edits must be a non-empty list of replacement operations")
         elif path == "/api/code-intelligence/query":
             action = text(payload.get("action", "search"), "action", 80).strip().lower().replace("-", "_")
             if action not in {"dead_code", "dead", "stats", "repository_stats"}:
@@ -1187,6 +1228,11 @@ class Handler(BaseHTTPRequestHandler):
                 days = int((query.get("days") or [30])[0])
                 scope = str((query.get("scope") or ["window"])[0])
                 self._send(200, {"success": True, "metrics": APP.telemetry.summary(days, scope=scope)}); return
+            if path == "/api/adoption":
+                store = getattr(getattr(APP, "services", None), "adoption_metrics", None)
+                if store is None:
+                    self._send(200, {"success": True, "available": False}); return
+                self._send(200, {"success": True, "available": True, "adoption": store.report(days=7)}); return
             if path == "/api/telemetry/report":
                 days = int((query.get("days") or [30])[0])
                 scope = str((query.get("scope") or ["window"])[0])
@@ -1513,7 +1559,14 @@ class Handler(BaseHTTPRequestHandler):
         trace_store = getattr(APP, "debug_traces", None)
         api_trace_id = str(getattr(self, "_debug_trace_id", "") or "")
         if trace_store is not None and api_trace_id:
-            trace_store.update(api_trace_id, state="running", request=payload)
+            if not getattr(self, "_debug_trace_redacted", False):
+                captured_request = self._safe_debug_trace_request(payload)
+                trace_store.update(api_trace_id, state="running", request=captured_request)
+                trace_store.event(
+                    api_trace_id,
+                    "request_body_captured",
+                    {"content_type": content_type, "capture_status": captured_request.get("capture_status", "captured")},
+                )
             trace_store.event(api_trace_id, "handler_started", {"action": path, "payload_keys": sorted(str(key) for key in payload)})
         tenant = self._tenant()
         self._journal_request_id = str(getattr(self, "_trace_request_id", ""))
@@ -1659,7 +1712,16 @@ class Handler(BaseHTTPRequestHandler):
                             "constraints": payload.get("constraints") or [],
                             "risk_profile": payload.get("risk_profile", "normal"),
                         }
-                    contract = GoalContract.from_dict(contract_data)
+                    elif isinstance(contract_data, str):
+                        contract_data = {
+                            "goal": contract_data,
+                            "acceptance_criteria": payload.get("acceptance_criteria") or [],
+                            "scope": payload.get("scope", "task"),
+                            "non_goals": payload.get("non_goals") or [],
+                            "constraints": payload.get("constraints") or [],
+                            "risk_profile": payload.get("risk_profile", "normal"),
+                        }
+                    contract = GoalContract.from_dict(contract_data) if isinstance(contract_data, Mapping) else GoalContract(goal=str(contract_data))
                     ctx_data = payload.get("context") or {}
                     context = ScopeContext(
                         repository_id=str(ctx_data.get("repository_id", "")),
@@ -2073,7 +2135,12 @@ class Handler(BaseHTTPRequestHandler):
                         tenant=tenant,
                     )
                     compiled = APP.agent_context.compile(req)
-                    self._send(200, {"success": True, "context": compiled.to_dict(), "text": compiled.text()}); return
+                    etag = compiled.etag()
+                    since_hash = str(payload.get("since_hash") or payload.get("etag") or "").strip()
+                    if since_hash and since_hash == etag:
+                        self._send(200, {"success": True, "unchanged": True, "etag": etag, "estimated_tokens": 10}); return
+                    compact_mode = bool(payload.get("compact", False))
+                    self._send(200, {"success": True, "etag": etag, "context": compiled.to_dict(compact=compact_mode), "text": compiled.text()}); return
                 self._send(400, {"success": False, "error": f"unknown context action '{action}'", "terminal": True, "retryable": False}); return
             if path == "/api/agent-state/learning":
                 if not getattr(APP, "agent_learning", None) or not APP.agent_learning.state_store.enabled:
@@ -2390,6 +2457,12 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
+            if path in {"/api/code/batch_replace", "/api/repo/batch_replace"}:
+                root = str(payload.get("root", "."))
+                edits = payload.get("edits") or payload.get("replacements") or []
+                dry_run = bool(payload.get("dry_run", False))
+                self._send(200, APP.services.batch_replace(root, edits if isinstance(edits, list) else [], dry_run=dry_run))
+                return
             if path == "/api/maintenance/optimize_db":
                 self._send(200, APP.services.optimize_databases())
                 return
@@ -2532,7 +2605,31 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/repo/map":
                 self._send(200, APP.services.repo_map(str(payload.get("root", ".")), int(payload.get("max_symbols", 120)))); return
             if path == "/api/repo/code-index":
-                self._send(200, APP.services.code_query(str(payload.get("root", ".")), str(payload.get("query", "")), int(payload.get("limit", 20)))); return
+                self._send(200, APP.services.code_query(str(payload.get("root", ".")), str(payload.get("query", "")), int(payload.get("limit", 20)), bool(payload.get("include_code", False)))); return
+            if path == "/api/repo/investigate":
+                self._send(200, APP.services.repo_investigate(
+                    str(payload.get("root", ".")),
+                    str(payload.get("query", "")),
+                    str(payload.get("path", "")),
+                    bool(payload.get("include_code", True)),
+                    int(payload.get("limit", 10)),
+                )); return
+            if path == "/api/repo/diagnose":
+                self._send(200, APP.services.repo_diagnose(
+                    str(payload.get("root", ".")),
+                    str(payload.get("text", payload.get("query", ""))),
+                )); return
+            if path == "/api/repo/briefing":
+                self._send(200, APP.services.repo_briefing(str(payload.get("root", ".")))); return
+            if path == "/api/command/preflight":
+                raw_paths = payload.get("paths") or payload.get("files")
+                paths_list = [str(p) for p in raw_paths] if isinstance(raw_paths, list) else ([str(raw_paths)] if raw_paths else None)
+                self._send(200, APP.services.commands.preflight(
+                    str(payload.get("cwd", payload.get("root", "."))),
+                    str(payload.get("tenant", "default")),
+                    paths=paths_list,
+                    timeout=int(payload.get("timeout", 10) or 10),
+                )); return
             if path == "/api/repo/deterministic":
                 self._send(200, APP.services.deterministic_query(str(payload.get("root", ".")), str(payload.get("query", "")), int(payload.get("limit", 24)))); return
             if path == "/api/repo/impact":
@@ -2542,7 +2639,13 @@ class Handler(BaseHTTPRequestHandler):
                     int(payload.get("max_dependents", APP.config.get("workflow", {}).get("impact_max_dependents", 30))),
                 )); return
             if path == "/api/search":
-                self._send(200, APP.services.repo_search(str(payload.get("root", ".")), str(payload.get("query", "")), int(payload.get("top_k", 12)))); return
+                self._send(200, APP.services.repo_search(
+                    str(payload.get("root", ".")),
+                    str(payload.get("query", "")),
+                    int(payload.get("top_k", 12)),
+                    context_lines=int(payload["context_lines"]) if payload.get("context_lines") is not None else None,
+                    enrich=bool(payload.get("enrich", False)),
+                )); return
             if path == "/api/context/pack":
                 root = str(payload.get("root", ".")); query_text = str(payload.get("query", ""))
                 max_tokens = int(payload.get("max_tokens", APP.config.get("token_saving", {}).get("default_repo_context_tokens", 4200)))
@@ -2599,6 +2702,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, APP.rag.search(str(payload.get("query", "")), tenant, workspace, int(payload.get("top_k", 8)), bool(payload.get("use_reranker", True)))); return
             if path in {"/api/task/speculative_draft", "/api/speculative_draft"}:
                 self._send(200, APP.services.speculative_draft(payload, tenant)); return
+            if path in {"/api/task/scaffold", "/api/scaffold"}:
+                self._send(200, APP.services.task_scaffold(payload, tenant)); return
             if path in {"/api/db/query"}:
                 db_name = str(payload.get("db", "agent_state"))
                 sql_q = str(payload.get("query", "SELECT name FROM sqlite_master WHERE type='table'"))

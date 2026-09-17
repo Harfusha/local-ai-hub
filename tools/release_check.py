@@ -22,6 +22,7 @@ _TOP_LEVEL_FORBIDDEN_DIRS = {
     "state",
     "tool-envs",
     "wheel-smoke",
+    ".worktrees",
 }
 _FORBIDDEN_DIR_NAMES = {"__pycache__"}
 _FORBIDDEN_FILE_NAMES = {"config.toml", ".local-ai-hub.zip", "ORIGINAL_REQUEST.md"}
@@ -37,7 +38,7 @@ def _version_from_init(root: Path) -> str:
     return match.group(1)
 
 
-_INSTALLED_ENV_DIRS = {".venv", "tool-envs", "state", ".serena", ".agents", ".superpowers"}
+_INSTALLED_ENV_DIRS = {".venv", "tool-envs", "state", ".serena", ".agents", ".superpowers", ".worktrees"}
 
 
 def _iter_release_hygiene_violations(root: Path, *, post_test: bool = False, allow_installed: bool = False) -> Iterable[str]:

@@ -1,0 +1,14 @@
+[hardware]
+profile = "auto"
+auto_tune = true
+
+[models]
+embedding = "BAAI/bge-small-en-v1.5"
+embedding_backend = "openvino"
+embedding_device = "auto"
+reranker = "cross-encoder/ms-marco-MiniLM-L6-v2"
+reranker_backend = "openvino"
+reranker_device = "auto"
+
+[openvino]
+device_priority = ["GPU", "CPU"]

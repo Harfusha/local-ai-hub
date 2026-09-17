@@ -200,9 +200,10 @@ def test_supervisor_captures_child_output_in_state_log(tmp_path, monkeypatch):
 
     monkeypatch.setattr(supervisor_module.subprocess, "Popen", _popen)
     supervisor.spawn_hub()
-    assert captured["stderr"] == supervisor_module.subprocess.STDOUT
+    assert str(getattr(captured["stderr"], "name", "")).endswith("logs\\hub_stderr.log")
     assert str(getattr(captured["stdout"], "name", "")).endswith("hub-process.log")
     captured["stdout"].close()
+    captured["stderr"].close()
 
 
 def test_supervisor_status_replaces_stale_hub_pid_with_owned_child(tmp_path):

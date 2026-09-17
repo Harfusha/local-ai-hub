@@ -10,6 +10,12 @@ from __future__ import annotations
 from typing import Any
 
 
+def rollout_feature_enabled(config: dict[str, Any], name: str) -> bool:
+    """Enable a rollout capability only for an explicit TOML boolean true."""
+    features = config.get("features", {})
+    return isinstance(features, dict) and features.get(name) is True
+
+
 class FeatureSet:
     """Stable, read-only snapshot of which hub features are active.
 
@@ -76,6 +82,13 @@ class FeatureSet:
         self.agent_os: bool = self.coord and bool(feat.get("agent_os", True))
         self.dashboard: bool = bool(feat.get("dashboard", True)) and bool(cfg.get("monitoring", {}).get("dashboard_enabled", True))
         self.work_orchestrator: bool = self.tasks and self.commands and self.coord and bool(feat.get("work_orchestrator", True)) and bool(work.get("enabled", True))
+
+        # Cost-bearing rollout capabilities start disabled. Use strict identity so
+        # malformed config values cannot accidentally enable writes or persistence.
+        self.enriched_search: bool = rollout_feature_enabled(cfg, "enriched_search")
+        self.batch_replacement: bool = rollout_feature_enabled(cfg, "batch_replacement")
+        self.diagnostic_artifacts: bool = rollout_feature_enabled(cfg, "diagnostic_artifacts")
+        self.local_diagnostic_dispatch: bool = rollout_feature_enabled(cfg, "local_diagnostic_dispatch")
 
         # Model names — used in descriptions and routing
         self.fast_model: str = str(mdl.get("fast_code", "qwen2.5-coder:1.5b"))
@@ -153,7 +166,10 @@ class FeatureSet:
             "migration_drift", "package_audit", "structural_search", "context_budget",
             "git_diff", "git_history_search", "hotspots", "generate_tests_for_diff", "cross_repo_contract",
             "reachability_dead_code", "mutation_test", "type_stubs", "skeletonize",
+            "investigate", "diagnose", "briefing",
         ]
+        if self.batch_replacement:
+            actions.append("batch_replace")
         if self.serena:
             actions.append("semantic")
         if self.codegraph:
@@ -184,7 +200,7 @@ class FeatureSet:
             "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report",
             "submit", "status", "wait", "result", "cancel", "candidate_create",
             "candidate_promote", "speculative_draft", "vision", "transcribe",
-            "eval_suite", "prompt_eval", "eval_drift", "complete_code",
+            "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold",
         ]
 
     def supported_coord_actions(self) -> list[str]:
@@ -226,6 +242,7 @@ class FeatureSet:
             "http_probe", "stash_save", "stash_restore", "record_mock", "replay_mock",
             "diff_hunk_stage", "flaky_detect", "webhook_replay",
             "mock_server", "mock_server_start", "mock_server_stop", "mock_server_status",
+            "patch_and_verify", "preflight",
         ]
 
     def semantic_hint(self) -> str:

@@ -11,6 +11,8 @@ Preserve model routing defaults when refreshing repository instructions: qwen2.5
 
 You are an autonomous AI engineering agent. Your task is to update **Local AI Hub** on this system to the latest version, update dependencies, restart the background service, re-verify health, and refresh the Local AI Hub Tool Policy and Token Economy Policy in this repository.
 
+Preserve privacy-safe adoption telemetry: it contains only normalized aggregate tool/action/intent/outcome, time, latency, and output-size buckets. Never migrate or expose prompts, source, secrets, absolute paths, or raw request records. Bypasses require an explicit client signal.
+
 Follow these execution phases:
 
 ---
@@ -91,6 +93,11 @@ Locate active agent instruction files in this repository (`AGENTS.md`, `CLAUDE.m
 - Ensure the refreshed policy retains this trigger verbatim:
   - Before any repository task, load and follow the `token-economizer` skill when it is installed; this trigger applies even under deadline pressure.
 - Preserve the `trim-run` safety boundary: only its bundled token tools and read-only search CLIs may be launched; use `local_ai_command` for tests/builds and arbitrary validation commands.
+- For durable work, require one `local_ai_coord(action="task_create")` contract, phase changes through `local_ai_coord(action="task_checkpoint")`, and one bounded wait instead of status polling loops.
+- Keep routing boundaries explicit: repository navigation/symbols/impact=`local_ai_repo`; exact source/log slices=`local_ai_artifact`; test/lint/typecheck/build=`local_ai_command`; task contracts/ownership leases/checkpoints/receipts/receipt-gated completion=`local_ai_coord`; local diagnosis/boilerplate/second opinion=`local_ai_task` failure diagnosis disabled by default, enable `features.local_diagnostic_dispatch=true` only after low-confidence deterministic command parsing with artifact reference plus narrow preview, never raw logs, architecture, security, mutations, or open-ended coding; closed, verified handoff work=`local_ai_work`, never micro-edits or live discussion.
+- Preserve native fallback gate: only after Hub returns `terminal=true` and `retryable=false`. Mutations never cache or single-flight.
+- Keep `features.enriched_search`, `features.batch_replacement`, `features.diagnostic_artifacts`, and `features.local_diagnostic_dispatch` disabled unless one literal TOML `true` flag has a 10–20% pilot. Capture a 14-day read-only baseline. Compare `/api/adoption` token, latency, first-pass validation, terminal failure, and native fallback metrics. Promote only sustained quality-neutral gains. Roll back immediately: set that flag to `false`, restart Hub, run `python tools/hubctl.py generate`. Malformed values must remain disabled and disabled features must return structured unavailable before work starts. `local_diagnostic_dispatch=true` alone may retain only bounded failure-preview context for one local diagnosis; it never retains raw output and does not require `diagnostic_artifacts=true`.
+- For `batch_replace`, require `features.batch_replacement=true`, then preview with explicit `dry_run=true`; `staged` is not batch dry-run and is never forwarded. Each edit must exact-match once. Keep rollback behavior and never auto-commit replacements. Set `dry_run=false` only after review.
 
 ---
 

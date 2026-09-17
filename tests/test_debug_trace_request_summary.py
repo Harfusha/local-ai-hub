@@ -38,6 +38,29 @@ class DebugTraceRequestSummaryTests(unittest.TestCase):
             self.assertEqual(item["request_summary"], "")
             self.assertNotIn("private prompt content", json.dumps(item))
 
+    def test_http_trace_capture_redacts_nested_sensitive_values_and_omits_large_or_binary_data(self):
+        from local_ai_hub.http_server import Handler
+
+        captured = Handler._safe_debug_trace_request(
+            {
+                "task": "inspect",
+                "api_key": "api-secret",
+                "nested": {"authorization": "Bearer authorization-secret", "safe": "kept"},
+            }
+        )
+
+        self.assertEqual(captured["api_key"], "[redacted]")
+        self.assertEqual(captured["nested"]["authorization"], "[redacted]")
+        self.assertEqual(captured["nested"]["safe"], "kept")
+        self.assertNotIn("api-secret", json.dumps(captured))
+        self.assertEqual(Handler._safe_debug_trace_request(b"\x00\x01")["capture_status"], "omitted")
+        self.assertEqual(
+            Handler._safe_debug_trace_request({"body": "x" * (Handler.DEBUG_TRACE_REQUEST_CAPTURE_BYTES + 1)})[
+                "capture_status"
+            ],
+            "omitted",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

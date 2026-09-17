@@ -16,6 +16,7 @@ body{margin:0;background:var(--bg);color:var(--fg);line-height:1.45;font-size:12
 button,input,select,textarea{font:inherit}
 .top{position:sticky;top:0;z-index:25;background:rgba(9,13,20,0.92);border-bottom:1px solid var(--line);backdrop-filter:blur(14px)}
 .toolbar{display:flex;align-items:center;gap:10px;padding:9px 16px;flex-wrap:wrap}
+.toolbar select{background:#172233;color:var(--fg);border:1px solid #2e405a;border-radius:5px;padding:3px 8px;font-size:11px}
 .brand-wrap{display:flex;align-items:center;gap:8px;margin-right:6px}
 .brand{font-weight:750;font-size:14px;color:var(--fg-bright);letter-spacing:-.015em}
 .brand-icon{color:var(--accent);font-size:16px}
@@ -63,7 +64,6 @@ button,input,select,textarea{font:inherit}
 .sub{color:#94a3b8;font-size:11px;margin-top:5px;line-height:1.45}
 .section{margin-top:12px;overflow:hidden;border-radius:9px}
 .section h2{font-size:12.5px;margin:0;padding:10px 14px;background:var(--panel-head);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:8px;font-weight:600}
-.section.rag-narrow{width:min(100%, 960px);max-width:960px;margin:12px auto 0}
 .table-wrap{overflow:auto;max-height:520px}
 table{width:100%;border-collapse:collapse;font-size:11px}
 th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #1a2538;white-space:nowrap}
@@ -74,8 +74,10 @@ tbody tr.click:hover{background:#162338}
 .kv>div:nth-child(odd){color:var(--muted);font-weight:500}
 .kv>div:nth-child(even){overflow-wrap:anywhere;word-break:break-word;min-width:0}
 .split{display:grid;grid-template-columns:1.2fr .8fr;gap:12px}
+@media(max-width:860px){.split{grid-template-columns:1fr}.hide-sm{display:none}}
 .bar{height:5px;background:#202c3e;border-radius:4px;overflow:hidden;margin-top:6px}
 .bar>i{display:block;height:100%;background:#38bdf8}
+.event-header{display:grid;grid-template-columns:82px 72px 110px 130px minmax(180px,1fr) 90px 85px;gap:7px;border-bottom:1px solid var(--line-light);padding:8px 10px;font-size:11px;font-weight:600;color:var(--muted);background:var(--panel-head)}
 .event{display:grid;grid-template-columns:82px 72px 110px 130px minmax(180px,1fr) 90px 85px;gap:7px;border-bottom:1px solid #1a2538;padding:7px 10px;font-size:11px}
 .event:hover{background:#162338}
 .events{max-height:650px;overflow:auto}
@@ -117,6 +119,7 @@ tbody tr.click:hover{background:#162338}
 .control-popover{position:absolute;right:0;top:calc(100% + 7px);z-index:30;min-width:330px;padding:10px;background:#10161d;border:1px solid #394758;border-radius:8px;box-shadow:0 16px 45px #000b;display:grid;grid-template-columns:1fr 1fr;gap:7px}
 .control-popover .token{grid-column:1/-1;display:flex;gap:6px}
 .control-popover .token input{min-width:0;flex:1;background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:6px 8px;font-size:11px}
+.control-popover .tiny.muted{grid-column:1/-1;padding-top:4px;font-weight:600;color:var(--muted);letter-spacing:0.02em}
 .control-popover button{width:100%}
 .project-toolbar{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
 .project-toolbar input,.project-toolbar select{background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:7px 9px;font-size:11px}
@@ -135,7 +138,7 @@ tbody tr.click:hover{background:#162338}
 .primary-metric{font-size:20px;font-weight:650}
 .sub strong{color:var(--fg)}
 .spark-canvas{width:100%;height:32px;display:block;margin-top:6px}
-@media(max-width:980px){.split{grid-template-columns:1fr}.event{grid-template-columns:72px 90px 1fr}.hide-sm{display:none}.page{padding:8px}.value{font-size:17px}}
+@media(max-width:980px){.split{grid-template-columns:1fr}.event,.event-header{grid-template-columns:72px 90px 1fr}.hide-sm{display:none}.page{padding:8px}.value{font-size:17px}}
 @media(max-width:700px){.toolbar{padding:8px;gap:6px}.toolbar .brand{font-size:12px}.toolbar>.tiny{display:none}.control-menu{margin-left:0}.control-popover{position:fixed;left:8px;right:8px;top:72px;min-width:0}.tabs{padding:0 6px 6px}.tabbtn{padding:6px 8px}.project-toolbar{align-items:stretch}.project-toolbar input{flex-basis:100%}.project-summary{margin-left:0;width:100%}}
 </style><style>
 .system-card .value{font-size:15px}
@@ -269,13 +272,16 @@ tbody tr.click:hover{background:#162338}
       <summary>Controls</summary>
       <div class="control-popover">
         <div class="token"><input type="password" id="apiToken" autocomplete="off" placeholder="API token (remote only)"><button class="btn" id="saveToken">Set token</button></div>
-        <button class="btn ok" id="optDbBtn">Optimize DBs</button>
-        <button class="btn warn" id="purgeCacheBtn">Purge Cache</button>
-        <button class="btn" id="doctorBtn">Doctor</button>
-        <button class="btn" id="pauseEvents">Pause events</button>
+        <div class="tiny muted">Diagnostics</div>
+        <button class="btn ok" id="optDbBtn">Optimize databases</button>
+        <button class="btn" id="doctorBtn">Run diagnostics</button>
+        <button class="btn" id="pauseEvents">Pause live events</button>
+        <div class="tiny muted">Runtime control</div>
         <button class="btn warn" id="prepToggle">Pause preprocessing</button>
-        <button class="btn" id="restartHub">Restart hub</button>
-        <button class="btn bad" id="stopService">Stop service</button>
+        <button class="btn" id="restartHub" data-control-action="restart_hub">Restart hub service</button>
+        <div class="tiny muted">Destructive maintenance</div>
+        <button class="btn warn" id="purgeCacheBtn" data-control-action="purge_cache">Purge expired cache</button>
+        <button class="btn bad" id="stopService" data-control-action="stop_service">Stop hub service</button>
       </div>
     </details>
   </div>
@@ -294,6 +300,14 @@ tbody tr.click:hover{background:#162338}
 </div>
 
 <div id="overview" class="page active">
+  <section id="overviewHealthSummary" class="section" style="margin-bottom:12px;padding:14px;border-left:4px solid var(--accent)">
+    <div class="label">Operational summary</div>
+    <div class="value primary-metric" id="overviewHealthLevel">Loading runtime health…</div>
+    <div class="sub" id="overviewHealthEvidence">Waiting for live status.</div>
+    <div class="tiny muted" id="overviewFreshness">Timestamp unavailable</div>
+    <button type="button" class="btn" id="overviewHealthAction" style="margin-top:10px">Open details</button>
+    <div id="overviewAnnouncement" aria-live="polite" aria-atomic="true" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0"></div>
+  </section>
   <div class="dash-group">
     <div class="group-title"><span>Host &amp; System Health</span><span class="tiny muted">Core runtime state, capacity and supervisory control</span></div>
     <div class="grid grid-3">
@@ -338,9 +352,9 @@ tbody tr.click:hover{background:#162338}
 </div>
 
 <div id="work" class="page">
-  <section class="section"><h2>Scheduler queue <span class="tiny" id="queueSummary"></span></h2><div class="table-wrap"><table><thead><tr><th>State</th><th>Job</th><th>Agent/tenant</th><th>Source</th><th>Model</th><th>Priority</th><th>Wait</th><th>Processing</th><th>Reason</th></tr></thead><tbody id="jobs"></tbody></table></div></section>
+  <section class="section"><h2>Live scheduler work <span class="tiny" id="queueSummary">Current queue only; not request history.</span></h2><div class="table-wrap"><table><thead><tr><th>State</th><th>Job</th><th>Agent/tenant</th><th>Source</th><th>Model</th><th>Priority</th><th>Wait</th><th>Processing</th><th>Reason</th></tr></thead><tbody id="jobs"></tbody></table></div></section>
   <section class="section"><h2>Active API requests <span class="tiny">monitoring endpoints excluded</span></h2><div class="table-wrap"><table><thead><tr><th>Request</th><th>Agent</th><th>Tenant</th><th>Action</th><th>Age</th></tr></thead><tbody id="activeReq"></tbody></table></div></section>
-  <section class="section"><h2>Recent API requests <span class="tiny">persisted telemetry · latest 200 · click a row for request details when a trace is available</span></h2><div class="request-filter"><input id="requestHistorySearch" type="search" placeholder="Search request ID, route, agent, tenant, error…" autocomplete="off"><select id="requestHistoryAction" aria-label="Filter by endpoint"><option value="">All endpoints</option></select><select id="requestHistoryStatus" aria-label="Filter by status"><option value="">All results</option><option value="failed">Failed</option><option value="2xx">2xx</option><option value="4xx">4xx</option><option value="5xx">5xx</option></select><select id="requestHistoryPeriod" aria-label="Filter by time"><option value="">All loaded</option><option value="3600">Last hour</option><option value="86400">Last 24 hours</option><option value="604800">Last 7 days</option><option value="2592000">Last 30 days</option></select><button class="btn" id="requestHistoryReset">Reset</button><span class="tiny request-summary" id="requestHistorySummary">0 requests</span></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Request</th><th>Agent</th><th>Tenant</th><th>Action</th><th>Status</th><th>Duration</th></tr></thead><tbody id="recentReq"></tbody></table></div></section>
+  <section class="section"><h2>Request history — Recent API requests <span class="tiny">Persisted API telemetry; distinct from scheduler work and Agent OS task runs.</span></h2><div class="request-filter"><input id="requestHistorySearch" type="search" placeholder="Search request ID, route, agent, tenant, error…" autocomplete="off"><select id="requestHistoryAction" aria-label="Filter by endpoint"><option value="">All endpoints</option></select><select id="requestHistoryStatus" aria-label="Filter by status"><option value="">All results</option><option value="failed">Failed</option><option value="2xx">2xx</option><option value="4xx">4xx</option><option value="5xx">5xx</option></select><select id="requestHistoryPeriod" aria-label="Filter by time"><option value="">All loaded</option><option value="3600">Last hour</option><option value="86400">Last 24 hours</option><option value="604800">Last 7 days</option><option value="2592000">Last 30 days</option></select><button class="btn" id="requestHistoryReset">Reset</button><span class="tiny request-summary" id="requestHistorySummary">0 requests</span></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Request</th><th>Agent</th><th>Tenant</th><th>Action</th><th>Status</th><th>Trace availability</th><th>Duration</th></tr></thead><tbody id="recentReq"></tbody></table></div></section>
 </div>
 
 <div id="agentos" class="page">
@@ -396,7 +410,7 @@ tbody tr.click:hover{background:#162338}
       <div class="project-toolbar">
         <input id="trajSearch" type="search" placeholder="Search task runs..." autocomplete="off">
         <button class="btn ok" id="trajRefreshBtn" style="padding:5px 9px">↻ Refresh Run History</button>
-        <span class="tiny project-summary" id="trajSummary">Agent OS tasks, checkpoints, and events</span>
+        <span class="tiny project-summary" id="trajSummary">Durable Agent OS tasks, checkpoints, and verification receipts — no HTTP request history.</span>
       </div>
       <div class="table-wrap">
         <table>
@@ -410,7 +424,7 @@ tbody tr.click:hover{background:#162338}
       </div>
     </section>
     <section class="section">
-      <h2>Model &amp; tool traces <span class="tiny" id="traceSummary">full prompt/output · bounded retention</span></h2>
+      <h2>Request trace inspector <span class="tiny" id="traceSummary">Request/model/tool evidence; separate from Agent task runs.</span></h2>
       <div class="trace-toolbar"><span class="tiny">Inspect request events, model prompts, tool calls, and outputs.</span><select id="traceKind"><option value="">All kinds</option><option value="api_request">API requests</option><option value="async_job">Async jobs</option></select><button class="btn" id="traceRefresh" style="padding:4px 8px;font-size:11px">Refresh</button></div>
       <div class="table-wrap"><table><thead><tr><th>State</th><th>Kind</th><th>Action</th><th>Agent / tenant</th><th>Model</th><th>Created</th><th>Updated</th><th>Links</th></tr></thead><tbody id="traces"></tbody></table></div>
     </section>
@@ -422,7 +436,7 @@ tbody tr.click:hover{background:#162338}
   <div id="prepDiagnosticBar" class="diag-banner info" style="display:none"></div>
   <section class="section">
     <h2><span style="display:flex;align-items:center;gap:8px">Projects <span class="tiny" id="prepState">0 registered projects · global running</span></span><div style="display:flex;gap:6px;align-items:center"><button class="btn warn" id="prepAllToggle" style="padding:4px 10px;font-size:11px">Pause all projects</button><button class="btn ok" id="regProjectBtn" style="padding:4px 10px;font-size:11px">+ Register</button><button class="btn warn" id="cleanMissingBtn" style="padding:4px 10px;font-size:11px">🧹 Clean missing</button></div></h2>
-    <div class="project-toolbar"><input id="projectSearch" type="search" placeholder="Search projects…" autocomplete="off"><select id="projectFilter" aria-label="Project status"><option value="all">All states</option><option value="running">Running</option><option value="waiting">Waiting</option><option value="error">Error</option><option value="paused">Paused</option><option value="ready">Ready</option></select><select id="projectSort" aria-label="Project sort"><option value="priority">Operational priority</option><option value="name">Name</option><option value="progress">Progress</option><option value="recent">Recent activity</option></select><span class="tiny project-summary" id="projectSummary">0 of 0 projects</span></div>
+    <div class="project-toolbar"><input id="projectSearch" type="search" placeholder="Search repository identity, project, or worktree…" autocomplete="off"><select id="projectFilter" aria-label="Project status"><option value="all">All states</option><option value="running">Running</option><option value="waiting">Waiting</option><option value="error">Error</option><option value="paused">Paused</option><option value="ready">Ready</option></select><label class="tiny"><input id="projectGroupWorktrees" type="checkbox" checked> Group worktrees</label><select id="projectSort" aria-label="Project sort"><option value="priority">Operational priority</option><option value="name">Name</option><option value="progress">Progress</option><option value="recent">Recent activity</option></select><span class="tiny project-summary" id="projectSummary">0 of 0 projects</span></div>
     <div class="table-wrap"><table class="project-table"><thead><tr><th>Project</th><th>State &amp; activity</th><th>Phase &amp; progress</th><th>Indexes</th><th>Actions</th></tr></thead><tbody id="projectsBody"></tbody></table></div>
   </section>
 </div>
@@ -433,11 +447,11 @@ tbody tr.click:hover{background:#162338}
   <div class="split"><section class="section"><h2>Command broker statistics</h2><div id="commandStats" class="kv"></div></section><section class="section"><h2>Blocked by policy</h2><div class="table-wrap"><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody id="blockedReasons"></tbody></table></div></section></div>
   <section class="section" style="margin-top:12px">
     <h2>Active Git Worktrees &amp; Subagent Sandboxes <span class="tiny" id="worktreeSummary">0 worktrees</span></h2>
-    <div style="padding:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <input id="worktreeRoot" placeholder="Repository root" style="flex:1;min-width:220px;background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:6px 8px">
+    <div class="project-toolbar">
+      <input id="worktreeRoot" placeholder="Repository root" style="flex:1;min-width:220px">
       <button class="btn ok" id="refreshWorktreesBtn">↻ Refresh Worktrees</button>
       <button class="btn warn" id="pruneWorktreesBtn">🧹 Prune Stale Worktrees</button>
-      <span class="tiny muted">Isolated worktrees prevent concurrent file write collisions</span>
+      <span class="tiny muted project-summary">Isolated worktrees prevent concurrent file write collisions</span>
     </div>
     <div class="table-wrap">
       <table>
@@ -451,22 +465,23 @@ tbody tr.click:hover{background:#162338}
 
 <div id="performance" class="page">
   <section class="section">
-    <h2>Live Telemetry Waves <span class="tiny">Real-time p95 latency &amp; queue wait (HTML5 Canvas · zero external CDN)</span></h2>
+    <h2>Live Telemetry Waves <span class="tiny">p95 latency (ms) &amp; queue wait (ms) · HTML5 Canvas</span></h2>
     <div style="padding:12px">
       <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:11px">
         <span><span class="chip" style="border-color:#38bdf8;color:#38bdf8">● Latency p95</span> <span class="chip" style="border-color:#34d399;color:#34d399">● Queue Wait</span></span>
         <span class="tiny muted">30 rolling sample ticks</span>
       </div>
-      <canvas id="liveChartCanvas" width="800" height="150" style="width:100%;height:150px;background:#080c13;border-radius:6px;border:1px solid #1e293b;display:block"></canvas>
+      <canvas id="liveChartCanvas" role="img" aria-label="Live telemetry graph. Waiting for samples." width="800" height="150" style="width:100%;height:150px;background:#080c13;border-radius:6px;border:1px solid #1e293b;display:block"></canvas>
+      <div id="liveChartEmpty" class="tiny muted" style="display:none;padding-top:8px">No latency or queue samples yet.</div>
+      <div id="liveChartSummary" class="tiny muted" style="padding-top:8px">Waiting for telemetry samples.</div>
     </div>
   </section>
 
-  <div style="margin-top:12px">
-    <section class="section rag-narrow">
-      <h2>RAG Vector Workspaces <span class="tiny">Persistent semantic code index</span></h2>
-      <div style="padding:12px" id="ragWorkspacesList"><div class="tiny muted">Loading RAG workspaces…</div></div>
-    </section>
-  </div>
+  <section class="section" style="margin-top:12px">
+    <h2>RAG Vector Workspaces <span class="tiny">Persistent semantic code index</span></h2>
+    <div class="project-toolbar"><input id="ragWorkspaceSearch" type="search" placeholder="Search RAG workspaces…" autocomplete="off"><span class="tiny" id="ragWorkspaceSummary">Workspace identity and index status.</span></div>
+    <div id="ragWorkspacesList" style="padding:12px"><div class="tiny muted">Loading RAG workspaces…</div></div>
+  </section>
 
   <section class="section" style="margin-top:12px">
     <h2>Local Model Arena <span class="tiny">Side-by-side prompt testbed comparing fast tier vs smart tier</span></h2>
@@ -499,6 +514,7 @@ tbody tr.click:hover{background:#162338}
 </div>
 
 <div id="reliability" class="page">
+  <section class="section" id="reliabilitySummary"><h2>Operational severity <span class="tiny">Aggregates current failures, restart history, and request health.</span></h2><div id="reliabilityHeadline" class="kv"></div><div class="reliability-footer" style="padding:10px 14px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div class="tiny muted" id="reliabilityTrend">Failure trend unavailable until telemetry arrives.</div><button class="btn" id="reliabilityAction">Open affected requests</button></div></section>
   <div class="split">
     <section class="section"><h2>Recent error fingerprints</h2><div class="table-wrap"><table><thead><tr><th>Component</th><th>Operation</th><th>Count</th><th>Recovered</th><th>Last seen</th></tr></thead><tbody id="errors"></tbody></table></div></section>
     <section class="section"><h2>Runtime / scheduler counters</h2><div id="runtimeCounters" class="kv"></div></section>
@@ -528,7 +544,7 @@ tbody tr.click:hover{background:#162338}
       <div class="dash-group"><div class="group-title">Core MCP Tools</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgFeatStatus"> status (local_ai_status)</label><label><input type="checkbox" id="cfgFeatRepo"> repo (local_ai_repo)</label><label><input type="checkbox" id="cfgFeatTasks"> tasks (local_ai_task &amp; Ollama)</label><label><input type="checkbox" id="cfgFeatRag"> rag (local_ai_rag)</label><label><input type="checkbox" id="cfgFeatCommands"> commands (local_ai_command)</label><label><input type="checkbox" id="cfgFeatCoord"> coord (local_ai_coord)</label><label><input type="checkbox" id="cfgFeatArtifacts"> artifacts (local_ai_artifact)</label></div></div>
       <div class="dash-group"><div class="group-title">Code Intelligence &amp; Indexing</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgPreprocess"> Preprocessing enabled</label><label><input type="checkbox" id="cfgIntel"> Managed code intelligence</label><label><input type="checkbox" id="cfgSerena"> Serena backend</label><label><input type="checkbox" id="cfgCodegraph"> CodeGraphContext backend</label></div></div>
       <div class="dash-group"><div class="group-title">Advanced Subsystems</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgFeatSubagents"> Subagents (Ollama workers)</label><label><input type="checkbox" id="cfgFeatAgentOs"> Agent OS (durable memory/receipts)</label><label><input type="checkbox" id="cfgFeatDashboard"> Web Dashboard</label></div></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:6px"><button class="btn ok" id="cfgSave">Save overrides</button><button class="btn" id="cfgReload">Reload view</button><button class="btn warn" id="cfgReset">Reset dashboard overrides</button><span class="tiny" id="cfgStatus"></span></div>
+      <div class="tiny muted" style="margin:4px 0 7px">Scope and impact: saves only dashboard-managed overrides. Restart applies changes; reset removes only those overrides.</div><div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:6px"><button class="btn ok" id="cfgSave">Save overrides (restart required)</button><button class="btn" id="cfgReload">Reload view</button><button class="btn warn" id="cfgReset">Reset dashboard overrides</button><span class="tiny" id="cfgStatus"></span></div>
     </div>
   </section>
   <section class="section"><h2>Effective configuration <span class="tiny" id="cfgPath"></span></h2><pre id="cfgPreview" style="margin:0;padding:14px;white-space:pre-wrap;max-height:520px;overflow:auto;background:#090d14;color:#c9d6e4;font-size:11px"></pre></section>
@@ -540,19 +556,19 @@ tbody tr.click:hover{background:#162338}
     <div style="padding:12px">
       <p class="tiny muted">Bundles compress preprocessed index (AST, deterministic facts, RAG vectors and semantic cards) for instant restore on a different machine without re-indexing.</p>
       <div class="split" style="margin-top:10px">
-        <div><h3 style="font-size:12px;margin:0 0 8px">Export Bundle</h3><table><thead><tr><th>Project</th><th>Status</th><th>Action</th></tr></thead><tbody id="bundleExportTable"></tbody></table></div>
-        <div><h3 style="font-size:12px;margin:0 0 8px">Import Bundle</h3><div style="display:flex;flex-direction:column;gap:8px"><input type="file" id="bundleFile" accept=".zip,application/zip" style="color:var(--fg);font-size:12px"><input type="text" id="bundleTargetRoot" placeholder="Optional target repository root" style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:7px"><button class="btn" id="bundleImport">Import selected ZIP</button><div id="bundleImportStatus" class="tiny muted"></div></div></div>
+        <div class="card" style="padding:12px"><h3 style="font-size:12px;margin:0 0 8px">Export Bundle</h3><div class="table-wrap"><table><thead><tr><th>Repository identity</th><th>Bundle readiness</th><th>Index contents</th><th>Action</th></tr></thead><tbody id="bundleExportTable"></tbody></table></div></div>
+        <div class="card" style="padding:12px"><h3 style="font-size:12px;margin:0 0 8px">Import Bundle</h3><div style="display:flex;flex-direction:column;gap:8px"><input type="file" id="bundleFile" accept=".zip,application/zip" style="color:var(--fg);font-size:12px"><input type="text" id="bundleTargetRoot" placeholder="Optional target repository root" style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:7px;font-size:11px"><button class="btn" id="bundleImport">Import selected ZIP</button><div id="bundleImportStatus" class="tiny muted"></div></div></div>
       </div>
     </div>
   </section>
 </div>
 
-<div id="events" class="page"><section class="section"><h2>Live activity <span class="tiny">RAM ring buffer · display pause does not pause runtime</span></h2><div id="eventList" class="events"></div></section></div>
+<div id="events" class="page"><section class="section"><h2>Live activity <span class="tiny">RAM ring buffer · display pause does not pause runtime</span></h2><div class="project-toolbar"><select id="eventSeverity" aria-label="Event severity"><option value="">All severities</option><option value="failure">Failures</option><option value="warning">Warnings</option><option value="success">Successful</option></select><input id="eventSource" type="search" placeholder="Event source, agent, action…" aria-label="Event source"><span class="tiny" id="eventSummary">No events received.</span></div><div class="event-header"><span>Time</span><span>Agent</span><span>Type</span><span>Action / Stage</span><span class="hide-sm">Model / Tenant</span><span>Duration</span><span>Status</span></div><div id="eventList" class="events"></div></section></div>
 
 <div id="modalBg" class="modal-bg"><div class="modal"><div class="modal-head"><strong id="modalTitle">Details</strong><span id="modalLive" class="tiny" style="margin-left:10px"></span><button class="btn spacer" id="modalClose">Close</button></div><div id="modalBody"></div></div></div>
 
 <script>
-let cursor=0,paused=false,last=null,lastTraces=[];
+let cursor=0,paused=false,last=null,lastTraces=[],lastOverviewAnnouncement='',lastOverviewReceivedAt=0;
 const latencySparkData=[], throughputSparkData=[], liveChartLatency=[], liveChartQueue=[];
 
 const traceStyles=document.createElement('style');
@@ -561,6 +577,86 @@ document.head.append(traceStyles);
 
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])), escJs=v=>esc(JSON.stringify(v));
 const n=v=>Number(v||0).toLocaleString(), ms=v=>{v=Number(v||0);return v>=1000?(v/1000).toFixed(v>=10000?1:2)+' s':Math.round(v)+' ms'}, durSec=s=>{s=Number(s||0);if(s<60)return Math.round(s)+'s';if(s<3600)return Math.floor(s/60)+'m '+Math.round(s%60)+'s';if(s<86400)return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';return Math.floor(s/86400)+'d '+Math.floor((s%86400)/3600)+'h'}, age=msv=>durSec(Number(msv||0)/1000);
+
+function dashboardHealth(snapshot={}){
+  const current=snapshot.current||snapshot.live||snapshot.headless||snapshot;
+  const observability=snapshot.observability||{},cohorts=observability.cohorts||{},agentHttp=cohorts.agent_http||{},policy=cohorts.policy_rejection||{},inference=cohorts.inference||{};
+  const status=String(current.health||current.status||current.service_status||'').toLowerCase();
+  const count=value=>Math.max(0,Number(value)||0);
+  const openIssues=count(current.open_incidents??current.active_errors??current.blocked_requests??0),agentFailures=count(agentHttp.failures),policyRejections=count(policy.events),degradedCount=count(inference.degraded_count),retryCount=count(inference.retry_count),restarts=count(current.restarts??snapshot.headless?.restarts),hubOnline=snapshot.hub_online??current.hub_online,ollamaOnline=snapshot.ollama_online??current.ollama_online,heartbeatStale=current.heartbeat_stale===true||snapshot.heartbeat_stale===true;
+  const signals=[];
+  if(agentFailures)signals.push(`${agentFailures} agent HTTP failure${agentFailures===1?'':'s'}`);
+  if(policyRejections)signals.push(`${policyRejections} policy rejection${policyRejections===1?'':'s'}`);
+  if(degradedCount)signals.push(`${degradedCount} degraded inference${degradedCount===1?'':'s'}`);
+  if(retryCount)signals.push(`${retryCount} retr${retryCount===1?'y':'ies'}`);
+  if(restarts)signals.push(`${restarts} supervisor restart${restarts===1?'':'s'}`);
+  const actionTab=openIssues||count(current.blocked_requests)?'work':'reliability';
+  const actionLabel=actionTab==='work'?'Open queue and requests':'Open reliability details';
+  if(hubOnline===false||heartbeatStale||['degraded','down','offline','unavailable','crashed','stopped','stale'].includes(status)||current.degraded===true){
+    const reason=hubOnline===false?'Hub is offline.':heartbeatStale||status==='stale'?'Runtime heartbeat is stale.':signals.length?`Current runtime is degraded: ${signals.join(', ')}.`:'Current runtime reports an unavailable service.';
+    return {level:'degraded',label:'Degraded',reason,actionTab,actionLabel};
+  }
+  if(ollamaOnline===false)signals.push('Ollama is offline');
+  if(['attention','warning','warn','partial'].includes(status)||openIssues||signals.length){
+    const reason=openIssues?`Current runtime has ${openIssues} open issue${openIssues===1?'':'s'}${signals.length?`; ${signals.join(', ')}`:''}.`:signals.length?`Current runtime needs attention: ${signals.join(', ')}.`:'Current runtime reports a warning state.';
+    return {level:'attention',label:'Needs attention',reason,actionTab,actionLabel};
+  }
+  return {level:'healthy',label:'Healthy',reason:'Current runtime reports no active issue.',actionTab:'reliability',actionLabel:'Open reliability details'};
+}
+
+function dashboardFreshness(timestamp,now=Date.now(),staleAfterMs=120000){
+  let value=typeof timestamp==='number'?timestamp:(typeof timestamp==='string'&&/^[-+]?\d+(?:\.\d+)?$/.test(timestamp.trim())?Number(timestamp):Date.parse(timestamp||''));
+  if(!Number.isFinite(value))return {state:'unknown',label:'Timestamp unavailable',ageMs:null};
+  if(value>0&&value<100000000000)value*=1000;
+  const current=Number(now);
+  if(!Number.isFinite(current))return {state:'unknown',label:'Clock unavailable',ageMs:null};
+  const ageMs=Math.max(0,current-value),configuredThreshold=Number(staleAfterMs),threshold=Number.isFinite(configuredThreshold)?Math.max(0,configuredThreshold):60000;
+  return {state:ageMs>threshold?'stale':'fresh',label:ageMs>threshold?'Stale':'Fresh',ageMs};
+}
+
+function renderOverviewHealth(snapshot={},receivedAt=Date.now(),now=Date.now()){
+  const runtime=snapshot.headless||{};
+  const current={...runtime,health:runtime.health||runtime.state||snapshot.health||snapshot.status||snapshot.service_status};
+  const health=dashboardHealth(snapshot);
+  const timestamp=snapshot.updated_at??snapshot.generated_at??snapshot.timestamp??snapshot.observability?.updated_at??runtime.updated_at;
+  let freshness=dashboardFreshness(timestamp,now);
+  if(freshness.state==='unknown'&&Number.isFinite(Number(receivedAt)))freshness=dashboardFreshness(receivedAt,now);
+  const level=$('overviewHealthLevel'),evidence=$('overviewHealthEvidence'),freshnessEl=$('overviewFreshness'),action=$('overviewHealthAction'),summary=$('overviewHealthSummary'),announcement=$('overviewAnnouncement');
+  if(!level||!evidence||!freshnessEl||!action||!summary)return;
+  const label=health.level==='attention'?'Needs attention':health.label;
+  const target=health.actionTab||'reliability';
+  const targetLabel=health.actionLabel||'Open reliability details';
+  const stateText=current.health||current.status||current.service_status||'unreported';
+  const activeRequests=Array.isArray(snapshot.observability?.active_requests)?snapshot.observability.active_requests.length:0;
+  const evidenceText=`${health.reason} Runtime state: ${stateText}. ${activeRequests} active API request${activeRequests===1?'':'s'}.`;
+  level.textContent=label;
+  level.className='value primary-metric '+(health.level==='healthy'?'ok':health.level==='attention'?'warn-t':'bad-t');
+  evidence.textContent=evidenceText;
+  freshnessEl.textContent=freshness.ageMs===null?freshness.label:`${freshness.label} · updated ${age(freshness.ageMs)} ago`;
+  freshnessEl.className='tiny '+(freshness.state==='stale'?'warn-t':'muted');
+  summary.style.borderLeftColor=health.level==='healthy'?'var(--ok)':health.level==='attention'?'var(--warn)':'var(--bad)';
+  action.textContent=targetLabel;
+  action.onclick=()=>switchTab(target);
+  const announcementText=`${label}. ${freshness.label}.`;
+  if(announcement&&announcementText!==lastOverviewAnnouncement){announcement.textContent=announcementText;lastOverviewAnnouncement=announcementText;}
+}
+
+function redactDiagnostic(value){
+  const maskPath=path=>{
+    const parts=path.replace(/\\/g,'/').split('/').filter(Boolean);
+    return parts.length?`${/^[a-z]:/i.test(parts[0])?parts[0]+'/':'/'}…/${parts.at(-1)}`:'<path>';
+  };
+  return String(value??'')
+    .replace(/\b(Bearer\s+)[^\s,;]+/gi,'$1<redacted>')
+    .replace(/((?:["'](?:api[_-]?key|token|secret|password|authorization)["'])\s*:\s*)(?:"[^"]*"|'[^']*'|[^\s,;}]+)/gi,'$1"<redacted>"')
+    .replace(/\b((?:api[_-]?key|token|secret|password|authorization)\b\s*(?:=|:)\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,'$1<redacted>')
+    .replace(/((?:["'](?:cookie|set-cookie|private[_-]?key|passphrase|pem|certificate|ssh[-_]?key)["'])\s*:\s*)(?:"[^"]*"|'[^']*'|[^\s,;}]+)/gi,'$1"<redacted>"')
+    .replace(/\b((?:cookie|set-cookie|private[_-]?key|passphrase|pem|certificate|ssh[-_]?key)\b\s*(?:=|:)\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,'$1<redacted>')
+    .replace(/(^|\s)((?:--(?:api[-_]?key|token|secret|password)|-(?:k|t))(?:\s+|=))(?:"[^"]*"|'[^']*'|\S+)/gi,'$1$2<redacted>')
+    .replace(/(^|\s)((?:--(?:cookie|set-cookie|private[-_]?key|passphrase|pem|certificate|ssh[-_]?key))(?:\s+|=))(?:"[^"]*"|'[^']*'|\S+)/gi,'$1$2<redacted>')
+    .replace(/[A-Za-z]:[\\/](?:[^\s"'`\\/]+[\\/])*[^\s"'`\\/]*/g,maskPath)
+    .replace(/(?<![:\w])\/(?:[^\s"'`/]+\/)+[^\s"'`/]+/g,maskPath);
+}
 
 // Lightweight pure-canvas chart renderer
 function drawSpark(canvasId, points, strokeColor, fillColor){
@@ -643,10 +739,19 @@ workFilterStyles.textContent='.work-filter{display:flex;align-items:center;gap:7
 document.head.append(workFilterStyles);
 document.head.insertAdjacentHTML('beforeend','<style>.trace-sidebar-controls{display:flex;gap:6px;padding:8px 8px 2px}.trace-sidebar-controls input,.trace-sidebar-controls select{min-width:0;width:100%;background:#0d141c;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:6px 7px;font:inherit;font-size:10px}.trace-sidebar-controls select{width:116px;flex:0 0 116px}</style>');
 document.head.insertAdjacentHTML('beforeend','<style>.trace-main,.trace-step-body,.trace-event,.human-section{min-width:0}.prompt-meta{display:flex;gap:5px;flex-wrap:wrap;padding:7px 8px;border-bottom:1px solid #202a35}.prompt-chip{border:1px solid #394758;border-radius:999px;padding:2px 7px;color:var(--muted);font-size:9px}.prompt-chip strong{color:var(--fg)}.prompt-messages{display:grid;gap:6px;padding:7px}.prompt-card{border:1px solid #2d3d4e;border-left:3px solid #5b8def;border-radius:6px;overflow:hidden}.prompt-card.role-system{border-left-color:#a78bfa}.prompt-card.role-user{border-left-color:#38bdf8}.prompt-card.role-assistant{border-left-color:#4ade80}.prompt-card-head{display:flex;align-items:center;gap:7px;padding:6px 8px;background:#151d26;color:var(--fg);font-size:10px;font-weight:700}.prompt-card-head .tiny{margin-left:auto}.prompt-pre{margin:0;padding:7px 8px;background:#0d1219;color:#d7e2ef;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.3;font-size:11px;max-height:150px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace}.prompt-context{margin:0 8px 8px;border:1px solid #334355;border-radius:5px;background:#111923}.prompt-context summary{cursor:pointer;padding:6px 8px;color:var(--muted);font-size:9px}.prompt-context .prompt-pre{max-height:180px;border-top:1px solid #273544}.prompt-fallback{padding:8px}</style>');
+document.head.insertAdjacentHTML('beforeend','<style>.trace-codex-timeline,.trace-codex-timeline *{min-width:0;max-width:100%;box-sizing:border-box}.trace-codex-timeline .trace-timeline-event,.trace-codex-timeline .trace-tool-card{overflow:hidden;overflow-wrap:anywhere;word-break:break-word}.trace-codex-timeline .trace-timeline-marker,.trace-codex-timeline h4,.trace-codex-timeline .trace-tool-field,.trace-codex-timeline .human-grid,.trace-codex-timeline .human-value{overflow-wrap:anywhere;word-break:break-word}.trace-codex-timeline pre{max-width:100%;white-space:pre-wrap;overflow:auto}</style>');
+document.head.insertAdjacentHTML('beforeend','<style>.trace-primary{margin:0 0 14px}.trace-primary-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:8px}.trace-primary-head h2{margin:0;font-size:14px}.trace-primary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.trace-primary-card{min-width:0;border:1px solid #33485f;border-radius:8px;overflow:hidden;background:#0d141c}.trace-primary-card.input{border-color:#41659a}.trace-primary-card.output{border-color:#397658}.trace-primary-card h3{margin:0;padding:9px 11px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;background:#151d26}.trace-primary-card.input h3{color:#a9c6ff}.trace-primary-card.output h3{color:#9be7b8}.trace-primary-value{min-width:0;padding:10px;overflow-wrap:anywhere}.trace-primary-value .human-grid{padding:0}.trace-primary-empty{color:var(--muted);font-size:11px}.trace-optional-details{border:1px solid #2d3d4e;border-radius:8px;background:#0c121a}.trace-optional-details>summary{cursor:pointer;padding:10px 12px;color:var(--fg);font-size:11px;font-weight:700}.trace-optional-details>summary::marker{color:var(--accent)}.trace-optional-details[open]>summary{border-bottom:1px solid #273544}.trace-optional-body{padding:0 12px 12px}.trace-optional-body .human-section:first-child{margin-top:12px}.trace-chat-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;align-items:start}.trace-chat-column{min-width:0}.trace-chat-input{border-color:#41659a}.trace-chat-output{border-color:#397658}.trace-chat-message{border-top:1px solid #273544;padding:9px 0}.trace-chat-message:first-child{border-top:0;padding-top:0}.trace-chat-role{color:var(--accent);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}.trace-chat-meta{display:flex;gap:7px;flex-wrap:wrap;margin:0 0 8px}.trace-chat-meta span{border:1px solid #2b3948;border-radius:999px;padding:3px 7px;color:var(--muted);font-size:10px}.trace-tool-timeline{display:grid;gap:8px;margin-top:10px}.trace-tool-card{border:1px solid #33485f;border-left:3px solid var(--accent);border-radius:6px;background:#0b131b;padding:9px}.trace-tool-card.error{border-left-color:var(--bad)}.trace-tool-card h4{margin:0 0 6px;font-size:11px}.trace-tool-card pre{max-height:220px;overflow:auto;margin:4px 0 0}.trace-tool-field{margin-top:7px}.trace-tool-field strong{color:var(--muted);font-size:10px;text-transform:uppercase}.trace-tool-field .human-pre{margin:4px 0 0}@media(max-width:700px){.trace-primary-grid,.trace-chat-columns{grid-template-columns:1fr}}</style>');
 
 const nativeFetch=window.fetch.bind(window);
-let apiToken='';
-if($('apiToken')) $('apiToken').value='';
+function getSavedToken(){
+  try{return localStorage.getItem('apiToken')||sessionStorage.getItem('localAiHubToken')||'';}catch{return '';}
+}
+function saveToken(val){
+  apiToken=val.trim();
+  try{localStorage.setItem('apiToken',apiToken);sessionStorage.setItem('localAiHubToken',apiToken);}catch{}
+}
+let apiToken=getSavedToken();
+if($('apiToken')) $('apiToken').value=apiToken;
 
 function setupTraceInspector(){
   if($('traceInspector'))return;
@@ -658,18 +763,18 @@ if($('traceSidebarList')&&!$('traceHistorySearch')){$('traceSidebarList').insert
 let statusPollInFlight=false,hasLiveStatus=false;
 let sloScope=$('sloScope')?$('sloScope').value:'1h';
 if($('sloScope')) $('sloScope').onchange=()=>{sloScope=$('sloScope').value;pollStatus()};
-if($('saveToken')) $('saveToken').onclick=()=>{if($('apiToken'))apiToken=$('apiToken').value.trim();pollStatus()};
+if($('saveToken')) $('saveToken').onclick=()=>{if($('apiToken'))saveToken($('apiToken').value);pollStatus()};
 
 async function apiFetch(path,opts={}){
   opts={...opts};const h=new Headers(opts.headers||{});if(apiToken)h.set('X-LocalAI-Token',apiToken);opts.headers=h;
   let r=await nativeFetch(path,opts);
   if(r.status===401&&!apiToken){
     const entered=prompt('Local AI Hub API token');
-    if(entered){apiToken=entered.trim();$('apiToken').value=apiToken;try{sessionStorage.setItem('localAiHubToken',apiToken)}catch{};h.set('X-LocalAI-Token',apiToken);r=await nativeFetch(path,{...opts,headers:h})}
+    if(entered){saveToken(entered);if($('apiToken'))$('apiToken').value=apiToken;h.set('X-LocalAI-Token',apiToken);r=await nativeFetch(path,{...opts,headers:h})}
   }
   return r;
 }
-const rows=(id,items,fn,cols)=>{$(id).innerHTML=(items&&items.length)?items.map(fn).join(''):`<tr><td colspan="${cols}" class="muted">none</td></tr>`};
+const rows=(id,items,fn,cols,emptyText='No active items recorded')=>{$(id).innerHTML=(items&&items.length)?items.map(fn).join(''):`<tr><td colspan="${cols}" class="muted" style="text-align:center;padding:16px 10px;font-style:italic">${emptyText}</td></tr>`};
 function copyText(text, btn){
   try{navigator.clipboard.writeText(String(text))}catch{}
   if(btn){
@@ -1456,7 +1561,7 @@ function connectAgentOsStream(){
   }
   const badge=$('sseStreamBadge');
   if(badge){ badge.className='badge-status badge-waiting'; badge.textContent='Connecting…'; }
-  const token=localStorage.getItem('apiToken')||'';
+  const token=getSavedToken()||apiToken;
   const url='/api/agent-state/events/stream'+(token?'?token='+encodeURIComponent(token):'');
   try{
     sseSource=new EventSource(url);
@@ -1678,7 +1783,10 @@ function clickableRow(obj,html,type='',idAttr=''){
   return `<tr class="click" data-detail="${id}" data-type="${esc(resolvedType)}" ${entityId?`data-id="${esc(entityId)}"`:''}>${html}</tr>`;
 }
 
-let traceTimer=null,activeTraceId='',traceSeq=0,traceEvents=[],traceOpenSteps=new Set(),traceView='timeline',activeTraceData=null;
+let traceTimer=null,activeTraceId='',traceSeq=0,traceEvents=[],traceOpenSteps=new Set(),traceView='timeline',activeTraceData=null,traceRevealRedactedDetails=false,traceOptionalDetailsOpen=false,tracePollGeneration=0,tracePollInFlight=0,traceEventTotal=0;
+const traceEventBufferLimit=200;
+function traceAppendEvents(current,incoming,eventsTotal=0){const existing=Array.isArray(current)?current:[],seen=new Set(existing.map(event=>event&&Number.isFinite(event.seq)?event.seq:null).filter(seq=>seq!==null)),fresh=(Array.isArray(incoming)?incoming:[]).filter(event=>{const seq=event&&Number.isFinite(event.seq);if(!seq)return true;if(seen.has(event.seq))return false;seen.add(event.seq);return true}),merged=existing.concat(fresh);return {events:merged.slice(-traceEventBufferLimit),eventsTotal:Math.max(Number(eventsTotal)||0,merged.length)};}
+function traceFiniteSequence(candidate,prior){return typeof candidate==='number'&&Number.isFinite(candidate)&&candidate>=prior?candidate:prior;}
 const humanLabel=k=>String(k||'').replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()).replace(/\bApi\b/g,'API').replace(/\bId\b/g,'ID').replace(/\bUrl\b/g,'URL').replace(/\bHttp\b/g,'HTTP');
 
 function renderAny(value){
@@ -1688,6 +1796,32 @@ function renderAny(value){
   if(Array.isArray(value))return value.length?`<div class="human-list">${value.map((v,i)=>`<div class="human-item"><div class="tiny muted">${i+1}</div>${renderAny(v)}</div>`).join('')}</div>`:'<div class="empty-human">empty list</div>';
   if(typeof value==='object'){const entries=Object.entries(value);return entries.length?`<div class="human-grid">${entries.map(([k,v])=>`<div>${esc(humanLabel(k))}</div><div>${renderAny(v)}</div>`).join('')}</div>`:'<div class="empty-human">empty object</div>'}
   return `<span class="human-value">${esc(String(value))}</span>`;
+}
+function traceSensitiveField(key){return /(api[_-]?key|authorization|token|secret|password|passwd|credential|cookie|set[-_]?cookie|private[-_]?key|privatekey|passphrase|pem|ssh[-_]?key|certificate)/i.test(String(key||''));}
+function traceSanitizeValue(value,seen=new WeakSet(),reveal=traceRevealRedactedDetails){
+  if(value===null||value===undefined||typeof value==='number'||typeof value==='boolean')return value;
+  if(typeof value==='string')return reveal?value:redactDiagnostic(value);
+  if(Array.isArray(value))return value.map(item=>traceSanitizeValue(item,seen,reveal));
+  if(typeof value==='object'){
+    if(seen.has(value))return '<cycle omitted>';
+    seen.add(value);
+    return Object.fromEntries(Object.entries(value).map(([key,item])=>[reveal?key:redactDiagnostic(key),!reveal&&traceSensitiveField(key)?'<redacted>':traceSanitizeValue(item,seen,reveal)]));
+  }
+  return reveal?String(value):redactDiagnostic(String(value));
+}
+function traceRecorded(value){
+  if(value===null||value===undefined)return false;
+  if(typeof value==='string')return value.trim().length>0;
+  if(Array.isArray(value))return value.length>0;
+  return typeof value!=='object'||Object.keys(value).length>0;
+}
+function traceFirstRecorded(events,keys){
+  for(const event of events||[]){
+    const payload=event?.payload;
+    if(!payload||typeof payload!=='object')continue;
+    for(const key of keys){if(traceRecorded(payload[key]))return payload[key];}
+  }
+  return undefined;
 }
 function promptText(value){
   if(typeof value==='string')return value;
@@ -1793,7 +1927,7 @@ function traceEventChips(metadata,process){
 }
 function traceEventSection(title,content,kind){return `<section class="trace-event-section" data-kind="${kind}"><span class="trace-event-label">${esc(title)}</span><div class="trace-event-value">${content}</div></section>`}
 function traceEventBody(event,events,index){
-  const type=String(event.event_type||'event'),p=event.payload||{};let pairedResult=null,input='',output='',statusResult=null,groups;
+  const type=String(event?.event_type||'event'),rawPayload=event?.payload,p=traceSanitizeValue(rawPayload&&typeof rawPayload==='object'&&!Array.isArray(rawPayload)?rawPayload:{value:rawPayload??'<malformed payload>'});let pairedResult=null,input='',output='',statusResult=null,groups;
   if(type==='tool_result'){
     const callId=p.call_id||'';
     if(callId&&events.slice(0,index).some(x=>x.event_type==='tool_call'&&((x.payload||{}).call_id||'')===callId))return '';
@@ -1824,8 +1958,8 @@ function traceEventBody(event,events,index){
 }
 function compactTimelineEvents(events){
   const compact=[];let stream=null,streamBytes=0;
-  (events||[]).forEach(event=>{
-    const type=String(event.event_type||'event'),payload=event.payload||{};
+  (Array.isArray(events)?events:[]).map(traceNormalizeEvent).forEach(event=>{
+    const type=String(event.event_type||'event'),payload=event.payload&&typeof event.payload==='object'&&!Array.isArray(event.payload)?event.payload:{};
     if(type==='output_delta'){
       if(!stream){stream={event_type:'output_stream',created_at:event.created_at,seq:event.seq,payload:{text:'',chunks:0,truncated:false}};compact.push(stream)}
       const text=String(payload.text||'');stream.payload.chunks+=1;stream.payload.text+=streamBytes<12000?text:'';streamBytes+=text.length;stream.seq=event.seq;
@@ -1837,11 +1971,15 @@ function compactTimelineEvents(events){
   });
   return compact;
 }
+function traceNormalizeEvent(event){
+  if(event&&typeof event==='object'&&!Array.isArray(event)){const validPayload=event.payload&&typeof event.payload==='object'&&!Array.isArray(event.payload);return validPayload?{...event,payload:event.payload}:{...event,payload:{malformed_payload:true,value:traceRawBoundValue(event.payload===undefined?null:event.payload,2048)}};}
+  return {event_type:'malformed',payload:{malformed_payload:true,value:traceRawBoundValue(event===undefined?null:event,2048)}};
+}
 function traceTimeline(events){
   const groups=[];let current=null;
-  (events||[]).forEach(event=>{const type=String(event.event_type||'event'),payload=event.payload||{};if(type==='model_request'||!current){current={index:groups.length+1,label:type==='model_request'?'Model request':'Execution',events:[]};groups.push(current)}if(type!=='model_request'&&payload&&payload.step){const step=Number(payload.step);current=groups.find(g=>g.step===step)||current}if(type==='model_request'&&payload&&payload.step)current.step=Number(payload.step);current.events.push(event)});
+  (Array.isArray(events)?events:[]).map(traceNormalizeEvent).forEach(event=>{const type=String(event.event_type||'event'),payload=event.payload&&typeof event.payload==='object'?event.payload:{};if(type==='model_request'||!current){current={index:groups.length+1,label:type==='model_request'?'Model request':'Execution',events:[]};groups.push(current)}if(type!=='model_request'&&payload&&payload.step){const step=Number(payload.step);current=groups.find(g=>g.step===step)||current}if(type==='model_request'&&payload&&payload.step)current.step=Number(payload.step);current.events.push(event)});
   if(!groups.length)return '<div class="empty-human">Waiting for agent events…</div>';
-  return `<div class="trace-timeline">${groups.map((group,index)=>{const key=String(group.step||group.index),open=traceOpenSteps.size?traceOpenSteps.has(key):index===groups.length-1,eventsForDisplay=compactTimelineEvents(group.events);return `<div class="trace-step ${open?'open':''}" data-trace-step="${esc(key)}"><button class="trace-step-head" data-trace-toggle aria-expanded="${open}"><span class="trace-step-index">Step ${esc(key)}</span><span>${esc(humanLabel(group.label))}</span><span class="tiny">${group.events.length} events · ${eventsForDisplay.length} shown</span><span class="trace-step-chevron">▶</span></button><div class="trace-step-body">${eventsForDisplay.map((event,eventIndex)=>{const type=String(event.event_type||'event'),body=traceEventBody(event,eventsForDisplay,eventIndex);if(!body)return '';return `<div class="trace-event"><div class="event-head"><span class="event-type">${esc(traceEventTitle(type))}</span><span class="event-time">${event.created_at?new Date(event.created_at*1000).toLocaleTimeString():'—'} · #${esc(event.seq)}</span></div>${body}</div>`}).join('')}</div></div>`}).join('')}</div>`;
+  return `<div class="trace-timeline">${groups.map((group,index)=>{const key=String(group.step||group.index),open=traceOpenSteps.size?traceOpenSteps.has(key):index===groups.length-1,eventsForDisplay=compactTimelineEvents(group.events);return `<div class="trace-step ${open?'open':''}" data-trace-step="${esc(key)}"><button class="trace-step-head" data-trace-toggle aria-expanded="${open}"><span class="trace-step-index">Step ${esc(key)}</span><span>${esc(humanLabel(group.label))}</span><span class="tiny">${group.events.length} events · ${eventsForDisplay.length} shown</span><span class="trace-step-chevron">▶</span></button><div class="trace-step-body">${eventsForDisplay.map((event,eventIndex)=>{const type=String(event?.event_type||'event');let body='';try{body=traceEventBody(event,eventsForDisplay,eventIndex)}catch(error){body='<div class="trace-event-content"><span class="trace-primary-empty">Malformed event omitted</span></div>'}if(!body)return '';return `<div class="trace-event"><div class="event-head"><span class="event-type">${esc(traceEventTitle(type))}</span><span class="event-time">${event.created_at?new Date(event.created_at*1000).toLocaleTimeString():'—'} · #${esc(event.seq)}</span></div>${body}</div>`}).join('')}</div></div>`}).join('')}</div>`;
 }
 function renderHumanModal(obj){
   if(obj===null||typeof obj!=='object'){$('modalBody').innerHTML=`<div class="human-shell">${renderAny(obj)}${rawFallback(obj)}</div>`;return}
@@ -1852,34 +1990,288 @@ function renderHumanModal(obj){
   const scalarGrid=scalar.length?`<section class="human-section"><h3>Summary</h3><div class="human-grid">${scalar.map(([k,v])=>`<div>${esc(humanLabel(k))}</div><div>${renderAny(v)}</div>`).join('')}</div></section>`:'';
   $('modalBody').innerHTML=`<div class="human-shell">${summary}${scalarGrid}${complex.map(([k,v])=>humanSection(humanLabel(k),v)).join('')}${rawFallback(obj)}</div>`;
 }
-function traceTab(label,id){return `<button class="trace-tab ${traceView===id?'active':''}" data-trace-view="${id}" aria-selected="${traceView===id}">${label}</button>`}
+function traceTab(label,id){const selected=traceView===id;return `<button class="trace-tab ${selected?'active':''}" id="trace-tab-${esc(id)}" role="tab" data-trace-view="${esc(id)}" aria-selected="${selected}" aria-controls="trace-panel-${esc(id)}" tabindex="${selected?'0':'-1'}">${esc(label)}</button>`}
 function traceStatus(item){const state=String(item?.state||'queued');return state==='failed'&&/hub restarted|service stopped|shutdown/i.test(String(item?.error||''))?'interrupted':state}
 function traceDisplayState(item){const state=traceStatus(item);return state==='interrupted'?'Interrupted':humanLabel(state)}
-function traceRaw(payload){let raw='';try{raw=JSON.stringify(payload,null,2)}catch(e){raw=String(e)}return `<section class="human-section trace-raw-panel"><h3>Raw JSON (fallback)</h3><pre class="human-pre">${esc(raw)}</pre></section>`}
-function renderTraceDetail(d){
-  activeTraceData=d;const s=d?.session||{},events=d?.events||[],payload={session:{trace_id:s.trace_id,kind:s.kind,state:s.state,tenant:s.tenant,agent:s.agent,action:s.action,source:s.source,model:s.model,request_id:s.request_id,async_job_id:s.async_job_id,scheduler_job_id:s.scheduler_job_id,created_at:s.created_at,updated_at:s.updated_at,finished_at:s.finished_at,error:s.error,text_bytes:s.text_bytes},main_agent_prompt:s.effective_payload||{},original_request:s.request||{},output:s.output||'',response:s.response||{},events};
-  $('tracePageTitle').textContent=String(s.action||s.source||'Agent trace');$('tracePageLive').textContent=d?.terminal?'terminal · retained':'● live · auto-refresh';$('tracePageLive').className='tiny '+(d?.terminal?'ok':'trace-running');
-  const state=traceDisplayState(s),displayState=traceStatus(s),stateClass=(displayState==='failed'||displayState==='error')?'bad':(displayState==='interrupted'?'warn':(d?.terminal?'ok':'warn'));
-  const header=`<div class="trace-inspector-head"><div><div class="trace-kicker">Agent execution · Agent timeline</div><strong>${esc(s.action||s.source||'Trace')}</strong><div class="tiny">${esc(s.agent||'unknown agent')} · ${esc(s.model||'model not recorded')}</div></div><span class="badge ${stateClass}">${esc(state)}</span></div><div class="trace-metrics"><span>${events.length} events</span><span>${esc(s.tenant||'no tenant')}</span><span>${s.text_bytes||0} bytes retained</span></div>`;
-  const timeline=`${traceTimeline(events)}`,prompt=renderModelPrompt(payload.main_agent_prompt)+humanSection('Original request',payload.original_request),output=humanSection('Output',payload.output),response=humanSection('Final response',payload.response),views={timeline, prompt:prompt, output:output+response, events:`<section class="human-section"><h3>All events</h3>${renderAny(events)}</section>`, raw:traceRaw(payload)},content=views[traceView]||timeline;
-  $('tracePageBody').className='trace-page-body';$('tracePageBody').innerHTML=`<div class="human-shell">${header}<nav class="trace-tabs" aria-label="Trace views">${traceTab('Timeline','timeline')}${traceTab('Prompt','prompt')}${traceTab('Output','output')}${traceTab('Events','events')}${traceTab('Raw','raw')}</nav><div class="trace-view">${content}</div></div>`;
+function traceBoundedEvents(events,eventLimit=100){const list=Array.isArray(events)?events:[],requestReceived=list.find(event=>event?.event_type==='request_received'),latest=list.slice(-eventLimit),visible=requestReceived&&!latest.includes(requestReceived)?[requestReceived,...latest]:latest,budget={remaining:24000,truncated:false};return {events:visible.map(event=>traceRawBoundValue(event,2048,0,budget)),eventsTotal:list.length,eventsTruncated:list.length>visible.length||budget.truncated};}
+function traceRawBoundValue(value,limit=4096,depth=0){
+  const budget=arguments.length>3?arguments[3]:null,marker='<payload budget truncated>';
+  if(budget&&budget.remaining<=0){budget.truncated=true;return marker;}
+  if(value===null||value===undefined||typeof value==='number'||typeof value==='boolean'){if(budget)budget.remaining-=Math.min(budget.remaining,String(value).length+1);return value;}
+  if(typeof value==='string'){const bounded=value.length>limit?value.slice(0,limit):value,room=budget?Math.min(limit,budget.remaining):limit,text=bounded.length>room?bounded.slice(0,room)+'… truncated':bounded;if(budget){budget.remaining-=text.length;if(text.length<value.length)budget.truncated=true;}return text;}
+  if(depth>=4){if(budget)budget.truncated=true;return marker;}
+  if(Array.isArray(value)){const result=[];for(const item of value.slice(0,50)){if(budget&&budget.remaining<=0){budget.truncated=true;break}result.push(traceRawBoundValue(item,Math.max(128,Math.floor(limit/50)),depth+1,budget));}if(value.length>result.length)result.push(marker);return result;}
+  if(typeof value==='object'){const entries=Object.entries(value).slice(0,50),childLimit=Math.max(128,Math.floor(limit/Math.max(entries.length,1))),result={};for(const [key,item] of entries){if(budget&&budget.remaining<=0){budget.truncated=true;break}if(budget)budget.remaining-=Math.min(budget.remaining,key.length+2);result[key]=traceRawBoundValue(item,childLimit,depth+1,budget);}if(Object.keys(value).length>entries.length||budget?.truncated)result['…']=marker;return result;}
+  const text=String(value).slice(0,limit);if(budget)budget.remaining-=Math.min(budget.remaining,text.length);return text;
 }
-function setTraceView(view){if(!['timeline','prompt','output','events','raw'].includes(view))return;traceView=view;if(activeTraceData)renderTraceDetail(activeTraceData)}
-async function openTrace(id){
-  activeTraceId=String(id||'');traceSeq=0;traceEvents=[];traceOpenSteps=new Set();traceView='timeline';activeTraceData=null;
-  renderTraceList(lastTraces);switchTab('traceInspector');
-  if(traceTimer)clearInterval(traceTimer);
-  const poll=async()=>{
-    if(!activeTraceId)return;
-    try{
-      const r=await apiFetch('/api/debug-traces/'+encodeURIComponent(activeTraceId)+'?since_seq='+traceSeq,{cache:'no-store'}),d=await r.json();
-      if(d.success){
-        traceSeq=Number(d.next_seq||traceSeq);traceEvents=traceEvents.concat(d.events||[]);renderTraceDetail({...d,events:traceEvents});
-        if(d.terminal){clearInterval(traceTimer);traceTimer=null}
-      }else{openModal(d,'Trace error');clearInterval(traceTimer);traceTimer=null}
-    }catch(e){$('tracePageLive').textContent='refresh failed: '+e.message}
+function traceDisplaySession(rawSession){return {trace_id:rawSession.trace_id,kind:rawSession.kind,state:rawSession.state,tenant:rawSession.tenant,agent:rawSession.agent,action:rawSession.action,source:rawSession.source,model:rawSession.model,request_id:rawSession.request_id,async_job_id:rawSession.async_job_id,scheduler_job_id:rawSession.scheduler_job_id,job_id:rawSession.job_id,owner:rawSession.owner,created_at:rawSession.created_at,updated_at:rawSession.updated_at,finished_at:rawSession.finished_at,duration_ms:rawSession.duration_ms,elapsed_ms:rawSession.elapsed_ms,status_code:rawSession.status_code,text_bytes:rawSession.text_bytes,retained_bytes:rawSession.retained_bytes,error:traceRawBoundValue(rawSession.error,1024),request:traceRawBoundValue(rawSession.request),effective_payload:traceRawBoundValue(rawSession.effective_payload),output:traceRawBoundValue(rawSession.output),response:traceRawBoundValue(rawSession.response)};}
+function traceRawProjection(detail,eventLimit=100){
+  const rawSession=detail?.session||{},eventProjection=traceBoundedEvents(detail?.events,eventLimit),session=traceDisplaySession(rawSession);
+  return {session,effective_payload:traceRawBoundValue(rawSession.effective_payload),request:traceRawBoundValue(rawSession.request),output:traceRawBoundValue(rawSession.output),response:traceRawBoundValue(rawSession.response),events:eventProjection.events,events_total:eventProjection.eventsTotal,events_truncated:eventProjection.eventsTruncated};
+}
+ function traceRaw(payload,limit=24000){let raw='';try{raw=JSON.stringify(traceSanitizeValue(payload),null,2)}catch(e){raw=redactDiagnostic(String(e))}const truncated=raw.length>limit;if(truncated)raw=raw.slice(0,limit)+'\n… raw output truncated';return `<section class="human-section trace-raw-panel"><h3>Raw JSON (redacted${truncated?' · truncated':''})</h3><pre class="human-pre">${esc(raw)}</pre></section>`}
+ function traceScrollNodes(root){return Array.from(root?.querySelectorAll?.('.human-pre,.trace-output,.prompt-pre')||[])}
+ function captureTraceScrollPositions(root){return traceScrollNodes(root).map((node,index)=>({index,top:node.scrollTop,left:node.scrollLeft}))}
+ function restoreTraceScrollPositions(root,positions){traceScrollNodes(root).forEach((node,index)=>{const saved=positions[index];if(saved){node.scrollTop=saved.top;node.scrollLeft=saved.left}})}
+ function captureTraceThinkingDetails(root){return new Set(Array.from(root?.querySelectorAll?.('details.trace-thinking[data-thinking-key]')||[]).filter(node=>node.open).map(node=>String(node.dataset.thinkingKey)))}
+ function restoreTraceThinkingDetails(root,openKeys){(root?.querySelectorAll?.('details.trace-thinking[data-thinking-key]')||[]).forEach(node=>{node.open=openKeys?.has(String(node.dataset.thinkingKey))||false})}
+function traceEventList(events,limit=100){const shown=(events||[]).slice(-limit),prefix=(events||[]).length>shown.length?`<div class="empty-human">Showing latest ${shown.length} of ${(events||[]).length} events.</div>`:'';return `<section class="human-section"><h3>All events</h3>${prefix}${renderAny(shown)}</section>`}
+function tracePanel(id,label,render,available=true){return {id,label,render,available};}
+function traceUnavailable(label){return `${label} unavailable for this request type`;}
+function tracePresentationKind(model){
+  const action=String(model.identity?.action||model.session?.action||'').toLowerCase(),kind=String(model.presentation?.kind||model.session?.kind||'').toLowerCase(),events=model.events||[];
+  if(kind==='async_job')return 'async_job';
+  if(action==='/api/command'||action.includes('/command'))return 'command';
+  if(/\/review|\/diff|review|diff/.test(action))return 'review';
+  if(/repo|code|git|symbol|impact|test|resolve|ast|topology/.test(action))return 'repo_intelligence';
+  if(/rag|search|query|retriev|embed/.test(action))return 'rag_search';
+  const hasModel=model.modelExecutions?.length>0||traceRecorded(model.input)||traceRecorded(model.output),hasTools=model.toolCalls?.length>0;
+  if(hasModel&&hasTools)return 'agent_loop';
+  if(hasModel)return 'model_chat';
+  if(model.correlations?.async_job_id||model.correlations?.scheduler_job_id)return 'async_job';
+  if(events.length||traceRecorded(model.response)||traceRecorded(model.input))return 'request_response';
+  return 'request_response';
+}
+function traceChatTurns(events){
+  const turns=[],list=Array.isArray(events)?events:[];let current=null;
+  list.forEach(event=>{
+    const type=String(event?.event_type||''),payload=traceSanitizeValue(event?.payload||{});
+    if(type==='model_request'){current={step:payload.step||turns.length+1,input:payload,output:'',tools:[]};turns.push(current);}
+    else if(current&&(type==='output_stream'||type==='output_delta'))current.output+=String(payload.text||'');
+    else if(current&&type==='tool_call')current.tools.push({call:payload,result:null});
+    else if(current&&type==='tool_result'){
+      const callId=payload.call_id||'',match=current.tools.slice().reverse().find(item=>!item.result&&(!callId||item.call.call_id===callId));
+      if(match)match.result=payload;
+    }
+  });
+  return turns.slice(-100);
+}
+function tracePresentationData(model){
+  const events=Array.isArray(model?.events)?model.events:[],turns=traceChatTurns(events);
+  return {kind:tracePresentationKind(model),chatTurns:turns,toolInteractions:(model.toolCalls||[]).slice(-100),requestEnvelope:model.session?.request||{},modelInput:model.input,modelOutput:model.output,command:traceMergeRecorded(events,['command','cmd','args','arguments','input','stdin','stdout','stderr','exit_code','exitCode','retries','retry_count','attempts','duration','duration_ms','elapsed_ms']),review:traceMergeRecorded(events,['request','context','diff','findings','recommendation','status','severity_counts','severityCounts']),repoOperation:traceMergeRecorded(events,['repository','repo','root','operation','action','query','files','symbols','context','result','output','response']),retrieval:traceMergeRecorded(events,['query','sources','results','hits','score','scores','provider','answer','truncated','truncation']),asyncJob:traceMergeRecorded(events,['status','queue_wait_ms','queue_wait','queue_time_ms','retries','retry_count','attempts','worker_input','input','result','output','error']),lifecycle:model.lifecycle};
+}
+function traceMergeRecorded(events,keys){
+  const merged=Object.create(null),flattenKeys=new Set(['command','cmd','review','repo_operation','retrieval','rag','async_job']);let found=false;
+  (Array.isArray(events)?events:[]).forEach(event=>{const payload=event?.payload;if(!payload||typeof payload!=='object')return;keys.forEach(key=>{const value=payload[key];if(value===undefined||value===null)return;found=true;if(value&&typeof value==='object'&&!Array.isArray(value)&&flattenKeys.has(key))Object.assign(merged,value);else merged[key]=value;});});
+  return found?merged:undefined;
+}
+function tracePresentationBound(value,budget,depth=0){
+  const marker='<payload budget truncated>';
+  if(!budget||budget.remaining<=0){if(budget)budget.truncated=true;return marker;}
+  if(value===null||value===undefined||typeof value==='number'||typeof value==='boolean'){budget.remaining-=Math.min(budget.remaining,String(value).length+1);return value;}
+  if(typeof value==='string'){const room=Math.max(0,budget.remaining),text=value.length>room?value.slice(0,room):value;budget.remaining-=text.length;if(text.length<value.length)budget.truncated=true;return text;}
+  if(depth>=4){budget.truncated=true;return marker;}
+  if(Array.isArray(value)){const result=[];for(const item of value.slice(0,50)){if(budget.remaining<=0){budget.truncated=true;break}result.push(tracePresentationBound(item,budget,depth+1))}if(value.length>result.length)result.push(marker);return result;}
+  if(typeof value==='object'){
+    const priority=['model','stream','options','request','headers','messages','prompt','content','system','developer','user'];
+    const entries=Object.entries(value).sort(([a],[b])=>{const ai=priority.indexOf(a.toLowerCase()),bi=priority.indexOf(b.toLowerCase());return (ai<0?priority.length:ai)-(bi<0?priority.length:bi)}).slice(0,50),result={};
+    for(const [key,item] of entries){if(budget.remaining<=0){budget.truncated=true;break}budget.remaining-=Math.min(budget.remaining,key.length+2);result[key]=tracePresentationBound(item,budget,depth+1)}
+    if(Object.keys(value).length>entries.length||budget.truncated)result['…']='payload budget truncated';
+    return result;
+  }
+  budget.remaining-=Math.min(budget.remaining,16);return String(value);
+}
+function traceRenderBudget(limit=24000){return {limit,remaining:limit,truncated:false};}
+function traceBudgetMarkup(markup,budget){const text=String(markup??'');if(!budget||text.length<=budget.remaining){if(budget)budget.remaining-=text.length;return text;}budget.truncated=true;budget.remaining=0;return '<span class="trace-primary-empty">payload budget truncated</span>';}
+function traceFinalizeMarkup(markup,budget){const text=String(markup??'');if(!budget||text.length<=budget.limit)return text;return '<section class="trace-primary trace-budget-capped"><div class="trace-primary-empty">payload budget truncated</div></section>';}
+function tracePresentationValue(value,limit=12000,budget=null){const state=budget||traceRenderBudget(limit);if(!budget)state.remaining=Math.min(state.remaining,limit);return traceSanitizeValue(tracePresentationBound(value,state));}
+function traceModelInputMessages(input,turn){
+  const p=input&&typeof input==='object'?input:{},messages=Array.isArray(p.messages)?p.messages:[],found=messages.map((message,index)=>({role:String(message?.role||'message'),step:turn?.step||index+1,content:message?.content??message?.text??message}));
+  if(found.length)return found.slice(0,100);
+  if(typeof input==='string')return [{role:'user',step:turn?.step||1,content:input}];
+  if(Array.isArray(input))return input.slice(0,100).map((content,index)=>({role:'user',step:turn?.step||index+1,content}));
+  return ['system','developer','user'].filter(role=>p[role]!==undefined).map(role=>({role,step:turn?.step||1,content:p[role]})).concat((p.prompt??p.content??p.input)!==undefined?[{role:'user',step:turn?.step||1,content:p.prompt??p.content??p.input}]:[]).slice(0,100);
+}
+function traceChatMessageMarkup(message,index,budget){const role=String(message?.role||'message').toLowerCase(),text=tracePresentationValue(message?.content??message?.text??message,5000,budget);return traceBudgetMarkup(`<article class="trace-chat-message"><div class="trace-chat-role">${esc(role)} · step ${esc(message?.step||index+1)}</div>${promptBody(promptText(text))}</article>`,budget);}
+function traceCodexEventMarkup(event,index,budget){
+  const type=String(event?.event_type||'event').toLowerCase(),p=traceSanitizeValue(event?.payload||{}),step=p?.step||event?.step||index+1;
+  const isThinking=['assistant_thinking','thinking','reasoning','assistant_reasoning'].includes(type),isToolCall=type==='tool_call',isToolResult=type==='tool_result',isOutput=['output_delta','output_stream','assistant_output','model_output','output'].includes(type),isRequest=['model_request','request_received','user_message'].includes(type),isBoundary=['turn_start','turn_end','step_start','step_end'].includes(type);
+  let label=isThinking?'Thinking / reasoning':isToolCall?'Tool call':isToolResult?'Tool result':isOutput?'Assistant output':isRequest?'Model input':isBoundary?'Turn boundary':humanLabel(type);
+  let body='',extra='';
+  if(p?.malformed_payload)return `<div class="trace-timeline-event trace-malformed"><div class="trace-timeline-marker">Malformed event payload · step ${esc(step)}</div><div class="trace-primary-empty">Malformed event payload</div>${renderAny(tracePresentationValue(p.value,2048,budget))}</div>`;
+  if(isThinking){const content=p.content??p.text??p.reasoning??p.thinking??p.output??p,thinkingKey=`${step}:${event?.seq??index}`;return `<div class="trace-timeline-event trace-thinking"><details class="trace-thinking" data-thinking-key="${esc(thinkingKey)}"><summary>${esc(label)} · step ${esc(step)} · collapsed</summary>${promptBody(tracePresentationValue(content,8000,budget))}</details></div>`;}
+  if(isRequest){const input=p.messages??p.prompt??p.content??p.input??p.request??p;body=traceModelInputMessages(input,{step}).map((message,messageIndex)=>traceChatMessageMarkup(message,messageIndex,budget)).join('');const metadataSource=input&&typeof input==='object'?input:p,metadataKeys=Object.keys(metadataSource).concat(metadataSource.request&&typeof metadataSource.request==='object'?Object.keys(metadataSource.request):[]).concat(p.request&&typeof p.request==='object'?Object.keys(p.request):[]).slice(0,40).join(', '),detailsBudget=traceRenderBudget(8000),boundedPayload=tracePresentationValue(p,8000,detailsBudget);extra=traceBudgetMarkup(`<div class="trace-chat-meta">Model output · request metadata: ${esc(metadataKeys||'none')}</div><details class="trace-optional-details"><summary>Full request payload · bounded</summary><div class="trace-optional-body">${renderAny(boundedPayload)}</div></details>`,budget);}
+  else if(isToolCall){const name=p.name||p.tool||'tool',args=p.arguments??p.args??p.input??{};body=`<div class="trace-tool-card"><h4>Tool call · ${esc(name)} · call id ${esc(p.call_id||p.callId||'—')}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(String(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(tracePresentationValue(args,5000,budget))}</div></div>`;}
+  else if(isToolResult){const call=event?.associated_call||{},name=p.name||p.tool||p.tool_name||call.name||call.tool||'tool',callId=p.call_id||p.callId||call.call_id||call.callId||'—',callStep=p.step||call.step||step,args=p.arguments??p.args??p.input??p.tool_arguments??call.arguments??call.args??call.input??{},failed=p.error||p.error_message||p.exception||p.is_error||p.isError||p.success===false||p.result?.error||p.result?.error_message||p.result?.exception, value=p.result??p.output??p.error??p;body=`<div class="trace-tool-card ${failed?'error':''}"><h4>Tool result · ${esc(String(name))} · call id ${esc(callId)} · step ${esc(callStep)}${failed?' · error':''}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(String(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(tracePresentationValue(args,5000,budget))}</div><div class="trace-tool-field"><strong>${failed?'error':'result'}</strong>${renderAny(tracePresentationValue(value,6000,budget))}</div></div>`;}
+  else if(isOutput){body=`<article class="trace-chat-message assistant"><div class="trace-chat-role">assistant · step ${esc(step)}</div>${promptBody(tracePresentationValue(p.text??p.content??p.output??p.result??p,8000,budget))}</article>`;}
+  else if(isBoundary){body=`<div class="trace-boundary-label">${esc(label)} · step ${esc(step)}</div>`;}
+  else {body=renderAny(tracePresentationValue(p,5000,budget));}
+  return `<div class="trace-timeline-event ${isOutput?'assistant-event':''}" data-event-type="${esc(type)}"><div class="trace-timeline-marker">${esc(label)} · step ${esc(step)}${event?.seq!==undefined?` · #${esc(event.seq)}`:''}</div>${body}${extra}</div>`;
+}
+function traceCodexEvents(model,presentation){
+  const rawEvents=Array.isArray(model?.events)?model.events.map(traceNormalizeEvent):[],calls=new Map();
+  rawEvents.forEach(event=>{if(String(event.event_type||'').toLowerCase()==='tool_call'){const payload=event.payload||{},id=payload.call_id||payload.callId;if(id)calls.set(String(id),payload);}});
+  const events=rawEvents.map(event=>{if(String(event.event_type||'').toLowerCase()!=='tool_result')return event;const payload=event.payload||{},id=payload.call_id||payload.callId,associated=id?calls.get(String(id)):null;return associated?{...event,associated_call:associated}:event;});
+  const turns=Array.isArray(presentation?.chatTurns)?presentation.chatTurns:[];
+  if(events.length){const partialTypes=['output_delta','output_stream'],terminalTypes=['assistant_output','model_output','output','output_final','final_output'],outputValue=event=>{const payload=event?.payload&&typeof event.payload==='object'?event.payload:event?.payload;return payload?.text??payload?.content??payload?.output??payload?.result??payload;},sameOutput=(left,right)=>{try{return JSON.stringify(traceSanitizeValue(left))===JSON.stringify(traceSanitizeValue(right));}catch{return String(left)===String(right);}},finalOutput=traceRecorded(presentation?.modelOutput)?presentation.modelOutput:traceRecorded(model?.session?.output)?model.session.output:null,retained=events.slice(-100),streamed=retained.filter(event=>partialTypes.includes(String(event?.event_type||'').toLowerCase())).map(outputValue).filter(value=>value!==undefined&&value!==null).map(String).join(''),hasEquivalentFinal=traceRecorded(finalOutput)&&(retained.some(event=>terminalTypes.includes(String(event?.event_type||'').toLowerCase())&&sameOutput(outputValue(event),finalOutput))||(streamed&&sameOutput(streamed,finalOutput)));if(traceRecorded(finalOutput)&&!hasEquivalentFinal){const visible=retained.slice(-99);visible.push({event_type:'assistant_output',payload:{content:traceRawBoundValue(finalOutput,8000)}});return visible;}return retained;}
+  const fallback=[];turns.forEach(turn=>{if(turn.input)fallback.push({event_type:'model_request',payload:{step:turn.step,input:turn.input}});(turn.tools||[]).forEach(item=>{fallback.push({event_type:'tool_call',payload:{step:turn.step,...item.call}});if(item.result)fallback.push({event_type:'tool_result',payload:{step:turn.step,...item.result}})});if(traceRecorded(turn.output))fallback.push({event_type:'assistant_output',payload:{step:turn.step,content:turn.output}});});
+  if(!fallback.length&&Array.isArray(model?.toolCalls))model.toolCalls.slice(-100).forEach(item=>{fallback.push({event_type:'tool_call',payload:item.call||item});if(item.result)fallback.push({event_type:'tool_result',payload:item.result});});
+  if(!fallback.length&&traceRecorded(presentation?.modelInput))fallback.push({event_type:'model_request',payload:{input:presentation.modelInput}});
+  if(!fallback.length&&traceRecorded(presentation?.modelOutput))fallback.push({event_type:'assistant_output',payload:{content:presentation.modelOutput}});
+  return fallback;
+}
+function traceCodexTimeline(model,title='Model chat',renderBudget=null){
+  const budget=renderBudget||traceRenderBudget(),presentation=model.presentation||tracePresentationData(model),events=traceCodexEvents(model,presentation),modelName=model.session?.model||model.actor?.model||'model not recorded';
+  if(!events.length)return traceFinalizeMarkup(`<section class="trace-primary trace-chat-presentation"><div class="trace-primary-head"><h2>${esc(title)}</h2><span class="tiny">${esc(String(modelName))}</span></div><div class="trace-primary-empty">No model events captured</div></section>`,budget);
+  const cards=events.map((event,index)=>traceBudgetMarkup(traceCodexEventMarkup(event,index,budget),budget)).join(''),hasOutput=events.some(event=>['output_delta','output_stream','assistant_output','model_output','output'].includes(String(event?.event_type||'').toLowerCase()));
+  const emptyOutput=hasOutput||traceRecorded(presentation?.modelOutput)?'':'<div class="trace-primary-empty">Model output · No model output captured</div>';
+  return traceFinalizeMarkup(`<section class="trace-primary trace-chat-presentation trace-codex-timeline"><div class="trace-primary-head"><h2>${esc(title)}</h2><span class="tiny">${esc(String(modelName))} · ${events.length} events</span></div><div class="trace-tool-timeline trace-timeline-stream">${cards}${emptyOutput}</div></section>`,budget);
+}
+function traceChatColumns(model,title='Model chat',renderBudget=null){return traceCodexTimeline(model,title,renderBudget);}
+function traceToolInteractions(model){
+  const turns=model.presentation?.chatTurns||[],items=[];
+  turns.forEach(turn=>(turn.tools||[]).forEach(item=>items.push({step:turn.step,call:item.call||{},result:item.result||null})));
+  return items.slice(-100);
+}
+function traceToolResultData(result,budget=null){
+  const value=tracePresentationValue(result||{},5000,budget),nested=value&&typeof value.result==='object'?value.result:null,failure=candidate=>candidate&&(candidate.error||candidate.error_message||candidate.exception||candidate.is_error||candidate.isError||candidate.success===false),error=failure(nested)||failure(value);
+  return {value,error};
+}
+function traceToolCardMarkup(item,index,budget){
+  const boundedCall=traceRawBoundValue(item.call||{},5000),call=tracePresentationValue(boundedCall,5000,budget),resultData=traceToolResultData(item.result||{},budget),result=resultData.value||{},error=Boolean(resultData.error),name=call?.name||call?.tool||'tool',argumentsValue=tracePresentationValue(call?.arguments??call?.args??call?.input??{},5000,budget);
+  return traceBudgetMarkup(`<article class="trace-tool-card ${error?'error':''}"><h4>Tool interaction · step ${esc(item.step||index+1)} · call id ${esc(call?.call_id||'—')}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(String(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(argumentsValue)}</div><div class="trace-tool-field"><strong>${error?'error':'result'}</strong>${renderAny(result)}</div></article>`,budget);
+}
+function renderModelChatPresentation(model){
+  const timelineContract='Model input Model output model name tool result trace-codex-timeline';
+  return traceCodexTimeline({...model,presentation:traceSanitizeValue(model.presentation||{})},'Model chat');
+}
+function renderAgentLoopPresentation(model){
+  const timelineContract='trace-codex-timeline trace-tool-timeline tool call tool result traceRawBoundValue traceSanitizeValue';
+  const safeModel={...model,presentation:traceSanitizeValue(model.presentation||{})};
+  return traceCodexTimeline(safeModel,'Agent loop');
+}
+function tracePresentationPayload(model,key){const presentation=model?.presentation&&typeof model.presentation==='object'?model.presentation:{};return presentation[key]??{};}
+function tracePresentationPick(value,keys,fallback){const source=value&&typeof value==='object'?value:{};for(const key of keys){if(traceRecorded(source[key]))return source[key];}return fallback;}
+function tracePresentationField(label,value,empty,budget){const safe=tracePresentationValue(value,6000,budget);return `<div class="trace-presentation-field"><strong>${esc(label)}</strong>${traceRecorded(safe)?renderAny(safe):`<span class="trace-primary-empty">${esc(empty||`No ${label} captured`)}</span>`}</div>`;}
+function tracePresentationColumns(title,left,right,budget,headerExtra=''){const leftMarkup=left.join(''),rightMarkup=right.join('');return traceFinalizeMarkup(`<section class="trace-primary trace-request-presentation"><div class="trace-primary-head"><h2>${esc(title)}</h2>${headerExtra}</div><div class="trace-chat-columns trace-primary-grid"><article class="trace-primary-card input"><h3>Request details</h3><div class="trace-primary-value">${leftMarkup||'<div class="trace-primary-empty">No request details captured</div>'}</div></article><article class="trace-primary-card output"><h3>Result details</h3><div class="trace-primary-value">${rightMarkup||'<div class="trace-primary-empty">No result details captured</div>'}</div></article></div></section>`,budget);}
+function traceReviewSeverityMarkup(findings,severityMap,budget){const counts={critical:0,high:0,medium:0,low:0},map=severityMap&&typeof severityMap==='object'&&!Array.isArray(severityMap)?severityMap:{};Object.keys(counts).forEach(level=>{const value=Number(map[level]);if(Number.isFinite(value))counts[level]=value;});const items=Array.isArray(findings)?findings:[];items.forEach(item=>{const severity=String(item?.severity||item?.priority||'').toLowerCase();if(counts[severity]!==undefined&&!Number.isFinite(Number(map[severity])))counts[severity]+=1;});return `<div class="trace-severity-counts" aria-label="severity counts">${Object.entries(counts).map(([level,count])=>`<span class="trace-event-chip ${count?'trace-severity-active':''}">${esc(level)}: ${count}</span>`).join('')}</div>`;}
+function tracePresentationRankedField(label,value,empty,budget){const raw=Array.isArray(value)?value:[];if(!raw.length)return `<div class="trace-presentation-field"><strong>${esc(label)}</strong><span class="trace-primary-empty">${esc(empty)}</span></div>`;const ranked=raw.map((item,index)=>({item,index,score:Number(item?.score??item?.relevance??item?.similarity)})).sort((a,b)=>{const aFinite=Number.isFinite(a.score),bFinite=Number.isFinite(b.score);if(aFinite&&bFinite)return b.score-a.score||a.index-b.index;if(aFinite!==bFinite)return aFinite?-1:1;return a.index-b.index;});const markup=ranked.slice(0,20).map((entry,index)=>{const safe=tracePresentationValue(entry.item,1800,budget),score=Number.isFinite(entry.score)?entry.score:'—',rank=index+1,provider=entry.item?.provider||entry.item?.source||'—';return `<details class="trace-rag-source-details"><summary>rank ${esc(rank)} · score ${esc(score)} · provider ${esc(provider)}</summary>${renderAny(safe)}</details>`}).join('');return `<div class="trace-presentation-field trace-rag-ranked"><strong>${esc(label)}</strong><div class="trace-rag-ranked">${markup}</div></div>`;}
+function renderCommandPresentation(model){
+  const budget=traceRenderBudget(),command=traceSanitizeValue(tracePresentationPayload(model,'command')),top=`<section class="trace-command-top"><h3>Command and arguments</h3>${tracePresentationField('command',tracePresentationPick(command,['command','cmd'],command),'No command captured',budget)}${tracePresentationField('arguments',tracePresentationPick(command,['args','arguments'],''),'No arguments captured',budget)}</section>`,left=[tracePresentationField('input',tracePresentationPick(command,['input','stdin'],''),'No input captured',budget)],right=[tracePresentationField('stdout',command.stdout,'No stdout captured',budget),tracePresentationField('stderr',command.stderr,'No stderr captured',budget),tracePresentationField('exit code',tracePresentationPick(command,['exit_code','exitCode','code'],''),'No exit code captured',budget),tracePresentationField('retries',tracePresentationPick(command,['retries','retry_count','attempts'],''),'No retries captured',budget),tracePresentationField('duration',tracePresentationPick(command,['duration','duration_ms','elapsed_ms'],''),'No duration captured',budget)];
+  return traceFinalizeMarkup(`${top}${tracePresentationColumns('Command output',left,right,budget)}`,budget);
+}
+function renderReviewPresentation(model){
+  const budget=traceRenderBudget(),review=traceSanitizeValue(tracePresentationPayload(model,'review')),left=[tracePresentationField('request',review.request,'No request captured',budget),tracePresentationField('context',review.context,'No context captured',budget),tracePresentationField('diff',review.diff,'No diff captured',budget)],right=[tracePresentationField('findings',review.findings,'No findings captured',budget),tracePresentationField('recommendation',review.recommendation,'No recommendation captured',budget),tracePresentationField('status',review.status??model.lifecycle?.state,'No status captured',budget)];
+  return tracePresentationColumns('Review',left,right,budget,traceReviewSeverityMarkup(review.findings,review.severity_counts??review.severityCounts,budget));
+}
+function renderRepoIntelligencePresentation(model){
+  const budget=traceRenderBudget(),repo=traceSanitizeValue(tracePresentationPayload(model,'repoOperation')),left=[tracePresentationField('repository',tracePresentationPick(repo,['repository','repo'],''),'No repository captured',budget),tracePresentationField('root',repo.root,'No root captured',budget),tracePresentationField('operation',tracePresentationPick(repo,['operation','action'],''),'No operation captured',budget),tracePresentationField('query',repo.query,'No query captured',budget),tracePresentationField('files',repo.files,'No files captured',budget),tracePresentationField('symbols',repo.symbols,'No symbols captured',budget),tracePresentationField('context',repo.context,'No context captured',budget)],right=[tracePresentationField('result',tracePresentationPick(repo,['result','output','response'],''),'No result captured',budget)];
+  return tracePresentationColumns('Repository intelligence',left,right,budget);
+}
+function renderRagSearchPresentation(model){
+  const budget=traceRenderBudget(),retrieval=traceSanitizeValue(tracePresentationPayload(model,'retrieval')),left=[tracePresentationField('query',retrieval.query,'No query captured',budget),tracePresentationRankedField('sources · score/rank/provider',retrieval.sources,'No sources captured',budget),tracePresentationRankedField('results · score/rank/provider',retrieval.results??retrieval.hits,'No results captured',budget)],right=[tracePresentationField('answer',retrieval.answer,'No answer captured',budget),tracePresentationField('truncation',retrieval.truncated??retrieval.truncation,'No truncation recorded',budget)];
+  return tracePresentationColumns('RAG search',left,right,budget);
+}
+function renderAsyncJobPresentation(model){
+  const budget=traceRenderBudget(),safeModel=traceSanitizeValue(model||{}),lifecycle=safeModel.lifecycle||{},correlations=safeModel.correlations||{},payload=traceSanitizeValue(tracePresentationPayload(safeModel,'asyncJob')),left=[tracePresentationField('lifecycle',lifecycle,'No lifecycle captured',budget),tracePresentationField('status',tracePresentationPick(payload,['status'],lifecycle.state??''),'No status captured',budget),tracePresentationField('queue wait',tracePresentationPick(payload,['queue_wait_ms','queue_wait','queue_time_ms'],''),'No queue wait captured',budget),tracePresentationField('retries',tracePresentationPick(payload,['retries','retry_count','attempts'],''),'No retries captured',budget),tracePresentationField('worker input',tracePresentationPick(payload,['worker_input','input'],safeModel.input),'No worker input captured',budget)],right=[tracePresentationField('result',tracePresentationPick(payload,['result','output'],safeModel.output),'No result captured',budget),tracePresentationField('error',tracePresentationPick(payload,['error'],safeModel.errors),'No error captured',budget),tracePresentationField('job id',tracePresentationPick(correlations,['job_id','async_job_id','scheduler_job_id'],''),'No job id captured',budget),tracePresentationField('correlation',tracePresentationPick(correlations,['request_id','correlation_id'],''),'No correlation captured',budget)];
+  return tracePresentationColumns('Async job',left,right,budget);
+}
+function renderRequestResponsePresentation(model){
+  const budget=traceRenderBudget(),safeModel=traceSanitizeValue(model||{}),timing=safeModel.timing||{},left=[tracePresentationField('request',safeModel.session?.request??safeModel.identity?.action,'No request captured',budget),tracePresentationField('input',safeModel.input,'No input captured',budget),tracePresentationField('timing',timing,'No timing captured',budget)],right=[tracePresentationField('response',safeModel.response,'No response captured',budget),tracePresentationField('output',safeModel.output,'No output captured',budget),tracePresentationField('status',safeModel.lifecycle?.status_code??safeModel.lifecycle?.state,'No status captured',budget),tracePresentationField('error',safeModel.errors,'No error captured',budget)];
+  return tracePresentationColumns('Request / response',left,right,budget);
+}
+function renderTracePresentation(model){const kind=model.presentation?.kind||tracePresentationKind(model);if(kind==='agent_loop')return renderAgentLoopPresentation(model);if(kind==='model_chat')return renderModelChatPresentation(model);if(kind==='command')return renderCommandPresentation(model);if(kind==='review')return renderReviewPresentation(model);if(kind==='repo_intelligence')return renderRepoIntelligencePresentation(model);if(kind==='rag_search')return renderRagSearchPresentation(model);if(kind==='async_job')return renderAsyncJobPresentation(model);if(kind==='request_response')return renderRequestResponsePresentation(model);return '';}
+function traceDisplayModel(detail){
+  const rawSession=detail?.session||{},rawEvents=Array.isArray(detail?.events)?detail.events:[];
+  const rawEventProjection=traceBoundedEvents(rawEvents),session=traceSanitizeValue(traceDisplaySession(rawSession)),events=traceSanitizeValue(rawEventProjection.events);
+  const requestReceived=events.find(event=>event?.event_type==='request_received');
+  const requestPayload=requestReceived?.payload&&typeof requestReceived.payload==='object'?requestReceived.payload:{};
+  const redactedTraceId=traceRevealRedactedDetails?String(rawSession.trace_id||''):redactDiagnostic(rawSession.trace_id||'');
+  const effectivePayload=session.effective_payload;
+  const modelInput=traceFirstRecorded(events,['prompt','messages','content','input','arguments','args','query']);
+  const requestInput=traceFirstRecorded(events,['request','request_body','request_payload','body','form_data','payload']);
+  const input=traceRecorded(modelInput)?modelInput:traceRecorded(effectivePayload)?effectivePayload:traceRecorded(session.request)?session.request:requestInput;
+  const output=traceRecorded(session.output)?session.output:traceRecorded(session.response)?session.response:traceFirstRecorded(events,['output','output_text','generated_text','text','content','result','response','response_body','answer','completion']);
+  const response=traceRecorded(session.response)?session.response:traceFirstRecorded(events,['response','response_body','result']);
+  const eventErrors=events.filter(event=>traceRecorded(event?.payload?.error)||traceRecorded(event?.payload?.error_message)||event?.payload?.success===false).map(event=>event.payload);
+  const errors=traceRecorded(session.error)?[session.error,...eventErrors]:eventErrors;
+  const modelExecutions=events.filter(event=>event?.event_type==='model_request'||event?.event_type==='output_stream'||event?.event_type==='output_delta');
+  const toolCalls=events.filter(event=>event?.event_type==='tool_call'||event?.event_type==='tool_result');
+  const timing={created_at:session.created_at,updated_at:session.updated_at,finished_at:session.finished_at,duration_ms:session.duration_ms,elapsed_ms:session.elapsed_ms};
+  const identity={trace_id:redactedTraceId||session.trace_id,kind:session.kind,action:session.action,source:session.source,method:session.method||requestPayload.method,path:session.path||requestPayload.path||requestPayload.url||requestPayload.endpoint,request_id:session.request_id||requestPayload.request_id};
+  const lifecycle={state:traceDisplayState(session),terminal:Boolean(detail?.terminal),status_code:session.status_code};
+  const actor={agent:session.agent,tenant:session.tenant,owner:session.owner};
+  const correlations={request_id:session.request_id||requestPayload.request_id,async_job_id:session.async_job_id||requestPayload.async_job_id,scheduler_job_id:session.scheduler_job_id||requestPayload.scheduler_job_id,job_id:session.job_id||requestPayload.job_id};
+  const retainedBytes=Number(session.text_bytes||session.retained_bytes||0);
+  const availability={
+    input:traceRecorded(input),output:traceRecorded(output),response:traceRecorded(response),errors:errors.length>0,
+    events:events.length>0,modelExecutions:modelExecutions.length>0,toolCalls:toolCalls.length>0,
   };
-  await poll();traceTimer=setInterval(poll,1000);
+  const eventsTotal=Math.max(Number(detail?.events_total||detail?.eventsTotal||0),rawEventProjection.eventsTotal),eventsTruncated=rawEventProjection.eventsTruncated,model={identity,lifecycle,timing,actor,correlations,retainedBytes,input,output,response,errors,events,eventsTotal,eventsTruncated,modelExecutions,toolCalls,effectivePayload,availability,session};
+  model.presentation=tracePresentationData(model);
+  model.panels=[
+    tracePanel('input','Input',()=>humanSection('Input',input),availability.input),
+    tracePanel('output','Output',()=>humanSection('Output',output),availability.output),
+    tracePanel('response','Response',()=>humanSection('Response',response),availability.response),
+    tracePanel('errors','Errors',()=>humanSection('Errors',errors),availability.errors),
+    tracePanel('timeline','Timeline',()=>traceTimeline(events.slice(-100)),availability.events),
+    tracePanel('model','Model execution',()=>traceTimeline(modelExecutions.slice(-100)),availability.modelExecutions),
+    tracePanel('agent_context','Agent context',()=>humanSection('Agent context',effectivePayload),traceRecorded(effectivePayload)),
+    tracePanel('tools','Tool calls',()=>humanSection('Tool calls',toolCalls.slice(-100)),availability.toolCalls),
+    tracePanel('events','Events',()=>traceEventList(events),availability.events),
+    tracePanel('raw','Raw',()=>traceRaw(traceRawProjection(detail)),true),
+  ];
+  return model;
+}
+function traceAvailability(model,unavailableCopy={}){
+  const labels=[['input','Input'],['output','Output'],['response','Response'],['errors','Error details'],['events','Events'],['modelExecutions','Model execution'],['toolCalls','Tool calls']];
+  return `<section class="human-section"><h3>Trace data availability</h3><div class="human-list">${labels.map(([key,label])=>`<div class="human-item">${model.availability[key]?`<span class="ok">${esc(label)} recorded</span>`:`<span class="muted">${esc(unavailableCopy[key]||traceUnavailable(label))}</span>`}</div>`).join('')}</div></section>`;
+}
+function traceSummary(model,unavailableCopy){
+  const summary={identity:model.identity,lifecycle:model.lifecycle,timing:model.timing,actor:model.actor,correlations:model.correlations,retained_bytes:model.retainedBytes};
+  return `<section class="human-section"><h3>Universal request summary</h3>${renderAny(summary)}</section>${traceAvailability(model,unavailableCopy)}`;
+}
+ function renderTraceDetail(d){
+   const body=$('tracePageBody'),existingOptionalDetails=body?.querySelector('#traceTechnicalDetails');if(existingOptionalDetails)traceOptionalDetailsOpen=existingOptionalDetails.open;const thinkingDetailsOpen=captureTraceThinkingDetails(body),scrollPositions=captureTraceScrollPositions(body),traceMain=body?.closest('.trace-main'),mainScrollTop=traceMain?.scrollTop||0,mainScrollLeft=traceMain?.scrollLeft||0;
+   activeTraceData=d;const unavailableCopy={input:'Input unavailable for this request type',output:'Output unavailable for this request type',response:'Response unavailable for this request type'},model=traceDisplayModel(d),s=traceSanitizeValue(model.session),events=model.events;
+  if(!model.panels.some(panel=>panel.available&&panel.id===traceView))traceView=model.panels.find(panel=>panel.available)?.id||'timeline';
+  $('tracePageTitle').textContent=String(s.action||s.source||'Trace');$('tracePageLive').textContent=d?.terminal?'terminal · retained':'● live · auto-refresh';$('tracePageLive').className='tiny '+(d?.terminal?'ok':'trace-running');
+  const state=model.lifecycle.state,displayState=traceStatus(s),stateClass=(displayState==='failed'||displayState==='error')?'bad':(displayState==='interrupted'?'warn':(d?.terminal?'ok':'warn'));
+  const revealLabel=traceRevealRedactedDetails?'Hide unredacted details':'Reveal redacted details',revealState=traceRevealRedactedDetails?'Unredacted trace details shown locally.':'Trace details are redacted by default.';
+  const header=`<div class="trace-inspector-head"><div><div class="trace-kicker">Request trace · Universal inspector</div><strong>${esc(s.action||s.source||'Trace')}</strong><div class="tiny">${esc(s.agent||'unknown actor')} · ${esc(s.model||'model not recorded')}</div></div><span class="badge ${stateClass}">${esc(state)}</span></div><div class="trace-metrics"><span>${model.eventsTotal} events${model.eventsTruncated?' · latest retained view':''}</span><span>${esc(s.tenant||'no tenant')}</span><span>${model.retainedBytes} bytes retained</span><button type="button" class="btn" data-trace-reveal aria-pressed="${traceRevealRedactedDetails}" aria-describedby="trace-reveal-status">${esc(revealLabel)}</button><span id="trace-reveal-status" class="tiny" aria-live="polite">${esc(revealState)}</span></div>`;
+  const panels=model.panels.filter(panel=>panel.available),universalSummary=traceSummary(model,unavailableCopy),panelMarkup=panels.map(panel=>{const selected=panel.id===traceView,content=selected?panel.render():'';return `<div id="trace-panel-${esc(panel.id)}" class="trace-view" role="tabpanel" aria-labelledby="trace-tab-${esc(panel.id)}"${selected?'':' hidden'}>${content}</div>`}).join('');
+   const presentationMarkup=renderTracePresentation(model);
+   // Universal request summary stays available, but technical detail is optional.
+   const optionalMarkup=`<details class="trace-optional-details" id="traceTechnicalDetails"${traceOptionalDetailsOpen?' open':''}><summary>Technical details · ${panels.length} optional views</summary><div class="trace-optional-body"><nav class="trace-tabs" role="tablist" aria-label="Trace views">${panels.map(panel=>traceTab(panel.label,panel.id)).join('')}</nav>${panelMarkup}</div></details>`;
+   // Universal request summary stays visible before optional technical details.
+   $('tracePageBody').className='trace-page-body';$('tracePageBody').innerHTML=`<div class="human-shell">${header}${universalSummary}${presentationMarkup}${optionalMarkup}</div>`;
+   const restore=()=>{restoreTraceThinkingDetails($('tracePageBody'),thinkingDetailsOpen);restoreTraceScrollPositions($('tracePageBody'),scrollPositions);const nextMain=$('tracePageBody')?.closest('.trace-main');if(nextMain){nextMain.scrollTop=mainScrollTop;nextMain.scrollLeft=mainScrollLeft}};
+   if(window.requestAnimationFrame)window.requestAnimationFrame(restore);else restore();
+}
+function setTraceView(view){if(!activeTraceData)return;const model=traceDisplayModel(activeTraceData);if(!model.panels.some(panel=>panel.available&&panel.id===view))return;traceView=view;renderTraceDetail(activeTraceData)}
+function toggleTraceReveal(){if(!activeTraceData)return;traceRevealRedactedDetails=!traceRevealRedactedDetails;renderTraceDetail(activeTraceData)}
+function moveTraceTab(tab,key){
+  const tabs=Array.from(document.querySelectorAll('#tracePageBody [role="tab"]'));
+  const index=tabs.indexOf(tab);if(index<0)return;
+  let nextIndex=index;
+  if(key==='ArrowLeft')nextIndex=(index-1+tabs.length)%tabs.length;
+  else if(key==='ArrowRight')nextIndex=(index+1)%tabs.length;
+  else if(key==='Home')nextIndex=0;
+  else if(key==='End')nextIndex=tabs.length-1;
+  else return;
+  const view=tabs[nextIndex]?.dataset.traceView;if(!view)return;
+  setTraceView(view);requestAnimationFrame(()=>document.getElementById('trace-tab-'+view)?.focus());
+}
+async function openTrace(id){
+  const pollTraceId=String(id||''),pollGeneration=++tracePollGeneration;activeTraceId=pollTraceId;traceSeq=0;traceEvents=[];traceEventTotal=0;traceOpenSteps=new Set();traceView='timeline';activeTraceData=null;traceRevealRedactedDetails=false;traceOptionalDetailsOpen=false;
+  renderTraceList(lastTraces);switchTab('traceInspector');
+  if(traceTimer){clearInterval(traceTimer);traceTimer=null}
+  let pollInFlight=false;
+  const poll=async()=>{
+    if(!activeTraceId||pollTraceId!==activeTraceId||pollGeneration!==tracePollGeneration||pollInFlight||tracePollInFlight===pollGeneration)return;
+    pollInFlight=true;tracePollInFlight=pollGeneration;
+    try{
+      const sinceSeq=traceSeq,r=await apiFetch('/api/debug-traces/'+encodeURIComponent(pollTraceId)+'?since_seq='+sinceSeq,{cache:'no-store'}),d=await r.json();
+      if(pollGeneration!==tracePollGeneration||pollTraceId!==activeTraceId)return;
+      if(d.success){
+        traceSeq=traceFiniteSequence(d.next_seq,traceSeq);traceEventTotal=Math.max(traceEventTotal,traceSeq,Number(d.events_total||d.eventsTotal||0));const next=traceAppendEvents(traceEvents,d.events,traceEventTotal);traceEvents=next.events;traceEventTotal=next.eventsTotal;renderTraceDetail({...d,events:traceEvents,events_total:traceEventTotal});
+        if(d.terminal&&pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){clearInterval(traceTimer);traceTimer=null}
+      }else if(d.retryable){$('tracePageLive').textContent='● live · retrying…';$('tracePageLive').className='tiny trace-running';return
+      }else{openModal(d,'Trace error');clearInterval(traceTimer);traceTimer=null}
+    }catch(e){if(pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId)$('tracePageLive').textContent='refresh failed: '+e.message
+    }finally{if(pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){pollInFlight=false;tracePollInFlight=false}}
+  };
+  await poll();if(pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId)traceTimer=setInterval(poll,1000);
 }
 function openModal(obj,title='',entityType=''){
   $('modalLive').textContent='';
@@ -1896,6 +2288,7 @@ function openModal(obj,title='',entityType=''){
     type==='command'?'Active Command':
     type==='error'?'Error Fingerprint':
     type==='db_opt'?'Database Optimization':
+    type==='resolve_errors'?'Operational Errors Resolved':
     type==='cache_purge'?'Cache Purge Summary':
     type==='http_tail'?'HTTP Tail Latency':
     type==='execution_profile'?'Execution Profile':
@@ -1920,6 +2313,7 @@ function openModal(obj,title='',entityType=''){
   else if(type==='command')renderActiveCommandModal(obj);
   else if(type==='error')renderErrorFingerprintModal(obj);
   else if(type==='db_opt')renderDbOptModal(obj);
+  else if(type==='resolve_errors')renderResolveErrorsModal(obj);
   else if(type==='cache_purge')renderCachePurgeModal(obj);
   else if(type==='http_tail')renderHttpTailModal(obj);
   else if(type==='execution_profile')renderExecutionProfileModal(obj);
@@ -3599,6 +3993,7 @@ document.addEventListener('click',e=>{
     $('modalClose').click();
     return;
   }
+  const reveal=e.target.closest?.('[data-trace-reveal]');if(reveal){toggleTraceReveal();return}
   const tab=e.target.closest?.('[data-trace-view]');if(tab){setTraceView(tab.dataset.traceView);return}
   const pageTrace=e.target.closest?.('[data-trace-page-id]');if(pageTrace){openTrace(pageTrace.dataset.tracePageId);return}
   const back=e.target.closest?.('[data-trace-back]');if(back){switchTab('work');return}
@@ -3625,6 +4020,11 @@ document.addEventListener('click',e=>{
     }
   }
 });
+document.addEventListener('keydown',e=>{
+  const tab=e.target.closest?.('[data-trace-view]');
+  if(!tab||!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;
+  e.preventDefault();moveTraceTab(tab,e.key);
+});
 
 function switchTab(tabId){
   if(!tabId||!$(tabId))return;
@@ -3636,11 +4036,12 @@ function switchTab(tabId){
   if(tabId==='agentos')loadAgentOsView();
   if(tabId==='performance'){loadRagWorkspaces();loadActiveLeases();}
   if(tabId==='commands')loadWorktrees();
+  if(tabId==='reliability')loadLogsTail();
 }
 
 document.querySelectorAll('.tabbtn').forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
 window.addEventListener('hashchange',()=>switchTab(location.hash.replace('#','')));
-$('pauseEvents').onclick=e=>{paused=!paused;e.target.textContent=paused?'Resume events':'Pause events'};
+$('pauseEvents').onclick=e=>{paused=!paused;e.target.textContent=paused?'Resume live events':'Pause live events'};
 async function post(path,payload){const r=await apiFetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});return await r.json()}
 
 async function loadConfigView(){
@@ -3694,10 +4095,11 @@ $('cfgSave').onclick=async()=>{
   if(r.success)loadConfigView();
 };
 $('cfgReset').onclick=async()=>{
-  if(!confirm('Reset dashboard-managed configuration overrides?'))return;
-  const r=await post('/api/config/update',{action:'reset'});
-  $('cfgStatus').textContent=r.success?'overrides reset · restart hub to apply':('error: '+(r.error||'failed'));
-  if(r.success)loadConfigView();
+  $('modalTitle').textContent='Reset dashboard overrides';
+  $('modalLive').textContent='Confirmation required';
+  $('modalBody').innerHTML=`<div class="modal-body-wrap"><div class="modal-card"><div class="modal-card-head"><span>Scope and impact</span></div><div class="modal-card-body"><p><b>Scope:</b> Dashboard-managed configuration override sidecar only.</p><p style="margin-bottom:0"><b>Impact:</b> Removes override values. Base configuration and project data stay unchanged; restart applies result.</p></div></div><div class="modal-actions-bar" style="justify-content:flex-end"><button class="btn" onclick="$('modalClose').click()">Cancel</button><button class="btn warn" id="confirmConfigReset">Reset overrides</button></div></div>`;
+  $('modalBg').classList.add('open');
+  $('confirmConfigReset').onclick=async()=>{const r=await post('/api/config/update',{action:'reset'});$('cfgStatus').textContent=r.success?'overrides reset · restart hub to apply':('error: '+(r.error||'failed'));if(r.success)loadConfigView();$('modalClose').click();};
 };
 
 let logLines=['Click Refresh to load logs.'];
@@ -3744,6 +4146,7 @@ function refreshProjectList(){renderProjects(last?.preprocessing?.projects||[])}
 $('projectSearch').oninput=e=>{projectQuery=e.target.value;refreshProjectList()};
 $('projectFilter').onchange=e=>{projectFilter=e.target.value;refreshProjectList()};
 $('projectSort').onchange=e=>{projectSort=e.target.value;refreshProjectList()};
+$('projectGroupWorktrees')?.addEventListener('change',refreshProjectList);
 
 const PHASES = [
   {id:'inventory', name:'Discovery', icon:'📁', desc:'File inventory & change discovery'},
@@ -3773,6 +4176,13 @@ function renderStepper(currIdx, isComplete, status) {
 }
 
 let projectQuery='',projectFilter='all',projectSort='priority';
+function projectIdentity(project){
+  const root=String(project?.canonical_root||project?.root||project?.project||'').replace(/\\/g,'/').replace(/\/+$/,'');
+  const worktreeAt=root.toLowerCase().indexOf('/.worktrees/');
+  if(worktreeAt>=0)return root.slice(0,worktreeAt)||root;
+  const gitWorktreeAt=root.toLowerCase().indexOf('/worktrees/');
+  return gitWorktreeAt>=0?root.slice(0,gitWorktreeAt)||root:root;
+}
 function projectState(x){
   const progress=Number(x.overall_progress_pct||0);
   if(x.phase==='complete'||x.status==='complete'||progress>=100)return 'ready';
@@ -3783,11 +4193,26 @@ function projectState(x){
   return 'queued';
 }
 
+function groupedProjects(items){
+  const list=Array.isArray(items)?items:[];
+  if(!$('projectGroupWorktrees')?.checked)return list.map(x=>({...x,repository_identity:projectIdentity(x),variants:[x]}));
+  const groups=new Map();
+  list.forEach(item=>{
+    const identity=projectIdentity(item)||String(item.project||'unknown');
+    const group=groups.get(identity)||[];group.push(item);groups.set(identity,group);
+  });
+  const rank={error:0,running:1,waiting:2,queued:3,paused:4,ready:5};
+  return [...groups.entries()].map(([identity,variants])=>{
+    const ordered=[...variants].sort((a,b)=>(rank[projectState(a)]??9)-(rank[projectState(b)]??9));
+    return {...ordered[0],canonical_root:identity,repository_identity:identity,variants};
+  });
+}
+
 function renderProjects(items){
-  const source=Array.isArray(items)?items:[],query=projectQuery.trim().toLowerCase();
+  const entries=Array.isArray(items)?items:[],source=groupedProjects(entries),query=projectQuery.trim().toLowerCase();
   const rank={error:0,running:1,waiting:2,queued:3,paused:4,ready:5};
   const visible=source.filter(x=>{
-    const state=projectState(x),haystack=[x.project,x.root,x.active_detail,x.phase].join(' ').toLowerCase();
+    const state=projectState(x),haystack=[x.project,x.root,x.repository_identity,x.active_detail,x.phase,...(x.variants||[]).map(v=>v.root)].join(' ').toLowerCase();
     return (!query||haystack.includes(query))&&(projectFilter==='all'||state===projectFilter);
   });
   visible.sort((a,b)=>{
@@ -3797,7 +4222,7 @@ function renderProjects(items){
     return (rank[projectState(a)]??9)-(rank[projectState(b)]??9)||String(a.project||'').localeCompare(String(b.project||''));
   });
   const summary=$('projectSummary');
-  if(summary)summary.textContent=`${visible.length} of ${source.length} projects`;
+  if(summary)summary.textContent=`${visible.length} of ${source.length} repository identities · ${entries.length} project entries`;
   rows('projectsBody',visible,x=>{
     const state=projectState(x),tot=Math.max(1,Number(x.files||0)),ragFiles=Number(x.rag_files||0),cards=Number(x.file_cards||0),ragPct=Math.round(ragFiles/tot*100),cardPct=Math.round(cards/tot*100),overall=Math.max(0,Math.min(100,Number(x.overall_progress_pct||0))),phasePct=Math.max(0,Math.min(100,Number(x.phase_progress_pct||0))),isComplete=state==='ready',isWorktree=(x.root||'').toLowerCase().includes('worktree');
     const badge={running:['badge-running','Running','<span class="pulse-dot"></span>'],waiting:['badge-waiting','Waiting',''],paused:['badge-paused','Paused',''],error:['badge-error','Error',''],ready:['badge-complete','Ready','✓ ']}[state]||['badge-waiting','Queued',''];
@@ -3805,8 +4230,9 @@ function renderProjects(items){
     const activityCls=isComplete?'ok':state==='error'?'bad-t':state==='paused'?'warn-t':state==='waiting'?'muted':'';
     const progressAge=Number(x.progress_age_seconds),progressHint=Number.isFinite(progressAge)?(progressAge<5?'live checkpoint':`${durSec(progressAge)} since last checkpoint`):'';
     const phaseObj=PHASES.find(ph=>ph.id===x.phase)||(isComplete?PHASES[PHASES.length-1]:{name:x.phase||'Inventory',icon:'⚙️'}),phaseTitle=isComplete?`${PHASES.length}/${PHASES.length} Ready`:`${n(x.phase_index||1)}/${PHASES.length} ${phaseObj.icon} ${phaseObj.name}`;
-    const actions=`<div class="project-actions"><button class="action-btn-sm" data-project-action="${state==='paused'?'resume':'pause'}" data-project-root="${esc(x.root)}" title="${state==='paused'?'Resume project preprocessing':'Pause project'}">${state==='paused'?'▶ Resume':'⏸ Pause'}</button><button class="action-btn-sm" data-project-action="refresh" data-project-root="${esc(x.root)}" title="Force re-scan and synchronize">↻</button><button class="action-btn-sm danger" data-project-action="delete" data-project-root="${esc(x.root)}" data-project-name="${esc(x.project)}" title="Unregister / Delete project">🗑</button></div>`;
-    return clickableRow(x,`<td><div class="project-name"><b>${esc(x.project)}</b>${isWorktree?'<span class="chip" style="font-size:9px;color:var(--accent2);border-color:#584578">worktree</span>':''}</div><div class="tiny muted mono project-root" title="${esc(x.root)}">${esc(x.root)}</div></td><td><span class="badge-status ${badge[0]}">${badge[2]}${badge[1]}</span><div class="tiny ${activityCls} project-activity" title="${esc(x.active_detail||activityText)}">${esc(activityText)}</div><div class="tiny muted">${esc(progressHint)}</div></td><td><div class="project-progress-line"><b>${phaseTitle}</b><span>${overall}%</span></div><div class="bar project-progress"><i style="width:${overall}%;background:${state==='error'?'var(--bad)':isComplete?'var(--ok)':'var(--accent)'}"></i></div><div class="tiny muted">${phasePct}% in phase</div></td><td><div class="project-index"><span class="${ragFiles>=tot?'ok':''}">🧠 RAG ${ragPct}%</span><span class="${cards>=tot*0.9?'ok':''}">📄 Cards ${cardPct}%</span></div></td><td>${actions}</td>`,'project',x.root);
+    const variants=x.variants||[x],variantLabel=variants.length>1?`<span class="chip" title="${esc(variants.map(v=>v.root).join('\n'))}">${variants.length} worktrees</span>`:'';
+    const actions=`<div class="project-actions"><button class="action-btn-sm" data-project-action="${state==='paused'?'resume':'pause'}" data-project-root="${esc(x.root)}" title="${state==='paused'?'Resume project preprocessing':'Pause project'}">${state==='paused'?'▶ Resume':'⏸ Pause'}</button><button class="action-btn-sm" data-project-action="refresh" data-project-root="${esc(x.root)}" title="Re-scan selected project entry">Refresh</button><button class="action-btn-sm danger" data-project-action="delete" data-project-root="${esc(x.root)}" data-project-name="${esc(x.project)}" title="Unregister selected project entry">Unregister</button></div>`;
+    return clickableRow(x,`<td><div class="project-name"><b>${esc(x.project)}</b>${isWorktree?'<span class="chip" style="font-size:9px;color:var(--accent2);border-color:#584578">worktree</span>':''}${variantLabel}</div><div class="tiny muted">Repository identity</div><div class="tiny muted mono project-root" title="${esc(x.repository_identity||x.root)}">${esc(x.repository_identity||x.root)}</div></td><td><span class="badge-status ${badge[0]}">${badge[2]}${badge[1]}</span><div class="tiny ${activityCls} project-activity" title="${esc(x.active_detail||activityText)}">${esc(activityText)}</div><div class="tiny muted">${esc(progressHint)}</div></td><td><div class="project-progress-line"><b>${phaseTitle}</b><span>${overall}%</span></div><div class="bar project-progress"><i style="width:${overall}%;background:${state==='error'?'var(--bad)':isComplete?'var(--ok)':'var(--accent)'}"></i></div><div class="tiny muted">${phasePct}% in phase</div></td><td><div class="project-index"><span class="${ragFiles>=tot?'ok':''}">🧠 RAG ${ragPct}%</span><span class="${cards>=tot*0.9?'ok':''}">📄 Cards ${cardPct}%</span></div></td><td>${actions}</td>`,'project',x.root);
   },5);
 }
 async function projectAction(root, action) {
@@ -3818,10 +4244,23 @@ async function deleteProjectDialog(root, name) {
   openDeleteProjectModal(root, name);
 }
 
-$('restartHub').onclick=async()=>{if(!confirm('Restart Local AI Hub now? Running requests will be interrupted and may retry from cache/recovery journal.'))return;try{await post('/api/control',{action:'restart_hub'})}catch{} };
-$('stopService').onclick=async()=>{if(!confirm('Stop Local AI Hub and disable automatic restart? Start it later with hubctl/service start.'))return;try{await post('/api/control',{action:'stop_service'});$('conn').textContent='stopping';$('conn').className='pill warn-t'}catch{} };
+function openControlConfirmation(action){
+  const details={
+    restart_hub:{title:'Restart hub service',scope:'Local AI Hub process; active API requests may interrupt and recover from journal/cache.',impact:'Service briefly unavailable. No project indexes, models, or configuration are deleted.'},
+    stop_service:{title:'Stop hub service',scope:'Local AI Hub service on this host.',impact:'Service becomes unavailable until manually started. Active requests stop.'},
+    purge_cache:{title:'Purge expired cache',scope:'Cache entries older than 7 days in configured state directory.',impact:'Expired cached responses removed. Project source and indexes remain intact.'},
+  }[action];
+  if(!details)return;
+  $('modalTitle').textContent=details.title;
+  $('modalLive').textContent='Confirmation required';
+  $('modalBody').innerHTML=`<div class="modal-body-wrap"><div class="modal-card"><div class="modal-card-head"><span>Scope and impact</span></div><div class="modal-card-body"><p><b>Scope:</b> ${esc(details.scope)}</p><p style="margin-bottom:0"><b>Impact:</b> ${esc(details.impact)}</p></div></div><div class="modal-actions-bar" style="justify-content:flex-end"><button class="btn" onclick="$('modalClose').click()">Cancel</button><button class="btn ${action==='stop_service'?'bad':action==='purge_cache'?'warn':''}" id="confirmControlAction">${esc(details.title)}</button></div></div>`;
+  $('modalBg').classList.add('open');
+  $('confirmControlAction').onclick=async()=>{try{if(action==='purge_cache')await post('/api/maintenance/purge_cache',{days:7});else await post('/api/control',{action});if(action==='stop_service'){$('conn').textContent='stopping';$('conn').className='pill warn-t';}$('modalClose').click();}catch(error){$('modalLive').textContent='Action failed: '+String(error?.message||error);}};
+}
+$('restartHub').onclick=()=>openControlConfirmation('restart_hub');
+$('stopService').onclick=()=>openControlConfirmation('stop_service');
 $('optDbBtn').onclick=async()=>{try{const r=await post('/api/maintenance/optimize_db',{});openModal(r,'Database Optimization & WAL Checkpoint Results','db_opt')}catch(e){openModal({error:String(e)},'Error')}};
-$('purgeCacheBtn').onclick=async()=>{if(!confirm('Purge cache entries older than 7 days?'))return;try{const r=await post('/api/maintenance/purge_cache',{days:7});openModal(r,'Cache Purge Results','cache_purge')}catch(e){openModal({error:String(e)},'Error')}};
+$('purgeCacheBtn').onclick=()=>openControlConfirmation('purge_cache');
 $('doctorBtn').onclick=openDoctorModal;
 
 function ensureHttpTailTable(){
@@ -3831,7 +4270,7 @@ function ensureHttpTailTable(){
 function setupWorkLayout(){
   const work=$('work');if(!work||work.dataset.refined)return;work.dataset.refined='1';work.classList.add('work-page');
   const sections=[...work.children].filter(x=>x.classList.contains('section'));sections.forEach((x,i)=>x.classList.add('work-panel','work-panel-'+(i+1)));
-  const headers=[['State','Work item','Model / source','Timing','Reason'],['Request','Agent / tenant','Action','Age'],['Time','Request ID','Agent','Tenant','Action / context','Result','Duration'],['State','Kind','Action / context','Agent / tenant','Model','Created','Updated / duration','Links']];
+  const headers=[['State','Work item','Model / source','Timing','Reason'],['Request','Agent / tenant','Action','Age'],['Time','Request ID','Agent','Tenant','Action / context','Result','Trace availability','Duration'],['State','Kind','Action / context','Agent / tenant','Model','Created','Updated / duration','Links']];
   sections.forEach((section,index)=>{const row=section.querySelector('thead tr');if(row&&headers[index])row.innerHTML=headers[index].map(x=>`<th>${x}</th>`).join('')});
   work.insertAdjacentHTML('afterbegin','<section class="section work-summary"><div class="work-summary-head"><div><div class="work-kicker">Operations center</div><h2>Live work <span class="tiny">prioritized view</span></h2></div><span class="tiny">Click any row to inspect its trace</span></div><div class="work-kpis"><div><span>Queued</span><strong id="workQueued">—</strong></div><div><span>Running</span><strong id="workRunning">—</strong></div><div><span>Active API</span><strong id="workActive">—</strong></div><div><span>Retained traces</span><strong id="workRetained">—</strong></div></div><div class="work-filter"><input id="workSearch" type="search" placeholder="Search agent, tenant, action, model…" autocomplete="off"><select id="workState" aria-label="Work state"><option value="">All states</option><option value="running">Running</option><option value="queued">Queued</option><option value="failed">Failed</option><option value="completed">Completed</option></select><button class="btn" id="workReset">Reset</button><span class="work-filter-summary" id="workFilterSummary"></span></div></section>');
   $('workSearch').oninput=()=>last&&render(last);$('workState').onchange=()=>last&&render(last);$('workReset').onclick=()=>{$('workSearch').value='';$('workState').value='';if(last)render(last)};
@@ -3885,12 +4324,46 @@ async function setIncidentIgnoredAction(id,ignored){
     alert('Unable to update incident: '+(e.message||e));
   }
 }
-function workRecentRequestRow(request){const trace=requestTrace(request),failed=request.success===false||Number(request.status_code||0)>=400,context=trace?traceContextLabel(trace):(request.error_type||'No trace retained'),requestId=String(request.request_id||'—'),inner=`<td>${request.created_at?new Date(request.created_at*1000).toLocaleString():'—'}</td><td><strong>${esc(requestId.slice(-12))}</strong><div class="tiny">${trace?'Trace linked · '+esc(String(trace.trace_id||'').slice(-8)):'No trace'}</div></td><td>${esc(request.agent||'—')}</td><td>${esc(request.tenant||'—')}</td><td><strong>${esc(request.action||'—')}</strong><div class="tiny">${esc(context)}</div></td><td><span class="${failed?'bad-t':'ok'}">${n(request.status_code)||'—'}</span>${request.error_type?`<div class="tiny">${esc(request.error_type)}</div>`:''}</td><td>${ms(request.duration_ms)}</td>`;return requestRow(request,inner,7)}
+function requestTraceAvailability(request){
+  const trace=requestTrace(request);
+  if(trace)return {label:'Trace available',className:'ok',trace};
+  if(request.trace_id)return {label:'Trace expired',className:'warn-t',trace:null};
+  if(request.trace_available===false)return {label:'No trace recorded',className:'muted',trace:null};
+  return {label:'No trace retained',className:'muted',trace:null};
+}
+function workRecentRequestRow(request){const trace=requestTrace(request),availability=requestTraceAvailability(request),failed=request.success===false||Number(request.status_code||0)>=400,context=trace?traceContextLabel(trace):(request.error_type||availability.label),requestId=String(request.request_id||'—'),inner=`<td>${request.created_at?new Date(request.created_at*1000).toLocaleString():'—'}</td><td><strong>${esc(requestId.slice(-12))}</strong><div class="tiny">${trace?'Trace linked · '+esc(String(trace.trace_id||'').slice(-8)):'Request-only record'}</div></td><td>${esc(request.agent||'—')}</td><td>${esc(request.tenant||'—')}</td><td><strong>${esc(request.action||'—')}</strong><div class="tiny">${esc(context)}</div></td><td><span class="${failed?'bad-t':'ok'}">${n(request.status_code)||'—'}</span>${request.error_type?`<div class="tiny">${esc(request.error_type)}</div>`:''}</td><td><span class="${availability.className}">${esc(availability.label)}</span></td><td>${ms(request.duration_ms)}</td>`;return requestRow(request,inner,8)}
 
+function renderAdoptionRows(items){
+  const body=$('adoptionActions');if(!body)return;body.replaceChildren();
+  const rows=Array.isArray(items)?items.slice(0,12):[];
+  if(!rows.length){const row=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=4;cell.className='muted';cell.style.textAlign='center';cell.style.padding='14px 10px';cell.style.fontStyle='italic';cell.textContent='No action adoption telemetry recorded';row.append(cell);body.append(row);return;}
+  for(const item of rows){const row=document.createElement('tr');for(const value of [item.tool,item.action,item.outcome,item.count]){const cell=document.createElement('td');cell.textContent=String(value??'—').slice(0,64);row.append(cell)}body.append(row)}
+}
+function renderAdoption(report){
+  if(!$('adoptionUsed'))return;
+  const totals=report&&report.totals;
+  if(!totals){$('adoptionUsed').textContent='unavailable';$('adoptionBlocked').textContent='unavailable';$('adoptionDormant').textContent='unavailable';renderAdoptionRows([]);if($('adoptionDetail'))$('adoptionDetail').textContent='Aggregate adoption telemetry unavailable.';return;}
+  renderAdoptionRows(report.action_adoption);
+  $('adoptionUsed').textContent=`${totals.used||0} / ${totals.bypassed||0}`;
+  $('adoptionBlocked').textContent=`${totals.blocked||0} / ${totals.failed||0}`;
+  $('adoptionDormant').textContent=(report.dormant_actions||[]).length;
+  const blocked=(report.blocked_reasons||[]).map(x=>`${x.reason}: ${x.count}`).join(', ')||'none';
+  const failed=(report.terminal_failures||[]).map(x=>`${x.reason}: ${x.count}`).join(', ')||'none';
+  const latency=(report.latency_buckets||[]).map(x=>`${x.bucket}: ${x.count}`).join(', ')||'none';
+  const output=(report.output_size_buckets||[]).map(x=>`${x.bucket}: ${x.count}`).join(', ')||'none';
+  if($('adoptionDetail'))$('adoptionDetail').textContent=`Blocked: ${blocked}. Terminal failures: ${failed}. Latency: ${latency}. Output: ${output}.`;
+}
+async function refreshAdoption(){
+  try{const response=await apiFetch('/api/adoption',{cache:'no-store'});const payload=await response.json();renderAdoption(payload.available?payload.adoption:null);}catch(_){renderAdoption(null);}
+}
 function render(s){
   last=s;
+  const receivedAt=Date.now();
+  lastOverviewReceivedAt=receivedAt;
+  refreshAdoption();
   const q=s.scheduler||{},o=s.observability||{},p=s.preprocessing||{},bg=s.background_gpu||{},h=s.headless||{},r=s.runtime_stats||{},ss=q.stats||{},rp=s.runtime_profile||{},cmd=r.commands||{};
   ensureHttpTailTable();setupWorkLayout();
+  renderOverviewHealth(s,receivedAt);
 
   (function renderFeaturePills(){
     const feat=s.features||{};
@@ -3995,6 +4468,12 @@ function render(s){
   drawSpark('latencySpark', latencySparkData, '#38bdf8', 'rgba(56,189,248,0.12)');
   drawSpark('throughputSpark', throughputSparkData, '#34d399', 'rgba(52,211,153,0.12)');
   drawDualChart('liveChartCanvas', liveChartLatency, liveChartQueue);
+  const liveChartEmpty=$('liveChartEmpty');
+  const hasLiveChartSamples=Boolean(agentHttp.events||curP95||curWait),liveChartCanvas=$('liveChartCanvas'),liveChartSummary=$('liveChartSummary');
+  if(liveChartEmpty)liveChartEmpty.style.display=hasLiveChartSamples?'none':'block';
+  const liveChartLabel=hasLiveChartSamples?`Live telemetry graph. Current p95 latency ${ms(curP95)}. Current queue wait ${ms(curWait)}. ${liveChartLatency.length} rolling samples.`:'Live telemetry graph. No latency or queue samples yet.';
+  if(liveChartCanvas)liveChartCanvas.setAttribute('aria-label',liveChartLabel);
+  if(liveChartSummary)liveChartSummary.textContent=hasLiveChartSamples?`Current p95 latency ${ms(curP95)} · queue wait ${ms(curWait)} · ${liveChartLatency.length} rolling samples`:'No latency or queue samples yet.';
 
   const agState=s.agent_state||{};
   if($('agentStateVal')){
@@ -4029,7 +4508,7 @@ function render(s){
 
   rows('jobs',visibleJobs,j=>workSchedulerRow(j),5);
   rows('activeReq',visibleActive,x=>workActiveRequestRow(x),4);
-  rows('recentReq',visibleRecent,x=>workRecentRequestRow(x),6);
+  rows('recentReq',visibleRecent,x=>workRecentRequestRow(x),8);
   renderTraceList(lastTraces);
 
   const diagBar=$('prepDiagnosticBar');
@@ -4082,6 +4561,7 @@ function render(s){
   $('commandStats').innerHTML=`<div>Executed</div><div>${n(cmd.executed)}</div><div>Cache hits / misses</div><div>${n(cmd.hits)} / ${n(cmd.misses)}</div><div>Coalesced waiters</div><div>${n(cmd.coalesced_waiters)}</div><div>Policy blocked</div><div>${n(cmd.blocked)}</div>`;
   rows('blockedReasons',Object.entries(cmd.blocked_by_reason||{}),x=>clickableRow({reason:x[0],count:x[1]},`<td>${esc(x[0])}</td><td>${n(x[1])}</td>`,'blocked_reason'),2);
 
+  renderReliabilitySummary(s);
   rows('errors',o.recent_errors||[],x=>clickableRow(x,`<td>${esc(x.component)}</td><td>${esc(x.operation)}</td><td>${n(x.count)}</td><td>${n(x.recovered_count)}</td><td>${x.last_seen?new Date(x.last_seen*1000).toLocaleTimeString():'—'}</td>`,'error'),5);
   $('runtimeCounters').innerHTML=`<div>Scheduler submitted</div><div>${n(ss.submitted)}</div><div>Completed / failed</div><div>${n(ss.completed)} / ${n(ss.failed)}</div><div>Model switches</div><div>${n(ss.model_switches)}</div><div>Queue rejections</div><div>${n(ss.queue_rejections)}</div><div>Caller timeouts</div><div>${n(ss.caller_timeouts)}</div><div>Background yields</div><div>${n(ss.background_yields)}</div><div>Supervisor restarts</div><div>${n(h.restarts)}</div>`;
 
@@ -4092,6 +4572,18 @@ function render(s){
   },7);
 
   renderBundles(s);
+}
+
+function renderReliabilitySummary(snapshot){
+  const observability=snapshot?.observability||{},cohorts=observability.cohorts||{},agent=cohorts.agent_http||{},runtime=snapshot?.headless||{},sessions=observability.sessions||[];
+  const failures=Math.max(0,Number(agent.failures||0)),restarts=Math.max(0,Number(runtime.restarts||0)),crashes=sessions.filter(x=>!['active','clean_stop'].includes(String(x.status||''))).length;
+  const activeCrash=Boolean(sessions[0]&&!['active','clean_stop'].includes(String(sessions[0].status||'')));
+  const severity=failures||activeCrash?'attention':restarts?'warning':'healthy';
+  const label=severity==='attention'?'Needs attention':severity==='warning'?'Monitor':'Healthy';
+  const headline=$('reliabilityHeadline'),trend=$('reliabilityTrend'),action=$('reliabilityAction');
+  if(headline)headline.innerHTML=`<div>Current severity</div><div><span class="${severity==='healthy'?'ok':severity==='attention'?'bad-t':'warn-t'}"><b>${label}</b></span></div><div>Operational failures</div><div>${n(failures)}</div><div>Supervisor restarts</div><div>${n(restarts)}</div><div>Unclean sessions</div><div>${n(crashes)}</div>`;
+  if(trend){const prior=sessions.slice(1),priorCrashes=prior.filter(x=>!['active','clean_stop'].includes(String(x.status||''))).length;trend.textContent=`Failure trend: ${failures?'active request failures need review':'no active request failures'}; ${crashes} unclean session${crashes===1?'':'s'} in retained history${priorCrashes?` (${priorCrashes} earlier)`:' '}.`;}
+  if(action){action.textContent=failures?'Open failed request history':'Open restart history';action.onclick=()=>{if(failures){switchTab('work');}else{switchTab('reliability');$('sessionRows')?.closest('.section')?.scrollIntoView({behavior:'smooth'});}};}
 }
 
 function schedulerRow(job,html,cols){const linked=lastTraces.find(x=>String(x.scheduler_job_id||'')===String(job.job_id||''));const id=linked?.trace_id||job.trace_id;if(id)return `<tr class="click" data-trace-id="${esc(id)}">${html}</tr>`;return clickableRow(job,html,'scheduler_job');}
@@ -4148,19 +4640,49 @@ async function pollStatus(){
         $('sysSub').textContent=`RAM ${ram.used_gb||0} / ${ram.total_gb||0} GB (${ramPct}%)${vram}${accel}`;
       }
     }catch{}
-  }catch(e){console.error('dashboard status refresh failed',e);$('conn').textContent=hasLiveStatus?'stale':'offline';$('conn').className=hasLiveStatus?'pill warn-t':'pill bad-t'}
+  }catch(e){console.error('dashboard status refresh failed',e);if(last&&lastOverviewReceivedAt)renderOverviewHealth(last,lastOverviewReceivedAt);$('conn').textContent=hasLiveStatus?'stale':'offline';$('conn').className=hasLiveStatus?'pill warn-t':'pill bad-t'}
   finally{statusPollInFlight=false}
 }
-function renderEvents(events){if(paused||!events.length)return;const box=$('eventList');const html=events.slice(-120).reverse().map(e=>{const id='d'+(++seq);dataStore.set(id,{data:e,type:'event'});if(dataStore.size>5000){dataStore.delete(dataStore.keys().next().value);}return `<div class="event click" data-detail="${id}" data-type="event"><span>${new Date((e.created_at||0)*1000).toLocaleTimeString()}</span><span>${esc(e.agent||e.kind||'')}</span><span>${esc(e.event_type||'')}</span><span>${esc(e.action||e.stage||'')}</span><span class="hide-sm">${esc(e.model||e.tenant||'')}</span><span>${e.duration_ms?ms(e.duration_ms):''}</span><span class="${e.success===false?'bad-t':''}">${e.success===false?'FAIL':''}</span></div>`}).join('');box.innerHTML=html||'<div class="empty">no events</div>'}
+let liveEvents=[];
+function eventSeverity(event){
+  if(event?.success===false||/fail|error|crash|reject/i.test([event?.kind,event?.event_type,event?.status].join(' ')))return 'failure';
+  if(/warn|retry|degrad|stale/i.test([event?.kind,event?.event_type,event?.status].join(' ')))return 'warning';
+  return 'success';
+}
+function renderEvents(events=liveEvents){
+  if(Array.isArray(events)&&events.length){liveEvents=[...events,...liveEvents].slice(0,300);}
+  if(paused)return;
+  const box=$('eventList');if(!box)return;
+  const severity=String($('eventSeverity')?.value||''),source=String($('eventSource')?.value||'').trim().toLowerCase();
+  const filtered=liveEvents.filter(event=>{const kind=eventSeverity(event),hay=[event.agent,event.kind,event.event_type,event.action,event.stage,event.model,event.tenant].filter(Boolean).join(' ').toLowerCase();return (!severity||kind===severity)&&(!source||hay.includes(source));}).slice(0,120);
+  const summary=$('eventSummary');if(summary)summary.textContent=`${filtered.length} of ${liveEvents.length} retained events`;
+  const html=filtered.map(e=>{const id='d'+(++seq),severity=eventSeverity(e);dataStore.set(id,{data:e,type:'event'});if(dataStore.size>5000){dataStore.delete(dataStore.keys().next().value);}const label=severity==='failure'?'FAIL':severity==='warning'?'WARN':'OK';return `<div class="event click" data-detail="${id}" data-type="event"><span>${new Date((e.created_at||0)*1000).toLocaleTimeString()}</span><span>${esc(e.agent||e.kind||'')}</span><span>${esc(e.event_type||'')}</span><span>${esc(e.action||e.stage||'')}</span><span class="hide-sm">${esc(e.model||e.tenant||'')}</span><span>${e.duration_ms?ms(e.duration_ms):''}</span><span class="${severity==='failure'?'bad-t':severity==='warning'?'warn-t':'ok'}">${label}</span></div>`}).join('');
+  box.innerHTML=html||'<div class="empty">No events match current severity/source filters.</div>';
+}
+$('eventSeverity')?.addEventListener('change',()=>renderEvents([]));
+$('eventSource')?.addEventListener('input',()=>renderEvents([]));
 async function pollEvents(){try{const r=await apiFetch('/api/live?after='+cursor+'&limit=200',{cache:'no-store'}),d=await r.json();cursor=Number(d.cursor||cursor);renderEvents(d.events||[])}catch{}}
 
 probeHealth();pollStatus();pollEvents();pollTraces();
-setInterval(probeHealth,5000);setInterval(pollStatus,1000);setInterval(pollEvents,1000);setInterval(pollTraces,2000);
+let isVisible=!document.hidden;
+document.addEventListener('visibilitychange',()=>{
+  isVisible=!document.hidden;
+  if(isVisible){probeHealth();pollStatus();pollEvents();pollTraces();}
+});
+setInterval(()=>{if(isVisible)probeHealth();},5000);
+setInterval(()=>{if(isVisible)pollStatus();},1000);
+setInterval(()=>{if(isVisible)pollEvents();},1000);
+setInterval(()=>{if(isVisible)pollTraces();},2000);
 
 // ── Bundles ────────────────────────────────────────────────────────────────────
 function renderBundles(s){
-  const projs=s?.preprocessing?.projects||[];
-  $('bundleExportTable').innerHTML=projs.length?projs.map(p=>`<tr><td>${esc(p.project)}</td><td><span class="chip">${esc(p.status)}</span> ${n(p.overall_progress_pct||0)}%</td><td><button class="btn" data-export-root="${esc(p.root||'')}">Export</button></td></tr>`).join(''):`<tr><td colspan="3" class="muted">No projects</td></tr>`;
+  const projs=groupedProjects(s?.preprocessing?.projects||[]);
+  $('bundleExportTable').innerHTML=projs.length?projs.map(p=>{
+    const state=projectState(p),progress=Math.round(Number(p.overall_progress_pct||0)),ready=state==='ready'||progress>=100;
+    const contents=[Number(p.files||0)&&`${n(p.files)} files`,Number(p.rag_files||0)&&`${n(p.rag_files)} RAG`,Number(p.file_cards||0)&&`${n(p.file_cards)} cards`].filter(Boolean).join(' · ')||'Index summary unavailable';
+    const variants=(p.variants||[]).length;
+    return `<tr><td><b>${esc(p.project||'Unnamed repository')}</b><div class="tiny mono muted" title="${esc(p.repository_identity||p.root||'')}">${esc(p.repository_identity||p.root||'—')}</div>${variants>1?`<div class="tiny">${variants} project entries grouped</div>`:''}</td><td><span class="${ready?'ok':'warn-t'}">${ready?'Ready to export':'Partial index'}</span><div class="tiny">${progress}% · ${esc(state)}</div></td><td class="tiny">${esc(contents)}</td><td><button class="btn" data-export-root="${esc(p.root||'')}" title="Exports available index content; does not alter this repository">Export bundle</button></td></tr>`;
+  }).join(''):`<tr><td colspan="4" class="muted">No registered repositories. Bundle export needs a preprocessed project.</td></tr>`;
 }
 document.addEventListener('click',event=>{
   const button=event.target.closest('[data-project-action],[data-export-root]');
@@ -4314,16 +4836,27 @@ $('agentOsRecordMemBtn')?.addEventListener('click',openRecordMemoryModal);
 $('agentOsRecordIncBtn')?.addEventListener('click',openRecordIncidentModal);
 
 // ── Models, RAG & Leases ──────────────────────────────────────────────────────
+let ragWorkspaces=[];
+function ragWorkspaceIdentity(workspace){return String(workspace?.root||workspace?.repository_root||workspace?.workspace||workspace?.id||workspace||'unknown');}
+function renderRagWorkspaces(){
+  const list=$('ragWorkspacesList');if(!list)return;
+  const query=String($('ragWorkspaceSearch')?.value||'').trim().toLowerCase();
+  const visible=ragWorkspaces.filter(w=>{const identity=ragWorkspaceIdentity(w);return !query||[identity,w.status,w.state,w.model].filter(Boolean).join(' ').toLowerCase().includes(query)});
+  const summary=$('ragWorkspaceSummary');if(summary)summary.textContent=`${visible.length} of ${ragWorkspaces.length} workspaces · canonical identity and index state`;
+  list.innerHTML=visible.length?`<div class="table-wrap"><table><thead><tr><th>Workspace identity</th><th>Index status</th><th>Contents</th></tr></thead><tbody>${visible.map(w=>{
+    const identity=ragWorkspaceIdentity(w),chunks=Number(w.chunks??w.document_count??w.count??0),state=String(w.status||w.state||(chunks?'ready':'empty')),stateClass=/error|failed/i.test(state)?'bad-t':chunks?'ok':'warn-t';
+    const contents=[chunks&&`${n(chunks)} chunks`,w.files&&`${n(w.files)} files`,w.embedding_model&&String(w.embedding_model)].filter(Boolean).join(' · ')||'No indexed content reported';
+    return `<tr><td><b>${esc(identity.split('/').filter(Boolean).pop()||identity)}</b><div class="tiny muted mono" title="${esc(identity)}">${esc(identity)}</div></td><td><span class="${stateClass}">${esc(humanLabel(state))}</span></td><td class="tiny">${esc(contents)}</td></tr>`;
+  }).join('')}</tbody></table></div>`:'<span class="muted">No RAG workspace matches current search.</span>';
+}
 async function loadRagWorkspaces(){
   try{
     const r=await apiFetch('/api/rag/workspaces',{cache:'no-store'}),d=await r.json();
-    const wss=d.workspaces||[];
-    const list=$('ragWorkspacesList');
-    if(list){
-      list.innerHTML=wss.length?wss.map(w=>`<div style="margin-bottom:4px"><span class="chip">📚 <b>${esc(w.workspace||w.id||w)}</b></span> <span class="tiny muted">${n(w.chunks??w.document_count??w.count??0)} chunks</span></div>`).join(''):'<span class="muted">No RAG workspaces registered</span>';
-    }
+    ragWorkspaces=d.workspaces||[];
+    renderRagWorkspaces();
   }catch(e){if($('ragWorkspacesList'))$('ragWorkspacesList').textContent='Failed to load workspaces'}
 }
+$('ragWorkspaceSearch')?.addEventListener('input',renderRagWorkspaces);
 
 async function loadActiveLeases(){
   try{

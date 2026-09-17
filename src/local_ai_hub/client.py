@@ -21,6 +21,17 @@ from urllib.request import Request, urlopen
 from .config import load_config
 
 
+_DETACHED_CHILDREN_LOCK = threading.Lock()
+_DETACHED_CHILDREN: list[subprocess.Popen[Any]] = []
+
+
+def _retain_detached_child(process: subprocess.Popen[Any]) -> None:
+    """Keep intentionally detached hub children alive for later polling/reaping."""
+    with _DETACHED_CHILDREN_LOCK:
+        _DETACHED_CHILDREN[:] = [child for child in _DETACHED_CHILDREN if child.poll() is None]
+        _DETACHED_CHILDREN.append(process)
+
+
 def _live_start_lock(path: Path, stale_seconds: float) -> bool:
     """Return whether a startup lock still belongs to a live, recent process."""
     try:
@@ -288,7 +299,8 @@ class HubClient:
                 kwargs = {}
             if sys.platform != "win32":
                 kwargs["start_new_session"] = True
-            subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+            process = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+            _retain_detached_child(process)
             deadline = time.monotonic() + self.startup_wait
             while time.monotonic() < deadline:
                 if self._online():
@@ -556,13 +568,17 @@ class HubClient:
             })
         return {"success": False, "error": f"unknown coord action '{action}'"}
 
-    def context_compile(self, task_id: str, token_budget: int = 4000, changed_paths: list[str] | None = None) -> dict[str, Any]:
-        return self.post("/api/agent-state/context", {
+    def context_compile(self, task_id: str, token_budget: int = 4000, changed_paths: list[str] | None = None, since_hash: str = "", compact: bool = False) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "action": "compile",
             "task_id": task_id,
             "token_budget": token_budget,
             "changed_paths": changed_paths or [],
-        })
+            "compact": compact,
+        }
+        if since_hash:
+            payload["since_hash"] = since_hash
+        return self.post("/api/agent-state/context", payload)
 
     def verify_receipt(self, task_id: str, criterion: str, passed: bool = True, command_id: str = "", evidence_id: str = "", details: dict[str, Any] | None = None) -> dict[str, Any]:
         return self.post("/api/agent-state/verification", {

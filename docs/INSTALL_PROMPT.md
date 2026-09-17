@@ -9,6 +9,8 @@ Use this prompt with any AI coding agent (Claude Code, Codex, Cursor, Windsurf, 
 
 You are an autonomous AI engineering agent. Your task is to install and configure **Local AI Hub** on this system (if not already installed or running), verify all components (service, Ollama, token economy suite, code intelligence), ensure MCP integration, and inject the canonical tool and token economy policies into this repository's agent instructions.
 
+Hub adoption telemetry is aggregate-only: retain normalized tool/action/intent/outcome plus time, latency, and output-size buckets. Never send prompts, source, secrets, absolute paths, or raw request records. Mark a bypass only when the client explicitly signals one; do not infer it from missing Hub calls.
+
 Execute the following phases deterministically:
 
 ---
@@ -102,13 +104,13 @@ Inspect current repository root for existing agent instruction files:
 ```markdown
 <!-- BEGIN LOCAL AI HUB TOOL POLICY -->
 Trigger map:
-- repository facts/files/symbols: `local_ai_repo`
-- tests/lint/typecheck/build: `local_ai_command`
-- exact source/evidence text: `local_ai_artifact`
-- shared findings or overlapping edits: `local_ai_coord`
+- repository navigation/symbols/impact: `local_ai_repo`
+- test/lint/typecheck/build commands: `local_ai_command`
+- exact source/log/evidence slice: `local_ai_artifact`
+- task contracts, ownership leases, checkpoints, verification receipts, and receipt-gated completion: `local_ai_coord`
 - semantic retrieval after indexed paths are insufficient: `local_ai_rag`
-- bounded local generation or second opinion: `local_ai_task`
-- closed whole-task delegation with verified handoff: `local_ai_work`
+- local diagnosis/boilerplate/second opinion: `local_ai_task` failure diagnosis is disabled by default. Enable `features.local_diagnostic_dispatch=true` only after low-confidence deterministic command parsing; provide artifact reference plus narrow preview, never raw logs. Automatic local inference never handles architecture, security, mutations, or open-ended coding.
+- closed, verified handoff work: `local_ai_work`; skip micro-edits and live discussion
 
 Recipes (guidance, not gates):
 - Recipe — Explore: preprocess once, use the cheapest repository action, fetch only required evidence slices.
@@ -142,12 +144,20 @@ Cheapest path: deterministic -> code_index/search -> semantic/graph -> context/s
  Stop escalating as soon as a cheaper layer provides enough evidence. Do not fan out overlapping retrieval layers in parallel for the same question. Before native `find`/`rg`/`grep`/recursive glob/tree or opening more than two files for discovery, use that hub path first. Reuse fresh evidence IDs, artifact slices, memos and cache hits;
  do not repeat the same hub action with the same root/query while repository state is unchanged.
 
-Treat result state as a protocol: `cache_hit`/`coalesced` means reuse the result; `in_progress=true` means another owner is doing identical work, so never duplicate it; `retryable`/429/503 means back off and do independent work; `degraded`/`stale` means verify only the affected path/slice; a non-retryable failure permits one cheaper/native fallback. Never turn a transient result into larger timeouts, force refreshes, or polling loops.
+Treat result state as a protocol: `cache_hit`/`coalesced` means reuse the result; `in_progress=true` means another owner is doing identical work, so never duplicate it; `retryable`/429/503 means back off and do independent work; `degraded`/`stale` means verify only the affected path/slice; native fallback requires `terminal=true` and `retryable=false`. Mutations never cache or single-flight. Never turn a transient result into larger timeouts, force refreshes, or polling loops.
 
 Route test/lint/typecheck/build/read-only commands through `local_ai_command` before running them natively. If it returns `in_progress=true`, do not launch a duplicate command. Before an expensive `solve`/model call, search coordination memos for reusable findings. For overlapping multi-agent edits use `local_ai_coord` leases and store concise reusable discoveries as memos.
  After edits, use indexed impact/review plus targeted cached validation; do not rerun broad discovery merely because files changed. `force` and `preprocess_refresh` are recovery/admin controls, never retry buttons. If an optional backend degrades, accept the hub's deterministic/index fallback. If the hub itself is unavailable, make one bounded health/retry attempt, then fall back to native tools. Never loop on health, status, preprocessing, model startup, a failing backend, or an identical command.
 
-Selection guide: `local_ai_repo` for bounded repository facts and checks (including `review_diff` and `security_audit`), `local_ai_command` for bounded repeatable commands, `local_ai_task` for small local-model work and second opinions, `local_ai_work` for a complete bounded repository task with planning, edits, validation and handoff, `local_ai_rag` only after cheaper indexed evidence, `local_ai_artifact` for exact slices, `local_ai_coord` for leases/memos.
+Selection guide: `local_ai_repo` for bounded repository facts and checks (including `review_diff` and `security_audit`), `local_ai_command` for bounded repeatable commands, `local_ai_task` for small local-model work and second opinions, `local_ai_work` only for a complete closed task with verified handoff, `local_ai_rag` only after cheaper indexed evidence, `local_ai_artifact` for exact slices, `local_ai_coord` for task contracts, leases, checkpoints, and receipts.
+
+For non-trivial multi-step work, create a `local_ai_coord` task contract first, claim overlapping paths, checkpoint phase changes, attach validation receipts, and complete only after receipt verification passes.
+
+Rollout controls: `features.enriched_search`, `features.batch_replacement`, `features.diagnostic_artifacts`, and `features.local_diagnostic_dispatch` start `false`. Enable only one literal TOML `true` flag for a 10–20% pilot after a 14-day read-only baseline. Compare `/api/adoption` token, latency, first-pass validation, terminal failure, and native fallback metrics. Promote only sustained quality-neutral gains. Roll back immediately: set that flag to `false`, restart Hub, run `python tools/hubctl.py generate`. Disabled flags return structured unavailable before work starts; malformed values stay disabled. `local_diagnostic_dispatch=true` alone may retain only its bounded failure preview for the one local diagnosis; never raw output and no `diagnostic_artifacts=true` dependency.
+
+Batch edits require `features.batch_replacement=true`. Then use `local_ai_repo(action="batch_replace", edits=[...], dry_run=true)` for preview. `staged` is not batch dry-run and is never forwarded. Each edit needs exact target text that matches once. The engine preflights all edits, rolls back write failures, and never auto-commits. Set `dry_run=false` only after review.
+
+For durable work, create one `local_ai_coord(action="task_create")` contract, record phase changes with `local_ai_coord(action="task_checkpoint")`, then use one bounded wait on the durable job. Do not poll status loops.
 
 Local model policy: use `qwen2.5-coder:0.5b` only for preprocessing, `qwen2.5-coder:1.5b` only for quick/simple requests, `qwen2.5-coder:3b` for ordinary and more involved work, and `qwen2.5-coder:7b` for the hardest reasoning. Deterministic and indexed Hub actions run first.
 <!-- END LOCAL AI HUB TOOL POLICY -->

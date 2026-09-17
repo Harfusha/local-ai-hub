@@ -277,13 +277,13 @@ def test_dashboard_has_unique_ids_and_valid_javascript(tmp_path: Path):
     assert "probeHealth" in DASHBOARD_HTML
     assert "Agent debug traces" in DASHBOARD_HTML
     assert "/api/debug-traces" in DASHBOARD_HTML
-    assert "main_agent_prompt" in DASHBOARD_HTML
+    assert "traceDisplayModel" in DASHBOARD_HTML
     assert "renderHumanModal" in DASHBOARD_HTML
     assert "Raw JSON" in DASHBOARD_HTML
     assert "human-grid" in DASHBOARD_HTML
     assert "trace-timeline" in DASHBOARD_HTML
     assert "toggleTraceStep" in DASHBOARD_HTML
-    assert "Agent timeline" in DASHBOARD_HTML
+    assert "Universal inspector" in DASHBOARD_HTML
     assert "trace-tabs" in DASHBOARD_HTML
     assert "data-trace-view" in DASHBOARD_HTML
     assert "Tool result" in DASHBOARD_HTML
@@ -318,6 +318,20 @@ def test_dashboard_has_unique_ids_and_valid_javascript(tmp_path: Path):
     if subprocess.run(["node", "--version"], capture_output=True).returncode == 0:
         cp = subprocess.run(["node", "--check", str(js_file)], capture_output=True, text=True)
         assert cp.returncode == 0, cp.stderr
+
+
+def test_live_trace_retryable_detail_errors_do_not_open_terminal_modal():
+    from local_ai_hub.dashboard import DASHBOARD_HTML
+
+    assert "if(d.retryable){" in DASHBOARD_HTML
+    assert "retrying…" in DASHBOARD_HTML
+
+
+def test_live_trace_rerender_preserves_nested_scroll_positions():
+    from local_ai_hub.dashboard import DASHBOARD_HTML
+
+    assert "captureTraceScrollPositions" in DASHBOARD_HTML
+    assert "restoreTraceScrollPositions" in DASHBOARD_HTML
 
 
 def _free_port() -> int:

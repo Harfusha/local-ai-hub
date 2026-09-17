@@ -168,6 +168,7 @@ class LocalAIApp:
         self.commands.set_incident_store(self.agent_incidents)
         self.commands.set_verification_store(self.agent_verification)
         self.commands.set_policy_engine(self.agent_policy)
+        self.commands.set_error_distiller(self.services.distill_command_error)
         self.services.set_commands(self.commands)
         self.services.set_task_store(self.agent_tasks)
         self.services.set_verification_store(self.agent_verification)
@@ -813,7 +814,7 @@ class LocalAIApp:
                 if rtype == "memory" and getattr(self, "agent_memory", None):
                     rec = MemoryRecord.create(
                         kind=MemoryKind(rdata.get("kind", "fact")),
-                        scope=AgentScope(rdata.get("scope", "task")),
+                        scope=AgentScope.parse(rdata.get("scope", "task")),
                         key=str(rdata.get("key", "")),
                         value=rdata.get("value"),
                         scope_id=str(rdata.get("scope_id", "")),

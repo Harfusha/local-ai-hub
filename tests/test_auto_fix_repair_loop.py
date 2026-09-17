@@ -5,6 +5,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -12,6 +13,7 @@ from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.commands import CommandBroker
 from local_ai_hub.agent_verification import VerificationStore
 from local_ai_hub.agent_events import AgentStateStore
+from local_ai_hub.services import LocalAIServices
 
 
 @pytest.fixture
@@ -29,6 +31,7 @@ def make_broker(temp_dir: Path) -> CommandBroker:
     state_dir.mkdir(parents=True, exist_ok=True)
     artifacts = ArtifactStore(state_dir / "artifacts")
     config = {
+        "features": {"diagnostic_artifacts": True},
         "commands": {
             "allowed": True,
             "allow_unknown": True,
@@ -103,7 +106,29 @@ def test_repair_loop_rollback_on_failure(temp_dir: Path):
     assert res["success"] is False
     assert res["repaired"] is False
     assert res["attempts"] == 2
+    assert attempts_made == 1
     assert test_file.read_text(encoding="utf-8") == initial_content
+
+
+def test_repair_loop_does_not_dispatch_local_diagnosis_for_arbitrary_interpreter(temp_dir: Path):
+    broker = make_broker(temp_dir)
+    script = temp_dir / "failing_command.py"
+    script.write_text("raise SystemExit('unclassified failure')\n", encoding="utf-8")
+    services = object.__new__(LocalAIServices)
+    services.config = {"models": {"fast_code": "qwen2.5-coder:1.5b"}}
+    services.proxy_request = MagicMock(return_value={"response": '{"candidate.py": "value = 1\\n"}'})
+
+    result = broker.repair_loop(
+        f"{sys.executable} -B {script.name}",
+        temp_dir,
+        "tenant-1",
+        max_attempts=3,
+        fix_generator=services._synthesize_repair_patch,
+    )
+
+    assert result["success"] is False
+    assert result["attempts"] == 3
+    services.proxy_request.assert_not_called()
 
 
 def test_command_run_auto_fix_flag(temp_dir: Path):
@@ -125,6 +150,119 @@ def test_command_run_auto_fix_flag(temp_dir: Path):
     assert res["success"] is True
     assert res.get("repaired") is True
     assert "self.assertEqual(20, 20)" in test_file.read_text(encoding="utf-8")
+
+
+def test_long_pytest_failure_has_artifact_and_first_failure_preview(temp_dir: Path):
+    broker = make_broker(temp_dir)
+    script = temp_dir / "synthetic_pytest_failure.py"
+    script.write_text(
+        "import sys\n"
+        "for _ in range(900):\n"
+        "    print('pytest progress ' + ('x' * 20))\n"
+        "print('tests/test_widget.py:42: AssertionError: expected ready', file=sys.stderr)\n"
+        "print('FAILED tests/test_widget.py::test_ready - AssertionError: expected ready', file=sys.stderr)\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+
+    result = broker.run(f"{sys.executable} {script.name}", temp_dir, "tenant-1", force=True)
+
+    assert result["success"] is False
+    assert result["failure_summary"] == {
+        "path": "tests/test_widget.py",
+        "line": 42,
+        "message": "AssertionError: expected ready",
+    }
+    assert result["artifact_id"].startswith("art_")
+    assert "tests/test_widget.py:42: AssertionError: expected ready" in result["preview"]
+    assert result["output_truncated"] is True
+    stdout_artifact = broker.artifacts.get(result["artifact_id"], section="stdout")
+    stderr_artifact = broker.artifacts.get(result["artifact_id"], section="stderr")
+    assert stdout_artifact["success"] is True
+    assert stderr_artifact["success"] is True
+    assert "pytest progress" in stdout_artifact["text"]
+    assert "FAILED tests/test_widget.py::test_ready" in stderr_artifact["text"]
+
+
+def test_failure_summary_ignores_remediation_diagnostic(temp_dir: Path):
+    broker = make_broker(temp_dir)
+    result = broker._compact({
+        "success": False,
+        "stdout": "",
+        "stderr": "tests/a.py:3: AssertionError: command failure",
+        "remediation": {"root_cause": "tests/remediation.py:99: stale guidance"},
+    }, "tenant-1", "pytest -q")
+
+    assert result["failure_summary"] == {
+        "path": "tests/a.py",
+        "line": 3,
+        "message": "AssertionError: command failure",
+    }
+
+
+def test_short_low_confidence_failure_gets_bounded_diagnostic_artifact(temp_dir: Path):
+    broker = make_broker(temp_dir)
+    result = broker._compact({
+        "success": False,
+        "stdout": "RAW_SHORT_LOG_MUST_NOT_BE_IN_DIAGNOSTIC_ARTIFACT",
+        "stderr": "unclassified failure",
+    }, "tenant-1", "pytest -q")
+
+    assert result["artifact_id"].startswith("art_")
+    diagnostic = broker.artifacts.get(result["artifact_id"])
+    assert diagnostic["success"] is True
+    assert "unclassified failure" in diagnostic["text"]
+    assert "RAW_SHORT_LOG_MUST_NOT_BE_IN_DIAGNOSTIC_ARTIFACT" not in diagnostic["text"]
+
+
+def test_failure_summary_prefers_error_diagnostic_over_stdout_warning(temp_dir: Path):
+    broker = make_broker(temp_dir)
+    result = broker._compact({
+        "success": False,
+        "stdout": "tests/warning.py:1: warning: deprecated fixture",
+        "stderr": "tests/a.py:3: AssertionError: command failure",
+    }, "tenant-1", "pytest -q")
+
+    assert result["failure_summary"] == {
+        "path": "tests/a.py",
+        "line": 3,
+        "message": "AssertionError: command failure",
+    }
+
+
+def test_failure_summary_keeps_first_failed_pytest_path(temp_dir: Path):
+    broker = make_broker(temp_dir)
+    result = broker._compact({
+        "success": False,
+        "stdout": "FAILED tests/widget.py::test_ready",
+        "stderr": "AssertionError: a later generic failure",
+    }, "tenant-1", "pytest -q")
+
+    assert result["failure_summary"] == {
+        "path": "tests/widget.py",
+        "line": 0,
+        "message": "test_ready",
+    }
+
+
+def test_long_low_confidence_failure_stores_only_full_artifact(temp_dir: Path):
+    broker = make_broker(temp_dir)
+    calls: list[tuple[str, str, str]] = []
+    original_put = broker.artifacts.put
+
+    def record_put(text: str, tenant: str, kind: str) -> str:
+        calls.append((text, tenant, kind))
+        return original_put(text, tenant, kind)
+
+    broker.artifacts.put = record_put
+    result = broker._compact({
+        "success": False,
+        "stdout": "x" * (broker.inline_chars + 1),
+        "stderr": "unclassified failure",
+    }, "tenant-1", "pytest -q")
+
+    assert result["artifact_id"].startswith("art_")
+    assert [kind for _, _, kind in calls] == ["command"]
 
 
 def test_classify_quoted_semicolons(temp_dir: Path):
@@ -211,6 +349,15 @@ def test_classify_python_c_dangerous_patterns(temp_dir: Path):
     res6 = broker.classify("python -c \"assert True, 'sanity check'\"")
     assert res6["class"] == "validation"
     assert res6["allowed"] is True
+
+    # Word-boundary check: 'latest' contains 'test' but should NOT be classified as validation
+    res7 = broker.classify("python -c \"latest = 123; print(latest)\"")
+    assert res7["class"] == "read", f"word containing 'test' substring should be read: {res7}"
+
+    # Dangerous functions blocked by AST/pattern
+    res8 = broker.classify("python -c \"import os; os.remove('some_file')\"")
+    assert res8["class"] == "unknown"
+    assert res8["allowed"] is False
 
 
 def test_broadened_command_classification(tmp_path: Path):

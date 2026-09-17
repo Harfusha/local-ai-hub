@@ -31,11 +31,12 @@ class AgentScope(str, Enum):
         return _RANKS[self]
 
     @classmethod
-    def parse(cls, value: Any, default: AgentScope = TASK) -> AgentScope:
+    def parse(cls, value: Any, default: AgentScope | str | None = None) -> AgentScope:
+        resolved_default = cls.TASK if default is None else (default if isinstance(default, cls) else cls.parse(default, cls.TASK))
         if isinstance(value, cls):
             return value
         if not value:
-            return default
+            return resolved_default
         raw = str(value).strip().lower()
         _ALIASES: dict[str, AgentScope] = {
             "code": cls.TASK,
@@ -60,7 +61,7 @@ class AgentScope(str, Enum):
         try:
             return cls(raw)
         except ValueError:
-            return default
+            return resolved_default
 
 
 @dataclass(frozen=True)
