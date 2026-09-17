@@ -24,6 +24,8 @@ from .process_utils import canonical_root
 from .repo_tools import RepositoryTools
 from .router import ModelRouter, review_diff_complexity
 from .sqlite_support import connect_sqlite
+from .adoption_metrics import AdoptionMetricsStore
+from .state_paths import configured_state_dir
 from .telemetry import TelemetryStore
 from .trace_context import observer
 
@@ -288,6 +290,7 @@ class LocalAIServices:
     task_store: Any = None
     verification_store: Any = None
     incident_store: Any = None
+    adoption_metrics: Any = None
     rag: Any = None
     token_router: Any = None
     pipeline: Any = None
@@ -334,6 +337,7 @@ class LocalAIServices:
         self.task_store: Any | None = None
         self.verification_store: Any | None = None
         self.incident_store: Any | None = None
+        self.adoption_metrics = AdoptionMetricsStore(configured_state_dir(config))
         self.router = ModelRouter(config)
         self.model_policy = ModelExecutionPolicy(config)
         self.profile_catalog = OllamaSubagentCatalog(config)

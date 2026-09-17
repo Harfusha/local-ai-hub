@@ -44,7 +44,7 @@ APP: LocalAIApp | None = None
 # independent of user config so a dashboard refresh cannot create immortal active jobs.
 MONITOR_PATHS = {
     "/health", "/dashboard", "/favicon.ico", "/api/live", "/api/live/status",
-    "/api/status", "/api/capabilities", "/api/metrics", "/api/telemetry/report", "/api/telemetry/tool-accounting", "/api/telemetry/timeline", "/api/audit/tail", "/api/control",
+    "/api/status", "/api/capabilities", "/api/metrics", "/api/adoption", "/api/telemetry/report", "/api/telemetry/tool-accounting", "/api/telemetry/timeline", "/api/audit/tail", "/api/control",
     "/api/config", "/api/logs/tail", "/api/hardware/system", "/api/hardware/gpu",
     "/api/debug-traces",
 }
@@ -1194,6 +1194,11 @@ class Handler(BaseHTTPRequestHandler):
                 days = int((query.get("days") or [30])[0])
                 scope = str((query.get("scope") or ["window"])[0])
                 self._send(200, {"success": True, "metrics": APP.telemetry.summary(days, scope=scope)}); return
+            if path == "/api/adoption":
+                store = getattr(getattr(APP, "services", None), "adoption_metrics", None)
+                if store is None:
+                    self._send(200, {"success": True, "available": False}); return
+                self._send(200, {"success": True, "available": True, "adoption": store.report(days=7)}); return
             if path == "/api/telemetry/report":
                 days = int((query.get("days") or [30])[0])
                 scope = str((query.get("scope") or ["window"])[0])
