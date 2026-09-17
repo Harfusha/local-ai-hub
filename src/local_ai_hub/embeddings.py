@@ -12,6 +12,7 @@ from .cache import SQLiteCache, SingleFlightGroup, TieredCache, stable_hash
 from .priority_gate import CooperativePriorityGate
 from .accelerators import openvino_cache_dir, openvino_device_candidates
 from .state_paths import configured_state_dir
+from .json_utils import dumps as json_dumps
 
 
 class EmbeddingModel:
@@ -301,7 +302,7 @@ class EmbeddingModel:
         try:
             req = urllib.request.Request(
                 f"{self.ollama_url}/api/embed",
-                data=json.dumps({"model": self._ollama_model_name, "input": texts}).encode("utf-8"),
+                data=json_dumps({"model": self._ollama_model_name, "input": texts}).encode("utf-8"),
                 headers={"Content-Type": "application/json"},
             )
             with urllib.request.urlopen(req, timeout=30.0) as resp:

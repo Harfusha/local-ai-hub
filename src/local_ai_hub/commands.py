@@ -20,6 +20,7 @@ from .cache import SQLiteCache, TieredCache, stable_hash
 from .features import rollout_feature_enabled
 from .process_utils import assign_process_to_job, canonical_root, create_job_object_kill_on_close, hidden_run_kwargs, terminate_tree
 from .state_paths import configured_state_dir
+from .json_utils import dumps as json_dumps
 
 _GLOBAL_WINDOWS_JOB = create_job_object_kill_on_close() if os.name == "nt" else None
 
@@ -1899,7 +1900,7 @@ class CommandBroker:
                                 self.incident_store.record_decision(
                                     inc_id,
                                     action="apply_verified_fix",
-                                    verified_fix=json.dumps([str(p.relative_to(cwd_path)) for p in applied_paths]),
+                                    verified_fix=json_dumps([str(p.relative_to(cwd_path)) for p in applied_paths]),
                                     confidence=1.0,
                                 )
                         except Exception:
@@ -2434,7 +2435,7 @@ class CommandBroker:
         from urllib.request import Request, urlopen
         from urllib.error import HTTPError, URLError
 
-        body_str = json.dumps(payload, ensure_ascii=False) if isinstance(payload, dict) else str(payload)
+        body_str = json_dumps(payload) if isinstance(payload, dict) else str(payload)
         body_bytes = body_str.encode("utf-8")
         headers = {
             "Content-Type": "application/json",
@@ -2560,7 +2561,7 @@ class CommandBroker:
                     "endpoint": matched or {"path": path_only, "synthetic": True},
                     "data": {"id": 1, "name": "mock_resource", "timestamp": time.time()},
                 }
-                self.wfile.write(json.dumps(resp).encode("utf-8"))
+                self.wfile.write(json_dumps(resp).encode("utf-8"))
 
         class ReusableTCPServer(socketserver.TCPServer):
             allow_reuse_address = True

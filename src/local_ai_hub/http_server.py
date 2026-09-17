@@ -31,6 +31,7 @@ from .agent_incidents import IncidentFingerprint, ToolOutcome
 from .agent_verification import VerificationReceipt
 from .agent_context import ContextRequest
 from .agent_learning import ImprovementCandidate, SLOObservation
+from .json_utils import dumps as json_dumps
 
 
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
@@ -51,7 +52,7 @@ MONITOR_PATHS = {
 
 
 def _json_bytes(data: Any) -> bytes:
-    return json.dumps(data, ensure_ascii=False).encode("utf-8")
+    return json_dumps(data).encode("utf-8")
 
 
 def _telemetry_http_outcome(status: int, data: Any, path: str = "") -> tuple[bool, str, bool]:
@@ -154,7 +155,7 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
         self.max_handlers = max(4, int(max_handlers))
         self.overload_wait_seconds = max(0.0, float(overload_wait_seconds))
         self._overload_retry_after_seconds = 1
-        self._overload_body = json.dumps(
+        self._overload_body = json_dumps(
             {
                 "success": False, "error": "hub overloaded; retry later", "status_code": 503,
                 "retryable": True, "retry_after_seconds": self._overload_retry_after_seconds,
@@ -443,11 +444,11 @@ class Handler(BaseHTTPRequestHandler):
         ollama_url = APP.config.get("ollama", {}).get("url", "http://localhost:11434")
         try:
             if action == "delete":
-                req = urllib.request.Request(f"{ollama_url}/api/delete", data=json.dumps({"name": model_name}).encode("utf-8"), headers={"Content-Type": "application/json"}, method="DELETE")
+                req = urllib.request.Request(f"{ollama_url}/api/delete", data=json_dumps({"name": model_name}).encode("utf-8"), headers={"Content-Type": "application/json"}, method="DELETE")
                 with urllib.request.urlopen(req, timeout=5):
                     return {"success": True, "deleted": model_name}
             elif action == "pull":
-                req = urllib.request.Request(f"{ollama_url}/api/pull", data=json.dumps({"name": model_name, "stream": False}).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
+                req = urllib.request.Request(f"{ollama_url}/api/pull", data=json_dumps({"name": model_name, "stream": False}).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
                 with urllib.request.urlopen(req, timeout=120):
                     return {"success": True, "pulled": model_name}
             return {"success": False, "error": f"Unknown action: {action}"}
@@ -759,7 +760,7 @@ class Handler(BaseHTTPRequestHandler):
             messages = payload.get("messages")
             if not isinstance(messages, list) or not messages or len(messages) > 128:
                 raise RequestBodyError("messages must be a non-empty list of at most 128 entries")
-            if len(json.dumps(messages, ensure_ascii=False, default=str)) > 1_000_000:
+            if len(json_dumps(messages, default=str)) > 1_000_000:
                 raise RequestBodyError("messages exceed 1000000 characters", 413)
         elif path == "/api/embed":
             values = payload.get("texts", payload.get("input", []))
@@ -1371,7 +1372,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, APP.services.resolve_all_errors())
                 return
             if path == "/api/config":
-                view = json.loads(json.dumps(APP.config, ensure_ascii=False, default=str))
+                view = json.loads(json_dumps(APP.config, default=str))
                 if isinstance(view.get("security"), dict) and view["security"].get("api_token"):
                     view["security"]["api_token"] = "***configured***"
                 self._send(200, {"success": True, "config": view, "config_path": APP.config.get("_config_path", ""), "runtime_override_path": APP.config.get("_runtime_override_path", "")})
