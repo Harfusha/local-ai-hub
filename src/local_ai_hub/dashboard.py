@@ -2001,6 +2001,37 @@ function traceRawProjection(detail,eventLimit=100){
 function traceEventList(events,limit=100){const shown=(events||[]).slice(-limit),prefix=(events||[]).length>shown.length?`<div class="empty-human">Showing latest ${shown.length} of ${(events||[]).length} events.</div>`:'';return `<section class="human-section"><h3>All events</h3>${prefix}${renderAny(shown)}</section>`}
 function tracePanel(id,label,render,available=true){return {id,label,render,available};}
 function traceUnavailable(label){return `${label} unavailable for this request type`;}
+function tracePresentationKind(model){
+  const action=String(model.identity?.action||model.session?.action||'').toLowerCase(),kind=String(model.session?.kind||'').toLowerCase(),events=model.events||[];
+  const hasModel=model.modelExecutions?.length>0||traceRecorded(model.input)||traceRecorded(model.output),hasTools=model.toolCalls?.length>0;
+  if(hasModel&&hasTools)return 'agent_loop';
+  if(hasModel)return 'model_chat';
+  if(kind==='async_job'||model.correlations?.async_job_id||model.correlations?.scheduler_job_id)return 'async_job';
+  if(action==='/api/command'||action.includes('/command'))return 'command';
+  if(/\/review|\/diff|review|diff/.test(action))return 'review';
+  if(/repo|code|git|symbol|impact|test|resolve|ast|topology/.test(action))return 'repo_intelligence';
+  if(/rag|search|query|retriev|embed/.test(action))return 'rag_search';
+  if(events.length||traceRecorded(model.response)||traceRecorded(model.input))return 'request_response';
+  return 'request_response';
+}
+function traceChatTurns(events){
+  const turns=[],list=events||[];let current=null;
+  list.forEach(event=>{
+    const type=String(event?.event_type||''),payload=traceSanitizeValue(event?.payload||{});
+    if(type==='model_request'){current={step:payload.step||turns.length+1,input:payload,output:'',tools:[]};turns.push(current);}
+    else if(current&&(type==='output_stream'||type==='output_delta'))current.output+=String(payload.text||'');
+    else if(current&&type==='tool_call')current.tools.push({call:payload,result:null});
+    else if(current&&type==='tool_result'){
+      const callId=payload.call_id||'',match=current.tools.slice().reverse().find(item=>!item.result&&(!callId||item.call.call_id===callId));
+      if(match)match.result=payload;
+    }
+  });
+  return turns.slice(-100);
+}
+function tracePresentationData(model){
+  const events=model.events||[],turns=traceChatTurns(events);
+  return {kind:tracePresentationKind(model),chatTurns:turns,toolInteractions:(model.toolCalls||[]).slice(-100),requestEnvelope:model.session?.request||{},modelInput:model.input,modelOutput:model.output,command:traceFirstRecorded(events,['command','cmd']),review:traceFirstRecorded(events,['diff','findings','recommendation']),repoOperation:traceFirstRecorded(events,['root','query','symbols','files']),retrieval:traceFirstRecorded(events,['sources','results','hits','answer']),lifecycle:model.lifecycle};
+}
 function traceDisplayModel(detail){
   const rawSession=detail?.session||{},rawEvents=Array.isArray(detail?.events)?detail.events:[];
   const rawEventProjection=traceBoundedEvents(rawEvents),session=traceSanitizeValue(traceDisplaySession(rawSession)),events=traceSanitizeValue(rawEventProjection.events);
@@ -2026,6 +2057,7 @@ function traceDisplayModel(detail){
     events:events.length>0,modelExecutions:modelExecutions.length>0,toolCalls:toolCalls.length>0,
   };
   const eventsTotal=rawEventProjection.eventsTotal,eventsTruncated=rawEventProjection.eventsTruncated,model={identity,lifecycle,timing,actor,correlations,retainedBytes,input,output,response,errors,events,eventsTotal,eventsTruncated,modelExecutions,toolCalls,effectivePayload,availability,session};
+  model.presentation=tracePresentationData(model);
   model.panels=[
     tracePanel('summary','Summary',()=>'',true),
     tracePanel('input','Input',()=>humanSection('Input',input),availability.input),
