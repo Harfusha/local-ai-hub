@@ -187,6 +187,51 @@ def json_mcp_merge(path: Path, servers: dict[str, dict[str, Any]], backup_enable
     json_server_merge(path, servers, backup_enabled, container_key="mcpServers")
 
 
+def prune_direct_code_intelligence(
+    path: Path, serena: Path | None, codegraph: Path | None, backup_enabled: bool,
+) -> None:
+    """Remove only stale Hub-generated direct backend entries from a JSON MCP manifest."""
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or not isinstance(data.get("mcpServers"), dict):
+            return
+    except Exception as exc:
+        raise RuntimeError(f"Cannot parse JSON config {path}: {exc}") from exc
+
+    container = data["mcpServers"]
+    expected = {"serena": serena, "codegraph": codegraph}
+    removed = False
+    for name, executable in expected.items():
+        entry = container.get(name)
+        command = entry.get("command") if isinstance(entry, dict) else None
+        if executable is None or not isinstance(command, str):
+            continue
+        if os.path.normcase(os.path.abspath(command)) == os.path.normcase(os.path.abspath(str(executable))):
+            del container[name]
+            removed = True
+    if removed:
+        backup(path, backup_enabled)
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        log(f"Stale direct code-intelligence MCP entries removed: {path}")
+
+
+def sync_antigravity_mcp_config(
+    path: Path,
+    install_dir: Path,
+    hub_python: Path,
+    serena: Path | None,
+    codegraph: Path | None,
+    cfg: dict[str, Any],
+    backup_enabled: bool,
+) -> None:
+    """Keep Antigravity's global MCP manifest aligned with the Hub-only default."""
+    json_mcp_merge(path, build_mcp_entries(install_dir, hub_python, serena, codegraph, "gemini", cfg), backup_enabled)
+    if not bool(cfg.get("code_intelligence", {}).get("direct_agent_mcp", False)):
+        prune_direct_code_intelligence(path, serena, codegraph, backup_enabled)
+
+
 def vscode_mcp_merge(path: Path, servers: dict[str, dict[str, Any]], backup_enabled: bool) -> None:
     json_server_merge(path, servers, backup_enabled, container_key="servers", require_stdio_type=True)
 
@@ -425,7 +470,7 @@ def build_mcp_entries(install_dir: Path, hub_python: Path, serena: Path | None, 
         return entries
     # Optional escape hatch. Default installations expose only Local AI Hub to save schemas/tokens.
     if serena is not None and cfg.get("code_intelligence", {}).get("serena_enabled", True):
-        context = "codex" if agent == "codex" else "claude-code" if agent == "claude" else "ide-assistant"
+        context = {"codex": "codex", "claude": "claude-code", "gemini": "gemini"}.get(agent, "ide-assistant")
         entries["serena"] = {"command": str(serena), "args": ["start-mcp-server", "--context", context, "--project-from-cwd", "--open-web-dashboard", "false"]}
     if codegraph is not None and cfg.get("code_intelligence", {}).get("codegraph_enabled", True):
         entries["codegraph"] = {"command": str(codegraph), "args": ["mcp", "start"]}
@@ -555,6 +600,10 @@ def configure_agents(
             merge_global_policy(doc, backup_enabled, cfg=cfg)
             merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
         json_mcp_merge(Path.home() / ".gemini" / "settings.json", build_mcp_entries(install_dir, hub_python, serena, codegraph, "gemini", cfg), backup_enabled)
+        sync_antigravity_mcp_config(
+            Path.home() / ".gemini" / "config" / "mcp_config.json",
+            install_dir, hub_python, serena, codegraph, cfg, backup_enabled,
+        )
         antigravity_mcp = Path.home() / ".gemini" / "antigravity" / "mcp" / "local-ai"
         if antigravity_mcp.exists():
             schemas_dir = install_dir / "generated" / "schemas"

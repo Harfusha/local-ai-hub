@@ -115,6 +115,35 @@ def test_direct_agent_backends_are_explicit_opt_in(tmp_path: Path):
     assert entries["codegraph"]["args"] == ["mcp", "start"]
 
 
+def test_direct_agent_serena_context_matches_gemini(tmp_path: Path):
+    cfg = {"code_intelligence": {"direct_agent_mcp": True, "serena_enabled": True}}
+    entries = setup.build_mcp_entries(tmp_path, tmp_path / "python", tmp_path / "serena", None, "gemini", cfg)
+    assert entries["serena"]["args"][1:3] == ["--context", "gemini"]
+
+
+def test_antigravity_mcp_sync_uses_gemini_and_prunes_stale_backends(tmp_path: Path):
+    path = tmp_path / "mcp_config.json"
+    serena = tmp_path / "serena.exe"
+    codegraph = tmp_path / "codegraph.exe"
+    path.write_text(json.dumps({"mcpServers": {
+        "user-server": {"command": "keep"},
+        "serena": {"command": str(serena), "args": ["start-mcp-server"]},
+        "codegraph": {"command": str(codegraph), "args": ["mcp", "start"]},
+    }}), encoding="utf-8")
+
+    setup.sync_antigravity_mcp_config(
+        path, tmp_path / "install", tmp_path / "python", serena, codegraph,
+        {"code_intelligence": {"direct_agent_mcp": False}}, False,
+    )
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert set(data["mcpServers"]) == {"user-server", "local-ai"}
+    local_ai = data["mcpServers"]["local-ai"]
+    assert local_ai["cwd"] == str(tmp_path / "install")
+    assert local_ai["env"]["LOCAL_AI_AGENT"] == "gemini"
+    assert local_ai["env"]["LOCAL_AI_AGENT_PROFILE"] == "gemini"
+
+
 def test_codex_mcp_merge_writes_stable_working_directory(tmp_path: Path):
     path = tmp_path / "config.toml"
     setup.codex_mcp_merge(
