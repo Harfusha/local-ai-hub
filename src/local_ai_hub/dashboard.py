@@ -1782,7 +1782,9 @@ function clickableRow(obj,html,type='',idAttr=''){
   return `<tr class="click" data-detail="${id}" data-type="${esc(resolvedType)}" ${entityId?`data-id="${esc(entityId)}"`:''}>${html}</tr>`;
 }
 
-let traceTimer=null,activeTraceId='',traceSeq=0,traceEvents=[],traceOpenSteps=new Set(),traceView='timeline',activeTraceData=null,traceRevealRedactedDetails=false;
+let traceTimer=null,activeTraceId='',traceSeq=0,traceEvents=[],traceOpenSteps=new Set(),traceView='timeline',activeTraceData=null,traceRevealRedactedDetails=false,traceOptionalDetailsOpen=false,tracePollGeneration=0,tracePollInFlight=0,traceEventTotal=0;
+const traceEventBufferLimit=200;
+function traceAppendEvents(current,incoming,eventsTotal=0){const merged=(Array.isArray(current)?current:[]).concat(Array.isArray(incoming)?incoming:[]);return {events:merged.slice(-traceEventBufferLimit),eventsTotal:Math.max(Number(eventsTotal)||0,merged.length)};}
 const humanLabel=k=>String(k||'').replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()).replace(/\bApi\b/g,'API').replace(/\bId\b/g,'ID').replace(/\bUrl\b/g,'URL').replace(/\bHttp\b/g,'HTTP');
 
 function renderAny(value){
@@ -2166,10 +2168,9 @@ function traceDisplayModel(detail){
     input:traceRecorded(input),output:traceRecorded(output),response:traceRecorded(response),errors:errors.length>0,
     events:events.length>0,modelExecutions:modelExecutions.length>0,toolCalls:toolCalls.length>0,
   };
-  const eventsTotal=rawEventProjection.eventsTotal,eventsTruncated=rawEventProjection.eventsTruncated,model={identity,lifecycle,timing,actor,correlations,retainedBytes,input,output,response,errors,events,eventsTotal,eventsTruncated,modelExecutions,toolCalls,effectivePayload,availability,session};
+  const eventsTotal=Math.max(Number(detail?.events_total||detail?.eventsTotal||0),rawEventProjection.eventsTotal),eventsTruncated=rawEventProjection.eventsTruncated,model={identity,lifecycle,timing,actor,correlations,retainedBytes,input,output,response,errors,events,eventsTotal,eventsTruncated,modelExecutions,toolCalls,effectivePayload,availability,session};
   model.presentation=tracePresentationData(model);
   model.panels=[
-    tracePanel('summary','Summary',()=>'',true),
     tracePanel('input','Input',()=>humanSection('Input',input),availability.input),
     tracePanel('output','Output',()=>humanSection('Output',output),availability.output),
     tracePanel('response','Response',()=>humanSection('Response',response),availability.response),
@@ -2192,9 +2193,9 @@ function traceSummary(model,unavailableCopy){
   return `<section class="human-section"><h3>Universal request summary</h3>${renderAny(summary)}</section>${traceAvailability(model,unavailableCopy)}`;
 }
  function renderTraceDetail(d){
-   const body=$('tracePageBody'),scrollPositions=captureTraceScrollPositions(body),traceMain=body?.closest('.trace-main'),mainScrollTop=traceMain?.scrollTop||0,mainScrollLeft=traceMain?.scrollLeft||0;
+   const body=$('tracePageBody'),existingOptionalDetails=body?.querySelector('.trace-optional-details');if(existingOptionalDetails)traceOptionalDetailsOpen=existingOptionalDetails.open;const scrollPositions=captureTraceScrollPositions(body),traceMain=body?.closest('.trace-main'),mainScrollTop=traceMain?.scrollTop||0,mainScrollLeft=traceMain?.scrollLeft||0;
    activeTraceData=d;const unavailableCopy={input:'Input unavailable for this request type',output:'Output unavailable for this request type',response:'Response unavailable for this request type'},model=traceDisplayModel(d),s=traceSanitizeValue(model.session),events=model.events;
-  if(!model.panels.some(panel=>panel.available&&panel.id===traceView))traceView='summary';
+  if(!model.panels.some(panel=>panel.available&&panel.id===traceView))traceView=model.panels.find(panel=>panel.available)?.id||'timeline';
   $('tracePageTitle').textContent=String(s.action||s.source||'Trace');$('tracePageLive').textContent=d?.terminal?'terminal · retained':'● live · auto-refresh';$('tracePageLive').className='tiny '+(d?.terminal?'ok':'trace-running');
   const state=model.lifecycle.state,displayState=traceStatus(s),stateClass=(displayState==='failed'||displayState==='error')?'bad':(displayState==='interrupted'?'warn':(d?.terminal?'ok':'warn'));
   const revealLabel=traceRevealRedactedDetails?'Hide unredacted details':'Reveal redacted details',revealState=traceRevealRedactedDetails?'Unredacted trace details shown locally.':'Trace details are redacted by default.';
@@ -2202,9 +2203,9 @@ function traceSummary(model,unavailableCopy){
   const panels=model.panels.filter(panel=>panel.available),universalSummary=traceSummary(model,unavailableCopy),panelMarkup=panels.map(panel=>{const selected=panel.id===traceView,content=selected?(panel.id==='summary'?'<div class="empty-human">Summary shown above.</div>':panel.render()):'';return `<div id="trace-panel-${esc(panel.id)}" class="trace-view" role="tabpanel" aria-labelledby="trace-tab-${esc(panel.id)}"${selected?'':' hidden'}>${content}</div>`}).join('');
    const presentationMarkup=renderTracePresentation(model);
    // Universal request summary stays available, but technical detail is optional.
-   const optionalMarkup=`<details class="trace-optional-details"><summary>Technical details · ${panels.length} optional views</summary><div class="trace-optional-body">${universalSummary}<nav class="trace-tabs" role="tablist" aria-label="Trace views">${panels.map(panel=>traceTab(panel.label,panel.id)).join('')}</nav>${panelMarkup}</div></details>`;
-   // Universal request summary and Trace data availability are always rendered before tabs.
-   $('tracePageBody').className='trace-page-body';$('tracePageBody').innerHTML=`<div class="human-shell">${header}${presentationMarkup}${optionalMarkup}</div>`;
+   const optionalMarkup=`<details class="trace-optional-details"${traceOptionalDetailsOpen?' open':''}><summary>Technical details · ${panels.length} optional views</summary><div class="trace-optional-body"><nav class="trace-tabs" role="tablist" aria-label="Trace views">${panels.map(panel=>traceTab(panel.label,panel.id)).join('')}</nav>${panelMarkup}</div></details>`;
+   // Universal request summary stays visible before optional technical details.
+   $('tracePageBody').className='trace-page-body';$('tracePageBody').innerHTML=`<div class="human-shell">${header}${universalSummary}${presentationMarkup}${optionalMarkup}</div>`;
    const restore=()=>{restoreTraceScrollPositions($('tracePageBody'),scrollPositions);const nextMain=$('tracePageBody')?.closest('.trace-main');if(nextMain){nextMain.scrollTop=mainScrollTop;nextMain.scrollLeft=mainScrollLeft}};
    if(window.requestAnimationFrame)window.requestAnimationFrame(restore);else restore();
 }
@@ -2223,21 +2224,25 @@ function moveTraceTab(tab,key){
   setTraceView(view);requestAnimationFrame(()=>document.getElementById('trace-tab-'+view)?.focus());
 }
 async function openTrace(id){
-  activeTraceId=String(id||'');traceSeq=0;traceEvents=[];traceOpenSteps=new Set();traceView='summary';activeTraceData=null;traceRevealRedactedDetails=false;
+  const pollTraceId=String(id||''),pollGeneration=++tracePollGeneration;activeTraceId=pollTraceId;traceSeq=0;traceEvents=[];traceEventTotal=0;traceOpenSteps=new Set();traceView='timeline';activeTraceData=null;traceRevealRedactedDetails=false;traceOptionalDetailsOpen=false;
   renderTraceList(lastTraces);switchTab('traceInspector');
-  if(traceTimer)clearInterval(traceTimer);
+  if(traceTimer){clearInterval(traceTimer);traceTimer=null}
+  let pollInFlight=false;
   const poll=async()=>{
-    if(!activeTraceId)return;
+    if(!activeTraceId||pollTraceId!==activeTraceId||pollGeneration!==tracePollGeneration||pollInFlight||tracePollInFlight===pollGeneration)return;
+    pollInFlight=true;tracePollInFlight=pollGeneration;
     try{
-      const r=await apiFetch('/api/debug-traces/'+encodeURIComponent(activeTraceId)+'?since_seq='+traceSeq,{cache:'no-store'}),d=await r.json();
+      const sinceSeq=traceSeq,r=await apiFetch('/api/debug-traces/'+encodeURIComponent(pollTraceId)+'?since_seq='+sinceSeq,{cache:'no-store'}),d=await r.json();
+      if(pollGeneration!==tracePollGeneration||pollTraceId!==activeTraceId)return;
       if(d.success){
-        traceSeq=Number(d.next_seq||traceSeq);traceEvents=traceEvents.concat(d.events||[]);renderTraceDetail({...d,events:traceEvents});
-        if(d.terminal){clearInterval(traceTimer);traceTimer=null}
+        traceSeq=Number(d.next_seq||traceSeq);traceEventTotal=Math.max(traceEventTotal,traceSeq,Number(d.events_total||d.eventsTotal||0));const next=traceAppendEvents(traceEvents,d.events,traceEventTotal);traceEvents=next.events;traceEventTotal=next.eventsTotal;renderTraceDetail({...d,events:traceEvents,events_total:traceEventTotal});
+        if(d.terminal&&pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){clearInterval(traceTimer);traceTimer=null}
       }else if(d.retryable){$('tracePageLive').textContent='● live · retrying…';$('tracePageLive').className='tiny trace-running';return
       }else{openModal(d,'Trace error');clearInterval(traceTimer);traceTimer=null}
-    }catch(e){$('tracePageLive').textContent='refresh failed: '+e.message}
+    }catch(e){if(pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId)$('tracePageLive').textContent='refresh failed: '+e.message
+    }finally{if(pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){pollInFlight=false;tracePollInFlight=false}}
   };
-  await poll();traceTimer=setInterval(poll,1000);
+  await poll();if(pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId)traceTimer=setInterval(poll,1000);
 }
 function openModal(obj,title='',entityType=''){
   $('modalLive').textContent='';
