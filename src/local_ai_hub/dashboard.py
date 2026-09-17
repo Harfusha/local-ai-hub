@@ -355,7 +355,7 @@ tbody tr.click:hover{background:#162338}
 <div id="work" class="page">
   <section class="section"><h2>Live scheduler work <span class="tiny" id="queueSummary">Current queue only; not request history.</span></h2><div class="table-wrap"><table><thead><tr><th>State</th><th>Job</th><th>Agent/tenant</th><th>Source</th><th>Model</th><th>Priority</th><th>Wait</th><th>Processing</th><th>Reason</th></tr></thead><tbody id="jobs"></tbody></table></div></section>
   <section class="section"><h2>Active API requests <span class="tiny">monitoring endpoints excluded</span></h2><div class="table-wrap"><table><thead><tr><th>Request</th><th>Agent</th><th>Tenant</th><th>Action</th><th>Age</th></tr></thead><tbody id="activeReq"></tbody></table></div></section>
-  <section class="section"><h2>Request history — Recent API requests <span class="tiny">Persisted API telemetry; distinct from scheduler work and Agent OS task runs.</span></h2><div class="request-filter"><input id="requestHistorySearch" type="search" placeholder="Search request ID, route, agent, tenant, error…" autocomplete="off"><select id="requestHistoryAction" aria-label="Filter by endpoint"><option value="">All endpoints</option></select><select id="requestHistoryStatus" aria-label="Filter by status"><option value="">All results</option><option value="failed">Failed</option><option value="2xx">2xx</option><option value="4xx">4xx</option><option value="5xx">5xx</option></select><select id="requestHistoryPeriod" aria-label="Filter by time"><option value="">All loaded</option><option value="3600">Last hour</option><option value="86400">Last 24 hours</option><option value="604800">Last 7 days</option><option value="2592000">Last 30 days</option></select><button class="btn" id="requestHistoryReset">Reset</button><span class="tiny request-summary" id="requestHistorySummary">0 requests</span></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Request</th><th>Agent</th><th>Tenant</th><th>Action</th><th>Status</th><th>Trace availability</th><th>Duration</th></tr></thead><tbody id="recentReq"></tbody></table></div></section>
+  <section class="section"><h2>Request history — Recent API requests <span class="tiny">Persisted API telemetry; distinct from scheduler work and Agent OS task runs.</span></h2><div class="request-filter"><input id="requestHistorySearch" type="search" placeholder="Search request ID, route, project, agent, error…" autocomplete="off"><select id="requestHistoryAction" aria-label="Filter by endpoint"><option value="">All endpoints</option></select><select id="requestHistoryStatus" aria-label="Filter by status"><option value="">All results</option><option value="failed">Failed</option><option value="2xx">2xx</option><option value="4xx">4xx</option><option value="5xx">5xx</option></select><select id="requestHistoryPeriod" aria-label="Filter by time"><option value="">All loaded</option><option value="3600">Last hour</option><option value="86400">Last 24 hours</option><option value="604800">Last 7 days</option><option value="2592000">Last 30 days</option></select><button class="btn" id="requestHistoryReset">Reset</button><span class="tiny request-summary" id="requestHistorySummary">0 requests</span></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Request</th><th>Project</th><th>Agent</th><th>Tenant</th><th>Action</th><th>Status</th><th>Trace availability</th><th>Duration</th></tr></thead><tbody id="recentReq"></tbody></table></div></section>
 </div>
 
 <div id="agentos" class="page">
@@ -575,6 +575,7 @@ const latencySparkData=[], throughputSparkData=[], liveChartLatency=[], liveChar
 const traceStyles=document.createElement('style');
 traceStyles.textContent='.trace-inspector-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:12px;background:linear-gradient(135deg,#172535,#11171e);border:1px solid #33485f;border-radius:8px}.trace-kicker{color:var(--accent);font-size:10px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px}.trace-inspector-head strong{font-size:15px;display:block;overflow-wrap:anywhere}.trace-metrics{display:flex;gap:7px;flex-wrap:wrap;padding:8px 0 2px;color:var(--muted);font-size:10px}.trace-metrics span{border:1px solid #2b3948;border-radius:999px;padding:3px 7px}.trace-tabs{display:flex;gap:5px;overflow:auto;padding:10px 0 2px;border-bottom:1px solid var(--line)}.trace-tab{background:transparent;color:var(--muted);border:0;border-bottom:2px solid transparent;padding:7px 9px;cursor:pointer;white-space:nowrap;font-size:11px}.trace-tab:hover,.trace-tab.active{color:var(--fg);border-bottom-color:var(--accent)}.trace-view{min-height:80px}.tool-pair{display:grid;gap:6px}.tool-part{border-left:3px solid #6d86a8;background:#0d141c;padding:8px;border-radius:4px}.tool-result{border-left-color:var(--ok)}.tool-label{color:var(--accent);font-weight:700;font-size:11px;margin-bottom:6px}.tool-label .tiny{margin-left:7px;color:var(--fg);font-weight:400}.tool-pending{color:var(--warn);font-size:11px;padding:7px 0}.trace-raw-panel pre{margin:0}';
 document.head.append(traceStyles);
+document.head.insertAdjacentHTML('beforeend','<style>.trace-inspector-context{display:flex;align-items:flex-end;gap:8px;flex-direction:column}.trace-project-label{border:1px solid #41659a;border-radius:999px;padding:4px 8px;color:#c7dcff;font-size:10px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.trace-search-presentation,.trace-model-presentation{border:1px solid #33485f;border-radius:8px;background:#0c121a;padding:12px}.trace-search-query{border:1px solid #2d4965;border-left:3px solid #5b8def;border-radius:6px;background:#111b26;padding:9px 10px;overflow-wrap:anywhere}.trace-search-query strong,.trace-search-answer strong{display:block;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}.trace-search-spec{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;color:var(--muted);font-size:10px}.trace-search-spec span{border:1px solid #2b3948;border-radius:999px;padding:3px 7px}.trace-search-results{margin-top:12px}.trace-search-results h3{margin:0 0 5px;font-size:11px}.trace-search-result-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:9px;align-items:start;border-top:1px solid #273544;padding:8px 0;min-width:0}.trace-search-rank{display:grid;place-items:center;width:20px;height:20px;border-radius:50%;background:#1c3042;color:#c7dcff;font-size:10px}.trace-search-result-main{min-width:0;overflow-wrap:anywhere}.trace-search-result-main strong{display:block;overflow-wrap:anywhere}.trace-search-result-main>.tiny{display:block;margin-top:2px}.trace-search-snippet{color:#c9d5e2;font-size:11px;line-height:1.35;margin-top:4px;overflow-wrap:anywhere}.trace-search-score{color:var(--muted);font-size:10px;padding-top:3px}.trace-search-answer{border-top:1px solid #273544;margin-top:8px;padding-top:9px;overflow-wrap:anywhere}.trace-model-presentation .trace-primary-card{min-height:0}.trace-model-presentation .trace-chat-message{border-top:0;padding:0}.trace-model-presentation .trace-chat-role{display:none}.trace-model-presentation .prompt-pre{max-height:260px}@media(max-width:700px){.trace-inspector-context{align-items:flex-end}.trace-project-label{max-width:150px}}</style>');
 
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])), escJs=v=>esc(JSON.stringify(v));
 const n=v=>Number(v||0).toLocaleString(), ms=v=>{v=Number(v||0);return v>=1000?(v/1000).toFixed(v>=10000?1:2)+' s':Math.round(v)+' ms'}, durSec=s=>{s=Number(s||0);if(s<60)return Math.round(s)+'s';if(s<3600)return Math.floor(s/60)+'m '+Math.round(s%60)+'s';if(s<86400)return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';return Math.floor(s/86400)+'d '+Math.floor((s%86400)/3600)+'h'}, age=msv=>durSec(Number(msv||0)/1000);
@@ -1607,13 +1608,14 @@ function renderLiveStreamTable(){
     const stream=esc(ev.stream_id||'—');
     const kind=esc(ev.kind||'unknown');
     const actor=esc(ev.actor||'system');
-    let payloadStr=typeof ev.payload==='object'?JSON.stringify(ev.payload):String(ev.payload||'');
-    if(payloadStr.length>85) payloadStr=payloadStr.slice(0,82)+'...';
+    const payloadTitle=traceInlineText(ev.payload,1000);
+    let payloadStr=traceInlineText(ev.payload,85);
+    if(payloadStr.length>82) payloadStr=payloadStr.slice(0,82)+'...';
     let kindBadge='badge-waiting';
     if(kind.startsWith('task.')) kindBadge='badge-running';
     else if(kind.startsWith('verification.')) kindBadge='badge-complete';
     else if(kind.startsWith('incident.')) kindBadge='badge-error';
-    return clickableRow(ev, `<td><strong>${seq}</strong></td><td class="tiny">${dt}</td><td class="tiny mono">${stream}</td><td><span class="badge-status ${kindBadge}">${kind}</span></td><td class="tiny">${actor}</td><td class="tiny mono" title="${esc(typeof ev.payload==='object'?JSON.stringify(ev.payload,null,2):payloadStr)}">${esc(payloadStr)}</td>`, 'event');
+    return clickableRow(ev, `<td><strong>${seq}</strong></td><td class="tiny">${dt}</td><td class="tiny mono">${stream}</td><td><span class="badge-status ${kindBadge}">${kind}</span></td><td class="tiny">${actor}</td><td class="tiny" title="${esc(payloadTitle)}">${esc(payloadStr||'—')}</td>`, 'event');
   }, 6);
 }
 
@@ -1734,7 +1736,8 @@ async function runDbQuery(){
       tbody.innerHTML=rows.map(r=>{
         return '<tr>'+cols.map(c=>{
           const v=Array.isArray(r)?r[cols.indexOf(c)]:r[c];
-          return `<td class="tiny mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(v)}">${esc(v===null?'NULL':(typeof v==='object'?JSON.stringify(v):v))}</td>`;
+          const cellText=v===null?'NULL':traceInlineText(v,500);
+          return `<td class="tiny" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(cellText)}">${esc(cellText||'—')}</td>`;
         }).join('')+'</tr>';
       }).join('');
     }
@@ -1801,13 +1804,22 @@ function renderAny(value){
 }
 function traceSensitiveField(key){return /(api[_-]?key|authorization|token|secret|password|passwd|credential|cookie|set[-_]?cookie|private[-_]?key|privatekey|passphrase|pem|ssh[-_]?key|certificate)/i.test(String(key||''));}
 function traceSanitizeValue(value,seen=new WeakSet(),reveal=traceRevealRedactedDetails){
+  const cycleMarker='<cycle omitted>';
   if(value===null||value===undefined||typeof value==='number'||typeof value==='boolean')return value;
   if(typeof value==='string')return reveal?value:redactDiagnostic(value);
-  if(Array.isArray(value))return value.map(item=>traceSanitizeValue(item,seen,reveal));
-  if(typeof value==='object'){
-    if(seen.has(value))return '<cycle omitted>';
+  if(Array.isArray(value)){
+    if(seen.has(value))return cycleMarker;
     seen.add(value);
-    return Object.fromEntries(Object.entries(value).map(([key,item])=>[reveal?key:redactDiagnostic(key),!reveal&&traceSensitiveField(key)?'<redacted>':traceSanitizeValue(item,seen,reveal)]));
+    const result=value.map(item=>traceSanitizeValue(item,seen,reveal));
+    seen.delete(value);
+    return result;
+  }
+  if(typeof value==='object'){
+    if(seen.has(value))return cycleMarker;
+    seen.add(value);
+    const result=Object.fromEntries(Object.entries(value).map(([key,item])=>[reveal?key:redactDiagnostic(key),!reveal&&traceSensitiveField(key)?'<redacted>':traceSanitizeValue(item,seen,reveal)]));
+    seen.delete(value);
+    return result;
   }
   return reveal?String(value):redactDiagnostic(String(value));
 }
@@ -1825,14 +1837,29 @@ function traceFirstRecorded(events,keys){
   }
   return undefined;
 }
-function promptText(value){
+function traceInlineText(value,limit=180,depth=0){
+  if(value===null||value===undefined)return '';
+  if(typeof value==='string'){const text=value.trim();return text.length>limit?text.slice(0,Math.max(0,limit-1))+'…':text;}
+  if(typeof value==='number'||typeof value==='boolean')return String(value);
+  if(depth>5)return 'nested data';
+  if(Array.isArray(value))return value.slice(0,8).map(item=>traceInlineText(item,Math.max(32,Math.floor(limit/2)),depth+1)).filter(Boolean).join(', ')||(value.length?'…':'empty list');
+  if(typeof value==='object'){
+    for(const key of ['text','content','name','path','summary','description','value','id'])if(value[key]!==undefined){const text=traceInlineText(value[key],limit,depth+1);if(text)return text;}
+    const parts=Object.entries(value).slice(0,4).map(([key,item])=>{const text=traceInlineText(item,Math.max(32,Math.floor(limit/2)),depth+1);return text?`${humanLabel(key)}: ${text}`:''}).filter(Boolean);
+    return parts.join(' · ')||(Object.keys(value).length?'…':'empty object');
+  }
+  return String(value);
+}
+function promptText(value){return promptTextDepth(value,0);}
+function promptTextDepth(value,depth=0){
   if(typeof value==='string')return value;
-  if(Array.isArray(value))return value.map(promptText).filter(Boolean).join('\n');
+  if(depth>8)return 'nested data omitted';
+  if(Array.isArray(value))return value.map(item=>promptTextDepth(item,depth+1)).filter(Boolean).join('\n');
   if(value&&typeof value==='object'){
-    if(value.text!==undefined)return promptText(value.text);
-    if(value.content!==undefined)return promptText(value.content);
-    if(value.messages!==undefined)return promptText(value.messages);
-     try{return JSON.stringify(value,null,2)}catch{return '[unserializable object]';}
+    if(value.text!==undefined)return promptTextDepth(value.text,depth+1);
+    if(value.content!==undefined)return promptTextDepth(value.content,depth+1);
+    if(value.messages!==undefined)return promptTextDepth(value.messages,depth+1);
+    return Object.entries(value).slice(0,40).map(([key,item])=>`${String(key).replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}: ${promptTextDepth(item,depth+1)}`).join('\n')||'empty object';
   }
   return value==null?'':String(value);
 }
@@ -1852,7 +1879,7 @@ function renderModelPrompt(prompt){
   const p=prompt&&typeof prompt==='object'?prompt:{},messages=Array.isArray(p.messages)?p.messages:[];
   if(!messages.length)return `<div class="prompt-fallback"><div class="prompt-card"><div class="prompt-card-head"><span>Model request</span></div>${promptBody(promptText(p.prompt??p.content??p.system??prompt))}</div></div>`;
   const cards=messages.map((message,index)=>{const role=String(message?.role||'message').toLowerCase(),label=role==='system'?'System instructions':role==='user'?'Task / user prompt':role==='assistant'?'Assistant context':humanLabel(role),text=promptText(message?.content??message?.text??message);return `<article class="prompt-card role-${esc(role)}"><div class="prompt-card-head"><span>${esc(label)}</span><span class="tiny">Message ${index+1} · ${n(text.length)} characters</span></div>${promptBody(text)}</article>`}).join('');
-  const options=p.options&&typeof p.options==='object'?p.options:null,meta=[p.model&&`Model: ${p.model}`,`Messages: ${messages.length}`,p.stream!==undefined&&`Stream: ${p.stream?'on':'off'}`,p.keep_alive&&`Keep alive: ${p.keep_alive}`].filter(Boolean).map(x=>`<span class="prompt-chip"><strong>${esc(String(x).split(':')[0])}</strong>${esc(String(x).includes(':')?':'+String(x).split(':').slice(1).join(':'):'')}</span>`).join('');
+  const options=p.options&&typeof p.options==='object'?p.options:null,meta=[p.model&&`Model: ${traceInlineText(p.model)}`,`Messages: ${messages.length}`,p.stream!==undefined&&`Stream: ${p.stream?'on':'off'}`,p.keep_alive&&`Keep alive: ${traceInlineText(p.keep_alive)}`].filter(Boolean).map(x=>`<span class="prompt-chip"><strong>${esc(String(x).split(':')[0])}</strong>${esc(String(x).includes(':')?':'+String(x).split(':').slice(1).join(':'):'')}</span>`).join('');
   return `<div class="prompt-panel"><div class="prompt-meta">${meta}</div><div class="prompt-messages">${cards}</div>${options?`<details class="prompt-context"><summary>Generation settings · ${Object.keys(options).length} values</summary>${renderAny(options)}</details>`:''}</div>`;
 }
 function humanSection(title,value){return `<section class="human-section"><h3>${esc(title)}</h3>${renderAny(value)}</section>`}
@@ -1866,27 +1893,27 @@ function traceEventTitle(type){
   return Object.prototype.hasOwnProperty.call(titles,type)?titles[type]:humanLabel(type||'Event');
 }
 function traceEventSummary(type,p){
-  if(type==='model_request')return `Request to ${p.model||p.provider||'model'}`;
-  if(type==='tool_call')return `Calling ${p.name||p.tool||'tool'}`;
+  if(type==='model_request')return `Request to ${traceInlineText(p.model??p.provider??'model')}`;
+  if(type==='tool_call')return `Calling ${traceInlineText(p.name??p.tool??'tool')}`;
   if(type==='tool_result')return p.isError||p.is_error||p.success===false||p.error?'Tool returned an error':'Tool returned a result';
   if(type==='output_stream')return `${n(p.chunks||0)} output chunks${p.truncated?' · truncated':''}`;
   if(type==='output_delta')return 'Output content received';
-  if(type==='scheduled')return `Queued${p.model?` · ${p.model}`:''}`;
-  if(type==='running')return `Started${p.action?` · ${p.action}`:''}`;
-  if(type==='retry')return `Retry${p.attempts?` · attempt ${p.attempts}`:''}`;
-  if(type==='request_received')return `${p.method||'Request'}${p.path?` · ${p.path}`:''}`;
-  if(type==='handler_started')return `Processing${p.action?` · ${p.action}`:''}`;
+  if(type==='scheduled')return `Queued${p.model?` · ${traceInlineText(p.model)}`:''}`;
+  if(type==='running')return `Started${p.action?` · ${traceInlineText(p.action)}`:''}`;
+  if(type==='retry')return `Retry${p.attempts?` · attempt ${traceInlineText(p.attempts)}`:''}`;
+  if(type==='request_received')return `${traceInlineText(p.method||'Request')}${p.path?` · ${traceInlineText(p.path)}`:''}`;
+  if(type==='handler_started')return `Processing${p.action?` · ${traceInlineText(p.action)}`:''}`;
   if(type==='async_job_submitted')return 'Background job submitted';
   if(type==='trace_truncated')return 'Some trace data was omitted';
   if(/^(complete|completed|done|success|succeeded|finished)$/i.test(type))return 'Operation completed';
-  if(/^(failed|error|request_failed)$/i.test(type))return String(p.error||p.error_message||p.message||'Operation failed').slice(0,160);
+  if(/^(failed|error|request_failed)$/i.test(type))return traceInlineText(p.error??p.error_message??p.message??'Operation failed');
   for(const key of ['summary','message','action','name','tool','path','model','job_id','request_id']){
     const value=p[key];if((typeof value==='string'&&value.trim())||typeof value==='number')return String(value).slice(0,160);
   }
   return `${traceEventTitle(type)} event`;
 }
 function traceEventStatus(type,p,result){
-  const r=result||{},raw=String(p.state||p.status||r.state||r.status||'').trim(),eventState=`${type} ${raw}`;
+  const r=result||{},raw=traceInlineText(p.state??p.status??r.state??r.status??'').trim(),eventState=`${type} ${raw}`;
   if(/cancel|interrupt/i.test(eventState))return {label:raw||traceEventTitle(type),tone:'warn'};
   if(/^(complete|completed|done|success|succeeded|finished|request_completed)$/i.test(type))return {label:'Completed',tone:'ok'};
   const failed=Boolean(p.error||p.error_message||p.exception||p.failure||r.error||r.error_message||r.exception||p.is_error||p.isError||r.is_error||r.isError||p.success===false||r.success===false||/fail|error|exception/i.test(eventState));
@@ -1944,9 +1971,9 @@ function traceEventBody(event,events,index){
   }else if(type==='tool_result'){
     groups=traceEventGroups(p);if(!Object.keys(groups.output).length)groups.output={result:p};
   }else if(type==='output_stream'){
-    output=`<pre class="trace-output">${esc(p.text||'')}${p.truncated?'…':''}</pre>`;groups=traceEventGroups(p,['text']);
+    output=traceOutputValueMarkup(p.values?.length?p.values:p.text??'',8000);groups=traceEventGroups(p,['text','values']);
   }else if(type==='output_delta'){
-    output=`<pre class="trace-output">${esc(p.text||'')}</pre>`;groups=traceEventGroups(p,['text']);
+    output=traceOutputValueMarkup(p.text??'',8000);groups=traceEventGroups(p,['text']);
   }else{
     groups=traceEventGroups(p);input=Object.keys(groups.input).length?renderAny(groups.input):'';output=Object.keys(groups.output).length?renderAny(groups.output):'';
   }
@@ -1963,8 +1990,10 @@ function compactTimelineEvents(events){
   (Array.isArray(events)?events:[]).map(traceNormalizeEvent).forEach(event=>{
     const type=String(event.event_type||'event'),payload=event.payload&&typeof event.payload==='object'&&!Array.isArray(event.payload)?event.payload:{};
     if(type==='output_delta'){
-      if(!stream){stream={event_type:'output_stream',created_at:event.created_at,seq:event.seq,payload:{text:'',chunks:0,truncated:false}};compact.push(stream)}
-      const text=String(payload.text||'');stream.payload.chunks+=1;stream.payload.text+=streamBytes<12000?text:'';streamBytes+=text.length;stream.seq=event.seq;
+      if(!stream){stream={event_type:'output_stream',created_at:event.created_at,seq:event.seq,payload:{text:'',values:[],chunks:0,truncated:false}};compact.push(stream)}
+      const chunk=payload.text??payload.content??payload.output??payload.result??'';
+      if(typeof chunk==='string'||typeof chunk==='number'||typeof chunk==='boolean'){const text=String(chunk);stream.payload.text+=streamBytes<12000?text:'';streamBytes+=text.length;}else{stream.payload.values.push(traceRawBoundValue(chunk,4096));streamBytes+=Math.min(4096,promptText(chunk).length);}
+      stream.payload.chunks+=1;stream.seq=event.seq;
       if(streamBytes>12000)stream.payload.truncated=true;
       return;
     }
@@ -2039,7 +2068,7 @@ function traceChatTurns(events){
   list.forEach(event=>{
     const type=String(event?.event_type||''),payload=traceSanitizeValue(event?.payload||{});
     if(type==='model_request'){current={step:payload.step||turns.length+1,input:payload,output:'',tools:[]};turns.push(current);}
-    else if(current&&(type==='output_stream'||type==='output_delta'))current.output+=String(payload.text||'');
+    else if(current&&(type==='output_stream'||type==='output_delta')){const chunk=payload.text??payload.content??payload.output??payload.result??'';if(typeof chunk==='string'||typeof chunk==='number'||typeof chunk==='boolean')current.output+=String(chunk);else if(!current.output)current.output=chunk;else current.output=[current.output,chunk];}
     else if(current&&type==='tool_call')current.tools.push({call:payload,result:null});
     else if(current&&type==='tool_result'){
       const callId=payload.call_id||'',match=current.tools.slice().reverse().find(item=>!item.result&&(!callId||item.call.call_id===callId));
@@ -2050,11 +2079,18 @@ function traceChatTurns(events){
 }
 function tracePresentationData(model){
   const events=Array.isArray(model?.events)?model.events:[],turns=traceChatTurns(events);
-  return {kind:tracePresentationKind(model),chatTurns:turns,toolInteractions:(model.toolCalls||[]).slice(-100),requestEnvelope:model.session?.request||{},modelInput:model.input,modelOutput:model.output,command:traceMergeRecorded(events,['command','cmd','args','arguments','input','stdin','stdout','stderr','exit_code','exitCode','retries','retry_count','attempts','duration','duration_ms','elapsed_ms']),review:traceMergeRecorded(events,['request','context','diff','findings','recommendation','status','severity_counts','severityCounts']),repoOperation:traceMergeRecorded(events,['repository','repo','root','operation','action','query','files','symbols','context','result','output','response']),retrieval:traceMergeRecorded(events,['query','sources','results','hits','score','scores','provider','answer','truncated','truncation']),asyncJob:traceMergeRecorded(events,['status','queue_wait_ms','queue_wait','queue_time_ms','retries','retry_count','attempts','worker_input','input','result','output','error']),lifecycle:model.lifecycle};
+  const commandKeys=['command','cmd','args','arguments','input','stdin','stdout','stderr','exit_code','exitCode','success','retries','retry_count','attempts','duration','duration_ms','elapsed_ms','action','cwd','root','paths','criterion','error'],reviewKeys=['request','context','diff','findings','recommendation','status','severity_counts','severityCounts','error'],repoKeys=['repository','repo','root','operation','action','query','files','symbols','context','result','output','response','error'],asyncKeys=['status','queue_wait_ms','queue_wait','queue_time_ms','retries','retry_count','attempts','worker_input','input','result','output','error'];
+  const sources=[model.input,model.output,model.response,model.session?.request,model.session?.effective_payload];
+  return {kind:tracePresentationKind(model),chatTurns:turns,toolInteractions:(model.toolCalls||[]).slice(-100),requestEnvelope:model.session?.request||{},modelInput:model.input,modelOutput:model.output,command:traceMergeRecordedSources([traceMergeRecorded(events,commandKeys),...sources],commandKeys),review:traceMergeRecordedSources([traceMergeRecorded(events,reviewKeys),...sources],reviewKeys),repoOperation:traceMergeRecordedSources([traceMergeRecorded(events,repoKeys),...sources],repoKeys),retrieval:traceMergeRecordedSources([traceMergeRecorded(events,['query','sources','results','hits','score','scores','provider','answer','truncated','truncation','root','project','top_k','limit','enrich','mode','path']),...sources],['query','search_query','term','sources','results','hits','score','scores','provider','answer','truncated','truncation','root','project','top_k','limit','enrich','mode','path']),asyncJob:traceMergeRecordedSources([traceMergeRecorded(events,asyncKeys),...sources],asyncKeys),lifecycle:model.lifecycle};
 }
 function traceMergeRecorded(events,keys){
   const merged=Object.create(null),flattenKeys=new Set(['command','cmd','review','repo_operation','retrieval','rag','async_job']);let found=false;
   (Array.isArray(events)?events:[]).forEach(event=>{const payload=event?.payload;if(!payload||typeof payload!=='object')return;keys.forEach(key=>{const value=payload[key];if(value===undefined||value===null)return;found=true;if(value&&typeof value==='object'&&!Array.isArray(value)&&flattenKeys.has(key))Object.assign(merged,value);else merged[key]=value;});});
+  return found?merged:undefined;
+}
+function traceMergeRecordedSources(sources,keys){
+  const merged=Object.create(null);let found=false;
+  (Array.isArray(sources)?sources:[]).forEach(source=>{if(!source||typeof source!=='object'||Array.isArray(source))return;keys.forEach(key=>{const value=source[key];if(value===undefined||value===null)return;found=true;merged[key]=value;});});
   return found?merged:undefined;
 }
 function tracePresentationBound(value,budget,depth=0){
@@ -2084,7 +2120,9 @@ function traceModelInputMessages(input,turn){
   if(Array.isArray(input))return input.slice(0,100).map((content,index)=>({role:'user',step:turn?.step||index+1,content}));
   return ['system','developer','user'].filter(role=>p[role]!==undefined).map(role=>({role,step:turn?.step||1,content:p[role]})).concat((p.prompt??p.content??p.input)!==undefined?[{role:'user',step:turn?.step||1,content:p.prompt??p.content??p.input}]:[]).slice(0,100);
 }
-function traceChatMessageMarkup(message,index,budget){const role=String(message?.role||'message').toLowerCase(),text=tracePresentationValue(message?.content??message?.text??message,5000,budget);return traceBudgetMarkup(`<article class="trace-chat-message"><div class="trace-chat-role">${esc(role)} · step ${esc(message?.step||index+1)}</div>${promptBody(promptText(text))}</article>`,budget);}
+function traceReadableMarkup(value,budget,limit=8000){const safe=tracePresentationValue(value,limit,budget);return safe&&typeof safe==='object'?renderAny(safe):promptBody(promptText(safe));}
+function traceOutputValueMarkup(value,budget=null,limit=8000){const safe=tracePresentationValue(value,limit,budget);return safe&&typeof safe==='object'?renderAny(safe):`<pre class="trace-output">${esc(promptText(safe))}</pre>`;}
+function traceChatMessageMarkup(message,index,budget){const role=String(message?.role||'message').toLowerCase(),content=message?.content??message?.text??message;return traceBudgetMarkup(`<article class="trace-chat-message"><div class="trace-chat-role">${esc(role)} · step ${esc(message?.step||index+1)}</div>${traceReadableMarkup(content,budget,5000)}</article>`,budget);}
 function traceCodexEventMarkup(event,index,budget){
   const type=String(event?.event_type||'event').toLowerCase(),p=traceSanitizeValue(event?.payload||{}),step=p?.step||event?.step||index+1;
   const isThinking=['assistant_thinking','thinking','reasoning','assistant_reasoning'].includes(type),isToolCall=type==='tool_call',isToolResult=type==='tool_result',isOutput=['output_delta','output_stream','assistant_output','model_output','output'].includes(type),isRequest=['model_request','request_received','user_message'].includes(type),isBoundary=['turn_start','turn_end','step_start','step_end'].includes(type);
@@ -2092,10 +2130,10 @@ function traceCodexEventMarkup(event,index,budget){
   let body='',extra='';
   if(p?.malformed_payload)return `<div class="trace-timeline-event trace-malformed"><div class="trace-timeline-marker">Malformed event payload · step ${esc(step)}</div><div class="trace-primary-empty">Malformed event payload</div>${renderAny(tracePresentationValue(p.value,2048,budget))}</div>`;
   if(isThinking){const content=p.content??p.text??p.reasoning??p.thinking??p.output??p,thinkingKey=`${step}:${event?.seq??index}`;return `<div class="trace-timeline-event trace-thinking"><details class="trace-thinking" data-thinking-key="${esc(thinkingKey)}"><summary>${esc(label)} · step ${esc(step)} · collapsed</summary>${promptBody(tracePresentationValue(content,8000,budget))}</details></div>`;}
-  if(isRequest){const input=p.messages??p.prompt??p.content??p.input??p.request??p;body=traceModelInputMessages(input,{step}).map((message,messageIndex)=>traceChatMessageMarkup(message,messageIndex,budget)).join('');const metadataSource=input&&typeof input==='object'?input:p,metadataKeys=Object.keys(metadataSource).concat(metadataSource.request&&typeof metadataSource.request==='object'?Object.keys(metadataSource.request):[]).concat(p.request&&typeof p.request==='object'?Object.keys(p.request):[]).slice(0,40).join(', '),detailsBudget=traceRenderBudget(8000),boundedPayload=tracePresentationValue(p,8000,detailsBudget);extra=traceBudgetMarkup(`<div class="trace-chat-meta">Model output · request metadata: ${esc(metadataKeys||'none')}</div><details class="trace-optional-details"><summary>Full request payload · bounded</summary><div class="trace-optional-body">${renderAny(boundedPayload)}</div></details>`,budget);}
-  else if(isToolCall){const name=p.name||p.tool||'tool',args=p.arguments??p.args??p.input??{};body=`<div class="trace-tool-card"><h4>Tool call · ${esc(name)} · call id ${esc(p.call_id||p.callId||'—')}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(String(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(tracePresentationValue(args,5000,budget))}</div></div>`;}
-  else if(isToolResult){const call=event?.associated_call||{},name=p.name||p.tool||p.tool_name||call.name||call.tool||'tool',callId=p.call_id||p.callId||call.call_id||call.callId||'—',callStep=p.step||call.step||step,args=p.arguments??p.args??p.input??p.tool_arguments??call.arguments??call.args??call.input??{},failed=p.error||p.error_message||p.exception||p.is_error||p.isError||p.success===false||p.result?.error||p.result?.error_message||p.result?.exception, value=p.result??p.output??p.error??p;body=`<div class="trace-tool-card ${failed?'error':''}"><h4>Tool result · ${esc(String(name))} · call id ${esc(callId)} · step ${esc(callStep)}${failed?' · error':''}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(String(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(tracePresentationValue(args,5000,budget))}</div><div class="trace-tool-field"><strong>${failed?'error':'result'}</strong>${renderAny(tracePresentationValue(value,6000,budget))}</div></div>`;}
-  else if(isOutput){body=`<article class="trace-chat-message assistant"><div class="trace-chat-role">assistant · step ${esc(step)}</div>${promptBody(tracePresentationValue(p.text??p.content??p.output??p.result??p,8000,budget))}</article>`;}
+  if(isRequest){const input=p.messages??p.prompt??p.content??p.input??p.request??p;body=traceModelInputMessages(input,{step}).map((message,messageIndex)=>traceChatMessageMarkup(message,messageIndex,budget)).join('');}
+  else if(isToolCall){const name=p.name||p.tool||'tool',args=p.arguments??p.args??p.input??{};body=`<div class="trace-tool-card"><h4>Tool call · ${esc(traceInlineText(name))} · call id ${esc(traceInlineText(p.call_id??p.callId??'—'))}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(traceInlineText(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(tracePresentationValue(args,5000,budget))}</div></div>`;}
+  else if(isToolResult){const call=event?.associated_call||{},name=p.name||p.tool||p.tool_name||call.name||call.tool||'tool',callId=p.call_id||p.callId||call.call_id||call.callId||'—',callStep=p.step||call.step||step,args=p.arguments??p.args??p.input??p.tool_arguments??call.arguments??call.args??call.input??{},failed=p.error||p.error_message||p.exception||p.is_error||p.isError||p.success===false||p.result?.error||p.result?.error_message||p.result?.exception, value=p.result??p.output??p.error??p;body=`<div class="trace-tool-card ${failed?'error':''}"><h4>Tool result · ${esc(traceInlineText(name))} · call id ${esc(traceInlineText(callId))} · step ${esc(traceInlineText(callStep))}${failed?' · error':''}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(traceInlineText(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(tracePresentationValue(args,5000,budget))}</div><div class="trace-tool-field"><strong>${failed?'error':'result'}</strong>${renderAny(tracePresentationValue(value,6000,budget))}</div></div>`;}
+  else if(isOutput){body=`<article class="trace-chat-message assistant"><div class="trace-chat-role">assistant · step ${esc(step)}</div>${traceReadableMarkup(p.text??p.content??p.output??p.result??p,budget,8000)}</article>`;}
   else if(isBoundary){body=`<div class="trace-boundary-label">${esc(label)} · step ${esc(step)}</div>`;}
   else {body=renderAny(tracePresentationValue(p,5000,budget));}
   return `<div class="trace-timeline-event ${isOutput?'assistant-event':''}" data-event-type="${esc(type)}"><div class="trace-timeline-marker">${esc(label)} · step ${esc(step)}${event?.seq!==undefined?` · #${esc(event.seq)}`:''}</div>${body}${extra}</div>`;
@@ -2105,7 +2143,7 @@ function traceCodexEvents(model,presentation){
   rawEvents.forEach(event=>{if(String(event.event_type||'').toLowerCase()==='tool_call'){const payload=event.payload||{},id=payload.call_id||payload.callId;if(id)calls.set(String(id),payload);}});
   const events=rawEvents.map(event=>{if(String(event.event_type||'').toLowerCase()!=='tool_result')return event;const payload=event.payload||{},id=payload.call_id||payload.callId,associated=id?calls.get(String(id)):null;return associated?{...event,associated_call:associated}:event;});
   const turns=Array.isArray(presentation?.chatTurns)?presentation.chatTurns:[];
-  if(events.length){const partialTypes=['output_delta','output_stream'],terminalTypes=['assistant_output','model_output','output','output_final','final_output'],outputValue=event=>{const payload=event?.payload&&typeof event.payload==='object'?event.payload:event?.payload;return payload?.text??payload?.content??payload?.output??payload?.result??payload;},sameOutput=(left,right)=>{try{return JSON.stringify(traceSanitizeValue(left))===JSON.stringify(traceSanitizeValue(right));}catch{return String(left)===String(right);}},finalOutput=traceRecorded(presentation?.modelOutput)?presentation.modelOutput:traceRecorded(model?.session?.output)?model.session.output:null,retained=events.slice(-100),streamed=retained.filter(event=>partialTypes.includes(String(event?.event_type||'').toLowerCase())).map(outputValue).filter(value=>value!==undefined&&value!==null).map(String).join(''),hasEquivalentFinal=traceRecorded(finalOutput)&&(retained.some(event=>terminalTypes.includes(String(event?.event_type||'').toLowerCase())&&sameOutput(outputValue(event),finalOutput))||(streamed&&sameOutput(streamed,finalOutput)));if(traceRecorded(finalOutput)&&!hasEquivalentFinal){const visible=retained.slice(-99);visible.push({event_type:'assistant_output',payload:{content:traceRawBoundValue(finalOutput,8000)}});return visible;}return retained;}
+  if(events.length){const partialTypes=['output_delta','output_stream'],terminalTypes=['assistant_output','model_output','output','output_final','final_output'],outputValue=event=>{const payload=event?.payload&&typeof event.payload==='object'?event.payload:event?.payload;return payload?.text??payload?.content??payload?.output??payload?.result??payload;},sameOutput=(left,right)=>{try{return JSON.stringify(traceSanitizeValue(left))===JSON.stringify(traceSanitizeValue(right));}catch{return promptText(left)===promptText(right);}},finalOutput=traceRecorded(presentation?.modelOutput)?presentation.modelOutput:traceRecorded(model?.session?.output)?model.session.output:null,retained=events.slice(-100),streamed=retained.filter(event=>partialTypes.includes(String(event?.event_type||'').toLowerCase())).map(outputValue).filter(value=>value!==undefined&&value!==null).map(value=>typeof value==='string'?value:promptText(traceSanitizeValue(value))).join(''),hasEquivalentFinal=traceRecorded(finalOutput)&&(retained.some(event=>terminalTypes.includes(String(event?.event_type||'').toLowerCase())&&sameOutput(outputValue(event),finalOutput))||(streamed&&sameOutput(streamed,finalOutput)));if(traceRecorded(finalOutput)&&!hasEquivalentFinal){const visible=retained.slice(-99);visible.push({event_type:'assistant_output',payload:{content:traceRawBoundValue(finalOutput,8000)}});return visible;}return retained;}
   const fallback=[];turns.forEach(turn=>{if(turn.input)fallback.push({event_type:'model_request',payload:{step:turn.step,input:turn.input}});(turn.tools||[]).forEach(item=>{fallback.push({event_type:'tool_call',payload:{step:turn.step,...item.call}});if(item.result)fallback.push({event_type:'tool_result',payload:{step:turn.step,...item.result}})});if(traceRecorded(turn.output))fallback.push({event_type:'assistant_output',payload:{step:turn.step,content:turn.output}});});
   if(!fallback.length&&Array.isArray(model?.toolCalls))model.toolCalls.slice(-100).forEach(item=>{fallback.push({event_type:'tool_call',payload:item.call||item});if(item.result)fallback.push({event_type:'tool_result',payload:item.result});});
   if(!fallback.length&&traceRecorded(presentation?.modelInput))fallback.push({event_type:'model_request',payload:{input:presentation.modelInput}});
@@ -2113,7 +2151,7 @@ function traceCodexEvents(model,presentation){
   return fallback;
 }
 function traceCodexTimeline(model,title='Model chat',renderBudget=null){
-  const budget=renderBudget||traceRenderBudget(),presentation=model.presentation||tracePresentationData(model),events=traceCodexEvents(model,presentation),modelName=model.session?.model||model.actor?.model||'model not recorded';
+  const budget=renderBudget||traceRenderBudget(),presentation=model.presentation||tracePresentationData(model),events=traceCodexEvents(model,presentation),modelName=traceInlineText(model.session?.model??model.actor?.model??'model not recorded');
   if(!events.length)return traceFinalizeMarkup(`<section class="trace-primary trace-chat-presentation"><div class="trace-primary-head"><h2>${esc(title)}</h2><span class="tiny">${esc(String(modelName))}</span></div><div class="trace-primary-empty">No model events captured</div></section>`,budget);
   const cards=events.map((event,index)=>traceBudgetMarkup(traceCodexEventMarkup(event,index,budget),budget)).join(''),hasOutput=events.some(event=>['output_delta','output_stream','assistant_output','model_output','output'].includes(String(event?.event_type||'').toLowerCase()));
   const emptyOutput=hasOutput||traceRecorded(presentation?.modelOutput)?'':'<div class="trace-primary-empty">Model output · No model output captured</div>';
@@ -2131,26 +2169,49 @@ function traceToolResultData(result,budget=null){
 }
 function traceToolCardMarkup(item,index,budget){
   const boundedCall=traceRawBoundValue(item.call||{},5000),call=tracePresentationValue(boundedCall,5000,budget),resultData=traceToolResultData(item.result||{},budget),result=resultData.value||{},error=Boolean(resultData.error),name=call?.name||call?.tool||'tool',argumentsValue=tracePresentationValue(call?.arguments??call?.args??call?.input??{},5000,budget);
-  return traceBudgetMarkup(`<article class="trace-tool-card ${error?'error':''}"><h4>Tool interaction · step ${esc(item.step||index+1)} · call id ${esc(call?.call_id||'—')}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(String(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(argumentsValue)}</div><div class="trace-tool-field"><strong>${error?'error':'result'}</strong>${renderAny(result)}</div></article>`,budget);
+  return traceBudgetMarkup(`<article class="trace-tool-card ${error?'error':''}"><h4>Tool interaction · step ${esc(item.step||index+1)} · call id ${esc(traceInlineText(call?.call_id??'—'))}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(traceInlineText(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(argumentsValue)}</div><div class="trace-tool-field"><strong>${error?'error':'result'}</strong>${renderAny(result)}</div></article>`,budget);
 }
+function traceModelChatEventTypes(events){const useful=new Set(['model_request','assistant_thinking','thinking','reasoning','assistant_reasoning','tool_call','tool_result','output_delta','output_stream','assistant_output','model_output','output','output_final','final_output','turn_start','turn_end','step_start','step_end']);return (Array.isArray(events)?events:[]).filter(event=>{const type=String(event?.event_type||'').toLowerCase(),payload=event?.payload;return useful.has(type)||(payload&&typeof payload==='object'&&payload.malformed_payload)||(event&&payload!==null&&typeof payload!=='object');});}
+function traceModelContextMarkup(input,budget){const source=input&&typeof input==='object'&&!Array.isArray(input)?input:{},details={};if(source.model!==undefined)details.model=source.model;if(source.stream!==undefined)details.stream=source.stream;if(source.options&&typeof source.options==='object')details.options=source.options;if(source.request&&typeof source.request==='object')details.request={request_id:source.request.request_id,path:source.request.path};if(source.headers&&typeof source.headers==='object')details.headers=source.headers;if(source.metadata!==undefined)details.metadata=source.metadata;if(!Object.keys(details).length)return '';return `<details class="trace-optional-details trace-model-context"><summary>Model details · compact</summary><div class="trace-optional-body">${renderAny(tracePresentationValue(details,4000,budget))}</div></details>`;}
 function renderModelChatPresentation(model){
   const timelineContract='Model input Model output model name tool result trace-codex-timeline';
-  return traceCodexTimeline({...model,presentation:traceSanitizeValue(model.presentation||{})},'Model chat');
+  const budget=traceRenderBudget(),presentation=traceSanitizeValue(model.presentation||{}),input=model.input??presentation.modelInput,output=model.output??presentation.modelOutput,messages=traceModelInputMessages(input,null),promptMarkup=messages.map((message,index)=>traceChatMessageMarkup(message,index,budget)).join(''),responseMarkup=traceRecorded(output)?traceReadableMarkup(output,budget,8000):'<div class="trace-primary-empty">No response captured</div>',timelineEvents=traceModelChatEventTypes(traceCodexEvents(model,presentation)),contextMarkup=traceModelContextMarkup(input,budget);
+  const primary=`<section class="trace-primary trace-model-presentation"><div class="trace-primary-head"><h2>Prompt / response</h2><span class="tiny">what the model received and returned</span></div><div class="trace-chat-columns trace-primary-grid"><article class="trace-primary-card input"><h3>Prompt</h3><div class="trace-primary-value">${promptMarkup||'<div class="trace-primary-empty">No prompt captured</div>'}</div></article><article class="trace-primary-card output"><h3>Response</h3><div class="trace-primary-value">${responseMarkup}</div></article></div>${contextMarkup}</section>`;
+  const timeline=traceCodexTimeline({...model,events:timelineEvents,presentation:presentation},'Model chat',budget);
+  return traceFinalizeMarkup(primary,budget)+`<details class="trace-optional-details trace-model-timeline"><summary>Execution timeline · ${timelineEvents.length} useful events</summary><div class="trace-optional-body">${timeline}</div></details>`;
 }
 function renderAgentLoopPresentation(model){
   const timelineContract='trace-codex-timeline trace-tool-timeline tool call tool result traceRawBoundValue traceSanitizeValue';
   const safeModel={...model,presentation:traceSanitizeValue(model.presentation||{})};
   return traceCodexTimeline(safeModel,'Agent loop');
 }
-function tracePresentationPayload(model,key){const presentation=model?.presentation&&typeof model.presentation==='object'?model.presentation:{};return presentation[key]??{};}
+function tracePresentationPayload(model,key){const presentation=model?.presentation&&typeof model.presentation==='object'?model.presentation:{},payload=presentation[key],fieldSets={command:['command','cmd','args','arguments','input','stdin','stdout','stderr','exit_code','exitCode','success','retries','retry_count','attempts','duration','duration_ms','elapsed_ms','action','cwd','root','paths','criterion','error'],review:['request','context','diff','findings','recommendation','status','severity_counts','severityCounts','error'],repoOperation:['repository','repo','root','operation','action','query','files','symbols','context','result','output','response','error'],asyncJob:['status','queue_wait_ms','queue_wait','queue_time_ms','retries','retry_count','attempts','worker_input','input','result','output','error'],retrieval:['query','search_query','term','sources','results','hits','score','scores','provider','answer','truncated','truncation','root','project','top_k','limit','enrich','mode','path']},keys=fieldSets[key];return keys?(traceMergeRecordedSources([payload,model?.input,model?.output,model?.response,model?.session?.request,model?.session?.effective_payload],keys)||{}):payload??{};}
 function tracePresentationPick(value,keys,fallback){const source=value&&typeof value==='object'?value:{};for(const key of keys){if(traceRecorded(source[key]))return source[key];}return fallback;}
 function tracePresentationField(label,value,empty,budget){const safe=tracePresentationValue(value,6000,budget);return `<div class="trace-presentation-field"><strong>${esc(label)}</strong>${traceRecorded(safe)?renderAny(safe):`<span class="trace-primary-empty">${esc(empty||`No ${label} captured`)}</span>`}</div>`;}
 function tracePresentationColumns(title,left,right,budget,headerExtra='',leftTitle='Request details',rightTitle='Result details'){const leftMarkup=left.join(''),rightMarkup=right.join('');return traceFinalizeMarkup(`<section class="trace-primary trace-request-presentation"><div class="trace-primary-head"><h2>${esc(title)}</h2>${headerExtra}</div><div class="trace-chat-columns trace-primary-grid"><article class="trace-primary-card input"><h3>${esc(leftTitle)}</h3><div class="trace-primary-value">${leftMarkup||'<div class="trace-primary-empty">No request details captured</div>'}</div></article><article class="trace-primary-card output"><h3>${esc(rightTitle)}</h3><div class="trace-primary-value">${rightMarkup||'<div class="trace-primary-empty">No result details captured</div>'}</div></article></div></section>`,budget);}
 function renderTraceInputOutputPresentation(model){const budget=traceRenderBudget(),input=tracePresentationField('input',model.input,'No input captured',budget),output=tracePresentationField('output',model.output,'No output captured',budget);if(!traceRecorded(model.input)&&!traceRecorded(model.output))return '';return tracePresentationColumns('Input / output',[input],[output],budget,'','Input','Output');}
 function traceReviewSeverityMarkup(findings,severityMap,budget){const counts={critical:0,high:0,medium:0,low:0},map=severityMap&&typeof severityMap==='object'&&!Array.isArray(severityMap)?severityMap:{};Object.keys(counts).forEach(level=>{const value=Number(map[level]);if(Number.isFinite(value))counts[level]=value;});const items=Array.isArray(findings)?findings:[];items.forEach(item=>{const severity=String(item?.severity||item?.priority||'').toLowerCase();if(counts[severity]!==undefined&&!Number.isFinite(Number(map[severity])))counts[severity]+=1;});return `<div class="trace-severity-counts" aria-label="severity counts">${Object.entries(counts).map(([level,count])=>`<span class="trace-event-chip ${count?'trace-severity-active':''}">${esc(level)}: ${count}</span>`).join('')}</div>`;}
-function tracePresentationRankedField(label,value,empty,budget){const raw=Array.isArray(value)?value:[];if(!raw.length)return `<div class="trace-presentation-field"><strong>${esc(label)}</strong><span class="trace-primary-empty">${esc(empty)}</span></div>`;const ranked=raw.map((item,index)=>({item,index,score:Number(item?.score??item?.relevance??item?.similarity)})).sort((a,b)=>{const aFinite=Number.isFinite(a.score),bFinite=Number.isFinite(b.score);if(aFinite&&bFinite)return b.score-a.score||a.index-b.index;if(aFinite!==bFinite)return aFinite?-1:1;return a.index-b.index;});const markup=ranked.slice(0,20).map((entry,index)=>{const safe=tracePresentationValue(entry.item,1800,budget),score=Number.isFinite(entry.score)?entry.score:'—',rank=index+1,provider=entry.item?.provider||entry.item?.source||'—';return `<details class="trace-rag-source-details"><summary>rank ${esc(rank)} · score ${esc(score)} · provider ${esc(provider)}</summary>${renderAny(safe)}</details>`}).join('');return `<div class="trace-presentation-field trace-rag-ranked"><strong>${esc(label)}</strong><div class="trace-rag-ranked">${markup}</div></div>`;}
+function tracePresentationRankedField(label,value,empty,budget){const raw=Array.isArray(value)?value:[];if(!raw.length)return `<div class="trace-presentation-field"><strong>${esc(label)}</strong><span class="trace-primary-empty">${esc(empty)}</span></div>`;const ranked=raw.map((item,index)=>({item,index,score:Number(item?.score??item?.relevance??item?.similarity)})).sort((a,b)=>{const aFinite=Number.isFinite(a.score),bFinite=Number.isFinite(b.score);if(aFinite&&bFinite)return b.score-a.score||a.index-b.index;if(aFinite!==bFinite)return aFinite?-1:1;return a.index-b.index;});const markup=ranked.slice(0,20).map((entry,index)=>{const safe=tracePresentationValue(entry.item,1800,budget),score=Number.isFinite(entry.score)?entry.score:'—',rank=index+1,provider=entry.item?.provider||entry.item?.source||'—';return `<details class="trace-rag-source-details"><summary>rank ${esc(rank)} · score ${esc(score)} · provider ${esc(traceInlineText(provider))}</summary>${renderAny(safe)}</details>`}).join('');return `<div class="trace-presentation-field trace-rag-ranked"><strong>${esc(label)}</strong><div class="trace-rag-ranked">${markup}</div></div>`;}
+function traceProjectLabel(value){
+  if(typeof value==='string'){const text=String(value).replace(/[\\/]+$/,'');if(!text)return '';const parts=text.split(/[\\/]/).filter(Boolean);return parts[parts.length-1]||text;}
+  const source=value&&typeof value==='object'?value:{};
+  for(const key of ['project','project_name','projectName','workspace_name','workspaceName','workspace','root','repo_root','repository','repo']){const candidate=source[key];if(typeof candidate==='string'&&candidate.trim())return traceProjectLabel(candidate);}
+  for(const key of ['request','effective_payload','payload','input']){if(source[key]&&typeof source[key]==='object'){const nested=traceProjectLabel(source[key]);if(nested)return nested;}}
+  return '';
+}
+function traceSearchText(value,limit=420){
+  if(value===undefined||value===null)return '';
+  if(typeof value==='string')return value.length>limit?value.slice(0,limit)+'…':value;
+  if(typeof value==='number'||typeof value==='boolean')return String(value);
+  const source=value&&typeof value==='object'?value:{};
+  return traceSearchText(source.text??source.content??source.snippet??source.summary??source.description??'',limit);
+}
+function traceSearchResultRow(item,index,budget){
+  const source=item&&typeof item==='object'?item:{},path=source.path??source.file??source.filename??source.name??'Result',start=source.start_line??source.startLine,end=source.end_line??source.endLine,location=start!==undefined?`line ${traceInlineText(start)}${end!==undefined&&traceInlineText(end)!==traceInlineText(start)?`–${traceInlineText(end)}`:''}`:'',provider=source.provider??source.source??'',score=Number(source.score??source.relevance??source.similarity),snippet=traceSearchText(source.text??source.content??source.snippet??source.summary??source.description),scoreMarkup=Number.isFinite(score)?`<span class="trace-search-score">${esc(score)}</span>`:'';
+  return `<div class="trace-search-result-row"><span class="trace-search-rank">${esc(index+1)}</span><div class="trace-search-result-main"><strong>${esc(traceInlineText(path))}</strong>${location?`<span class="tiny">${esc(location)}</span>`:''}${provider?`<span class="tiny">${esc(traceInlineText(provider))}</span>`:''}${snippet?`<div class="trace-search-snippet">${esc(snippet)}</div>`:''}</div>${scoreMarkup}</div>`;
+}
 function renderCommandPresentation(model){
-  const budget=traceRenderBudget(),command=traceSanitizeValue(tracePresentationPayload(model,'command')),top=`<section class="trace-command-top"><h3>Command and arguments</h3>${tracePresentationField('command',tracePresentationPick(command,['command','cmd'],command),'No command captured',budget)}${tracePresentationField('arguments',tracePresentationPick(command,['args','arguments'],''),'No arguments captured',budget)}</section>`,left=[tracePresentationField('input',tracePresentationPick(command,['input','stdin'],''),'No input captured',budget)],right=[tracePresentationField('stdout',command.stdout,'No stdout captured',budget),tracePresentationField('stderr',command.stderr,'No stderr captured',budget),tracePresentationField('exit code',tracePresentationPick(command,['exit_code','exitCode','code'],''),'No exit code captured',budget),tracePresentationField('retries',tracePresentationPick(command,['retries','retry_count','attempts'],''),'No retries captured',budget),tracePresentationField('duration',tracePresentationPick(command,['duration','duration_ms','elapsed_ms'],''),'No duration captured',budget)];
+  const budget=traceRenderBudget(),command=traceSanitizeValue(tracePresentationPayload(model,'command')||{}),top=`<section class="trace-command-top"><h3>Command and arguments</h3>${tracePresentationField('command',tracePresentationPick(command,['command','cmd'],command),'No command captured',budget)}${tracePresentationField('arguments',tracePresentationPick(command,['args','arguments'],''),'No arguments captured',budget)}</section>`,left=[tracePresentationField('input',tracePresentationPick(command,['input','stdin'],''),'No input captured',budget)],right=[tracePresentationField('stdout',command.stdout,'No stdout captured',budget),tracePresentationField('stderr',command.stderr,'No stderr captured',budget),tracePresentationField('exit code',tracePresentationPick(command,['exit_code','exitCode','code'],''),'No exit code captured',budget),tracePresentationField('retries',tracePresentationPick(command,['retries','retry_count','attempts'],''),'No retries captured',budget),tracePresentationField('duration',tracePresentationPick(command,['duration','duration_ms','elapsed_ms'],''),'No duration captured',budget)];
   return traceFinalizeMarkup(`${top}${tracePresentationColumns('Command output',left,right,budget)}`,budget);
 }
 function renderReviewPresentation(model){
@@ -2162,8 +2223,9 @@ function renderRepoIntelligencePresentation(model){
   return tracePresentationColumns('Repository intelligence',left,right,budget);
 }
 function renderRagSearchPresentation(model){
-  const budget=traceRenderBudget(),retrieval=traceSanitizeValue(tracePresentationPayload(model,'retrieval')),left=[tracePresentationField('query',retrieval.query,'No query captured',budget),tracePresentationRankedField('sources · score/rank/provider',retrieval.sources,'No sources captured',budget),tracePresentationRankedField('results · score/rank/provider',retrieval.results??retrieval.hits,'No results captured',budget)],right=[tracePresentationField('answer',retrieval.answer,'No answer captured',budget),tracePresentationField('truncation',retrieval.truncated??retrieval.truncation,'No truncation recorded',budget)];
-  return tracePresentationColumns('RAG search',left,right,budget);
+  const budget=traceRenderBudget(),retrieval=traceSanitizeValue(tracePresentationPayload(model,'retrieval')),query=tracePresentationPick(retrieval,['query','search_query','term'],''),rawResults=Array.isArray(retrieval.results)?retrieval.results:(Array.isArray(retrieval.hits)?retrieval.hits:[]),sources=Array.isArray(retrieval.sources)?retrieval.sources:[],results=rawResults.length?rawResults:sources,ranked=results.map((item,index)=>({item,index,score:Number(item?.score??item?.relevance??item?.similarity)})).sort((a,b)=>{const af=Number.isFinite(a.score),bf=Number.isFinite(b.score);if(af&&bf)return b.score-a.score||a.index-b.index;if(af!==bf)return af?-1:1;return a.index-b.index}),spec=[traceProjectLabel(model),retrieval.path,retrieval.top_k??retrieval.limit,typeof retrieval.enrich==='boolean'?`enrich ${retrieval.enrich?'on':'off'}`:retrieval.mode,retrieval.provider].filter(Boolean),rows=ranked.slice(0,50).map((entry,index)=>traceSearchResultRow(entry.item,index,budget)).join('');
+  const resultLabel=`${results.length}${results.length===1?' result':' results'}`;
+  return traceFinalizeMarkup(`<section class="trace-primary trace-search-presentation"><div class="trace-primary-head"><h2>Search</h2><span class="tiny">${esc(resultLabel)}</span></div><div class="trace-search-query"><strong>Query</strong><div>${query?esc(traceSearchText(query,1200)):'<span class="trace-primary-empty">No query captured</span>'}</div></div>${spec.length?`<div class="trace-search-spec">${spec.map(item=>`<span>${esc(traceInlineText(item))}</span>`).join('')}</div>`:''}<div class="trace-search-results"><h3>Results</h3>${rows||'<div class="trace-primary-empty">No results captured</div>'}</div>${traceRecorded(retrieval.answer)?`<div class="trace-search-answer"><strong>Answer</strong><div>${esc(traceSearchText(retrieval.answer,2400))}</div></div>`:''}${traceRecorded(retrieval.truncated??retrieval.truncation)?`<div class="trace-search-answer"><strong>Truncation</strong><div>${esc(traceSearchText(retrieval.truncated??retrieval.truncation,300))}</div></div>`:''}</section>`,budget);
 }
 function renderAsyncJobPresentation(model){
   const budget=traceRenderBudget(),safeModel=traceSanitizeValue(model||{}),lifecycle=safeModel.lifecycle||{},correlations=safeModel.correlations||{},payload=traceSanitizeValue(tracePresentationPayload(safeModel,'asyncJob')),left=[tracePresentationField('lifecycle',lifecycle,'No lifecycle captured',budget),tracePresentationField('status',tracePresentationPick(payload,['status'],lifecycle.state??''),'No status captured',budget),tracePresentationField('queue wait',tracePresentationPick(payload,['queue_wait_ms','queue_wait','queue_time_ms'],''),'No queue wait captured',budget),tracePresentationField('retries',tracePresentationPick(payload,['retries','retry_count','attempts'],''),'No retries captured',budget),tracePresentationField('worker input',tracePresentationPick(payload,['worker_input','input'],safeModel.input),'No worker input captured',budget)],right=[tracePresentationField('result',tracePresentationPick(payload,['result','output'],safeModel.output),'No result captured',budget),tracePresentationField('error',tracePresentationPick(payload,['error'],safeModel.errors),'No error captured',budget),tracePresentationField('job id',tracePresentationPick(correlations,['job_id','async_job_id','scheduler_job_id'],''),'No job id captured',budget),tracePresentationField('correlation',tracePresentationPick(correlations,['request_id','correlation_id'],''),'No correlation captured',budget)];
@@ -2173,7 +2235,7 @@ function renderRequestResponsePresentation(model){
   const budget=traceRenderBudget(),safeModel=traceSanitizeValue(model||{}),timing=safeModel.timing||{},left=[tracePresentationField('request',safeModel.session?.request??safeModel.identity?.action,'No request captured',budget),tracePresentationField('input',safeModel.input,'No input captured',budget),tracePresentationField('timing',timing,'No timing captured',budget)],right=[tracePresentationField('response',safeModel.response,'No response captured',budget),tracePresentationField('output',safeModel.output,'No output captured',budget),tracePresentationField('status',safeModel.lifecycle?.status_code??safeModel.lifecycle?.state,'No status captured',budget),tracePresentationField('error',safeModel.errors,'No error captured',budget)];
   return tracePresentationColumns('Request / response',left,right,budget);
 }
-function renderTracePresentation(model){const kind=model.presentation?.kind||tracePresentationKind(model),inputOutput=['agent_loop','model_chat','request_response'].includes(kind)?'':renderTraceInputOutputPresentation(model);let specialized='';if(kind==='agent_loop')specialized=renderAgentLoopPresentation(model);else if(kind==='model_chat')specialized=renderModelChatPresentation(model);else if(kind==='command')specialized=renderCommandPresentation(model);else if(kind==='review')specialized=renderReviewPresentation(model);else if(kind==='repo_intelligence')specialized=renderRepoIntelligencePresentation(model);else if(kind==='rag_search')specialized=renderRagSearchPresentation(model);else if(kind==='async_job')specialized=renderAsyncJobPresentation(model);else if(kind==='request_response')specialized=renderRequestResponsePresentation(model);return inputOutput+specialized;}
+function renderTracePresentation(model){const kind=model.presentation?.kind||tracePresentationKind(model),specializedKinds=['agent_loop','model_chat','command','review','repo_intelligence','rag_search','async_job','request_response'],inputOutput=specializedKinds.includes(kind)?'':renderTraceInputOutputPresentation(model);let specialized='';if(kind==='agent_loop')specialized=renderAgentLoopPresentation(model);else if(kind==='model_chat')specialized=renderModelChatPresentation(model);else if(kind==='command')specialized=renderCommandPresentation(model);else if(kind==='review')specialized=renderReviewPresentation(model);else if(kind==='repo_intelligence')specialized=renderRepoIntelligencePresentation(model);else if(kind==='rag_search')specialized=renderRagSearchPresentation(model);else if(kind==='async_job')specialized=renderAsyncJobPresentation(model);else if(kind==='request_response')specialized=renderRequestResponsePresentation(model);return inputOutput+specialized;}
 function traceDisplayModel(detail){
   const rawSession=detail?.session||{},rawEvents=Array.isArray(detail?.events)?detail.events:[];
   const rawEventProjection=traceBoundedEvents(rawEvents),session=traceSanitizeValue(traceDisplaySession(rawSession)),events=traceSanitizeValue(rawEventProjection.events);
@@ -2200,7 +2262,7 @@ function traceDisplayModel(detail){
     input:traceRecorded(input),output:traceRecorded(output),response:traceRecorded(response),errors:errors.length>0,
     events:events.length>0,modelExecutions:modelExecutions.length>0,toolCalls:toolCalls.length>0,
   };
-  const eventsTotal=Math.max(Number(detail?.events_total||detail?.eventsTotal||0),rawEventProjection.eventsTotal),eventsTruncated=rawEventProjection.eventsTruncated,model={identity,lifecycle,timing,actor,correlations,retainedBytes,input,output,response,errors,events,eventsTotal,eventsTruncated,modelExecutions,toolCalls,effectivePayload,availability,session};
+  const eventsTotal=Math.max(Number(detail?.events_total||detail?.eventsTotal||0),rawEventProjection.eventsTotal),eventsTruncated=rawEventProjection.eventsTruncated,project=traceProjectLabel({project:rawSession.project,workspace:rawSession.workspace,request:session.request,effective_payload:effectivePayload,root:session.root})||traceProjectLabel(input),model={identity,lifecycle,timing,actor,correlations,retainedBytes,input,output,response,errors,events,eventsTotal,eventsTruncated,modelExecutions,toolCalls,effectivePayload,availability,session,project};
   model.presentation=tracePresentationData(model);
   model.panels=[
     tracePanel('input','Input',()=>humanSection('Input',input),availability.input),
@@ -2224,20 +2286,22 @@ function traceSummary(model,unavailableCopy){
   const summary={identity:model.identity,lifecycle:model.lifecycle,timing:model.timing,actor:model.actor,correlations:model.correlations,retained_bytes:model.retainedBytes};
   return `<section class="human-section"><h3>Universal request summary</h3>${renderAny(summary)}</section>${traceAvailability(model,unavailableCopy)}`;
 }
+function traceHumanTitle(model){
+  const kind=String(model?.presentation?.kind||'').toLowerCase();
+  return ({rag_search:'Search',model_chat:'Model request',agent_loop:'Agent run',command:'Command run',review:'Review',repo_intelligence:'Repository lookup',async_job:'Background job',request_response:'Request'}[kind]||'Request');
+}
  function renderTraceDetail(d){
    const body=$('tracePageBody'),existingOptionalDetails=body?.querySelector('#traceTechnicalDetails');if(existingOptionalDetails)traceOptionalDetailsOpen=existingOptionalDetails.open;const thinkingDetailsOpen=captureTraceThinkingDetails(body),scrollPositions=captureTraceScrollPositions(body),traceMain=body?.closest('.trace-main'),mainScrollTop=traceMain?.scrollTop||0,mainScrollLeft=traceMain?.scrollLeft||0;
    activeTraceData=d;const unavailableCopy={input:'Input unavailable for this request type',output:'Output unavailable for this request type',response:'Response unavailable for this request type'},model=traceDisplayModel(d),s=traceSanitizeValue(model.session),events=model.events;
   if(!model.panels.some(panel=>panel.available&&panel.id===traceView))traceView=model.panels.find(panel=>panel.available)?.id||'timeline';
-  $('tracePageTitle').textContent=String(s.action||s.source||'Trace');$('tracePageLive').textContent=d?.terminal?'terminal · retained':'● live · auto-refresh';$('tracePageLive').className='tiny '+(d?.terminal?'ok':'trace-running');
+  $('tracePageTitle').textContent=traceHumanTitle(model);$('tracePageLive').textContent=d?.terminal?'finished':'● live · updating';$('tracePageLive').className='tiny '+(d?.terminal?'ok':'trace-running');
   const state=model.lifecycle.state,displayState=traceStatus(s),stateClass=(displayState==='failed'||displayState==='error')?'bad':(displayState==='interrupted'?'warn':(d?.terminal?'ok':'warn'));
   const revealLabel=traceRevealRedactedDetails?'Hide unredacted details':'Reveal redacted details',revealState=traceRevealRedactedDetails?'Unredacted trace details shown locally.':'Trace details are redacted by default.';
-  const header=`<div class="trace-inspector-head"><div><div class="trace-kicker">Request trace · Universal inspector</div><strong>${esc(s.action||s.source||'Trace')}</strong><div class="tiny">${esc(s.agent||'unknown actor')} · ${esc(s.model||'model not recorded')}</div></div><span class="badge ${stateClass}">${esc(state)}</span></div><div class="trace-metrics"><span>${model.eventsTotal} events${model.eventsTruncated?' · latest retained view':''}</span><span>${esc(s.tenant||'no tenant')}</span><span>${model.retainedBytes} bytes retained</span><button type="button" class="btn" data-trace-reveal aria-pressed="${traceRevealRedactedDetails}" aria-describedby="trace-reveal-status">${esc(revealLabel)}</button><span id="trace-reveal-status" class="tiny" aria-live="polite">${esc(revealState)}</span></div>`;
+  const header=`<div class="trace-inspector-head"><div><div class="trace-kicker">Request trace</div><strong>${esc(traceHumanTitle(model))}</strong><div class="tiny">${esc(s.action||s.source||'Trace')} · ${esc(s.agent||'unknown actor')}${s.model?` · ${esc(s.model)}`:''}</div></div><div class="trace-inspector-context"><span class="trace-project-label">${esc(model.project||'Project not recorded')}</span><span class="badge ${stateClass}">${esc(state)}</span></div></div><div class="trace-metrics"><span>${esc(model.project||'Project not recorded')}</span><button type="button" class="btn" data-trace-reveal aria-pressed="${traceRevealRedactedDetails}" aria-describedby="trace-reveal-status">${esc(revealLabel)}</button><span id="trace-reveal-status" class="tiny" aria-live="polite">${esc(revealState)}</span></div>`;
   const panels=model.panels.filter(panel=>panel.available),universalSummary=traceSummary(model,unavailableCopy),panelMarkup=panels.map(panel=>{const selected=panel.id===traceView,content=selected?panel.render():'';return `<div id="trace-panel-${esc(panel.id)}" class="trace-view" role="tabpanel" aria-labelledby="trace-tab-${esc(panel.id)}"${selected?'':' hidden'}>${content}</div>`}).join('');
    const presentationMarkup=renderTracePresentation(model);
-   // Universal request summary stays available, but technical detail is optional.
-   const optionalMarkup=`<details class="trace-optional-details" id="traceTechnicalDetails"${traceOptionalDetailsOpen?' open':''}><summary>Technical details · ${panels.length} optional views</summary><div class="trace-optional-body"><nav class="trace-tabs" role="tablist" aria-label="Trace views">${panels.map(panel=>traceTab(panel.label,panel.id)).join('')}</nav>${panelMarkup}</div></details>`;
-   // Universal request summary stays visible before optional technical details.
-   $('tracePageBody').className='trace-page-body';$('tracePageBody').innerHTML=`<div class="human-shell">${header}${universalSummary}${presentationMarkup}${optionalMarkup}</div>`;
+   const optionalMarkup=`<details class="trace-optional-details" id="traceTechnicalDetails"${traceOptionalDetailsOpen?' open':''}><summary>Technical details · ${panels.length} optional views</summary><div class="trace-optional-body">${universalSummary}<nav class="trace-tabs" role="tablist" aria-label="Trace views">${panels.map(panel=>traceTab(panel.label,panel.id)).join('')}</nav>${panelMarkup}</div></details>`;
+   $('tracePageBody').className='trace-page-body';$('tracePageBody').innerHTML=`<div class="human-shell">${header}${presentationMarkup}${optionalMarkup}</div>`;
    const restore=()=>{restoreTraceThinkingDetails($('tracePageBody'),thinkingDetailsOpen);restoreTraceScrollPositions($('tracePageBody'),scrollPositions);const nextMain=$('tracePageBody')?.closest('.trace-main');if(nextMain){nextMain.scrollTop=mainScrollTop;nextMain.scrollLeft=mainScrollLeft}};
    if(window.requestAnimationFrame)window.requestAnimationFrame(restore);else restore();
 }
@@ -3047,7 +3111,7 @@ async function executeCleanupAction(){
           <span style="font-size:16px">✅</span>
           <div>
             <b>Agent OS State Cleanup Completed</b>
-            <div class="tiny" style="margin-top:3px">${esc(JSON.stringify(res))}</div>
+            <div class="tiny" style="margin-top:8px">${renderAny(res)}</div>
           </div>
         </div>
         <div class="modal-actions-bar" style="justify-content:flex-end">
@@ -4305,7 +4369,7 @@ function ensureHttpTailTable(){
 function setupWorkLayout(){
   const work=$('work');if(!work||work.dataset.refined)return;work.dataset.refined='1';work.classList.add('work-page');
   const sections=[...work.children].filter(x=>x.classList.contains('section'));sections.forEach((x,i)=>x.classList.add('work-panel','work-panel-'+(i+1)));
-  const headers=[['State','Work item','Model / source','Timing','Reason'],['Request','Agent / tenant','Action','Age'],['Time','Request ID','Agent','Tenant','Action / context','Result','Trace availability','Duration'],['State','Kind','Action / context','Agent / tenant','Model','Created','Updated / duration','Links']];
+  const headers=[['State','Work item','Model / source','Timing','Reason'],['Request','Agent / tenant','Action','Age'],['Time','Request ID','Project','Agent','Tenant','Action / context','Result','Trace availability','Duration'],['State','Kind','Project','Action / context','Agent / tenant','Model','Created','Updated / duration','Links']];
   sections.forEach((section,index)=>{const row=section.querySelector('thead tr');if(row&&headers[index])row.innerHTML=headers[index].map(x=>`<th>${x}</th>`).join('')});
   work.insertAdjacentHTML('afterbegin','<section class="section work-summary"><div class="work-summary-head"><div><div class="work-kicker">Operations center</div><h2>Live work <span class="tiny">prioritized view</span></h2></div><span class="tiny">Click any row to inspect its trace</span></div><div class="work-kpis"><div><span>Queued</span><strong id="workQueued">—</strong></div><div><span>Running</span><strong id="workRunning">—</strong></div><div><span>Active API</span><strong id="workActive">—</strong></div><div><span>Retained traces</span><strong id="workRetained">—</strong></div></div><div class="work-filter"><input id="workSearch" type="search" placeholder="Search agent, tenant, action, model…" autocomplete="off"><select id="workState" aria-label="Work state"><option value="">All states</option><option value="running">Running</option><option value="queued">Queued</option><option value="failed">Failed</option><option value="completed">Completed</option></select><button class="btn" id="workReset">Reset</button><span class="work-filter-summary" id="workFilterSummary"></span></div></section>');
   $('workSearch').oninput=()=>last&&render(last);$('workState').onchange=()=>last&&render(last);$('workReset').onclick=()=>{$('workSearch').value='';$('workState').value='';if(last)render(last)};
@@ -4326,7 +4390,7 @@ function filterRecentRequests(items,allItems){
   if(actionSelect){actionSelect.innerHTML='<option value="">All endpoints ('+all.length+')</option>'+[...counts].sort((a,b)=>a[0].localeCompare(b[0])).map(([action,count])=>`<option value="${esc(action)}">${esc(action)} (${count})</option>`).join('');actionSelect.value=counts.has(selected)?selected:''}
   const query=String($('requestHistorySearch')?.value||'').trim().toLowerCase(),action=String(actionSelect?.value||''),status=String($('requestHistoryStatus')?.value||''),period=Number($('requestHistoryPeriod')?.value||0),after=period?Date.now()/1000-period:0;
   const visible=(items||[]).filter(item=>{
-    const code=Number(item.status_code||0),hay=[item.request_id,item.action,item.agent,item.tenant,item.error_type,code,traceContextLabel(requestTrace(item))].filter(Boolean).join(' ').toLowerCase();
+    const code=Number(item.status_code||0),hay=[item.request_id,item.action,item.project,item.agent,item.tenant,item.error_type,code,traceProjectLabel(item),traceContextLabel(requestTrace(item))].filter(Boolean).join(' ').toLowerCase();
     const matchesStatus=!status||(status==='failed'?(item.success===false||code>=400):Math.floor(code/100)===Number(status[0]));
     return (!query||hay.includes(query))&&(!action||String(item.action||'')===action)&&matchesStatus&&(!after||Number(item.created_at||0)>=after);
   });
@@ -4366,7 +4430,7 @@ function requestTraceAvailability(request){
   if(request.trace_available===false)return {label:'No trace recorded',className:'muted',trace:null};
   return {label:'No trace retained',className:'muted',trace:null};
 }
-function workRecentRequestRow(request){const trace=requestTrace(request),availability=requestTraceAvailability(request),failed=request.success===false||Number(request.status_code||0)>=400,context=trace?traceContextLabel(trace):(request.error_type||availability.label),requestId=String(request.request_id||'—'),inner=`<td>${request.created_at?new Date(request.created_at*1000).toLocaleString():'—'}</td><td><strong>${esc(requestId.slice(-12))}</strong><div class="tiny">${trace?'Trace linked · '+esc(String(trace.trace_id||'').slice(-8)):'Request-only record'}</div></td><td>${esc(request.agent||'—')}</td><td>${esc(request.tenant||'—')}</td><td><strong>${esc(request.action||'—')}</strong><div class="tiny">${esc(context)}</div></td><td><span class="${failed?'bad-t':'ok'}">${n(request.status_code)||'—'}</span>${request.error_type?`<div class="tiny">${esc(request.error_type)}</div>`:''}</td><td><span class="${availability.className}">${esc(availability.label)}</span></td><td>${ms(request.duration_ms)}</td>`;return requestRow(request,inner,8)}
+function workRecentRequestRow(request){const trace=requestTrace(request),availability=requestTraceAvailability(request),failed=request.success===false||Number(request.status_code||0)>=400,context=trace?traceContextLabel(trace):(request.error_type||availability.label),requestId=String(request.request_id||'—'),project=traceProjectLabel(request.project||request.workspace||request.root||trace?.project)||'—',inner=`<td>${request.created_at?new Date(request.created_at*1000).toLocaleString():'—'}</td><td><strong>${esc(requestId.slice(-12))}</strong><div class="tiny">${trace?'Trace linked · '+esc(String(trace.trace_id||'').slice(-8)):'Request-only record'}</div></td><td><strong>${esc(project)}</strong></td><td>${esc(request.agent||'—')}</td><td>${esc(request.tenant||'—')}</td><td><strong>${esc(request.action||'—')}</strong><div class="tiny">${esc(context)}</div></td><td><span class="${failed?'bad-t':'ok'}">${n(request.status_code)||'—'}</span>${request.error_type?`<div class="tiny">${esc(request.error_type)}</div>`:''}</td><td><span class="${availability.className}">${esc(availability.label)}</span></td><td>${ms(request.duration_ms)}</td>`;return requestRow(request,inner,9)}
 
 function renderAdoptionRows(items){
   const body=$('adoptionActions');if(!body)return;body.replaceChildren();
@@ -4652,15 +4716,15 @@ function requestRow(request,html,cols){const linked=lastTraces.find(x=>String(x.
 function renderTraceList(items){
   const base=workVisible(items||[]),kind=String($('traceKind')?.value||''),matching=base.filter(x=>!kind||x.kind===kind);
   const tableQuery=String($('traceTableSearch')?.value||'').trim().toLowerCase(),tableState=String($('traceTableState')?.value||''),tableSort=String($('traceTableSort')?.value||'newest');
-  const tableVisible=matching.filter(x=>{const state=traceStatus(x),hay=[x.trace_id,x.request_id,x.action,x.source,x.kind,x.agent,x.tenant,x.model,x.error_type,x.error,traceContextLabel(x)].filter(Boolean).join(' ').toLowerCase();return (!tableQuery||hay.includes(tableQuery))&&(!tableState||state===tableState)});
+  const tableVisible=matching.filter(x=>{const state=traceStatus(x),hay=[x.trace_id,x.request_id,x.action,x.source,x.kind,x.project,x.agent,x.tenant,x.model,x.error_type,x.error,traceProjectLabel(x),traceContextLabel(x)].filter(Boolean).join(' ').toLowerCase();return (!tableQuery||hay.includes(tableQuery))&&(!tableState||state===tableState)});
   tableVisible.sort((a,b)=>{const time=Number(a.updated_at||a.created_at||0)-Number(b.updated_at||b.created_at||0);if(tableSort==='oldest')return -time;if(tableSort==='action')return String(a.action||'').localeCompare(String(b.action||''))||-time;if(tableSort==='duration'){const ad=Number(a.updated_at||a.created_at||0)-Number(a.created_at||0),bd=Number(b.updated_at||b.created_at||0)-Number(b.created_at||0);return bd-ad||-time}if(tableSort==='state')return String(traceStatus(a)).localeCompare(String(traceStatus(b)))||-time;return -time});
   const historyQuery=String($('traceHistorySearch')?.value||'').trim().toLowerCase(),historyState=$('traceHistoryState')?.value||'useful';
   const sidebarVisible=matching.filter(x=>{const state=traceStatus(x),hay=[x.trace_id,x.request_id,x.action,x.source,x.kind,x.agent,x.tenant,x.model,x.error,traceContextLabel(x)].filter(Boolean).join(' ').toLowerCase();return (!historyQuery||hay.includes(historyQuery))&&(historyState==='useful'?(state!=='interrupted'&&state!=='failed'):(!historyState||state===historyState))});
   $('traceSummary').textContent=`${tableVisible.length} shown · ${n(items?.length||0)} retained · full prompt/output · bounded retention`;
   if($('workRetained'))$('workRetained').textContent=n(items?.length||0);
-  rows('traces',tableVisible,x=>{const state=traceStatus(x),cls='trace-'+state,links=[x.async_job_id&&('job '+String(x.async_job_id).slice(0,10)),x.scheduler_job_id&&('sched '+String(x.scheduler_job_id).slice(0,10))].filter(Boolean).join(' · '),activity=x.updated_at&&x.created_at?durSec(Math.max(0,Number(x.updated_at)-Number(x.created_at))):'—',context=traceContextLabel({...x,kind:'',model:''});return `<tr class="click" data-trace-id="${esc(x.trace_id)}"><td class="${cls}">${esc(humanLabel(state))}</td><td>${esc(humanLabel(x.kind||'trace'))}</td><td><strong>${esc(x.action||'—')}</strong><div class="tiny">${esc(context||'No request details')}</div></td><td>${esc(x.agent||'—')}<div class="tiny">${esc(x.tenant||'—')}</div></td><td>${esc(x.model||'—')}</td><td>${x.created_at?new Date(x.created_at*1000).toLocaleTimeString():'—'}</td><td>${x.updated_at?new Date(x.updated_at*1000).toLocaleTimeString():'—'}<div class="tiny">${esc(activity)} total</div></td><td class="tiny">${esc(links||'open trace')}</td></tr>`},8);
+  rows('traces',tableVisible,x=>{const state=traceStatus(x),cls='trace-'+state,links=[x.async_job_id&&('job '+String(x.async_job_id).slice(0,10)),x.scheduler_job_id&&('sched '+String(x.scheduler_job_id).slice(0,10))].filter(Boolean).join(' · '),activity=x.updated_at&&x.created_at?durSec(Math.max(0,Number(x.updated_at)-Number(x.created_at))):'—',context=traceContextLabel({...x,kind:'',model:''}),project=traceProjectLabel(x)||'—';return `<tr class="click" data-trace-id="${esc(x.trace_id)}"><td class="${cls}">${esc(humanLabel(state))}</td><td>${esc(humanLabel(x.kind||'trace'))}</td><td><strong>${esc(project)}</strong></td><td><strong>${esc(x.action||'—')}</strong><div class="tiny">${esc(context||'No request details')}</div></td><td>${esc(x.agent||'—')}<div class="tiny">${esc(x.tenant||'—')}</div></td><td>${esc(x.model||'—')}</td><td>${x.created_at?new Date(x.created_at*1000).toLocaleTimeString():'—'}</td><td>${x.updated_at?new Date(x.updated_at*1000).toLocaleTimeString():'—'}<div class="tiny">${esc(activity)} total</div></td><td class="tiny">${esc(links||'open trace')}</td></tr>`},9);
   $('traceSideSummary').textContent=`${sidebarVisible.length} trace${sidebarVisible.length===1?'':'s'} · click to inspect`;
-  $('traceSidebarList').innerHTML=sidebarVisible.length?sidebarVisible.map(x=>{const state=traceStatus(x),label=state==='interrupted'?'Interrupted':state,cls=state==='interrupted'?'interrupted':(state==='failed'||state==='error'?'failed':(x.terminal||state==='completed'||state==='succeeded'?'done':'')),kindLabel=x.kind==='api_request'?'API request':humanLabel(x.kind||'trace'),context=traceContextLabel({...x,kind:'',model:''});return `<button class="trace-side-item ${String(x.trace_id)===activeTraceId?'active':''}" data-trace-page-id="${esc(x.trace_id)}"><span class="trace-side-top"><span class="trace-side-state ${cls}"></span><span class="trace-side-action">${esc(x.action||x.kind||'Trace')}</span><span class="tiny spacer">${esc(label)}</span></span><span class="trace-side-meta">${esc(context||x.agent||'unknown agent')}</span><span class="trace-side-meta">${esc(x.agent||'unknown agent')} · ${esc(kindLabel)} · ${x.updated_at?new Date(x.updated_at*1000).toLocaleTimeString():'—'} · ${esc(x.tenant||'no tenant')}</span></button>`}).join(''):'<div class="empty-human">No retained traces</div>';
+  $('traceSidebarList').innerHTML=sidebarVisible.length?sidebarVisible.map(x=>{const state=traceStatus(x),label=state==='interrupted'?'Interrupted':state,cls=state==='interrupted'?'interrupted':(state==='failed'||state==='error'?'failed':(x.terminal||state==='completed'||state==='succeeded'?'done':'')),kindLabel=x.kind==='api_request'?'API request':humanLabel(x.kind||'trace'),context=traceContextLabel({...x,kind:'',model:''}),project=traceProjectLabel(x)||'Project not recorded';return `<button class="trace-side-item ${String(x.trace_id)===activeTraceId?'active':''}" data-trace-page-id="${esc(x.trace_id)}"><span class="trace-side-top"><span class="trace-side-state ${cls}"></span><span class="trace-side-action">${esc(x.action||x.kind||'Trace')}</span><span class="tiny spacer">${esc(label)}</span></span><span class="trace-side-meta">${esc(project)} · ${esc(context||x.agent||'unknown agent')}</span><span class="trace-side-meta">${esc(x.agent||'unknown agent')} · ${esc(kindLabel)} · ${x.updated_at?new Date(x.updated_at*1000).toLocaleTimeString():'—'} · ${esc(x.tenant||'no tenant')}</span></button>`}).join(''):'<div class="empty-human">No retained traces</div>';
 }
 async function pollTraces(){try{const kind=$('traceKind')?.value||'',suffix=kind?'&kind='+encodeURIComponent(kind):'',r=await apiFetch('/api/debug-traces?limit=200'+suffix,{cache:'no-store'}),d=await r.json();if(d.success){lastTraces=d.items||[];renderTraceList(lastTraces)}}catch(e){console.warn('trace refresh failed',e)}}
 $('traceRefresh')?.addEventListener('click',pollTraces);$('traceKind')?.addEventListener('change',()=>renderTraceList(lastTraces));
@@ -5090,13 +5154,13 @@ async function viewTrajectory(taskId){
     list.innerHTML=evs.map(ev=>{
       const kind=esc(ev.event_type||ev.kind||'event');
       const time=ev.timestamp?new Date(ev.timestamp*1000).toLocaleTimeString():'';
-      const payload=typeof ev.payload==='object'?JSON.stringify(ev.payload,null,2):String(ev.payload||'');
+       const payload=traceOutputValueMarkup(ev.payload, null, 5000);
       return `<div class="trace-event" style="border-left:2px solid var(--accent);padding:8px;margin-bottom:8px;background:#0d1219;border-radius:4px">
         <div style="display:flex;justify-content:space-between;margin-bottom:4px">
           <span class="chip"><b>${kind}</b></span>
           <span class="tiny muted">#${ev.seq||0} · ${time}</span>
         </div>
-        <pre style="margin:0;font-size:11px;color:#d7e2ef;max-height:160px;overflow:auto">${esc(payload)}</pre>
+         <div style="margin:0;font-size:11px;color:#d7e2ef;max-height:220px;overflow:auto">${payload}</div>
       </div>`;
     }).join('');
   }catch(err){
