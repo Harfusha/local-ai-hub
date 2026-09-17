@@ -36,7 +36,7 @@ def _normalize_agent(agent: str | None) -> str:
     return "generic"
 
 
-def _dense_text(text: str, max_chars: int) -> str:
+def _dense_text(text: str, max_chars: int, *, artifact_backed: bool = True) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text.strip())
     if len(text) <= max_chars:
         return text
@@ -44,7 +44,9 @@ def _dense_text(text: str, max_chars: int) -> str:
     newline = cut.rfind("\n")
     if newline > max_chars * 0.65:
         cut = cut[:newline]
-    return cut + "\n[…more available via artifact…]"
+    if artifact_backed:
+        return cut + "\n[…more available via artifact…]"
+    return cut + "\n[…truncated…]"
 
 
 class AgentProjector:
@@ -291,9 +293,10 @@ class AgentProjector:
             data["summary"] = _dense_text(data["summary"], min(max_text, 1000))
 
         # Raw command streams are intentionally tiny. Full content is artifact-backed.
+        has_artifact = bool(data.get("artifact_id"))
         stream_limit = max(160, min(650, max_text // 3))
         if isinstance(data.get("stdout"), str):
-            data["stdout"] = _dense_text(data["stdout"], stream_limit)
+            data["stdout"] = _dense_text(data["stdout"], stream_limit, artifact_backed=has_artifact)
         if isinstance(data.get("stderr"), str) and len(data["stderr"]) > stream_limit:
             data["stderr"] = "[…head omitted…]\n" + data["stderr"][-stream_limit:]
 

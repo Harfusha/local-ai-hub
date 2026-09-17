@@ -22,6 +22,13 @@ def _config(tmp_path, **overrides):
     return {"server": {"state_dir": str(tmp_path)}, "debug_traces": values}
 
 
+def test_trace_list_defaults_to_200_and_accepts_higher_configured_limit(tmp_path):
+    default_config = _config(tmp_path / "default")
+    del default_config["debug_traces"]["max_list_limit"]
+    assert DebugTraceStore(default_config).max_list_limit == 200
+    assert DebugTraceStore(_config(tmp_path / "custom", max_list_limit=500)).max_list_limit == 500
+
+
 def test_trace_detail_preserves_ordered_full_debug_content(tmp_path):
     store = DebugTraceStore(_config(tmp_path))
     trace_id = store.start(kind="async_job", tenant="tenant", agent="codex", action="reason")

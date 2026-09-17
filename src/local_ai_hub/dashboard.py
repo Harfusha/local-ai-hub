@@ -16,6 +16,7 @@ body{margin:0;background:var(--bg);color:var(--fg);line-height:1.45;font-size:12
 button,input,select,textarea{font:inherit}
 .top{position:sticky;top:0;z-index:25;background:rgba(9,13,20,0.92);border-bottom:1px solid var(--line);backdrop-filter:blur(14px)}
 .toolbar{display:flex;align-items:center;gap:10px;padding:9px 16px;flex-wrap:wrap}
+.toolbar select{background:#172233;color:var(--fg);border:1px solid #2e405a;border-radius:5px;padding:3px 8px;font-size:11px}
 .brand-wrap{display:flex;align-items:center;gap:8px;margin-right:6px}
 .brand{font-weight:750;font-size:14px;color:var(--fg-bright);letter-spacing:-.015em}
 .brand-icon{color:var(--accent);font-size:16px}

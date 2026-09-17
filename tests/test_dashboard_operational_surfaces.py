@@ -31,3 +31,16 @@ def test_destructive_controls_describe_scope_and_impact() -> None:
     assert "Purge expired cache" in DASHBOARD_HTML
     assert "Scope and impact" in DASHBOARD_HTML
     assert "function openControlConfirmation" in DASHBOARD_HTML
+
+
+def test_reliability_summary_footer_padding_and_severity_contract() -> None:
+    assert 'class="reliability-footer"' in DASHBOARD_HTML
+    assert 'id="reliabilityTrend"' in DASHBOARD_HTML
+    assert 'id="reliabilityAction"' in DASHBOARD_HTML
+    footer_idx = DASHBOARD_HTML.index('class="reliability-footer"')
+    trend_idx = DASHBOARD_HTML.index('id="reliabilityTrend"')
+    action_idx = DASHBOARD_HTML.index('id="reliabilityAction"')
+    assert footer_idx < trend_idx < action_idx
+    # Assert active crash rather than any historical crash determines attention severity
+    assert "activeCrash" in DASHBOARD_HTML
+    assert "failures||activeCrash?'attention':restarts?'warning':'healthy'" in DASHBOARD_HTML

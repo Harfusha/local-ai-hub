@@ -814,7 +814,7 @@ class LocalAIApp:
                 if rtype == "memory" and getattr(self, "agent_memory", None):
                     rec = MemoryRecord.create(
                         kind=MemoryKind(rdata.get("kind", "fact")),
-                        scope=AgentScope(rdata.get("scope", "task")),
+                        scope=AgentScope.parse(rdata.get("scope", "task")),
                         key=str(rdata.get("key", "")),
                         value=rdata.get("value"),
                         scope_id=str(rdata.get("scope_id", "")),

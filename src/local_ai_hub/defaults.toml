@@ -219,7 +219,7 @@ max_events_per_session = 20000
 max_event_bytes = 65536
 max_session_text_bytes = 8388608
 cleanup_batch_size = 50
-max_list_limit = 100
+max_list_limit = 200
 
 [ollama]
 num_parallel = 2

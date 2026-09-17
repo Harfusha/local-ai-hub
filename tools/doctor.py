@@ -12,6 +12,7 @@ from typing import Any
 
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root / "src"))
+from local_ai_hub import __version__
 from local_ai_hub.client import HubClient
 from local_ai_hub.config import load_config
 from local_ai_hub.doctor_support import probe_hub_status
@@ -212,7 +213,7 @@ if state_dir.is_dir():
         warnings.append(f"Found {len(corrupt_files)} quarantined database file(s) in {state_dir} ({total_sz} bytes). Clean via clean_quarantined_files.")
 
 report = {
-    "version": status.get("version") if isinstance(status, dict) else None,
+    "version": (status.get("version") if isinstance(status, dict) else None) or __version__,
     "python": sys.version.split()[0],
     "config": {
         "user": cfg.get("_config_path"),
@@ -293,7 +294,7 @@ def format_doctor_report(rep: dict[str, Any]) -> str:
     hw = rt.get("hardware", {})
 
     hub_ok = rt.get("hub_online", False)
-    ver = rep.get("version", "unknown")
+    ver = rep.get("version") or __version__
     py_ver = rep.get("python", sys.version.split()[0])
     hub_sym = "[✓]" if hub_ok else "[✗]"
     lines.append(f"{hub_sym} Hub Server:        {'Online' if hub_ok else 'Offline'} (v{ver}, Python {py_ver})")

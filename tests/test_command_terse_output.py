@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from local_ai_hub.commands import CommandBroker
-from local_ai_hub.projection import AgentProjector
+from local_ai_hub.projection import AgentProjector, _dense_text
 
 
 class _Artifacts:
@@ -101,3 +101,35 @@ def test_command_broker_failure_terse(tmp_path: Path):
     assert "classification" not in projected
     assert "timed_out" not in projected
     assert "cancelled" not in projected
+
+
+def test_command_creates_artifact_for_moderate_output(tmp_path: Path):
+    import sys
+    broker = CommandBroker(
+        config={"server": {"state_dir": str(tmp_path / "state")}, "commands": {"enabled": True}},
+        artifacts=_Artifacts(),
+        repo_state=_MockRepoState(),
+    )
+    # Output of ~600 chars: >300 chars, <5000 chars inline limit
+    raw_res = broker.run(f'{sys.executable} -c "print(\'x\' * 600)"', str(tmp_path), tenant="test_agent")
+
+    assert raw_res["success"] is True
+    assert raw_res.get("artifact_id") == "art-123"
+
+    projector = AgentProjector({})
+    projected = projector.project(raw_res, agent="generic", task_kind="command")
+
+    assert projected["success"] is True
+    assert projected.get("artifact_id") == "art-123"
+    assert "[…more available via artifact…]" in projected["stdout"]
+
+
+def test_dense_text_without_artifact_uses_truncated_marker():
+    long_text = "line\n" * 100
+    res_with_artifact = _dense_text(long_text, 200, artifact_backed=True)
+    assert "[…more available via artifact…]" in res_with_artifact
+    assert "[…truncated…]" not in res_with_artifact
+
+    res_without_artifact = _dense_text(long_text, 200, artifact_backed=False)
+    assert "[…truncated…]" in res_without_artifact
+    assert "[…more available via artifact…]" not in res_without_artifact

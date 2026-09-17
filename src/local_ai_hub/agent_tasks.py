@@ -73,11 +73,22 @@ class GoalContract:
     risk_profile: str = "normal"
     slo_profile: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.scope, AgentScope):
+            object.__setattr__(self, "scope", AgentScope.parse(self.scope))
+        if not isinstance(self.acceptance_criteria, tuple):
+            object.__setattr__(self, "acceptance_criteria", tuple(self.acceptance_criteria or ()))
+        if not isinstance(self.non_goals, tuple):
+            object.__setattr__(self, "non_goals", tuple(self.non_goals or ()))
+        if not isinstance(self.constraints, tuple):
+            object.__setattr__(self, "constraints", tuple(self.constraints or ()))
+
     def to_dict(self) -> dict[str, Any]:
+        scope_val = self.scope.value if isinstance(self.scope, AgentScope) else (getattr(self.scope, "value", None) or str(self.scope))
         return {
             "goal": self.goal,
             "acceptance_criteria": list(self.acceptance_criteria),
-            "scope": self.scope.value,
+            "scope": scope_val,
             "non_goals": list(self.non_goals),
             "constraints": list(self.constraints),
             "risk_profile": self.risk_profile,
