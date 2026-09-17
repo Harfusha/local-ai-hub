@@ -1803,7 +1803,7 @@ function renderAny(value){
   if(typeof value==='object'){const entries=Object.entries(value);return entries.length?`<div class="human-grid">${entries.map(([k,v])=>`<div>${esc(humanLabel(k))}</div><div>${renderAny(v)}</div>`).join('')}</div>`:'<div class="empty-human">empty object</div>'}
   return `<span class="human-value">${esc(String(value))}</span>`;
 }
-function traceSensitiveField(key){return /(api[_-]?key|authorization|token|secret|password|passwd|credential|cookie|set[-_]?cookie|private[-_]?key|privatekey|passphrase|pem|ssh[-_]?key|certificate)/i.test(String(key||''));}
+function traceSensitiveField(key){const normalized=String(key||'').replace(/([a-z])([A-Z])/g,'$1_$2').toLowerCase();return /(?:^|[_-])(?:api[-_]?key|access[-_]?token|refresh[-_]?token|auth[-_]?token|id[-_]?token|bearer[-_]?token|authorization|secret|password|passwd|credential|cookie|set[-_]?cookie|private[-_]?key|privatekey|passphrase|pem|ssh[-_]?key|certificate)(?:$|[_-])/.test(normalized)||/(?:^|[_-])token(?:$|[_-](?:id|value|key|secret|hash|header|credential|authorization|password))/.test(normalized);}
 function traceSanitizeValue(value,seen=new WeakSet(),reveal=traceRevealRedactedDetails){
   const cycleMarker='<cycle omitted>';
   if(value===null||value===undefined||typeof value==='number'||typeof value==='boolean')return value;
@@ -2249,9 +2249,11 @@ function traceSummaryCard(title,value,budget,options={}){
   return `<section class="trace-summary-card ${esc(options.tone||'')}" data-field="${esc(options.key||title)}"><h3>${esc(title)}</h3><div class="trace-summary-value">${traceHumanValue(val,budget,options.limit||4000)}</div></section>`;
 }
 function traceCodeBlock(title,value,budget,options={}){
-  const val=tracePresentationValue(value,options.limit||8000,budget);
+  const limit=options.limit||8000,state=budget||traceRenderBudget(limit);
+  if(budget)state.remaining=Math.min(state.remaining,limit);
+  const val=tracePresentationValue(value,limit,state);
   if(!tracePrimaryMeaningfulValue(val,options.key||title))return '';
-  return `<section class="trace-code-card"><h3>${esc(title)}</h3><pre class="trace-output">${esc(traceInlineText(val,options.limit||8000))}</pre></section>`;
+  return `<section class="trace-code-card"><h3>${esc(title)}</h3><pre class="trace-output">${esc(traceInlineText(val,limit))}</pre></section>`;
 }
 function traceList(title,items,budget,renderItem){
   const values=(Array.isArray(items)?items:[]).filter(item=>traceMeaningfulValue(item));
@@ -2306,8 +2308,8 @@ function renderRepoIntelligencePresentation(model){
     traceMeaningfulValue(repo.root)?traceSummaryCard('root',repo.root,budget):'',
     traceMeaningfulValue(operation)?traceSummaryCard('operation',operation,budget):'',
     traceMeaningfulValue(repo.query)?traceSummaryCard('query',repo.query,budget):'',
-    traceMeaningfulValue(repo.files??repo.changed_files)?traceSummaryCard('files',repo.files??repo.changed_files,budget):'',
-    traceMeaningfulValue(repo.symbols)?traceSummaryCard('symbols',repo.symbols,budget):'',
+    traceMeaningfulValue(repo.files??repo.changed_files)?(Array.isArray(repo.files??repo.changed_files)?traceList('files',repo.files??repo.changed_files,budget):traceSummaryCard('files',repo.files??repo.changed_files,budget)):'',
+    traceMeaningfulValue(repo.symbols)?(Array.isArray(repo.symbols)?traceList('symbols',repo.symbols,budget):traceSummaryCard('symbols',repo.symbols,budget)):'',
     traceMeaningfulValue(repo.context)?traceSummaryCard('context',repo.context,budget):''
   ];
   const right=[
@@ -2338,7 +2340,7 @@ function renderAsyncJobPresentation(model){
     traceMeaningfulValue(workerInput)?traceSummaryCard('worker input',workerInput,budget):''
   ];
   const right=[
-    traceMeaningfulValue(result)?(Array.isArray(result)?traceList('result',result,budget):traceSummaryCard('result',result,budget)):'',
+    traceMeaningfulValue(result)?traceCodeBlock('result',result,budget):'',
     traceMeaningfulValue(error)?traceSummaryCard('error',error,budget):'',
     traceMeaningfulValue(jobId)?traceSummaryCard('job id',jobId,budget):'',
     traceMeaningfulValue(correlation)?traceSummaryCard('correlation',correlation,budget):''
@@ -2356,7 +2358,7 @@ function renderRequestResponsePresentation(model){
   ];
   const right=[
     traceMeaningfulValue(safeModel.response)?traceSummaryCard('response',safeModel.response,budget):'<div class="trace-summary-card"><h3>response</h3><span class="trace-primary-empty">No response captured</span></div>',
-    traceMeaningfulValue(safeModel.output)?(Array.isArray(safeModel.output)?traceList('output',safeModel.output,budget):traceSummaryCard('output',safeModel.output,budget)):'',
+    traceMeaningfulValue(safeModel.output)?traceCodeBlock('output',safeModel.output,budget):'',
     traceMeaningfulValue(statusVal)?traceSummaryCard('status',statusVal,budget):'',
     traceMeaningfulValue(safeModel.errors)?traceSummaryCard('error',safeModel.errors,budget):''
   ];
