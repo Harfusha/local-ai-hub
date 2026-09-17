@@ -70,11 +70,14 @@ class Supervisor:
         if os.name == "nt":
             try:
                 import ctypes
-                name_hash = hashlib.sha1(str(self.state_dir).lower().encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
-                handle = ctypes.windll.kernel32.CreateMutexW(None, False, f"Local\\LocalAIHubSupervisor-{name_hash}")
-                if not handle or ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+                resolved_state = str(self.state_dir.resolve()).lower().encode("utf-8")
+                name_hash = hashlib.sha1(resolved_state, usedforsecurity=False).hexdigest()[:16]
+                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                handle = kernel32.CreateMutexW(None, True, f"Local\\LocalAIHubSupervisor-{name_hash}")
+                err = ctypes.get_last_error()
+                if not handle or err == 183:  # ERROR_ALREADY_EXISTS
                     if handle:
-                        ctypes.windll.kernel32.CloseHandle(handle)
+                        kernel32.CloseHandle(handle)
                     return False
                 self._mutex_handle = int(handle)
                 self.lock_path.write_text(str(os.getpid()), encoding="utf-8")
@@ -101,8 +104,9 @@ class Supervisor:
         if self._mutex_handle and os.name == "nt":
             try:
                 import ctypes
-                ctypes.windll.kernel32.ReleaseMutex(self._mutex_handle)
-                ctypes.windll.kernel32.CloseHandle(self._mutex_handle)
+                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                kernel32.ReleaseMutex(self._mutex_handle)
+                kernel32.CloseHandle(self._mutex_handle)
             except Exception:
                 pass
             self._mutex_handle = None
