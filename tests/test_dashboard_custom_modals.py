@@ -714,6 +714,78 @@ def test_trace_model_chat_runtime_enforces_cumulative_payload_budget() -> None:
     assert "oversized_key_239" not in html
 
 
+def test_trace_model_chat_runtime_caps_final_html_across_repeated_large_messages() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    redact = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function redactDiagnostic(") : DASHBOARD_HTML.index(
+            "// Lightweight pure-canvas"
+        )
+    ]
+    large = "message-payload-" + ("z" * 4800)
+    fixture = {
+        "presentation": {
+            "kind": "model_chat",
+            "chatTurns": [
+                {"step": index + 1, "input": {"messages": [{"role": "user", "content": large}]}, "output": large}
+                for index in range(10)
+            ],
+            "modelInput": {"messages": [{"role": "user", "content": large}]},
+            "modelOutput": large,
+        },
+        "session": {"model": "fixture-model"},
+        "actor": {},
+        "correlations": {},
+        "identity": {},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));const n=v=>String(v??0);"
+        + redact
+        + "let traceRevealRedactedDetails=false;"
+        + source
+        + f"console.log(JSON.stringify(renderModelChatPresentation({json.dumps(fixture)})));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    html = json.loads(result.stdout)
+    assert len(html) <= 24000
+    assert "payload budget" in html.lower()
+
+
+def test_trace_model_chat_runtime_redacts_embedded_pem_certificate_and_ssh_keys() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    redact = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function redactDiagnostic(") : DASHBOARD_HTML.index(
+            "// Lightweight pure-canvas"
+        )
+    ]
+    embedded = '{"pem":"pem-secret","certificate":"certificate-secret","ssh-key":"ssh-secret","cookie":"cookie-secret","private-key":"private-secret"}'
+    fixture = {
+        "presentation": {
+            "kind": "model_chat",
+            "chatTurns": [],
+            "modelInput": {"metadata": embedded, "messages": [{"role": "user", "content": "safe"}]},
+            "modelOutput": "ok",
+        },
+        "session": {"model": "fixture-model"},
+        "actor": {},
+        "correlations": {},
+        "identity": {},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));const n=v=>String(v??0);"
+        + redact
+        + "let traceRevealRedactedDetails=false;"
+        + source
+        + f"console.log(JSON.stringify(renderModelChatPresentation({json.dumps(fixture)})));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    html = json.loads(result.stdout)
+    for secret in ["pem-secret", "certificate-secret", "ssh-secret", "cookie-secret", "private-secret"]:
+        assert secret not in html
+    assert "redacted" in html.lower()
+
+
 def test_trace_raw_projection_bounds_events_before_sanitization() -> None:
     bounded_events_source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function traceBoundedEvents(") : DASHBOARD_HTML.index(
