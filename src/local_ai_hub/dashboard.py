@@ -1989,7 +1989,7 @@ function renderHumanModal(obj){
 function traceTab(label,id){const selected=traceView===id;return `<button class="trace-tab ${selected?'active':''}" id="trace-tab-${esc(id)}" role="tab" data-trace-view="${esc(id)}" aria-selected="${selected}" aria-controls="trace-panel-${esc(id)}" tabindex="${selected?'0':'-1'}">${esc(label)}</button>`}
 function traceStatus(item){const state=String(item?.state||'queued');return state==='failed'&&/hub restarted|service stopped|shutdown/i.test(String(item?.error||''))?'interrupted':state}
 function traceDisplayState(item){const state=traceStatus(item);return state==='interrupted'?'Interrupted':humanLabel(state)}
-function traceBoundedEvents(events,eventLimit=100){const list=Array.isArray(events)?events:[],requestReceived=list.find(event=>event?.event_type==='request_received'),latest=list.slice(-eventLimit),visible=requestReceived&&!latest.includes(requestReceived)?[requestReceived,...latest]:latest,budget={remaining:24000,truncated:false};return {events:visible.map(event=>traceRawBoundValue(traceRawBoundValue(event,2048),2048,0,budget)),eventsTotal:list.length,eventsTruncated:list.length>visible.length||budget.truncated};}
+function traceBoundedEvents(events,eventLimit=100){const list=Array.isArray(events)?events:[],requestReceived=list.find(event=>event?.event_type==='request_received'),latest=list.slice(-eventLimit),visible=requestReceived&&!latest.includes(requestReceived)?[requestReceived,...latest]:latest,budget={remaining:24000,truncated:false};return {events:visible.map(event=>traceRawBoundValue(event,2048,0,budget)),eventsTotal:list.length,eventsTruncated:list.length>visible.length||budget.truncated};}
 function traceRawBoundValue(value,limit=4096,depth=0){
   const budget=arguments.length>3?arguments[3]:null,marker='<payload budget truncated>';
   if(budget&&budget.remaining<=0){budget.truncated=true;return marker;}
@@ -2026,7 +2026,7 @@ function tracePresentationKind(model){
   return 'request_response';
 }
 function traceChatTurns(events){
-  const turns=[],list=events||[];let current=null;
+  const turns=[],list=Array.isArray(events)?events:[];let current=null;
   list.forEach(event=>{
     const type=String(event?.event_type||''),payload=traceSanitizeValue(event?.payload||{});
     if(type==='model_request'){current={step:payload.step||turns.length+1,input:payload,output:'',tools:[]};turns.push(current);}
@@ -2040,12 +2040,12 @@ function traceChatTurns(events){
   return turns.slice(-100);
 }
 function tracePresentationData(model){
-  const events=model.events||[],turns=traceChatTurns(events);
+  const events=Array.isArray(model?.events)?model.events:[],turns=traceChatTurns(events);
   return {kind:tracePresentationKind(model),chatTurns:turns,toolInteractions:(model.toolCalls||[]).slice(-100),requestEnvelope:model.session?.request||{},modelInput:model.input,modelOutput:model.output,command:traceMergeRecorded(events,['command','cmd','args','arguments','input','stdin','stdout','stderr','exit_code','exitCode','retries','retry_count','attempts','duration','duration_ms','elapsed_ms']),review:traceMergeRecorded(events,['request','context','diff','findings','recommendation','status','severity_counts','severityCounts']),repoOperation:traceMergeRecorded(events,['repository','repo','root','operation','action','query','files','symbols','context','result','output','response']),retrieval:traceMergeRecorded(events,['query','sources','results','hits','score','scores','provider','answer','truncated','truncation']),asyncJob:traceMergeRecorded(events,['status','queue_wait_ms','queue_wait','queue_time_ms','retries','retry_count','attempts','worker_input','input','result','output','error']),lifecycle:model.lifecycle};
 }
 function traceMergeRecorded(events,keys){
   const merged=Object.create(null),flattenKeys=new Set(['command','cmd','review','repo_operation','retrieval','rag','async_job']);let found=false;
-  (events||[]).forEach(event=>{const payload=event?.payload;if(!payload||typeof payload!=='object')return;keys.forEach(key=>{const value=payload[key];if(value===undefined||value===null)return;found=true;if(value&&typeof value==='object'&&!Array.isArray(value)&&flattenKeys.has(key))Object.assign(merged,value);else merged[key]=value;});});
+  (Array.isArray(events)?events:[]).forEach(event=>{const payload=event?.payload;if(!payload||typeof payload!=='object')return;keys.forEach(key=>{const value=payload[key];if(value===undefined||value===null)return;found=true;if(value&&typeof value==='object'&&!Array.isArray(value)&&flattenKeys.has(key))Object.assign(merged,value);else merged[key]=value;});});
   return found?merged:undefined;
 }
 function tracePresentationBound(value,budget,depth=0){
