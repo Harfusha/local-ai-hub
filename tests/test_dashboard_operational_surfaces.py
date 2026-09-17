@@ -44,3 +44,22 @@ def test_reliability_summary_footer_padding_and_severity_contract() -> None:
     # Assert active crash rather than any historical crash determines attention severity
     assert "activeCrash" in DASHBOARD_HTML
     assert "failures||activeCrash?'attention':restarts?'warning':'healthy'" in DASHBOARD_HTML
+
+
+def test_dashboard_ux_refinements_and_empty_states() -> None:
+    # 1. Control popover & buttons
+    assert "Pause live events" in DASHBOARD_HTML
+    assert ".control-popover .tiny.muted" in DASHBOARD_HTML
+    # 2. Toolbar select dark theme
+    assert ".toolbar select" in DASHBOARD_HTML
+    # 3. Live events header row
+    assert 'class="event-header"' in DASHBOARD_HTML
+    assert "Action / Stage" in DASHBOARD_HTML
+    # 4. Styled empty table state
+    assert "No active items recorded" in DASHBOARD_HTML
+    # 5. Worktrees toolbar
+    assert 'id="worktreeRoot" placeholder="Repository root"' in DASHBOARD_HTML
+    # 6. Reliability tab auto-tail
+    assert "if(tabId==='reliability')loadLogsTail();" in DASHBOARD_HTML
+    # 7. Bundles table wrap
+    assert '<div class="table-wrap"><table><thead><tr><th>Repository identity</th>' in DASHBOARD_HTML

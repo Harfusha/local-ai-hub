@@ -12,6 +12,7 @@ class _Flight:
 
 def test_repo_cache_outcome_is_promoted_to_top_level_response():
     services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"features": {"enriched_search": True}}
     services.repo_flight = _Flight()
     services._touch_project = lambda _root: None
     services._repo_cache_state = lambda _root: {"fingerprint": "rev", "kind": "filesystem"}
@@ -80,6 +81,7 @@ def test_enriched_repo_search_returns_symbol_and_evidence_for_hit(tmp_path: Path
         lambda _source, _path, _line: {"name": "target", "kind": "function", "line": 1, "end_line": 2, "name_path": "target"},
     )
     services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"features": {"enriched_search": True}}
     services.repo_flight = _Flight()
     services._touch_project = lambda _root: None
     services._repo_cache_state = lambda _root: {"fingerprint": "rev", "kind": "filesystem"}

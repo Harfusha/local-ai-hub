@@ -64,7 +64,6 @@ button,input,select,textarea{font:inherit}
 .sub{color:#94a3b8;font-size:11px;margin-top:5px;line-height:1.45}
 .section{margin-top:12px;overflow:hidden;border-radius:9px}
 .section h2{font-size:12.5px;margin:0;padding:10px 14px;background:var(--panel-head);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:8px;font-weight:600}
-.section.rag-narrow{width:min(100%, 960px);max-width:960px;margin:12px auto 0}
 .table-wrap{overflow:auto;max-height:520px}
 table{width:100%;border-collapse:collapse;font-size:11px}
 th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #1a2538;white-space:nowrap}
@@ -78,6 +77,7 @@ tbody tr.click:hover{background:#162338}
 @media(max-width:860px){.split{grid-template-columns:1fr}.hide-sm{display:none}}
 .bar{height:5px;background:#202c3e;border-radius:4px;overflow:hidden;margin-top:6px}
 .bar>i{display:block;height:100%;background:#38bdf8}
+.event-header{display:grid;grid-template-columns:82px 72px 110px 130px minmax(180px,1fr) 90px 85px;gap:7px;border-bottom:1px solid var(--line-light);padding:8px 10px;font-size:11px;font-weight:600;color:var(--muted);background:var(--panel-head)}
 .event{display:grid;grid-template-columns:82px 72px 110px 130px minmax(180px,1fr) 90px 85px;gap:7px;border-bottom:1px solid #1a2538;padding:7px 10px;font-size:11px}
 .event:hover{background:#162338}
 .events{max-height:650px;overflow:auto}
@@ -119,6 +119,7 @@ tbody tr.click:hover{background:#162338}
 .control-popover{position:absolute;right:0;top:calc(100% + 7px);z-index:30;min-width:330px;padding:10px;background:#10161d;border:1px solid #394758;border-radius:8px;box-shadow:0 16px 45px #000b;display:grid;grid-template-columns:1fr 1fr;gap:7px}
 .control-popover .token{grid-column:1/-1;display:flex;gap:6px}
 .control-popover .token input{min-width:0;flex:1;background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:6px 8px;font-size:11px}
+.control-popover .tiny.muted{grid-column:1/-1;padding-top:4px;font-weight:600;color:var(--muted);letter-spacing:0.02em}
 .control-popover button{width:100%}
 .project-toolbar{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
 .project-toolbar input,.project-toolbar select{background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:7px 9px;font-size:11px}
@@ -137,7 +138,7 @@ tbody tr.click:hover{background:#162338}
 .primary-metric{font-size:20px;font-weight:650}
 .sub strong{color:var(--fg)}
 .spark-canvas{width:100%;height:32px;display:block;margin-top:6px}
-@media(max-width:980px){.split{grid-template-columns:1fr}.event{grid-template-columns:72px 90px 1fr}.hide-sm{display:none}.page{padding:8px}.value{font-size:17px}}
+@media(max-width:980px){.split{grid-template-columns:1fr}.event,.event-header{grid-template-columns:72px 90px 1fr}.hide-sm{display:none}.page{padding:8px}.value{font-size:17px}}
 @media(max-width:700px){.toolbar{padding:8px;gap:6px}.toolbar .brand{font-size:12px}.toolbar>.tiny{display:none}.control-menu{margin-left:0}.control-popover{position:fixed;left:8px;right:8px;top:72px;min-width:0}.tabs{padding:0 6px 6px}.tabbtn{padding:6px 8px}.project-toolbar{align-items:stretch}.project-toolbar input{flex-basis:100%}.project-summary{margin-left:0;width:100%}}
 </style><style>
 .system-card .value{font-size:15px}
@@ -274,7 +275,7 @@ tbody tr.click:hover{background:#162338}
         <div class="tiny muted">Diagnostics</div>
         <button class="btn ok" id="optDbBtn">Optimize databases</button>
         <button class="btn" id="doctorBtn">Run diagnostics</button>
-        <button class="btn" id="pauseEvents">Pause event display</button>
+        <button class="btn" id="pauseEvents">Pause live events</button>
         <div class="tiny muted">Runtime control</div>
         <button class="btn warn" id="prepToggle">Pause preprocessing</button>
         <button class="btn" id="restartHub" data-control-action="restart_hub">Restart hub service</button>
@@ -446,11 +447,11 @@ tbody tr.click:hover{background:#162338}
   <div class="split"><section class="section"><h2>Command broker statistics</h2><div id="commandStats" class="kv"></div></section><section class="section"><h2>Blocked by policy</h2><div class="table-wrap"><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody id="blockedReasons"></tbody></table></div></section></div>
   <section class="section" style="margin-top:12px">
     <h2>Active Git Worktrees &amp; Subagent Sandboxes <span class="tiny" id="worktreeSummary">0 worktrees</span></h2>
-    <div style="padding:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <input id="worktreeRoot" placeholder="Repository root" style="flex:1;min-width:220px;background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:6px 8px">
+    <div class="project-toolbar">
+      <input id="worktreeRoot" placeholder="Repository root" style="flex:1;min-width:220px">
       <button class="btn ok" id="refreshWorktreesBtn">↻ Refresh Worktrees</button>
       <button class="btn warn" id="pruneWorktreesBtn">🧹 Prune Stale Worktrees</button>
-      <span class="tiny muted">Isolated worktrees prevent concurrent file write collisions</span>
+      <span class="tiny muted project-summary">Isolated worktrees prevent concurrent file write collisions</span>
     </div>
     <div class="table-wrap">
       <table>
@@ -476,12 +477,11 @@ tbody tr.click:hover{background:#162338}
     </div>
   </section>
 
-  <div style="margin-top:12px">
-    <section class="section rag-narrow">
-      <h2>RAG Vector Workspaces <span class="tiny">Persistent semantic code index</span></h2>
-      <div style="padding:12px"><div class="project-toolbar"><input id="ragWorkspaceSearch" type="search" placeholder="Search RAG workspaces…" autocomplete="off"><span class="tiny" id="ragWorkspaceSummary">Workspace identity and index status.</span></div><div id="ragWorkspacesList"><div class="tiny muted">Loading RAG workspaces…</div></div></div>
-    </section>
-  </div>
+  <section class="section" style="margin-top:12px">
+    <h2>RAG Vector Workspaces <span class="tiny">Persistent semantic code index</span></h2>
+    <div class="project-toolbar"><input id="ragWorkspaceSearch" type="search" placeholder="Search RAG workspaces…" autocomplete="off"><span class="tiny" id="ragWorkspaceSummary">Workspace identity and index status.</span></div>
+    <div id="ragWorkspacesList" style="padding:12px"><div class="tiny muted">Loading RAG workspaces…</div></div>
+  </section>
 
   <section class="section" style="margin-top:12px">
     <h2>Local Model Arena <span class="tiny">Side-by-side prompt testbed comparing fast tier vs smart tier</span></h2>
@@ -556,14 +556,14 @@ tbody tr.click:hover{background:#162338}
     <div style="padding:12px">
       <p class="tiny muted">Bundles compress preprocessed index (AST, deterministic facts, RAG vectors and semantic cards) for instant restore on a different machine without re-indexing.</p>
       <div class="split" style="margin-top:10px">
-        <div><h3 style="font-size:12px;margin:0 0 8px">Export Bundle</h3><table><thead><tr><th>Repository identity</th><th>Bundle readiness</th><th>Index contents</th><th>Action</th></tr></thead><tbody id="bundleExportTable"></tbody></table></div>
-        <div><h3 style="font-size:12px;margin:0 0 8px">Import Bundle</h3><div style="display:flex;flex-direction:column;gap:8px"><input type="file" id="bundleFile" accept=".zip,application/zip" style="color:var(--fg);font-size:12px"><input type="text" id="bundleTargetRoot" placeholder="Optional target repository root" style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:7px"><button class="btn" id="bundleImport">Import selected ZIP</button><div id="bundleImportStatus" class="tiny muted"></div></div></div>
+        <div class="card" style="padding:12px"><h3 style="font-size:12px;margin:0 0 8px">Export Bundle</h3><div class="table-wrap"><table><thead><tr><th>Repository identity</th><th>Bundle readiness</th><th>Index contents</th><th>Action</th></tr></thead><tbody id="bundleExportTable"></tbody></table></div></div>
+        <div class="card" style="padding:12px"><h3 style="font-size:12px;margin:0 0 8px">Import Bundle</h3><div style="display:flex;flex-direction:column;gap:8px"><input type="file" id="bundleFile" accept=".zip,application/zip" style="color:var(--fg);font-size:12px"><input type="text" id="bundleTargetRoot" placeholder="Optional target repository root" style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:7px;font-size:11px"><button class="btn" id="bundleImport">Import selected ZIP</button><div id="bundleImportStatus" class="tiny muted"></div></div></div>
       </div>
     </div>
   </section>
 </div>
 
-<div id="events" class="page"><section class="section"><h2>Live activity <span class="tiny">RAM ring buffer · display pause does not pause runtime</span></h2><div class="project-toolbar"><select id="eventSeverity" aria-label="Event severity"><option value="">All severities</option><option value="failure">Failures</option><option value="warning">Warnings</option><option value="success">Successful</option></select><input id="eventSource" type="search" placeholder="Event source, agent, action…" aria-label="Event source"><span class="tiny" id="eventSummary">No events received.</span></div><div id="eventList" class="events"></div></section></div>
+<div id="events" class="page"><section class="section"><h2>Live activity <span class="tiny">RAM ring buffer · display pause does not pause runtime</span></h2><div class="project-toolbar"><select id="eventSeverity" aria-label="Event severity"><option value="">All severities</option><option value="failure">Failures</option><option value="warning">Warnings</option><option value="success">Successful</option></select><input id="eventSource" type="search" placeholder="Event source, agent, action…" aria-label="Event source"><span class="tiny" id="eventSummary">No events received.</span></div><div class="event-header"><span>Time</span><span>Agent</span><span>Type</span><span>Action / Stage</span><span class="hide-sm">Model / Tenant</span><span>Duration</span><span>Status</span></div><div id="eventList" class="events"></div></section></div>
 
 <div id="modalBg" class="modal-bg"><div class="modal"><div class="modal-head"><strong id="modalTitle">Details</strong><span id="modalLive" class="tiny" style="margin-left:10px"></span><button class="btn spacer" id="modalClose">Close</button></div><div id="modalBody"></div></div></div>
 
@@ -770,7 +770,7 @@ async function apiFetch(path,opts={}){
   }
   return r;
 }
-const rows=(id,items,fn,cols)=>{$(id).innerHTML=(items&&items.length)?items.map(fn).join(''):`<tr><td colspan="${cols}" class="muted">none</td></tr>`};
+const rows=(id,items,fn,cols,emptyText='No active items recorded')=>{$(id).innerHTML=(items&&items.length)?items.map(fn).join(''):`<tr><td colspan="${cols}" class="muted" style="text-align:center;padding:16px 10px;font-style:italic">${emptyText}</td></tr>`};
 function copyText(text, btn){
   try{navigator.clipboard.writeText(String(text))}catch{}
   if(btn){
@@ -3935,11 +3935,12 @@ function switchTab(tabId){
   if(tabId==='agentos')loadAgentOsView();
   if(tabId==='performance'){loadRagWorkspaces();loadActiveLeases();}
   if(tabId==='commands')loadWorktrees();
+  if(tabId==='reliability')loadLogsTail();
 }
 
 document.querySelectorAll('.tabbtn').forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
 window.addEventListener('hashchange',()=>switchTab(location.hash.replace('#','')));
-$('pauseEvents').onclick=e=>{paused=!paused;e.target.textContent=paused?'Resume events':'Pause events'};
+$('pauseEvents').onclick=e=>{paused=!paused;e.target.textContent=paused?'Resume live events':'Pause live events'};
 async function post(path,payload){const r=await apiFetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});return await r.json()}
 
 async function loadConfigView(){
@@ -4231,10 +4232,33 @@ function requestTraceAvailability(request){
 }
 function workRecentRequestRow(request){const trace=requestTrace(request),availability=requestTraceAvailability(request),failed=request.success===false||Number(request.status_code||0)>=400,context=trace?traceContextLabel(trace):(request.error_type||availability.label),requestId=String(request.request_id||'—'),inner=`<td>${request.created_at?new Date(request.created_at*1000).toLocaleString():'—'}</td><td><strong>${esc(requestId.slice(-12))}</strong><div class="tiny">${trace?'Trace linked · '+esc(String(trace.trace_id||'').slice(-8)):'Request-only record'}</div></td><td>${esc(request.agent||'—')}</td><td>${esc(request.tenant||'—')}</td><td><strong>${esc(request.action||'—')}</strong><div class="tiny">${esc(context)}</div></td><td><span class="${failed?'bad-t':'ok'}">${n(request.status_code)||'—'}</span>${request.error_type?`<div class="tiny">${esc(request.error_type)}</div>`:''}</td><td><span class="${availability.className}">${esc(availability.label)}</span></td><td>${ms(request.duration_ms)}</td>`;return requestRow(request,inner,8)}
 
+function renderAdoptionRows(items){
+  const body=$('adoptionActions');if(!body)return;body.replaceChildren();
+  const rows=Array.isArray(items)?items.slice(0,12):[];
+  if(!rows.length){const row=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=4;cell.className='muted';cell.textContent='none';row.append(cell);body.append(row);return;}
+  for(const item of rows){const row=document.createElement('tr');for(const value of [item.tool,item.action,item.outcome,item.count]){const cell=document.createElement('td');cell.textContent=String(value??'—').slice(0,64);row.append(cell)}body.append(row)}
+}
+function renderAdoption(report){
+  const totals=report&&report.totals;
+  if(!totals){$('adoptionUsed').textContent='unavailable';$('adoptionBlocked').textContent='unavailable';$('adoptionDormant').textContent='unavailable';renderAdoptionRows([]);$('adoptionDetail').textContent='Aggregate adoption telemetry unavailable.';return;}
+  renderAdoptionRows(report.action_adoption);
+  $('adoptionUsed').textContent=`${totals.used||0} / ${totals.bypassed||0}`;
+  $('adoptionBlocked').textContent=`${totals.blocked||0} / ${totals.failed||0}`;
+  $('adoptionDormant').textContent=(report.dormant_actions||[]).length;
+  const blocked=(report.blocked_reasons||[]).map(x=>`${x.reason}: ${x.count}`).join(', ')||'none';
+  const failed=(report.terminal_failures||[]).map(x=>`${x.reason}: ${x.count}`).join(', ')||'none';
+  const latency=(report.latency_buckets||[]).map(x=>`${x.bucket}: ${x.count}`).join(', ')||'none';
+  const output=(report.output_size_buckets||[]).map(x=>`${x.bucket}: ${x.count}`).join(', ')||'none';
+  $('adoptionDetail').textContent=`Blocked: ${blocked}. Terminal failures: ${failed}. Latency: ${latency}. Output: ${output}.`;
+}
+async function refreshAdoption(){
+  try{const response=await apiFetch('/api/adoption',{cache:'no-store'});const payload=await response.json();renderAdoption(payload.available?payload.adoption:null);}catch(_){renderAdoption(null);}
+}
 function render(s){
   last=s;
   const receivedAt=Date.now();
   lastOverviewReceivedAt=receivedAt;
+  refreshAdoption();
   const q=s.scheduler||{},o=s.observability||{},p=s.preprocessing||{},bg=s.background_gpu||{},h=s.headless||{},r=s.runtime_stats||{},ss=q.stats||{},rp=s.runtime_profile||{},cmd=r.commands||{};
   ensureHttpTailTable();setupWorkLayout();
   renderOverviewHealth(s,receivedAt);

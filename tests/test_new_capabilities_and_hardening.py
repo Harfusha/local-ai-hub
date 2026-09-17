@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+import tomllib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -20,6 +21,191 @@ from local_ai_hub.doctor_support import install_git_precommit_hook, uninstall_gi
 from local_ai_hub.process_utils import list_git_worktrees, prune_git_worktrees, simulate_git_merge
 from local_ai_hub.rag import _python_ast_chunks
 from local_ai_hub.services import LocalAIServices, vram_priority
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_repair_model_uses_only_low_confidence_artifact_preview():
+    services = object.__new__(LocalAIServices)
+    services.config = {"features": {"local_diagnostic_dispatch": True}, "models": {"fast_code": "qwen2.5-coder:1.5b"}}
+    services.proxy_request = MagicMock(return_value={"response": '{"diagnosis": "missing test setup"}'})
+    failure = {
+        "success": False,
+        "failure_summary": {"path": "", "line": 0, "message": "unclassified failure"},
+        "artifact_id": "art_failure_log",
+        "preview": "test command failed after setup",
+        "stderr": "RAW_LOG_MUST_NOT_REACH_MODEL" * 400,
+    }
+
+    result = services._synthesize_repair_patch("pytest -q", "C:/repo", failure)
+
+    assert result is None
+    assert failure["local_diagnostic"] == "missing test setup"
+    prompt = services.proxy_request.call_args.args[1]["prompt"]
+    assert "art_failure_log" in prompt
+    assert "test command failed after setup" in prompt
+    assert "RAW_LOG_MUST_NOT_REACH_MODEL" not in prompt
+    payload = services.proxy_request.call_args.args[1]
+    assert payload["options"]["num_predict"] == 320
+    assert payload["format"] == {
+        "type": "object",
+        "properties": {"diagnosis": {"type": "string"}},
+        "required": ["diagnosis"],
+        "additionalProperties": False,
+    }
+    assert "_hub_timeout_seconds" not in payload
+    assert services.proxy_request.call_args.args[3] == "local_ai_task"
+    assert services.proxy_request.call_args.kwargs["diagnostic_timeout_seconds"] == 20
+
+
+def test_repair_model_skips_high_confidence_failure():
+    services = object.__new__(LocalAIServices)
+    services.config = {"features": {"local_diagnostic_dispatch": True}, "models": {"fast_code": "qwen2.5-coder:1.5b"}}
+    services.proxy_request = MagicMock()
+    failure = {
+        "success": False,
+        "failure_summary": {"path": "tests/test_widget.py", "line": 42, "message": "AssertionError"},
+        "artifact_id": "art_failure_log",
+        "preview": "tests/test_widget.py:42: AssertionError",
+    }
+
+    assert services._synthesize_repair_patch("pytest -q", "C:/repo", failure) is None
+    services.proxy_request.assert_not_called()
+
+
+def test_repair_model_never_dispatches_open_ended_or_security_work():
+    services = object.__new__(LocalAIServices)
+    services.config = {"features": {"local_diagnostic_dispatch": True}, "models": {"fast_code": "qwen2.5-coder:1.5b"}}
+    services.proxy_request = MagicMock()
+    failure = {
+        "success": False,
+        "failure_summary": {"path": "", "line": 0, "message": "unclassified failure"},
+        "artifact_id": "art_failure_log",
+        "preview": "unclassified command failure",
+    }
+
+    assert services._synthesize_repair_patch("security audit architecture redesign", "C:/repo", failure) is None
+    services.proxy_request.assert_not_called()
+
+
+@pytest.mark.parametrize("command", [
+    "git reset --hard",
+    "python -c \"print('arbitrary')\"",
+    "cmd /c echo arbitrary",
+    "pytest -q | tee result.txt",
+    "pytest -q > result.txt",
+    "pytest --snapshot-update",
+    "npm test -- -u",
+    "npm test -- -u=true",
+    "npm test -- --updateSnapshot",
+    "pytest --inline-snapshot=fix",
+    "pytest --update-goldens",
+    "pytest --golden=write",
+])
+def test_repair_model_default_denies_mutating_or_arbitrary_commands(command: str):
+    services = object.__new__(LocalAIServices)
+    services.config = {"features": {"local_diagnostic_dispatch": True}, "models": {"fast_code": "qwen2.5-coder:1.5b"}}
+    services.proxy_request = MagicMock()
+    failure = {
+        "success": False,
+        "failure_summary": {"path": "", "line": 0, "message": "unclassified failure"},
+        "artifact_id": "art_failure_log",
+        "preview": "unclassified command failure",
+    }
+
+    assert services._synthesize_repair_patch(command, "C:/repo", failure) is None
+    services.proxy_request.assert_not_called()
+
+
+def test_repair_model_respects_disabled_local_tasks():
+    services = object.__new__(LocalAIServices)
+    services.config = {"features": {"tasks": False, "local_diagnostic_dispatch": True}, "models": {"fast_code": "qwen2.5-coder:1.5b"}}
+    services.proxy_request = MagicMock()
+    failure = {
+        "success": False,
+        "failure_summary": {"path": "", "line": 0, "message": "unclassified failure"},
+        "artifact_id": "art_failure_log",
+        "preview": "unclassified command failure",
+    }
+
+    assert services._synthesize_repair_patch("pytest -q", "C:/repo", failure) is None
+    services.proxy_request.assert_not_called()
+
+
+def test_repair_model_requires_explicit_diagnostic_dispatch_opt_in():
+    services = object.__new__(LocalAIServices)
+    services.config = {"models": {"fast_code": "qwen2.5-coder:1.5b"}}
+    services.proxy_request = MagicMock()
+    failure = {
+        "success": False,
+        "failure_summary": {"path": "", "line": 0, "message": "unclassified failure"},
+        "artifact_id": "art_failure_log",
+        "preview": "unclassified command failure",
+    }
+
+    assert services._synthesize_repair_patch("pytest -q", "C:/repo", failure) is None
+    services.proxy_request.assert_not_called()
+
+
+def test_defaults_disable_local_diagnostic_dispatch():
+    defaults = tomllib.loads((ROOT / "defaults.toml").read_text(encoding="utf-8"))
+
+    assert defaults["features"]["local_diagnostic_dispatch"] is False
+
+
+def test_proxy_timeout_clamps_only_explicit_diagnostic_cap():
+    config = {"server": {"request_timeout_seconds": 300}}
+
+    assert LocalAIServices._proxy_timeout_seconds(config) == 300
+    assert LocalAIServices._proxy_timeout_seconds(config, 20) == 20
+    assert LocalAIServices._proxy_timeout_seconds(config, 600) == 60
+
+
+def test_proxy_diagnostic_cap_bounds_scheduler_wait():
+    services = object.__new__(LocalAIServices)
+    services.config = {"server": {"request_timeout_seconds": 300}}
+    services.semantic_cache = MagicMock(enabled=False)
+    services.generation_cache = MagicMock()
+    services.generation_cache.get_or_compute.side_effect = lambda _key, compute: (compute(), False, False)
+    services.scheduler = MagicMock()
+    services.scheduler.submit.return_value = {"response": "ok"}
+    services.runtime = MagicMock()
+
+    services.proxy_request("/api/version", {}, "hub", "local_ai_task", diagnostic_timeout_seconds=20)
+
+    assert services.scheduler.submit.call_args.kwargs["wait_timeout"] == 20
+
+
+def test_proxy_normal_call_uses_configured_scheduler_wait_default():
+    services = object.__new__(LocalAIServices)
+    services.config = {"server": {"request_timeout_seconds": 300}, "resilience": {"scheduler_wait_timeout_seconds": 180}}
+    services.semantic_cache = MagicMock(enabled=False)
+    services.generation_cache = MagicMock()
+    services.generation_cache.get_or_compute.side_effect = lambda _key, compute: (compute(), False, False)
+    services.scheduler = MagicMock()
+    services.scheduler.submit.return_value = {"response": "ok"}
+    services.runtime = MagicMock()
+
+    services.proxy_request("/api/version", {}, "hub", "local_ai_task")
+
+    assert "wait_timeout" not in services.scheduler.submit.call_args.kwargs
+
+
+def test_proxy_ignores_public_timeout_metadata():
+    services = object.__new__(LocalAIServices)
+    services.config = {"server": {"request_timeout_seconds": 300}}
+    services.semantic_cache = MagicMock(enabled=False)
+    services.generation_cache = MagicMock()
+    services.generation_cache.get_or_compute.side_effect = lambda _key, compute: (compute(), False, False)
+    services.scheduler = MagicMock()
+    services.scheduler.submit.side_effect = lambda _model, _tenant, _source, run, **_kwargs: run()
+    services.runtime = MagicMock(return_value={"response": "ok"})
+
+    services.proxy_request("/api/version", {"_hub_timeout_seconds": 1}, "hub", "local_ai_task")
+
+    assert "wait_timeout" not in services.scheduler.submit.call_args.kwargs
+    assert services.runtime.request.call_args.kwargs["timeout"] == 300
+    assert "_hub_timeout_seconds" not in services.runtime.request.call_args.args[1]
 
 
 def test_1_ast_aware_python_chunking(tmp_path: Path):
@@ -296,7 +482,7 @@ def test_batch_replace_preflight_does_not_write_bytecode(tmp_path, monkeypatch):
     assert target.read_text(encoding="utf-8") == "value = 1\n"
 
 
-def test_batch_replace_is_atomic_on_later_invalid_edit(tmp_path):
+def test_batch_replace_is_atomic_on_later_syntax_error(tmp_path):
     first = tmp_path / "first.py"
     second = tmp_path / "second.py"
     first.write_text("first = 1\n", encoding="utf-8")
@@ -307,11 +493,12 @@ def test_batch_replace_is_atomic_on_later_invalid_edit(tmp_path):
         str(tmp_path),
         [
             {"path": "first.py", "old": "first = 1", "new": "first = 2"},
-            {"path": "second.py", "old": "missing", "new": "second = 2"},
+            {"path": "second.py", "old": "second = 1", "new": "second = ("},
         ],
     )
 
     assert result["success"] is False
+    assert "Syntax error" in result["error"]
     assert first.read_text(encoding="utf-8") == "first = 1\n"
     assert second.read_text(encoding="utf-8") == "second = 1\n"
 

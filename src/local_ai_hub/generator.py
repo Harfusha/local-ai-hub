@@ -532,7 +532,11 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         " If an optional backend degrades, accept the hub's deterministic/index fallback."
         " If the hub itself is unavailable, make one bounded health/retry attempt, then fall back to native tools."
         " Never loop on health, status, preprocessing, model startup, a failing backend, or an identical command.\n\n"
-        f"{fs.selection_guide()}\n"
+        + ("Batch repository replacement: use `local_ai_repo(action=\"batch_replace\", edits=[...], dry_run=true)` for preview. "
+           "`staged` is not batch dry-run and is never forwarded. Each edit must exact-match once. "
+           "The engine preflights all edits, rolls back write failures, and performs no auto-commit. "
+           "Set `dry_run=false` only after review.\n\n" if fs.repo and fs.batch_replacement else "")
+        + f"{fs.selection_guide()}\n"
         f"{model_default}\n"
         "<!-- END LOCAL AI HUB TOOL POLICY -->"
     )
@@ -727,6 +731,11 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 },
             },
         }
+        if fs.batch_replacement:
+            schemas["local_ai_repo"]["parameters"]["properties"].update({
+                "dry_run": {"type": "boolean", "default": False},
+                "edits": {"type": "array", "items": {"type": "object"}},
+            })
 
     if fs.tasks and fs.has_any_model():
         task_actions = fs.supported_task_actions()

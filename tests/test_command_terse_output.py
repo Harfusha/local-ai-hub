@@ -26,7 +26,7 @@ class _MockRepoState:
 
 def test_command_broker_output_projected_terse(tmp_path: Path):
     broker = CommandBroker(
-        config={"server": {"state_dir": str(tmp_path / "state")}, "commands": {"enabled": True}},
+        config={"server": {"state_dir": str(tmp_path / "state")}, "commands": {"enabled": True}, "features": {"diagnostic_artifacts": True}},
         artifacts=_Artifacts(),
         repo_state=_MockRepoState(),
     )
@@ -103,25 +103,27 @@ def test_command_broker_failure_terse(tmp_path: Path):
     assert "cancelled" not in projected
 
 
-def test_command_creates_artifact_for_moderate_output(tmp_path: Path):
+def test_command_keeps_moderate_success_output_inline(tmp_path: Path):
     import sys
     broker = CommandBroker(
         config={"server": {"state_dir": str(tmp_path / "state")}, "commands": {"enabled": True}},
         artifacts=_Artifacts(),
         repo_state=_MockRepoState(),
     )
-    # Output of ~600 chars: >300 chars, <5000 chars inline limit
+    # A moderate successful result stays inline; artifacts are for bounded failure diagnostics or long output.
     raw_res = broker.run(f'{sys.executable} -c "print(\'x\' * 600)"', str(tmp_path), tenant="test_agent")
 
     assert raw_res["success"] is True
-    assert raw_res.get("artifact_id") == "art-123"
+    assert "artifact_id" not in raw_res
+    assert len(raw_res["stdout"]) >= 600
 
     projector = AgentProjector({})
     projected = projector.project(raw_res, agent="generic", task_kind="command")
 
     assert projected["success"] is True
-    assert projected.get("artifact_id") == "art-123"
-    assert "[…more available via artifact…]" in projected["stdout"]
+    assert "artifact_id" not in projected
+    assert "x" * 100 in projected["stdout"]
+    assert "[…truncated…]" in projected["stdout"]
 
 
 def test_dense_text_without_artifact_uses_truncated_marker():
