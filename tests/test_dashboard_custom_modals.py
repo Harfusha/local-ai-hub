@@ -439,6 +439,27 @@ def test_trace_display_model_bounds_events_and_raw_fields_before_sanitization() 
     assert "traceRawBoundValue(rawSession.request)" in projection_source
 
 
+def test_bounded_trace_events_retain_request_metadata_and_cap_each_event() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceBoundedEvents(") : DASHBOARD_HTML.index(
+            "function traceDisplaySession("
+        )
+    ]
+    assert "event_type==='request_received'" in source
+    assert "traceRawBoundValue(event,2048)" in source
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    script = (
+        source
+        + "const events=[{event_type:'request_received',payload:{method:'POST',path:'/api/reason'}}]"
+        + ".concat(Array.from({length:101},(_,index)=>({event_type:'output_delta',payload:{text:String(index)}})));"
+        + "const bounded=traceBoundedEvents(events);console.log(JSON.stringify(bounded));"
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    bounded = json.loads(result.stdout)
+    assert bounded["eventsTotal"] == 102
+    assert any(event["event_type"] == "request_received" for event in bounded["events"])
+
+
 def test_trace_display_model_derives_http_identity_and_keeps_effective_payload() -> None:
     source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function traceDisplayModel(detail)") : DASHBOARD_HTML.index(
