@@ -94,7 +94,7 @@ def all_supervisor_pids() -> list[int]:
         pids.add(sup_pid)
     if os.name == "nt":
         try:
-            script = "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*service_entry.py*' -or $_.CommandLine -like '*local_ai_hub.supervisor*' } | Select-Object -ExpandProperty ProcessId"
+            script = "Get-CimInstance Win32_Process -Filter \"Name='python.exe' OR Name='pythonw.exe'\" | Where-Object { $_.CommandLine -like '*service_entry.py*' -or $_.CommandLine -like '*local_ai_hub.supervisor*' } | Select-Object -ExpandProperty ProcessId"
             cp = subprocess.run(
                 ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
                 capture_output=True, text=True, timeout=5.0, check=False, **hidden_run_kwargs()
