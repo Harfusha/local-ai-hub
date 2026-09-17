@@ -320,6 +320,20 @@ def test_dashboard_has_unique_ids_and_valid_javascript(tmp_path: Path):
         assert cp.returncode == 0, cp.stderr
 
 
+def test_live_trace_retryable_detail_errors_do_not_open_terminal_modal():
+    from local_ai_hub.dashboard import DASHBOARD_HTML
+
+    assert "if(d.retryable){" in DASHBOARD_HTML
+    assert "retrying…" in DASHBOARD_HTML
+
+
+def test_live_trace_rerender_preserves_nested_scroll_positions():
+    from local_ai_hub.dashboard import DASHBOARD_HTML
+
+    assert "captureTraceScrollPositions" in DASHBOARD_HTML
+    assert "restoreTraceScrollPositions" in DASHBOARD_HTML
+
+
 def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0)); return sock.getsockname()[1]
