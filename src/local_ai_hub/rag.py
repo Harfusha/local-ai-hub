@@ -5,6 +5,7 @@ import json
 import math
 import os
 import sqlite3
+import sys
 import threading
 import time
 from contextlib import closing
@@ -398,6 +399,8 @@ class RAGStore:
     @staticmethod
     def _get_ts_language(language: str) -> Any:
         """Load a tree-sitter Language object for the given language identifier."""
+        if os.name == "nt" and sys.version_info >= (3, 13) and language == "c_sharp":
+            return None
         try:
             from tree_sitter import Language
             if language in ("python",):
