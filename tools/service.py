@@ -58,6 +58,8 @@ def spawn_detached() -> None:
             def psq(val: object) -> str:
                 return "'" + str(val).replace("'", "''") + "'"
             cmdline = f'"{PYWIN}" "{script_path}"'
+            if _ACTIVE_CONFIG_ARG:
+                cmdline += f' --config "{_ACTIVE_CONFIG_ARG}"'
             script = (
                 f"$proc = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
                 f"-Arguments @{{CommandLine = {psq(cmdline)}; CurrentDirectory = {psq(str(ROOT))}}}; "

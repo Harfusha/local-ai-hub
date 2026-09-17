@@ -2538,7 +2538,8 @@ class CommandBroker:
                     "message": f"Remediation guidance: {fix_msg}",
                 })
         result["diagnostics"] = diagnostics
-        if combined_chars > self.inline_chars or not result.get("success", False):
+        min_artifact_chars = 300
+        if combined_chars > min_artifact_chars or not result.get("success", False):
             if self.artifacts is not None:
                 full = f"$ {command}\n\nSTDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
                 result["artifact_id"] = self.artifacts.put(full, tenant, "command")

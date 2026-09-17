@@ -83,14 +83,7 @@ class MemoryRecord:
                 kind = MemoryKind(kind.lower())
             except ValueError:
                 kind = MemoryKind.FACT
-        if isinstance(scope, str):
-            raw_s = scope.lower()
-            if raw_s == "repo":
-                raw_s = "repository"
-            try:
-                scope = AgentScope(raw_s)
-            except ValueError:
-                scope = AgentScope.REPOSITORY
+        scope = AgentScope.parse(scope, AgentScope.REPOSITORY)
         now = time.time()
         # Default status based on source & kind
         determined_status = status
@@ -218,7 +211,7 @@ class MemoryRecord:
         return cls(
             record_id=str(data["record_id"]),
             kind=MemoryKind(data["kind"]),
-            scope=AgentScope(data["scope"]),
+            scope=AgentScope.parse(data.get("scope", AgentScope.REPOSITORY)),
             scope_id=str(data.get("scope_id", "")),
             key=str(data.get("key", "")),
             value=data.get("value"),
@@ -814,7 +807,7 @@ class MemoryStore:
         return MemoryRecord(
             record_id=record_id,
             kind=MemoryKind(kind_val),
-            scope=AgentScope(scope_val),
+            scope=AgentScope.parse(scope_val, AgentScope.REPOSITORY),
             scope_id=scope_id,
             key=key,
             value=json.loads(val_raw) if val_raw else None,
@@ -886,13 +879,7 @@ class MemoryStore:
 
             out_scope = grp_scope
             if target_scope is not None:
-                if isinstance(target_scope, str):
-                    try:
-                        out_scope = AgentScope(target_scope.lower())
-                    except ValueError:
-                        out_scope = grp_scope
-                else:
-                    out_scope = target_scope
+                out_scope = AgentScope.parse(target_scope, grp_scope)
 
             digest_key = f"compacted_{grp_kind.value}_{int(now)}"
             all_ev: set[str] = set()

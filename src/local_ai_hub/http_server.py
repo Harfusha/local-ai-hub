@@ -12,7 +12,7 @@ import time
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 import urllib.request
 from urllib.parse import parse_qs, urlparse
 
@@ -1707,7 +1707,16 @@ class Handler(BaseHTTPRequestHandler):
                             "constraints": payload.get("constraints") or [],
                             "risk_profile": payload.get("risk_profile", "normal"),
                         }
-                    contract = GoalContract.from_dict(contract_data)
+                    elif isinstance(contract_data, str):
+                        contract_data = {
+                            "goal": contract_data,
+                            "acceptance_criteria": payload.get("acceptance_criteria") or [],
+                            "scope": payload.get("scope", "task"),
+                            "non_goals": payload.get("non_goals") or [],
+                            "constraints": payload.get("constraints") or [],
+                            "risk_profile": payload.get("risk_profile", "normal"),
+                        }
+                    contract = GoalContract.from_dict(contract_data) if isinstance(contract_data, Mapping) else GoalContract(goal=str(contract_data))
                     ctx_data = payload.get("context") or {}
                     context = ScopeContext(
                         repository_id=str(ctx_data.get("repository_id", "")),

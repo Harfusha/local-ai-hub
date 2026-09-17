@@ -66,7 +66,7 @@ def test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources():
     skip_parts = {
         ".git", "__pycache__", ".pytest_cache", ".venv", "tool-envs", "state", "data", "generated",
         ".agents", ".serena", ".superpowers", "agy-contextless-workspace",
-        "backups", "migration-backups",
+        "backups", "migration-backups", ".worktrees",
     }
     skip_files = {"ORIGINAL_REQUEST.md", ".coverage"}
     for path in ROOT.rglob("*"):

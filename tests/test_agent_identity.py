@@ -109,3 +109,19 @@ def test_equal_scope_resolves_by_evidence_confidence_and_freshness():
     assert len(chosen) == 1
     assert chosen[0].record_id == "r2"
     assert chosen[0].value == 9090
+
+
+def test_agent_scope_parse_defaults_and_aliases():
+    assert AgentScope.parse(None) is AgentScope.TASK
+    assert isinstance(AgentScope.parse(None), AgentScope)
+    assert AgentScope.parse(None).value == "task"
+
+    assert AgentScope.parse("") is AgentScope.TASK
+    assert AgentScope.parse("code") is AgentScope.TASK
+    assert AgentScope.parse("tasks") is AgentScope.TASK
+    assert AgentScope.parse("repo") is AgentScope.REPOSITORY
+    assert AgentScope.parse("workspace") is AgentScope.WORKTREE
+
+    assert AgentScope.parse("nonexistent_scope") is AgentScope.TASK
+    assert AgentScope.parse("nonexistent_scope", AgentScope.GLOBAL) is AgentScope.GLOBAL
+    assert AgentScope.parse("nonexistent_scope", "clone") is AgentScope.CLONE

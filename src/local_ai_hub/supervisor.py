@@ -176,13 +176,27 @@ class Supervisor:
             pyw_candidate = Path(sys.executable).parent / "pythonw.exe"
             if pyw_candidate.exists():
                 py_exe = str(pyw_candidate)
+        logs_dir = self.state_dir / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        stderr_target: Any = subprocess.DEVNULL
+        try:
+            stderr_target = open(logs_dir / "hub_stderr.log", "a", encoding="utf-8", errors="replace")
+        except Exception:
+            stderr_target = subprocess.DEVNULL
         kwargs: dict[str, Any] = {
-            "env": env, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
+            "env": env, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": stderr_target,
             **hidden_run_kwargs(detached=True),
         }
         if os.name != "nt":
             kwargs["start_new_session"] = True
-        return subprocess.Popen([py_exe, "-X", "utf8", "-m", "local_ai_hub.http_server"], **kwargs)
+        try:
+            return subprocess.Popen([py_exe, "-X", "utf8", "-m", "local_ai_hub.http_server"], **kwargs)
+        finally:
+            if hasattr(stderr_target, "close"):
+                try:
+                    stderr_target.close()
+                except Exception:
+                    pass
 
     def terminate_child(self) -> None:
         target_pids: set[int] = set()

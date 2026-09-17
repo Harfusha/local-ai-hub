@@ -277,13 +277,13 @@ def test_dashboard_has_unique_ids_and_valid_javascript(tmp_path: Path):
     assert "probeHealth" in DASHBOARD_HTML
     assert "Agent debug traces" in DASHBOARD_HTML
     assert "/api/debug-traces" in DASHBOARD_HTML
-    assert "main_agent_prompt" in DASHBOARD_HTML
+    assert "traceDisplayModel" in DASHBOARD_HTML
     assert "renderHumanModal" in DASHBOARD_HTML
     assert "Raw JSON" in DASHBOARD_HTML
     assert "human-grid" in DASHBOARD_HTML
     assert "trace-timeline" in DASHBOARD_HTML
     assert "toggleTraceStep" in DASHBOARD_HTML
-    assert "Agent timeline" in DASHBOARD_HTML
+    assert "Universal inspector" in DASHBOARD_HTML
     assert "trace-tabs" in DASHBOARD_HTML
     assert "data-trace-view" in DASHBOARD_HTML
     assert "Tool result" in DASHBOARD_HTML
