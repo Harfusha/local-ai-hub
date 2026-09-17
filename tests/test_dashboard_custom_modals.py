@@ -413,6 +413,104 @@ def test_trace_inspector_renders_universal_summary_before_optional_panels() -> N
     assert "function tracePanel(" in DASHBOARD_HTML
 
 
+def test_trace_inspector_prioritizes_input_output_and_demotes_technical_detail() -> None:
+    detail_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
+            "function setTraceView(view)"
+        )
+    ]
+    model_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceDisplayModel(detail)") : DASHBOARD_HTML.index(
+            "function traceAvailability("
+        )
+    ]
+    assert "trace-primary-grid" in detail_source
+    assert "trace-optional-details" in detail_source
+    assert "traceFirstRecorded(events,['prompt'" in model_source
+    assert "traceFirstRecorded(events,['output'" in model_source
+
+
+def test_trace_inspector_has_model_chat_renderer_contract_and_two_column_layout() -> None:
+    assert "function renderModelChatPresentation(model)" in DASHBOARD_HTML
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function tracePresentationValue(value") : DASHBOARD_HTML.index(
+            "function traceDisplayModel(detail)"
+        )
+    ]
+    for marker in [
+        "Model chat",
+        "Model input",
+        "Model output",
+        "model name",
+        "step",
+        "role",
+        "No model input captured",
+        "No model output captured",
+        "traceSanitizeValue",
+        "esc(",
+        "trace-chat-columns",
+        "trace-chat-input",
+        "trace-chat-output",
+        "typeof input==='string'",
+    ]:
+        assert marker in source, f"Model chat renderer omits {marker}"
+
+    css_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index(".trace-chat-columns") : DASHBOARD_HTML.index(
+            "</style>", DASHBOARD_HTML.index(".trace-chat-columns")
+        )
+    ]
+    assert "grid-template-columns" in css_source
+    assert "minmax(0,1fr)" in css_source
+
+
+def test_trace_inspector_has_agent_loop_tool_cards_with_bounded_safe_fields() -> None:
+    assert "function renderAgentLoopPresentation(model)" in DASHBOARD_HTML
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceChatColumns(model") : DASHBOARD_HTML.index(
+            "function traceDisplayModel(detail)"
+        )
+    ]
+    for marker in [
+        "Agent loop",
+        "trace-chat-columns",
+        "trace-tool-card",
+        "trace-tool-timeline",
+        "tool name",
+        "arguments",
+        "result",
+        "error",
+        "step",
+        "call id",
+        "traceSanitizeValue",
+        "traceRawBoundValue",
+        "esc(",
+    ]:
+        assert marker in source, f"Agent-loop renderer omits {marker}"
+
+
+def test_trace_inspector_shows_model_prompt_as_input() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceDisplayModel(detail)") : DASHBOARD_HTML.index(
+            "function traceAvailability("
+        )
+    ]
+    assert "prompt" in source
+    assert "model_request" in source
+
+
+def test_trace_inspector_prefers_full_model_payload_over_api_request_wrapper() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceDisplayModel(detail)") : DASHBOARD_HTML.index(
+            "function traceAvailability("
+        )
+    ]
+    assert "const modelInput=traceFirstRecorded(events,['prompt','messages','content','input','arguments','args','query'])" in source
+    assert "traceRecorded(modelInput)?modelInput" in source
+    assert "traceRecorded(effectivePayload)?effectivePayload" in source
+
+
 def test_trace_inspector_uses_accessible_conditional_tabs_and_safe_trace_values() -> None:
     tab_source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function traceTab(") : DASHBOARD_HTML.index(
