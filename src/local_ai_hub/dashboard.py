@@ -1976,6 +1976,11 @@ function renderHumanModal(obj){
 function traceTab(label,id){const selected=traceView===id;return `<button class="trace-tab ${selected?'active':''}" id="trace-tab-${esc(id)}" role="tab" data-trace-view="${esc(id)}" aria-selected="${selected}" aria-controls="trace-panel-${esc(id)}" tabindex="${selected?'0':'-1'}">${esc(label)}</button>`}
 function traceStatus(item){const state=String(item?.state||'queued');return state==='failed'&&/hub restarted|service stopped|shutdown/i.test(String(item?.error||''))?'interrupted':state}
 function traceDisplayState(item){const state=traceStatus(item);return state==='interrupted'?'Interrupted':humanLabel(state)}
+function traceRawProjection(detail,eventLimit=100){
+  const rawSession=detail?.session||{},events=Array.isArray(detail?.events)?detail.events:[];
+  const session={trace_id:rawSession.trace_id,kind:rawSession.kind,state:rawSession.state,tenant:rawSession.tenant,agent:rawSession.agent,action:rawSession.action,source:rawSession.source,model:rawSession.model,request_id:rawSession.request_id,async_job_id:rawSession.async_job_id,scheduler_job_id:rawSession.scheduler_job_id,created_at:rawSession.created_at,updated_at:rawSession.updated_at,finished_at:rawSession.finished_at,text_bytes:rawSession.text_bytes,error:rawSession.error};
+  return {session,effective_payload:rawSession.effective_payload||{},request:rawSession.request||{},output:rawSession.output||'',response:rawSession.response||{},events:events.slice(-eventLimit),events_total:events.length,events_truncated:events.length>eventLimit};
+}
 function traceRaw(payload,limit=24000){let raw='';try{raw=JSON.stringify(traceSanitizeValue(payload),null,2)}catch(e){raw=redactDiagnostic(String(e))}const truncated=raw.length>limit;if(truncated)raw=raw.slice(0,limit)+'\n… raw output truncated';return `<section class="human-section trace-raw-panel"><h3>Raw JSON (redacted${truncated?' · truncated':''})</h3><pre class="human-pre">${esc(raw)}</pre></section>`}
 function traceEventList(events,limit=100){const shown=(events||[]).slice(-limit),prefix=(events||[]).length>shown.length?`<div class="empty-human">Showing latest ${shown.length} of ${(events||[]).length} events.</div>`:'';return `<section class="human-section"><h3>All events</h3>${prefix}${renderAny(shown)}</section>`}
 function tracePanel(id,label,render,available=true){return {id,label,render,available};}
@@ -2016,7 +2021,7 @@ function traceDisplayModel(detail){
     tracePanel('agent_context','Agent context',()=>humanSection('Agent context',effectivePayload),traceRecorded(effectivePayload)),
     tracePanel('tools','Tool calls',()=>humanSection('Tool calls',toolCalls.slice(-100)),availability.toolCalls),
     tracePanel('events','Events',()=>traceEventList(events),availability.events),
-    tracePanel('raw','Raw',()=>traceRaw({session,effective_payload:effectivePayload,input,output,response,errors,events}),true),
+    tracePanel('raw','Raw',()=>traceRaw(traceRawProjection(detail)),true),
   ];
   return model;
 }

@@ -398,6 +398,23 @@ def test_trace_inspector_uses_accessible_conditional_tabs_and_safe_trace_values(
     assert "events.slice(-100)" in model_source
 
 
+def test_trace_raw_projection_bounds_events_before_sanitization() -> None:
+    projection_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceRawProjection(") : DASHBOARD_HTML.index(
+            "function tracePanel("
+        )
+    ]
+    assert "events.slice(-eventLimit)" in projection_source
+    assert "events_total" in projection_source
+    assert "events_truncated" in projection_source
+    model_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceDisplayModel(detail)") : DASHBOARD_HTML.index(
+            "function traceAvailability("
+        )
+    ]
+    assert "traceRaw(traceRawProjection(detail))" in model_source
+
+
 def test_trace_display_model_derives_http_identity_and_keeps_effective_payload() -> None:
     source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function traceDisplayModel(detail)") : DASHBOARD_HTML.index(
