@@ -509,10 +509,58 @@ def test_trace_sequence_runtime_retains_prior_value_for_malformed_next_sequence(
     script = (
         source
         + "console.log(JSON.stringify([traceFiniteSequence(4,2),traceFiniteSequence(null,2),"
-        + "traceFiniteSequence('5',2),traceFiniteSequence(NaN,2)]));"
+        + "traceFiniteSequence('5',2),traceFiniteSequence(NaN,2),traceFiniteSequence(1,2)]));"
     )
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
-    assert json.loads(result.stdout) == [4, 2, 2, 2]
+    assert json.loads(result.stdout) == [4, 2, 2, 2, 2]
+
+
+def test_trace_presentation_kind_prioritizes_explicit_specialized_requests() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function tracePresentationKind(model)") : DASHBOARD_HTML.index(
+            "function tracePresentationData(model)"
+        )
+    ]
+    script = (
+        "const traceRecorded=v=>v!==null&&v!==undefined&&(typeof v!=='object'||Object.keys(v).length>0);"
+        + source
+        + "const base={modelExecutions:[{}],input:{prompt:'x'},output:'y',toolCalls:[{}],events:[]};"
+        + "console.log(JSON.stringify(["
+        + "tracePresentationKind({...base,identity:{action:'/api/command'}}),"
+        + "tracePresentationKind({...base,identity:{action:'/api/review'}}),"
+        + "tracePresentationKind({...base,session:{kind:'async_job'}})"
+        + "]));"
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    assert json.loads(result.stdout) == ["command", "review", "async_job"]
+
+
+def test_trace_thinking_details_have_stable_keys_and_restore_across_renders() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
+            "function setTraceView(view)"
+        )
+    ]
+    assert "captureTraceThinkingDetails" in source
+    assert "restoreTraceThinkingDetails" in source
+    assert "data-thinking-key" in DASHBOARD_HTML
+    assert "thinkingDetailsOpen" in source
+
+
+def test_trace_event_append_deduplicates_sequence_ids() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("const traceEventBufferLimit=") : DASHBOARD_HTML.index(
+            "function traceBoundedEvents("
+        )
+    ]
+    script = (
+        source
+        + "console.log(JSON.stringify(traceAppendEvents([{seq:1},{seq:2}],[{seq:2},{seq:3}],4)));"
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    assert json.loads(result.stdout)["events"] == [{"seq": 1}, {"seq": 2}, {"seq": 3}]
 
 
 def test_trace_inspector_keeps_optional_details_open_and_summary_visible() -> None:

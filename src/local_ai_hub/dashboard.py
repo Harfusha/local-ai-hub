@@ -1785,8 +1785,8 @@ function clickableRow(obj,html,type='',idAttr=''){
 
 let traceTimer=null,activeTraceId='',traceSeq=0,traceEvents=[],traceOpenSteps=new Set(),traceView='timeline',activeTraceData=null,traceRevealRedactedDetails=false,traceOptionalDetailsOpen=false,tracePollGeneration=0,tracePollInFlight=0,traceEventTotal=0;
 const traceEventBufferLimit=200;
-function traceAppendEvents(current,incoming,eventsTotal=0){const merged=(Array.isArray(current)?current:[]).concat(Array.isArray(incoming)?incoming:[]);return {events:merged.slice(-traceEventBufferLimit),eventsTotal:Math.max(Number(eventsTotal)||0,merged.length)};}
-function traceFiniteSequence(candidate,prior){return typeof candidate==='number'&&Number.isFinite(candidate)?candidate:prior;}
+function traceAppendEvents(current,incoming,eventsTotal=0){const existing=Array.isArray(current)?current:[],seen=new Set(existing.map(event=>event&&Number.isFinite(event.seq)?event.seq:null).filter(seq=>seq!==null)),fresh=(Array.isArray(incoming)?incoming:[]).filter(event=>{const seq=event&&Number.isFinite(event.seq);if(!seq)return true;if(seen.has(event.seq))return false;seen.add(event.seq);return true}),merged=existing.concat(fresh);return {events:merged.slice(-traceEventBufferLimit),eventsTotal:Math.max(Number(eventsTotal)||0,merged.length)};}
+function traceFiniteSequence(candidate,prior){return typeof candidate==='number'&&Number.isFinite(candidate)&&candidate>=prior?candidate:prior;}
 const humanLabel=k=>String(k||'').replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()).replace(/\bApi\b/g,'API').replace(/\bId\b/g,'ID').replace(/\bUrl\b/g,'URL').replace(/\bHttp\b/g,'HTTP');
 
 function renderAny(value){
@@ -2013,19 +2013,22 @@ function traceRawProjection(detail,eventLimit=100){
  function traceScrollNodes(root){return Array.from(root?.querySelectorAll?.('.human-pre,.trace-output,.prompt-pre')||[])}
  function captureTraceScrollPositions(root){return traceScrollNodes(root).map((node,index)=>({index,top:node.scrollTop,left:node.scrollLeft}))}
  function restoreTraceScrollPositions(root,positions){traceScrollNodes(root).forEach((node,index)=>{const saved=positions[index];if(saved){node.scrollTop=saved.top;node.scrollLeft=saved.left}})}
+ function captureTraceThinkingDetails(root){return new Set(Array.from(root?.querySelectorAll?.('details.trace-thinking[data-thinking-key]')||[]).filter(node=>node.open).map(node=>String(node.dataset.thinkingKey)))}
+ function restoreTraceThinkingDetails(root,openKeys){(root?.querySelectorAll?.('details.trace-thinking[data-thinking-key]')||[]).forEach(node=>{node.open=openKeys?.has(String(node.dataset.thinkingKey))||false})}
 function traceEventList(events,limit=100){const shown=(events||[]).slice(-limit),prefix=(events||[]).length>shown.length?`<div class="empty-human">Showing latest ${shown.length} of ${(events||[]).length} events.</div>`:'';return `<section class="human-section"><h3>All events</h3>${prefix}${renderAny(shown)}</section>`}
 function tracePanel(id,label,render,available=true){return {id,label,render,available};}
 function traceUnavailable(label){return `${label} unavailable for this request type`;}
 function tracePresentationKind(model){
-  const action=String(model.identity?.action||model.session?.action||'').toLowerCase(),kind=String(model.session?.kind||'').toLowerCase(),events=model.events||[];
-  const hasModel=model.modelExecutions?.length>0||traceRecorded(model.input)||traceRecorded(model.output),hasTools=model.toolCalls?.length>0;
-  if(hasModel&&hasTools)return 'agent_loop';
-  if(hasModel)return 'model_chat';
-  if(kind==='async_job'||model.correlations?.async_job_id||model.correlations?.scheduler_job_id)return 'async_job';
+  const action=String(model.identity?.action||model.session?.action||'').toLowerCase(),kind=String(model.presentation?.kind||model.session?.kind||'').toLowerCase(),events=model.events||[];
+  if(kind==='async_job')return 'async_job';
   if(action==='/api/command'||action.includes('/command'))return 'command';
   if(/\/review|\/diff|review|diff/.test(action))return 'review';
   if(/repo|code|git|symbol|impact|test|resolve|ast|topology/.test(action))return 'repo_intelligence';
   if(/rag|search|query|retriev|embed/.test(action))return 'rag_search';
+  const hasModel=model.modelExecutions?.length>0||traceRecorded(model.input)||traceRecorded(model.output),hasTools=model.toolCalls?.length>0;
+  if(hasModel&&hasTools)return 'agent_loop';
+  if(hasModel)return 'model_chat';
+  if(model.correlations?.async_job_id||model.correlations?.scheduler_job_id)return 'async_job';
   if(events.length||traceRecorded(model.response)||traceRecorded(model.input))return 'request_response';
   return 'request_response';
 }
@@ -2086,7 +2089,7 @@ function traceCodexEventMarkup(event,index,budget){
   let label=isThinking?'Thinking / reasoning':isToolCall?'Tool call':isToolResult?'Tool result':isOutput?'Assistant output':isRequest?'Model input':isBoundary?'Turn boundary':humanLabel(type);
   let body='',extra='';
   if(p?.malformed_payload)return `<div class="trace-timeline-event trace-malformed"><div class="trace-timeline-marker">Malformed event payload · step ${esc(step)}</div><div class="trace-primary-empty">Malformed event payload</div>${renderAny(tracePresentationValue(p.value,2048,budget))}</div>`;
-  if(isThinking){const content=p.content??p.text??p.reasoning??p.thinking??p.output??p;return `<div class="trace-timeline-event trace-thinking"><details class="trace-thinking"><summary>${esc(label)} · step ${esc(step)} · collapsed</summary>${promptBody(tracePresentationValue(content,8000,budget))}</details></div>`;}
+  if(isThinking){const content=p.content??p.text??p.reasoning??p.thinking??p.output??p,thinkingKey=`${step}:${event?.seq??index}`;return `<div class="trace-timeline-event trace-thinking"><details class="trace-thinking" data-thinking-key="${esc(thinkingKey)}"><summary>${esc(label)} · step ${esc(step)} · collapsed</summary>${promptBody(tracePresentationValue(content,8000,budget))}</details></div>`;}
   if(isRequest){const input=p.messages??p.prompt??p.content??p.input??p.request??p;body=traceModelInputMessages(input,{step}).map((message,messageIndex)=>traceChatMessageMarkup(message,messageIndex,budget)).join('');const metadataSource=input&&typeof input==='object'?input:p,metadataKeys=Object.keys(metadataSource).concat(metadataSource.request&&typeof metadataSource.request==='object'?Object.keys(metadataSource.request):[]).concat(p.request&&typeof p.request==='object'?Object.keys(p.request):[]).slice(0,40).join(', '),detailsBudget=traceRenderBudget(8000),boundedPayload=tracePresentationValue(p,8000,detailsBudget);extra=traceBudgetMarkup(`<div class="trace-chat-meta">Model output · request metadata: ${esc(metadataKeys||'none')}</div><details class="trace-optional-details"><summary>Full request payload · bounded</summary><div class="trace-optional-body">${renderAny(boundedPayload)}</div></details>`,budget);}
   else if(isToolCall){const name=p.name||p.tool||'tool',args=p.arguments??p.args??p.input??{};body=`<div class="trace-tool-card"><h4>Tool call · ${esc(name)} · call id ${esc(p.call_id||p.callId||'—')}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(String(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(tracePresentationValue(args,5000,budget))}</div></div>`;}
   else if(isToolResult){const call=event?.associated_call||{},name=p.name||p.tool||p.tool_name||call.name||call.tool||'tool',callId=p.call_id||p.callId||call.call_id||call.callId||'—',callStep=p.step||call.step||step,args=p.arguments??p.args??p.input??p.tool_arguments??call.arguments??call.args??call.input??{},failed=p.error||p.error_message||p.exception||p.is_error||p.isError||p.success===false||p.result?.error||p.result?.error_message||p.result?.exception, value=p.result??p.output??p.error??p;body=`<div class="trace-tool-card ${failed?'error':''}"><h4>Tool result · ${esc(String(name))} · call id ${esc(callId)} · step ${esc(callStep)}${failed?' · error':''}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(String(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(tracePresentationValue(args,5000,budget))}</div><div class="trace-tool-field"><strong>${failed?'error':'result'}</strong>${renderAny(tracePresentationValue(value,6000,budget))}</div></div>`;}
@@ -2219,7 +2222,7 @@ function traceSummary(model,unavailableCopy){
   return `<section class="human-section"><h3>Universal request summary</h3>${renderAny(summary)}</section>${traceAvailability(model,unavailableCopy)}`;
 }
  function renderTraceDetail(d){
-   const body=$('tracePageBody'),existingOptionalDetails=body?.querySelector('#traceTechnicalDetails');if(existingOptionalDetails)traceOptionalDetailsOpen=existingOptionalDetails.open;const scrollPositions=captureTraceScrollPositions(body),traceMain=body?.closest('.trace-main'),mainScrollTop=traceMain?.scrollTop||0,mainScrollLeft=traceMain?.scrollLeft||0;
+   const body=$('tracePageBody'),existingOptionalDetails=body?.querySelector('#traceTechnicalDetails');if(existingOptionalDetails)traceOptionalDetailsOpen=existingOptionalDetails.open;const thinkingDetailsOpen=captureTraceThinkingDetails(body),scrollPositions=captureTraceScrollPositions(body),traceMain=body?.closest('.trace-main'),mainScrollTop=traceMain?.scrollTop||0,mainScrollLeft=traceMain?.scrollLeft||0;
    activeTraceData=d;const unavailableCopy={input:'Input unavailable for this request type',output:'Output unavailable for this request type',response:'Response unavailable for this request type'},model=traceDisplayModel(d),s=traceSanitizeValue(model.session),events=model.events;
   if(!model.panels.some(panel=>panel.available&&panel.id===traceView))traceView=model.panels.find(panel=>panel.available)?.id||'timeline';
   $('tracePageTitle').textContent=String(s.action||s.source||'Trace');$('tracePageLive').textContent=d?.terminal?'terminal · retained':'● live · auto-refresh';$('tracePageLive').className='tiny '+(d?.terminal?'ok':'trace-running');
@@ -2232,7 +2235,7 @@ function traceSummary(model,unavailableCopy){
    const optionalMarkup=`<details class="trace-optional-details" id="traceTechnicalDetails"${traceOptionalDetailsOpen?' open':''}><summary>Technical details · ${panels.length} optional views</summary><div class="trace-optional-body"><nav class="trace-tabs" role="tablist" aria-label="Trace views">${panels.map(panel=>traceTab(panel.label,panel.id)).join('')}</nav>${panelMarkup}</div></details>`;
    // Universal request summary stays visible before optional technical details.
    $('tracePageBody').className='trace-page-body';$('tracePageBody').innerHTML=`<div class="human-shell">${header}${universalSummary}${presentationMarkup}${optionalMarkup}</div>`;
-   const restore=()=>{restoreTraceScrollPositions($('tracePageBody'),scrollPositions);const nextMain=$('tracePageBody')?.closest('.trace-main');if(nextMain){nextMain.scrollTop=mainScrollTop;nextMain.scrollLeft=mainScrollLeft}};
+   const restore=()=>{restoreTraceThinkingDetails($('tracePageBody'),thinkingDetailsOpen);restoreTraceScrollPositions($('tracePageBody'),scrollPositions);const nextMain=$('tracePageBody')?.closest('.trace-main');if(nextMain){nextMain.scrollTop=mainScrollTop;nextMain.scrollLeft=mainScrollLeft}};
    if(window.requestAnimationFrame)window.requestAnimationFrame(restore);else restore();
 }
 function setTraceView(view){if(!activeTraceData)return;const model=traceDisplayModel(activeTraceData);if(!model.panels.some(panel=>panel.available&&panel.id===view))return;traceView=view;renderTraceDetail(activeTraceData)}
@@ -2285,6 +2288,7 @@ function openModal(obj,title='',entityType=''){
     type==='command'?'Active Command':
     type==='error'?'Error Fingerprint':
     type==='db_opt'?'Database Optimization':
+    type==='resolve_errors'?'Operational Errors Resolved':
     type==='cache_purge'?'Cache Purge Summary':
     type==='http_tail'?'HTTP Tail Latency':
     type==='execution_profile'?'Execution Profile':
@@ -2309,6 +2313,7 @@ function openModal(obj,title='',entityType=''){
   else if(type==='command')renderActiveCommandModal(obj);
   else if(type==='error')renderErrorFingerprintModal(obj);
   else if(type==='db_opt')renderDbOptModal(obj);
+  else if(type==='resolve_errors')renderResolveErrorsModal(obj);
   else if(type==='cache_purge')renderCachePurgeModal(obj);
   else if(type==='http_tail')renderHttpTailModal(obj);
   else if(type==='execution_profile')renderExecutionProfileModal(obj);
