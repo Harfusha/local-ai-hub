@@ -1957,7 +1957,7 @@ function traceEventChips(metadata,process){
 }
 function traceEventSection(title,content,kind){return `<section class="trace-event-section" data-kind="${kind}"><span class="trace-event-label">${esc(title)}</span><div class="trace-event-value">${content}</div></section>`}
 function traceEventBody(event,events,index){
-  const type=String(event?.event_type||'event'),rawPayload=event?.payload,p=traceSanitizeValue(rawPayload&&typeof rawPayload==='object'&&!Array.isArray(rawPayload)?rawPayload:{value:rawPayload??'<malformed payload>'});let pairedResult=null,input='',output='',statusResult=null,groups;
+  const type=String(event?.event_type||'event'),budget=traceRenderBudget(8000),rawPayload=event?.payload,p=traceSanitizeValue(rawPayload&&typeof rawPayload==='object'&&!Array.isArray(rawPayload)?rawPayload:{value:rawPayload??'<malformed payload>'});let pairedResult=null,input='',output='',statusResult=null,groups;
   if(type==='tool_result'){
     const callId=p.call_id||'';
     if(callId&&events.slice(0,index).some(x=>x.event_type==='tool_call'&&((x.payload||{}).call_id||'')===callId))return '';
@@ -1972,9 +1972,9 @@ function traceEventBody(event,events,index){
   }else if(type==='tool_result'){
     groups=traceEventGroups(p);if(!Object.keys(groups.output).length)groups.output={result:p};
   }else if(type==='output_stream'){
-    output=traceOutputValueMarkup(p.values?.length?p.values:p.text??'',8000);groups=traceEventGroups(p,['text','values']);
+    output=traceOutputValueMarkup(p.values?.length?p.values:p.text??'',budget,8000);groups=traceEventGroups(p,['text','values']);
   }else if(type==='output_delta'){
-    output=traceOutputValueMarkup(p.text??'',8000);groups=traceEventGroups(p,['text']);
+    output=traceOutputValueMarkup(p.text??'',budget,8000);groups=traceEventGroups(p,['text']);
   }else{
     groups=traceEventGroups(p);input=Object.keys(groups.input).length?renderAny(groups.input):'';output=Object.keys(groups.output).length?renderAny(groups.output):'';
   }
@@ -2188,10 +2188,10 @@ function renderAgentLoopPresentation(model){
 }
 function tracePresentationPayload(model,key){const presentation=model?.presentation&&typeof model.presentation==='object'?model.presentation:{},payload=presentation[key],fieldSets={command:['command','cmd','args','arguments','input','stdin','stdout','stderr','exit_code','exitCode','success','retries','retry_count','attempts','duration','duration_ms','elapsed_ms','action','cwd','root','paths','criterion','error'],review:['request','context','diff','findings','recommendation','status','severity_counts','severityCounts','error'],repoOperation:['repository','repo','root','operation','action','query','files','symbols','context','result','output','response','error'],asyncJob:['status','queue_wait_ms','queue_wait','queue_time_ms','retries','retry_count','attempts','worker_input','input','result','output','error'],retrieval:['query','search_query','term','sources','results','hits','score','scores','provider','answer','truncated','truncation','root','project','top_k','limit','enrich','mode','path']},keys=fieldSets[key];return keys?(traceMergeRecordedSources([payload,model?.input,model?.output,model?.response,model?.session?.request,model?.session?.effective_payload],keys)||{}):payload??{};}
 function tracePresentationPick(value,keys,fallback){const source=value&&typeof value==='object'?value:{};for(const key of keys){if(traceRecorded(source[key]))return source[key];}return fallback;}
-function tracePresentationField(label,value,empty,budget){const safe=tracePresentationValue(value,6000,budget);return `<div class="trace-presentation-field"><strong>${esc(label)}</strong>${traceRecorded(safe)?renderAny(safe):`<span class="trace-primary-empty">${esc(empty||`No ${label} captured`)}</span>`}</div>`;}
+function tracePresentationField(label,value,empty,budget,options={}){const key=String(label||'').toLowerCase().replace(/\s+/g,'_'),safe=tracePresentationValue(value,6000,budget);if(options.mode==='technical')return `<div class="trace-presentation-field"><strong>${esc(label)}</strong>${traceRecorded(safe)?renderAny(safe):`<span class="trace-primary-empty">${esc(empty||`No ${label} captured`)}</span>`}</div>`;if(!traceMeaningfulValue(safe,key))return '';if(/(^|_)(stdout|stderr|diff|prompt|output|response)$/.test(key))return traceCodeBlock(label,safe,budget,{key});if(Array.isArray(safe))return traceList(label,safe,budget);return traceSummaryCard(label,safe,budget,{key});}
 function tracePresentationColumns(title,left,right,budget,headerExtra='',leftTitle='Request details',rightTitle='Result details'){const leftMarkup=left.join(''),rightMarkup=right.join('');return traceFinalizeMarkup(`<section class="trace-primary trace-request-presentation"><div class="trace-primary-head"><h2>${esc(title)}</h2>${headerExtra}</div><div class="trace-chat-columns trace-primary-grid"><article class="trace-primary-card input"><h3>${esc(leftTitle)}</h3><div class="trace-primary-value">${leftMarkup||'<div class="trace-primary-empty">No request details captured</div>'}</div></article><article class="trace-primary-card output"><h3>${esc(rightTitle)}</h3><div class="trace-primary-value">${rightMarkup||'<div class="trace-primary-empty">No result details captured</div>'}</div></article></div></section>`,budget);}
 function renderTraceInputOutputPresentation(model){const budget=traceRenderBudget(),input=tracePresentationField('input',model.input,'No input captured',budget),output=tracePresentationField('output',model.output,'No output captured',budget);if(!traceRecorded(model.input)&&!traceRecorded(model.output))return '';return tracePresentationColumns('Input / output',[input],[output],budget,'','Input','Output');}
-function traceReviewSeverityMarkup(findings,severityMap,budget){const counts={critical:0,high:0,medium:0,low:0},map=severityMap&&typeof severityMap==='object'&&!Array.isArray(severityMap)?severityMap:{};Object.keys(counts).forEach(level=>{const value=Number(map[level]);if(Number.isFinite(value))counts[level]=value;});const items=Array.isArray(findings)?findings:[];items.forEach(item=>{const severity=String(item?.severity||item?.priority||'').toLowerCase();if(counts[severity]!==undefined&&!Number.isFinite(Number(map[severity])))counts[severity]+=1;});return `<div class="trace-severity-counts" aria-label="severity counts">${Object.entries(counts).map(([level,count])=>`<span class="trace-event-chip ${count?'trace-severity-active':''}">${esc(level)}: ${count}</span>`).join('')}</div>`;}
+function traceReviewSeverityMarkup(findings,severityMap,budget){const counts={critical:0,high:0,medium:0,low:0},map=severityMap&&typeof severityMap==='object'&&!Array.isArray(severityMap)?severityMap:{};Object.keys(counts).forEach(level=>{const value=Number(map[level]);if(Number.isFinite(value))counts[level]=value;});const items=Array.isArray(findings)?findings:[];items.forEach(item=>{const severity=traceInlineText(item?.severity??item?.priority??'',120).toLowerCase();if(counts[severity]!==undefined&&!Number.isFinite(Number(map[severity])))counts[severity]+=1;});return `<div class="trace-severity-counts" aria-label="severity counts">${Object.entries(counts).map(([level,count])=>`<span class="trace-event-chip ${count?'trace-severity-active':''}">${esc(level)}: ${count}</span>`).join('')}</div>`;}
 function tracePresentationRankedField(label,value,empty,budget){const raw=Array.isArray(value)?value:[];if(!raw.length)return `<div class="trace-presentation-field"><strong>${esc(label)}</strong><span class="trace-primary-empty">${esc(empty)}</span></div>`;const ranked=raw.map((item,index)=>({item,index,score:Number(item?.score??item?.relevance??item?.similarity)})).sort((a,b)=>{const aFinite=Number.isFinite(a.score),bFinite=Number.isFinite(b.score);if(aFinite&&bFinite)return b.score-a.score||a.index-b.index;if(aFinite!==bFinite)return aFinite?-1:1;return a.index-b.index;});const markup=ranked.slice(0,20).map((entry,index)=>{const safe=tracePresentationValue(entry.item,1800,budget),score=Number.isFinite(entry.score)?entry.score:'—',rank=index+1,provider=entry.item?.provider||entry.item?.source||'—';return `<details class="trace-rag-source-details"><summary>rank ${esc(rank)} · score ${esc(score)} · provider ${esc(traceInlineText(provider))}</summary>${renderAny(safe)}</details>`}).join('');return `<div class="trace-presentation-field trace-rag-ranked"><strong>${esc(label)}</strong><div class="trace-rag-ranked">${markup}</div></div>`;}
 function traceProjectLabel(value){
   if(typeof value==='string'){const text=String(value).replace(/[\\/]+$/,'');if(!text)return '';const parts=text.split(/[\\/]/).filter(Boolean);return parts[parts.length-1]||text;}
@@ -2211,29 +2211,155 @@ function traceSearchResultRow(item,index,budget){
   const source=item&&typeof item==='object'?item:{},path=source.path??source.file??source.filename??source.name??'Result',start=source.start_line??source.startLine,end=source.end_line??source.endLine,location=start!==undefined?`line ${traceInlineText(start)}${end!==undefined&&traceInlineText(end)!==traceInlineText(start)?`–${traceInlineText(end)}`:''}`:'',provider=source.provider??source.source??'',score=Number(source.score??source.relevance??source.similarity),snippet=traceSearchText(source.text??source.content??source.snippet??source.summary??source.description),scoreMarkup=Number.isFinite(score)?`<span class="trace-search-score">${esc(score)}</span>`:'';
   return `<div class="trace-search-result-row"><span class="trace-search-rank">${esc(index+1)}</span><div class="trace-search-result-main"><strong>${esc(traceInlineText(path))}</strong>${location?`<span class="tiny">${esc(location)}</span>`:''}${provider?`<span class="tiny">${esc(traceInlineText(provider))}</span>`:''}${snippet?`<div class="trace-search-snippet">${esc(snippet)}</div>`:''}</div>${scoreMarkup}</div>`;
 }
+function traceMeaningfulValue(value,key=''){
+  const name=String(key||'').toLowerCase();
+  if(value===undefined||value===null||value==='')return false;
+  if(typeof value==='string'&&/^(empty|none|null|n\/a|unknown)$/i.test(value.trim()))return false;
+  if(/(^|_)(id|ids|lease_id|session_id|clone_id|worktree_id|repository_id|task_id|metadata)$/.test(name)||name.includes('internal')||name.includes('duplicate'))return false;
+  if(Array.isArray(value))return value.some(item=>traceMeaningfulValue(item));
+  if(typeof value==='object')return Object.entries(value).some(([childKey,childValue])=>traceMeaningfulValue(childValue,childKey));
+  return true;
+}
+function tracePrimaryMeaningfulValue(value,key=''){if(typeof value==='string'&&/^(empty|none|null|n\/a|unknown)$/i.test(value.trim()))return false;return traceMeaningfulValue(value,key);}
+function traceHumanValue(value,budget,limit=4000){
+  const val=tracePresentationValue(value,limit,budget);
+  if(val===undefined||val===null)return '';
+  if(typeof val==='string'||typeof val==='number'||typeof val==='boolean'){
+    const str=String(val);
+    return esc(str.length>limit?str.slice(0,limit)+'…':str);
+  }
+  if(Array.isArray(val)){
+    const items=val.filter(item=>traceMeaningfulValue(item));
+    if(!items.length)return '';
+    if(items.every(it=>typeof it==='string'||typeof it==='number'||typeof it==='boolean')){
+      return items.map(it=>`<span class="trace-chip">${esc(String(it))}</span>`).join('');
+    }
+    return `<div class="trace-list-items">${items.map(it=>`<div>${traceHumanValue(it,budget,limit)}</div>`).join('')}</div>`;
+  }
+  if(typeof val==='object'){
+    const entries=Object.entries(val).filter(([k,v])=>traceMeaningfulValue(v,k));
+    if(!entries.length)return '';
+    return entries.map(([k,v])=>`<div class="trace-obj-field"><strong class="trace-obj-key">${esc(k)}:</strong> <span class="trace-obj-val">${traceHumanValue(v,budget,limit)}</span></div>`).join('');
+  }
+  return esc(String(val));
+}
+function traceSummaryCard(title,value,budget,options={}){
+  const val=tracePresentationValue(value,options.limit||4000,budget);
+  if(!traceMeaningfulValue(val,options.key||title))return '';
+  return `<section class="trace-summary-card ${esc(options.tone||'')}" data-field="${esc(options.key||title)}"><h3>${esc(title)}</h3><div class="trace-summary-value">${traceHumanValue(val,budget,options.limit||4000)}</div></section>`;
+}
+function traceCodeBlock(title,value,budget,options={}){
+  const val=tracePresentationValue(value,options.limit||8000,budget);
+  if(!tracePrimaryMeaningfulValue(val,options.key||title))return '';
+  return `<section class="trace-code-card"><h3>${esc(title)}</h3><pre class="trace-output">${esc(traceInlineText(val,options.limit||8000))}</pre></section>`;
+}
+function traceList(title,items,budget,renderItem){
+  const values=(Array.isArray(items)?items:[]).filter(item=>traceMeaningfulValue(item));
+  if(!values.length)return '';
+  const rendered=renderItem?values.map((item,index)=>renderItem(item,index,budget)).join(''):values.map(item=>`<div class="trace-list-item">${traceHumanValue(item,budget)}</div>`).join('');
+  return `<section class="trace-list-card"><h3>${esc(title)} <span class="tiny">${values.length}</span></h3><div>${rendered}</div></section>`;
+}
 function renderCommandPresentation(model){
-  const budget=traceRenderBudget(),command=traceSanitizeValue(tracePresentationPayload(model,'command')||{}),top=`<section class="trace-command-top"><h3>Command and arguments</h3>${tracePresentationField('command',tracePresentationPick(command,['command','cmd'],command),'No command captured',budget)}${tracePresentationField('arguments',tracePresentationPick(command,['args','arguments'],''),'No arguments captured',budget)}</section>`,left=[tracePresentationField('input',tracePresentationPick(command,['input','stdin'],''),'No input captured',budget)],right=[tracePresentationField('stdout',command.stdout,'No stdout captured',budget),tracePresentationField('stderr',command.stderr,'No stderr captured',budget),tracePresentationField('exit code',tracePresentationPick(command,['exit_code','exitCode','code'],''),'No exit code captured',budget),tracePresentationField('retries',tracePresentationPick(command,['retries','retry_count','attempts'],''),'No retries captured',budget),tracePresentationField('duration',tracePresentationPick(command,['duration','duration_ms','elapsed_ms'],''),'No duration captured',budget)];
+  const budget=traceRenderBudget(),command=traceSanitizeValue(tracePresentationPayload(model,'command')||{});
+  const cmdVal=tracePresentationPick(command,['command','cmd'],command.command||'');
+  const argsVal=tracePresentationPick(command,['args','arguments'],'');
+  const inputVal=tracePresentationPick(command,['input','stdin'],'');
+  const exitCodeVal=tracePresentationPick(command,['exit_code','exitCode','code'],'');
+  const retriesVal=tracePresentationPick(command,['retries','retry_count','attempts'],'');
+  const durationVal=tracePresentationPick(command,['duration','duration_ms','elapsed_ms'],'');
+  const cmdSummary=traceMeaningfulValue(cmdVal)?`<div class="trace-command-line"><code>${esc(traceInlineText(cmdVal))}</code></div>`:'';
+  const argsMarkup=Array.isArray(argsVal)?traceList('arguments',argsVal,budget):traceMeaningfulValue(argsVal)?traceSummaryCard('args',argsVal,budget):'';
+  const top=`<section class="trace-summary-card trace-command-top"><h3>Command and arguments</h3>${cmdSummary||traceSummaryCard('command',cmdVal,budget)}${argsMarkup}</section>`;
+  const left=[traceMeaningfulValue(inputVal)?traceSummaryCard('input',inputVal,budget):''];
+  const right=[
+    traceCodeBlock('stdout',command.stdout,budget),
+    (traceRecorded(command.stderr)?traceCodeBlock('stderr',command.stderr,budget):''),
+    (traceMeaningfulValue(exitCodeVal)?traceSummaryCard('exit code',exitCodeVal,budget):''),
+    (traceMeaningfulValue(retriesVal)?traceSummaryCard('retries',retriesVal,budget):''),
+    (traceMeaningfulValue(durationVal)?traceSummaryCard('duration',durationVal,budget):'')
+  ];
   return traceFinalizeMarkup(`${top}${tracePresentationColumns('Command output',left,right,budget)}`,budget);
 }
 function renderReviewPresentation(model){
-  const budget=traceRenderBudget(),review=traceSanitizeValue(tracePresentationPayload(model,'review')),left=[tracePresentationField('request',review.request,'No request captured',budget),tracePresentationField('context',review.context,'No context captured',budget),tracePresentationField('diff',review.diff,'No diff captured',budget)],right=[tracePresentationField('findings',review.findings,'No findings captured',budget),tracePresentationField('recommendation',review.recommendation,'No recommendation captured',budget),tracePresentationField('status',review.status??model.lifecycle?.state,'No status captured',budget)];
+  const budget=traceRenderBudget(),review=traceSanitizeValue(tracePresentationPayload(model,'review'));
+  const findings=review.findings??review.text??model.output??'';
+  const status=review.status??(review.final_response_status==='empty'?'No final response produced':model.lifecycle?.state);
+  const left=[
+    traceMeaningfulValue(review.request)?traceSummaryCard('request',review.request,budget):'',
+    traceMeaningfulValue(review.context)?traceSummaryCard('context',review.context,budget):'',
+    traceMeaningfulValue(review.diff)?traceCodeBlock('diff',review.diff,budget):''
+  ];
+  const right=[
+    (Array.isArray(findings)?traceList('findings',findings,budget,(item,idx)=>{const severity=traceInlineText(item?.severity??item?.priority??'',120);return `<div class="trace-finding-item"><span class="trace-chip ${esc(severity)}">${esc(severity)}</span><div>${traceHumanValue(item,budget)}</div></div>`}):(traceMeaningfulValue(findings)?traceSummaryCard('findings',findings,budget):'')),
+    traceMeaningfulValue(review.recommendation)?traceSummaryCard('recommendation',review.recommendation,budget):'',
+    traceMeaningfulValue(status)?traceSummaryCard('status',status,budget):''
+  ];
   return tracePresentationColumns('Review',left,right,budget,traceReviewSeverityMarkup(review.findings,review.severity_counts??review.severityCounts,budget));
 }
 function renderRepoIntelligencePresentation(model){
-  const budget=traceRenderBudget(),repo=traceSanitizeValue(tracePresentationPayload(model,'repoOperation')),left=[tracePresentationField('repository',tracePresentationPick(repo,['repository','repo'],''),'No repository captured',budget),tracePresentationField('root',repo.root,'No root captured',budget),tracePresentationField('operation',tracePresentationPick(repo,['operation','action'],''),'No operation captured',budget),tracePresentationField('query',repo.query,'No query captured',budget),tracePresentationField('files',repo.files,'No files captured',budget),tracePresentationField('symbols',repo.symbols,'No symbols captured',budget),tracePresentationField('context',repo.context,'No context captured',budget)],right=[tracePresentationField('result',tracePresentationPick(repo,['result','output','response'],''),'No result captured',budget)];
+  const budget=traceRenderBudget(),repo=traceSanitizeValue(tracePresentationPayload(model,'repoOperation'));
+  const repository=tracePresentationPick(repo,['repository','repo'],'');
+  const operation=tracePresentationPick(repo,['operation','action'],model.identity?.action||'');
+  const result=tracePresentationPick(repo,['result','output','response','text'],'');
+  const left=[
+    traceMeaningfulValue(repository)?traceSummaryCard('repository',repository,budget):'',
+    traceMeaningfulValue(repo.root)?traceSummaryCard('root',repo.root,budget):'',
+    traceMeaningfulValue(operation)?traceSummaryCard('operation',operation,budget):'',
+    traceMeaningfulValue(repo.query)?traceSummaryCard('query',repo.query,budget):'',
+    traceMeaningfulValue(repo.files??repo.changed_files)?traceSummaryCard('files',repo.files??repo.changed_files,budget):'',
+    traceMeaningfulValue(repo.symbols)?traceSummaryCard('symbols',repo.symbols,budget):'',
+    traceMeaningfulValue(repo.context)?traceSummaryCard('context',repo.context,budget):''
+  ];
+  const right=[
+    traceMeaningfulValue(result)?traceSummaryCard('result',result,budget):''
+  ];
   return tracePresentationColumns('Repository intelligence',left,right,budget);
 }
 function renderRagSearchPresentation(model){
   const budget=traceRenderBudget(),retrieval=traceSanitizeValue(tracePresentationPayload(model,'retrieval')),query=tracePresentationPick(retrieval,['query','search_query','term'],''),rawResults=Array.isArray(retrieval.results)?retrieval.results:(Array.isArray(retrieval.hits)?retrieval.hits:[]),sources=Array.isArray(retrieval.sources)?retrieval.sources:[],results=rawResults.length?rawResults:sources,ranked=results.map((item,index)=>({item,index,score:Number(item?.score??item?.relevance??item?.similarity)})).sort((a,b)=>{const af=Number.isFinite(a.score),bf=Number.isFinite(b.score);if(af&&bf)return b.score-a.score||a.index-b.index;if(af!==bf)return af?-1:1;return a.index-b.index}),spec=[traceProjectLabel(model),retrieval.path,retrieval.top_k??retrieval.limit,typeof retrieval.enrich==='boolean'?`enrich ${retrieval.enrich?'on':'off'}`:retrieval.mode,retrieval.provider].filter(Boolean),rows=ranked.slice(0,50).map((entry,index)=>traceSearchResultRow(entry.item,index,budget)).join('');
   const resultLabel=`${results.length}${results.length===1?' result':' results'}`;
-  return traceFinalizeMarkup(`<section class="trace-primary trace-search-presentation"><div class="trace-primary-head"><h2>Search</h2><span class="tiny">${esc(resultLabel)}</span></div><div class="trace-search-query"><strong>Query</strong><div>${query?esc(traceSearchText(query,1200)):'<span class="trace-primary-empty">No query captured</span>'}</div></div>${spec.length?`<div class="trace-search-spec">${spec.map(item=>`<span>${esc(traceInlineText(item))}</span>`).join('')}</div>`:''}<div class="trace-search-results"><h3>Results</h3>${rows||'<div class="trace-primary-empty">No results captured</div>'}</div>${traceRecorded(retrieval.answer)?`<div class="trace-search-answer"><strong>Answer</strong><div>${esc(traceSearchText(retrieval.answer,2400))}</div></div>`:''}${traceRecorded(retrieval.truncated??retrieval.truncation)?`<div class="trace-search-answer"><strong>Truncation</strong><div>${esc(traceSearchText(retrieval.truncated??retrieval.truncation,300))}</div></div>`:''}</section>`,budget);
+  return traceFinalizeMarkup(`<section class="trace-primary trace-search-presentation"><div class="trace-primary-head"><h2>Search</h2><span class="tiny">${esc(resultLabel)}</span></div><div class="trace-summary-card trace-search-query"><strong>Query</strong><div>${query?esc(traceSearchText(query,1200)):'<span class="trace-primary-empty">No query captured</span>'}</div></div>${spec.length?`<div class="trace-search-spec">${spec.map(item=>`<span>${esc(traceInlineText(item))}</span>`).join('')}</div>`:''}<div class="trace-list-card trace-search-results"><h3>Results</h3>${rows||'<div class="trace-primary-empty">No results captured</div>'}</div>${traceRecorded(retrieval.answer)?`<div class="trace-summary-card trace-search-answer"><strong>Answer</strong><div>${esc(traceSearchText(retrieval.answer,2400))}</div></div>`:''}${traceRecorded(retrieval.truncated??retrieval.truncation)?`<div class="trace-summary-card trace-search-answer"><strong>Truncation</strong><div>${esc(traceSearchText(retrieval.truncated??retrieval.truncation,300))}</div></div>`:''}</section>`,budget);
 }
 function renderAsyncJobPresentation(model){
-  const budget=traceRenderBudget(),safeModel=traceSanitizeValue(model||{}),lifecycle=safeModel.lifecycle||{},correlations=safeModel.correlations||{},payload=traceSanitizeValue(tracePresentationPayload(safeModel,'asyncJob')),left=[tracePresentationField('lifecycle',lifecycle,'No lifecycle captured',budget),tracePresentationField('status',tracePresentationPick(payload,['status'],lifecycle.state??''),'No status captured',budget),tracePresentationField('queue wait',tracePresentationPick(payload,['queue_wait_ms','queue_wait','queue_time_ms'],''),'No queue wait captured',budget),tracePresentationField('retries',tracePresentationPick(payload,['retries','retry_count','attempts'],''),'No retries captured',budget),tracePresentationField('worker input',tracePresentationPick(payload,['worker_input','input'],safeModel.input),'No worker input captured',budget)],right=[tracePresentationField('result',tracePresentationPick(payload,['result','output'],safeModel.output),'No result captured',budget),tracePresentationField('error',tracePresentationPick(payload,['error'],safeModel.errors),'No error captured',budget),tracePresentationField('job id',tracePresentationPick(correlations,['job_id','async_job_id','scheduler_job_id'],''),'No job id captured',budget),tracePresentationField('correlation',tracePresentationPick(correlations,['request_id','correlation_id'],''),'No correlation captured',budget)];
+  const budget=traceRenderBudget(),safeModel=traceSanitizeValue(model||{}),lifecycle=safeModel.lifecycle||{},correlations=safeModel.correlations||{},payload=traceSanitizeValue(tracePresentationPayload(safeModel,'asyncJob'));
+  const status=tracePresentationPick(payload,['status'],lifecycle.state??'');
+  const queueWait=tracePresentationPick(payload,['queue_wait_ms','queue_wait','queue_time_ms'],'');
+  const retries=tracePresentationPick(payload,['retries','retry_count','attempts'],'');
+  const workerInput=tracePresentationPick(payload,['worker_input','input'],safeModel.input);
+  const result=tracePresentationPick(payload,['result','output'],safeModel.output);
+  const error=tracePresentationPick(payload,['error'],safeModel.errors);
+  const jobId=tracePresentationPick(correlations,['job_id','async_job_id','scheduler_job_id'],'');
+  const correlation=tracePresentationPick(correlations,['request_id','correlation_id'],'');
+  const left=[
+    traceMeaningfulValue(lifecycle)?traceSummaryCard('lifecycle',lifecycle,budget):'',
+    traceMeaningfulValue(status)?traceSummaryCard('status',status,budget):'',
+    traceMeaningfulValue(queueWait)?traceSummaryCard('queue wait',queueWait,budget):'',
+    traceMeaningfulValue(retries)?traceSummaryCard('retries',retries,budget):'',
+    traceMeaningfulValue(workerInput)?traceSummaryCard('worker input',workerInput,budget):''
+  ];
+  const right=[
+    traceMeaningfulValue(result)?(Array.isArray(result)?traceList('result',result,budget):traceSummaryCard('result',result,budget)):'',
+    traceMeaningfulValue(error)?traceSummaryCard('error',error,budget):'',
+    traceMeaningfulValue(jobId)?traceSummaryCard('job id',jobId,budget):'',
+    traceMeaningfulValue(correlation)?traceSummaryCard('correlation',correlation,budget):''
+  ];
   return tracePresentationColumns('Async job',left,right,budget);
 }
 function renderRequestResponsePresentation(model){
-  const budget=traceRenderBudget(),safeModel=traceSanitizeValue(model||{}),timing=safeModel.timing||{},left=[tracePresentationField('request',safeModel.session?.request??safeModel.identity?.action,'No request captured',budget),tracePresentationField('input',safeModel.input,'No input captured',budget),tracePresentationField('timing',timing,'No timing captured',budget)],right=[tracePresentationField('response',safeModel.response,'No response captured',budget),tracePresentationField('output',safeModel.output,'No output captured',budget),tracePresentationField('status',safeModel.lifecycle?.status_code??safeModel.lifecycle?.state,'No status captured',budget),tracePresentationField('error',safeModel.errors,'No error captured',budget)];
+  const budget=traceRenderBudget(),safeModel=traceSanitizeValue(model||{}),timing=safeModel.timing||{};
+  const reqVal=safeModel.session?.request??safeModel.identity?.action;
+  const statusVal=safeModel.lifecycle?.status_code??safeModel.lifecycle?.state;
+  const left=[
+    traceMeaningfulValue(reqVal)?traceSummaryCard('request',reqVal,budget):'<div class="trace-summary-card"><h3>request</h3><span class="trace-primary-empty">No request captured</span></div>',
+    traceMeaningfulValue(safeModel.input)?traceSummaryCard('input',safeModel.input,budget):'',
+    traceMeaningfulValue(timing)?traceSummaryCard('timing',timing,budget):''
+  ];
+  const right=[
+    traceMeaningfulValue(safeModel.response)?traceSummaryCard('response',safeModel.response,budget):'<div class="trace-summary-card"><h3>response</h3><span class="trace-primary-empty">No response captured</span></div>',
+    traceMeaningfulValue(safeModel.output)?(Array.isArray(safeModel.output)?traceList('output',safeModel.output,budget):traceSummaryCard('output',safeModel.output,budget)):'',
+    traceMeaningfulValue(statusVal)?traceSummaryCard('status',statusVal,budget):'',
+    traceMeaningfulValue(safeModel.errors)?traceSummaryCard('error',safeModel.errors,budget):''
+  ];
   return tracePresentationColumns('Request / response',left,right,budget);
 }
 function renderTracePresentation(model){const kind=model.presentation?.kind||tracePresentationKind(model),specializedKinds=['agent_loop','model_chat','command','review','repo_intelligence','rag_search','async_job','request_response'],inputOutput=specializedKinds.includes(kind)?'':renderTraceInputOutputPresentation(model);let specialized='';if(kind==='agent_loop')specialized=renderAgentLoopPresentation(model);else if(kind==='model_chat')specialized=renderModelChatPresentation(model);else if(kind==='command')specialized=renderCommandPresentation(model);else if(kind==='review')specialized=renderReviewPresentation(model);else if(kind==='repo_intelligence')specialized=renderRepoIntelligencePresentation(model);else if(kind==='rag_search')specialized=renderRagSearchPresentation(model);else if(kind==='async_job')specialized=renderAsyncJobPresentation(model);else if(kind==='request_response')specialized=renderRequestResponsePresentation(model);return inputOutput+specialized;}
