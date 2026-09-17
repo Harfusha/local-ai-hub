@@ -270,13 +270,16 @@ tbody tr.click:hover{background:#162338}
       <summary>Controls</summary>
       <div class="control-popover">
         <div class="token"><input type="password" id="apiToken" autocomplete="off" placeholder="API token (remote only)"><button class="btn" id="saveToken">Set token</button></div>
-        <button class="btn ok" id="optDbBtn">Optimize DBs</button>
-        <button class="btn warn" id="purgeCacheBtn">Purge Cache</button>
-        <button class="btn" id="doctorBtn">Doctor</button>
-        <button class="btn" id="pauseEvents">Pause events</button>
+        <div class="tiny muted">Diagnostics</div>
+        <button class="btn ok" id="optDbBtn">Optimize databases</button>
+        <button class="btn" id="doctorBtn">Run diagnostics</button>
+        <button class="btn" id="pauseEvents">Pause event display</button>
+        <div class="tiny muted">Runtime control</div>
         <button class="btn warn" id="prepToggle">Pause preprocessing</button>
-        <button class="btn" id="restartHub">Restart hub</button>
-        <button class="btn bad" id="stopService">Stop service</button>
+        <button class="btn" id="restartHub" data-control-action="restart_hub">Restart hub service</button>
+        <div class="tiny muted">Destructive maintenance</div>
+        <button class="btn warn" id="purgeCacheBtn" data-control-action="purge_cache">Purge expired cache</button>
+        <button class="btn bad" id="stopService" data-control-action="stop_service">Stop hub service</button>
       </div>
     </details>
   </div>
@@ -347,9 +350,9 @@ tbody tr.click:hover{background:#162338}
 </div>
 
 <div id="work" class="page">
-  <section class="section"><h2>Scheduler queue <span class="tiny" id="queueSummary"></span></h2><div class="table-wrap"><table><thead><tr><th>State</th><th>Job</th><th>Agent/tenant</th><th>Source</th><th>Model</th><th>Priority</th><th>Wait</th><th>Processing</th><th>Reason</th></tr></thead><tbody id="jobs"></tbody></table></div></section>
+  <section class="section"><h2>Live scheduler work <span class="tiny" id="queueSummary">Current queue only; not request history.</span></h2><div class="table-wrap"><table><thead><tr><th>State</th><th>Job</th><th>Agent/tenant</th><th>Source</th><th>Model</th><th>Priority</th><th>Wait</th><th>Processing</th><th>Reason</th></tr></thead><tbody id="jobs"></tbody></table></div></section>
   <section class="section"><h2>Active API requests <span class="tiny">monitoring endpoints excluded</span></h2><div class="table-wrap"><table><thead><tr><th>Request</th><th>Agent</th><th>Tenant</th><th>Action</th><th>Age</th></tr></thead><tbody id="activeReq"></tbody></table></div></section>
-  <section class="section"><h2>Recent API requests <span class="tiny">persisted telemetry · latest 200 · click a row for request details when a trace is available</span></h2><div class="request-filter"><input id="requestHistorySearch" type="search" placeholder="Search request ID, route, agent, tenant, error…" autocomplete="off"><select id="requestHistoryAction" aria-label="Filter by endpoint"><option value="">All endpoints</option></select><select id="requestHistoryStatus" aria-label="Filter by status"><option value="">All results</option><option value="failed">Failed</option><option value="2xx">2xx</option><option value="4xx">4xx</option><option value="5xx">5xx</option></select><select id="requestHistoryPeriod" aria-label="Filter by time"><option value="">All loaded</option><option value="3600">Last hour</option><option value="86400">Last 24 hours</option><option value="604800">Last 7 days</option><option value="2592000">Last 30 days</option></select><button class="btn" id="requestHistoryReset">Reset</button><span class="tiny request-summary" id="requestHistorySummary">0 requests</span></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Request</th><th>Agent</th><th>Tenant</th><th>Action</th><th>Status</th><th>Duration</th></tr></thead><tbody id="recentReq"></tbody></table></div></section>
+  <section class="section"><h2>Request history <span class="tiny">Persisted API telemetry; distinct from scheduler work and Agent OS task runs.</span></h2><div class="request-filter"><input id="requestHistorySearch" type="search" placeholder="Search request ID, route, agent, tenant, error…" autocomplete="off"><select id="requestHistoryAction" aria-label="Filter by endpoint"><option value="">All endpoints</option></select><select id="requestHistoryStatus" aria-label="Filter by status"><option value="">All results</option><option value="failed">Failed</option><option value="2xx">2xx</option><option value="4xx">4xx</option><option value="5xx">5xx</option></select><select id="requestHistoryPeriod" aria-label="Filter by time"><option value="">All loaded</option><option value="3600">Last hour</option><option value="86400">Last 24 hours</option><option value="604800">Last 7 days</option><option value="2592000">Last 30 days</option></select><button class="btn" id="requestHistoryReset">Reset</button><span class="tiny request-summary" id="requestHistorySummary">0 requests</span></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Request</th><th>Agent</th><th>Tenant</th><th>Action</th><th>Status</th><th>Trace availability</th><th>Duration</th></tr></thead><tbody id="recentReq"></tbody></table></div></section>
 </div>
 
 <div id="agentos" class="page">
@@ -405,7 +408,7 @@ tbody tr.click:hover{background:#162338}
       <div class="project-toolbar">
         <input id="trajSearch" type="search" placeholder="Search task runs..." autocomplete="off">
         <button class="btn ok" id="trajRefreshBtn" style="padding:5px 9px">↻ Refresh Run History</button>
-        <span class="tiny project-summary" id="trajSummary">Agent OS tasks, checkpoints, and events</span>
+        <span class="tiny project-summary" id="trajSummary">Durable Agent OS tasks, checkpoints, and verification receipts — no HTTP request history.</span>
       </div>
       <div class="table-wrap">
         <table>
@@ -419,7 +422,7 @@ tbody tr.click:hover{background:#162338}
       </div>
     </section>
     <section class="section">
-      <h2>Model &amp; tool traces <span class="tiny" id="traceSummary">full prompt/output · bounded retention</span></h2>
+      <h2>Request trace inspector <span class="tiny" id="traceSummary">Request/model/tool evidence; separate from Agent task runs.</span></h2>
       <div class="trace-toolbar"><span class="tiny">Inspect request events, model prompts, tool calls, and outputs.</span><select id="traceKind"><option value="">All kinds</option><option value="api_request">API requests</option><option value="async_job">Async jobs</option></select><button class="btn" id="traceRefresh" style="padding:4px 8px;font-size:11px">Refresh</button></div>
       <div class="table-wrap"><table><thead><tr><th>State</th><th>Kind</th><th>Action</th><th>Agent / tenant</th><th>Model</th><th>Created</th><th>Updated</th><th>Links</th></tr></thead><tbody id="traces"></tbody></table></div>
     </section>
@@ -431,7 +434,7 @@ tbody tr.click:hover{background:#162338}
   <div id="prepDiagnosticBar" class="diag-banner info" style="display:none"></div>
   <section class="section">
     <h2><span style="display:flex;align-items:center;gap:8px">Projects <span class="tiny" id="prepState">0 registered projects · global running</span></span><div style="display:flex;gap:6px;align-items:center"><button class="btn warn" id="prepAllToggle" style="padding:4px 10px;font-size:11px">Pause all projects</button><button class="btn ok" id="regProjectBtn" style="padding:4px 10px;font-size:11px">+ Register</button><button class="btn warn" id="cleanMissingBtn" style="padding:4px 10px;font-size:11px">🧹 Clean missing</button></div></h2>
-    <div class="project-toolbar"><input id="projectSearch" type="search" placeholder="Search projects…" autocomplete="off"><select id="projectFilter" aria-label="Project status"><option value="all">All states</option><option value="running">Running</option><option value="waiting">Waiting</option><option value="error">Error</option><option value="paused">Paused</option><option value="ready">Ready</option></select><select id="projectSort" aria-label="Project sort"><option value="priority">Operational priority</option><option value="name">Name</option><option value="progress">Progress</option><option value="recent">Recent activity</option></select><span class="tiny project-summary" id="projectSummary">0 of 0 projects</span></div>
+    <div class="project-toolbar"><input id="projectSearch" type="search" placeholder="Search repository identity, project, or worktree…" autocomplete="off"><select id="projectFilter" aria-label="Project status"><option value="all">All states</option><option value="running">Running</option><option value="waiting">Waiting</option><option value="error">Error</option><option value="paused">Paused</option><option value="ready">Ready</option></select><label class="tiny"><input id="projectGroupWorktrees" type="checkbox" checked> Group worktrees</label><select id="projectSort" aria-label="Project sort"><option value="priority">Operational priority</option><option value="name">Name</option><option value="progress">Progress</option><option value="recent">Recent activity</option></select><span class="tiny project-summary" id="projectSummary">0 of 0 projects</span></div>
     <div class="table-wrap"><table class="project-table"><thead><tr><th>Project</th><th>State &amp; activity</th><th>Phase &amp; progress</th><th>Indexes</th><th>Actions</th></tr></thead><tbody id="projectsBody"></tbody></table></div>
   </section>
 </div>
@@ -475,7 +478,7 @@ tbody tr.click:hover{background:#162338}
   <div style="margin-top:12px">
     <section class="section rag-narrow">
       <h2>RAG Vector Workspaces <span class="tiny">Persistent semantic code index</span></h2>
-      <div style="padding:12px" id="ragWorkspacesList"><div class="tiny muted">Loading RAG workspaces…</div></div>
+      <div style="padding:12px"><div class="project-toolbar"><input id="ragWorkspaceSearch" type="search" placeholder="Search RAG workspaces…" autocomplete="off"><span class="tiny" id="ragWorkspaceSummary">Workspace identity and index status.</span></div><div id="ragWorkspacesList"><div class="tiny muted">Loading RAG workspaces…</div></div></div>
     </section>
   </div>
 
@@ -510,6 +513,7 @@ tbody tr.click:hover{background:#162338}
 </div>
 
 <div id="reliability" class="page">
+  <section class="section" id="reliabilitySummary"><h2>Operational severity <span class="tiny">Aggregates current failures, restart history, and request health.</span></h2><div id="reliabilityHeadline" class="kv"></div><div class="tiny muted" id="reliabilityTrend">Failure trend unavailable until telemetry arrives.</div><button class="btn" id="reliabilityAction">Open affected requests</button></section>
   <div class="split">
     <section class="section"><h2>Recent error fingerprints</h2><div class="table-wrap"><table><thead><tr><th>Component</th><th>Operation</th><th>Count</th><th>Recovered</th><th>Last seen</th></tr></thead><tbody id="errors"></tbody></table></div></section>
     <section class="section"><h2>Runtime / scheduler counters</h2><div id="runtimeCounters" class="kv"></div></section>
@@ -539,7 +543,7 @@ tbody tr.click:hover{background:#162338}
       <div class="dash-group"><div class="group-title">Core MCP Tools</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgFeatStatus"> status (local_ai_status)</label><label><input type="checkbox" id="cfgFeatRepo"> repo (local_ai_repo)</label><label><input type="checkbox" id="cfgFeatTasks"> tasks (local_ai_task &amp; Ollama)</label><label><input type="checkbox" id="cfgFeatRag"> rag (local_ai_rag)</label><label><input type="checkbox" id="cfgFeatCommands"> commands (local_ai_command)</label><label><input type="checkbox" id="cfgFeatCoord"> coord (local_ai_coord)</label><label><input type="checkbox" id="cfgFeatArtifacts"> artifacts (local_ai_artifact)</label></div></div>
       <div class="dash-group"><div class="group-title">Code Intelligence &amp; Indexing</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgPreprocess"> Preprocessing enabled</label><label><input type="checkbox" id="cfgIntel"> Managed code intelligence</label><label><input type="checkbox" id="cfgSerena"> Serena backend</label><label><input type="checkbox" id="cfgCodegraph"> CodeGraphContext backend</label></div></div>
       <div class="dash-group"><div class="group-title">Advanced Subsystems</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgFeatSubagents"> Subagents (Ollama workers)</label><label><input type="checkbox" id="cfgFeatAgentOs"> Agent OS (durable memory/receipts)</label><label><input type="checkbox" id="cfgFeatDashboard"> Web Dashboard</label></div></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:6px"><button class="btn ok" id="cfgSave">Save overrides</button><button class="btn" id="cfgReload">Reload view</button><button class="btn warn" id="cfgReset">Reset dashboard overrides</button><span class="tiny" id="cfgStatus"></span></div>
+      <div class="tiny muted" style="margin:4px 0 7px">Scope and impact: saves only dashboard-managed overrides. Restart applies changes; reset removes only those overrides.</div><div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:6px"><button class="btn ok" id="cfgSave">Save overrides (restart required)</button><button class="btn" id="cfgReload">Reload view</button><button class="btn warn" id="cfgReset">Reset dashboard overrides</button><span class="tiny" id="cfgStatus"></span></div>
     </div>
   </section>
   <section class="section"><h2>Effective configuration <span class="tiny" id="cfgPath"></span></h2><pre id="cfgPreview" style="margin:0;padding:14px;white-space:pre-wrap;max-height:520px;overflow:auto;background:#090d14;color:#c9d6e4;font-size:11px"></pre></section>
@@ -551,14 +555,14 @@ tbody tr.click:hover{background:#162338}
     <div style="padding:12px">
       <p class="tiny muted">Bundles compress preprocessed index (AST, deterministic facts, RAG vectors and semantic cards) for instant restore on a different machine without re-indexing.</p>
       <div class="split" style="margin-top:10px">
-        <div><h3 style="font-size:12px;margin:0 0 8px">Export Bundle</h3><table><thead><tr><th>Project</th><th>Status</th><th>Action</th></tr></thead><tbody id="bundleExportTable"></tbody></table></div>
+        <div><h3 style="font-size:12px;margin:0 0 8px">Export Bundle</h3><table><thead><tr><th>Repository identity</th><th>Bundle readiness</th><th>Index contents</th><th>Action</th></tr></thead><tbody id="bundleExportTable"></tbody></table></div>
         <div><h3 style="font-size:12px;margin:0 0 8px">Import Bundle</h3><div style="display:flex;flex-direction:column;gap:8px"><input type="file" id="bundleFile" accept=".zip,application/zip" style="color:var(--fg);font-size:12px"><input type="text" id="bundleTargetRoot" placeholder="Optional target repository root" style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:7px"><button class="btn" id="bundleImport">Import selected ZIP</button><div id="bundleImportStatus" class="tiny muted"></div></div></div>
       </div>
     </div>
   </section>
 </div>
 
-<div id="events" class="page"><section class="section"><h2>Live activity <span class="tiny">RAM ring buffer · display pause does not pause runtime</span></h2><div id="eventList" class="events"></div></section></div>
+<div id="events" class="page"><section class="section"><h2>Live activity <span class="tiny">RAM ring buffer · display pause does not pause runtime</span></h2><div class="project-toolbar"><select id="eventSeverity" aria-label="Event severity"><option value="">All severities</option><option value="failure">Failures</option><option value="warning">Warnings</option><option value="success">Successful</option></select><input id="eventSource" type="search" placeholder="Event source, agent, action…" aria-label="Event source"><span class="tiny" id="eventSummary">No events received.</span></div><div id="eventList" class="events"></div></section></div>
 
 <div id="modalBg" class="modal-bg"><div class="modal"><div class="modal-head"><strong id="modalTitle">Details</strong><span id="modalLive" class="tiny" style="margin-left:10px"></span><button class="btn spacer" id="modalClose">Close</button></div><div id="modalBody"></div></div></div>
 
@@ -3902,10 +3906,11 @@ $('cfgSave').onclick=async()=>{
   if(r.success)loadConfigView();
 };
 $('cfgReset').onclick=async()=>{
-  if(!confirm('Reset dashboard-managed configuration overrides?'))return;
-  const r=await post('/api/config/update',{action:'reset'});
-  $('cfgStatus').textContent=r.success?'overrides reset · restart hub to apply':('error: '+(r.error||'failed'));
-  if(r.success)loadConfigView();
+  $('modalTitle').textContent='Reset dashboard overrides';
+  $('modalLive').textContent='Confirmation required';
+  $('modalBody').innerHTML=`<div class="modal-body-wrap"><div class="modal-card"><div class="modal-card-head"><span>Scope and impact</span></div><div class="modal-card-body"><p><b>Scope:</b> Dashboard-managed configuration override sidecar only.</p><p style="margin-bottom:0"><b>Impact:</b> Removes override values. Base configuration and project data stay unchanged; restart applies result.</p></div></div><div class="modal-actions-bar" style="justify-content:flex-end"><button class="btn" onclick="$('modalClose').click()">Cancel</button><button class="btn warn" id="confirmConfigReset">Reset overrides</button></div></div>`;
+  $('modalBg').classList.add('open');
+  $('confirmConfigReset').onclick=async()=>{const r=await post('/api/config/update',{action:'reset'});$('cfgStatus').textContent=r.success?'overrides reset · restart hub to apply':('error: '+(r.error||'failed'));if(r.success)loadConfigView();$('modalClose').click();};
 };
 
 let logLines=['Click Refresh to load logs.'];
@@ -3952,6 +3957,7 @@ function refreshProjectList(){renderProjects(last?.preprocessing?.projects||[])}
 $('projectSearch').oninput=e=>{projectQuery=e.target.value;refreshProjectList()};
 $('projectFilter').onchange=e=>{projectFilter=e.target.value;refreshProjectList()};
 $('projectSort').onchange=e=>{projectSort=e.target.value;refreshProjectList()};
+$('projectGroupWorktrees')?.addEventListener('change',refreshProjectList);
 
 const PHASES = [
   {id:'inventory', name:'Discovery', icon:'📁', desc:'File inventory & change discovery'},
@@ -3981,6 +3987,13 @@ function renderStepper(currIdx, isComplete, status) {
 }
 
 let projectQuery='',projectFilter='all',projectSort='priority';
+function projectIdentity(project){
+  const root=String(project?.canonical_root||project?.root||project?.project||'').replace(/\\/g,'/').replace(/\/+$/,'');
+  const worktreeAt=root.toLowerCase().indexOf('/.worktrees/');
+  if(worktreeAt>=0)return root.slice(0,worktreeAt)||root;
+  const gitWorktreeAt=root.toLowerCase().indexOf('/worktrees/');
+  return gitWorktreeAt>=0?root.slice(0,gitWorktreeAt)||root:root;
+}
 function projectState(x){
   const progress=Number(x.overall_progress_pct||0);
   if(x.phase==='complete'||x.status==='complete'||progress>=100)return 'ready';
@@ -3991,11 +4004,26 @@ function projectState(x){
   return 'queued';
 }
 
+function groupedProjects(items){
+  const list=Array.isArray(items)?items:[];
+  if(!$('projectGroupWorktrees')?.checked)return list.map(x=>({...x,repository_identity:projectIdentity(x),variants:[x]}));
+  const groups=new Map();
+  list.forEach(item=>{
+    const identity=projectIdentity(item)||String(item.project||'unknown');
+    const group=groups.get(identity)||[];group.push(item);groups.set(identity,group);
+  });
+  const rank={error:0,running:1,waiting:2,queued:3,paused:4,ready:5};
+  return [...groups.entries()].map(([identity,variants])=>{
+    const ordered=[...variants].sort((a,b)=>(rank[projectState(a)]??9)-(rank[projectState(b)]??9));
+    return {...ordered[0],canonical_root:identity,repository_identity:identity,variants};
+  });
+}
+
 function renderProjects(items){
-  const source=Array.isArray(items)?items:[],query=projectQuery.trim().toLowerCase();
+  const entries=Array.isArray(items)?items:[],source=groupedProjects(entries),query=projectQuery.trim().toLowerCase();
   const rank={error:0,running:1,waiting:2,queued:3,paused:4,ready:5};
   const visible=source.filter(x=>{
-    const state=projectState(x),haystack=[x.project,x.root,x.active_detail,x.phase].join(' ').toLowerCase();
+    const state=projectState(x),haystack=[x.project,x.root,x.repository_identity,x.active_detail,x.phase,...(x.variants||[]).map(v=>v.root)].join(' ').toLowerCase();
     return (!query||haystack.includes(query))&&(projectFilter==='all'||state===projectFilter);
   });
   visible.sort((a,b)=>{
@@ -4005,7 +4033,7 @@ function renderProjects(items){
     return (rank[projectState(a)]??9)-(rank[projectState(b)]??9)||String(a.project||'').localeCompare(String(b.project||''));
   });
   const summary=$('projectSummary');
-  if(summary)summary.textContent=`${visible.length} of ${source.length} projects`;
+  if(summary)summary.textContent=`${visible.length} of ${source.length} repository identities · ${entries.length} project entries`;
   rows('projectsBody',visible,x=>{
     const state=projectState(x),tot=Math.max(1,Number(x.files||0)),ragFiles=Number(x.rag_files||0),cards=Number(x.file_cards||0),ragPct=Math.round(ragFiles/tot*100),cardPct=Math.round(cards/tot*100),overall=Math.max(0,Math.min(100,Number(x.overall_progress_pct||0))),phasePct=Math.max(0,Math.min(100,Number(x.phase_progress_pct||0))),isComplete=state==='ready',isWorktree=(x.root||'').toLowerCase().includes('worktree');
     const badge={running:['badge-running','Running','<span class="pulse-dot"></span>'],waiting:['badge-waiting','Waiting',''],paused:['badge-paused','Paused',''],error:['badge-error','Error',''],ready:['badge-complete','Ready','✓ ']}[state]||['badge-waiting','Queued',''];
@@ -4013,8 +4041,9 @@ function renderProjects(items){
     const activityCls=isComplete?'ok':state==='error'?'bad-t':state==='paused'?'warn-t':state==='waiting'?'muted':'';
     const progressAge=Number(x.progress_age_seconds),progressHint=Number.isFinite(progressAge)?(progressAge<5?'live checkpoint':`${durSec(progressAge)} since last checkpoint`):'';
     const phaseObj=PHASES.find(ph=>ph.id===x.phase)||(isComplete?PHASES[PHASES.length-1]:{name:x.phase||'Inventory',icon:'⚙️'}),phaseTitle=isComplete?`${PHASES.length}/${PHASES.length} Ready`:`${n(x.phase_index||1)}/${PHASES.length} ${phaseObj.icon} ${phaseObj.name}`;
-    const actions=`<div class="project-actions"><button class="action-btn-sm" data-project-action="${state==='paused'?'resume':'pause'}" data-project-root="${esc(x.root)}" title="${state==='paused'?'Resume project preprocessing':'Pause project'}">${state==='paused'?'▶ Resume':'⏸ Pause'}</button><button class="action-btn-sm" data-project-action="refresh" data-project-root="${esc(x.root)}" title="Force re-scan and synchronize">↻</button><button class="action-btn-sm danger" data-project-action="delete" data-project-root="${esc(x.root)}" data-project-name="${esc(x.project)}" title="Unregister / Delete project">🗑</button></div>`;
-    return clickableRow(x,`<td><div class="project-name"><b>${esc(x.project)}</b>${isWorktree?'<span class="chip" style="font-size:9px;color:var(--accent2);border-color:#584578">worktree</span>':''}</div><div class="tiny muted mono project-root" title="${esc(x.root)}">${esc(x.root)}</div></td><td><span class="badge-status ${badge[0]}">${badge[2]}${badge[1]}</span><div class="tiny ${activityCls} project-activity" title="${esc(x.active_detail||activityText)}">${esc(activityText)}</div><div class="tiny muted">${esc(progressHint)}</div></td><td><div class="project-progress-line"><b>${phaseTitle}</b><span>${overall}%</span></div><div class="bar project-progress"><i style="width:${overall}%;background:${state==='error'?'var(--bad)':isComplete?'var(--ok)':'var(--accent)'}"></i></div><div class="tiny muted">${phasePct}% in phase</div></td><td><div class="project-index"><span class="${ragFiles>=tot?'ok':''}">🧠 RAG ${ragPct}%</span><span class="${cards>=tot*0.9?'ok':''}">📄 Cards ${cardPct}%</span></div></td><td>${actions}</td>`,'project',x.root);
+    const variants=x.variants||[x],variantLabel=variants.length>1?`<span class="chip" title="${esc(variants.map(v=>v.root).join('\n'))}">${variants.length} worktrees</span>`:'';
+    const actions=`<div class="project-actions"><button class="action-btn-sm" data-project-action="${state==='paused'?'resume':'pause'}" data-project-root="${esc(x.root)}" title="${state==='paused'?'Resume project preprocessing':'Pause project'}">${state==='paused'?'▶ Resume':'⏸ Pause'}</button><button class="action-btn-sm" data-project-action="refresh" data-project-root="${esc(x.root)}" title="Re-scan selected project entry">Refresh</button><button class="action-btn-sm danger" data-project-action="delete" data-project-root="${esc(x.root)}" data-project-name="${esc(x.project)}" title="Unregister selected project entry">Unregister</button></div>`;
+    return clickableRow(x,`<td><div class="project-name"><b>${esc(x.project)}</b>${isWorktree?'<span class="chip" style="font-size:9px;color:var(--accent2);border-color:#584578">worktree</span>':''}${variantLabel}</div><div class="tiny muted">Repository identity</div><div class="tiny muted mono project-root" title="${esc(x.repository_identity||x.root)}">${esc(x.repository_identity||x.root)}</div></td><td><span class="badge-status ${badge[0]}">${badge[2]}${badge[1]}</span><div class="tiny ${activityCls} project-activity" title="${esc(x.active_detail||activityText)}">${esc(activityText)}</div><div class="tiny muted">${esc(progressHint)}</div></td><td><div class="project-progress-line"><b>${phaseTitle}</b><span>${overall}%</span></div><div class="bar project-progress"><i style="width:${overall}%;background:${state==='error'?'var(--bad)':isComplete?'var(--ok)':'var(--accent)'}"></i></div><div class="tiny muted">${phasePct}% in phase</div></td><td><div class="project-index"><span class="${ragFiles>=tot?'ok':''}">🧠 RAG ${ragPct}%</span><span class="${cards>=tot*0.9?'ok':''}">📄 Cards ${cardPct}%</span></div></td><td>${actions}</td>`,'project',x.root);
   },5);
 }
 async function projectAction(root, action) {
@@ -4026,10 +4055,23 @@ async function deleteProjectDialog(root, name) {
   openDeleteProjectModal(root, name);
 }
 
-$('restartHub').onclick=async()=>{if(!confirm('Restart Local AI Hub now? Running requests will be interrupted and may retry from cache/recovery journal.'))return;try{await post('/api/control',{action:'restart_hub'})}catch{} };
-$('stopService').onclick=async()=>{if(!confirm('Stop Local AI Hub and disable automatic restart? Start it later with hubctl/service start.'))return;try{await post('/api/control',{action:'stop_service'});$('conn').textContent='stopping';$('conn').className='pill warn-t'}catch{} };
+function openControlConfirmation(action){
+  const details={
+    restart_hub:{title:'Restart hub service',scope:'Local AI Hub process; active API requests may interrupt and recover from journal/cache.',impact:'Service briefly unavailable. No project indexes, models, or configuration are deleted.'},
+    stop_service:{title:'Stop hub service',scope:'Local AI Hub service on this host.',impact:'Service becomes unavailable until manually started. Active requests stop.'},
+    purge_cache:{title:'Purge expired cache',scope:'Cache entries older than 7 days in configured state directory.',impact:'Expired cached responses removed. Project source and indexes remain intact.'},
+  }[action];
+  if(!details)return;
+  $('modalTitle').textContent=details.title;
+  $('modalLive').textContent='Confirmation required';
+  $('modalBody').innerHTML=`<div class="modal-body-wrap"><div class="modal-card"><div class="modal-card-head"><span>Scope and impact</span></div><div class="modal-card-body"><p><b>Scope:</b> ${esc(details.scope)}</p><p style="margin-bottom:0"><b>Impact:</b> ${esc(details.impact)}</p></div></div><div class="modal-actions-bar" style="justify-content:flex-end"><button class="btn" onclick="$('modalClose').click()">Cancel</button><button class="btn ${action==='stop_service'?'bad':action==='purge_cache'?'warn':''}" id="confirmControlAction">${esc(details.title)}</button></div></div>`;
+  $('modalBg').classList.add('open');
+  $('confirmControlAction').onclick=async()=>{try{if(action==='purge_cache')await post('/api/maintenance/purge_cache',{days:7});else await post('/api/control',{action});if(action==='stop_service'){$('conn').textContent='stopping';$('conn').className='pill warn-t';}$('modalClose').click();}catch(error){$('modalLive').textContent='Action failed: '+String(error?.message||error);}};
+}
+$('restartHub').onclick=()=>openControlConfirmation('restart_hub');
+$('stopService').onclick=()=>openControlConfirmation('stop_service');
 $('optDbBtn').onclick=async()=>{try{const r=await post('/api/maintenance/optimize_db',{});openModal(r,'Database Optimization & WAL Checkpoint Results','db_opt')}catch(e){openModal({error:String(e)},'Error')}};
-$('purgeCacheBtn').onclick=async()=>{if(!confirm('Purge cache entries older than 7 days?'))return;try{const r=await post('/api/maintenance/purge_cache',{days:7});openModal(r,'Cache Purge Results','cache_purge')}catch(e){openModal({error:String(e)},'Error')}};
+$('purgeCacheBtn').onclick=()=>openControlConfirmation('purge_cache');
 $('doctorBtn').onclick=openDoctorModal;
 
 function ensureHttpTailTable(){
@@ -4039,7 +4081,7 @@ function ensureHttpTailTable(){
 function setupWorkLayout(){
   const work=$('work');if(!work||work.dataset.refined)return;work.dataset.refined='1';work.classList.add('work-page');
   const sections=[...work.children].filter(x=>x.classList.contains('section'));sections.forEach((x,i)=>x.classList.add('work-panel','work-panel-'+(i+1)));
-  const headers=[['State','Work item','Model / source','Timing','Reason'],['Request','Agent / tenant','Action','Age'],['Time','Request ID','Agent','Tenant','Action / context','Result','Duration'],['State','Kind','Action / context','Agent / tenant','Model','Created','Updated / duration','Links']];
+  const headers=[['State','Work item','Model / source','Timing','Reason'],['Request','Agent / tenant','Action','Age'],['Time','Request ID','Agent','Tenant','Action / context','Result','Trace availability','Duration'],['State','Kind','Action / context','Agent / tenant','Model','Created','Updated / duration','Links']];
   sections.forEach((section,index)=>{const row=section.querySelector('thead tr');if(row&&headers[index])row.innerHTML=headers[index].map(x=>`<th>${x}</th>`).join('')});
   work.insertAdjacentHTML('afterbegin','<section class="section work-summary"><div class="work-summary-head"><div><div class="work-kicker">Operations center</div><h2>Live work <span class="tiny">prioritized view</span></h2></div><span class="tiny">Click any row to inspect its trace</span></div><div class="work-kpis"><div><span>Queued</span><strong id="workQueued">—</strong></div><div><span>Running</span><strong id="workRunning">—</strong></div><div><span>Active API</span><strong id="workActive">—</strong></div><div><span>Retained traces</span><strong id="workRetained">—</strong></div></div><div class="work-filter"><input id="workSearch" type="search" placeholder="Search agent, tenant, action, model…" autocomplete="off"><select id="workState" aria-label="Work state"><option value="">All states</option><option value="running">Running</option><option value="queued">Queued</option><option value="failed">Failed</option><option value="completed">Completed</option></select><button class="btn" id="workReset">Reset</button><span class="work-filter-summary" id="workFilterSummary"></span></div></section>');
   $('workSearch').oninput=()=>last&&render(last);$('workState').onchange=()=>last&&render(last);$('workReset').onclick=()=>{$('workSearch').value='';$('workState').value='';if(last)render(last)};
@@ -4093,7 +4135,14 @@ async function setIncidentIgnoredAction(id,ignored){
     alert('Unable to update incident: '+(e.message||e));
   }
 }
-function workRecentRequestRow(request){const trace=requestTrace(request),failed=request.success===false||Number(request.status_code||0)>=400,context=trace?traceContextLabel(trace):(request.error_type||'No trace retained'),requestId=String(request.request_id||'—'),inner=`<td>${request.created_at?new Date(request.created_at*1000).toLocaleString():'—'}</td><td><strong>${esc(requestId.slice(-12))}</strong><div class="tiny">${trace?'Trace linked · '+esc(String(trace.trace_id||'').slice(-8)):'No trace'}</div></td><td>${esc(request.agent||'—')}</td><td>${esc(request.tenant||'—')}</td><td><strong>${esc(request.action||'—')}</strong><div class="tiny">${esc(context)}</div></td><td><span class="${failed?'bad-t':'ok'}">${n(request.status_code)||'—'}</span>${request.error_type?`<div class="tiny">${esc(request.error_type)}</div>`:''}</td><td>${ms(request.duration_ms)}</td>`;return requestRow(request,inner,7)}
+function requestTraceAvailability(request){
+  const trace=requestTrace(request);
+  if(trace)return {label:'Trace available',className:'ok',trace};
+  if(request.trace_id)return {label:'Trace expired',className:'warn-t',trace:null};
+  if(request.trace_available===false)return {label:'No trace recorded',className:'muted',trace:null};
+  return {label:'No trace retained',className:'muted',trace:null};
+}
+function workRecentRequestRow(request){const trace=requestTrace(request),availability=requestTraceAvailability(request),failed=request.success===false||Number(request.status_code||0)>=400,context=trace?traceContextLabel(trace):(request.error_type||availability.label),requestId=String(request.request_id||'—'),inner=`<td>${request.created_at?new Date(request.created_at*1000).toLocaleString():'—'}</td><td><strong>${esc(requestId.slice(-12))}</strong><div class="tiny">${trace?'Trace linked · '+esc(String(trace.trace_id||'').slice(-8)):'Request-only record'}</div></td><td>${esc(request.agent||'—')}</td><td>${esc(request.tenant||'—')}</td><td><strong>${esc(request.action||'—')}</strong><div class="tiny">${esc(context)}</div></td><td><span class="${failed?'bad-t':'ok'}">${n(request.status_code)||'—'}</span>${request.error_type?`<div class="tiny">${esc(request.error_type)}</div>`:''}</td><td><span class="${availability.className}">${esc(availability.label)}</span></td><td>${ms(request.duration_ms)}</td>`;return requestRow(request,inner,8)}
 
 function render(s){
   last=s;
@@ -4246,7 +4295,7 @@ function render(s){
 
   rows('jobs',visibleJobs,j=>workSchedulerRow(j),5);
   rows('activeReq',visibleActive,x=>workActiveRequestRow(x),4);
-  rows('recentReq',visibleRecent,x=>workRecentRequestRow(x),6);
+  rows('recentReq',visibleRecent,x=>workRecentRequestRow(x),8);
   renderTraceList(lastTraces);
 
   const diagBar=$('prepDiagnosticBar');
@@ -4299,6 +4348,7 @@ function render(s){
   $('commandStats').innerHTML=`<div>Executed</div><div>${n(cmd.executed)}</div><div>Cache hits / misses</div><div>${n(cmd.hits)} / ${n(cmd.misses)}</div><div>Coalesced waiters</div><div>${n(cmd.coalesced_waiters)}</div><div>Policy blocked</div><div>${n(cmd.blocked)}</div>`;
   rows('blockedReasons',Object.entries(cmd.blocked_by_reason||{}),x=>clickableRow({reason:x[0],count:x[1]},`<td>${esc(x[0])}</td><td>${n(x[1])}</td>`,'blocked_reason'),2);
 
+  renderReliabilitySummary(s);
   rows('errors',o.recent_errors||[],x=>clickableRow(x,`<td>${esc(x.component)}</td><td>${esc(x.operation)}</td><td>${n(x.count)}</td><td>${n(x.recovered_count)}</td><td>${x.last_seen?new Date(x.last_seen*1000).toLocaleTimeString():'—'}</td>`,'error'),5);
   $('runtimeCounters').innerHTML=`<div>Scheduler submitted</div><div>${n(ss.submitted)}</div><div>Completed / failed</div><div>${n(ss.completed)} / ${n(ss.failed)}</div><div>Model switches</div><div>${n(ss.model_switches)}</div><div>Queue rejections</div><div>${n(ss.queue_rejections)}</div><div>Caller timeouts</div><div>${n(ss.caller_timeouts)}</div><div>Background yields</div><div>${n(ss.background_yields)}</div><div>Supervisor restarts</div><div>${n(h.restarts)}</div>`;
 
@@ -4309,6 +4359,17 @@ function render(s){
   },7);
 
   renderBundles(s);
+}
+
+function renderReliabilitySummary(snapshot){
+  const observability=snapshot?.observability||{},cohorts=observability.cohorts||{},agent=cohorts.agent_http||{},runtime=snapshot?.headless||{},sessions=observability.sessions||[];
+  const failures=Math.max(0,Number(agent.failures||0)),restarts=Math.max(0,Number(runtime.restarts||0)),crashes=sessions.filter(x=>!['active','clean_stop'].includes(String(x.status||''))).length;
+  const severity=failures||crashes?'attention':restarts?'warning':'healthy';
+  const label=severity==='attention'?'Needs attention':severity==='warning'?'Monitor':'Healthy';
+  const headline=$('reliabilityHeadline'),trend=$('reliabilityTrend'),action=$('reliabilityAction');
+  if(headline)headline.innerHTML=`<div>Current severity</div><div><span class="${severity==='healthy'?'ok':severity==='attention'?'bad-t':'warn-t'}"><b>${label}</b></span></div><div>Operational failures</div><div>${n(failures)}</div><div>Supervisor restarts</div><div>${n(restarts)}</div><div>Unclean sessions</div><div>${n(crashes)}</div>`;
+  if(trend){const prior=sessions.slice(1),priorCrashes=prior.filter(x=>!['active','clean_stop'].includes(String(x.status||''))).length;trend.textContent=`Failure trend: ${failures?'active request failures need review':'no active request failures'}; ${crashes} unclean session${crashes===1?'':'s'} in retained history${priorCrashes?` (${priorCrashes} earlier)`:' '}.`;}
+  if(action){action.textContent=failures?'Open failed request history':'Open restart history';action.onclick=()=>switchTab(failures?'work':'reliability');}
 }
 
 function schedulerRow(job,html,cols){const linked=lastTraces.find(x=>String(x.scheduler_job_id||'')===String(job.job_id||''));const id=linked?.trace_id||job.trace_id;if(id)return `<tr class="click" data-trace-id="${esc(id)}">${html}</tr>`;return clickableRow(job,html,'scheduler_job');}
@@ -4368,7 +4429,24 @@ async function pollStatus(){
   }catch(e){console.error('dashboard status refresh failed',e);if(last&&lastOverviewReceivedAt)renderOverviewHealth(last,lastOverviewReceivedAt);$('conn').textContent=hasLiveStatus?'stale':'offline';$('conn').className=hasLiveStatus?'pill warn-t':'pill bad-t'}
   finally{statusPollInFlight=false}
 }
-function renderEvents(events){if(paused||!events.length)return;const box=$('eventList');const html=events.slice(-120).reverse().map(e=>{const id='d'+(++seq);dataStore.set(id,{data:e,type:'event'});if(dataStore.size>5000){dataStore.delete(dataStore.keys().next().value);}return `<div class="event click" data-detail="${id}" data-type="event"><span>${new Date((e.created_at||0)*1000).toLocaleTimeString()}</span><span>${esc(e.agent||e.kind||'')}</span><span>${esc(e.event_type||'')}</span><span>${esc(e.action||e.stage||'')}</span><span class="hide-sm">${esc(e.model||e.tenant||'')}</span><span>${e.duration_ms?ms(e.duration_ms):''}</span><span class="${e.success===false?'bad-t':''}">${e.success===false?'FAIL':''}</span></div>`}).join('');box.innerHTML=html||'<div class="empty">no events</div>'}
+let liveEvents=[];
+function eventSeverity(event){
+  if(event?.success===false||/fail|error|crash|reject/i.test([event?.kind,event?.event_type,event?.status].join(' ')))return 'failure';
+  if(/warn|retry|degrad|stale/i.test([event?.kind,event?.event_type,event?.status].join(' ')))return 'warning';
+  return 'success';
+}
+function renderEvents(events=liveEvents){
+  if(Array.isArray(events)&&events.length){liveEvents=[...events,...liveEvents].slice(0,300);}
+  if(paused)return;
+  const box=$('eventList');if(!box)return;
+  const severity=String($('eventSeverity')?.value||''),source=String($('eventSource')?.value||'').trim().toLowerCase();
+  const filtered=liveEvents.filter(event=>{const kind=eventSeverity(event),hay=[event.agent,event.kind,event.event_type,event.action,event.stage,event.model,event.tenant].filter(Boolean).join(' ').toLowerCase();return (!severity||kind===severity)&&(!source||hay.includes(source));}).slice(0,120);
+  const summary=$('eventSummary');if(summary)summary.textContent=`${filtered.length} of ${liveEvents.length} retained events`;
+  const html=filtered.map(e=>{const id='d'+(++seq),severity=eventSeverity(e);dataStore.set(id,{data:e,type:'event'});if(dataStore.size>5000){dataStore.delete(dataStore.keys().next().value);}const label=severity==='failure'?'FAIL':severity==='warning'?'WARN':'OK';return `<div class="event click" data-detail="${id}" data-type="event"><span>${new Date((e.created_at||0)*1000).toLocaleTimeString()}</span><span>${esc(e.agent||e.kind||'')}</span><span>${esc(e.event_type||'')}</span><span>${esc(e.action||e.stage||'')}</span><span class="hide-sm">${esc(e.model||e.tenant||'')}</span><span>${e.duration_ms?ms(e.duration_ms):''}</span><span class="${severity==='failure'?'bad-t':severity==='warning'?'warn-t':'ok'}">${label}</span></div>`}).join('');
+  box.innerHTML=html||'<div class="empty">No events match current severity/source filters.</div>';
+}
+$('eventSeverity')?.addEventListener('change',()=>renderEvents([]));
+$('eventSource')?.addEventListener('input',()=>renderEvents([]));
 async function pollEvents(){try{const r=await apiFetch('/api/live?after='+cursor+'&limit=200',{cache:'no-store'}),d=await r.json();cursor=Number(d.cursor||cursor);renderEvents(d.events||[])}catch{}}
 
 probeHealth();pollStatus();pollEvents();pollTraces();
@@ -4384,8 +4462,13 @@ setInterval(()=>{if(isVisible)pollTraces();},2000);
 
 // ── Bundles ────────────────────────────────────────────────────────────────────
 function renderBundles(s){
-  const projs=s?.preprocessing?.projects||[];
-  $('bundleExportTable').innerHTML=projs.length?projs.map(p=>`<tr><td>${esc(p.project)}</td><td><span class="chip">${esc(p.status)}</span> ${n(p.overall_progress_pct||0)}%</td><td><button class="btn" data-export-root="${esc(p.root||'')}">Export</button></td></tr>`).join(''):`<tr><td colspan="3" class="muted">No projects</td></tr>`;
+  const projs=groupedProjects(s?.preprocessing?.projects||[]);
+  $('bundleExportTable').innerHTML=projs.length?projs.map(p=>{
+    const state=projectState(p),progress=Math.round(Number(p.overall_progress_pct||0)),ready=state==='ready'||progress>=100;
+    const contents=[Number(p.files||0)&&`${n(p.files)} files`,Number(p.rag_files||0)&&`${n(p.rag_files)} RAG`,Number(p.file_cards||0)&&`${n(p.file_cards)} cards`].filter(Boolean).join(' · ')||'Index summary unavailable';
+    const variants=(p.variants||[]).length;
+    return `<tr><td><b>${esc(p.project||'Unnamed repository')}</b><div class="tiny mono muted" title="${esc(p.repository_identity||p.root||'')}">${esc(p.repository_identity||p.root||'—')}</div>${variants>1?`<div class="tiny">${variants} project entries grouped</div>`:''}</td><td><span class="${ready?'ok':'warn-t'}">${ready?'Ready to export':'Partial index'}</span><div class="tiny">${progress}% · ${esc(state)}</div></td><td class="tiny">${esc(contents)}</td><td><button class="btn" data-export-root="${esc(p.root||'')}" title="Exports available index content; does not alter this repository">Export bundle</button></td></tr>`;
+  }).join(''):`<tr><td colspan="4" class="muted">No registered repositories. Bundle export needs a preprocessed project.</td></tr>`;
 }
 document.addEventListener('click',event=>{
   const button=event.target.closest('[data-project-action],[data-export-root]');
@@ -4539,16 +4622,27 @@ $('agentOsRecordMemBtn')?.addEventListener('click',openRecordMemoryModal);
 $('agentOsRecordIncBtn')?.addEventListener('click',openRecordIncidentModal);
 
 // ── Models, RAG & Leases ──────────────────────────────────────────────────────
+let ragWorkspaces=[];
+function ragWorkspaceIdentity(workspace){return String(workspace?.root||workspace?.repository_root||workspace?.workspace||workspace?.id||workspace||'unknown');}
+function renderRagWorkspaces(){
+  const list=$('ragWorkspacesList');if(!list)return;
+  const query=String($('ragWorkspaceSearch')?.value||'').trim().toLowerCase();
+  const visible=ragWorkspaces.filter(w=>{const identity=ragWorkspaceIdentity(w);return !query||[identity,w.status,w.state,w.model].filter(Boolean).join(' ').toLowerCase().includes(query)});
+  const summary=$('ragWorkspaceSummary');if(summary)summary.textContent=`${visible.length} of ${ragWorkspaces.length} workspaces · canonical identity and index state`;
+  list.innerHTML=visible.length?`<div class="table-wrap"><table><thead><tr><th>Workspace identity</th><th>Index status</th><th>Contents</th></tr></thead><tbody>${visible.map(w=>{
+    const identity=ragWorkspaceIdentity(w),chunks=Number(w.chunks??w.document_count??w.count??0),state=String(w.status||w.state||(chunks?'ready':'empty')),stateClass=/error|failed/i.test(state)?'bad-t':chunks?'ok':'warn-t';
+    const contents=[chunks&&`${n(chunks)} chunks`,w.files&&`${n(w.files)} files`,w.embedding_model&&String(w.embedding_model)].filter(Boolean).join(' · ')||'No indexed content reported';
+    return `<tr><td><b>${esc(identity.split('/').filter(Boolean).pop()||identity)}</b><div class="tiny muted mono" title="${esc(identity)}">${esc(identity)}</div></td><td><span class="${stateClass}">${esc(humanLabel(state))}</span></td><td class="tiny">${esc(contents)}</td></tr>`;
+  }).join('')}</tbody></table></div>`:'<span class="muted">No RAG workspace matches current search.</span>';
+}
 async function loadRagWorkspaces(){
   try{
     const r=await apiFetch('/api/rag/workspaces',{cache:'no-store'}),d=await r.json();
-    const wss=d.workspaces||[];
-    const list=$('ragWorkspacesList');
-    if(list){
-      list.innerHTML=wss.length?wss.map(w=>`<div style="margin-bottom:4px"><span class="chip">📚 <b>${esc(w.workspace||w.id||w)}</b></span> <span class="tiny muted">${n(w.chunks??w.document_count??w.count??0)} chunks</span></div>`).join(''):'<span class="muted">No RAG workspaces registered</span>';
-    }
+    ragWorkspaces=d.workspaces||[];
+    renderRagWorkspaces();
   }catch(e){if($('ragWorkspacesList'))$('ragWorkspacesList').textContent='Failed to load workspaces'}
 }
+$('ragWorkspaceSearch')?.addEventListener('input',renderRagWorkspaces);
 
 async function loadActiveLeases(){
   try{
