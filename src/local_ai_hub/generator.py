@@ -29,6 +29,29 @@ def _actions_note(actions: list[str]) -> str:
     return f" Supported actions: {', '.join(actions)}." if actions else " No actions are enabled."
 
 
+def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
+    """Single short contract shared by skills, policies, and routing references."""
+    features = FeatureSet.from_config(cfg or {})
+    budget = 1200
+    try:
+        section = (cfg or {}).get("mcp", {}).get("response_budget", {})
+        budget = int(section.get("default_tokens", budget)) if isinstance(section, dict) else budget
+    except (TypeError, ValueError, AttributeError):
+        pass
+    batch_line = '- Use the existing `local_ai_task(action="batch")` for independent local tasks; keep each item bounded and consume compact per-item results.' if features.tasks else ''
+    return f"""## Context economy contract
+
+- Every Hub response is aggregate-bounded (default ≈{budget} tokens); use `max_response_tokens` only when a different bounded size is needed.
+- Prefer `response_profile=\"minimal\"`/`\"compact\"`; request only decision-grade fields.
+- Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls return a pointer, not missing data.
+{batch_line}
+- The Hub keeps a bounded metadata-only context ledger; inspect it only with an explicit cache/status request, never by replaying the whole session.
+- Broad native shell reads are guarded by the optional host hook; use bounded limits or the Hub command/repository tools for discovery.
+- Fetch exact source, logs, or evidence only with `local_ai_artifact` slices. Never ask a broad tool for the same payload twice.
+- Commands return status, summary, changed paths, and failures; full stdout/stderr stays artifact-backed.
+- Do not bypass the budget with native broad reads unless Hub has one bounded terminal failure."""
+
+
 def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     """Generate a dynamic SKILL.md reflecting only enabled tools and models."""
     fs = FeatureSet.from_config(cfg)
@@ -283,6 +306,8 @@ Before native `find`, `rg`, `grep`, recursive glob/tree, or opening more than tw
 
 Stop escalating when evidence is sufficient; reuse cached results and bounded evidence instead of widening the search.
 
+{context_economy_contract(cfg)}
+
 ## Action routing
 
 {routing_section}
@@ -348,6 +373,8 @@ The active tool surface reflects your configuration:
 {tool_lines}
 
 {agent_os_reference}
+
+{context_economy_contract(cfg)}
 
     Keep assignments bounded. The main agent retains final acceptance; {work_owner_note}
 """
@@ -540,6 +567,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
            "Set `dry_run=false` only after review.\n\n" if fs.repo and fs.batch_replacement else "")
         + f"{fs.selection_guide()}\n"
         f"{model_default}\n"
+        f"{context_economy_contract(cfg)}\n"
         "<!-- END LOCAL AI HUB TOOL POLICY -->"
     )
 
@@ -621,6 +649,11 @@ Load and follow this skill before any coding or repository task. Apply its disco
 ### 5. Concise Output (Caveman Protocol)
 - Omit conversational filler, decorative preambles, and post-execution summaries of obvious changes.
 - Focus strictly on file links, diff summaries, and failure diagnostics.
+
+### 6. MCP Response Economy
+- Hub responses are aggregate-bounded; use `max_response_tokens` only for a bounded exception.
+- Prefer compact/minimal profiles, stable `reuse_key` values, cache reuse, and artifact slices.
+- Keep command output at summary/status level; fetch exact logs only when needed.
 """
 
 
@@ -677,6 +710,21 @@ def generate_mcp_configs(
         if codegraph is not None and cfg.get("code_intelligence", {}).get("codegraph_enabled", True):
             entries["codegraph"] = {"command": str(codegraph), "args": ["mcp", "start"]}
     return entries
+
+
+def _apply_response_budget_schema(schemas: dict[str, dict[str, Any]], cfg: dict[str, Any]) -> None:
+    """Add one compact response contract to every enabled public tool."""
+    fields = {
+        "max_response_tokens": {"type": "integer", "minimum": 0, "default": 0},
+        "response_profile": {"type": "string", "enum": ["minimal", "compact", "standard", "debug", "delta"], "default": ""},
+        "reuse_key": {"type": "string", "default": ""},
+    }
+    for schema in schemas.values():
+        params = schema.setdefault("parameters", {})
+        props = params.setdefault("properties", {})
+        for name, spec in fields.items():
+            props.setdefault(name, dict(spec))
+        schema["description"] = str(schema.get("description", "")) + " Responses are aggregate-bounded; exact detail remains artifact-backed."
 
 
 def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -887,7 +935,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "budget": {"type": "object"},
                     "timeout_seconds": {"type": "number", "default": 90},
                     "answer": {"type": "string", "default": ""},
-                    "response_profile": {"type": "string", "enum": ["minimal", "compact", "standard", "debug"], "default": "compact"},
+                    "response_profile": {"type": "string", "enum": ["minimal", "compact", "standard", "debug", "delta"], "default": "compact"},
                     "return_fields": {"type": "array", "items": {"type": "string"}},
                     "max_output_tokens": {"type": "integer", "default": 0},
                     "keep_failed_workspace": {"type": "boolean", "default": False},
@@ -912,6 +960,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
             },
         }
 
+    _apply_response_budget_schema(schemas, cfg)
     return schemas
 
 
@@ -937,7 +986,7 @@ def write_all_generated(
     skill_dir = target_root / "skills" / "local-ai-orchestrator"
     skill_dir.mkdir(parents=True, exist_ok=True)
     skill_path = skill_dir / "SKILL.md"
-    skill_path.write_text(generate_skill_markdown(cfg), encoding="utf-8")
+    skill_path.write_text(generate_skill_markdown(cfg).rstrip() + "\n", encoding="utf-8")
     results["skill"].append(str(skill_path))
 
     refs_dir = skill_dir / "references"
@@ -1024,7 +1073,7 @@ def main(argv: list[str] | None = None) -> int:
     target = Path(args.output_dir).resolve()
     py_bin = Path(args.python_bin) if args.python_bin else Path(sys.executable)
     res = write_all_generated(cfg, target, py_bin)
-    print(json.dumps({"success": True, "target": str(target), "generated": res}, indent=2, ensure_ascii=False))
+    print(json_dumps({"success": True, "target": str(target), "generated": res}, indent=2, ensure_ascii=False))
     return 0
 
 

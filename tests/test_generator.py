@@ -155,6 +155,12 @@ class TestGlobalPolicyGeneration:
 
 
 class TestMcpSchemasGeneration:
+    def test_response_schema_exposes_delta_profile(self):
+        schemas = generate_mcp_tool_schemas({})
+        for schema in schemas.values():
+            profile = schema["parameters"]["properties"]["response_profile"]
+            assert "delta" in profile["enum"]
+
     def test_default_schemas_contain_all_tools(self):
         schemas = generate_mcp_tool_schemas({})
         assert set(schemas.keys()) == {

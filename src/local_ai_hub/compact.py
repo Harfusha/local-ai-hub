@@ -25,6 +25,7 @@ def compact_result(
     *,
     max_text_chars: int = 1800,
     max_evidence: int = 10,
+    max_items: int = 50,
     extra_fields: Iterable[str] | None = None,
 ) -> Any:
     """Remove low-value runtime detail before an MCP result enters cloud context.
@@ -34,8 +35,8 @@ def compact_result(
     extra = {str(x).strip() for x in (extra_fields or ())} if extra_fields else set()
     if isinstance(value, list):
         return [
-            compact_result(v, max_text_chars=max_text_chars, max_evidence=max_evidence, extra_fields=extra)
-            for v in value[:50]
+            compact_result(v, max_text_chars=max_text_chars, max_evidence=max_evidence, max_items=max_items, extra_fields=extra)
+            for v in value[:max_items]
         ]
     if not isinstance(value, dict):
         return value
@@ -82,11 +83,14 @@ def compact_result(
 
     if isinstance(data.get("results"), list):
         new_results = []
-        for item in data["results"][:50]:
+        total = len(data["results"])
+        for item in data["results"][:max_items]:
             if isinstance(item, dict):
-                item = compact_result(item, max_text_chars=min(max_text_chars, 1100), max_evidence=max_evidence, extra_fields=extra)
+                item = compact_result(item, max_text_chars=min(max_text_chars, 1100), max_evidence=max_evidence, max_items=max_items, extra_fields=extra)
             new_results.append(item)
         data["results"] = new_results
+        if total > max_items:
+            data["results_omitted"] = total - max_items
 
     # Tool responses can wrap service payloads under arbitrary keys (for example
     # structured/canonical/content). Compact nested containers too; otherwise a
@@ -95,7 +99,7 @@ def compact_result(
         if key in {"results", "repo_context"}:
             continue
         if isinstance(item, (dict, list)):
-            data[key] = compact_result(item, max_text_chars=max_text_chars, max_evidence=max_evidence, extra_fields=extra)
+            data[key] = compact_result(item, max_text_chars=max_text_chars, max_evidence=max_evidence, max_items=max_items, extra_fields=extra)
 
     for key in ("output", "content", "raw", "preview"):
         if isinstance(data.get(key), str) and len(data[key]) > max_text_chars:

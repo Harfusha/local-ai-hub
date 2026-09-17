@@ -230,6 +230,8 @@ def pop_accounting(value: Any) -> tuple[Any, dict[str, Any]]:
             "input_savings_source": str(private.get("input_savings_source", ""))[:64],
             "output_savings_source": str(private.get("output_savings_source", ""))[:64],
             "local_compute_source": str(private.get("local_compute_source", ""))[:64],
+            "raw_response_tokens_est": _nonneg_int(private.get("raw_response_tokens_est")),
+            "projected_response_tokens_est": _nonneg_int(private.get("projected_response_tokens_est")),
         }
         return clean, measured
     return clean, measure_savings(clean)
@@ -249,6 +251,8 @@ def account_projection(raw_value: Any, projected_value: Any) -> Any:
         raw_tokens = json_tokens(_strip_accounting_noise(raw_value))
         clean, measured = pop_accounting(projected_value)
         visible_tokens = json_tokens(clean)
+        measured["raw_response_tokens_est"] = raw_tokens
+        measured["projected_response_tokens_est"] = visible_tokens
         projected_saved = max(0, raw_tokens - visible_tokens)
         previous_output = _nonneg_int(measured.get("gross_output_tokens_avoided_est"))
         output_saved = max(previous_output, projected_saved)
@@ -267,7 +271,7 @@ def account_projection(raw_value: Any, projected_value: Any) -> Any:
         selected_source = str(measured.get("input_savings_source", "")) if input_saved else str(measured.get("output_savings_source", ""))
         if selected_source and measured["gross_cloud_tokens_avoided_est"]:
             measured["savings_breakdown"] = {selected_source: measured["gross_cloud_tokens_avoided_est"]}
-        if measured.get("gross_cloud_tokens_avoided_est") or measured.get("local_compute_tokens_avoided_est"):
+        if measured.get("gross_cloud_tokens_avoided_est") or measured.get("local_compute_tokens_avoided_est") or raw_tokens or visible_tokens:
             clean[_PRIVATE_KEY] = measured
         return clean
     except Exception:
@@ -301,6 +305,30 @@ def finalize_tool_accounting(
     protocol_usd = round(((request_tokens / 1_000_000.0) * 3.0) + ((response_tokens / 1_000_000.0) * 15.0), 4)
     net_usd = round(gross_usd - protocol_usd, 4)
 
+    action = str(arguments.get("action", "")).strip().lower()
+    if tool_name == "local_ai_repo":
+        category = "search" if action in {"search", "code_index", "deterministic", "map", "symbols", "callers", "dead_code"} else "edit" if action in {"ast_refactor", "batch_replace", "validate_patch"} else "validation" if action in {"verify", "affected_tests", "review_diff", "security_audit", "impact"} else "repo"
+    elif tool_name == "local_ai_command":
+        category = "edit" if action in {"format", "auto_fix", "patch_and_verify", "lint_fix", "repair_loop"} else "validation"
+    elif tool_name == "local_ai_artifact":
+        category = "artifact"
+    elif tool_name == "local_ai_coord":
+        category = "coordination"
+    elif tool_name == "local_ai_task":
+        category = "task"
+    elif tool_name == "local_ai_status":
+        category = "status"
+    elif tool_name == "local_ai_work":
+        category = "work"
+    elif tool_name == "local_ai_rag":
+        category = "search"
+    else:
+        category = "other"
+    budget = response.get("response_budget") if isinstance(response, dict) else {}
+    if not isinstance(budget, dict):
+        budget = {}
+    cache_outcome = "reused" if isinstance(response, dict) and response.get("reused") else "cache_hit" if isinstance(response, dict) and response.get("cache_hit") else "coalesced" if isinstance(response, dict) and response.get("coalesced") else "in_progress" if isinstance(response, dict) and response.get("in_progress") else "miss"
+
     return {
         "tool": str(tool_name)[:80],
         "gross_cloud_tokens_avoided_est": gross,
@@ -320,6 +348,14 @@ def finalize_tool_accounting(
         "estimated_savings_usd": max(0.0, net_usd),
         "estimated_input_savings_usd": est_in_usd,
         "estimated_output_savings_usd": est_out_usd,
+        "operation_category": category,
+        "raw_response_tokens_est": _nonneg_int(measured.get("raw_response_tokens_est")),
+        "projected_response_tokens_est": _nonneg_int(measured.get("projected_response_tokens_est")) or response_tokens,
+        "projected_response_saved_tokens_est": max(0, _nonneg_int(measured.get("raw_response_tokens_est")) - (_nonneg_int(measured.get("projected_response_tokens_est")) or response_tokens)),
+        "response_budget_requested_tokens": _nonneg_int(budget.get("requested_tokens")),
+        "response_budget_truncated": bool(budget.get("truncated", False)),
+        "cache_outcome": cache_outcome,
+        "projection_reason": "aggregate_budget" if budget.get("truncated") else "semantic_projection",
         "local_compute_tokens_avoided_est": _nonneg_int(measured.get("local_compute_tokens_avoided_est")),
         "savings_breakdown": measured.get("savings_breakdown", {}) if isinstance(measured.get("savings_breakdown"), dict) else {},
     }

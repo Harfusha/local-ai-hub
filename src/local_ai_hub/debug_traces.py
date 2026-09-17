@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import json
 import re
 import sqlite3
@@ -83,7 +85,7 @@ class DebugTraceStore:
 
     @staticmethod
     def _encode(value: Any) -> str:
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+        return json_dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
     @staticmethod
     def _decode(value: str, default: Any = None) -> Any:

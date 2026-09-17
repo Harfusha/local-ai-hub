@@ -9,6 +9,12 @@ def test_operations_views_name_distinct_records_and_trace_availability() -> None
     assert "function requestTraceAvailability(request)" in DASHBOARD_HTML
 
 
+def test_recent_request_table_reserves_trace_and_duration_columns() -> None:
+    assert ".work-panel-3 th:nth-child(8){width:12%}" in DASHBOARD_HTML
+    assert ".work-panel-3 th:nth-child(9){width:7%}" in DASHBOARD_HTML
+    assert ".work-panel-3 td:nth-child(8),.work-panel-3 td:nth-child(9){white-space:nowrap" in DASHBOARD_HTML
+
+
 def test_projects_and_bundles_expose_canonical_identity_and_readiness() -> None:
     assert "Repository identity" in DASHBOARD_HTML
     assert "Group worktrees" in DASHBOARD_HTML
