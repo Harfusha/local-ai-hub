@@ -320,3 +320,65 @@ def test_dashboard_redacts_quoted_json_secret_keys() -> None:
     ]
     assert "(?:[\"'](?:api[_-]?key|token|secret|password|authorization)[\"']" in source
     assert "<redacted>" in source
+
+
+def test_trace_inspector_has_universal_redacted_display_model() -> None:
+    """Every retained trace needs a useful safe summary before optional detail panes."""
+    assert "function traceDisplayModel(detail)" in DASHBOARD_HTML
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceDisplayModel(detail)") : DASHBOARD_HTML.index(
+            "function renderTraceDetail(d)"
+        )
+    ]
+    for field in [
+        "identity",
+        "lifecycle",
+        "timing",
+        "actor",
+        "correlations",
+        "retainedBytes",
+        "input",
+        "output",
+        "response",
+        "errors",
+        "events",
+        "modelExecutions",
+        "toolCalls",
+    ]:
+        assert field in source, f"Trace display model omits {field}"
+    assert "traceSanitizeValue" in source
+    assert "redactDiagnostic" in source
+
+
+def test_trace_inspector_renders_universal_summary_before_optional_panels() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
+            "function setTraceView(view)"
+        )
+    ]
+    assert "traceDisplayModel(d)" in source
+    assert "Universal request summary" in source
+    assert source.index("Universal request summary") < source.index("role=\"tablist\"")
+    assert "Input unavailable for this request type" in source
+    assert "Output unavailable for this request type" in source
+    assert "Response unavailable for this request type" in source
+    assert "Trace data availability" in source
+    assert "role=\"tabpanel\"" in source
+    assert "function tracePanel(" in DASHBOARD_HTML
+
+
+def test_trace_inspector_uses_accessible_conditional_tabs_and_safe_trace_values() -> None:
+    tab_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceTab(") : DASHBOARD_HTML.index(
+            "function traceStatus("
+        )
+    ]
+    assert 'role="tab"' in tab_source
+    assert "aria-controls" in tab_source
+    detail_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
+            "function setTraceView(view)"
+        )
+    ]
+    assert "model.panels.filter(panel=>panel.available)" in detail_source
+    assert "traceSanitizeValue" in detail_source

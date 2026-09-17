@@ -1784,6 +1784,31 @@ function renderAny(value){
   if(typeof value==='object'){const entries=Object.entries(value);return entries.length?`<div class="human-grid">${entries.map(([k,v])=>`<div>${esc(humanLabel(k))}</div><div>${renderAny(v)}</div>`).join('')}</div>`:'<div class="empty-human">empty object</div>'}
   return `<span class="human-value">${esc(String(value))}</span>`;
 }
+function traceSanitizeValue(value,seen=new WeakSet()){
+  if(value===null||value===undefined||typeof value==='number'||typeof value==='boolean')return value;
+  if(typeof value==='string')return redactDiagnostic(value);
+  if(Array.isArray(value))return value.map(item=>traceSanitizeValue(item,seen));
+  if(typeof value==='object'){
+    if(seen.has(value))return '<cycle omitted>';
+    seen.add(value);
+    return Object.fromEntries(Object.entries(value).map(([key,item])=>[redactDiagnostic(key),traceSanitizeValue(item,seen)]));
+  }
+  return redactDiagnostic(String(value));
+}
+function traceRecorded(value){
+  if(value===null||value===undefined)return false;
+  if(typeof value==='string')return value.trim().length>0;
+  if(Array.isArray(value))return value.length>0;
+  return typeof value!=='object'||Object.keys(value).length>0;
+}
+function traceFirstRecorded(events,keys){
+  for(const event of events||[]){
+    const payload=event?.payload;
+    if(!payload||typeof payload!=='object')continue;
+    for(const key of keys){if(traceRecorded(payload[key]))return payload[key];}
+  }
+  return undefined;
+}
 function promptText(value){
   if(typeof value==='string')return value;
   if(Array.isArray(value))return value.map(promptText).filter(Boolean).join('\n');
@@ -1888,7 +1913,7 @@ function traceEventChips(metadata,process){
 }
 function traceEventSection(title,content,kind){return `<section class="trace-event-section" data-kind="${kind}"><span class="trace-event-label">${esc(title)}</span><div class="trace-event-value">${content}</div></section>`}
 function traceEventBody(event,events,index){
-  const type=String(event.event_type||'event'),p=event.payload||{};let pairedResult=null,input='',output='',statusResult=null,groups;
+  const type=String(event.event_type||'event'),p=traceSanitizeValue(event.payload||{});let pairedResult=null,input='',output='',statusResult=null,groups;
   if(type==='tool_result'){
     const callId=p.call_id||'';
     if(callId&&events.slice(0,index).some(x=>x.event_type==='tool_call'&&((x.payload||{}).call_id||'')===callId))return '';
@@ -1947,21 +1972,69 @@ function renderHumanModal(obj){
   const scalarGrid=scalar.length?`<section class="human-section"><h3>Summary</h3><div class="human-grid">${scalar.map(([k,v])=>`<div>${esc(humanLabel(k))}</div><div>${renderAny(v)}</div>`).join('')}</div></section>`:'';
   $('modalBody').innerHTML=`<div class="human-shell">${summary}${scalarGrid}${complex.map(([k,v])=>humanSection(humanLabel(k),v)).join('')}${rawFallback(obj)}</div>`;
 }
-function traceTab(label,id){return `<button class="trace-tab ${traceView===id?'active':''}" data-trace-view="${id}" aria-selected="${traceView===id}">${label}</button>`}
+function traceTab(label,id){const selected=traceView===id;return `<button class="trace-tab ${selected?'active':''}" id="trace-tab-${esc(id)}" role="tab" data-trace-view="${esc(id)}" aria-selected="${selected}" aria-controls="trace-panel-${esc(id)}" tabindex="${selected?'0':'-1'}">${esc(label)}</button>`}
 function traceStatus(item){const state=String(item?.state||'queued');return state==='failed'&&/hub restarted|service stopped|shutdown/i.test(String(item?.error||''))?'interrupted':state}
 function traceDisplayState(item){const state=traceStatus(item);return state==='interrupted'?'Interrupted':humanLabel(state)}
-function traceRaw(payload){let raw='';try{raw=JSON.stringify(payload,null,2)}catch(e){raw=String(e)}return `<section class="human-section trace-raw-panel"><h3>Raw JSON (fallback)</h3><pre class="human-pre">${esc(raw)}</pre></section>`}
-function renderTraceDetail(d){
-  activeTraceData=d;const s=d?.session||{},events=d?.events||[],payload={session:{trace_id:s.trace_id,kind:s.kind,state:s.state,tenant:s.tenant,agent:s.agent,action:s.action,source:s.source,model:s.model,request_id:s.request_id,async_job_id:s.async_job_id,scheduler_job_id:s.scheduler_job_id,created_at:s.created_at,updated_at:s.updated_at,finished_at:s.finished_at,error:s.error,text_bytes:s.text_bytes},main_agent_prompt:s.effective_payload||{},original_request:s.request||{},output:s.output||'',response:s.response||{},events};
-  $('tracePageTitle').textContent=String(s.action||s.source||'Agent trace');$('tracePageLive').textContent=d?.terminal?'terminal · retained':'● live · auto-refresh';$('tracePageLive').className='tiny '+(d?.terminal?'ok':'trace-running');
-  const state=traceDisplayState(s),displayState=traceStatus(s),stateClass=(displayState==='failed'||displayState==='error')?'bad':(displayState==='interrupted'?'warn':(d?.terminal?'ok':'warn'));
-  const header=`<div class="trace-inspector-head"><div><div class="trace-kicker">Agent execution · Agent timeline</div><strong>${esc(s.action||s.source||'Trace')}</strong><div class="tiny">${esc(s.agent||'unknown agent')} · ${esc(s.model||'model not recorded')}</div></div><span class="badge ${stateClass}">${esc(state)}</span></div><div class="trace-metrics"><span>${events.length} events</span><span>${esc(s.tenant||'no tenant')}</span><span>${s.text_bytes||0} bytes retained</span></div>`;
-  const timeline=`${traceTimeline(events)}`,prompt=renderModelPrompt(payload.main_agent_prompt)+humanSection('Original request',payload.original_request),output=humanSection('Output',payload.output),response=humanSection('Final response',payload.response),views={timeline, prompt:prompt, output:output+response, events:`<section class="human-section"><h3>All events</h3>${renderAny(events)}</section>`, raw:traceRaw(payload)},content=views[traceView]||timeline;
-  $('tracePageBody').className='trace-page-body';$('tracePageBody').innerHTML=`<div class="human-shell">${header}<nav class="trace-tabs" aria-label="Trace views">${traceTab('Timeline','timeline')}${traceTab('Prompt','prompt')}${traceTab('Output','output')}${traceTab('Events','events')}${traceTab('Raw','raw')}</nav><div class="trace-view">${content}</div></div>`;
+function traceRaw(payload){let raw='';try{raw=JSON.stringify(traceSanitizeValue(payload),null,2)}catch(e){raw=redactDiagnostic(String(e))}return `<section class="human-section trace-raw-panel"><h3>Raw JSON (redacted)</h3><pre class="human-pre">${esc(raw)}</pre></section>`}
+function tracePanel(id,label,content,available=true){return {id,label,content,available};}
+function traceUnavailable(label){return `${label} unavailable for this request type`;}
+function traceDisplayModel(detail){
+  const rawSession=detail?.session||{},rawEvents=Array.isArray(detail?.events)?detail.events:[];
+  const session=traceSanitizeValue(rawSession),events=traceSanitizeValue(rawEvents);
+  const redactedTraceId=redactDiagnostic(rawSession.trace_id||'');
+  const input=traceRecorded(session.request)?session.request:traceFirstRecorded(events,['request','request_body','request_payload','body','input','payload']);
+  const output=traceRecorded(session.output)?session.output:traceFirstRecorded(events,['output','output_text','generated_text','text']);
+  const response=traceRecorded(session.response)?session.response:traceFirstRecorded(events,['response','response_body','result']);
+  const eventErrors=events.filter(event=>traceRecorded(event?.payload?.error)||traceRecorded(event?.payload?.error_message)||event?.payload?.success===false).map(event=>event.payload);
+  const errors=traceRecorded(session.error)?[session.error,...eventErrors]:eventErrors;
+  const modelExecutions=events.filter(event=>event?.event_type==='model_request'||event?.event_type==='output_stream'||event?.event_type==='output_delta');
+  const toolCalls=events.filter(event=>event?.event_type==='tool_call'||event?.event_type==='tool_result');
+  const timing={created_at:session.created_at,updated_at:session.updated_at,finished_at:session.finished_at,duration_ms:session.duration_ms,elapsed_ms:session.elapsed_ms};
+  const identity={trace_id:redactedTraceId||session.trace_id,kind:session.kind,action:session.action,source:session.source,method:session.method,path:session.path};
+  const lifecycle={state:traceDisplayState(session),terminal:Boolean(detail?.terminal),status_code:session.status_code};
+  const actor={agent:session.agent,tenant:session.tenant,owner:session.owner};
+  const correlations={request_id:session.request_id,async_job_id:session.async_job_id,scheduler_job_id:session.scheduler_job_id,job_id:session.job_id};
+  const retainedBytes=Number(session.text_bytes||session.retained_bytes||0);
+  const availability={
+    input:traceRecorded(input),output:traceRecorded(output),response:traceRecorded(response),errors:errors.length>0,
+    events:events.length>0,modelExecutions:modelExecutions.length>0,toolCalls:toolCalls.length>0,
+  };
+  const model={identity,lifecycle,timing,actor,correlations,retainedBytes,input,output,response,errors,events,modelExecutions,toolCalls,availability,session};
+  model.panels=[
+    tracePanel('summary','Summary','',true),
+    tracePanel('input','Input',humanSection('Input',input),availability.input),
+    tracePanel('output','Output',humanSection('Output',output),availability.output),
+    tracePanel('response','Response',humanSection('Response',response),availability.response),
+    tracePanel('errors','Errors',humanSection('Errors',errors),availability.errors),
+    tracePanel('timeline','Timeline',traceTimeline(events),availability.events),
+    tracePanel('model','Model execution',traceTimeline(modelExecutions),availability.modelExecutions),
+    tracePanel('tools','Tool calls',humanSection('Tool calls',toolCalls),availability.toolCalls),
+    tracePanel('events','Events',humanSection('All events',events),availability.events),
+    tracePanel('raw','Raw',traceRaw({session,input,output,response,errors,events}),true),
+  ];
+  return model;
 }
-function setTraceView(view){if(!['timeline','prompt','output','events','raw'].includes(view))return;traceView=view;if(activeTraceData)renderTraceDetail(activeTraceData)}
+function traceAvailability(model,unavailableCopy={}){
+  const labels=[['input','Input'],['output','Output'],['response','Response'],['errors','Error details'],['events','Events'],['modelExecutions','Model execution'],['toolCalls','Tool calls']];
+  return `<section class="human-section"><h3>Trace data availability</h3><div class="human-list">${labels.map(([key,label])=>`<div class="human-item">${model.availability[key]?`<span class="ok">${esc(label)} recorded</span>`:`<span class="muted">${esc(unavailableCopy[key]||traceUnavailable(label))}</span>`}</div>`).join('')}</div></section>`;
+}
+function traceSummary(model,unavailableCopy){
+  const summary={identity:model.identity,lifecycle:model.lifecycle,timing:model.timing,actor:model.actor,correlations:model.correlations,retained_bytes:model.retainedBytes};
+  return `<section class="human-section"><h3>Universal request summary</h3>${renderAny(summary)}</section>${traceAvailability(model,unavailableCopy)}`;
+}
+function renderTraceDetail(d){
+  activeTraceData=d;const unavailableCopy={input:'Input unavailable for this request type',output:'Output unavailable for this request type',response:'Response unavailable for this request type'},model=traceDisplayModel(d),s=traceSanitizeValue(model.session),events=model.events;
+  if(!model.panels.some(panel=>panel.available&&panel.id===traceView))traceView='summary';
+  $('tracePageTitle').textContent=String(s.action||s.source||'Trace');$('tracePageLive').textContent=d?.terminal?'terminal · retained':'● live · auto-refresh';$('tracePageLive').className='tiny '+(d?.terminal?'ok':'trace-running');
+  const state=model.lifecycle.state,displayState=traceStatus(s),stateClass=(displayState==='failed'||displayState==='error')?'bad':(displayState==='interrupted'?'warn':(d?.terminal?'ok':'warn'));
+  const header=`<div class="trace-inspector-head"><div><div class="trace-kicker">Request trace · Universal inspector</div><strong>${esc(redactDiagnostic(s.action||s.source||'Trace'))}</strong><div class="tiny">${esc(redactDiagnostic(s.agent||'unknown actor'))} · ${esc(redactDiagnostic(s.model||'model not recorded'))}</div></div><span class="badge ${stateClass}">${esc(state)}</span></div><div class="trace-metrics"><span>${events.length} events</span><span>${esc(redactDiagnostic(s.tenant||'no tenant'))}</span><span>${model.retainedBytes} bytes retained</span></div>`;
+  const panels=model.panels.filter(panel=>panel.available),selected=panels.find(panel=>panel.id===traceView)||panels[0],universalSummary=traceSummary(model,unavailableCopy),content=selected?.id==='summary'?'<div class="empty-human">Summary shown above.</div>':selected?.content||'<div class="empty-human">Trace data unavailable</div>';
+  // Universal request summary and Trace data availability are always rendered before tabs.
+  $('tracePageBody').className='trace-page-body';$('tracePageBody').innerHTML=`<div class="human-shell">${header}${universalSummary}<nav class="trace-tabs" role="tablist" aria-label="Trace views">${panels.map(panel=>traceTab(panel.label,panel.id)).join('')}</nav><div id="trace-panel-${esc(traceView)}" class="trace-view" role="tabpanel" aria-labelledby="trace-tab-${esc(traceView)}">${content}</div></div>`;
+}
+function setTraceView(view){if(!activeTraceData)return;const model=traceDisplayModel(activeTraceData);if(!model.panels.some(panel=>panel.available&&panel.id===view))return;traceView=view;renderTraceDetail(activeTraceData)}
 async function openTrace(id){
-  activeTraceId=String(id||'');traceSeq=0;traceEvents=[];traceOpenSteps=new Set();traceView='timeline';activeTraceData=null;
+  activeTraceId=String(id||'');traceSeq=0;traceEvents=[];traceOpenSteps=new Set();traceView='summary';activeTraceData=null;
   renderTraceList(lastTraces);switchTab('traceInspector');
   if(traceTimer)clearInterval(traceTimer);
   const poll=async()=>{
