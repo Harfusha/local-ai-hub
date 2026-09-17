@@ -13,6 +13,13 @@ from typing import Any
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
 
 
+def _compact_project_label(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip().rstrip("/\\")
+    return re.split(r"[\\/]", text)[-1] if text else ""
+
+
 class DebugTraceStore:
     """Bounded, dashboard-only execution traces kept apart from telemetry."""
 
@@ -364,12 +371,15 @@ class DebugTraceStore:
                 total = int(con.execute(f"SELECT COUNT(*) FROM traces{clause}", values).fetchone()[0])
                 rows = con.execute(f"""SELECT trace_id,kind,tenant,agent,action,source,model,request_id,async_job_id,scheduler_job_id,state,created_at,updated_at,finished_at,error,
                     CASE WHEN json_valid(request_json) THEN substr(json_extract(request_json, '$.action'), 1, 48) END AS request_action,
-                    CASE WHEN json_valid(request_json) THEN substr(json_extract(request_json, '$.command'), 1, 512) END AS request_command
+                    CASE WHEN json_valid(request_json) THEN substr(json_extract(request_json, '$.command'), 1, 512) END AS request_command,
+                    CASE WHEN json_valid(request_json) THEN COALESCE(json_extract(request_json, '$.project'), json_extract(request_json, '$.workspace'), json_extract(request_json, '$.root'), json_extract(request_json, '$.repo_root')) END AS request_project,
+                    CASE WHEN json_valid(effective_payload_json) THEN COALESCE(json_extract(effective_payload_json, '$.project'), json_extract(effective_payload_json, '$.workspace'), json_extract(effective_payload_json, '$.root'), json_extract(effective_payload_json, '$.repo_root')) END AS payload_project
                     FROM traces{clause} ORDER BY updated_at DESC LIMIT ? OFFSET ?""", [*values, limit, offset]).fetchall()
                 items = []
                 for row in rows:
                     item = dict(row)
                     item["request_summary"] = self._request_summary(item["action"], item.pop("request_action", None), item.pop("request_command", None))
+                    item["project"] = _compact_project_label(item.pop("request_project", None) or item.pop("payload_project", None))
                     items.append(item)
                 return {"success": True, "items": items, "total": total, "limit": limit, "offset": offset}
         except sqlite3.Error:

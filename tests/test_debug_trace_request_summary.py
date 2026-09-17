@@ -38,6 +38,17 @@ class DebugTraceRequestSummaryTests(unittest.TestCase):
             self.assertEqual(item["request_summary"], "")
             self.assertNotIn("private prompt content", json.dumps(item))
 
+    def test_list_row_exposes_compact_project_label(self):
+        with tempfile.TemporaryDirectory() as state_dir:
+            store = self._store(state_dir)
+            trace_id = store.start(kind="api_request", tenant="test", action="/api/search", request_id="req-project")
+            store.update(trace_id, request={"root": "C:/workspace/hub", "query": "trace"})
+
+            item = store.list(limit=10)["items"][0]
+
+            self.assertEqual(item["project"], "hub")
+            self.assertNotIn("C:/workspace", json.dumps(item))
+
     def test_http_trace_capture_redacts_nested_sensitive_values_and_omits_large_or_binary_data(self):
         from local_ai_hub.http_server import Handler
 
