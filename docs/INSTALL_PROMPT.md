@@ -9,6 +9,8 @@ Use this prompt with any AI coding agent (Claude Code, Codex, Cursor, Windsurf, 
 
 You are an autonomous AI engineering agent. Your task is to install and configure **Local AI Hub** on this system (if not already installed or running), verify all components (service, Ollama, token economy suite, code intelligence), ensure MCP integration, and inject the canonical tool and token economy policies into this repository's agent instructions.
 
+Hub adoption telemetry is aggregate-only: retain normalized tool/action/intent/outcome plus time, latency, and output-size buckets. Never send prompts, source, secrets, absolute paths, or raw request records. Mark a bypass only when the client explicitly signals one; do not infer it from missing Hub calls.
+
 Execute the following phases deterministically:
 
 ---

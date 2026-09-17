@@ -7,6 +7,7 @@ import hashlib
 import inspect
 import os
 import queue
+import re
 import threading
 import time
 from pathlib import Path
@@ -21,6 +22,8 @@ from local_ai_hub.features import FeatureSet
 from local_ai_hub.ollama_subagents import OllamaSubagentCatalog
 from local_ai_hub.process_utils import canonical_root, is_rooted_path
 from local_ai_hub.token_accounting import account_projection, attach_accounting, finalize_tool_accounting, json_tokens, pop_accounting
+from local_ai_hub.adoption_metrics import AdoptionMetricsStore
+from local_ai_hub.state_paths import configured_state_dir
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -67,6 +70,7 @@ try:
     MAX_TEXT = int(MCP_CFG.get("compact_max_text_chars", 1800))
     MAX_EVIDENCE = int(MCP_CFG.get("compact_max_evidence", 10))
     LEAN_SCHEMAS = bool(MCP_CFG.get("lean_schemas", True))
+    ADOPTION_METRICS = AdoptionMetricsStore(configured_state_dir(CFG))
 except Exception as _init_exc:  # pragma: no cover
     import sys
     print(f"[local-ai-hub] MCP server init failed: {_init_exc}", file=sys.stderr)
@@ -575,6 +579,7 @@ def _instrumented_tool():
 
         @functools.wraps(fn)
         def wrapped(*args: Any, **kwargs: Any) -> Any:
+            started = time.monotonic()
             try:
                 bound = signature.bind_partial(*args, **kwargs)
                 # Do not apply Python defaults: omitted optional arguments are not
@@ -586,10 +591,14 @@ def _instrumented_tool():
             token = _CURRENT_EXTRA_FIELDS.set(extra) if extra is not None else None
             try:
                 result = fn(*args, **kwargs)
+            except Exception:
+                _record_adoption(fn.__name__, arguments, None, (time.monotonic() - started) * 1000, failed=True)
+                raise
             finally:
                 if token is not None:
                     _CURRENT_EXTRA_FIELDS.reset(token)
             clean, measured = pop_accounting(result)
+            _record_adoption(fn.__name__, arguments, clean, (time.monotonic() - started) * 1000)
             try:
                 event = finalize_tool_accounting(
                     tool_name=fn.__name__, arguments=arguments, response=clean, measured=measured,
@@ -605,10 +614,78 @@ def _instrumented_tool():
     return decorator
 
 
+def _adoption_reason(value: Any) -> str:
+    text = str(value or "").lower()
+    if "timeout" in text: return "timeout"
+    if "unsupported" in text or "disabled" in text: return "unsupported"
+    if "policy" in text or "forbidden" in text or "denied" in text: return "policy"
+    if "validation" in text or "invalid" in text or "required" in text: return "validation"
+    if "unavailable" in text or "connection" in text: return "unavailable"
+    return "other"
+
+
+_ADOPTION_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_ADOPTION_TOOLS = {"local_ai_status", "local_ai_task", "local_ai_repo", "local_ai_rag", "local_ai_command", "local_ai_coord", "local_ai_work", "local_ai_artifact"}
+_ADOPTION_ACTIONS = {
+    "local_ai_status": set(StatusDetail.__args__),
+    "local_ai_task": set(TaskAction.__args__),
+    "local_ai_repo": set(RepoAction.__args__),
+    "local_ai_rag": set(RagAction.__args__),
+    "local_ai_command": set(CommandAction.__args__),
+    "local_ai_coord": set(CoordAction.__args__),
+    "local_ai_work": set(WorkAction.__args__),
+    "local_ai_artifact": {"get"},
+}
+
+
+def _adoption_target(arguments: dict[str, Any]) -> tuple[str, str] | None:
+    if arguments.get("adoption_signal") != "bypassed":
+        return None
+    tool = str(arguments.get("target_tool") or "").strip().lower()
+    action = str(arguments.get("target_action") or "").strip().lower()
+    if tool not in _ADOPTION_TOOLS or not _ADOPTION_IDENTIFIER.fullmatch(action) or action not in _ADOPTION_ACTIONS[tool]:
+        return None
+    return tool, action
+
+
+def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration_ms: float, *, failed: bool = False) -> None:
+    """Best-effort aggregate telemetry; never retain request/response values."""
+    try:
+        action = str(arguments.get("action") or "default").lower()
+        target = _adoption_target(arguments)
+        if target is not None:
+            tool, action = target
+        intent = {"local_ai_repo": "repository", "local_ai_command": "validation", "local_ai_coord": "coordination"}.get(tool, "hub")
+        payload = result if isinstance(result, dict) else {}
+        if target is not None:
+            outcome, reason = "bypassed", "explicit_client_signal"
+        elif failed:
+            outcome, reason = "failed", "other"
+        elif payload.get("success") is True:
+            outcome, reason = "used", None
+        elif payload.get("blocked") is True or payload.get("unsupported") is True:
+            outcome, reason = "blocked", _adoption_reason(payload.get("error"))
+        else:
+            outcome, reason = "failed", _adoption_reason(payload.get("error"))
+        # Do not serialize payloads merely to measure them: they can contain source,
+        # prompts, paths, or secrets.  A bounded structural estimate is enough for a
+        # coarse output-size bucket and never reads any value.
+        output_size = min(4096, len(payload) * 64)
+        ADOPTION_METRICS.record(tool, action, intent, outcome, fallback_reason=reason, duration_ms=duration_ms, output_size=output_size)
+    except Exception:
+        pass
+
+
 @mcp.tool()
 @_instrumented_tool()
-def local_ai_status(detail: StatusDetail = "brief", scope: str = "process", extra_fields: list[str] | None = None) -> dict[str, Any]:
-    """Health/queue/token-saving status. detail: brief, cache, telemetry, full, agent_state. scope: process (default) or window. Telemetry is metadata-only. Do not poll status during normal repository work or while preprocessing/model startup is in progress; one bounded health check is enough before native fallback. Use when: make one bounded health, cache, or telemetry check. Skip when: repository evidence or task work is needed."""
+def local_ai_status(detail: StatusDetail = "brief", scope: str = "process", extra_fields: list[str] | None = None, adoption_signal: Literal["", "bypassed"] = "", target_tool: str = "", target_action: str = "") -> dict[str, Any]:
+    """Health/queue/token-saving status. detail: brief, cache, telemetry, full, agent_state. scope: process (default) or window. To report a deliberate bypass, set adoption_signal=bypassed with validated target_tool and target_action; omitted means no bypass. Telemetry is metadata-only. Do not poll status during normal repository work or while preprocessing/model startup is in progress; one bounded health check is enough before native fallback. Use when: make one bounded health, cache, or telemetry check. Skip when: repository evidence or task work is needed."""
+    if adoption_signal not in {"", "bypassed"}:
+        return {"success": False, "error": "adoption_signal must be empty or bypassed"}
+    if adoption_signal == "bypassed" and _adoption_target({"adoption_signal": adoption_signal, "target_tool": target_tool, "target_action": target_action}) is None:
+        return {"success": False, "error": "bypass report requires a supported target_tool and safe target_action"}
+    if adoption_signal == "" and (target_tool or target_action):
+        return {"success": False, "error": "target_tool and target_action require adoption_signal=bypassed"}
     if not FEATURES.status:
         return {"success": False, "unsupported": True, "error": "local_ai_status is disabled in configuration"}
     scope = scope.strip().lower()

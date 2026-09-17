@@ -336,6 +336,7 @@ tbody tr.click:hover{background:#162338}
     <section class="section"><h2>Current workload <span class="tiny" id="currentSummary"></span></h2><div class="table-wrap"><table><thead><tr><th>State</th><th>Agent/tenant</th><th>Source</th><th>Model</th><th>Wait</th><th>Processing</th><th>Reason</th></tr></thead><tbody id="overviewJobs"></tbody></table></div></section>
     <section class="section"><h2>Hotspots</h2><div id="hotspots" class="kv"></div></section>
   </div>
+  <section class="section" style="margin-top:12px"><h2>Hub adoption, last 7 days <span class="tiny">aggregate only; no prompts, source, paths, or raw records</span></h2><div class="grid grid-3"><div class="metric"><label>Used / bypassed</label><strong id="adoptionUsed">-</strong></div><div class="metric"><label>Blocked / failed</label><strong id="adoptionBlocked">-</strong></div><div class="metric"><label>Dormant actions</label><strong id="adoptionDormant">-</strong></div></div><div class="table-wrap" style="margin-top:8px"><table><thead><tr><th>Tool</th><th>Action</th><th>Outcome</th><th>Count</th></tr></thead><tbody id="adoptionActions"></tbody></table></div><div id="adoptionDetail" class="tiny muted" style="margin-top:8px"></div></section>
 </div>
 
 <div id="work" class="page">
@@ -3895,8 +3896,31 @@ async function setIncidentIgnoredAction(id,ignored){
 }
 function workRecentRequestRow(request){const trace=requestTrace(request),failed=request.success===false||Number(request.status_code||0)>=400,context=trace?traceContextLabel(trace):(request.error_type||'No trace retained'),requestId=String(request.request_id||'—'),inner=`<td>${request.created_at?new Date(request.created_at*1000).toLocaleString():'—'}</td><td><strong>${esc(requestId.slice(-12))}</strong><div class="tiny">${trace?'Trace linked · '+esc(String(trace.trace_id||'').slice(-8)):'No trace'}</div></td><td>${esc(request.agent||'—')}</td><td>${esc(request.tenant||'—')}</td><td><strong>${esc(request.action||'—')}</strong><div class="tiny">${esc(context)}</div></td><td><span class="${failed?'bad-t':'ok'}">${n(request.status_code)||'—'}</span>${request.error_type?`<div class="tiny">${esc(request.error_type)}</div>`:''}</td><td>${ms(request.duration_ms)}</td>`;return requestRow(request,inner,7)}
 
+function renderAdoptionRows(items){
+  const body=$('adoptionActions');if(!body)return;body.replaceChildren();
+  const rows=Array.isArray(items)?items.slice(0,12):[];
+  if(!rows.length){const row=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=4;cell.className='muted';cell.textContent='none';row.append(cell);body.append(row);return;}
+  for(const item of rows){const row=document.createElement('tr');for(const value of [item.tool,item.action,item.outcome,item.count]){const cell=document.createElement('td');cell.textContent=String(value??'—').slice(0,64);row.append(cell)}body.append(row)}
+}
+function renderAdoption(report){
+  const totals=report&&report.totals;
+  if(!totals){$('adoptionUsed').textContent='unavailable';$('adoptionBlocked').textContent='unavailable';$('adoptionDormant').textContent='unavailable';renderAdoptionRows([]);$('adoptionDetail').textContent='Aggregate adoption telemetry unavailable.';return;}
+  renderAdoptionRows(report.action_adoption);
+  $('adoptionUsed').textContent=`${totals.used||0} / ${totals.bypassed||0}`;
+  $('adoptionBlocked').textContent=`${totals.blocked||0} / ${totals.failed||0}`;
+  $('adoptionDormant').textContent=(report.dormant_actions||[]).length;
+  const blocked=(report.blocked_reasons||[]).map(x=>`${x.reason}: ${x.count}`).join(', ')||'none';
+  const failed=(report.terminal_failures||[]).map(x=>`${x.reason}: ${x.count}`).join(', ')||'none';
+  const latency=(report.latency_buckets||[]).map(x=>`${x.bucket}: ${x.count}`).join(', ')||'none';
+  const output=(report.output_size_buckets||[]).map(x=>`${x.bucket}: ${x.count}`).join(', ')||'none';
+  $('adoptionDetail').textContent=`Blocked: ${blocked}. Terminal failures: ${failed}. Latency: ${latency}. Output: ${output}.`;
+}
+async function refreshAdoption(){
+  try{const response=await apiFetch('/api/adoption',{cache:'no-store'});const payload=await response.json();renderAdoption(payload.available?payload.adoption:null);}catch(_){renderAdoption(null);}
+}
 function render(s){
   last=s;
+  refreshAdoption();
   const q=s.scheduler||{},o=s.observability||{},p=s.preprocessing||{},bg=s.background_gpu||{},h=s.headless||{},r=s.runtime_stats||{},ss=q.stats||{},rp=s.runtime_profile||{},cmd=r.commands||{};
   ensureHttpTailTable();setupWorkLayout();
 
