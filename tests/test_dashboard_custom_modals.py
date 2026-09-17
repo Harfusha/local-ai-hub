@@ -1083,6 +1083,47 @@ def test_trace_model_chat_runtime_has_clear_empty_timeline_state() -> None:
     assert "No model events captured" in html
 
 
+def test_trace_tool_result_card_carries_matching_call_context() -> None:
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {"kind": "model_chat", "modelOutput": "done"},
+        "events": [
+            {"seq": 1, "event_type": "tool_call", "payload": {"step": 4, "call_id": "call-4", "name": "shell", "arguments": {"cmd": "false"}}},
+            {"seq": 2, "event_type": "tool_result", "payload": {"step": 4, "call_id": "call-4", "result": {"error": "failed"}}},
+        ],
+        "session": {}, "actor": {}, "correlations": {}, "identity": {},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;" + source
+        + f"console.log(JSON.stringify(renderModelChatPresentation({json.dumps(fixture)})));"
+    )
+    html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    result_card = html[html.index("Tool result") :]
+    assert "shell" in result_card
+    assert "call-4" in result_card
+    assert "step 4" in result_card
+    assert "Cmd" in result_card or "cmd" in result_card
+    assert "failed" in result_card
+
+
+def test_trace_codex_timeline_appends_missing_final_assistant_output_once() -> None:
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {"kind": "model_chat", "modelOutput": "final answer"},
+        "events": [{"seq": 1, "event_type": "model_request", "payload": {"messages": [{"role": "user", "content": "question"}]}}],
+        "session": {"output": "session answer"}, "actor": {}, "correlations": {}, "identity": {},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;" + source
+        + f"console.log(JSON.stringify(renderModelChatPresentation({json.dumps(fixture)})));"
+    )
+    html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    assert html.count("Assistant output") == 1
+    assert "final answer" in html
+
+
 def test_trace_model_chat_runtime_keeps_request_envelope_visible_and_bounded() -> None:
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     source = _trace_presentation_runtime_source()
