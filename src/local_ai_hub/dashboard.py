@@ -1976,7 +1976,7 @@ function renderHumanModal(obj){
 function traceTab(label,id){const selected=traceView===id;return `<button class="trace-tab ${selected?'active':''}" id="trace-tab-${esc(id)}" role="tab" data-trace-view="${esc(id)}" aria-selected="${selected}" aria-controls="trace-panel-${esc(id)}" tabindex="${selected?'0':'-1'}">${esc(label)}</button>`}
 function traceStatus(item){const state=String(item?.state||'queued');return state==='failed'&&/hub restarted|service stopped|shutdown/i.test(String(item?.error||''))?'interrupted':state}
 function traceDisplayState(item){const state=traceStatus(item);return state==='interrupted'?'Interrupted':humanLabel(state)}
-function traceBoundedEvents(events,eventLimit=100){const list=Array.isArray(events)?events:[];return {events:list.slice(-eventLimit),eventsTotal:list.length,eventsTruncated:list.length>eventLimit};}
+function traceBoundedEvents(events,eventLimit=100){const list=Array.isArray(events)?events:[],requestReceived=list.find(event=>event?.event_type==='request_received'),latest=list.slice(-eventLimit),visible=requestReceived&&!latest.includes(requestReceived)?[requestReceived,...latest]:latest;return {events:visible.map(event=>traceRawBoundValue(event,2048)),eventsTotal:list.length,eventsTruncated:list.length>visible.length};}
 function traceRawBoundValue(value,limit=4096,depth=0){
   if(value===null||value===undefined||typeof value==='number'||typeof value==='boolean')return value;
   if(typeof value==='string')return value.length>limit?value.slice(0,limit)+'… truncated':value;
