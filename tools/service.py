@@ -194,6 +194,10 @@ def native_start() -> None:
             run_cp = run(["schtasks", "/Run", "/TN", "LocalAIHubSupervisor"])
             if run_cp.returncode == 0:
                 return
+        # Task Scheduler can start the supervisor even when its control command
+        # reports failure. Re-check before the fallback spawn to avoid duplicates.
+        if all_supervisor_pids():
+            return
         spawn_detached(); return
     if sys.platform == "darwin":
         dest = Path.home() / "Library/LaunchAgents/com.localai.hub.plist"

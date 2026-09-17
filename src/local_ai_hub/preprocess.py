@@ -2288,6 +2288,11 @@ class ProjectPreprocessor:
             self._missing_refs_checked_generations = self._bound_generation_set(self._missing_refs_checked_generations)
         with self._db_lock, closing(self._connect()) as con:
             refs = [(str(r["path"]), str(r["content_hash"])) for r in con.execute("SELECT path,content_hash FROM file_refs WHERE root=? AND needs_hash=0 AND content_hash<>'' ORDER BY path", (root,)).fetchall()]
+        refs = [
+            (path, digest)
+            for path, digest in refs
+            if not any(part in self.repo_tools.ignore_dirs for part in Path(path).parts[:-1])
+        ]
         pruned_generations = getattr(self, "_code_index_pruned_generations", set())
         if generation_key not in pruned_generations:
             try:
