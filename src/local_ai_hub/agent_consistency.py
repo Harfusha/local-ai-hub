@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+import json
 import math
 import re
 import threading
