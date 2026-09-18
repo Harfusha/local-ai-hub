@@ -69,11 +69,6 @@ class ArtifactStore:
         """Persist stable tenant identity without retaining caller-controlled text."""
         return hashlib.sha256(str(tenant).encode("utf-8")).hexdigest()
 
-    @classmethod
-    def _tenant_identities(cls, tenant: str) -> tuple[str, str]:
-        primary = cls._tenant_identity(tenant)
-        return primary, cls._tenant_identity(primary)
-
     def _init_db(self) -> None:
         if self._initialized:
             return
@@ -155,22 +150,22 @@ class ArtifactStore:
                                         (artifact_id, created_at, raw_tenant, raw_tenant, kind, text),
                                     )
                         self._table = _ARTIFACT_V2_TABLE
-                    if marker_value != "sha256-v2":
-                        def _repair_tenants(table: str, *, has_identity: bool) -> None:
-                            rows = list(con.execute(f"SELECT rowid, tenant FROM {table}"))
-                            for rowid, tenant in rows:
-                                digest = self._tenant_identity(str(tenant))
-                                if has_identity:
-                                    con.execute(
-                                        f"UPDATE {table} SET tenant=?, tenant_identity=? WHERE rowid=?",
-                                        (digest, digest, rowid),
-                                    )
-                                else:
-                                    con.execute(
-                                        f"UPDATE {table} SET tenant=? WHERE rowid=?",
-                                        (digest, rowid),
-                                    )
+                    def _repair_tenants(table: str, *, has_identity: bool) -> None:
+                        rows = list(con.execute(f"SELECT rowid, tenant FROM {table}"))
+                        for rowid, tenant in rows:
+                            digest = self._tenant_identity(str(tenant))
+                            if has_identity:
+                                con.execute(
+                                    f"UPDATE {table} SET tenant=?, tenant_identity=? WHERE rowid=?",
+                                    (digest, digest, rowid),
+                                )
+                            else:
+                                con.execute(
+                                    f"UPDATE {table} SET tenant=? WHERE rowid=?",
+                                    (digest, rowid),
+                                )
 
+                    if marker_value in {"", "legacy-raw-v1"}:
                         if existing_columns:
                             _repair_tenants(
                                 _ARTIFACT_TABLE,
@@ -178,9 +173,26 @@ class ArtifactStore:
                             )
                         if v2_exists or self._table == _ARTIFACT_V2_TABLE:
                             _repair_tenants(_ARTIFACT_V2_TABLE, has_identity=True)
+                    elif marker_value == "sha256-v1" and v2_exists and existing_columns and not full_schema.issubset(existing_columns):
+                        source_tenants = {
+                            str(artifact_id): str(tenant)
+                            for artifact_id, tenant in con.execute("SELECT artifact_id, tenant FROM artifacts")
+                        }
+                        for rowid, artifact_id, tenant, tenant_identity in con.execute(
+                            "SELECT rowid, artifact_id, tenant, tenant_identity FROM artifacts_v2"
+                        ):
+                            source_tenant = source_tenants.get(str(artifact_id))
+                            if source_tenant is None:
+                                continue
+                            if str(tenant) != source_tenant or str(tenant_identity) != source_tenant:
+                                repaired = source_tenant if str(tenant) == source_tenant else self._tenant_identity(str(tenant))
+                                con.execute(
+                                    "UPDATE artifacts_v2 SET tenant=?, tenant_identity=? WHERE rowid=?",
+                                    (repaired, repaired, rowid),
+                                )
                     con.execute(
                         "INSERT OR REPLACE INTO artifact_schema_meta(key, value) VALUES(?, ?)",
-                        ("tenant_storage", "sha256-v2"),
+                        ("tenant_storage", "sha256-v1"),
                     )
                     con.execute(f"CREATE INDEX IF NOT EXISTS idx_{self._table}_created ON {self._table}(created_at)")
                     con.commit()
@@ -200,7 +212,7 @@ class ArtifactStore:
             (base_id,),
         ).fetchone()
         existing_identity = str((row[0] if row and row[0] else row[1]) if row else "")
-        if not row or existing_identity in {tenant_identity, self._tenant_identity(tenant_identity)}:
+        if not row or existing_identity == tenant_identity:
             return base_id
         return f"{base_id}_{tenant_identity}"
 
@@ -312,8 +324,8 @@ class ArtifactStore:
                 )
                 params: list[Any] = [str(artifact_id), cutoff]
                 if tenant is not None:
-                    query += " AND tenant_identity IN (?, ?)"
-                    params.extend(self._tenant_identities(tenant))
+                    query += " AND tenant_identity=?"
+                    params.append(self._tenant_identity(tenant))
                 return con.execute(query, params).fetchone()
 
         row = retry_busy(_do_get, retries=3)
@@ -428,8 +440,8 @@ class ArtifactStore:
                 query = f"SELECT kind, text, mime_type, created_at FROM {self._table} WHERE artifact_id=? AND created_at>=?"
                 params: list[Any] = [artifact_id, cutoff]
                 if tenant is not None:
-                    query += " AND tenant_identity IN (?, ?)"
-                    params.extend(self._tenant_identities(tenant))
+                    query += " AND tenant_identity=?"
+                    params.append(self._tenant_identity(tenant))
                 return con.execute(query, params).fetchone()
         row = retry_busy(_do_get, retries=3)
         if not row:
