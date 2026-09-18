@@ -11,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from local_ai_hub import mcp_server as local_ai_mcp  # noqa: E402
 from local_ai_hub.features import FeatureSet  # noqa: E402
+from local_ai_hub.routing import semantic_handoff_hint  # noqa: E402
+from local_ai_hub.adoption_metrics import AdoptionMetricsStore  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -105,6 +107,40 @@ def test_dynamic_descriptions_make_first_choice_routing_explicit() -> None:
     assert "terminal=true and retryable=false" in descriptions["repo"]
     assert "terminal=true and retryable=false" in descriptions["command"]
     assert "Mutations never cache or single-flight" in descriptions["command"]
+
+
+def test_successful_repo_evidence_exposes_typed_semantic_handoff(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True, "matches": []})
+
+    result = local_ai_mcp.local_ai_repo(action="search", query="routing")
+
+    assert result["routing"]["semantic_handoff"] == semantic_handoff_hint("local_ai_repo", "search", True)
+
+
+def test_repo_evidence_recommendation_preserves_used_adoption(monkeypatch, tmp_path: Path) -> None:
+    store = AdoptionMetricsStore(tmp_path)
+    monkeypatch.setattr(local_ai_mcp, "ADOPTION_METRICS", store)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True})
+
+    local_ai_mcp.local_ai_repo(action="search", query="routing")
+
+    totals = store.report(days=1)["totals"]
+    assert totals["used"] == 1
+    assert totals["recommended"] == 1
+
+
+def test_artifact_and_command_success_do_not_expose_semantic_handoff(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True})
+
+    artifact = local_ai_mcp.local_ai_artifact("artifact-1")
+    command = local_ai_mcp.local_ai_command(action="run", command="true")
+
+    assert "routing" not in artifact
+    assert "routing" not in command
 
 
 def test_durable_routing_requires_checkpointed_contracts_and_closed_handoffs() -> None:

@@ -34,6 +34,24 @@ def test_records_bucketed_daily_outcomes_and_reasons(tmp_path):
     assert report["output_size_buckets"] == [{"bucket": "0-255B", "count": 1}, {"bucket": "1-4KiB", "count": 1}]
 
 
+def test_report_exposes_routing_adoption_aggregate_counts(tmp_path):
+    store = AdoptionMetricsStore(tmp_path)
+    now = datetime(2026, 9, 17, tzinfo=timezone.utc)
+    store.record("local_ai_repo", "search", "repository", "recommended", now=now)
+    store.record("local_ai_repo", "search", "repository", "used", now=now)
+    store.record("local_ai_repo", "search", "repository", "bypassed", fallback_reason="explicit_client_signal", now=now)
+    store.record("local_ai_repo", "search", "repository", "fallback_used", fallback_reason="unavailable", now=now)
+
+    report = store.report(days=1, now=now)
+
+    assert report["routing_adoption"] == {
+        "local_recommended": 1,
+        "local_used": 1,
+        "bypassed": 1,
+        "fallback_used": 1,
+    }
+
+
 def test_rejects_sensitive_or_path_bearing_input(tmp_path):
     store = AdoptionMetricsStore(tmp_path)
 

@@ -26,6 +26,7 @@ from local_ai_hub.ollama_subagents import OllamaSubagentCatalog
 from local_ai_hub.process_utils import canonical_root, is_rooted_path
 from local_ai_hub.token_accounting import account_projection, attach_accounting, finalize_tool_accounting, json_tokens, pop_accounting
 from local_ai_hub.adoption_metrics import AdoptionMetricsStore
+from local_ai_hub.routing import semantic_handoff_hint
 from local_ai_hub.state_paths import configured_state_dir
 
 try:
@@ -691,6 +692,18 @@ def _instrumented_tool():
                     _CURRENT_EXTRA_FIELDS.reset(token)
                 _CURRENT_RESPONSE_OPTIONS.reset(response_token)
             clean, measured = pop_accounting(result)
+            if isinstance(clean, dict) and clean.get("success") is True:
+                hint = semantic_handoff_hint(
+                    fn.__name__,
+                    str(arguments.get("action") or "").lower(),
+                    FEATURES.tasks and FEATURES.has_any_model(),
+                )
+                if hint is not None:
+                    routing = clean.get("routing")
+                    if routing is None:
+                        clean["routing"] = {"semantic_handoff": hint}
+                    elif isinstance(routing, dict) and "semantic_handoff" not in routing:
+                        routing["semantic_handoff"] = hint
             _record_adoption(fn.__name__, arguments, clean, (time.monotonic() - started) * 1000)
             try:
                 event = finalize_tool_accounting(
@@ -760,10 +773,17 @@ def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration
             tool, action = target
         intent = {"local_ai_repo": "repository", "local_ai_command": "validation", "local_ai_coord": "coordination"}.get(tool, "hub")
         payload = result if isinstance(result, dict) else {}
+        recommended = (
+            payload.get("success") is True
+            and isinstance(payload.get("routing"), dict)
+            and payload["routing"].get("semantic_handoff") is not None
+        )
         if target is not None:
             outcome, reason = "bypassed", "explicit_client_signal"
         elif failed:
             outcome, reason = "failed", "other"
+        elif payload.get("fallback_used") is True:
+            outcome, reason = "fallback_used", _adoption_reason(payload.get("error"))
         elif payload.get("success") is True:
             outcome, reason = "used", None
         elif payload.get("blocked") is True or payload.get("unsupported") is True:
@@ -775,6 +795,8 @@ def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration
         # coarse output-size bucket and never reads any value.
         output_size = min(4096, len(payload) * 64)
         ADOPTION_METRICS.record(tool, action, intent, outcome, fallback_reason=reason, duration_ms=duration_ms, output_size=output_size)
+        if recommended:
+            ADOPTION_METRICS.record(tool, action, intent, "recommended", duration_ms=duration_ms, output_size=output_size)
     except Exception:
         pass
 
