@@ -1076,6 +1076,7 @@ def _local_ai_repo_impl(
     repository_id: str = "",
     session_id: str = "",
     repository_revision: str = "",
+    changed_paths: list[str] | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
@@ -1257,6 +1258,7 @@ def _local_ai_repo_impl(
             "repository_id": repository_id,
             "session_id": session_id,
             "repository_revision": repository_revision,
+            "changed_paths": changed_paths or [],
         }, timeout=_timeout("context")), "context")
     if action == "verify_receipt":
         return _compact(CLIENT.post("/api/agent-state/verification", {
@@ -1423,6 +1425,7 @@ def local_ai_repo(
     repository_id: str = "",
     session_id: str = "",
     repository_revision: str = "",
+    changed_paths: list[str] | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
     return _local_ai_repo_impl(
@@ -1430,6 +1433,7 @@ def local_ai_repo(
         max_tokens, evidence, mode, relation, language, profile, receipt, task_id,
         include_code, edits, extra_fields, max_response_tokens, response_profile, reuse_key,
         include_diagnostics, clone_id, worktree_id, branch, repository_id, session_id, repository_revision,
+        changed_paths,
     )
 
 
@@ -1632,11 +1636,14 @@ def local_ai_coord(
             root=root, ttl_seconds=ttl_seconds,
         ), "status")
     if action.startswith("memory_"):
-        return _compact(CLIENT.coord(
+        memory_kwargs = dict(
             action=action, record=record, record_id=record_id,
             target_scope=target_scope, approver=approver, key=key,
-            value=value, query=query, root=root, ttl_seconds=ttl_seconds,
-        ), "status")
+            value=value, query=query, root=root,
+        )
+        if ttl_seconds is not None and ttl_seconds > 0:
+            memory_kwargs["ttl_seconds"] = ttl_seconds
+        return _compact(CLIENT.coord(**memory_kwargs), "status")
     if action.startswith("relation_"):
         return _compact(CLIENT.coord(
             action=action, source_entity=key or task_id or query or task,

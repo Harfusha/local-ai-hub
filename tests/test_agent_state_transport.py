@@ -142,6 +142,19 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
     assert memory_payload["record"]["expires_at"] == 12345.0
     assert memory_payload["ttl_seconds"] == 77
 
+    c_res2_default = mcp_mod.local_ai_coord(
+        action="memory_record",
+        record={"key": "no-expiry-by-default", "value": "v"},
+    )
+    assert c_res2_default["success"] is True
+    default_memory_payload = next(
+        call[2] for call in calls
+        if call[0] == "COORD"
+        and call[1] == "memory_record"
+        and call[2]["record"]["key"] == "no-expiry-by-default"
+    )
+    assert "ttl_seconds" not in default_memory_payload
+
     c_res3 = mcp_mod.local_ai_coord(action="incident_decision", fingerprint={"error_class": "e"})
     assert c_res3["success"] is True
 
@@ -185,6 +198,7 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
         repository_id="repository-2",
         session_id="session-2",
         repository_revision="revision-2",
+        changed_paths=["src/main.py"],
         include_diagnostics=True,
     )
     assert r_res1["success"] is True
@@ -204,6 +218,7 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
         "session_id": "session-2",
         "repository_revision": "revision-2",
     }
+    assert repo_context_payload["changed_paths"] == ["src/main.py"]
 
     r_res2 = mcp_mod.local_ai_repo(action="verify_receipt", receipt={"task_id": "t1", "criterion": "c1"})
     assert r_res2["success"] is True
@@ -411,6 +426,20 @@ def test_http_memory_transport_preserves_expiry_and_ttl(tmp_path: Path):
         })
         assert ttl_result["success"] is True
         assert before + 100 <= ttl_result["record"]["expires_at"] <= time.time() + 120
+
+        no_ttl = post({
+            "action": "record",
+            "idempotency_key": "expiry-unspecified",
+            "record": {
+                "kind": "finding",
+                "scope": "task",
+                "scope_id": "task-expiry",
+                "key": "no-expiry",
+                "value": "v",
+            },
+        })
+        assert no_ttl["success"] is True
+        assert no_ttl["record"]["expires_at"] is None
     finally:
         server.shutdown()
         server.server_close()
