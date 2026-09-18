@@ -164,3 +164,94 @@ def test_memory_diagnostics_aggregate_beyond_context_candidate_limit(tmp_path: P
     for status in expected_counts:
         ids = diagnostics.content.split(f"{status.value}_ids=", 1)[1].split(" ", 1)[0]
         assert len([item for item in ids.split(",") if item]) <= 8
+
+
+def test_authoritative_memory_is_root_and_task_session_scoped(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    memory_store = MemoryStore(state_store)
+    current_root = str(tmp_path / "current")
+    other_root = str(tmp_path / "other")
+
+    current_repository = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope="repository",
+            key="current-repository",
+            value="keep",
+            status=MemoryStatus.CONFIRMED,
+            provenance={"root": current_root, "repository_revision": "rev-1", "path_refs": ["src/current.py"]},
+        )
+    )
+    for index in range(25):
+        memory_store.record(
+            MemoryRecord.create(
+                kind=MemoryKind.FINDING,
+                scope="repository",
+                key=f"excluded-{index}",
+                value="exclude",
+                status=MemoryStatus.STALE,
+                provenance={"root": current_root, "repository_revision": "rev-1", "path_refs": [f"src/{index}.py"]},
+            )
+        )
+    wrong_root = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope="repository",
+            key="wrong-root",
+            value="exclude",
+            status=MemoryStatus.CONFIRMED,
+            provenance={"root": other_root, "repository_revision": "rev-1", "path_refs": ["src/wrong.py"]},
+        )
+    )
+    current_task = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope="task",
+            scope_id="task-1",
+            key="current-task",
+            value="keep",
+            status=MemoryStatus.CONFIRMED,
+        )
+    )
+    wrong_task = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope="task",
+            scope_id="task-2",
+            key="wrong-task",
+            value="exclude",
+            status=MemoryStatus.CONFIRMED,
+        )
+    )
+    current_session = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope="session",
+            scope_id="session-1",
+            key="current-session",
+            value="keep",
+            status=MemoryStatus.CONFIRMED,
+        )
+    )
+    wrong_session = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope="session",
+            scope_id="session-2",
+            key="wrong-session",
+            value="exclude",
+            status=MemoryStatus.CONFIRMED,
+        )
+    )
+
+    context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
+        ContextRequest(task_id="task-1", tenant="session-1", root=current_root, token_budget=300)
+    )
+    element_ids = {element.element_id for element in context.elements}
+
+    assert current_repository.record_id in element_ids
+    assert current_task.record_id in element_ids
+    assert current_session.record_id in element_ids
+    assert wrong_root.record_id not in element_ids
+    assert wrong_task.record_id not in element_ids
+    assert wrong_session.record_id not in element_ids

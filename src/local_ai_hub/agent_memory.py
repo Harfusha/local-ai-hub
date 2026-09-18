@@ -529,21 +529,24 @@ class MemoryStore:
         return os.path.normcase(os.path.normpath(str(value).replace("\\", "/"))).replace("\\", "/")
 
     @classmethod
-    def _paths_overlap(cls, left: str, right: str) -> bool:
-        left_norm = cls._normalise_path(left).strip("/")
-        right_norm = cls._normalise_path(right).strip("/")
-        return bool(
-            left_norm
-            and right_norm
-            and (
-                left_norm == right_norm
-                or left_norm.endswith("/" + right_norm)
-                or right_norm.endswith("/" + left_norm)
+    def _canonical_repo_path(cls, root: str, value: str) -> str:
+        root_abs = os.path.normcase(os.path.abspath(os.path.normpath(str(root).replace("\\", "/"))))
+        raw_path = str(value).replace("\\", "/")
+        path_abs = os.path.normcase(
+            os.path.abspath(
+                os.path.normpath(raw_path if os.path.isabs(raw_path) else os.path.join(root_abs, raw_path))
             )
         )
+        return os.path.normcase(os.path.relpath(path_abs, root_abs)).replace("\\", "/")
+
+    @classmethod
+    def _paths_overlap(cls, left: str, right: str, *, root: str = "") -> bool:
+        if root:
+            return cls._canonical_repo_path(root, left) == cls._canonical_repo_path(root, right)
+        return cls._normalise_path(left).strip("/") == cls._normalise_path(right).strip("/")
 
     def mark_stale_for_revision(self, root: str, revision: str, changed_paths: Collection[str] | None) -> int:
-        """Mark repository memories stale when changed paths invalidate their evidence."""
+        """Atomically stale matching memories; transition or event errors roll back the batch."""
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return 0
 
@@ -553,7 +556,7 @@ class MemoryStore:
         else:
             raw_changed_paths = changed_paths or ()
         changed = tuple(
-            self._normalise_path(path)
+            self._canonical_repo_path(root, path)
             for path in raw_changed_paths
             if path is not None and str(path).strip() and str(path).strip().lower() != "none"
         )
@@ -575,114 +578,114 @@ class MemoryStore:
             "FROM agent_memory_records WHERE record_id = ?"
         )
 
-        def _mark_one(record: MemoryRecord) -> bool:
+        def _mark_batch() -> tuple[int, list[AgentEvent]]:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
-            published_event: AgentEvent | None = None
+            published_events: list[AgentEvent] = []
+            stale_count = 0
             try:
                 con.execute("BEGIN IMMEDIATE")
-                row = con.execute(select_sql, (record.record_id,)).fetchone()
-                if not row:
-                    con.execute("COMMIT")
-                    return False
+                for record in records:
+                    row = con.execute(select_sql, (record.record_id,)).fetchone()
+                    if not row:
+                        continue
 
-                current = self._row_to_record(row)
-                record_root = current.provenance.get("root") if isinstance(current.provenance, Mapping) else None
-                if (
-                    not record_root
-                    or self._normalise_path(str(record_root)) != root_norm
-                    or current.status is MemoryStatus.STALE
-                    or current.repository_revision in (None, str(revision))
-                    or current.status is not record.status
-                    or current.repository_revision != record.repository_revision
-                    or current.updated_at != record.updated_at
-                    or not any(self._paths_overlap(ref, path) for ref in current.path_refs for path in changed)
-                ):
-                    con.execute("COMMIT")
-                    return False
+                    current = self._row_to_record(row)
+                    record_root = current.provenance.get("root") if isinstance(current.provenance, Mapping) else None
+                    if (
+                        not record_root
+                        or self._normalise_path(str(record_root)) != root_norm
+                        or current.status is MemoryStatus.STALE
+                        or current.repository_revision in (None, str(revision))
+                        or current.status is not record.status
+                        or current.repository_revision != record.repository_revision
+                        or current.updated_at != record.updated_at
+                        or not any(
+                            self._paths_overlap(ref, path, root=root)
+                            for ref in current.path_refs
+                            for path in changed
+                        )
+                    ):
+                        continue
 
-                original = current.to_dict()
-                updated_provenance = dict(current.provenance)
-                updated_provenance["staled_by_revision"] = str(revision)
-                updated_provenance["staled_changed_paths"] = list(changed)[:32]
-                updated_provenance["superseded_metadata"] = original
-                stale = replace(
-                    current,
-                    status=MemoryStatus.STALE,
-                    quarantine_reason=f"Repository revision changed to {revision}",
-                    provenance=updated_provenance,
-                    updated_at=time.time(),
-                )
-                provenance_raw = row[14]
-                update = con.execute(
-                    """
-                    UPDATE agent_memory_records
-                    SET status = ?, quarantine_reason = ?, provenance = ?, updated_at = ?
-                    WHERE record_id = ? AND status = ? AND updated_at = ? AND provenance = ?
-                    """,
-                    (
-                        stale.status.value,
-                        stale.quarantine_reason,
-                        json_dumps(stale.provenance),
-                        stale.updated_at,
-                        current.record_id,
-                        current.status.value,
-                        current.updated_at,
-                        provenance_raw,
-                    ),
-                )
-                if update.rowcount != 1:
-                    con.execute("ROLLBACK")
-                    return False
-
-                event = AgentEvent.create(
-                    stream_id=f"memory:{current.scope.value}:{current.key or current.record_id}",
-                    kind="memory.staled",
-                    payload={
-                        "record_id": current.record_id,
-                        "root": root,
-                        "revision": str(revision),
-                        "changed_paths": list(changed)[:32],
-                    },
-                    idempotency_key=f"stale_{current.record_id}_{revision}",
-                    actor="system",
-                )
-                event_row = con.execute(
-                    """
-                    SELECT stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at
-                    FROM agent_events WHERE stream_id = ? AND idempotency_key = ?
-                    """,
-                    (event.stream_id, event.idempotency_key),
-                ).fetchone()
-                if event_row:
-                    # Existing event means another compatible transition already
-                    # persisted it; do not notify subscribers a second time.
-                    published_event = None
-                else:
-                    seq_row = con.execute(
-                        "SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_events WHERE stream_id = ?",
-                        (event.stream_id,),
-                    ).fetchone()
-                    new_seq = int(seq_row[0]) if seq_row else 1
-                    con.execute(
+                    original = current.to_dict()
+                    updated_provenance = dict(current.provenance)
+                    updated_provenance["staled_by_revision"] = str(revision)
+                    updated_provenance["staled_changed_paths"] = list(changed)[:32]
+                    updated_provenance["superseded_metadata"] = original
+                    stale = replace(
+                        current,
+                        status=MemoryStatus.STALE,
+                        quarantine_reason=f"Repository revision changed to {revision}",
+                        provenance=updated_provenance,
+                        updated_at=time.time(),
+                    )
+                    provenance_raw = row[14]
+                    update = con.execute(
                         """
-                        INSERT INTO agent_events (
-                            stream_id, seq, event_id, kind, payload, idempotency_key,
-                            correlation_id, actor, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        UPDATE agent_memory_records
+                        SET status = ?, quarantine_reason = ?, provenance = ?, updated_at = ?
+                        WHERE record_id = ? AND status = ? AND updated_at = ? AND provenance = ?
                         """,
                         (
-                            event.stream_id,
-                            new_seq,
-                            event.event_id,
-                            event.kind,
-                            json_dumps(event.payload, separators=(",", ":")),
-                            event.idempotency_key,
-                            event.correlation_id,
-                            event.actor,
-                            event.created_at,
+                            stale.status.value,
+                            stale.quarantine_reason,
+                            json_dumps(stale.provenance),
+                            stale.updated_at,
+                            current.record_id,
+                            current.status.value,
+                            current.updated_at,
+                            provenance_raw,
                         ),
                     )
-                    published_event = event.with_seq(new_seq)
+                    if update.rowcount != 1:
+                        continue
+
+                    event = AgentEvent.create(
+                        stream_id=f"memory:{current.scope.value}:{current.key or current.record_id}",
+                        kind="memory.staled",
+                        payload={
+                            "record_id": current.record_id,
+                            "root": root,
+                            "revision": str(revision),
+                            "changed_paths": list(changed)[:32],
+                        },
+                        idempotency_key=f"stale_{current.record_id}_{revision}",
+                        actor="system",
+                    )
+                    event_row = con.execute(
+                        """
+                        SELECT stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at
+                        FROM agent_events WHERE stream_id = ? AND idempotency_key = ?
+                        """,
+                        (event.stream_id, event.idempotency_key),
+                    ).fetchone()
+                    if not event_row:
+                        seq_row = con.execute(
+                            "SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_events WHERE stream_id = ?",
+                            (event.stream_id,),
+                        ).fetchone()
+                        new_seq = int(seq_row[0]) if seq_row else 1
+                        con.execute(
+                            """
+                            INSERT INTO agent_events (
+                                stream_id, seq, event_id, kind, payload, idempotency_key,
+                                correlation_id, actor, created_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                event.stream_id,
+                                new_seq,
+                                event.event_id,
+                                event.kind,
+                                json_dumps(event.payload, separators=(",", ":")),
+                                event.idempotency_key,
+                                event.correlation_id,
+                                event.actor,
+                                event.created_at,
+                            ),
+                        )
+                        published_events.append(event.with_seq(new_seq))
+                    stale_count += 1
                 con.execute("COMMIT")
             except Exception:
                 try:
@@ -692,15 +695,12 @@ class MemoryStore:
                 raise
             finally:
                 con.close()
-            if published_event is not None:
-                self.state_store._publish(published_event)
-            return True
+            return stale_count, published_events
 
-        return sum(
-            1
-            for record in records
-            if retry_busy(lambda record=record: _mark_one(record), retries=5, base_delay_seconds=0.02)
-        )
+        stale_count, published_events = retry_busy(_mark_batch, retries=5, base_delay_seconds=0.02)
+        for event in published_events:
+            self.state_store._publish(event)
+        return stale_count
 
     def diagnostic_summary(self, *, id_limit: int = 8) -> dict[str, dict[str, Any]]:
         """Return aggregate excluded-memory counts with bounded newest record IDs."""
