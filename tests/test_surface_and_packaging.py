@@ -29,6 +29,14 @@ def test_packaged_defaults_match_source_defaults():
     assert (ROOT / "defaults.toml").read_bytes() == (ROOT / "src" / "local_ai_hub" / "defaults.toml").read_bytes()
 
 
+def test_browser_bridge_files_are_in_source_and_wheel_manifests():
+    manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    for name in ("background.js", "capture.js", "manifest.json", "README.md"):
+        assert f"browser_bridge/{name}" in manifest or "recursive-include browser_bridge" in manifest
+        assert f"browser_bridge/{name}" in pyproject
+
+
 def test_shipping_agent_policy_advertises_compact_workflow():
     policy = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     assert "local_ai_work" in policy

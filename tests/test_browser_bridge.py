@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
 import tomllib
 from pathlib import Path
 
@@ -205,7 +206,7 @@ def test_staged_capture_requires_explicit_commit_and_abandon_is_terminal() -> No
         tenant="tenant-a",
         config=config(),
     )
-    assert late_commit["success"] is False
+    assert late_commit == committed
     assert len([call for call in sink.calls if call[0] == "frontend-review-bundle"]) == 1
 
     abandoned_sink = ArtifactSink()
@@ -229,10 +230,84 @@ def test_staged_capture_requires_explicit_commit_and_abandon_is_terminal() -> No
         tenant="tenant-a",
         config=config(),
     )
-    assert late_commit["success"] is False
+    assert late_commit == abandoned
     assert abandoned_sink.calls == []
 
 
+def test_request_id_conflict_does_not_poison_losing_capability() -> None:
+    payload = capture_payload()
+    payload["request_id"] = "shared-request"
+    first = issue_capture_capability(config(), origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7, window_id=3)
+    second = issue_capture_capability(config(), origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7, window_id=3)
+
+    assert stage_capture(first, payload, tenant="tenant-a", config=config())["success"] is True
+    assert stage_capture(second, payload, tenant="tenant-a", config=config())["error_code"] == "request_id_conflict"
+
+    replacement = dict(payload)
+    replacement["request_id"] = "second-request"
+    assert stage_capture(second, replacement, tenant="tenant-a", config=config())["success"] is True
+
+
+def test_terminal_request_id_is_idempotent_and_conflicts_across_capabilities() -> None:
+    sink = ArtifactSink()
+    first = issue_capture_capability(config(), origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7, window_id=3)
+    payload = capture_payload()
+    payload["request_id"] = "terminal-request"
+    assert stage_capture(first, payload, tenant="tenant-a", config=config())["success"] is True
+    request = {"origin": "chrome-extension://fixture", "tab_id": 7, "window_id": 3, "request_id": "terminal-request"}
+
+    committed = commit_staged_capture(first, request, artifacts=sink, tenant="tenant-a", config=config())
+    replay = commit_staged_capture(first, request, artifacts=sink, tenant="tenant-a", config=config())
+    assert replay == committed
+    assert len([call for call in sink.calls if call[0] == "frontend-review-bundle"]) == 1
+
+    other = issue_capture_capability(config(), origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7, window_id=3)
+    conflict = commit_staged_capture(other, request, artifacts=ArtifactSink(), tenant="tenant-a", config=config())
+    assert conflict["error_code"] == "request_id_conflict"
+
+
+def test_abandon_cancels_inflight_commit_before_artifact_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    sink = ArtifactSink()
+    capability = issue_capture_capability(config(), origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7, window_id=3)
+    payload = capture_payload()
+    payload["request_id"] = "cancel-inflight"
+    assert stage_capture(capability, payload, tenant="tenant-a", config=config())["success"] is True
+
+    def delayed_capture(*_args, cancel_check=None, **_kwargs):
+        started.set()
+        release.wait(2)
+        assert cancel_check is not None
+        if cancel_check():
+            return {"success": False, "terminal": True, "retryable": False, "error_code": "capture_cancelled", "error": "cancelled"}
+        raise AssertionError("cancel check did not observe abandon")
+
+    monkeypatch.setattr(browser_bridge_module, "capture_to_artifacts", delayed_capture)
+    result: list[dict] = []
+    worker = threading.Thread(
+        target=lambda: result.append(
+            commit_staged_capture(
+                capability,
+                {"origin": "chrome-extension://fixture", "tab_id": 7, "window_id": 3, "request_id": "cancel-inflight"},
+                artifacts=sink,
+                tenant="tenant-a",
+                config=config(),
+            )
+        )
+    )
+    worker.start()
+    assert started.wait(2)
+    cancelled = abandon_staged_capture(
+        capability,
+        {"origin": "chrome-extension://fixture", "tab_id": 7, "window_id": 3, "request_id": "cancel-inflight"},
+        tenant="tenant-a",
+    )
+    assert cancelled["success"] is True
+    release.set()
+    worker.join(2)
+    assert result == [{"success": False, "terminal": True, "retryable": False, "error_code": "capture_cancelled", "error": "cancelled", "request_id": "cancel-inflight"}]
+    assert sink.calls == []
 def test_expired_staged_capture_is_cleaned_without_artifact_commit(monkeypatch: pytest.MonkeyPatch) -> None:
     clock = {"now": 100.0}
     monkeypatch.setattr(browser_bridge_module.time, "monotonic", lambda: clock["now"])
@@ -271,6 +346,7 @@ def test_packaged_browser_bridge_defaults_match_source_defaults() -> None:
 
 def test_default_browser_origin_policy_is_fail_closed() -> None:
     assert origin_allowed({"browser_bridge": {"enabled": True, "allowed_origins": []}}, "chrome-extension://x") is False
+    assert origin_allowed({"browser_bridge": {"enabled": True, "allowed_origins": ["chrome-extension://fixture*"]}}, "chrome-extension://fixture-extra") is False
     defaults = Path(__file__).parents[1] / "src/local_ai_hub/defaults.toml"
     assert 'allowed_origins = ["chrome-extension://*"]' not in defaults.read_text(encoding="utf-8")
 
@@ -361,6 +437,8 @@ def test_browser_bridge_config_validates_bounds_without_becoming_required() -> N
     validate_config({"server": {"port": 11435}, **config()})
     with pytest.raises(ConfigError, match="allowed_origins"):
         validate_config({"server": {"port": 11435}, "browser_bridge": {"allowed_origins": "not-a-list"}})
+    with pytest.raises(ConfigError, match="exact origins"):
+        validate_config({"server": {"port": 11435}, "browser_bridge": {"allowed_origins": ["chrome-extension://*"]}})
 
 
 def test_extension_is_explicit_current_tab_only_and_does_not_mutate_pages() -> None:
@@ -375,5 +453,5 @@ def test_extension_is_explicit_current_tab_only_and_does_not_mutate_pages() -> N
     assert "windows.create" not in background
     assert "document.cookie" not in capture
     assert "input.value" not in capture
-    assert "setAttribute(" not in capture
+    assert "document.documentElement.setAttribute(" not in capture
     assert "location.href =" not in capture

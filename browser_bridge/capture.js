@@ -70,14 +70,95 @@ function collectRuntimeRefs() {
   return {console_refs, network_refs};
 }
 
+const MAX_DOM_SERIALIZED_CHARS = 2000000;
+const MAX_DOM_NODES = 8192;
+const MAX_DOM_DEPTH = 128;
+const SENSITIVE_ATTRIBUTE = /(^|[-_:])(token|secret|password|passwd|authorization|cookie|csrf|session|api[-_]?key|access[-_]?token|refresh[-_]?token|nonce|signature|state)([-_:]|$)/i;
+const URL_ATTRIBUTE = /^(href|src|action|formaction|poster)$/i;
+
+function attributeEntries(node) {
+  if (!node || !node.attributes) return [];
+  if (typeof node.attributes.length === "number") {
+    return Array.from(node.attributes).map((attribute) => [String(attribute.name), String(attribute.value)]);
+  }
+  return Object.entries(node.attributes).map(([name, value]) => [String(name), String(value)]);
+}
+
+function setSafeAttribute(node, name, value) {
+  if (typeof node.setAttribute === "function") node.setAttribute(name, value);
+  else if (node.attributes) node.attributes[name] = value;
+}
+
+function appendSafeChild(node, child) {
+  if (typeof node.appendChild === "function") node.appendChild(child);
+  else if (typeof node.append === "function") node.append(child);
+}
+
+function safeAttributeValue(source, name, value) {
+  const normalizedName = name.toLowerCase();
+  const tagName = String(source.tagName || "").toLowerCase();
+  const fieldName = String((typeof source.getAttribute === "function" && source.getAttribute("name")) || "");
+  if (normalizedName === "style" || normalizedName === "value" || normalizedName === "integrity" || SENSITIVE_ATTRIBUTE.test(name)) return null;
+  if (tagName === "input" && (normalizedName === "checked" || normalizedName === "selected")) return null;
+  if (tagName === "option" && normalizedName === "selected") return null;
+  if (tagName === "meta" && normalizedName === "content" && SENSITIVE_ATTRIBUTE.test(fieldName)) return null;
+  if (!URL_ATTRIBUTE.test(normalizedName)) return String(value).slice(0, 4096);
+  if (/^(data|javascript|blob):/i.test(String(value).trim())) return null;
+  try {
+    const parsed = new URL(String(value), location.href);
+    return `${parsed.origin}${parsed.pathname}`.slice(0, 4096);
+  } catch (_) {
+    return String(value).split(/[?#]/, 1)[0].slice(0, 4096);
+  }
+}
+
+function sanitizedDomNode(source, state, depth) {
+  if (!source || depth > MAX_DOM_DEPTH || state.nodes >= MAX_DOM_NODES) return null;
+  if (source.nodeType === 3) {
+    const text = String(source.nodeValue || "");
+    const allowed = Math.min(text.length, Math.floor(state.remaining / 6));
+    if (allowed <= 0) return null;
+    state.remaining -= allowed * 6;
+    return document.createTextNode(text.slice(0, allowed));
+  }
+  const tagName = String(source.tagName || "").toLowerCase();
+  if (!tagName || tagName === "script" || tagName === "noscript") return null;
+  const copy = source.cloneNode(false);
+  state.nodes += 1;
+  for (const [name] of attributeEntries(copy)) {
+    if (typeof copy.removeAttribute === "function") copy.removeAttribute(name);
+    else if (copy.attributes) delete copy.attributes[name];
+  }
+  for (const [name, value] of attributeEntries(source)) {
+    const safe = safeAttributeValue(source, name, value);
+    if (safe !== null && state.remaining > (name.length + safe.length + tagName.length + 8) * 6) {
+      setSafeAttribute(copy, name, safe);
+      state.remaining -= (name.length + safe.length + 8) * 6;
+    }
+  }
+  if (!source.childNodes && tagName !== "textarea") {
+    const text = String(source.textContent || "");
+    const allowed = Math.min(text.length, Math.floor(state.remaining / 6));
+    copy.textContent = text.slice(0, allowed);
+    state.remaining -= allowed * 6;
+  } else {
+    copy.textContent = "";
+  }
+  if (tagName !== "textarea") {
+    const children = source.childNodes ? Array.from(source.childNodes) : Array.from(source.children || []);
+    for (const child of children) {
+      const sanitized = sanitizedDomNode(child, state, depth + 1);
+      if (sanitized) appendSafeChild(copy, sanitized);
+      if (state.remaining <= 0) break;
+    }
+  }
+  return copy;
+}
+
 function safeDomHtml() {
-  const clone = document.documentElement.cloneNode(true);
-  clone.querySelectorAll('input[type="password"]').forEach((passwordInput) => {
-    passwordInput.removeAttribute("value");
-    passwordInput["value"] = "";
-    passwordInput["defaultValue"] = "";
-  });
-  return clone.outerHTML;
+  const state = {nodes: 0, remaining: MAX_DOM_SERIALIZED_CHARS};
+  const clone = sanitizedDomNode(document.documentElement, state, 0);
+  return clone ? String(clone.outerHTML || "").slice(0, MAX_DOM_SERIALIZED_CHARS) : "<html></html>";
 }
 
 const SHA256_K = [

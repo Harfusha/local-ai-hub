@@ -79,6 +79,10 @@ const body = html.append(new FakeElement("body"));
 const main = body.append(new FakeElement("main", {"data-authenticated": "true"}, "Signed-in checkout"));
 main.append(new FakeElement("button", {id: "pay", type: "button"}, "Pay"));
 body.append(new FakeElement("input", {type: "password", value: "do-not-export"}));
+body.append(new FakeElement("input", {type: "hidden", name: "csrf-token", value: "hidden-token"}));
+body.append(new FakeElement("textarea", {}, "textarea-secret"));
+body.append(new FakeElement("div", {"data-state": "inline-secret"}, "visible content"));
+body.append(new FakeElement("script", {}, "window.__INITIAL_STATE__={token:'script-secret'}"));
 
 const captureContext = {
   document: {
@@ -106,6 +110,7 @@ assert.equal(page.dom.redaction, "none");
 assert.equal(page.dom.password_values_sanitized, true);
 assert.match(page.dom.html, /data-authenticated="true"/);
 assert.doesNotMatch(page.dom.html, /do-not-export/);
+assert.doesNotMatch(page.dom.html, /hidden-token|textarea-secret|inline-secret|script-secret|INITIAL_STATE/);
 assert.equal(html.querySelectorAll('input[type="password"]')[0].value, "do-not-export");
 assert.match(page.target_origin, /^https:\/\/fixture\.test$/);
 assert.match(page.captured_at, /T/);
