@@ -4,6 +4,7 @@ from .json_utils import dumps as json_dumps
 
 import hashlib
 import json
+import os
 import threading
 import time
 import uuid
@@ -11,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Collection
 
 from .agent_events import AgentStateStore
+from .agent_identity import AgentScope
 from .agent_memory import MemoryStatus
 from .sqlite_support import connect_sqlite, retry_busy
 
@@ -120,6 +122,10 @@ class KnowledgeLink:
 
 def _estimate_tokens(text: str) -> int:
     return max(1, len(text.strip()) // 4)
+
+
+def _normalise_root(value: str) -> str:
+    return os.path.normcase(os.path.abspath(os.path.normpath(str(value).replace("\\", "/")))).replace("\\", "/")
 
 
 class ContextCompiler:
@@ -367,7 +373,26 @@ class ContextCompiler:
 
         # 3. Active memory records (priority: 70)
         if self.memory_store is not None:
-            records = self.memory_store.find(limit=20)
+            records: list[Any] = []
+            for status in (MemoryStatus.ACTIVE, MemoryStatus.CONFIRMED):
+                records.extend(self.memory_store.find(status=status, limit=100000, semantic=False))
+            request_root = _normalise_root(request.root) if request.root else ""
+
+            def in_request_scope(record: Any) -> bool:
+                scope = record.scope.value if hasattr(record.scope, "value") else str(record.scope)
+                if scope == AgentScope.REPOSITORY.value:
+                    provenance = record.provenance if isinstance(record.provenance, dict) else {}
+                    record_root = str(provenance.get("root") or "")
+                    return bool(request_root and record_root and _normalise_root(record_root) == request_root)
+                if scope == AgentScope.TASK.value:
+                    return bool(request.task_id) and (not record.scope_id or record.scope_id == request.task_id)
+                if scope == AgentScope.SESSION.value:
+                    return bool(request.tenant) and (not record.scope_id or record.scope_id == request.tenant)
+                return True
+
+            records = [record for record in records if in_request_scope(record)]
+            records.sort(key=lambda record: record.updated_at, reverse=True)
+            records = records[:20]
             excluded_memory: dict[str, dict[str, Any]] = {
                 status: {"count": 0, "ids": []}
                 for status in (
@@ -426,15 +451,15 @@ class ContextCompiler:
                     ))
             if request.include_diagnostics:
                 stale = excluded_memory[MemoryStatus.STALE.value]
-                conflict = excluded_memory[MemoryStatus.QUARANTINED.value]
+                quarantined = excluded_memory[MemoryStatus.QUARANTINED.value]
                 rejected = excluded_memory[MemoryStatus.REJECTED.value]
                 superseded = excluded_memory[MemoryStatus.SUPERSEDED.value]
                 diagnostic_content = (
                     "[MEMORY DIAGNOSTICS] "
-                    f"stale_count={stale['count']} conflict_count={conflict['count']} "
-                    f"quarantined_count={conflict['count']} rejected_count={rejected['count']} "
+                    f"stale_count={stale['count']} quarantined_count={quarantined['count']} "
+                    f"rejected_count={rejected['count']} "
                     f"superseded_count={superseded['count']} stale_ids={','.join(stale['ids'])} "
-                    f"quarantined_ids={','.join(conflict['ids'])} conflict_ids={','.join(conflict['ids'])} "
+                    f"quarantined_ids={','.join(quarantined['ids'])} "
                     f"rejected_ids={','.join(rejected['ids'])} superseded_ids={','.join(superseded['ids'])}"
                 )
                 candidates.append((

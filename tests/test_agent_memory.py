@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import pytest
 
-from local_ai_hub.agent_events import AgentStateStore
+from local_ai_hub.agent_events import AgentEvent, AgentStateStore
 from local_ai_hub.agent_identity import AgentScope
 from local_ai_hub.agent_memory import (
     ApprovalRequiredError,
@@ -177,6 +177,7 @@ def test_mark_stale_for_revision_guards_revision_paths_root_and_repeats(store: M
 
     assert store.mark_stale_for_revision(str(tmp_path), "rev-1", ["src/guarded.py"]) == 0
     assert store.mark_stale_for_revision(str(tmp_path), "rev-2", ["src/other.py"]) == 0
+    assert store.mark_stale_for_revision(str(tmp_path), "rev-2", ["other/src/guarded.py"]) == 0
     assert store.mark_stale_for_revision(str(tmp_path / "other"), "rev-2", ["src/guarded.py"]) == 0
     assert store.mark_stale_for_revision(str(tmp_path), "rev-2", None) == 0
 
@@ -190,3 +191,51 @@ def test_mark_stale_for_revision_guards_revision_paths_root_and_repeats(store: M
     events = store.state_store.events(stream_id=f"memory:{AgentScope.REPOSITORY.value}:guarded")
     assert [event.kind for event in events].count("memory.staled") == 1
     assert store.get(record.record_id).status is MemoryStatus.STALE
+
+
+def test_mark_stale_batch_rolls_back_and_repeats_idempotently(store: MemoryStore, tmp_path: Path, monkeypatch):
+    records = [
+        store.record(
+            MemoryRecord.create(
+                kind=MemoryKind.FINDING,
+                scope=AgentScope.REPOSITORY,
+                key=f"batch-{index}",
+                value="evidence",
+                status=MemoryStatus.CONFIRMED,
+                provenance={
+                    "root": str(tmp_path),
+                    "repository_revision": "rev-1",
+                    "path_refs": [f"src/batch-{index}.py"],
+                },
+            )
+        )
+        for index in range(2)
+    ]
+    original_create = AgentEvent.create
+    calls = 0
+
+    def fail_on_second_create(cls, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("injected batch failure")
+        return original_create(*args, **kwargs)
+
+    monkeypatch.setattr(AgentEvent, "create", classmethod(fail_on_second_create))
+    with pytest.raises(RuntimeError, match="injected batch failure"):
+        store.mark_stale_for_revision(str(tmp_path), "rev-2", ["src/batch-0.py", "src/batch-1.py"])
+
+    assert [store.get(record.record_id).status for record in records] == [
+        MemoryStatus.CONFIRMED,
+        MemoryStatus.CONFIRMED,
+    ]
+    assert all(
+        not [event for event in store.state_store.events(
+            stream_id=f"memory:{AgentScope.REPOSITORY.value}:batch-{index}"
+        ) if event.kind == "memory.staled"]
+        for index in range(2)
+    )
+
+    count = store.mark_stale_for_revision(str(tmp_path), "rev-2", ["src/batch-0.py", "src/batch-1.py"])
+    assert count == 2
+    assert store.mark_stale_for_revision(str(tmp_path), "rev-2", ["src/batch-0.py", "src/batch-1.py"]) == 0
