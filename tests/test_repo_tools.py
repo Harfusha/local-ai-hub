@@ -189,6 +189,78 @@ def test_git_diff_rejects_path_capture_failure(tmp_path: Path, monkeypatch):
     assert "path capture" in result["error"]
 
 
+def test_git_diff_rejects_path_capture_cap(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / "main.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-qm", "base"], check=True)
+    target.write_text("value = 2\n", encoding="utf-8")
+
+    real_popen = subprocess.Popen
+
+    class CappedPathProcess:
+        stdout = io.BytesIO(("".join(f"path-{index}\0" for index in range(4097))).encode())
+        stderr = io.BytesIO()
+
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_popen(command, *args, **kwargs):
+        if "--name-only" in command:
+            return CappedPathProcess()
+        return real_popen(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    result = RepositoryTools(_cfg(tmp_path)).git_diff(str(repo))
+
+    assert result["success"] is False
+    assert result["paths_complete"] is False
+    assert result["retryable"] is True
+    assert "cap" in result["error"]
+
+
+def test_git_diff_rejects_stream_read_failure(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / "main.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-qm", "base"], check=True)
+    target.write_text("value = 2\n", encoding="utf-8")
+
+    real_popen = subprocess.Popen
+
+    class ExplodingStream:
+        def read(self, _size):
+            raise OSError("stream exploded")
+
+        def close(self):
+            return None
+
+    class StreamFailureProcess:
+        stdout = ExplodingStream()
+        stderr = io.BytesIO()
+
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_popen(command, *args, **kwargs):
+        if "--unified=3" in command:
+            return StreamFailureProcess()
+        return real_popen(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    result = RepositoryTools(_cfg(tmp_path)).git_diff(str(repo))
+
+    assert result["success"] is False
+    assert result["retryable"] is True
+    assert "stream read" in result["error"]
+
+
 def test_search_returns_bounded_retryable_result_after_accelerator_timeouts(tmp_path: Path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()

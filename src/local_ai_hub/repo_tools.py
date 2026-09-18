@@ -1147,8 +1147,9 @@ class RepositoryTools:
             stderr_retained = bytearray()
             digest = hashlib.sha256() if digest_output else None
             total = 0
+            stream_errors: list[str] = []
 
-            def drain(stream: Any, output: bytearray, digest_value: Any = None) -> None:
+            def drain(stream: Any, output: bytearray, digest_value: Any = None, stream_name: str = "stdout") -> None:
                 nonlocal total
                 try:
                     while True:
@@ -1166,14 +1167,17 @@ class RepositoryTools:
                         remaining = max(0, retain_limit - len(output))
                         if remaining:
                             output.extend(chunk[:remaining])
-                except Exception:
+                except Exception as exc:
+                    if len(stream_errors) < 2:
+                        detail = str(exc).replace("\r", " ").replace("\n", " ")[:200]
+                        stream_errors.append(f"{stream_name}: {type(exc).__name__}: {detail}")
                     return
 
             process = None
             try:
                 process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **hidden_run_kwargs())
-                stdout_thread = threading.Thread(target=drain, args=(process.stdout, retained, digest), daemon=True)
-                stderr_thread = threading.Thread(target=drain, args=(process.stderr, stderr_retained), daemon=True)
+                stdout_thread = threading.Thread(target=drain, args=(process.stdout, retained, digest, "stdout"), daemon=True)
+                stderr_thread = threading.Thread(target=drain, args=(process.stderr, stderr_retained, None, "stderr"), daemon=True)
                 stdout_thread.start()
                 stderr_thread.start()
                 try:
@@ -1186,6 +1190,14 @@ class RepositoryTools:
                     return {"returncode": None, "error": "git diff timed out", "retryable": True}
                 stdout_thread.join(timeout=5)
                 stderr_thread.join(timeout=5)
+                if stdout_thread.is_alive() or stderr_thread.is_alive():
+                    stream_errors.append("reader thread did not drain before timeout")
+                if stream_errors:
+                    return {
+                        "returncode": None,
+                        "error": "git diff stream read failed: " + "; ".join(stream_errors[:2]),
+                        "retryable": True,
+                    }
                 return {
                     "returncode": returncode,
                     "stdout": bytes(retained),
@@ -1194,7 +1206,7 @@ class RepositoryTools:
                     "sha256": digest.hexdigest() if digest is not None else "",
                 }
             except Exception as exc:
-                return {"returncode": None, "error": str(exc)}
+                return {"returncode": None, "error": str(exc), "retryable": True}
             finally:
                 if process is not None:
                     for stream in (process.stdout, process.stderr):
@@ -1228,17 +1240,33 @@ class RepositoryTools:
                 changed.append(match.group(2))
         path_names: list[str] = []
         path_pending = bytearray()
+        path_capture_error = ""
 
         def collect_path_chunk(chunk: bytes) -> None:
+            nonlocal path_capture_error
+            if path_capture_error:
+                return
             if len(path_names) >= 4096:
+                path_capture_error = "path count cap reached"
                 return
             data = bytes(path_pending) + chunk
             pieces = data.split(b"\0")
+            tail = pieces.pop()
+            if len(tail) > 4096:
+                path_capture_error = "path byte cap reached"
+                return
             path_pending.clear()
-            path_pending.extend(pieces.pop()[-4096:])
+            path_pending.extend(tail)
             for piece in pieces:
-                if piece and len(path_names) < 4096:
-                    path_names.append(piece[:4096].decode("utf-8", errors="replace"))
+                if not piece:
+                    continue
+                if len(piece) > 4096:
+                    path_capture_error = "path byte cap reached"
+                    return
+                if len(path_names) >= 4096:
+                    path_capture_error = "path count cap reached"
+                    return
+                path_names.append(piece.decode("utf-8", errors="replace"))
 
         path_cmd = ["git", "-C", str(repo), "diff", "--no-ext-diff", "--name-only", "-z"]
         if staged:
@@ -1246,6 +1274,14 @@ class RepositoryTools:
         elif base:
             path_cmd.append(base)
         path_result = bounded_process(path_cmd, 0, on_stdout_chunk=collect_path_chunk)
+        if path_capture_error:
+            return {
+                "success": False,
+                "error": f"git diff path capture failed: {path_capture_error}",
+                "terminal": False,
+                "retryable": True,
+                "paths_complete": False,
+            }
         if path_result.get("returncode") is None or path_result.get("returncode") != 0:
             path_error = bytes(path_result.get("stderr", b"")).decode("utf-8", errors="replace").strip()
             return {
