@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import re
 from pathlib import Path
 
 from local_ai_hub.rag import RAGStore, _simhash, _fragment_hash
@@ -50,6 +52,20 @@ def test_simhash_near_duplicate_vs_distinct():
     dist = (fp1 ^ fp2).bit_count()
     assert dist <= 4, f"expected near-duplicate dist <= 4, got {dist}"
     assert (fp1 ^ fp3).bit_count() > 10
+
+
+def test_simhash_matches_bitwise_reference():
+    for text in ("", "abc", "The quick brown fox " * 20):
+        clean = re.sub(r"\s+", " ", text.lower().strip())
+        shingles = [clean] if 0 < len(clean) < 4 else [clean[i : i + 4] for i in range(len(clean) - 3)]
+        votes = [0] * 64
+        for shingle in shingles:
+            digest = hashlib.md5(shingle.encode("utf-8"), usedforsecurity=False).hexdigest()
+            value = int(digest[:16], 16)
+            for bit in range(64):
+                votes[bit] += 1 if (value >> bit) & 1 else -1
+        expected = sum(1 << bit for bit, vote in enumerate(votes) if vote > 0) if shingles else 0
+        assert _simhash(text) == expected
 
 
 def test_rag_index_skips_near_duplicate_chunks(tmp_path: Path):

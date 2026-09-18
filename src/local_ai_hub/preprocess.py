@@ -616,7 +616,7 @@ class ProjectPreprocessor:
             rel_path = changed.relative_to(root)
         except ValueError:
             return None
-        if any(part in self.repo_tools.ignore_dirs for part in rel_path.parts[:-1]):
+        if any(part.lower() in self.repo_tools.ignore_dirs for part in rel_path.parts[:-1]):
             return None
         name = rel_path.name.lower()
         suffix = rel_path.suffix.lower()
@@ -1384,6 +1384,12 @@ class ProjectPreprocessor:
             ).fetchone()[0] or 0)
             if processing >= self.max_preprocessing_projects:
                 return None
+            # A healthy filesystem watcher queues only changed paths. Avoid waking
+            # completed projects into a full-tree inventory while that signal is
+            # available; periodic inventory remains the fallback when watching is
+            # disabled or unavailable.
+            if self._watcher_active:
+                return None
             # Complete projects needing auto-recheck
             return con.execute(
                 """SELECT * FROM projects
@@ -1671,23 +1677,12 @@ class ProjectPreprocessor:
         # A watcher event is only a candidate change. Mutagen and some editors can
         # rewrite timestamps/metadata while preserving bytes, so verify content for
         # the coalesced batch before invalidating indexes or bumping generation.
-        try:
-            git_hashes = self.repo_tools.git_blob_map(root)
-        except Exception:
-            git_hashes = {}
-
+        # Hash only those paths; building a full Git snapshot defeats incremental work.
         def _content_identity(rel: str) -> tuple[str, bool]:
-            existing = old.get(rel)
-            old_hash = str(existing["content_hash"] or "") if existing else ""
-            # Clean tracked files use Git blob identities in the durable index;
-            # files that were modified in-place use SHA-256 identities. Do not
-            # compare those two identity schemes across a later commit.
-            digest = str(git_hashes.get(rel) or "") if not old_hash or old_hash.startswith("git:") else ""
-            if not digest:
-                try:
-                    digest = str(self.repo_tools._hash_file_only(Path(root) / rel) or "")
-                except Exception:
-                    digest = ""
+            try:
+                digest = str(self.repo_tools._hash_file_only(Path(root) / rel) or "")
+            except Exception:
+                digest = ""
             return digest, bool(digest)
 
         content_hashes: dict[str, str] = {}
@@ -2293,7 +2288,7 @@ class ProjectPreprocessor:
         refs = [
             (path, digest)
             for path, digest in refs
-            if not any(part in self.repo_tools.ignore_dirs for part in Path(path).parts[:-1])
+            if not any(part.lower() in self.repo_tools.ignore_dirs for part in Path(path).parts[:-1])
         ]
         pruned_generations = getattr(self, "_code_index_pruned_generations", set())
         if generation_key not in pruned_generations:

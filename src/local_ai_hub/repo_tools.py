@@ -69,7 +69,7 @@ class RepositoryTools:
             ".gitlab-ci.yml", ".gitlab-ci.yaml", "azure-pipelines.yml", "azure-pipelines.yaml",
             "pytest.ini", "tox.ini", "phpunit.xml", "phpunit.xml.dist", "phpstan.neon", "phpstan.neon.dist",
         ])}
-        self.ignore_dirs = set(rag.get("ignore_dirs", []))
+        self.ignore_dirs = {str(name).lower() for name in rag.get("ignore_dirs", [])}
         self.max_file_bytes = int(rag.get("max_file_bytes", 2_000_000))
         self.max_files = int(search.get("max_files", 8000))
         self.max_hits = int(search.get("max_hits", 80))
@@ -202,7 +202,7 @@ class RepositoryTools:
             except Exception:
                 pass
             for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
-                dirnames[:] = [d for d in dirnames if d not in self.ignore_dirs]
+                dirnames[:] = [d for d in dirnames if d.lower() not in self.ignore_dirs]
                 try:
                     rel_parts = Path(dirpath).relative_to(base).parts
                     if len(rel_parts) >= max_depth:
@@ -244,7 +244,7 @@ class RepositoryTools:
             # `git ls-files -co --exclude-standard` also returns untracked files.
             # External code-intelligence tools create project-local metadata that
             # must never feed back into Local AI Hub's own repository inventory.
-            if any(part in self.ignore_dirs for part in relative.parts[:-1]):
+            if any(part.lower() in self.ignore_dirs for part in relative.parts[:-1]):
                 continue
             if self.extensions and path.suffix.lower() not in self.extensions and path.name.lower() not in self.special_filenames:
                 continue
@@ -935,7 +935,7 @@ class RepositoryTools:
         if raw_files is None:
             raw_files = []
             for dirpath, dirnames, filenames in os.walk(base):
-                dirnames[:] = [d for d in dirnames if d not in self.ignore_dirs]
+                dirnames[:] = [d for d in dirnames if d.lower() not in self.ignore_dirs]
                 for name in filenames:
                     p = Path(dirpath) / name
                     ext = p.suffix.lower()

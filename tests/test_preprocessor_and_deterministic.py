@@ -280,6 +280,98 @@ def test_preprocessor_pause_resume_status_regressions(tmp_path: Path):
         pre.close()
 
 
+def test_active_watcher_suppresses_periodic_full_inventory(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    repo_tools = RepositoryTools(cfg)
+    pre = ProjectPreprocessor(cfg, _Noop(), _Rag(), _Noop(), _Noop(), repo_tools)
+    try:
+        root = str(repo.resolve())
+        now = time.time()
+        with closing(pre._connect()) as con:
+            con.execute(
+                "INSERT INTO projects(root,workspace,status,phase,registered_at,updated_at,next_check_at) VALUES(?,?,?,?,?,?,?)",
+                (root, "workspace", "complete", "complete", now, now, 0),
+            )
+            con.commit()
+
+        pre._watcher_active = True
+        assert pre._next_cpu_project() is None
+
+        pre._watcher_active = False
+        assert pre._next_cpu_project()["root"] == root
+    finally:
+        pre.close()
+
+
+def test_watcher_filters_ignored_directories_case_insensitively(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    ignored = repo / "Node_Modules"
+    ignored.mkdir()
+    (ignored / "generated.py").write_text("generated = True\n", encoding="utf-8")
+    repo_tools = RepositoryTools(cfg)
+    pre = ProjectPreprocessor(cfg, _Noop(), _Rag(), _Noop(), _Noop(), repo_tools)
+    try:
+        assert list(repo_tools.iter_files(str(repo))) == []
+        assert pre._watch_relevant(repo, repo / "Node_Modules" / "generated.py") is None
+        assert pre._watch_relevant(repo, repo / "src" / "module.PY") == "src/module.PY"
+        assert pre._watch_relevant(repo, repo / "src" / "notes.tmp") is None
+    finally:
+        pre.close()
+
+
+def test_incremental_inventory_hashes_only_dirty_paths(tmp_path: Path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    path = repo / "module.py"
+    path.write_text("value = 1\n", encoding="utf-8")
+    repo_tools = RepositoryTools(cfg)
+    pre = ProjectPreprocessor(cfg, _Noop(), _Rag(), _Noop(), _Noop(), repo_tools)
+    try:
+        root = str(repo.resolve())
+        old_hash = "git:old"
+        stat = path.stat()
+        now = time.time()
+        with closing(pre._connect()) as con:
+            con.execute(
+                "INSERT INTO projects(root,workspace,status,phase,registered_at,updated_at,next_check_at) VALUES(?,?,?,?,?,?,?)",
+                (root, "workspace", "complete", "complete", now, now, 0),
+            )
+            con.execute(
+                "INSERT INTO file_refs(root,path,content_hash,size,mtime_ns,needs_hash,rag_hash,generation,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (root, "module.py", old_hash, stat.st_size, stat.st_mtime_ns, 0, old_hash, 0, now),
+            )
+            con.commit()
+        path.write_text("value = 2\n", encoding="utf-8")
+
+        git_snapshot_calls: list[str] = []
+
+        def record_git_snapshot(scan_root):
+            git_snapshot_calls.append(scan_root)
+            return {}
+
+        monkeypatch.setattr(repo_tools, "git_blob_map", record_git_snapshot)
+        assert pre._step_incremental_inventory(
+            {"root": root, "generation": 0, "inventory_hash": "old", "structural_hash": "old"},
+            {"module.py"},
+        ) is True
+        assert git_snapshot_calls == []
+
+        with closing(pre._connect()) as con:
+            row = con.execute(
+                "SELECT content_hash,needs_hash FROM file_refs WHERE root=? AND path=?",
+                (root, "module.py"),
+            ).fetchone()
+        assert row[0] != old_hash
+        assert row[1] == 0
+    finally:
+        pre.close()
+
+
 def test_successful_preprocess_step_clears_stale_error_state(tmp_path: Path):
     cfg = _cfg(tmp_path)
     repo = tmp_path / "repo"

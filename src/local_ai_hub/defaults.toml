@@ -507,6 +507,8 @@ ignore_dirs = [
   ".git", ".svn", ".hg", ".idea", ".vscode", ".venv", "venv", "node_modules",
   "vendor", "dist", "build", "bin", "obj", "coverage", ".next", ".cache",
   ".serena", ".codegraphcontext", ".local-ai-hub", "tool-envs", "site-packages", "__pycache__",
+  ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox", ".eggs", "htmlcov",
+  "target", "out", ".terraform", ".turbo", ".parcel-cache",
   "Library", "Temp", "Logs", "UserSettings"
 ]
 
