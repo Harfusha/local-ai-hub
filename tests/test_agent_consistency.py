@@ -446,6 +446,29 @@ def test_claim_rejects_stale_foreign_and_missing_evidence_ids(repository: Path):
     assert guard.check_claims(evidence, [{"claim": "current", "evidence_ids": ["current-1"]}], request=request) == ()
 
 
+def test_metadata_only_current_claim_evidence_is_not_authoritative(repository: Path):
+    guard = _guard(repository)
+    revision = guard.repository_tools.git_snapshot(str(repository)).revision
+    evidence = [{"evidence_id": "forged-current", "status": "current", "repository_revision": revision}]
+
+    first = guard.check_claims(evidence, [{"claim": "forged", "evidence_ids": ["forged-current"]}], request=_request(repository))
+    repeat = guard.check_claims(evidence, [{"claim": "forged", "evidence_ids": ["forged-current"]}], request=_request(repository))
+
+    assert first and first[0].code == "unknown_claim"
+    assert first[0].evidence_ids == repeat[0].evidence_ids
+
+
+def test_claims_without_request_accept_deterministic_path_hash_evidence(repository: Path):
+    guard = _guard(repository)
+    evidence = [{
+        "evidence_id": "deterministic-no-request",
+        "path": "backend/users.py",
+        "file_sha256": hashlib.sha256((repository / "backend" / "users.py").read_bytes()).hexdigest(),
+    }]
+
+    assert guard.check_claims(evidence, [{"claim": "UserService exists", "evidence_ids": ["deterministic-no-request"]}]) == ()
+
+
 def test_soft_warning_has_required_fields(repository: Path):
     warning = GuardWarning(
         severity="warning",
