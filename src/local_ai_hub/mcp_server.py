@@ -26,6 +26,7 @@ from local_ai_hub.ollama_subagents import OllamaSubagentCatalog
 from local_ai_hub.process_utils import canonical_root, is_rooted_path
 from local_ai_hub.token_accounting import account_projection, attach_accounting, finalize_tool_accounting, json_tokens, pop_accounting
 from local_ai_hub.adoption_metrics import AdoptionMetricsStore
+from local_ai_hub.routing import semantic_handoff_hint
 from local_ai_hub.state_paths import configured_state_dir
 
 try:
@@ -199,21 +200,54 @@ def _desc_status() -> str:
     )
 
 
+def _semantic_handoff_contract(enabled: bool, status_enabled: bool = True) -> str:
+    if not enabled:
+        if not status_enabled:
+            return (
+                " Semantic handoff is unavailable because local inference is disabled."
+                " If a permitted boundary excludes local inference, state the permitted bypass explicitly"
+                " without using unavailable status tooling."
+            )
+        return (
+            " Semantic handoff is unavailable because local inference is disabled."
+            " If a permitted boundary excludes local inference, report the bypass through"
+            " `local_ai_status(adoption_signal=\"bypassed\", target_tool=\"local_ai_task\", target_action=\"reason\")`."
+        )
+    bypass = (
+        " If local inference is unavailable or intentionally excluded by a permitted boundary, report the bypass through"
+        " `local_ai_status(adoption_signal=\"bypassed\", target_tool=\"local_ai_task\", target_action=\"reason\")`."
+        if status_enabled
+        else
+        " If local inference is unavailable or intentionally excluded by a permitted boundary, report the permitted bypass explicitly"
+        " without using unavailable status tooling."
+    )
+    return (
+        " Semantic handoff is mandatory: after deterministic/indexed evidence, planning, interpretation,"
+        " synthesis, generation, review, compression, and second-opinion work must call `local_ai_task`"
+        " before cloud reasoning. The cloud agent integrates the bounded local result and does not redo"
+        " semantic work."
+        + bypass
+        + " Preserve exceptions for architecture, security, mutations, open-ended coding,"
+        " exact evidence, and verification."
+    )
+
+
 def _desc_task() -> str:
+    local_enabled = FEATURES.tasks and FEATURES.has_any_model()
+    if not local_enabled:
+        return (
+            "Local inference is disabled on this installation for this tool."
+            " Returns unsupported=true for local-model actions."
+            " Use deterministic/indexed evidence only."
+        )
     if LEAN_SCHEMAS:
         return (
             "Bounded local-model worker for semantic generation, exploration, reasoning, review, independent second opinions, and semantic compression. "
             "Use deterministic/indexed tools for exact facts, symbols, diff and tests; they are not substitutes for these semantic tasks. "
+            f"{_semantic_handoff_contract(local_enabled, FEATURES.status)}"
             "Command failure diagnosis remains disabled by default; never pass raw logs or open-ended coding. "
             "Local AI Hub does not route or manage native Codex agents. "
             f"{_actions_note(FEATURES.supported_task_actions())}"
-        )
-    if not FEATURES.has_any_model():
-        return (
-            "Local-model worker — disabled on this installation (no local model backend configured)."
-            " Returns unsupported=true for all actions."
-            " Use when: never (no local inference available). Skip when: always use indexed evidence only."
-            " Local AI Hub does not route or manage external agents."
         )
     profile_note = ""
     if FEATURES.subagents and FEATURES.subagent_profiles:
@@ -228,6 +262,7 @@ def _desc_task() -> str:
         f" Explicit model overrides must match a configured model tag."
         f"{profile_note}"
         " Use deterministic/indexed tools for exact facts, symbols, diff and tests; use this worker for semantic generation, exploration, reasoning, review, independent second opinions and semantic compression after any needed evidence."
+        f"{_semantic_handoff_contract(local_enabled, FEATURES.status)}"
         " Command failure diagnosis is disabled by default; enable `features.local_diagnostic_dispatch=true` only for one local diagnostic after low-confidence deterministic command parsing with an artifact reference and narrow preview, never raw logs."
         " Never automatically dispatch local inference for architecture, security, mutations, or open-ended coding."
         " Use it for bounded generation, exploration, reasoning, boilerplate, review, independent second opinions and semantic compression after any needed indexed evidence."
@@ -246,8 +281,22 @@ def _desc_task() -> str:
 
 
 def _desc_repo() -> str:
+    local_enabled = FEATURES.tasks and FEATURES.has_any_model()
+    if not local_enabled:
+        return (
+            "Primary repository worker for repository navigation, symbols, and impact."
+            " Local inference is disabled on this installation."
+            " Use deterministic/indexed evidence only for exact facts, symbols, diff, tests, and verification."
+            " Native fallback requires terminal=true and retryable=false."
+        )
     if LEAN_SCHEMAS:
-        return "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
+        local_semantic = ""
+        if local_enabled:
+            local_semantic = (
+                " use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression."
+                + _semantic_handoff_contract(local_enabled, FEATURES.status)
+            )
+        return "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Use deterministic/indexed actions for exact facts, symbols, diff and tests;" + local_semantic + " `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
     semantic_hint = ""
     if FEATURES.has_semantic():
         semantic_hint = f" -> {FEATURES.semantic_hint()} for relationships"
@@ -261,9 +310,10 @@ def _desc_repo() -> str:
         f" Use deterministic, code_index/search,{' ' + FEATURES.semantic_hint() + ',' if FEATURES.has_semantic() else ''}"
         " context and solve for bounded evidence and implementation support."
         " For implementation, diagnosis, refactoring or complex review, call `solve` after evidence and before native edits."
-        f"{' When generating, use `' + FEATURES.fast_model + '` for quick tasks, `' + FEATURES.smart_model + '` for complex work, and `' + FEATURES.reasoning_model + '` for hardest reasoning.' if FEATURES.has_any_model() else ''}"
+        f"{' When generating, use `' + FEATURES.fast_model + '` for quick tasks, `' + FEATURES.smart_model + '` for complex work, and `' + FEATURES.reasoning_model + '` for hardest reasoning.' if local_enabled else ''}"
         " `review_diff` and `security_audit` are targeted local checks."
-         f"{'  After any needed indexed evidence, use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong.' if FEATURES.has_any_model() else ''}"
+        f"{'  After any needed indexed evidence, use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong.' if local_enabled else ''}"
+        f"{_semantic_handoff_contract(local_enabled, FEATURES.status)}"
         " Codex separately decides whether to use native Codex subagents;"
         " Local AI Hub does not route or manage those agents."
         " On first use of a stable absolute root call action=preprocess exactly once and continue immediately;"
@@ -666,6 +716,7 @@ def _instrumented_tool():
         @functools.wraps(fn)
         def wrapped(*args: Any, **kwargs: Any) -> Any:
             started = time.monotonic()
+            handoff_added = False
             try:
                 bound = signature.bind_partial(*args, **kwargs)
                 # Do not apply Python defaults: omitted optional arguments are not
@@ -691,7 +742,25 @@ def _instrumented_tool():
                     _CURRENT_EXTRA_FIELDS.reset(token)
                 _CURRENT_RESPONSE_OPTIONS.reset(response_token)
             clean, measured = pop_accounting(result)
-            _record_adoption(fn.__name__, arguments, clean, (time.monotonic() - started) * 1000)
+            if isinstance(clean, dict) and clean.get("success") is True:
+                hint = semantic_handoff_hint(
+                    fn.__name__,
+                    str(arguments.get("action") or "").lower(),
+                    FEATURES.tasks and FEATURES.has_any_model(),
+                    FEATURES.status,
+                )
+                if hint is not None:
+                    routing = clean.get("routing")
+                    if routing is None:
+                        clean["routing"] = {"semantic_handoff": hint}
+                        handoff_added = True
+                    elif isinstance(routing, dict) and "semantic_handoff" not in routing:
+                        routing["semantic_handoff"] = hint
+                        handoff_added = True
+                    elif not isinstance(routing, dict):
+                        clean["routing"] = {"value": routing, "semantic_handoff": hint}
+                        handoff_added = True
+            _record_adoption(fn.__name__, arguments, clean, (time.monotonic() - started) * 1000, recommended=handoff_added)
             try:
                 event = finalize_tool_accounting(
                     tool_name=fn.__name__, arguments=arguments, response=clean, measured=measured,
@@ -751,7 +820,7 @@ def _adoption_target(arguments: dict[str, Any]) -> tuple[str, str] | None:
     return tool, action
 
 
-def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration_ms: float, *, failed: bool = False) -> None:
+def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration_ms: float, *, failed: bool = False, recommended: bool = False) -> None:
     """Best-effort aggregate telemetry; never retain request/response values."""
     try:
         action = str(arguments.get("action") or "default").lower()
@@ -764,6 +833,8 @@ def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration
             outcome, reason = "bypassed", "explicit_client_signal"
         elif failed:
             outcome, reason = "failed", "other"
+        elif payload.get("fallback_used") is True:
+            outcome, reason = "fallback_used", _adoption_reason(payload.get("error"))
         elif payload.get("success") is True:
             outcome, reason = "used", None
         elif payload.get("blocked") is True or payload.get("unsupported") is True:
@@ -775,6 +846,8 @@ def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration
         # coarse output-size bucket and never reads any value.
         output_size = min(4096, len(payload) * 64)
         ADOPTION_METRICS.record(tool, action, intent, outcome, fallback_reason=reason, duration_ms=duration_ms, output_size=output_size)
+        if recommended:
+            ADOPTION_METRICS.record(tool, action, intent, "recommended", duration_ms=duration_ms, output_size=output_size)
     except Exception:
         pass
 
