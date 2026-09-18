@@ -13,15 +13,18 @@ import json
 import secrets
 import threading
 import time
+from datetime import datetime, timezone
 from collections.abc import Mapping
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
 
 CAPTURE_ERROR_STATUSES = {
     "unsupported": 501,
     "permission_denied": 403,
     "closed_tab": 410,
+    "tab_mismatch": 409,
+    "window_mismatch": 409,
     "timeout": 408,
 }
 _SENSITIVE_KEYS = {
@@ -89,7 +92,7 @@ def _enabled(config: Any) -> bool:
 def _origin_allowed(origin: str, config: Any) -> bool:
     allowed = _allowed_origins(config)
     if not allowed:
-        return origin.startswith("http://127.0.0.1:") or origin.startswith("http://localhost:")
+        return False
     return any(origin == item or (item.endswith("*") and origin.startswith(item[:-1])) for item in allowed)
 
 
@@ -116,19 +119,26 @@ def issue_capture_capability(
     origin: str,
     tenant: str = "generic",
     tab_id: int | str | None = None,
+    window_id: int | str | None = None,
+    api_token_authorized: bool = False,
 ) -> str:
     """Issue a short-lived capability bound to one extension origin and tab."""
     if not _enabled(config):
         raise CaptureProtocolError("unsupported", "current-tab browser bridge is disabled", status=501)
     normalized_origin = str(origin or "").strip()
-    if not normalized_origin or not _origin_allowed(normalized_origin, config):
+    if not normalized_origin or (not _origin_allowed(normalized_origin, config) and not api_token_authorized):
         raise CaptureProtocolError("permission_denied", "browser bridge origin is not permitted", status=403)
+    if window_id is not None and str(window_id).strip() == "":
+        raise CaptureProtocolError("invalid_window_id", "window_id must be non-empty when provided", status=400)
+    if tab_id is None or str(tab_id).strip() == "":
+        raise CaptureProtocolError("missing_tab_id", "current-tab capability requires an explicit tab_id", status=400)
     token = secrets.token_urlsafe(32)
     now = time.monotonic()
     record = {
         "tenant": str(tenant or "generic"),
         "origin": normalized_origin,
-        "tab_id": str(tab_id) if tab_id is not None else None,
+        "tab_id": str(tab_id),
+        "window_id": str(window_id) if window_id is not None else None,
         "expires_at": now + max(1.0, float(_setting(config, "capability_ttl_seconds"))),
         "created_at": now,
         "used": False,
@@ -167,10 +177,16 @@ def validate_capture_request(
         if requested_tenant != record["tenant"]:
             return _result_error("capability_tenant_mismatch", "capture tenant does not match capability", status=403)
         requested_tab = request.get("tab_id")
-        if record["tab_id"] is not None and str(requested_tab) != record["tab_id"]:
+        if requested_tab is None or str(requested_tab).strip() == "":
+            return _result_error("missing_tab_id", "capture requires the explicitly requested tab_id")
+        if str(requested_tab) != record["tab_id"]:
             return _result_error("tab_mismatch", "capture tab does not match the explicitly requested tab", status=409)
+        if record.get("window_id") is not None and str(request.get("window_id", "")).strip() == "":
+            return _result_error("missing_window_id", "capture requires the explicitly requested window_id")
+        if record.get("window_id") is not None and str(request.get("window_id")) != record["window_id"]:
+            return _result_error("window_mismatch", "capture window does not match the explicitly requested window", status=409)
         record["used"] = True
-    return {"success": True, "tenant": record["tenant"], "tab_id": record["tab_id"] or requested_tab}
+    return {"success": True, "tenant": record["tenant"], "tab_id": record["tab_id"], "window_id": record.get("window_id")}
 
 
 def _json_size(value: Any) -> int:
@@ -239,6 +255,10 @@ def validate_capture_payload(payload: Mapping[str, Any], *, config: Any | None =
         return _result_error("credential_bearing_capture_fields", "credential-bearing capture fields are not allowed")
     if "tab_id" not in payload:
         return _result_error("missing_tab_id", "current-tab capture requires the explicitly selected tab_id")
+    if payload.get("tab_id") is None or str(payload.get("tab_id")).strip() == "":
+        return _result_error("missing_tab_id", "current-tab capture requires the explicitly selected tab_id")
+    if "captured_at" in payload and not _safe_capture_timestamp(payload.get("captured_at")):
+        return _result_error("invalid_capture_timestamp", "capture timestamp is invalid or unbounded")
     try:
         _screenshot_bytes(payload.get("screenshot"), max_bytes=int(_setting(config or {}, "max_screenshot_bytes")))
     except CaptureProtocolError as exc:
@@ -253,6 +273,11 @@ def validate_capture_payload(payload: Mapping[str, Any], *, config: Any | None =
         return _result_error("invalid_dom", "live DOM html must be a string")
     if len(html) > int(_setting(config or {}, "max_dom_chars")):
         return _result_error("dom_too_large", "live DOM exceeds the bounded character limit", status=413)
+    derived_origin = _safe_origin(payload.get("url"))
+    if not derived_origin:
+        return _result_error("invalid_target_origin", "current-tab capture requires a valid target origin")
+    if "target_origin" in payload and _safe_origin(payload.get("target_origin")) != derived_origin:
+        return _result_error("target_origin_mismatch", "target-origin provenance does not match the captured page", status=409)
     elements = dom.get("elements")
     if not isinstance(elements, list):
         return _result_error("missing_dom_elements", "live DOM requires a stable elements list")
@@ -287,6 +312,8 @@ def capture_failure(error_code: str) -> dict[str, Any]:
         "unsupported": "current-tab browser capture is unsupported",
         "permission_denied": "browser denied capture permission",
         "closed_tab": "the explicitly requested tab is closed or unavailable",
+        "tab_mismatch": "the active tab changed during capture; no fallback tab was captured",
+        "window_mismatch": "the active browser window changed during capture",
         "timeout": "current-tab capture timed out",
     }
     return _result_error(code, messages.get(code, "current-tab capture failed"), status=status, fallback=False)
@@ -294,7 +321,39 @@ def capture_failure(error_code: str) -> dict[str, Any]:
 
 def _safe_url(value: Any) -> str:
     parsed = urlsplit(str(value or ""))
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))[:4096]
+    origin = _safe_origin(value)
+    if not origin:
+        return ""
+    return f"{origin}{parsed.path}"[:4096]
+
+
+def _safe_origin(value: Any) -> str:
+    parsed = urlsplit(str(value or ""))
+    if parsed.username or parsed.password or not parsed.scheme or not parsed.netloc:
+        return ""
+    try:
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return ""
+    if not host:
+        return ""
+    host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    origin = f"{parsed.scheme.lower()}://{host.lower()}" + (f":{port}" if port is not None else "")
+    return origin if len(origin) <= 256 else ""
+
+
+def _safe_capture_timestamp(value: Any) -> str:
+    raw = str(value or "")
+    if not raw or len(raw) > 64:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if parsed.tzinfo is None:
+        return ""
+    return parsed.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _safe_runtime(runtime: Mapping[str, Any]) -> dict[str, Any]:
@@ -334,6 +393,11 @@ def capture_to_artifacts(payload: Mapping[str, Any], *, artifacts: Any, tenant: 
             "source": "current-tab",
             "tab_id": str(value["tab_id"]),
             "page": {"url": _safe_url(value.get("url")), "title": str(value.get("title", ""))[:512]},
+            "provenance": {
+                "captured_at": _safe_capture_timestamp(value.get("captured_at"))
+                or datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                "target_origin": _safe_origin(value.get("target_origin") or value.get("url")),
+            },
             "screenshot": {"artifact_id": screenshot_id, "mime_type": mime},
             "dom": {"artifact_id": dom_id, "format": "live-dom", "redaction": "none"},
             "accessibility": {"artifact_id": accessibility_id, "format": "accessibility-snapshot"},

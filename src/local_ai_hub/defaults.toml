@@ -23,7 +23,9 @@ api_token = "" # required (>=16 chars) when allow_remote=true and bind is non-lo
 [browser_bridge]
 # Capture is explicit: only the extension action click can request the current tab.
 enabled = true
-allowed_origins = ["chrome-extension://*"]
+# Empty by default: operators must configure the exact extension origin (or
+# protect the route with the hub API token). Never use a wildcard origin.
+allowed_origins = []
 capability_ttl_seconds = 60
 max_payload_bytes = 12582912
 max_screenshot_bytes = 8388608

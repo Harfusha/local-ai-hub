@@ -328,6 +328,17 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type, X-LocalAI-Tenant")
             self.send_header("Vary", "Origin")
+        elif request_origin and bridge_path and APP is not None:
+            expected_token = str(APP.config.get("security", {}).get("api_token", ""))
+            supplied_token = self.headers.get("X-LocalAI-Token", "")
+            auth_header = self.headers.get("Authorization", "")
+            if auth_header.lower().startswith("bearer "):
+                supplied_token = auth_header[7:].strip()
+            if expected_token and hmac.compare_digest(supplied_token, expected_token):
+                self.send_header("Access-Control-Allow-Origin", request_origin)
+                self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type, X-LocalAI-Tenant, X-LocalAI-Token, Authorization")
+                self.send_header("Vary", "Origin")
         if html:
             script_source = f"'nonce-{nonce}'" if nonce else "'none'"
             self.send_header("Content-Security-Policy", f"default-src 'none'; connect-src 'self'; img-src 'self' data:; style-src 'unsafe-inline'; script-src {script_source}; script-src-attr 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
@@ -661,9 +672,16 @@ class Handler(BaseHTTPRequestHandler):
 
             if not APP.config.get("security", {}).get("allow_remote", False):
                 bridge_origin = False
+                bridge_token = False
                 if str(getattr(self, "path", "")).startswith("/api/browser/") or str(getattr(self, "path", "")) == "/api/vision/review":
                     bridge_origin = origin_allowed(APP.config, origin_header)
-                if origin_host not in allowed_origins and not bridge_origin:
+                    expected_token = str(APP.config.get("security", {}).get("api_token", ""))
+                    supplied_token = self.headers.get("X-LocalAI-Token", "")
+                    auth_header = self.headers.get("Authorization", "")
+                    if auth_header.lower().startswith("bearer "):
+                        supplied_token = auth_header[7:].strip()
+                    bridge_token = bool(expected_token and hmac.compare_digest(supplied_token, expected_token))
+                if origin_host not in allowed_origins and not bridge_origin and not bridge_token:
                     self._send(403, {"success": False, "error": "forbidden: cross-origin requests are not allowed"})
                     return False
         return True
@@ -860,8 +878,12 @@ class Handler(BaseHTTPRequestHandler):
                 required_text("path", maximum=4096)
         elif path == "/api/browser/capability":
             required_text("origin", maximum=512)
-            if "tab_id" in payload and not isinstance(payload["tab_id"], (int, str)):
+            if "tab_id" not in payload or payload["tab_id"] in (None, ""):
+                raise RequestBodyError("tab_id is required")
+            if not isinstance(payload["tab_id"], (int, str)):
                 raise RequestBodyError("tab_id must be an integer or string")
+            if "window_id" in payload and not isinstance(payload["window_id"], (int, str)):
+                raise RequestBodyError("window_id must be an integer or string")
         elif path == "/api/browser/capture":
             required_text("capability", maximum=256)
             if "tab_id" not in payload:
@@ -1728,15 +1750,22 @@ class Handler(BaseHTTPRequestHandler):
                         origin=origin,
                         tenant=tenant,
                         tab_id=payload.get("tab_id"),
+                        window_id=payload.get("window_id"),
+                        api_token_authorized=bool(APP.config.get("security", {}).get("api_token")) and self._authorized(),
                     )
                 except Exception as exc:
                     code = getattr(exc, "error_code", "permission_denied")
                     status = int(getattr(exc, "status", 403))
                     self._send(status, {"success": False, "error": str(exc), "error_code": code, "terminal": True, "retryable": False}); return
                 ttl = int(APP.config.get("browser_bridge", {}).get("capability_ttl_seconds", 60))
-                self._send(200, {"success": True, "capability": capability, "one_use": True, "expires_in_seconds": ttl, "tab_id": payload.get("tab_id")}); return
+                self._send(200, {"success": True, "capability": capability, "one_use": True, "expires_in_seconds": ttl, "tab_id": payload.get("tab_id"), "window_id": payload.get("window_id")}); return
             if path == "/api/browser/capture":
-                request = {"origin": self.headers.get("Origin", payload.get("origin", "")), "tenant": tenant, "tab_id": payload.get("tab_id")}
+                request = {
+                    "origin": self.headers.get("Origin", payload.get("origin", "")),
+                    "tenant": tenant,
+                    "tab_id": payload.get("tab_id"),
+                    "window_id": payload.get("window_id"),
+                }
                 checked = validate_capture_request(str(payload.get("capability", "")), request, tenant=tenant)
                 if not checked.get("success"):
                     status = int(checked.get("status", 403))
