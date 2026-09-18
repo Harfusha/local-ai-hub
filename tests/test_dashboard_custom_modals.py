@@ -3178,3 +3178,78 @@ def test_trace_sanitizer_keeps_accounting_metrics_and_model_thinking_expandable(
     assert "trace-thinking" in DASHBOARD_HTML
     assert "Thinking / reasoning" in DASHBOARD_HTML
     assert "model.thinking" in DASHBOARD_HTML
+
+
+def test_trace_repo_and_rag_presentations_are_result_first_and_bounded() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixtures = {
+        "repo": {
+            "presentation": {
+                "kind": "repo_intelligence",
+                "repoOperation": {
+                    "repository": "local-ai-hub",
+                    "root": "C:/workspace/local-ai-hub",
+                    "operation": "search symbols",
+                    "query": "tracePresentationShell",
+                    "files": ["dashboard.py", "tests.py"],
+                    "symbols": ["renderRepoIntelligencePresentation"],
+                    "result": {"summary": "2 matches", "matches": 2},
+                    "graph": {"nodes": ["node-a"], "edges": ["edge-a"], "api_key": "REPO_SECRET_MARKER"},
+                    "evidence": {"source": "indexed", "snippet": "safe repository evidence"},
+                },
+            }
+        },
+        "rag": {
+            "presentation": {
+                "kind": "rag_search",
+                "retrieval": {
+                    "query": "renderer contract",
+                    "results": [
+                        {"title": "First result", "source": "docs", "path": "docs/first.md", "score": 0.95, "snippet": "first snippet"},
+                        {"title": "Second result", "source": "index", "path": "src/second.py", "score": 0.4, "snippet": "second snippet"},
+                    ],
+                    "answer": "Use result-first cards.",
+                },
+            }
+        },
+        "empty": {"presentation": {"kind": "rag_search", "retrieval": {"query": "missing", "results": [], "truncated": True}}},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"const fixtures={json.dumps(fixtures)};"
+        + "console.log(JSON.stringify({repo:renderRepoIntelligencePresentation(fixtures.repo),rag:renderRagSearchPresentation(fixtures.rag),empty:renderRagSearchPresentation(fixtures.empty)}));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    rendered = json.loads(result.stdout)
+
+    repo = rendered["repo"]
+    repo_primary = repo.split('<details class="trace-secondary-details', 1)[0]
+    for marker in ["local-ai-hub", "C:/workspace/local-ai-hub", "search symbols", "tracePresentationShell", "dashboard.py", "renderRepoIntelligencePresentation", "2 matches"]:
+        assert marker in repo_primary
+    assert "safe repository evidence" not in repo_primary
+    assert "node-a" not in repo_primary
+    assert "Repository evidence" in repo
+    assert "Full repository payload" in repo
+    assert "REPO_SECRET_MARKER" not in repo
+    assert "[object Object]" not in repo
+
+    rag = rendered["rag"]
+    rag_primary = rag.split('<details class="trace-secondary-details', 1)[0]
+    for marker in ["renderer contract", "2 results", "result count", "First result", "docs", "first snippet"]:
+        assert marker in rag_primary
+    assert "Second result" in rag
+    assert rag.index("First result") < rag.index("Second result")
+    assert "0.95" not in rag_primary
+    assert "docs/first.md" not in rag_primary
+    assert "More result details" in rag
+    assert "0.95" in rag and "docs/first.md" in rag and "Full result payload" in rag
+    assert "[object Object]" not in rag
+
+    empty = rendered["empty"]
+    assert "No results found" in empty
+    assert "truncated results" in empty
+    assert "missing" in empty
