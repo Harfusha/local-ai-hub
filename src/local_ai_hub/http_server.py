@@ -158,6 +158,37 @@ def _memory_query_limit(value: Any) -> int:
     return max(1, min(parsed, MAX_MEMORY_QUERY_LIMIT))
 
 
+def _completion_revision_or_stop(root: Any, repo_tools: Any) -> tuple[str, dict[str, Any] | None]:
+    root_value = str(root or "").strip()
+    snapshotter = getattr(repo_tools, "git_snapshot", None)
+    if not root_value or not callable(snapshotter):
+        return "", {
+            "success": False,
+            "terminal": True,
+            "retryable": False,
+            "stop_code": "completion_repository_revision_unavailable",
+            "error": "completion requires a repository snapshot with a non-empty revision",
+        }
+    try:
+        snapshot = snapshotter(root_value)
+        revision = str(getattr(snapshot, "revision", "") or "").strip()
+        if getattr(snapshot, "degraded", False) or getattr(snapshot, "error", None) or not revision:
+            raise ValueError("repository snapshot revision unavailable")
+    except Exception:
+        return "", {
+            "success": False,
+            "terminal": True,
+            "retryable": False,
+            "stop_code": "completion_repository_revision_unavailable",
+            "error": "completion requires a repository snapshot with a non-empty revision",
+        }
+    return revision, None
+
+
+def _memory_lookup_has_identity(*values: Any) -> bool:
+    return any(str(value or "").strip() for value in values)
+
+
 def _telemetry_http_outcome(status: int, data: Any, path: str = "") -> tuple[bool, str, bool]:
     """Return reliability success, safe outcome category, and error-record flag."""
     payload = data if isinstance(data, dict) else {}
@@ -1337,6 +1368,11 @@ class Handler(BaseHTTPRequestHandler):
                 clone_id_val = (query.get("clone_id") or [None])[0]
                 worktree_id_val = (query.get("worktree_id") or [None])[0]
                 branch_val = (query.get("branch") or [None])[0]
+                if not _memory_lookup_has_identity(
+                    scope_id_val, root_val, repository_id_val, tenant_val, task_id_val,
+                    session_id_val, clone_id_val, worktree_id_val, branch_val,
+                ):
+                    self._send(400, {"success": False, "error": "memory lookup requires explicit root or identity", "terminal": True, "retryable": False}); return
                 legacy_unscoped = scope_val is None and not any(
                     str(value or "").strip()
                     for value in (
@@ -2196,6 +2232,11 @@ class Handler(BaseHTTPRequestHandler):
                     clone_id_val = payload.get("clone_id")
                     worktree_id_val = payload.get("worktree_id")
                     branch_val = payload.get("branch")
+                    if not _memory_lookup_has_identity(
+                        scope_id_val, root_val, repository_id_val, tenant_val, task_id_val,
+                        session_id_val, clone_id_val, worktree_id_val, branch_val,
+                    ):
+                        self._send(400, {"success": False, "error": "memory lookup requires explicit root or identity", "terminal": True, "retryable": False}); return
                     legacy_unscoped = scope_val is None and not any(
                         str(value or "").strip()
                         for value in (
@@ -2425,15 +2466,25 @@ class Handler(BaseHTTPRequestHandler):
                     task_id = str(payload.get("task_id", "")).strip()
                     current_revision = ""
                     root = str(payload.get("root", "")).strip()
+                    requested_revision = str(payload.get("repository_revision", "")).strip()
                     repo_tools = getattr(APP, "repo_tools", None)
-                    if root and repo_tools is not None and callable(getattr(repo_tools, "git_snapshot", None)):
-                        try:
-                            snapshot = repo_tools.git_snapshot(root)
-                            if not getattr(snapshot, "degraded", False) and not getattr(snapshot, "error", None):
-                                current_revision = str(getattr(snapshot, "revision", "") or "").strip()
-                        except Exception:
-                            current_revision = ""
+                    if root or requested_revision:
+                        current_revision, revision_stop = _completion_revision_or_stop(root, repo_tools)
+                        if revision_stop:
+                            self._send(409, revision_stop); return
                     res = APP.agent_verification.completion(task_id, current_revision=current_revision)
+                    if not current_revision and any(
+                        str(getattr(receipt, "repository_revision", "") or "").strip()
+                        for receipt in res.receipts
+                    ):
+                        _, revision_stop = _completion_revision_or_stop(root, repo_tools)
+                        self._send(409, revision_stop or {
+                            "success": False,
+                            "terminal": True,
+                            "retryable": False,
+                            "stop_code": "completion_repository_revision_unavailable",
+                            "error": "completion requires a repository snapshot with a non-empty revision",
+                        }); return
                     self._send(200, {"success": True, "completion": res.to_dict()}); return
                 self._send(400, {"success": False, "error": f"unknown verification action '{action}'", "terminal": True, "retryable": False}); return
             if path == "/api/agent-state/context":

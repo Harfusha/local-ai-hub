@@ -1095,6 +1095,8 @@ class AgentConsistencyGuard:
                 diff = self.repository_tools.git_diff(request.root, base=request.base, staged=request.staged, max_tokens=request.token_budget)
             except Exception as exc:
                 diff = {"success": False, "paths_complete": False, "error": _text(exc, 240)}
+        if not self._valid_diff_mapping(diff):
+            return ()
         diff_data: Mapping[str, Any] = diff if isinstance(diff, Mapping) else {}
         diff_unavailable = (
             diff_data.get("success") is False
@@ -1218,6 +1220,42 @@ class AgentConsistencyGuard:
             if "mismatch" in warning.code:
                 self.record_metric("contract_mismatches")
         return normalized_warnings
+
+    @staticmethod
+    def _valid_diff_mapping(diff: Any) -> bool:
+        if not isinstance(diff, Mapping):
+            return False
+        if diff.get("success") is not True or diff.get("paths_complete") is not True:
+            return False
+        if not isinstance(diff.get("diff"), str):
+            return False
+        path_key = "changed_paths" if "changed_paths" in diff else "changed_files" if "changed_files" in diff else ""
+        if not path_key:
+            return False
+        for key in ("changed_paths", "changed_files"):
+            if key not in diff:
+                continue
+            paths = diff[key]
+            if isinstance(paths, (str, bytes)) or not isinstance(paths, (list, tuple)):
+                return False
+            if any(not isinstance(path, str) for path in paths):
+                return False
+        revision = diff.get("revision", diff.get("repository_revision"))
+        if not isinstance(revision, str) or not revision.strip():
+            return False
+        for key in ("diff_sha256",):
+            if key in diff and not isinstance(diff[key], str):
+                return False
+        for key in ("evidence", "reuse_decisions"):
+            if key in diff:
+                value = diff[key]
+                if not isinstance(value, (list, tuple)):
+                    return False
+                if key == "evidence" and any(not isinstance(item, Mapping) for item in value):
+                    return False
+                if key == "reuse_decisions" and any(not isinstance(item, Mapping) for item in value):
+                    return False
+        return True
 
     def _deterministic_evidence_ids(self, evidence: Iterable[Mapping[str, Any]]) -> tuple[str, ...]:
         ids: list[str] = []

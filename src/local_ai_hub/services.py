@@ -81,7 +81,7 @@ _MAX_REVIEW_DIFF_CHUNKS = 8
 _REVIEW_SYNTHESIS_CONTEXT_TOKENS = 6000
 _UNIFIED_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
 _GUARD_REASON_SECRET_RE = re.compile(
-    r"(?i)\b((?:token|api[-_]?key|access[-_]?token|refresh[-_]?token|auth(?:orization)?|bearer|secret|password|passwd|credential|cookie|private[-_]?key)\b\s*[:=]\s*)([\"']?)([^\"'\s,;]+)\2"
+    r"(?i)\b((?:token|api[-_]?key|access[-_]?token|refresh[-_]?token|auth(?:orization)?|bearer|secret|password|passwd|credential|cookie|private[-_]?key)\b\s*[:=]\s*)(?!Bearer\b)([\"']?)([^\"'\s,;]+)\2"
 )
 _GUARD_REASON_PROMPT_RE = re.compile(r"(?is)\b(?:system\s+|user\s+)?(?:prompt|instructions?)\s*[:=].*$")
 
@@ -91,8 +91,8 @@ def _redact_guard_reason(reason: Any) -> str:
     text = str(reason or "").strip()
     if not text:
         return ""
-    text = _GUARD_REASON_SECRET_RE.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
     text = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [REDACTED]", text)
+    text = _GUARD_REASON_SECRET_RE.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
     text = _GUARD_REASON_PROMPT_RE.sub("prompt: [REDACTED]", text)
     return text[:500]
 
@@ -628,6 +628,31 @@ class LocalAIServices:
             return refreshed_status, bool(refreshed_status.lower() == "waiting" or (boundary and not approved))
         except Exception:
             return str(status), bool(boundary and not approved)
+
+    def _guard_stop_code(self, request: ConsistencyRequest, boundary: bool) -> str:
+        """Return terminal stop code when high-risk delivery lacks Agent OS state."""
+        if not boundary:
+            return ""
+        if not request.task_id:
+            return "guard_task_id_required"
+        agent_state = getattr(self, "agent_state", None)
+        if agent_state is not None and getattr(agent_state, "enabled", True) is False:
+            return "agent_os_disabled"
+        store = getattr(self.consistency_guard, "task_store", None)
+        if store is None or getattr(store, "enabled", True) is False:
+            return "agent_os_disabled"
+        state_store = getattr(store, "state_store", None)
+        if state_store is not None and getattr(state_store, "enabled", True) is False:
+            return "agent_os_disabled"
+        getter = getattr(store, "get", None)
+        if not callable(getter):
+            return "guard_task_state_unavailable"
+        try:
+            if getter(request.task_id) is None:
+                return "guard_task_state_unavailable"
+        except Exception:
+            return "guard_task_state_unavailable"
+        return ""
 
     def _touch_project(self, root: str) -> None:
         # Local AI: repository reads refresh only explicitly registered projects.
@@ -2635,6 +2660,28 @@ class LocalAIServices:
             pass
         drift_warnings = guard.check_drift(request, contract, changed_paths, diff)
         warnings = tuple(dict.fromkeys((*mapping_warnings, *drift_warnings)))[:24]
+        boundary = any(item.requires_approval or item.severity.lower() in {"boundary", "high", "high-risk"} for item in warnings)
+        stop_code = self._guard_stop_code(request, boundary)
+        if stop_code:
+            warning_payload = [
+                warning.to_dict() if hasattr(warning, "to_dict") else dict(warning)
+                for warning in warnings
+            ]
+            return {
+                **base,
+                "success": False,
+                "guarded": True,
+                "delivery_mode": mode,
+                "terminal": True,
+                "retryable": False,
+                "stop_code": stop_code,
+                "error": f"guarded context stopped: {stop_code}",
+                "warnings": warning_payload[:24],
+                "repo_revision": revision,
+                "changed_paths": list(changed_paths),
+                "task_status": "",
+                "waiting": False,
+            }
         memory_revision = self._adaptive_memory_revision(request)
         relevance = self._adaptive_relevance(request, evidence, revision, memory_revision)
         metric = getattr(guard, "record_metric", None)
@@ -2667,7 +2714,6 @@ class LocalAIServices:
             model_warnings=model_warnings,
         )
         pack_data = pack.to_dict()
-        boundary = any(item.requires_approval or item.severity.lower() in {"boundary", "high", "high-risk"} for item in warnings)
         ordinary = any(not (item.requires_approval or item.severity.lower() in {"boundary", "high", "high-risk"}) for item in warnings)
         decision_recorded, decision_persisted = self._guard_decision(request, revision, reason=request.override_reason, approval=request.approval)
         task_status, waiting = self._guard_task_state(request, warnings, revision)
