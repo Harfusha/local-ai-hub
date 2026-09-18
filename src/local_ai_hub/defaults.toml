@@ -508,6 +508,7 @@ max_rows_per_table = 1000000
 status = true # health, queue, cache, telemetry inspection (local_ai_status)
 repo = true # primary repository worker (local_ai_repo)
 tasks = true # local model inference worker (local_ai_task)
+vision = true # image understanding/frontend review and qwen3-vl model
 rag = true # semantic retrieval fallback (local_ai_rag)
 commands = true # safe command execution broker (local_ai_command)
 coord = true # coordination leases, memos, task contracts (local_ai_coord)

@@ -33,7 +33,9 @@ Execute the following phases deterministically:
 
 ### PHASE 2: RUN BOOTSTRAP INSTALLATION
 
-Run the platform installer from the repository root. This automatically configures Python 3.11+, virtual environment, Token Economy tools, backend-appropriate local model support, Serena/CodeGraphContext environments, global MCP configs, and background supervisor. Ollama is installed and its models are pulled only when `server.auto_start_ollama = true` and `llama_cpp.fallback_to_ollama = true`; an exclusive `llama_cpp.mode = "on"` configuration with `fallback_to_ollama = false` skips Ollama entirely. The default install deploys the `token-economizer` skill and registers its CLI directory on the user's persistent PATH; verify both after setup, then open a new terminal. Do not pass `--skip-token-economy` or `--skip-companion-skills` for the standard install.
+Run the platform installer from the repository root. This automatically configures Python 3.11+, virtual environment, Token Economy tools, backend-appropriate local model support, Serena/CodeGraphContext environments, global MCP configs, and background supervisor. Ollama is installed and its configured coding models plus `models.vision` are pulled only when `features.vision = true`, `server.auto_start_ollama = true`, and `llama_cpp.fallback_to_ollama = true`; set `features.vision = false` to remove vision capability and its model pull. An exclusive `llama_cpp.mode = "on"` configuration with `fallback_to_ollama = false` skips Ollama entirely. The default install deploys the `token-economizer` skill and registers its CLI directory on the user's persistent PATH; verify both after setup, then open a new terminal. Do not pass `--skip-token-economy` or `--skip-companion-skills` for the standard install.
+
+When `headless.manage_ollama = true` (default), Ollama is Hub-managed. Never start it with `ollama serve` or add a separate startup task; the supervisor takes over a local endpoint and applies the configured Ollama profile.
 
 - **Windows (PowerShell)**:
   ```powershell
@@ -79,7 +81,7 @@ Run the platform installer from the repository root. This automatically configur
    - On Intel-only systems, follow `docs/LLAMA_CPP_SYCL.md` and verify that the official SYCL `llama-server.exe --list-devices` lists the Intel GPU before enabling `llama_cpp.mode = "on"`. The installed Hub selects the SYCL backend in `auto` mode when its Intel hardware profile and routes are present. Do not set `OLLAMA_VULKAN` for Intel inference.
    - NVIDIA/AMD discrete GPUs continue through the configured Ollama CUDA/ROCm path. AMD iGPU is not an Intel SYCL target and retains its configured Ollama route. Do not enable llama.cpp SYCL on non-Intel hardware.
    - If an NPU (Intel AI Boost / AMD XDNA) or Intel iGPU is present:
-     Ensure OpenVINO dependencies are installed in the venv to offload embeddings and reranking from CPU:
+     Ensure OpenVINO dependencies are installed in the venv only when active hardware/configuration selects OpenVINO for embeddings or reranking. Do not install OpenVINO on NVIDIA-only systems merely because the feature permission is true:
      ```powershell
      & "$HOME\.local-ai-hub\.venv\Scripts\pip.exe" install -r "$HOME\.local-ai-hub\requirements-openvino.txt"
      & "$HOME\.local-ai-hub\.venv\Scripts\python.exe" "$HOME\.local-ai-hub\tools\prefetch_openvino.py"
