@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from .agent_tasks import GoalContract
+from .process_utils import canonical_root
 from .repo_tools import RepositoryTools
 
 
@@ -43,6 +44,8 @@ _IDENTIFIER = re.compile(r"\b[A-Z][A-Z0-9_]{2,}\b")
 _PUBLIC_SYMBOL = re.compile(r"^\+\s*(?:export\s+)?(?:async\s+)?(?:def|class|function|const|let|type|interface)\s+([A-Za-z_]\w*)")
 _HTTP_ENDPOINT = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE)\s+([/A-Za-z0-9_{}:$.-]+)")
 _FIELD = re.compile(r"\b([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w<>\[\]| ]*)(?=[,;}\n]|$)")
+_MEMORY_SECRET_RE = re.compile(r"(?i)\b(api[_-]?key|token|password|secret|authorization|credential)\s*([=:])\s*[^\s,;]+")
+_MEMORY_PROMPT_RE = re.compile(r"(?is)\bprompt\s*([=:])\s*.*$")
 
 
 def _text(value: Any, limit: int = _MAX_TEXT) -> str:
@@ -153,6 +156,13 @@ def _normalise_authority_label(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", " ", raw).strip()
 
 
+def _redact_memory_text(value: Any, limit: int = 240) -> str:
+    text = _text(value, limit)
+    text = _MEMORY_PROMPT_RE.sub(r"prompt\1[redacted]", text)
+    text = _MEMORY_SECRET_RE.sub(r"\1\2[redacted]", text)
+    return text[:limit]
+
+
 def _is_local_model_evidence(item: Mapping[str, Any]) -> bool:
     labels = []
     for key in ("source", "provider", "provider_name", "model", "model_name"):
@@ -187,7 +197,10 @@ def _memory_value(value: Any, depth: int = 0) -> Any:
             lowered = name.casefold()
             if any(token in lowered for token in ("raw", "source", "prompt", "output", "content", "text")):
                 continue
-            output[name] = _memory_value(item, depth + 1)
+            if any(token in lowered for token in ("reason", "claim", "stable_key")):
+                output[name] = _redact_memory_text(item)
+            else:
+                output[name] = _memory_value(item, depth + 1)
         return output
     if isinstance(value, (tuple, list, set, frozenset)):
         return [_memory_value(item, depth + 1) for item in itertools.islice(iter(value), _MAX_MEMORY_VALUE_ITEMS)]
@@ -485,16 +498,18 @@ class AgentConsistencyGuard:
             bounded_paths = tuple(dict.fromkeys(_text(item, 240) for item in path_refs if item))[:24]
             bounded_symbols = tuple(dict.fromkeys(_text(item, 200) for item in symbol_refs if item))[:24]
             task = _text(related_task or (request_obj.task_id if request_obj else ""), 160)
-            stable = _text(stable_key, 240) or hashlib.sha256(
+            repository_root = canonical_root(request_obj.root if request_obj else root) if (request_obj and request_obj.root) or root else ""
+            root_token = hashlib.sha256(repository_root.encode("utf-8", "replace")).hexdigest()[:16] if repository_root else "noroot"
+            stable = _redact_memory_text(stable_key, 240) or hashlib.sha256(
                 json.dumps(_memory_value(value), sort_keys=True, separators=(",", ":")).encode("utf-8")
             ).hexdigest()[:16]
             revision_token = revision or "unrevisioned"
-            record_key = f"consistency:{memory_kind.value}:{stable}:{revision_token}"
+            record_key = f"consistency:{memory_kind.value}:{root_token}:{stable}:{revision_token}"
             now = time.time()
             retention = _MEMORY_RETENTION_SECONDS if retention_seconds is None else max(1.0, float(retention_seconds))
             expires_at = now + min(retention, float(_MEMORY_RETENTION_SECONDS))
             provenance = {
-                "root": _text(request_obj.root if request_obj else root, 400),
+                "root": repository_root[:400],
                 "guard": "agent_consistency",
                 "phase": _text(request_obj.phase if request_obj else phase, 80),
                 "stable_key": stable,
@@ -1072,6 +1087,8 @@ class AgentConsistencyGuard:
 
     def check_drift(self, request: ConsistencyRequest, contract: GoalContract, changed_paths: Iterable[str], diff: Mapping[str, Any] | str | None) -> tuple[GuardWarning, ...]:
         warnings: list[GuardWarning] = []
+        if isinstance(diff, str):
+            return ()
         paths = list(_bounded_sequence(_tuple(changed_paths), _MAX_ITEMS))
         if diff is None:
             try:

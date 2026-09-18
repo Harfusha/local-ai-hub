@@ -67,6 +67,37 @@ def test_revert_is_explicit_negative_outcome(stores: tuple[TaskStore, Verificati
     assert outcome.actor == "user"
 
 
+def test_verification_store_record_methods_are_noops_when_agent_state_disabled(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "disabled.sqlite3", enabled=False)
+    store = VerificationStore(state_store)
+    receipt = receipt_for("disabled-task", "tests")
+    change = ChangeIntent.create("disabled-task", ("src/app.py",))
+    outcome = OutcomeRecord.accepted(change.change_id, task_id="disabled-task")
+
+    assert store.record(receipt) is receipt
+    assert store.record_change(change) is change
+    assert store.record_outcome(outcome) is outcome
+    assert not state_store.db_path.exists()
+
+
+def test_current_revision_rejects_fresh_receipt_from_other_revision(stores: tuple[TaskStore, VerificationStore]):
+    task_store, verif_store = stores
+    task_store.create(
+        GoalContract(goal="revision task", acceptance_criteria=("tests",)),
+        ScopeContext(task_id="revision-task"),
+        task_id="revision-task",
+    )
+    verif_store.record(VerificationReceipt.create(
+        "revision-task", "tests", repository_revision="old-revision", expires_at=100.0,
+    ))
+
+    result = verif_store.completion("revision-task", now=50.0, current_revision="new-revision")
+
+    assert result.complete is False
+    assert result.satisfied_criteria == ()
+    assert result.stale_criteria == ("tests",)
+
+
 def test_all_criteria_must_pass_for_completion(stores: tuple[TaskStore, VerificationStore]):
     task_store, verif_store = stores
     task_store.create(

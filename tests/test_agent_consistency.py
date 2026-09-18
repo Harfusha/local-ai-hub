@@ -22,6 +22,7 @@ from local_ai_hub.agent_consistency import (
 )
 from local_ai_hub.agent_tasks import GoalContract
 from local_ai_hub.repo_tools import RepositoryTools
+from local_ai_hub.telemetry import TelemetryStore
 
 
 def _cfg(tmp_path: Path):
@@ -694,3 +695,56 @@ def test_guard_memory_is_noop_when_store_disabled(repository: Path):
 
     assert saved is None
     assert memory.count() == 0
+
+
+def test_guard_memory_keys_are_root_scoped_and_sensitive_fields_redacted(repository: Path):
+    memory = _MemoryStoreFake()
+    guard = AgentConsistencyGuard(RepositoryTools(_cfg(repository.parent)), memory_store=memory)
+    other_root = repository.parent / "repo-two"
+    other_root.mkdir()
+
+    guard.record_decision(
+        _request(repository),
+        decision="approve",
+        reason="Approved token=secret-value prompt: private instruction",
+        stable_key="stable token=stable-secret prompt: private key",
+    )
+    guard.record_unknown(
+        _request(other_root),
+        claim="claim token=claim-secret prompt: private claim",
+        stable_key="claim-key token=key-secret",
+    )
+
+    first, second = memory.records
+    assert first[0].key != second[0].key
+    assert first[1]["idempotency_key"] != second[1]["idempotency_key"]
+    encoded = json.dumps({
+        "key": first[0].key,
+        "idempotency_key": first[1]["idempotency_key"],
+        "value": first[0].value,
+        "provenance": first[0].provenance,
+    }) + json.dumps(second[0].value)
+    for secret in ("secret-value", "stable-secret", "claim-secret", "key-secret", "private instruction", "private claim"):
+        assert secret not in encoded
+
+
+def test_raw_string_diff_fails_closed(repository: Path):
+    guard = _guard(repository)
+    request = _request(repository)
+    contract = guard.build_contract(request)
+
+    assert guard.check_drift(request, contract, ("frontend/users.ts",), "+class NewPublicThing") == ()
+
+
+def test_telemetry_savings_labels_use_fixed_allowlist():
+    clean = TelemetryStore._clean_event({
+        "savings_source": "response_compaction",
+        "input_savings_source": "prompt:secret-value",
+        "output_savings_source": "untrusted-label",
+        "savings_breakdown_json": '{"response_compaction": 3, "prompt-secret": 9}',
+    })
+
+    assert clean["savings_source"] == "response_compaction"
+    assert clean["input_savings_source"] == ""
+    assert clean["output_savings_source"] == ""
+    assert clean["savings_breakdown_json"] == '{"response_compaction":3}'
