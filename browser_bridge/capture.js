@@ -80,7 +80,18 @@ function safeDomHtml() {
   return clone.outerHTML;
 }
 
+function currentDocumentIdentity() {
+  const navigation = performance.getEntriesByType("navigation")[0] || {};
+  const document_token = `document:${String(performance.timeOrigin || "unknown")}:${String(navigation.startTime || 0)}:${String(navigation.type || "navigate")}`.slice(0, 256);
+  return {
+    url: String(location.href).slice(0, 4096),
+    target_origin: String(location.origin).slice(0, 256),
+    document_token,
+  };
+}
+
 function captureCurrentTab() {
+  const initial_identity = currentDocumentIdentity();
   const allElements = Array.from(document.querySelectorAll("*"));
   const elements = allElements.slice(0, 256).map((element) => ({
     element_id: stableElementId(element),
@@ -90,10 +101,12 @@ function captureCurrentTab() {
   }));
   return {
     success: true,
-    url: location.href,
-    target_origin: location.origin,
+    url: initial_identity.url,
+    target_origin: initial_identity.target_origin,
+    document_token: initial_identity.document_token,
     captured_at: new Date().toISOString(),
     title: document.title,
+    capture_identity: {initial: initial_identity},
     dom: {redaction: "none", password_values_sanitized: true, html: safeDomHtml(), elements},
     accessibility: {snapshot: collectAccessibleProjection(allElements.slice(0, 256))},
     computed_styles: collectVisibleComputedStyles(allElements.slice(0, 256)),
@@ -102,10 +115,15 @@ function captureCurrentTab() {
   };
 }
 
+function verifyCurrentTab() {
+  const identity = currentDocumentIdentity();
+  return {success: true, ...identity};
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (!message || message.type !== "LOCAL_AI_CAPTURE_CURRENT_TAB") return undefined;
+  if (!message || !["LOCAL_AI_CAPTURE_CURRENT_TAB", "LOCAL_AI_VERIFY_CURRENT_TAB"].includes(message.type)) return undefined;
   try {
-    sendResponse(captureCurrentTab());
+    sendResponse(message.type === "LOCAL_AI_CAPTURE_CURRENT_TAB" ? captureCurrentTab() : verifyCurrentTab());
   } catch (_) {
     sendResponse({success: false, error_code: "unsupported"});
   }

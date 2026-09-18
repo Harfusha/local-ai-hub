@@ -77,7 +77,7 @@ const captureContext = {
     querySelectorAll: (selector) => html.querySelectorAll(selector),
   },
   location: {href: "https://fixture.test/checkout?session=preserved", origin: "https://fixture.test"},
-  performance: {getEntriesByType: () => [{name: "https://fixture.test/app.js?token=hidden", initiatorType: "script", duration: 2, transferSize: 10}]},
+  performance: {timeOrigin: 1000, getEntriesByType: (type) => type === "navigation" ? [{startTime: 0, type: "navigate"}] : [{name: "https://fixture.test/app.js?token=hidden", initiatorType: "script", duration: 2, transferSize: 10}]},
   getComputedStyle: () => ({display: "block", visibility: "visible", position: "static", color: "black", backgroundColor: "white", fontSize: "16px", lineHeight: "20px", width: "100px", height: "20px"}),
   innerWidth: 1280,
   innerHeight: 720,
@@ -96,7 +96,7 @@ assert.equal(html.querySelectorAll('input[type="password"]')[0].value, "do-not-e
 assert.match(page.target_origin, /^https:\/\/fixture\.test$/);
 assert.match(page.captured_at, /T/);
 
-async function runBackground({timeout = null, switchTab = false, switchAfterScreenshot = false, screenshotTimeout = false, closed = false, permission = false} = {}) {
+async function runBackground({timeout = null, switchTab = false, switchAfterScreenshot = false, screenshotTimeout = false, closed = false, permission = false, navigateAfterScreenshot = false} = {}) {
   let activeId = closed ? null : 7;
   const posts = [];
   const bgContext = {
@@ -105,9 +105,15 @@ async function runBackground({timeout = null, switchTab = false, switchAfterScre
       runtime: {getURL: () => "chrome-extension://fixture/"},
       action: {onClicked: {addListener: () => {}}},
       tabs: {
-        get: async () => ({id: 7, windowId: 3}),
+        get: async () => ({id: 7, windowId: 3, url: page.url}),
         query: async () => { if (permission) throw new Error("permission denied"); return activeId === null ? [] : [{id: activeId, windowId: 3}]; },
-        sendMessage: async () => { if (switchTab) activeId = 8; return page; },
+        sendMessage: async (tabId, message) => {
+          if (message.type === "LOCAL_AI_VERIFY_CURRENT_TAB" && navigateAfterScreenshot) {
+            return {...page, url: "https://fixture.test/other", target_origin: "https://fixture.test", document_token: "document:new"};
+          }
+          if (switchTab) activeId = 8;
+          return page;
+        },
         captureVisibleTab: async () => {
           if (screenshotTimeout) return new Promise(() => {});
           if (switchAfterScreenshot) activeId = 8;
@@ -142,6 +148,7 @@ async function runBackground({timeout = null, switchTab = false, switchAfterScre
   assert.equal(success.posts.at(-1).tab_id, 7);
   assert.equal(success.posts.at(-1).window_id, 3);
   assert.match(success.posts.at(-1).dom.html, /data-authenticated="true"/);
+  assert.equal(success.posts.at(-1).capture_identity.initial.document_token, "document:1000:0:navigate");
 
   const timeout = await runBackground({timeout: 5});
   assert.equal(timeout.result.error_code, "timeout");
@@ -159,7 +166,11 @@ async function runBackground({timeout = null, switchTab = false, switchAfterScre
   assert.equal(switchedAfter.result.error_code, "tab_mismatch");
   assert.equal(switchedAfter.posts.at(-1).capture_error, "tab_mismatch");
   assert.equal(switchedAfter.posts.some((post) => post.screenshot), false);
+  const navigated = await runBackground({navigateAfterScreenshot: true});
+  assert.equal(navigated.result.error_code, "target_changed");
+  assert.equal(navigated.posts.at(-1).capture_error, "target_changed");
+  assert.equal(navigated.posts.some((post) => post.screenshot), false);
   assert.equal((await runBackground({closed: true})).result.error_code, "closed_tab");
   assert.equal((await runBackground({permission: true})).result.error_code, "permission_denied");
-  process.stdout.write(JSON.stringify({success: true, fixture: "login-preserving", cases: ["success", "timeout", "tab-switch", "password", "timestamp", "origin"]}));
+  process.stdout.write(JSON.stringify({success: true, fixture: "login-preserving", cases: ["success", "timeout", "tab-switch", "same-tab-navigation", "password", "timestamp", "origin"]}));
 })().catch((error) => { console.error(error); process.exitCode = 1; });

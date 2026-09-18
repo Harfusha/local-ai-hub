@@ -882,12 +882,16 @@ class Handler(BaseHTTPRequestHandler):
                 raise RequestBodyError("tab_id is required")
             if not isinstance(payload["tab_id"], (int, str)):
                 raise RequestBodyError("tab_id must be an integer or string")
-            if "window_id" in payload and not isinstance(payload["window_id"], (int, str)):
+            if "window_id" not in payload or payload["window_id"] in (None, ""):
+                raise RequestBodyError("window_id is required")
+            if not isinstance(payload["window_id"], (int, str)):
                 raise RequestBodyError("window_id must be an integer or string")
         elif path == "/api/browser/capture":
             required_text("capability", maximum=256)
             if "tab_id" not in payload:
                 raise RequestBodyError("tab_id is required")
+            if "window_id" not in payload or payload["window_id"] in (None, ""):
+                raise RequestBodyError("window_id is required")
         elif path == "/api/vision/review":
             if "prompt" in payload:
                 text(payload["prompt"], "prompt", 20000)
