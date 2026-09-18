@@ -193,6 +193,24 @@ def test_memory_identity_indexes_exist_for_bounded_filtered_queries(store: Memor
     } <= names
 
 
+def test_memory_query_limit_is_hard_capped(store: MemoryStore):
+    for index in range(3):
+        store.record(
+            MemoryRecord.create(
+                kind=MemoryKind.FINDING,
+                scope=AgentScope.GLOBAL,
+                key=f"bounded-{index}",
+                value=index,
+            ),
+            idempotency_key=f"bounded-{index}",
+        )
+
+    store.max_query_limit = 2
+    assert len(store.find(scope=AgentScope.GLOBAL, limit=100_000)) == 2
+    with pytest.raises(ValueError, match="memory limit"):
+        store.find(scope=AgentScope.GLOBAL, limit="invalid")
+
+
 def test_global_promotion_requires_user_approval(store: MemoryStore):
     record = confirmed_repository_record(store)
     with pytest.raises(ApprovalRequiredError):
@@ -288,6 +306,24 @@ def test_repository_conflicts_are_isolated_by_root(store: MemoryStore, tmp_path:
         assert record.status is MemoryStatus.CONFIRMED
 
 
+def test_task_conflicts_are_isolated_by_provenance_root(store: MemoryStore, tmp_path: Path):
+    for index in range(2):
+        record = store.record(
+            MemoryRecord.create(
+                kind=MemoryKind.FACT,
+                scope=AgentScope.TASK,
+                scope_id="same-task",
+                key="root-aware-task-key",
+                value=index,
+                confidence=0.95,
+                status=MemoryStatus.CONFIRMED,
+                provenance={"root": str(tmp_path / f"repo-{index}")},
+            ),
+            idempotency_key=f"root-aware-task-{index}",
+        )
+        assert record.status is MemoryStatus.CONFIRMED
+
+
 def test_consistency_memory_kinds_round_trip():
     kinds = (
         MemoryKind.FINDING,
@@ -357,6 +393,36 @@ def test_record_idempotency_is_atomic_under_concurrency(store: MemoryStore):
     assert [event.kind for event in store.state_store.events(
         stream_id=f"memory:{AgentScope.TASK.value}:concurrent"
     )].count("memory.recorded") == 1
+
+
+def test_conflicting_high_confidence_insert_is_atomic_under_concurrency(tmp_path: Path):
+    db_path = tmp_path / "agent_state.sqlite3"
+    stores = [
+        MemoryStore(AgentStateStore(db_path)),
+        MemoryStore(AgentStateStore(db_path)),
+    ]
+
+    def record_attempt(index: int) -> MemoryRecord:
+        return stores[index].record(
+            MemoryRecord.create(
+                kind=MemoryKind.FACT,
+                scope=AgentScope.REPOSITORY,
+                scope_id="repo",
+                key="concurrent-conflict",
+                value=index,
+                confidence=0.95,
+                status=MemoryStatus.CONFIRMED,
+                provenance={"root": str(tmp_path / "repo")},
+            ),
+            actor="agent",
+            idempotency_key=f"conflict-{index}",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        saved = list(executor.map(record_attempt, range(2)))
+
+    assert sum(item.status in (MemoryStatus.ACTIVE, MemoryStatus.CONFIRMED) for item in saved) == 1
+    assert sum(item.status is MemoryStatus.QUARANTINED for item in saved) == 1
 
 def test_repository_revision_is_preserved_in_provenance(store: MemoryStore, tmp_path: Path):
     record = MemoryRecord.create(

@@ -329,6 +329,19 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, key="shared", value="legacy-session"),
         MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="tenant-1", key="tenant-shared", value="tenant-one", provenance={"tenant": "tenant-1"}),
         MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="tenant-2", key="tenant-shared", value="tenant-two", provenance={"tenant": "tenant-2"}),
+        MemoryRecord.create(
+            kind="finding",
+            scope=AgentScope.SESSION,
+            scope_id="session-rich",
+            key="session-rich",
+            value="session-rich-value",
+            provenance={
+                "tenant": "tenant-rich",
+                "clone_id": "clone-session",
+                "worktree_id": "worktree-session",
+                "branch": "branch-session",
+            },
+        ),
         rich_record,
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one", provenance={"root": str(repo_one), "repository_id": "repository-one"}),
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one-missing-id", provenance={"root": str(repo_one)}),
@@ -405,6 +418,37 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
                 "key": "tenant-shared",
             })
         assert tenant_ambiguous.value.code == 400
+        with pytest.raises(urllib.error.HTTPError) as invalid_scope:
+            get(scope="not-a-scope", key="shared")
+        assert invalid_scope.value.code == 400
+        with pytest.raises(urllib.error.HTTPError) as task_missing_id:
+            post({
+                "action": "find",
+                "scope": "task",
+                "session_id": "session-one",
+                "key": "shared",
+            })
+        assert task_missing_id.value.code == 400
+        with pytest.raises(urllib.error.HTTPError) as session_missing_id:
+            post({
+                "action": "find",
+                "scope": "session",
+                "task_id": "task-one",
+                "key": "shared",
+            })
+        assert session_missing_id.value.code == 400
+        session_rich = post({
+            "action": "find",
+            "scope": "session",
+            "scope_id": "session-rich",
+            "session_id": "session-rich",
+            "tenant": "tenant-rich",
+            "clone_id": "clone-session",
+            "worktree_id": "worktree-session",
+            "branch": "branch-session",
+            "key": "session-rich",
+        })
+        assert [item["value"] for item in session_rich["records"]] == ["session-rich-value"]
         repo_result = get(scope="repository", root=str(repo_one), repository_id="repository-one", key="shared")
         assert [item["value"] for item in repo_result["records"]] == ["repo-one"]
         direct = post({
@@ -457,6 +501,14 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
             )
             assert mcp_result["success"] is True
             assert mcp_result["record"]["value"] == "rich-task"
+            mcp_ambiguous = mcp_server.local_ai_coord(
+                action="memory_get",
+                record_id=rich_record.record_id,
+                task_id="task-rich",
+                session_id="session-one",
+            )
+            assert mcp_ambiguous["success"] is False
+            assert mcp_ambiguous["status_code"] == 400
         finally:
             mcp_server.CLIENT = previous_mcp_client
             mcp_client.close()

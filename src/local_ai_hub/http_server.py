@@ -26,7 +26,7 @@ from .config import ConfigError, deep_merge, load_config, save_runtime_overrides
 from .delivery import decide_delivery
 from .agent_identity import AgentScope, ScopeContext
 from .agent_tasks import CompletionGateError, GoalContract, InvalidTransitionError, TaskCheckpoint, TaskStatus
-from .agent_memory import ApprovalRequiredError, MemoryKind, MemoryRecord, MemoryStatus
+from .agent_memory import ApprovalRequiredError, MAX_MEMORY_QUERY_LIMIT, MemoryKind, MemoryRecord, MemoryStatus
 from .agent_incidents import IncidentFingerprint, ToolOutcome
 from .agent_verification import VerificationReceipt
 from .agent_context import ContextRequest
@@ -83,6 +83,15 @@ def _resolve_memory_scope(
     repository_value = clean(repository_id)
     tenant_value = clean(tenant)
 
+    if scope is AgentScope.TASK and not values["task"] and any(
+        values[name] for name in ("session", "clone", "worktree", "branch")
+    ):
+        return None, None, True
+    if scope is AgentScope.SESSION and not values["session"] and any(
+        values[name] for name in ("task", "clone", "worktree", "branch")
+    ):
+        return None, None, True
+
     if scope is None:
         if len(identity_scopes) > 1:
             return None, None, True
@@ -125,6 +134,28 @@ def _resolve_memory_scope(
             return None, None, True
 
     return scope, (scope_id_value or None), False
+
+
+def _parse_memory_scope(value: Any) -> AgentScope | None:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None
+    aliases = {
+        "code", "task", "tasks", "repo", "repository", "project", "workspace",
+        "worktree", "worktrees", "clone", "branch", "branches", "session", "sessions",
+        "global", "user",
+    }
+    if raw not in aliases:
+        raise ValueError(f"invalid memory scope '{raw}'")
+    return AgentScope.parse(raw, default=None)
+
+
+def _memory_query_limit(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("memory limit must be an integer") from exc
+    return max(1, min(parsed, MAX_MEMORY_QUERY_LIMIT))
 
 
 def _telemetry_http_outcome(status: int, data: Any, path: str = "") -> tuple[bool, str, bool]:
@@ -1241,7 +1272,7 @@ class Handler(BaseHTTPRequestHandler):
                 rec_id = (query.get("record_id") or [""])[0]
                 if rec_id:
                     scope_raw = (query.get("scope") or [None])[0]
-                    scope_val = AgentScope.parse(scope_raw, default=None) if scope_raw else None
+                    scope_val = _parse_memory_scope(scope_raw)
                     scope_id_val = (query.get("scope_id") or [None])[0]
                     root_val = (query.get("root") or [None])[0]
                     repository_id_val = (query.get("repository_id") or [None])[0]
@@ -1286,7 +1317,7 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
                     self._send(200, {"success": True, "record": rec.to_dict()}); return
                 scope_raw = (query.get("scope") or [None])[0]
-                scope_val = AgentScope.parse(scope_raw, default=None) if scope_raw else None
+                scope_val = _parse_memory_scope(scope_raw)
                 key_val = (query.get("key") or [None])[0]
                 query_val = (query.get("query") or [None])[0]
                 status_raw = (query.get("status") or [None])[0]
@@ -1296,7 +1327,7 @@ class Handler(BaseHTTPRequestHandler):
                         status_val = MemoryStatus(str(status_raw).lower())
                     except ValueError:
                         pass
-                limit_val = int((query.get("limit") or [100])[0])
+                limit_val = _memory_query_limit((query.get("limit") or [100])[0])
                 scope_id_val = (query.get("scope_id") or [None])[0]
                 root_val = (query.get("root") or [None])[0]
                 repository_id_val = (query.get("repository_id") or [None])[0]
@@ -2076,7 +2107,7 @@ class Handler(BaseHTTPRequestHandler):
                         except ValueError:
                             kind_val = MemoryKind.FACT
                         raw_scope = str(rec_data.get("scope", AgentScope.TASK.value)).lower()
-                        scope_val = AgentScope.parse(raw_scope, default=AgentScope.TASK)
+                        scope_val = _parse_memory_scope(raw_scope) or AgentScope.TASK
                         raw_status = rec_data.get("status")
                         status_val = None
                         if raw_status:
@@ -2108,7 +2139,7 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "get":
                     scope_raw = payload.get("scope")
-                    scope_val = AgentScope.parse(scope_raw, default=None) if scope_raw else None
+                    scope_val = _parse_memory_scope(scope_raw)
                     scope_id_val = payload.get("scope_id")
                     root_val = payload.get("root")
                     repository_id_val = payload.get("repository_id")
@@ -2151,11 +2182,11 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
                     self._send(200, {"success": True, "record": rec.to_dict()}); return
                 if action == "find":
-                    scope_val = AgentScope.parse(payload["scope"], default=None) if payload.get("scope") else None
+                    scope_val = _parse_memory_scope(payload.get("scope"))
                     key_val = str(payload["key"]) if payload.get("key") else None
                     query_val = str(payload["query"]) if payload.get("query") else None
                     status_val = MemoryStatus(str(payload["status"])) if payload.get("status") else None
-                    limit_val = int(payload.get("limit", 100))
+                    limit_val = _memory_query_limit(payload.get("limit", 100))
                     scope_id_val = payload.get("scope_id")
                     root_val = payload.get("root")
                     repository_id_val = payload.get("repository_id")
