@@ -4,6 +4,7 @@ from .json_utils import dumps as json_dumps
 
 import hashlib
 import json
+import os
 import threading
 import time
 import uuid
@@ -11,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Collection
 
 from .agent_events import AgentStateStore
-from .agent_memory import MemoryStatus
+from .agent_memory import MemoryStatus, MemoryStore
 from .sqlite_support import connect_sqlite, retry_busy
 
 
@@ -29,6 +30,7 @@ class ContextRequest:
     branch: str = ""
     repository_id: str = ""
     session_id: str = ""
+    repository_revision: str = ""
 
 
 @dataclass(frozen=True)
@@ -242,10 +244,43 @@ class ContextCompiler:
         retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
         return klink
 
-    def invalidate(self, changed_paths: Collection[str], revision: str = "") -> int:
+    @staticmethod
+    def _normalise_changed_paths(
+        changed_paths: Collection[str] | str | None,
+        root: str = "",
+    ) -> tuple[tuple[str, ...], bool]:
+        raw_paths = (changed_paths,) if isinstance(changed_paths, str) else (changed_paths or ())
+        paths: list[str] = []
+        seen: set[str] = set()
+        truncated = False
+        for path in raw_paths:
+            if path is None or not str(path).strip() or str(path).strip().lower() == "none":
+                continue
+            raw_path = str(path)
+            normalized = (
+                MemoryStore._canonical_repo_path(root, raw_path)
+                if root
+                else os.path.normcase(os.path.normpath(raw_path.replace("\\", "/"))).replace("\\", "/").strip("/")
+            )
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            if len(paths) >= 32:
+                truncated = True
+                continue
+            paths.append(normalized)
+        return tuple(paths), truncated
+
+    def invalidate(
+        self,
+        changed_paths: Collection[str],
+        revision: str = "",
+        *,
+        root: str = "",
+    ) -> int:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return 0
-        paths = [str(p) for p in changed_paths if p]
+        paths, _ = self._normalise_changed_paths(changed_paths, root)
         if not paths:
             return 0
         self._init_table()
@@ -315,11 +350,36 @@ class ContextCompiler:
         # Changed source paths make stored relationship links stale immediately.
         # Invalidation is idempotent and bounded to the explicit paths supplied by
         # the caller, avoiding broad repository-wide link churn.
-        if request.changed_paths:
-            self.invalidate(request.changed_paths)
-
         candidates: list[tuple[int, ContextElement]] = []
         pinned_goal: ContextElement | None = None
+        changed_paths, changed_paths_truncated = self._normalise_changed_paths(
+            request.changed_paths,
+            request.root,
+        )
+        if changed_paths:
+            if self.memory_store is not None and request.root and request.repository_revision:
+                mark_stale = getattr(self.memory_store, "mark_stale_for_revision", None)
+                if callable(mark_stale):
+                    mark_stale(request.root, request.repository_revision, changed_paths)
+            self.invalidate(
+                changed_paths,
+                revision=request.repository_revision,
+                root=request.root,
+            )
+        if changed_paths_truncated and request.include_diagnostics:
+            diagnostic_content = (
+                "[CONTEXT DIAGNOSTICS] changed_paths_truncated=true "
+                f"kept={len(changed_paths)} limit=32"
+            )
+            candidates.append((55, ContextElement(
+                element_id="context_diagnostics",
+                source_kind="context_diagnostics",
+                content=diagnostic_content,
+                estimated_tokens=_estimate_tokens(diagnostic_content),
+                reason="bounded changed-path invalidation diagnostics",
+                confidence=1.0,
+                freshness=time.time(),
+            )))
 
         # 1. Fresh verification receipts (highest priority: 100)
         if self.verification_store is not None:

@@ -73,6 +73,76 @@ def test_change_invalidates_only_linked_records(compiler: ContextCompiler):
     assert compiler.get_active_links("src/changed.py") == []
 
 
+def test_context_compile_marks_changed_repository_memory_stale(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    memory_store = MemoryStore(state_store)
+    stale_candidate = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope="repository",
+            key="compile-stale",
+            value="old evidence",
+            status=MemoryStatus.CONFIRMED,
+            provenance={"root": str(tmp_path), "repository_revision": "rev-1", "path_refs": ["src/a.py"]},
+        )
+    )
+    unrelated = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope="repository",
+            key="compile-unrelated",
+            value="keep evidence",
+            status=MemoryStatus.CONFIRMED,
+            provenance={"root": str(tmp_path / "other"), "repository_revision": "rev-1", "path_refs": ["src/a.py"]},
+        )
+    )
+    compiler = ContextCompiler(state_store=state_store, memory_store=memory_store)
+
+    request = ContextRequest(
+        task_id="task-1",
+        root=str(tmp_path),
+        repository_revision="rev-2",
+        changed_paths=("src/a.py",),
+        token_budget=120,
+    )
+    compiler.compile(request)
+    compiler.compile(request)
+
+    assert memory_store.get(stale_candidate.record_id).status is MemoryStatus.STALE
+    assert memory_store.get(unrelated.record_id).status is MemoryStatus.CONFIRMED
+    assert [event.kind for event in state_store.events(
+        stream_id=f"memory:{stale_candidate.scope.value}:compile-stale"
+    )].count("memory.staled") == 1
+
+
+def test_context_compile_caps_normalized_changed_paths_with_diagnostic(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    compiler = ContextCompiler(state_store=state_store)
+    for index in range(40):
+        compiler.link(
+            source_id=f"rec-{index}",
+            target_id=f"src/{index}.py",
+            relationship="modifies",
+            path=f"src/{index}.py",
+        )
+    changed_paths = tuple(["src/0.py", "src/0.py"] + [f"src/{index}.py" for index in range(1, 40)])
+
+    context = compiler.compile(ContextRequest(
+        task_id="task-1",
+        root=str(tmp_path),
+        changed_paths=changed_paths,
+        include_diagnostics=True,
+        token_budget=300,
+    ))
+
+    assert compiler.get_active_links("src/0.py") == []
+    assert compiler.get_active_links("src/31.py") == []
+    assert compiler.get_active_links("src/32.py")
+    diagnostics = [element for element in context.elements if element.source_kind == "context_diagnostics"]
+    assert diagnostics
+    assert "changed_paths_truncated=true" in diagnostics[0].content
+
+
 def test_stale_memory_is_excluded_from_authoritative_context(tmp_path: Path):
     state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
     memory_store = MemoryStore(state_store)

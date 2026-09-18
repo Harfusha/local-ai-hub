@@ -254,6 +254,64 @@ def test_project_bundle_rejects_tampered_agent_state_records(tmp_path: Path):
         assert app2.agent_memory.get(record.record_id) is None
 
 
+@pytest.mark.parametrize("removed_key", ["agent_state_records", "agent_state_records_sha256", "both"])
+def test_project_bundle_rejects_removed_agent_state_integrity_data(tmp_path: Path, removed_key: str):
+    source_repo = tmp_path / "source-repo"
+    target_repo = tmp_path / "target-repo"
+    source_repo.mkdir()
+    target_repo.mkdir()
+    with app_with_agent_state(tmp_path / "source-app") as app1:
+        record = app1.agent_memory.record(
+            MemoryRecord.create(
+                kind=MemoryKind.FINDING,
+                scope=AgentScope.REPOSITORY,
+                key="removal-check",
+                value="original",
+                status=MemoryStatus.CONFIRMED,
+                provenance={"root": str(source_repo)},
+            ),
+            actor="user",
+        )
+        raw = app1.export_bundle(str(source_repo), agent_state_record_ids=[record.record_id])
+
+    with zipfile.ZipFile(io.BytesIO(raw), "r") as zf:
+        payload = json.loads(zf.read("bundle.json"))
+    if removed_key == "both":
+        payload.pop("agent_state_records")
+        payload.pop("agent_state_records_sha256")
+    else:
+        payload.pop(removed_key)
+    modified = io.BytesIO()
+    with zipfile.ZipFile(modified, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("bundle.json", json.dumps(payload, separators=(",", ":")))
+
+    with app_with_agent_state(tmp_path / f"target-app-{removed_key}") as app2:
+        result = app2.import_bundle(modified.getvalue(), str(target_repo))
+        assert result["success"] is False
+        assert result["error"] == "bundle integrity check failed"
+
+
+def test_standalone_bundle_honors_json_and_compressed_limits(tmp_path: Path, monkeypatch):
+    with app_with_agent_state(tmp_path / "source") as app:
+        record = app.agent_memory.record(
+            MemoryRecord.create(
+                kind=MemoryKind.FINDING,
+                scope=AgentScope.TASK,
+                key="limited",
+                value="payload",
+                scope_id="task-limited",
+            ),
+            actor="user",
+        )
+        monkeypatch.setattr(app, "_bundle_limits", lambda: (1024 * 1024, 1, 10))
+        with pytest.raises(ValueError, match="bundle.json exceeds configured limit"):
+            app.export_bundle(agent_state_record_ids=[record.record_id])
+
+        monkeypatch.setattr(app, "_bundle_limits", lambda: (1, 1024 * 1024, 10))
+        with pytest.raises(ValueError, match="bundle exceeds configured compressed limit"):
+            app.export_bundle(agent_state_record_ids=[record.record_id])
+
+
 
 def test_bundle_requires_exact_current_application_version(tmp_path: Path):
     with app_with_agent_state(tmp_path / "source") as app:

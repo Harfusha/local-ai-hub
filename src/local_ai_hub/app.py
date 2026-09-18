@@ -687,13 +687,18 @@ class LocalAIApp:
                     "records": exported_agent_records,
                 }
                 raw_json = json_dumps(bundle_data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                if len(raw_json) > max_json:
+                    raise ValueError(f"bundle.json exceeds configured limit ({max_json} bytes)")
                 buf = io.BytesIO()
                 with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
                     info = zipfile.ZipInfo("bundle.json")
                     info.compress_type = zipfile.ZIP_DEFLATED
                     info.external_attr = 0o600 << 16
                     zf.writestr(info, raw_json)
-                return buf.getvalue()
+                result = buf.getvalue()
+                if len(result) > max_bundle:
+                    raise ValueError(f"bundle exceeds configured compressed limit ({max_bundle} bytes)")
+                return result
 
         root_obj = Path(root).expanduser().resolve()
         if not root_obj.is_dir():
@@ -756,6 +761,13 @@ class LocalAIApp:
                 separators=(",", ":"),
             ).encode("utf-8")
             bundle_data["agent_state_records_sha256"] = hashlib.sha256(agent_records_canonical).hexdigest()
+            all_state_canonical = json_dumps(
+                {"agent_state_records": exported_agent_records, "tables": encoded_tables},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            bundle_data["tables_sha256"] = hashlib.sha256(all_state_canonical).hexdigest()
         raw_json = json_dumps(bundle_data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         if len(raw_json) > max_json:
             raise ValueError(f"bundle.json exceeds configured limit ({max_json} bytes)")
@@ -877,11 +889,14 @@ class LocalAIApp:
         encoded_tables: Any = data.get("tables")
         if not isinstance(encoded_tables, dict):
             return {"success": False, "error": "bundle tables are missing"}
+        has_agent_records = "agent_state_records" in data
+        has_agent_records_hash = "agent_state_records_sha256" in data
+        if has_agent_records != has_agent_records_hash:
+            return {"success": False, "error": "bundle integrity check failed"}
         canonical = json_dumps(encoded_tables, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         expected = str(data.get("tables_sha256", ""))
-        if not expected or not hmac.compare_digest(hashlib.sha256(canonical).hexdigest(), expected):
-            return {"success": False, "error": "bundle integrity check failed"}
-        if "agent_state_records" in data:
+        table_hash_valid = bool(expected) and hmac.compare_digest(hashlib.sha256(canonical).hexdigest(), expected)
+        if has_agent_records:
             agent_records = data.get("agent_state_records")
             if not isinstance(agent_records, list):
                 return {"success": False, "error": "invalid agent-state bundle records"}
@@ -896,6 +911,17 @@ class LocalAIApp:
                 hashlib.sha256(agent_records_canonical).hexdigest(), agent_records_expected
             ):
                 return {"success": False, "error": "bundle integrity check failed"}
+            all_state_canonical = json_dumps(
+                {"agent_state_records": agent_records, "tables": encoded_tables},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            table_hash_valid = table_hash_valid or hmac.compare_digest(
+                hashlib.sha256(all_state_canonical).hexdigest(), expected
+            )
+        if not table_hash_valid:
+            return {"success": False, "error": "bundle integrity check failed"}
         try:
             tables = self._bundle_decode(encoded_tables)
         except Exception as exc:
