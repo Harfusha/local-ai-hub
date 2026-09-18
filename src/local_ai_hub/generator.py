@@ -351,7 +351,8 @@ def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
     """Generate dynamic reference documents for skills/local-ai-orchestrator/references/."""
     fs = FeatureSet.from_config(cfg)
     reasoning_tier = _reasoning_tier_label(cfg, fs)
-    semantic_handoff = _semantic_handoff_contract(fs)
+    local_semantic_enabled = fs.tasks and fs.has_any_model()
+    semantic_handoff = _semantic_handoff_contract(fs) if local_semantic_enabled else ""
     work_owner_note = (
         "A submitted `local_ai_work` order may own its bounded internal planning, edits, validation and integration until handoff."
         if fs.work_orchestrator
@@ -379,6 +380,10 @@ def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
     if fs.status:
         status_detail_note = ", Agent OS task/incident state" if fs.agent_os else ""
         tool_bullets.append(f"- `local_ai_status`: bounded health/cache/telemetry{status_detail_note} inspection; no polling loops.")
+    if local_semantic_enabled:
+        tool_bullets.append(f"- Semantic routing contract: {semantic_handoff}")
+    else:
+        tool_bullets.append("- Local model inference is disabled; use deterministic/indexed evidence only.")
 
     tool_lines = "\n".join(tool_bullets) if tool_bullets else "- *(All tools disabled)*"
     agent_os_reference = ""
@@ -410,7 +415,10 @@ The active tool surface reflects your configuration:
         step_i += 1
         wf_steps.append(f"{step_i}. Retrieve deterministic facts, then code-index/search evidence.")
         step_i += 1
-        wf_steps.append(f"{step_i}. Retrieve deterministic/indexed evidence, then {semantic_handoff} Use `context` for compact evidence and call `solve` after evidence for repository implementation support.")
+        if local_semantic_enabled:
+            wf_steps.append(f"{step_i}. Retrieve deterministic/indexed evidence, then {semantic_handoff} Use `context` for compact evidence and call `solve` after evidence for repository implementation support.")
+        else:
+            wf_steps.append(f"{step_i}. Retrieve deterministic/indexed evidence only; use available deterministic/indexed tools for exact facts, symbols, diff, tests, and verification.")
         step_i += 1
         lease_note = "claim `local_ai_coord` leases for overlapping paths; " if fs.coord else ""
         wf_steps.append(f"{step_i}. Edit in the main agent; {lease_note}use `impact` before risky dependent changes.")
@@ -761,6 +769,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Generate compact JSON tool schemas for all enabled tools."""
     fs = FeatureSet.from_config(cfg)
     reasoning_tier = _reasoning_tier_label(cfg, fs)
+    local_semantic_enabled = fs.tasks and fs.has_any_model()
     schemas: dict[str, dict[str, Any]] = {}
 
     if fs.status:
@@ -783,9 +792,14 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
     if fs.repo:
         repo_actions = fs.supported_repo_actions()
+        repo_semantic_contract = (
+            f" {_semantic_handoff_contract(fs)}"
+            if local_semantic_enabled
+            else " Local model inference is disabled; use deterministic/indexed evidence only."
+        )
         schemas["local_ai_repo"] = {
             "name": "local_ai_repo",
-            "description": "Primary bounded repository worker; use deterministic/indexed evidence first, then semantic/graph as enabled; use review_diff/security_audit before model inference." + _actions_note(repo_actions),
+            "description": "Primary bounded repository worker; use deterministic/indexed evidence first, then semantic/graph as enabled; use review_diff/security_audit before model inference." + repo_semantic_contract + _actions_note(repo_actions),
             "parameters": {
                 "type": "object",
                 "required": ["action"],
@@ -821,7 +835,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         task_actions = fs.supported_task_actions()
         schemas["local_ai_task"] = {
             "name": "local_ai_task",
-            "description": f"Tiered bounded local-model work ({fs.fast_model} quick, {fs.general_model} ordinary, {fs.smart_model} more involved, {reasoning_tier} hardest) for semantic generation, reasoning, review, independent second opinions and semantic compression; use deterministic/indexed tools for exact facts, symbols, diff and tests." + _actions_note(task_actions),
+            "description": f"Tiered bounded local-model work ({fs.fast_model} quick, {fs.general_model} ordinary, {fs.smart_model} more involved, {reasoning_tier} hardest) for semantic generation, reasoning, review, independent second opinions and semantic compression; use deterministic/indexed tools for exact facts, symbols, diff and tests. {_semantic_handoff_contract(fs)}" + _actions_note(task_actions),
             "parameters": {
                 "type": "object",
                 "required": ["action"],
