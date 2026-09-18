@@ -2335,12 +2335,13 @@ function renderCommandPresentation(model){
   if(traceMeaningfulValue(paths)){const pathsSafe=bound(paths,4000);details.push(Array.isArray(pathsSafe)?traceList('paths',pathsSafe,budget):traceSummaryCard('paths',pathsSafe,budget,{full:true}));}
   if(traceMeaningfulValue(retriesVal))details.push(traceSummaryCard('retries',bound(retriesVal,400),budget));
   if(traceMeaningfulValue(criterion))details.push(traceSummaryCard('criterion',bound(criterion,4000),budget,{full:true}));
-  const fullInput=traceRecorded(inputVal)?traceCodeBlock('Full input',traceRawBoundValue(traceSanitizeValue(inputVal),16000),traceRenderBudget(18000)):'';
+  const rawSource=Object.keys(rawCommand).length?rawCommand:command,cleanRaw=(value,key='')=>{if(traceSensitiveField(key))return traceSanitizeValue(value);if(!tracePrimaryMeaningfulValue(value,key))return undefined;if(Array.isArray(value))return value.map(item=>cleanRaw(item)).filter(item=>item!==undefined);if(value&&typeof value==='object'){const result={};Object.entries(value).forEach(([childKey,childValue])=>{const cleaned=cleanRaw(childValue,childKey);if(cleaned!==undefined)result[childKey]=cleaned});return result;}return traceSanitizeValue(value)};
+  const fullInput=traceRecorded(inputVal)?traceCodeBlock('Full input',traceRawBoundValue(cleanRaw(inputVal,'input'),16000),traceRenderBudget(18000)):'';
   const fullFailure=traceRecorded(errorVal)?traceCodeBlock('Full failure',traceRawBoundValue(traceSanitizeValue(errorVal),16000),traceRenderBudget(18000)):'';
   const fullStdout=traceRecorded(stdout)?traceCodeBlock('Full stdout',traceRawBoundValue(traceSanitizeValue(stdout),16000),traceRenderBudget(18000)):'';
   const fullStderr=traceRecorded(stderr)?traceCodeBlock('Full stderr',traceRawBoundValue(traceSanitizeValue(stderr),16000),traceRenderBudget(18000)):'';
   [fullInput,fullFailure,fullStdout,fullStderr].filter(Boolean).forEach(item=>details.push(item));
-  const rawSource=Object.keys(rawCommand).length?rawCommand:command,cleanRaw=(value,key='')=>{if(!tracePrimaryMeaningfulValue(value,key))return undefined;if(Array.isArray(value))return value.map(item=>cleanRaw(item)).filter(item=>item!==undefined);if(value&&typeof value==='object'){const result={};Object.entries(value).forEach(([childKey,childValue])=>{const cleaned=cleanRaw(childValue,childKey);if(cleaned!==undefined)result[childKey]=cleaned});return result;}return traceSanitizeValue(value)},rawProjection=cleanRaw(rawSource)||{};
+  const rawProjection=cleanRaw(rawSource)||{};
   if(Object.keys(rawProjection).length)details.push(`<section class="trace-code-card"><h3>Raw command payload</h3><pre class="trace-output">${esc(traceHumanText(traceRawBoundValue(rawProjection,12000)))}</pre></section>`);
   const secondary=details.length?traceSecondaryDetails('Command details',details.join('')):'';
   return traceFinalizeMarkup(`${top}${tracePresentationColumns('Command output',left,right,budget)}${secondary}`,budget);
