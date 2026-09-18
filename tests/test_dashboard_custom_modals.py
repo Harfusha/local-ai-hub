@@ -60,6 +60,103 @@ def _trace_remediation_probe(expression):
     return json.loads(result.stdout)
 
 
+def test_trace_task8_technical_keys_and_values_cannot_bypass_bounds():
+    rendered = _trace_remediation_probe("""(()=>{
+      const cases={};
+      for(const length of [100000,500000])for(const char of ['K','<']){
+        const payload={[char.repeat(length)]:1,value:'<'.repeat(length)};
+        cases['worker'+char+length]=probe({kind:'async_job',request:{worker_input:payload,worker_output:payload}});
+        cases['context'+char+length]=probe({action:'/api/chat',request:{prompt:'hello',options:payload},output:'answer'});
+      }
+      return cases;
+    })()""")
+    for html in rendered.values():
+        assert len(html) < 50000
+        assert 'payload budget truncated' in html
+        parsed = _TraceMarkupParser(html)
+        assert not parsed.errors and not parsed.stack
+
+
+def test_trace_task8_raw_event_projection_caps_serialized_keys():
+    rendered = _trace_remediation_probe("""(()=>{
+      const detail={session:{kind:'async_job'},events:[{event_type:'job_progress',payload:{worker_output:{['K'.repeat(500000)]:1}}}]};
+      const model=traceDisplayModel(detail);
+      return {size:JSON.stringify(model.events).length,truncated:model.eventsTruncated,raw:model.panels.find(panel=>panel.id==='raw').render()};
+    })()""")
+    assert rendered['size'] < 26000
+    assert rendered['truncated'] is True
+    assert 'payload budget truncated' in rendered['raw']
+    parsed = _TraceMarkupParser(rendered['raw'])
+    assert not parsed.errors and not parsed.stack
+
+
+def test_trace_task8_specialized_response_arrays_remain_visible():
+    rendered = _trace_remediation_probe("""({
+      review:probe({action:'/api/review',response:['CAPTURED_RESPONSE_ARRAY']}),
+      repo:probe({action:'/api/repo',response:['CAPTURED_RESPONSE_ARRAY']}),
+      job:probe({kind:'async_job',response:['CAPTURED_RESPONSE_ARRAY']}),
+      reviewOutput:probe({action:'/api/review',output:['CAPTURED_RESPONSE_ARRAY']}),
+      repoOutput:probe({action:'/api/repo',output:['CAPTURED_RESPONSE_ARRAY']}),
+      jobOutput:probe({kind:'async_job',output:['CAPTURED_RESPONSE_ARRAY']}),
+      findings:probe({action:'/api/review',output:{findings:[{message:'Useful finding'}]},response:['CAPTURED_RESPONSE_ARRAY']})
+    })""")
+    for html in rendered.values():
+        visible = ''.join(_TraceMarkupParser(html).visible)
+        assert visible.count('CAPTURED_RESPONSE_ARRAY') == 1
+    assert 'Useful finding' in ''.join(_TraceMarkupParser(rendered['findings']).visible)
+
+
+def test_trace_task8_repo_result_context_has_response_provenance():
+    rendered = _trace_remediation_probe("""({
+      response:probe({action:'/api/repo',request:{query:'needle',context:'REQUEST_CONTEXT'},response:{success:true,context:'RESULT_CONTEXT'}}),
+      output:probe({action:'/api/repo',request:{query:'needle',context:'REQUEST_CONTEXT'},output:{context:'RESULT_CONTEXT'}}),
+      event:probe({action:'/api/repo',request:{query:'needle',context:'REQUEST_CONTEXT'}},[{event_type:'repo_result',payload:{context:'RESULT_CONTEXT'}}]),
+      inputOnly:probe({action:'/api/repo',request:{query:'needle',context:'REQUEST_CONTEXT'}})
+    })""")
+    for name, html in rendered.items():
+        visible = ''.join(_TraceMarkupParser(html).visible)
+        assert 'REQUEST_CONTEXT' not in visible
+        assert 'REQUEST_CONTEXT' in html
+        if name != 'inputOnly':
+            assert 'RESULT_CONTEXT' in visible
+            assert 'No result summary captured' not in visible
+        else:
+            assert 'No result summary captured' in visible
+
+
+def test_trace_task8_primary_metadata_filters_separator_variants():
+    rendered = _trace_remediation_probe("""(()=>{
+      const metadata={message:'Useful content',nested:Object.fromEntries(['request-id','correlation-id','sequence-id','request-headers','requestId','request_id'].map(key=>[key,'INTERNAL_MARKER']))};
+      return {chat:probe({action:'/api/chat',request:{prompt:metadata},output:metadata}),
+              agent:probe({request:{prompt:metadata},output:metadata},[{event_type:'tool_call',payload:{name:'lookup',arguments:metadata}}])};
+    })()""")
+    for html in rendered.values():
+        visible = ''.join(_TraceMarkupParser(html).visible)
+        assert 'Useful content' in visible
+        assert 'INTERNAL_MARKER' not in visible
+
+
+def test_trace_task8_tool_errors_survive_exhausted_display_budget():
+    rendered = _trace_remediation_probe("""(()=>{
+      const events=Array.from({length:20},(_,i)=>[
+        {event_type:'tool_call',payload:{call_id:'c'+i,name:'tool'+i,arguments:{query:'x'.repeat(900)}}},
+        {event_type:'tool_result',payload:{call_id:'c'+i,result:{error:'Failure '+i+' '+ 'e'.repeat(900)}}}
+      ]).flat();
+      const session={request:{prompt:'lookup'}},model=traceDisplayModel({session,events});
+      return {chat:renderModelChatPresentation(model),dispatched:probe(session,events),errors:model.events.filter(e=>e.payload?.result?.error).length};
+    })()""")
+    assert rendered['errors'] == 20
+    rows = re.findall(r'<div class="trace-tool-summary-row[^\"]*">(.*?)</div>', rendered['chat'])
+    assert rows
+    for row in rows:
+        assert '>error<' in row
+        assert '>complete<' not in row and '>pending<' not in row
+    for html in [rendered['chat'], rendered['dispatched']]:
+        parsed = _TraceMarkupParser(html)
+        assert not parsed.errors and not parsed.stack
+        assert len(html) < 100000
+
+
 def test_trace_remediation_large_model_and_wide_command_are_bounded():
     rendered = _trace_remediation_probe("""({
       chat:probe({action:'/api/chat',request:{prompt:'PROMPT-'+ 'p'.repeat(100000)},output:'ANSWER-'+ 'a'.repeat(100000)}),
