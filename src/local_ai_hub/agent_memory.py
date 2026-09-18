@@ -1176,7 +1176,10 @@ class MemoryStore:
             elif expected_scope_id and not scope_id_val:
                 scope_id_val = expected_scope_id
             if not scope_id_val:
-                sql += " AND 0"
+                if any(str(value or "").strip() for value in (task_id_val, session_id_val, root, repository_id, tenant)):
+                    sql += " AND 0"
+                else:
+                    sql += " AND scope_id = ''"
             else:
                 if scope is not None or task_id_val or session_id_val:
                     sql += " AND scope_id = ?"

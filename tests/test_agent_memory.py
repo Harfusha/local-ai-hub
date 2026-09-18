@@ -83,8 +83,12 @@ def test_legacy_unscoped_lookup_rejects_nonempty_task_and_session_context(store:
     for record in (legacy_task, scoped_task, legacy_session, scoped_session):
         store.record(record, actor="user")
 
+    assert [record.value for record in store.find(scope=AgentScope.TASK)] == ["must not leak"]
+    assert [record.value for record in store.find(scope=AgentScope.SESSION)] == ["must not leak"]
     assert [record.value for record in store.find(allow_legacy_unscoped=True, task_id="task-1")] == ["task value"]
     assert [record.value for record in store.find(allow_legacy_unscoped=True, session_id="session-1")] == ["session value"]
+    assert store.find(scope=AgentScope.TASK, root="C:/repo") == []
+    assert store.find(scope=AgentScope.SESSION, tenant="tenant-1") == []
     assert store.get(legacy_task.record_id, task_id="task-1") is None
     assert store.get(scoped_task.record_id, task_id="task-1").value == "task value"
 
