@@ -32,6 +32,7 @@ from .agent_verification import VerificationReceipt
 from .agent_context import ContextRequest
 from .agent_learning import ImprovementCandidate, SLOObservation
 from .json_utils import dumps as json_dumps
+from .browser_bridge import capture_failure, capture_to_artifacts, issue_capture_capability, origin_allowed, validate_capture_request
 
 
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
@@ -320,6 +321,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        request_origin = self.headers.get("Origin", "").strip()
+        bridge_path = str(getattr(self, "path", "")).startswith("/api/browser/") or str(getattr(self, "path", "")) == "/api/vision/review"
+        if request_origin and bridge_path and APP is not None and origin_allowed(APP.config, request_origin):
+            self.send_header("Access-Control-Allow-Origin", request_origin)
+            self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-LocalAI-Tenant")
+            self.send_header("Vary", "Origin")
         if html:
             script_source = f"'nonce-{nonce}'" if nonce else "'none'"
             self.send_header("Content-Security-Policy", f"default-src 'none'; connect-src 'self'; img-src 'self' data:; style-src 'unsafe-inline'; script-src {script_source}; script-src-attr 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
@@ -652,7 +660,10 @@ class Handler(BaseHTTPRequestHandler):
                 allowed_origins.add(str(extra).strip("[]").lower())
 
             if not APP.config.get("security", {}).get("allow_remote", False):
-                if origin_host not in allowed_origins:
+                bridge_origin = False
+                if str(getattr(self, "path", "")).startswith("/api/browser/") or str(getattr(self, "path", "")) == "/api/vision/review":
+                    bridge_origin = origin_allowed(APP.config, origin_header)
+                if origin_host not in allowed_origins and not bridge_origin:
                     self._send(403, {"success": False, "error": "forbidden: cross-origin requests are not allowed"})
                     return False
         return True
@@ -847,6 +858,17 @@ class Handler(BaseHTTPRequestHandler):
                 required_text("query", maximum=4096)
             if action in {"overview", "symbols_overview", "references", "find_references", "referencing"}:
                 required_text("path", maximum=4096)
+        elif path == "/api/browser/capability":
+            required_text("origin", maximum=512)
+            if "tab_id" in payload and not isinstance(payload["tab_id"], (int, str)):
+                raise RequestBodyError("tab_id must be an integer or string")
+        elif path == "/api/browser/capture":
+            required_text("capability", maximum=256)
+            if "tab_id" not in payload:
+                raise RequestBodyError("tab_id is required")
+        elif path == "/api/vision/review":
+            if "prompt" in payload:
+                text(payload["prompt"], "prompt", 20000)
         evaluation = payload.get("evaluation")
         if evaluation is not None:
             if not isinstance(evaluation, dict):
@@ -1087,6 +1109,23 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             APP.agent_state.unsubscribe(q)
             self._finish_stream_request(True)
+
+    def do_OPTIONS(self) -> None:
+        if APP is None:
+            self._send(503, {"success": False, "error": "hub starting up; please retry", "retryable": True})
+            return
+        path = urlparse(self.path).path
+        if not path.startswith("/api/browser/") or not self._validate_host_and_origin():
+            self._send(404, {"success": False, "error": "unsupported browser bridge route", "terminal": True, "retryable": False})
+            return
+        try:
+            self.send_response(204)
+            self._common_headers()
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        except OSError as exc:
+            if not _is_client_disconnect(exc):
+                raise
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -1679,6 +1718,33 @@ class Handler(BaseHTTPRequestHandler):
                         os._exit(0)
                     threading.Thread(target=_graceful_stop, daemon=True).start(); return
                 self._send(400, {"success": False, "error": "unknown control action"}); return
+            if path == "/api/browser/capability":
+                if not APP.config.get("browser_bridge", {}).get("enabled", True):
+                    self._send(501, capture_failure("unsupported")); return
+                origin = str(payload.get("origin", ""))
+                try:
+                    capability = issue_capture_capability(
+                        APP.config,
+                        origin=origin,
+                        tenant=tenant,
+                        tab_id=payload.get("tab_id"),
+                    )
+                except Exception as exc:
+                    code = getattr(exc, "error_code", "permission_denied")
+                    status = int(getattr(exc, "status", 403))
+                    self._send(status, {"success": False, "error": str(exc), "error_code": code, "terminal": True, "retryable": False}); return
+                ttl = int(APP.config.get("browser_bridge", {}).get("capability_ttl_seconds", 60))
+                self._send(200, {"success": True, "capability": capability, "one_use": True, "expires_in_seconds": ttl, "tab_id": payload.get("tab_id")}); return
+            if path == "/api/browser/capture":
+                request = {"origin": self.headers.get("Origin", payload.get("origin", "")), "tenant": tenant, "tab_id": payload.get("tab_id")}
+                checked = validate_capture_request(str(payload.get("capability", "")), request, tenant=tenant)
+                if not checked.get("success"):
+                    status = int(checked.get("status", 403))
+                    self._send(status, checked); return
+                if payload.get("capture_error"):
+                    failure = capture_failure(str(payload["capture_error"]))
+                    self._send(int(failure["status"]), failure); return
+                self._send(200, capture_to_artifacts(payload, artifacts=APP.artifacts, tenant=tenant, config=APP.config)); return
             delivery = self._async_delivery(path, payload, tenant)
             if delivery is not None:
                 self._send(*delivery); return
@@ -2762,7 +2828,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     events = list(payload.get("events", []))
                     self._send(200, APP.agent_state_store.import_delta(events)); return
-            if path in {"/api/task/vision", "/api/vision"}:
+            if path in {"/api/task/vision", "/api/vision", "/api/vision/review"}:
                 self._send(200, APP.services.vision(payload, tenant)); return
             if path in {"/api/repo/split_changes", "/api/split_changes"}:
                 root = str(payload.get("root", "."))
