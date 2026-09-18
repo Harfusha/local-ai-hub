@@ -151,7 +151,7 @@ def test_context_projection_keeps_deterministic_warning_and_evidence_authoritati
         "adaptive_context_pack": {
             "warnings": [{
                 "severity": "warning",
-                "code": "preload_missing",
+                "code": "preload_missing_file",
                 "message": "optional preload omitted",
                 "evidence_ids": [],
                 "affected_paths": ["docs/missing.md"],
@@ -170,7 +170,7 @@ def test_context_projection_keeps_deterministic_warning_and_evidence_authoritati
 
     assert projected["context"] == "verified route evidence"
     assert projected["evidence_ids"] == ["det-route"]
-    assert projected["warnings"][0]["code"] == "preload_missing"
+    assert projected["warnings"][0]["code"] == "preload_missing_file"
     assert projected["repo_revision"] == "rev-1"
     assert projected["degraded"] is True
 

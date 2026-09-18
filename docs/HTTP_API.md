@@ -15,13 +15,14 @@ Repository endpoints cover profile/map/code-index/deterministic/search/context, 
 
 Guarded request fields are `task_id`, `phase`, `focus`, `preload_profile`, `changed_paths`, `base`, `staged`, `since_hash`, `approval`, `override_reason`, and `token_budget`. Supported phases are `plan`, `edit`, `review`, `test`, and `handoff`. The response includes a bounded `adaptive_context_pack`/`context_pack`, `context_id`, `repo_revision`, `stale`, `evidence_ids`, `warnings`, and (when supplied) `delta_from`/`since_hash` metadata. A matching revision/hash may be reused as an unchanged delta pack; callers should keep the prior useful pack and avoid duplicate discovery.
 
-Every warning is a concise JSON object: `severity`, `code`, `message`, `evidence_ids`, `affected_paths`, `recommended_action`, and `requires_approval`. Use `info`, `warning`, `boundary`, and `high-risk` as severity levels. `boundary` and `high-risk` warnings are recoverable soft-stops: the task may enter `waiting` until approval. Ordinary warnings require an `override_reason`; decisions are persisted only when Agent OS is enabled.
+Every guarded warning is a concise JSON object: `severity`, `code`, `message`, `evidence_ids`, `affected_paths`, `recommended_action`, and `requires_approval`. Context-compiler fallback warnings may be smaller and contain `code`, `message`, plus relevant path/error details. Use `info`, `warning`, `boundary`, and `high-risk` as severity levels. `boundary` and `high-risk` warnings are recoverable soft-stops: the task may enter `waiting` until approval. Ordinary warnings require an `override_reason`; decisions are persisted only when Agent OS is enabled.
 
 Fallback behavior remains useful and explicit:
 
-* Missing preload file: omit that input and emit `code: "preload_missing"` with deterministic context intact.
-* Unavailable Serena/CodeGraphContext: use deterministic/indexed search and emit `code: "code_intelligence_unavailable"`.
-* Local-model timeout/failure: return deterministic/indexed evidence and emit `code: "local_model_timeout"` or `"local_model_unavailable"`; model text cannot override evidence.
+* Missing preload file: omit that input and emit `code: "preload_missing_file"` with deterministic context intact.
+* Deterministic fast fallback: set `degraded: true`, `context_source: "deterministic-fast"`, and `continuation.available: true` with `continuation.mode: "full"`.
+* Unavailable optional semantic/code-intelligence backend: keep deterministic/lexical evidence and report `semantic_used: false` when no semantic results are used; no synthetic warning code is added.
+* Guarded local-model relevance failure: keep deterministic/indexed evidence and set `model_degraded: true` plus `model_degraded_reason` (`no_authoritative_evidence`, `model_error`, `model_unavailable`, `invalid_model_output`, or `relevance_error`); model text cannot override evidence.
 * Disabled Agent OS: return a stateless repository pack and emit `code: "agent_state_disabled"`; no memory, decision, task, or receipt is persisted.
 * Unchanged delta: return `unchanged: true` or equivalent `delta_from` metadata and retain the previous useful pack.
 * Legacy caller: omit guarded fields and receive the existing fast/full response shape.
