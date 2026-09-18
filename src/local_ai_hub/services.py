@@ -35,6 +35,7 @@ from .telemetry import TelemetryStore
 from .trace_context import observer
 from .treesitter_parser import parse_treesitter
 from .vision_contracts import (
+    UNTRUSTED_CONTEXT_INSTRUCTION,
     VISION_MAX_BUNDLE_CHARS,
     VISION_MAX_IMAGE_BYTES,
     VISION_MAX_IMAGE_CHARS,
@@ -1721,13 +1722,18 @@ class LocalAIServices:
         )
         prompt_context = prompt
         if model_context is not None:
-            prompt_context += "\n\nFrontend evidence bundle:\n" + json_dumps(
+            prompt_context += "\n\n" + UNTRUSTED_CONTEXT_INSTRUCTION + "\nFrontend evidence bundle:\n" + json_dumps(
                 model_context.prompt_payload(), ensure_ascii=False
             )
         elif bundle_context:
-            prompt_context += "\n\nFrontend evidence bundle:\n" + bundle_context
+            prompt_context += "\n\n" + UNTRUSTED_CONTEXT_INSTRUCTION + "\nFrontend evidence bundle:\n" + bundle_context
         prompt_budget = max(0, VISION_MAX_PROMPT_CHARS - len(prompt_suffix))
-        prompt_context = prompt_context[:prompt_budget] + prompt_suffix
+        if len(prompt_context) > prompt_budget:
+            return input_error(
+                "Vision prompt and frontend evidence exceed the bounded prompt limit.",
+                "frontend_prompt_too_large",
+            )
+        prompt_context += prompt_suffix
         payload = {
             "model": model,
             "prompt": prompt_context,

@@ -99,6 +99,27 @@ def test_vision_resolves_network_artifact_with_console_ref_for_tenant(tmp_path: 
     assert all(call.kwargs["tenant"] == "tenant-a" for call in services.artifacts.get.call_args_list)
 
 
+def test_vision_rejects_oversized_inline_dom_like_artifact_ref(tmp_path: Path) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+
+    result = services.vision(
+        {
+            "image": str(image),
+            "dom": {
+                "redaction": "none",
+                "html": "x" * 12_001,
+                "elements": [{"element_id": "root"}],
+            },
+        },
+        "tenant-a",
+    )
+
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["error_code"] == "frontend_context_too_large"
+    runtime.request.assert_not_called()
+
+
 def test_packaged_and_source_defaults_configure_qwen_vision_model() -> None:
     root = Path(__file__).resolve().parents[1]
     for relative in ("defaults.toml", "src/local_ai_hub/defaults.toml"):
@@ -358,6 +379,7 @@ def test_vision_resolves_binary_screenshot_and_bundle_text_refs(tmp_path: Path) 
     screenshot_id = artifacts.put_bytes(b"binary-image", "tenant", "vision-image", "image/png")
     dom_id = artifacts.put_json(
         {
+            "redaction": "none",
             "html": "<main><button>Save</button></main>",
             "elements": [{"element_id": "root", "tag": "main"}],
         },
@@ -420,8 +442,9 @@ def test_vision_rejects_unbounded_prompt_schema_and_image(tmp_path: Path) -> Non
         "t",
     )
 
-    assert prompt_result["success"] is True
-    assert len(runtime.request.call_args.args[1]["prompt"]) <= 16_000
+    assert prompt_result["success"] is False
+    assert prompt_result["terminal"] is True
+    assert prompt_result["error_code"] == "frontend_prompt_too_large"
 
     schema_result = services.vision(
         {

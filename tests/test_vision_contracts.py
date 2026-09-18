@@ -41,6 +41,26 @@ def test_bundle_rejects_semantic_dom_redaction(redaction: str) -> None:
         )
 
 
+def test_bundle_rejects_missing_dom_redaction_marker() -> None:
+    with pytest.raises(ValueError, match="redaction"):
+        FrontendReviewBundle.from_payload(
+            {
+                "screenshot": {"artifact_id": "art_img", "mime_type": "image/png"},
+                "dom": {"artifact_id": "art_dom"},
+            }
+        )
+
+
+def test_bundle_rejects_oversized_inline_prompt() -> None:
+    with pytest.raises(ValueError, match="exceeds"):
+        FrontendReviewBundle.from_payload(
+            {
+                "prompt": "x" * 2_001,
+                "screenshot": {"artifact_id": "art_img", "mime_type": "image/png"},
+            }
+        )
+
+
 def test_bundle_forwards_network_runtime_artifact_id() -> None:
     bundle = FrontendReviewBundle.from_payload(
         {
@@ -251,7 +271,7 @@ def test_coder_packet_keeps_referenced_dom_ancestors_and_bounded_runtime() -> No
             ]
         },
         repo_context={"files": ["src/Checkout.tsx"]},
-        runtime_context={"console": ["error"] * 100, "network": ["failed"] * 100},
+        runtime_context={"console": ["error", "error"], "network": ["failed", "failed"]},
         max_runtime_items=2,
     )
 
@@ -269,11 +289,7 @@ def test_coder_packet_bounds_runtime_dict_keys_and_nested_lists() -> None:
         prompt="Review runtime",
         findings=[],
         dom={"elements": []},
-        runtime_context={
-            "console": ["one", "two", "three"],
-            "network": ["one", "two", "three"],
-            "extra": ["must be omitted"],
-        },
+        runtime_context={"console": ["one", "two"], "network": ["one", "two"]},
         max_runtime_items=2,
     )
 
@@ -290,7 +306,32 @@ def test_coder_packet_normalizes_negative_runtime_bound() -> None:
         max_runtime_items=-1,
     )
 
-    assert packet["runtime"] == {}
+    assert packet["terminal"] is True
+    assert packet["error"]["code"] == "frontend_context_too_large"
+
+
+def test_coder_packet_rejects_runtime_overflow_instead_of_truncating() -> None:
+    packet = build_coder_packet(
+        prompt="Review runtime",
+        findings=[],
+        dom={"elements": []},
+        runtime_context={"network": ["one", "two", "three"]},
+        max_runtime_items=2,
+    )
+
+    assert packet["terminal"] is True
+    assert packet["error"]["code"] == "frontend_context_too_large"
+
+
+def test_coder_packet_rejects_oversized_prompt() -> None:
+    packet = build_coder_packet(
+        prompt="x" * 2_001,
+        findings=[],
+        dom={"elements": []},
+    )
+
+    assert packet["terminal"] is True
+    assert packet["error"]["code"] == "frontend_context_too_large"
 
 
 @pytest.mark.parametrize("dom", [{"elements": [None]}, {"elements": "not-a-list"}])

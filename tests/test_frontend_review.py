@@ -15,7 +15,10 @@ def test_build_model_context_includes_screenshot_dom_and_prompt() -> None:
     context = build_model_context(
         prompt="Why is the button missing?",
         screenshot_data_url="data:image/png;base64,AA==",
-        dom={"elements": [{"element_id": "el-1", "tag": "button"}]},
+        dom={
+            "redaction": "none",
+            "elements": [{"element_id": "el-1", "tag": "button"}],
+        },
         accessibility={"el-1": {"role": "button"}},
         computed_styles={"el-1": {"display": "none"}},
         viewport={"width": 390, "height": 844},
@@ -30,6 +33,7 @@ def test_build_model_context_includes_screenshot_dom_and_prompt() -> None:
 def test_full_dom_is_not_semantically_redacted() -> None:
     projected = project_live_dom(
         {
+            "redaction": "none",
             "html": "<main>user@example.test</main>",
             "elements": [{"element_id": "root", "tag": "main"}],
         },
@@ -39,19 +43,85 @@ def test_full_dom_is_not_semantically_redacted() -> None:
     assert "user@example.test" in projected["html"]
 
 
-def test_dom_limit_is_explicit() -> None:
+def test_dom_limit_is_terminal_not_truncated() -> None:
     projected = project_live_dom(
-        {"html": "x" * 20, "elements": [{"element_id": "root"}]}, max_chars=10
+        {
+            "redaction": "none",
+            "html": "x" * 20,
+            "elements": [{"element_id": "root"}],
+        },
+        max_chars=10,
     )
 
-    assert projected["truncated"] is True
-    assert projected["original_chars"] == 20
-    assert projected["limit_chars"] == 10
+    assert projected["terminal"] is True
+    assert projected["error"]["code"] == "frontend_context_too_large"
+
+
+def test_dom_requires_explicit_none_redaction_marker() -> None:
+    projected = project_live_dom(
+        {"html": "<main />", "elements": [{"element_id": "root"}]},
+        max_chars=10_000,
+    )
+
+    assert projected["terminal"] is True
+    assert projected["error"]["code"] == "missing_dom_redaction"
+
+
+def test_dom_rejects_oversized_element_content() -> None:
+    projected = project_live_dom(
+        {
+            "redaction": "none",
+            "elements": [{"element_id": "root", "text": "x" * 2_001}],
+        },
+        max_chars=10_000,
+    )
+
+    assert projected["terminal"] is True
+    assert projected["error"]["code"] == "frontend_context_too_large"
+
+
+def test_model_context_rejects_nested_a11y_overflow() -> None:
+    try:
+        build_model_context(
+            prompt="Review",
+            screenshot_data_url="data:image/png;base64,AA==",
+            dom={"redaction": "none", "elements": [{"element_id": "root"}]},
+            accessibility={"root": {"name": "x" * 2_001}},
+            computed_styles={},
+            viewport={},
+        )
+    except Exception as exc:
+        assert getattr(exc, "code", "") == "frontend_context_too_large"
+    else:
+        raise AssertionError("oversized accessibility context must be terminal")
+
+
+def test_model_context_rejects_excessive_nesting() -> None:
+    nested = value = {}
+    for _ in range(10):
+        value["next"] = {}
+        value = value["next"]
+
+    try:
+        build_model_context(
+            prompt="Review",
+            screenshot_data_url="data:image/png;base64,AA==",
+            dom={"redaction": "none", "elements": [{"element_id": "root"}]},
+            accessibility={},
+            computed_styles={},
+            viewport={},
+            runtime=nested,
+        )
+    except Exception as exc:
+        assert getattr(exc, "code", "") == "frontend_context_too_deep"
+    else:
+        raise AssertionError("deep runtime context must be terminal")
 
 
 def test_project_live_dom_rejects_duplicate_element_ids() -> None:
     projected = project_live_dom(
         {
+            "redaction": "none",
             "html": "<button>Save</button>",
             "elements": [
                 {"element_id": "el-1", "tag": "button"},
@@ -66,7 +136,9 @@ def test_project_live_dom_rejects_duplicate_element_ids() -> None:
 
 
 def test_html_dom_requires_stable_elements_list() -> None:
-    projected = project_live_dom({"html": "<main />"}, max_chars=10_000)
+    projected = project_live_dom(
+        {"redaction": "none", "html": "<main />"}, max_chars=10_000
+    )
 
     assert projected["terminal"] is True
     assert projected["error"]["code"] == "missing_dom_elements"
@@ -125,7 +197,8 @@ def test_service_passes_screenshot_and_dom_bundle_to_vision_model(tmp_path: Path
             "success": True,
             "text": json.dumps(
                 {
-                    "html": "<button id='save'>Save</button>",
+            "redaction": "none",
+            "html": "<button id='save'>Save</button>",
                     "elements": [
                         {"element_id": "el-1", "tag": "button", "ancestor_ids": []}
                     ],
@@ -174,6 +247,7 @@ def test_service_passes_screenshot_and_dom_bundle_to_vision_model(tmp_path: Path
     assert "<button id='save'>Save</button>" in payload["prompt"]
     assert "el-1" in payload["prompt"]
     assert result["coder_context"]["artifact_refs"]["dom"] == "dom-1"
+    assert "untrusted evidence" in payload["prompt"].lower()
 
 
 def test_service_rejects_missing_or_oversized_dom_refs(tmp_path: Path) -> None:

@@ -6,7 +6,13 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from .vision_contracts import VISION_MAX_BUNDLE_CHARS, build_coder_packet
+from .vision_contracts import (
+    UNTRUSTED_CONTEXT_INSTRUCTION,
+    VISION_MAX_BUNDLE_CHARS,
+    VisionContextBoundsError,
+    build_coder_packet,
+    validate_bounded_context,
+)
 
 
 _TRANSPORT_METADATA = {
@@ -57,6 +63,7 @@ class FrontendModelContext:
         """Return model context without duplicating image transport data."""
         return {
             "prompt": self.prompt,
+            "context_instructions": UNTRUSTED_CONTEXT_INSTRUCTION,
             "dom": self.dom,
             "accessibility": self.accessibility,
             "computed_styles": self.computed_styles,
@@ -94,6 +101,12 @@ def project_live_dom(payload: dict[str, Any], *, max_chars: int) -> dict[str, An
         return FrontendReviewError("invalid_dom_bound", "DOM character bound must be positive").as_result()
 
     projected = _strip_transport_metadata(dict(payload))
+    has_dom = "html" in projected or "elements" in projected
+    if has_dom and "redaction" not in projected:
+        return FrontendReviewError(
+            "missing_dom_redaction",
+            "DOM-aware context requires an explicit redaction=none marker",
+        ).as_result()
     if "redaction" in projected and projected.get("redaction") != "none":
         return FrontendReviewError(
             "semantic_dom_redaction_not_allowed",
@@ -128,14 +141,16 @@ def project_live_dom(payload: dict[str, Any], *, max_chars: int) -> dict[str, An
                 ).as_result()
             seen.add(element_id)
 
-    html = projected.get("html")
-    if isinstance(html, str) and len(html) > max_chars:
-        projected["html"] = html[:max_chars]
-        projected["truncated"] = True
-        projected["original_chars"] = len(html)
-        projected["limit_chars"] = max_chars
-    else:
-        projected.setdefault("truncated", False)
+    try:
+        validate_bounded_context(
+            projected,
+            name="dom",
+            max_chars=max_chars,
+            allow_html_paths={"html"},
+        )
+    except VisionContextBoundsError as exc:
+        return FrontendReviewError(exc.code, str(exc)).as_result()
+    projected.setdefault("truncated", False)
     return projected
 
 
@@ -151,11 +166,17 @@ def build_model_context(
 ) -> FrontendModelContext:
     if not isinstance(screenshot_data_url, str) or not screenshot_data_url:
         raise FrontendReviewError("missing_screenshot", "vision review requires screenshot data")
+    if not isinstance(prompt, str):
+        raise FrontendReviewError("frontend_context_invalid", "prompt must be a string")
+    try:
+        validate_bounded_context(prompt, name="prompt")
+    except VisionContextBoundsError as exc:
+        raise FrontendReviewError(exc.code, str(exc)) from exc
     projected_dom = project_live_dom(dom, max_chars=VISION_MAX_BUNDLE_CHARS)
     if projected_dom.get("terminal"):
         error = projected_dom.get("error", {})
         raise FrontendReviewError(str(error.get("code", "invalid_dom_bundle")), str(error.get("message", "invalid DOM bundle")))
-    return FrontendModelContext(
+    context = FrontendModelContext(
         prompt=str(prompt),
         screenshot_data_url=screenshot_data_url,
         dom=projected_dom,
@@ -164,6 +185,22 @@ def build_model_context(
         viewport=_mapping(viewport, "viewport"),
         runtime=_strip_transport_metadata(_mapping(runtime, "runtime")),
     )
+    try:
+        validate_bounded_context(
+            {
+                "prompt": context.prompt,
+                "dom": context.dom,
+                "accessibility": context.accessibility,
+                "computed_styles": context.computed_styles,
+                "viewport": context.viewport,
+                "runtime": context.runtime,
+            },
+            name="frontend_bundle",
+            allow_html_paths={"dom.html"},
+        )
+    except VisionContextBoundsError as exc:
+        raise FrontendReviewError(exc.code, str(exc)) from exc
+    return context
 
 
 def _artifact_id(value: Any) -> str:
@@ -223,6 +260,10 @@ def build_coder_context(
     dom = _strip_transport_metadata(dom)
     if bundle.get("dom_payload") and not dom:
         dom = {"html": str(bundle["dom_payload"])}
+    projected_dom = project_live_dom(dom, max_chars=VISION_MAX_BUNDLE_CHARS)
+    if projected_dom.get("terminal"):
+        return projected_dom
+    dom = projected_dom
     if dom.get("truncated"):
         return FrontendReviewError(
             "frontend_dom_context_truncated",
@@ -266,12 +307,39 @@ def build_coder_context(
             element_ids=missing,
         ).as_result()
 
+    raw_prompt = bundle.get("prompt", review.get("prompt", ""))
+    if not isinstance(raw_prompt, str):
+        return FrontendReviewError("frontend_context_invalid", "prompt must be a string").as_result()
+    prompt_value = raw_prompt
+    accessibility_value = _strip_transport_metadata(
+        _context_value(bundle.get("accessibility"), "accessibility")
+    )
+    styles_value = _strip_transport_metadata(
+        _context_value(bundle.get("computed_styles"), "computed_styles")
+    )
+    runtime_value = _context_value(bundle.get("runtime"), "runtime")
+    try:
+        validate_bounded_context(
+            {
+                "prompt": prompt_value,
+                "dom": dom,
+                "accessibility": accessibility_value,
+                "computed_styles": styles_value,
+                "runtime": runtime_value,
+                "repo": repo_context or {},
+            },
+            name="coder_context",
+            allow_html_paths={"dom.html"},
+        )
+    except VisionContextBoundsError as exc:
+        return FrontendReviewError(exc.code, str(exc)).as_result()
+
     base = build_coder_packet(
-        prompt=str(bundle.get("prompt", review.get("prompt", ""))),
+        prompt=prompt_value,
         findings=findings,
         dom=dom,
         repo_context=repo_context,
-        runtime_context=_context_value(bundle.get("runtime"), "runtime") or None,
+        runtime_context=runtime_value or None,
     )
     if base.get("terminal"):
         return {"success": False, **base}
@@ -282,11 +350,11 @@ def build_coder_context(
         if isinstance(element, dict) and element.get("element_id")
     }
     accessibility = _relevant_mapping(
-        _strip_transport_metadata(_context_value(bundle.get("accessibility"), "accessibility")),
+        accessibility_value,
         kept_ids,
     )
     styles = _relevant_mapping(
-        _strip_transport_metadata(_context_value(bundle.get("computed_styles"), "computed_styles")),
+        styles_value,
         kept_ids,
     )
     refs: dict[str, str] = {}
