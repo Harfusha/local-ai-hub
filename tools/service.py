@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import plistlib
 import shutil
@@ -352,10 +353,24 @@ def main() -> int:
     if action == "stop": native_stop(); print("stopped"); return 0
     if action == "start": native_start(); time.sleep(0.5); print("started"); return 0
     if action == "restart": native_stop(); time.sleep(0.5); native_start(); print("restarted"); return 0
-    client = HubClient(tenant="service-control", config_path=_ACTIVE_CONFIG_ARG)
+    client = HubClient(tenant="service-control", config_path=_ACTIVE_CONFIG_ARG, auto_start=False)
     status_path = STATE / "supervisor.status.json"
-    print(status_path.read_text(encoding="utf-8") if status_path.exists() else '{"state":"stopped"}')
-    return 0 if client._online() else 1
+    try:
+        status = json.loads(status_path.read_text(encoding="utf-8")) if status_path.exists() else {"state": "stopped"}
+    except (OSError, ValueError):
+        status = {"state": "unknown"}
+    online = bool(client._online())
+    status["hub_online"] = online
+    if not online:
+        # A supervisor status file can outlive its child after an abrupt stop.
+        # Never report that stale state as running and never auto-start from a
+        # read-only status command.
+        if status.get("state") in {"running", "starting"}:
+            status["state"] = "unavailable"
+        status["last_error"] = status.get("last_error") or "hub endpoint unavailable"
+        status["ollama_online"] = False
+    print(json.dumps(status, ensure_ascii=False, sort_keys=True))
+    return 0 if online else 1
 
 
 if __name__ == "__main__":
