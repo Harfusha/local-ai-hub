@@ -640,19 +640,41 @@ class MemoryStore:
         if not changed:
             return 0
 
-        records = self.find(
-            scope=AgentScope.REPOSITORY,
-            limit=100000,
-            include_expired=True,
-            semantic=False,
+        changed_placeholders = ", ".join("?" for _ in changed)
+        revision_sql = (
+            "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
+            "'$.repository_revision')"
         )
-        root_norm = self._normalise_path(root)
-
-        select_sql = (
-            "SELECT record_id, kind, scope, scope_id, key, value, status, confidence, source, "
-            "evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id, "
-            "quarantine_reason, provenance, created_at, updated_at, expires_at "
-            "FROM agent_memory_records WHERE record_id = ?"
+        path_refs_sql = (
+            "CASE "
+            "WHEN json_valid(provenance) AND json_type(provenance, '$.path_refs') = 'array' "
+            "THEN json_extract(provenance, '$.path_refs') "
+            "WHEN json_valid(provenance) AND json_type(provenance, '$.path_refs') = 'text' "
+            "THEN json_array(json_extract(provenance, '$.path_refs')) "
+            "ELSE '[]' END"
+        )
+        select_sql = f"""
+            SELECT record_id, kind, scope, scope_id, key, value, status, confidence, source,
+                   evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id,
+                   quarantine_reason, provenance, created_at, updated_at, expires_at
+            FROM agent_memory_records
+            WHERE scope = ?
+              AND status <> ?
+              AND {_CONTEXT_ROOT_SQL} = ?
+              AND COALESCE({revision_sql}, '') <> ?
+              AND EXISTS (
+                  SELECT 1
+                  FROM json_each({path_refs_sql}) AS path_ref
+                  WHERE canonical_repo_path(path_ref.value, ?) IN ({changed_placeholders})
+              )
+        """
+        select_params = (
+            AgentScope.REPOSITORY.value,
+            MemoryStatus.STALE.value,
+            _normalise_scope_root(root),
+            str(revision),
+            root,
+            *changed,
         )
 
         def _mark_batch() -> tuple[int, list[AgentEvent]]:
@@ -660,29 +682,22 @@ class MemoryStore:
             published_events: list[AgentEvent] = []
             stale_count = 0
             try:
+                con.create_function(
+                    "canonical_scope_root",
+                    1,
+                    lambda value: _normalise_scope_root(str(value)) if value else "",
+                )
+                con.create_function(
+                    "canonical_repo_path",
+                    2,
+                    lambda value, repo_root: (
+                        self._canonical_repo_path(str(repo_root), str(value)) if value is not None else ""
+                    ),
+                )
                 con.execute("BEGIN IMMEDIATE")
-                for record in records:
-                    row = con.execute(select_sql, (record.record_id,)).fetchone()
-                    if not row:
-                        continue
-
+                rows = con.execute(select_sql, select_params).fetchall()
+                for row in rows:
                     current = self._row_to_record(row)
-                    record_root = current.provenance.get("root") if isinstance(current.provenance, Mapping) else None
-                    if (
-                        not record_root
-                        or self._normalise_path(str(record_root)) != root_norm
-                        or current.status is MemoryStatus.STALE
-                        or current.repository_revision in (None, str(revision))
-                        or current.status is not record.status
-                        or current.repository_revision != record.repository_revision
-                        or current.updated_at != record.updated_at
-                        or not any(
-                            self._paths_overlap(ref, path, root=root)
-                            for ref in current.path_refs
-                            for path in changed
-                        )
-                    ):
-                        continue
 
                     original = current.to_dict()
                     updated_provenance = dict(current.provenance)
