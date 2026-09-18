@@ -67,7 +67,7 @@ class GitSnapshot:
 
     @property
     def changed_paths(self) -> tuple[str, ...]:
-        paths = set(self.status)
+        paths = {path for path, state in self.status.items() if state != "clean"}
         paths.update(self.deleted)
         paths.update(self.renames)
         paths.update(self.renames.values())
