@@ -7,8 +7,11 @@ does not mutate task state, remove history, or treat model output as proof.
 from __future__ import annotations
 
 import hashlib
+import itertools
+import math
 import re
-from dataclasses import dataclass, field
+import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -25,30 +28,130 @@ _FIELD = re.compile(r"\b([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w<>\[\]| ]*)(?=[,;}\n]|
 
 
 def _text(value: Any, limit: int = _MAX_TEXT) -> str:
-    rendered = str(value or "")
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        rendered = value
+    else:
+        try:
+            rendered = str(value)
+        except Exception:
+            rendered = "<unserializable>"
     return rendered[:limit]
 
 
 def _tuple(value: Any, limit: int = _MAX_ITEMS) -> tuple[str, ...]:
     if isinstance(value, str):
         values = (value,)
-    elif isinstance(value, Iterable):
-        values = tuple(value)
     else:
-        values = ()
-    return tuple(_text(item, 240) for item in values if item is not None)[:limit]
+        try:
+            values = itertools.islice(iter(value), limit)
+        except Exception:
+            values = ()
+    output: list[str] = []
+    try:
+        for item in values:
+            if item is not None:
+                output.append(_text(item, 240))
+    except Exception:
+        pass
+    return tuple(output[:limit])
 
 
-def _json_value(value: Any, depth: int = 0) -> Any:
+def _bounded_sequence(value: Any, limit: int = _MAX_ITEMS) -> tuple[Any, ...]:
+    try:
+        return tuple(itertools.islice(iter(value), limit))
+    except Exception:
+        return ()
+
+
+def _safe_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"", "0", "false", "no", "off", "none", "null"}:
+            return False
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+    try:
+        return bool(value)
+    except Exception:
+        return default
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        result = float(value)
+        return result if math.isfinite(result) else default
+    except Exception:
+        return default
+
+
+def _json_value(value: Any, depth: int = 0, seen: set[int] | None = None) -> Any:
+    seen = seen if seen is not None else set()
     if depth > 3:
         return _text(value, 240)
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return _text(value) if isinstance(value, str) else value
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else 0.0
+    identity = id(value)
+    if identity in seen:
+        return "<cycle>"
     if isinstance(value, Mapping):
-        return {_text(k, 80): _json_value(v, depth + 1) for k, v in list(value.items())[:_MAX_ITEMS]}
+        seen.add(identity)
+        output: dict[str, Any] = {}
+        try:
+            items = itertools.islice(value.items(), _MAX_ITEMS)
+            for key, item in items:
+                output[_text(key, 80)] = _json_value(item, depth + 1, seen)
+        except Exception:
+            pass
+        seen.discard(identity)
+        return output
     if isinstance(value, (tuple, list, set)):
-        return [_json_value(item, depth + 1) for item in list(value)[:_MAX_ITEMS]]
+        seen.add(identity)
+        output: list[Any] = []
+        try:
+            for item in itertools.islice(iter(value), _MAX_ITEMS):
+                output.append(_json_value(item, depth + 1, seen))
+        except Exception:
+            pass
+        seen.discard(identity)
+        return output
     return _text(value, 240)
+
+
+def _normalise_authority_label(value: Any) -> str:
+    raw = unicodedata.normalize("NFKC", _text(value, 240)).casefold()
+    return re.sub(r"[^a-z0-9]+", " ", raw).strip()
+
+
+def _is_local_model_evidence(item: Mapping[str, Any]) -> bool:
+    labels = []
+    for key in ("source", "provider", "provider_name", "model", "model_name"):
+        if item.get(key) is not None:
+            labels.append(_normalise_authority_label(item.get(key)))
+    blocked = {"model", "llm", "generated", "local model", "local model output", "local inference", "ollama"}
+    model_family = ("qwen", "llama", "mistral", "gemma", "phi", "deepseek", "granite", "llm")
+    for label in labels:
+        compact = label.replace(" ", "")
+        tokens = set(label.split())
+        if label in blocked or tokens.intersection({"model", "llm", "generated", "ollama"}) or "ollama" in compact:
+            return True
+        if "local" in label and any(token in label for token in ("model", "inference", "llm", "ai")):
+            return True
+        if any(compact.startswith(prefix) for prefix in model_family):
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -76,9 +179,10 @@ class ConsistencyRequest:
         object.__setattr__(self, "focus", _tuple(self.focus, 16))
         object.__setattr__(self, "workspace", _text(self.workspace, 160))
         object.__setattr__(self, "preload_profile", _text(self.preload_profile, 120))
-        object.__setattr__(self, "token_budget", max(128, min(int(self.token_budget), 20000)))
+        object.__setattr__(self, "token_budget", max(128, min(_safe_int(self.token_budget, 2400), 20000)))
         object.__setattr__(self, "changed_paths", _tuple(self.changed_paths, 64))
         object.__setattr__(self, "base", _text(self.base, 160) or "HEAD")
+        object.__setattr__(self, "staged", _safe_bool(self.staged))
         object.__setattr__(self, "tenant", _text(self.tenant, 160))
         object.__setattr__(self, "override_reason", _text(self.override_reason, 500))
         if not isinstance(self.approval, bool):
@@ -111,17 +215,18 @@ class ReuseCandidate:
         object.__setattr__(self, "kind", _text(self.kind, 80))
         object.__setattr__(self, "path", _text(self.path, 400))
         object.__setattr__(self, "symbol", _text(self.symbol, 160))
-        object.__setattr__(self, "line", max(0, int(self.line)))
-        object.__setattr__(self, "score", round(float(self.score), 3))
+        object.__setattr__(self, "line", max(0, _safe_int(self.line)))
+        object.__setattr__(self, "score", round(_safe_float(self.score), 3))
         object.__setattr__(self, "reason", _text(self.reason, 400))
         object.__setattr__(self, "evidence_ids", _tuple(self.evidence_ids))
+        object.__setattr__(self, "suitable", _safe_bool(self.suitable, True))
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        return _json_value({
             "candidate_id": self.candidate_id, "kind": self.kind, "path": self.path,
             "symbol": self.symbol, "line": self.line, "score": self.score,
             "reason": self.reason, "evidence_ids": list(self.evidence_ids), "suitable": self.suitable,
-        }
+        })
 
 
 @dataclass(frozen=True)
@@ -151,7 +256,7 @@ class ContractMapping:
             object.__setattr__(self, name, _tuple(getattr(self, name)))
 
     def to_dict(self) -> dict[str, Any]:
-        return {name: _json_value(value) for name, value in {
+        return _json_value({name: value for name, value in {
             "kind": self.kind, "endpoint": self.endpoint, "backend_path": self.backend_path,
             "frontend_path": self.frontend_path, "backend_symbol": self.backend_symbol,
             "frontend_symbol": self.frontend_symbol, "backend_fields": self.backend_fields,
@@ -159,7 +264,7 @@ class ContractMapping:
             "frontend_error_identifiers": self.frontend_error_identifiers, "loading_state": self.loading_state,
             "empty_state": self.empty_state, "error_state": self.error_state, "test_paths": self.test_paths,
             "status": self.status, "evidence_ids": self.evidence_ids, "mismatches": self.mismatches,
-        }.items()}
+        }.items()})
 
 
 @dataclass(frozen=True)
@@ -182,13 +287,14 @@ class GuardWarning:
         object.__setattr__(self, "evidence_ids", _tuple(self.evidence_ids))
         object.__setattr__(self, "affected_paths", _tuple(self.affected_paths))
         object.__setattr__(self, "recommended_action", _text(self.recommended_action, 500))
+        object.__setattr__(self, "requires_approval", _safe_bool(self.requires_approval))
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        return _json_value({
             "severity": self.severity, "code": self.code, "kind": self.kind, "message": self.message,
             "evidence_ids": list(self.evidence_ids), "affected_paths": list(self.affected_paths),
             "recommended_action": self.recommended_action, "requires_approval": self.requires_approval,
-        }
+        })
 
 
 @dataclass(frozen=True)
@@ -203,16 +309,37 @@ class AdaptiveContextPack:
     stale: bool = False
     context_id: str = ""
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "reuse_candidates", _bounded_sequence(self.reuse_candidates))
+        object.__setattr__(self, "mappings", _bounded_sequence(self.mappings))
+        object.__setattr__(self, "warnings", _bounded_sequence(self.warnings))
+        object.__setattr__(self, "evidence", _bounded_sequence(self.evidence))
+        object.__setattr__(self, "repo_revision", _text(self.repo_revision, 200))
+        object.__setattr__(self, "changed_paths", _tuple(self.changed_paths, 64))
+        object.__setattr__(self, "stale", _safe_bool(self.stale))
+        object.__setattr__(self, "context_id", _text(self.context_id, 200))
+
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "contract": self.contract.to_dict() if self.contract else None,
-            "reuse_candidates": [item.to_dict() for item in self.reuse_candidates[:_MAX_ITEMS]],
-            "mappings": [item.to_dict() for item in self.mappings[:_MAX_ITEMS]],
-            "warnings": [item.to_dict() for item in self.warnings[:_MAX_ITEMS]],
+        try:
+            contract = self.contract.to_dict() if self.contract else None
+        except Exception:
+            contract = {"goal": "<unserializable>"}
+        def nested(value: Any) -> Any:
+            try:
+                converter = getattr(value, "to_dict", None)
+                return converter() if callable(converter) else value
+            except Exception:
+                return "<unserializable>"
+
+        return _json_value({
+            "contract": contract,
+            "reuse_candidates": [nested(item) for item in self.reuse_candidates[:_MAX_ITEMS]],
+            "mappings": [nested(item) for item in self.mappings[:_MAX_ITEMS]],
+            "warnings": [nested(item) for item in self.warnings[:_MAX_ITEMS]],
             "evidence": [_json_value(item) for item in self.evidence[:_MAX_ITEMS]],
             "repo_revision": _text(self.repo_revision, 200), "changed_paths": list(_tuple(self.changed_paths)),
             "stale": bool(self.stale), "context_id": _text(self.context_id, 200),
-        }
+        })
 
 
 class AgentConsistencyGuard:
@@ -283,10 +410,13 @@ class AgentConsistencyGuard:
             symbols = re.findall(r"\b(?:class|def|function|interface|type|const)\s+([A-Za-z_]\w*)", raw)
             symbol = symbols[0] if symbols else Path(path).stem
             kind = "frontend" if any(token in path.lower() for token in ("frontend", "client", ".ts", ".tsx", "component")) else "backend"
-            score = float(item.get("score", 0.0)) + (2.0 if symbol.lower() in query.lower() else 0.0)
+            reinvention = bool(re.search(r"(?:^|[/_.-])(new|reinvent|duplicate|copy)(?:[/_.-]|$)", f"{path.lower()}"))
+            score = _safe_float(item.get("score", 0.0)) + (2.0 if symbol.lower() in query.lower() else 0.0)
+            if reinvention:
+                score = max(0.0, score - 3.0)
             evidence_id = self._evidence_id(item)
             candidate_id = "reuse-" + hashlib.sha256(f"{path}:{item.get('start_line', 0)}:{symbol}".encode("utf-8")).hexdigest()[:16]
-            candidates.append(ReuseCandidate(candidate_id, kind, path, symbol, int(item.get("start_line", 0) or 0), score, "deterministic repository match", (evidence_id,)))
+            candidates.append(ReuseCandidate(candidate_id, kind, path, symbol, _safe_int(item.get("start_line", 0)), score, "deterministic repository match", (evidence_id,), not reinvention))
         candidates.sort(key=lambda item: (-int(item.suitable), -item.score, item.path, item.line, item.candidate_id))
         return tuple(candidates[: self.max_candidates])
 
@@ -342,12 +472,12 @@ class AgentConsistencyGuard:
         path = str(item.get("path", "")).lower()
         return "/test" in f"/{path}" or path.startswith("test_") or "_test" in path
 
-    def check_claims(self, evidence: Iterable[Mapping[str, Any]] | Mapping[str, Any], claims: Iterable[Any]) -> tuple[GuardWarning, ...]:
+    def check_claims(self, evidence: Iterable[Mapping[str, Any]] | Mapping[str, Any], claims: Iterable[Any], request: ConsistencyRequest | None = None) -> tuple[GuardWarning, ...]:
         if isinstance(evidence, Mapping):
             evidence = evidence.get("evidence") or evidence.get("results") or ()
         authoritative: dict[str, Mapping[str, Any]] = {}
         for item in list(evidence)[:_MAX_ITEMS]:
-            if not isinstance(item, Mapping) or str(item.get("source", "")).lower() in {"model", "llm", "generated"}:
+            if not isinstance(item, Mapping) or _is_local_model_evidence(item):
                 continue
             authoritative[self._evidence_id(item)] = item
         warnings: list[GuardWarning] = []
@@ -359,7 +489,58 @@ class AgentConsistencyGuard:
                 text, ids = _text(claim, 400), ()
             if not ids or any(evidence_id not in authoritative for evidence_id in ids):
                 warnings.append(GuardWarning("warning", "unknown_claim", f"unsupported claim: {text}", (), (), "verify the claim with deterministic repository evidence"))
+                self._persist_claim_decision(request, text, (), "unknown")
+            else:
+                self._persist_claim_decision(request, text, ids, "verified")
         return tuple(warnings)
+
+    def _persist_claim_decision(self, request: ConsistencyRequest | None, claim: str, evidence_ids: tuple[str, ...], status: str) -> None:
+        """Use existing stores when supplied; never create a parallel persistence layer."""
+        if request is None or (self.memory_store is None and self.verification_store is None):
+            return
+        try:
+            revision = self.repository_tools.git_snapshot(request.root).revision
+        except Exception:
+            revision = ""
+        compact_claim = _text(claim, 240)
+        key_digest = hashlib.sha256(f"{request.task_id}:{status}:{compact_claim}:{','.join(evidence_ids)}".encode("utf-8")).hexdigest()[:16]
+        if self.memory_store is not None and callable(getattr(self.memory_store, "record", None)):
+            try:
+                from .agent_identity import AgentScope
+                from .agent_memory import MemoryKind, MemoryRecord
+
+                record = MemoryRecord.create(
+                    kind=MemoryKind.FINDING if status == "verified" else MemoryKind.UNKNOWN,
+                    scope=AgentScope.REPOSITORY,
+                    key=f"consistency_claim:{key_digest}",
+                    value={"status": status, "claim": compact_claim},
+                    source="consistency_guard",
+                    evidence_ids=tuple(evidence_ids),
+                    repository_revision=revision,
+                    path_refs=tuple(request.changed_paths),
+                    related_task=request.task_id,
+                    provenance={"root": _text(request.root, 400), "guard": "agent_consistency"},
+                )
+                try:
+                    self.memory_store.record(record, actor="consistency_guard", idempotency_key=f"consistency:{key_digest}")
+                except TypeError:
+                    self.memory_store.record(record)
+            except Exception:
+                pass
+        if status == "verified" and request.task_id and evidence_ids and self.verification_store is not None and callable(getattr(self.verification_store, "record", None)):
+            try:
+                from .agent_verification import VerificationReceipt
+
+                receipt = VerificationReceipt.create(
+                    task_id=request.task_id,
+                    criterion=f"consistency claim:{key_digest}",
+                    evidence_id=evidence_ids[0],
+                    repository_revision=revision,
+                    details={"kind": "claim", "evidence_ids": list(evidence_ids)},
+                )
+                self.verification_store.record(receipt)
+            except Exception:
+                pass
 
     def check_drift(self, request: ConsistencyRequest, contract: GoalContract, changed_paths: Iterable[str], diff: Mapping[str, Any] | str | None) -> tuple[GuardWarning, ...]:
         warnings: list[GuardWarning] = []
