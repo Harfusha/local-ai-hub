@@ -166,6 +166,131 @@ def test_memory_diagnostics_are_repository_scoped(tmp_path: Path):
     assert "stale_count=1" in diagnostics.content
 
 
+def test_legacy_rootless_memory_is_only_authoritative_without_root(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    memory_store = MemoryStore(state_store)
+    concrete_root = str(tmp_path / "repository")
+    legacy = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope="repository",
+            key="legacy-rootless",
+            value="legacy evidence",
+            status=MemoryStatus.CONFIRMED,
+            provenance={},
+        )
+    )
+
+    rootless_context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
+        ContextRequest(task_id="task-1", token_budget=120)
+    )
+    assert legacy.record_id in {element.element_id for element in rootless_context.elements}
+
+    scoped_context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
+        ContextRequest(task_id="task-1", root=concrete_root, token_budget=120, include_diagnostics=True)
+    )
+    scoped_ids = {element.element_id for element in scoped_context.elements}
+    diagnostics = next(element for element in scoped_context.elements if element.source_kind == "memory_diagnostics")
+    assert legacy.record_id not in scoped_ids
+    assert legacy.record_id in diagnostics.content
+    assert "legacy_unscoped_count=1" in diagnostics.content
+
+
+def test_repository_root_aliases_match_context_scope(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    memory_store = MemoryStore(state_store)
+    canonical_root = str(tmp_path / "repository")
+    aliased_root = str(tmp_path / "repository" / "child" / "..")
+    record = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope="repository",
+            key="aliased-root",
+            value="same repository",
+            status=MemoryStatus.CONFIRMED,
+            provenance={"root": aliased_root},
+        )
+    )
+
+    context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
+        ContextRequest(task_id="task-1", root=canonical_root, token_budget=120)
+    )
+    assert record.record_id in {element.element_id for element in context.elements}
+
+
+def test_unsupported_memory_scopes_require_matching_request_identity(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    memory_store = MemoryStore(state_store)
+    records = [
+        memory_store.record(
+            MemoryRecord.create(
+                kind=MemoryKind.FINDING,
+                scope=scope,
+                scope_id=scope_id,
+                key=f"{scope}-memory",
+                value="scoped evidence",
+                status=MemoryStatus.CONFIRMED,
+            )
+        )
+        for scope, scope_id in (("clone", "clone-a"), ("worktree", "worktree-a"), ("branch", "branch-a"))
+    ]
+
+    unavailable = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
+        ContextRequest(task_id="task-1", token_budget=200)
+    )
+    unavailable_ids = {element.element_id for element in unavailable.elements}
+    assert unavailable_ids.isdisjoint({record.record_id for record in records})
+
+    matched = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
+        ContextRequest(
+            task_id="task-1",
+            token_budget=200,
+            clone_id="clone-a",
+            worktree_id="worktree-a",
+            branch="branch-a",
+        )
+    )
+    matched_ids = {element.element_id for element in matched.elements}
+    assert {record.record_id for record in records} <= matched_ids
+
+
+def test_context_filters_before_candidate_limit_with_many_excluded_records(tmp_path: Path, monkeypatch):
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    memory_store = MemoryStore(state_store)
+    current_root = str(tmp_path / "current")
+    other_root = str(tmp_path / "other")
+    for index in range(25):
+        memory_store.record(
+            MemoryRecord.create(
+                kind=MemoryKind.FINDING,
+                scope="repository",
+                key=f"other-{index}",
+                value="excluded",
+                status=MemoryStatus.CONFIRMED,
+                provenance={"root": other_root},
+            )
+        )
+    current = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope="repository",
+            key="current",
+            value="authoritative",
+            status=MemoryStatus.CONFIRMED,
+            provenance={"root": current_root},
+        )
+    )
+
+    def fail_unbounded_find(*args, **kwargs):
+        raise AssertionError("context must use bounded SQL-filtered memory lookup")
+
+    monkeypatch.setattr(memory_store, "find", fail_unbounded_find)
+    context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
+        ContextRequest(task_id="task-1", root=current_root, token_budget=120)
+    )
+    assert current.record_id in {element.element_id for element in context.elements}
+
+
 def test_memory_diagnostics_aggregate_beyond_context_candidate_limit(tmp_path: Path):
     state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
     memory_store = MemoryStore(state_store)

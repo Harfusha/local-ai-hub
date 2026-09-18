@@ -2138,6 +2138,7 @@ class Handler(BaseHTTPRequestHandler):
                         changed_paths=tuple(payload.get("changed_paths") or ()),
                         root=str(payload.get("root", "")),
                         tenant=tenant,
+                        include_diagnostics=bool(payload.get("include_diagnostics", False)),
                     )
                     compiled = APP.agent_context.compile(req)
                     etag = compiled.etag()

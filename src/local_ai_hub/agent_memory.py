@@ -63,16 +63,69 @@ def _memory_matches_request_scope(
     root: str,
     task_id: str,
     tenant: str,
+    clone_id: str = "",
+    worktree_id: str = "",
+    branch: str = "",
 ) -> bool:
     scope_value = scope.value if hasattr(scope, "value") else str(scope)
     if scope_value == AgentScope.REPOSITORY.value:
         record_root = str((provenance or {}).get("root") or "")
-        return bool(root and record_root and _normalise_scope_root(record_root) == _normalise_scope_root(root))
+        if not record_root:
+            return not root
+        return bool(root and _normalise_scope_root(record_root) == _normalise_scope_root(root))
     if scope_value == AgentScope.TASK.value:
         return bool(task_id) and (not scope_id or scope_id == task_id)
     if scope_value == AgentScope.SESSION.value:
         return bool(tenant) and (not scope_id or scope_id == tenant)
-    return True
+    if scope_value == AgentScope.CLONE.value:
+        return bool(clone_id) and scope_id == clone_id
+    if scope_value == AgentScope.WORKTREE.value:
+        return bool(worktree_id) and scope_id == worktree_id
+    if scope_value == AgentScope.BRANCH.value:
+        return bool(branch) and scope_id == branch
+    return scope_value == AgentScope.GLOBAL.value
+
+
+_CONTEXT_ROOT_SQL = (
+    "canonical_scope_root(json_extract("
+    "CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.root'))"
+)
+
+
+def _context_scope_sql(
+    *,
+    root: str,
+    task_id: str,
+    tenant: str,
+    clone_id: str,
+    worktree_id: str,
+    branch: str,
+) -> tuple[str, list[Any]]:
+    clauses = ["scope = ?"]
+    params: list[Any] = [AgentScope.GLOBAL.value]
+    canonical_root = _normalise_scope_root(root) if root else ""
+    if root:
+        clauses.append(f"(scope = ? AND {_CONTEXT_ROOT_SQL} = ?)")
+        params.extend([AgentScope.REPOSITORY.value, canonical_root])
+    else:
+        clauses.append(f"(scope = ? AND {_CONTEXT_ROOT_SQL} = '')")
+        params.append(AgentScope.REPOSITORY.value)
+    if task_id:
+        clauses.append("(scope = ? AND (scope_id = '' OR scope_id = ?))")
+        params.extend([AgentScope.TASK.value, task_id])
+    if tenant:
+        clauses.append("(scope = ? AND (scope_id = '' OR scope_id = ?))")
+        params.extend([AgentScope.SESSION.value, tenant])
+    if clone_id:
+        clauses.append("(scope = ? AND scope_id = ?)")
+        params.extend([AgentScope.CLONE.value, clone_id])
+    if worktree_id:
+        clauses.append("(scope = ? AND scope_id = ?)")
+        params.extend([AgentScope.WORKTREE.value, worktree_id])
+    if branch:
+        clauses.append("(scope = ? AND scope_id = ?)")
+        params.extend([AgentScope.BRANCH.value, branch])
+    return "(" + " OR ".join(clauses) + ")", params
 
 
 @dataclass(frozen=True)
@@ -733,6 +786,9 @@ class MemoryStore:
         root: str | None = None,
         task_id: str | None = None,
         tenant: str | None = None,
+        clone_id: str | None = None,
+        worktree_id: str | None = None,
+        branch: str | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Return request-scoped excluded-memory counts with bounded newest IDs."""
         statuses = (
@@ -742,43 +798,68 @@ class MemoryStore:
             MemoryStatus.SUPERSEDED.value,
         )
         summary = {status: {"count": 0, "ids": []} for status in statuses}
+        summary["legacy_unscoped"] = {"count": 0, "ids": []}
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return summary
         self._init_table()
         capped_limit = max(0, min(32, int(id_limit)))
-        request_scope_provided = root is not None or task_id is not None or tenant is not None
+        request_scope_provided = any(
+            value is not None for value in (root, task_id, tenant, clone_id, worktree_id, branch)
+        )
         con = connect_sqlite(self.state_store.db_path)
         try:
-            placeholders = ", ".join("?" for _ in statuses)
-            rows = con.execute(
-                f"""
-                SELECT record_id, status, scope, scope_id, provenance
-                FROM agent_memory_records
-                WHERE status IN ({placeholders}) AND (expires_at IS NULL OR expires_at > ?)
-                ORDER BY updated_at DESC
-                """,
-                (*statuses, time.time()),
-            ).fetchall()
-            for row in rows:
-                provenance: Mapping[str, Any]
-                try:
-                    parsed_provenance = json.loads(row[4] or "{}")
-                except (TypeError, ValueError):
-                    parsed_provenance = {}
-                provenance = parsed_provenance if isinstance(parsed_provenance, Mapping) else {}
-                if request_scope_provided and not _memory_matches_request_scope(
-                    scope=row[2],
-                    scope_id=str(row[3] or ""),
-                    provenance=provenance,
+            con.create_function(
+                "canonical_scope_root",
+                1,
+                lambda value: _normalise_scope_root(str(value)) if value else "",
+            )
+            scope_sql = ""
+            scope_params: list[Any] = []
+            if request_scope_provided:
+                scope_sql, scope_params = _context_scope_sql(
                     root=root or "",
                     task_id=task_id or "",
                     tenant=tenant or "",
-                ):
-                    continue
-                status = str(row[1])
-                summary[status]["count"] += 1
-                if len(summary[status]["ids"]) < capped_limit:
-                    summary[status]["ids"].append(str(row[0]))
+                    clone_id=clone_id or "",
+                    worktree_id=worktree_id or "",
+                    branch=branch or "",
+                )
+            for status in statuses:
+                where = "status = ? AND (expires_at IS NULL OR expires_at > ?)"
+                params: list[Any] = [status, time.time()]
+                if scope_sql:
+                    where += f" AND {scope_sql}"
+                    params.extend(scope_params)
+                count_row = con.execute(
+                    f"SELECT COUNT(1) FROM agent_memory_records WHERE {where}", tuple(params)
+                ).fetchone()
+                summary[status]["count"] = int(count_row[0]) if count_row else 0
+                if capped_limit:
+                    rows = con.execute(
+                        f"SELECT record_id FROM agent_memory_records WHERE {where} "
+                        "ORDER BY updated_at DESC LIMIT ?",
+                        (*params, capped_limit),
+                    ).fetchall()
+                    summary[status]["ids"] = [str(row[0]) for row in rows]
+
+            if request_scope_provided and root:
+                legacy_where = (
+                    "scope = ? AND "
+                    f"{_CONTEXT_ROOT_SQL} = '' AND (expires_at IS NULL OR expires_at > ?)"
+                )
+                legacy_params: list[Any] = [AgentScope.REPOSITORY.value, time.time()]
+                count_row = con.execute(
+                    f"SELECT COUNT(1) FROM agent_memory_records WHERE {legacy_where}",
+                    tuple(legacy_params),
+                ).fetchone()
+                summary["legacy_unscoped"]["count"] = int(count_row[0]) if count_row else 0
+                if capped_limit:
+                    rows = con.execute(
+                        f"SELECT record_id FROM agent_memory_records WHERE {legacy_where} "
+                        "ORDER BY updated_at DESC LIMIT ?",
+                        (*legacy_params, capped_limit),
+                    ).fetchall()
+                    summary["legacy_unscoped"]["ids"] = [str(row[0]) for row in rows]
         finally:
             con.close()
         return summary
@@ -803,6 +884,60 @@ class MemoryStore:
             if not row:
                 return None
             return self._row_to_record(row)
+        finally:
+            con.close()
+
+    def find_for_context(
+        self,
+        *,
+        root: str = "",
+        task_id: str = "",
+        tenant: str = "",
+        clone_id: str = "",
+        worktree_id: str = "",
+        branch: str = "",
+        include_kinds: Collection[str] = (),
+        limit: int = 20,
+    ) -> list[MemoryRecord]:
+        """Find bounded authoritative memory with status and scope filtering in SQL."""
+        if not self.state_store.enabled or not self.state_store.db_path.exists():
+            return []
+        self._init_table()
+        scope_sql, scope_params = _context_scope_sql(
+            root=root,
+            task_id=task_id,
+            tenant=tenant,
+            clone_id=clone_id,
+            worktree_id=worktree_id,
+            branch=branch,
+        )
+        sql = (
+            "SELECT record_id, kind, scope, scope_id, key, value, status, confidence, source, "
+            "evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id, "
+            "quarantine_reason, provenance, created_at, updated_at, expires_at "
+            "FROM agent_memory_records WHERE status IN (?, ?) AND (expires_at IS NULL OR expires_at > ?) "
+            f"AND {scope_sql}"
+        )
+        params: list[Any] = [MemoryStatus.ACTIVE.value, MemoryStatus.CONFIRMED.value, time.time(), *scope_params]
+        kinds = tuple(
+            kind.value if hasattr(kind, "value") else str(kind).strip().lower()
+            for kind in include_kinds
+            if str(kind).strip()
+        )
+        if kinds:
+            placeholders = ", ".join("?" for _ in kinds)
+            sql += f" AND kind IN ({placeholders})"
+            params.extend(kinds)
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(max(1, min(20, int(limit))))
+        con = connect_sqlite(self.state_store.db_path)
+        try:
+            con.create_function(
+                "canonical_scope_root",
+                1,
+                lambda value: _normalise_scope_root(str(value)) if value else "",
+            )
+            return [self._row_to_record(row) for row in con.execute(sql, tuple(params)).fetchall()]
         finally:
             con.close()
 
