@@ -440,6 +440,19 @@ class LocalAIApp:
                 return result
             headless = self._headless_status()
             ollama = headless.get("ollama_online") if headless.get("supervisor") else None
+            # The supervisor status file is asynchronous and can lag behind a
+            # live endpoint during restart/recovery. Prefer the runtime probe
+            # for the public live/doctor status so stale supervisor state does
+            # not report a healthy Ollama process as offline.
+            runtime = getattr(self, "runtime", None)
+            if runtime is not None:
+                try:
+                    ollama = bool(runtime.is_online())
+                    if isinstance(headless, dict) and headless.get("supervisor"):
+                        headless = dict(headless)
+                        headless["ollama_online"] = ollama
+                except Exception:
+                    pass
             scheduler = self.scheduler.status()
             prep_stats = self.preprocessor.stats()
             try:
