@@ -134,10 +134,23 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
     c_res3 = mcp_mod.local_ai_coord(action="incident_decision", fingerprint={"error_class": "e"})
     assert c_res3["success"] is True
 
+    c_res4 = mcp_mod.local_ai_coord(action="context_compile", task_id="t1", include_diagnostics=True)
+    assert c_res4["success"] is True
+    coord_context_payload = next(
+        call[2] for call in calls
+        if call[0] == "POST" and call[1] == "/api/agent-state/context" and call[2].get("task_id") == "t1"
+    )
+    assert coord_context_payload["include_diagnostics"] is True
+
     # local_ai_repo actions
-    r_res1 = mcp_mod.local_ai_repo(action="context_compile", task_id="t1")
+    r_res1 = mcp_mod.local_ai_repo(action="context_compile", task_id="t2", include_diagnostics=True)
     assert r_res1["success"] is True
     assert any(c[0] == "POST" and c[1] == "/api/agent-state/context" for c in calls)
+    repo_context_payload = next(
+        call[2] for call in calls
+        if call[0] == "POST" and call[1] == "/api/agent-state/context" and call[2].get("task_id") == "t2"
+    )
+    assert repo_context_payload["include_diagnostics"] is True
 
     r_res2 = mcp_mod.local_ai_repo(action="verify_receipt", receipt={"task_id": "t1", "criterion": "c1"})
     assert r_res2["success"] is True
@@ -169,6 +182,49 @@ def test_http_agent_state_routes(running_app_client):
     assert app.agent_context.state_store.enabled is True
     # 4. Learning endpoint
     assert app.agent_learning.state_store.enabled is True
+
+
+def test_http_context_transport_preserves_diagnostics_flag(tmp_path: Path):
+    import json
+    import threading
+    import urllib.request
+
+    from local_ai_hub import http_server
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        "\n[agent_state]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(cfg_path))
+    previous = http_server.APP
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps({
+            "action": "compile",
+            "task_id": "transport-task",
+            "token_budget": 120,
+            "include_diagnostics": True,
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/context",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        assert result["success"] is True
+        assert any(element["source_kind"] == "memory_diagnostics" for element in result["context"]["elements"])
+    finally:
+        server.shutdown()
+        server.server_close()
+        http_server.APP = previous
+        app.close()
 
 
 def test_client_convenience_methods(running_app_client):

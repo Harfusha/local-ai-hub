@@ -24,6 +24,9 @@ class ContextRequest:
     root: str = ""
     tenant: str = ""
     include_diagnostics: bool = False
+    clone_id: str = ""
+    worktree_id: str = ""
+    branch: str = ""
 
 
 @dataclass(frozen=True)
@@ -367,22 +370,35 @@ class ContextCompiler:
 
         # 3. Active memory records (priority: 70)
         if self.memory_store is not None:
-            records: list[Any] = []
-            for status in (MemoryStatus.ACTIVE, MemoryStatus.CONFIRMED):
-                records.extend(self.memory_store.find(status=status, limit=100000, semantic=False))
-            def in_request_scope(record: Any) -> bool:
-                return _memory_matches_request_scope(
-                    scope=record.scope,
-                    scope_id=record.scope_id,
-                    provenance=record.provenance,
+            find_for_context = getattr(self.memory_store, "find_for_context", None)
+            if callable(find_for_context):
+                records = find_for_context(
                     root=request.root,
                     task_id=request.task_id,
                     tenant=request.tenant,
+                    clone_id=request.clone_id,
+                    worktree_id=request.worktree_id,
+                    branch=request.branch,
+                    limit=20,
                 )
-
-            records = [record for record in records if in_request_scope(record)]
-            records.sort(key=lambda record: record.updated_at, reverse=True)
-            records = records[:20]
+            else:
+                records = []
+                for status in (MemoryStatus.ACTIVE, MemoryStatus.CONFIRMED):
+                    records.extend(self.memory_store.find(status=status, limit=20, semantic=False))
+                records = [
+                    record for record in records
+                    if _memory_matches_request_scope(
+                        scope=record.scope,
+                        scope_id=record.scope_id,
+                        provenance=record.provenance,
+                        root=request.root,
+                        task_id=request.task_id,
+                        tenant=request.tenant,
+                        clone_id=request.clone_id,
+                        worktree_id=request.worktree_id,
+                        branch=request.branch,
+                    )
+                ][:20]
             excluded_memory: dict[str, dict[str, Any]] = {
                 status: {"count": 0, "ids": []}
                 for status in (
@@ -390,6 +406,7 @@ class ContextCompiler:
                     MemoryStatus.QUARANTINED.value,
                     MemoryStatus.REJECTED.value,
                     MemoryStatus.SUPERSEDED.value,
+                    "legacy_unscoped",
                 )
             }
             diagnostic_summary = None
@@ -401,6 +418,9 @@ class ContextCompiler:
                         root=request.root,
                         task_id=request.task_id,
                         tenant=request.tenant,
+                        clone_id=request.clone_id,
+                        worktree_id=request.worktree_id,
+                        branch=request.branch,
                     )
                 except Exception:
                     diagnostic_summary = None
@@ -449,13 +469,16 @@ class ContextCompiler:
                 quarantined = excluded_memory[MemoryStatus.QUARANTINED.value]
                 rejected = excluded_memory[MemoryStatus.REJECTED.value]
                 superseded = excluded_memory[MemoryStatus.SUPERSEDED.value]
+                legacy_unscoped = excluded_memory["legacy_unscoped"]
                 diagnostic_content = (
                     "[MEMORY DIAGNOSTICS] "
                     f"stale_count={stale['count']} quarantined_count={quarantined['count']} "
                     f"rejected_count={rejected['count']} "
                     f"superseded_count={superseded['count']} stale_ids={','.join(stale['ids'])} "
                     f"quarantined_ids={','.join(quarantined['ids'])} "
-                    f"rejected_ids={','.join(rejected['ids'])} superseded_ids={','.join(superseded['ids'])}"
+                    f"rejected_ids={','.join(rejected['ids'])} superseded_ids={','.join(superseded['ids'])} "
+                    f"legacy_unscoped_count={legacy_unscoped['count']} "
+                    f"legacy_unscoped_ids={','.join(legacy_unscoped['ids'])}"
                 )
                 candidates.append((
                     55,
