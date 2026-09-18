@@ -64,7 +64,7 @@ class HubClient:
         self.startup_wait = max(1.0, float(client_cfg.get("startup_wait_seconds", 15.0)))
         self.startup_poll = max(0.05, float(client_cfg.get("startup_poll_seconds", 0.15)))
         self.start_lock_stale = max(self.startup_wait, float(client_cfg.get("start_lock_stale_seconds", 20.0)))
-        self.max_request_timeout = max(5.0, float(client_cfg.get("max_request_timeout_seconds", 900.0)))
+        self.max_request_timeout = max(5.0, float(client_cfg.get("max_request_timeout_seconds", 1800.0)))
         self._transport_local = threading.local()
         self._connections_lock = threading.Lock()
         self._connections: dict[int, http.client.HTTPConnection] = {}

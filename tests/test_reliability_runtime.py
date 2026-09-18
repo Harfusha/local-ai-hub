@@ -106,8 +106,8 @@ def test_git_timeout_cooldown_prevents_repeated_slow_probe(tmp_path: Path, monke
 def test_new_agent_projection_profiles_are_recognized(tmp_path: Path):
     projector = AgentProjector({"agent_output": {}})
     assert projector.profile("Cursor")["relationships"] is True
-    assert projector.profile("Windsurf")["max_text"] == 1250
-    assert projector.profile("GitHub Copilot")["max_text"] == 1100
+    assert projector.profile("Windsurf")["max_text"] == 3200
+    assert projector.profile("GitHub Copilot")["max_text"] == 3000
 
 
 def test_vscode_mcp_merge_uses_servers_and_stdio_type(tmp_path: Path):

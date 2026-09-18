@@ -298,3 +298,13 @@ def test_install_agent_skills_skip_companion(tmp_path: Path):
     assert (target / "local-ai-orchestrator" / "SKILL.md").exists()
     for s in ["token-economizer", "caveman", "tool-orchestration", "ollama-quality-routing"]:
         assert not (target / s).exists()
+
+
+def test_install_agent_skills_accepts_generated_install_target(tmp_path: Path):
+    install = tmp_path / "install"
+    target = tmp_path / "target_skills"
+    setup.write_all_generated({"models": {"fast_code": "qwen2.5-coder:7b"}}, install)
+
+    setup.install_agent_skills(install, target, include_companion=False)
+
+    assert (target / "local-ai-orchestrator" / "SKILL.md").exists()

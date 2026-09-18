@@ -2610,7 +2610,7 @@ class ProjectPreprocessor:
             )
             response = self.runtime.request_interruptible(
                 "/api/generate", payload, self.scheduler.foreground_busy,
-                timeout=float(self.cfg.get("background_request_timeout_seconds", 90)),
+                timeout=float(self.cfg.get("background_request_timeout_seconds", 300)),
             )
             if response.get("preempted"):
                 return response

@@ -7,13 +7,13 @@ from typing import Any, Iterable
 
 
 _DEFAULTS = {
-    "generic": {"max_text": 1500, "max_evidence": 8, "raw_evidence": 2, "risks": "important", "relationships": False, "commands": True},
-    "codex": {"max_text": 1150, "max_evidence": 7, "raw_evidence": 1, "risks": "critical", "relationships": False, "commands": True},
-    "claude": {"max_text": 1700, "max_evidence": 10, "raw_evidence": 2, "risks": "all", "relationships": True, "commands": True},
-    "gemini": {"max_text": 1450, "max_evidence": 9, "raw_evidence": 2, "risks": "important", "relationships": True, "commands": True},
-    "cursor": {"max_text": 1250, "max_evidence": 8, "raw_evidence": 2, "risks": "important", "relationships": True, "commands": True},
-    "windsurf": {"max_text": 1250, "max_evidence": 8, "raw_evidence": 2, "risks": "important", "relationships": True, "commands": True},
-    "copilot": {"max_text": 1100, "max_evidence": 7, "raw_evidence": 2, "risks": "important", "relationships": False, "commands": True},
+    "generic": {"max_text": 4000, "max_evidence": 12, "raw_evidence": 4, "risks": "important", "relationships": False, "commands": True},
+    "codex": {"max_text": 3000, "max_evidence": 10, "raw_evidence": 3, "risks": "critical", "relationships": False, "commands": True},
+    "claude": {"max_text": 4500, "max_evidence": 14, "raw_evidence": 5, "risks": "all", "relationships": True, "commands": True},
+    "gemini": {"max_text": 3500, "max_evidence": 12, "raw_evidence": 4, "risks": "important", "relationships": True, "commands": True},
+    "cursor": {"max_text": 3200, "max_evidence": 11, "raw_evidence": 4, "risks": "important", "relationships": True, "commands": True},
+    "windsurf": {"max_text": 3200, "max_evidence": 11, "raw_evidence": 4, "risks": "important", "relationships": True, "commands": True},
+    "copilot": {"max_text": 3000, "max_evidence": 10, "raw_evidence": 3, "risks": "important", "relationships": False, "commands": True},
 }
 
 VENDOR_RE = re.compile(r"site-packages|dist-packages|node_modules|python\d+[\\/]lib|node:internal|\.venv[\\/]lib", re.IGNORECASE)
@@ -74,7 +74,7 @@ class AgentProjector:
             merged["max_evidence"] = max(int(merged["max_evidence"]), 9)
             merged["raw_evidence"] = max(int(merged.get("raw_evidence", 1)), 3)
         if task_kind in {"command", "status", "profile"}:
-            merged["max_text"] = min(int(merged["max_text"]), 900)
+            merged["max_text"] = min(int(merged["max_text"]), 4000)
         return merged
 
     def project(
@@ -286,7 +286,7 @@ class AgentProjector:
         if self.flat_symbols and isinstance(data.get("symbols"), list):
             data["symbols"] = self._flatten_symbols(data["symbols"], extra_fields=extra)
 
-        max_text = max(300, int(p.get("max_text", 1400)))
+        max_text = max(300, int(p.get("max_text", 6000)))
         if isinstance(data.get("text"), str):
             data["text"] = _dense_text(data["text"], max_text)
         if isinstance(data.get("summary"), str):

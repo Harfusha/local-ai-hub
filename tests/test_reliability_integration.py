@@ -16,6 +16,7 @@ import pytest
 
 from local_ai_hub.cache import SQLiteCache
 from local_ai_hub.client import HubClient
+from local_ai_hub.generator import generate_skill_markdown
 from local_ai_hub.http_server import Handler, LocalAIHTTPServer
 from local_ai_hub.repo_state import RepoStateTracker
 from local_ai_hub.resilience import RecoveryJournal
@@ -672,7 +673,7 @@ def test_agent_policy_is_consistent_and_has_stop_reuse_protocol():
     spec.loader.exec_module(setup)
     policy = setup.GLOBAL_POLICY
     agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-    skill = (ROOT / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
+    skill = generate_skill_markdown({})
     assert setup.GLOBAL_POLICY_BEGIN in agents
     assert setup.GLOBAL_POLICY_END in agents
     for phrase in ("Stop escalating", "in_progress=true", "Do not fan out", "one bounded health/retry attempt"):
@@ -696,7 +697,7 @@ def test_agent_policy_has_actionable_adoption_triggers_and_recipes():
         "exact source/evidence text: `local_ai_artifact`",
         "shared findings or overlapping edits: `local_ai_coord`",
         "semantic retrieval after indexed paths are insufficient: `local_ai_rag`",
-        "bounded local generation or second opinion: `local_ai_task`",
+        'semantic generation, exploration, reasoning, review, second opinion and compression: `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")`',
         "Recipe — Explore:",
         "Recipe — Change:",
         "Recipe — Validate:",
@@ -705,7 +706,7 @@ def test_agent_policy_has_actionable_adoption_triggers_and_recipes():
     for phrase in expected:
         assert phrase in policy
 
-    skill = (ROOT / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
+    skill = generate_skill_markdown({})
     for phrase in expected:
         assert phrase in skill
 
@@ -730,14 +731,14 @@ def test_agent_policy_has_default_delegation_triggers():
     spec.loader.exec_module(setup)
     expected = (
         "Delegation is the default for any task with useful bounded independent work.",
-        "Use `local_ai_task` for bounded local-model work when local inference is the right fit.",
+        "Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression.",
         "Use the native Codex `multi_agent_v1__spawn_agent` path only for useful independent bounded work or an explicit Codex-subagent request.",
         "Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.",
         "Do not duplicate the same scope across agents.",
         "Skip delegation only for trivial tasks, pure evidence lookups, security/privacy constraints, or no useful independent scope.",
     )
     policy = setup.GLOBAL_POLICY
-    skill = (ROOT / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
+    skill = generate_skill_markdown({})
     for phrase in expected:
         assert phrase in policy
         assert phrase in skill

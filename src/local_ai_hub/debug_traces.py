@@ -219,7 +219,7 @@ class DebugTraceStore:
             if key in fields:
                 updates.append(f"{column}=?"); values.append(candidate[key])
         for key, value in fields.items():
-            if key in allowed and key not in self.JSON_FIELDS and key != "output":
+            if key in allowed and key not in self.JSON_FIELDS and key not in {"output", "thinking"}:
                 updates.append(f"{key}=?"); values.append(value)
         if not updates:
             return False
@@ -315,6 +315,7 @@ class DebugTraceStore:
         for key in ("request_json", "effective_payload_json", "response_json"):
             result[key.removesuffix("_json")] = self._decode(result.pop(key), {})
         result["output"] = result.pop("output_text", "")
+        result["thinking"] = ""
         result["request"] = result.get("request") or {}
         result["effective_payload"] = result.get("effective_payload") or {}
         result["response"] = result.get("response") or {}
@@ -350,10 +351,17 @@ class DebugTraceStore:
                 row = con.execute("SELECT * FROM traces WHERE trace_id=?", (trace_id,)).fetchone()
                 if not row:
                     return {"success": False, "error": "trace not found", "trace_id": trace_id, "terminal": True}
-                session = self._session(row)
                 events = [dict(event) for event in con.execute("SELECT seq,created_at,event_type,payload_json FROM trace_events WHERE trace_id=? AND seq>? ORDER BY seq ASC", (trace_id, max(0, int(since_seq))))]
                 for event in events:
                     event["payload"] = self._decode(event.pop("payload_json"), {})
+                thinking_rows = con.execute("SELECT payload_json FROM trace_events WHERE trace_id=? AND event_type=? ORDER BY seq ASC", (trace_id, "thinking")).fetchall()
+                thinking_parts = []
+                for thinking_row in thinking_rows:
+                    payload = self._decode(thinking_row[0], {})
+                    if isinstance(payload, dict):
+                        thinking_parts.append(str(payload.get("text") or ""))
+                session = self._session(row)
+                session["thinking"] = "".join(thinking_parts)[: self.max_session_text_bytes]
                 return {"success": True, "session": session, "events": events, "next_seq": events[-1]["seq"] if events else max(0, int(since_seq)), "terminal": session["state"] in self.TERMINAL_STATES}
         except sqlite3.Error:
             return {"success": False, "error": "trace store unavailable", "trace_id": trace_id, "retryable": True}
@@ -447,6 +455,7 @@ class DebugTraceObserver:
         self.store = store
         self.trace_id = trace_id
         self._output = ""
+        self._thinking = ""
 
     def event(self, event_type: str, payload: Any) -> None:
         self.store.event(self.trace_id, event_type, payload)
@@ -458,13 +467,27 @@ class DebugTraceObserver:
         self.event("model_request", payload)
 
     def output_delta(self, text: str) -> None:
-        self._output += str(text)
+        text = str(text)
+        if not text:
+            return
+        self._output += text
         max_bytes = max(64, int(self.store.max_session_text_bytes))
         raw = self._output.encode("utf-8")
         if len(raw) > max_bytes:
             self._output = raw[:max_bytes].decode("utf-8", errors="ignore") + "\n[trace output truncated]"
         self.store.update(self.trace_id, output=self._output)
-        self.event("output_delta", {"text": str(text)})
+        self.event("output_delta", {"text": text})
+
+    def thinking_delta(self, text: str) -> None:
+        text = str(text)
+        if not text:
+            return
+        self._thinking += text
+        max_bytes = max(64, int(self.store.max_session_text_bytes))
+        raw = self._thinking.encode("utf-8")
+        if len(raw) > max_bytes:
+            self._thinking = raw[:max_bytes].decode("utf-8", errors="ignore") + "\n[trace thinking truncated]"
+        self.event("thinking", {"text": text})
 
     def tool_call(self, payload: Any) -> None:
         self.event("tool_call", payload)

@@ -111,11 +111,11 @@ def test_command_keeps_moderate_success_output_inline(tmp_path: Path):
         repo_state=_MockRepoState(),
     )
     # A moderate successful result stays inline; artifacts are for bounded failure diagnostics or long output.
-    raw_res = broker.run(f'{sys.executable} -c "print(\'x\' * 600)"', str(tmp_path), tenant="test_agent")
+    raw_res = broker.run(f'{sys.executable} -c "print(\'x\' * 800)"', str(tmp_path), tenant="test_agent")
 
     assert raw_res["success"] is True
     assert "artifact_id" not in raw_res
-    assert len(raw_res["stdout"]) >= 600
+    assert len(raw_res["stdout"]) >= 800
 
     projector = AgentProjector({})
     projected = projector.project(raw_res, agent="generic", task_kind="command")

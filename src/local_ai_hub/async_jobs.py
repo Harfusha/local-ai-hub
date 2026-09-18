@@ -35,7 +35,7 @@ class AsyncJobManager:
         cfg = config.get("async_jobs", {})
         self.enabled = bool(cfg.get("enabled", True))
         self.max_pending = max(1, int(cfg.get("max_pending", 64)))
-        self.wait_max_seconds = max(1.0, min(90.0, float(cfg.get("wait_max_seconds", 90))))
+        self.wait_max_seconds = max(1.0, min(3600.0, float(cfg.get("wait_max_seconds", 600))))
         self.lease_seconds = max(30.0, float(cfg.get("lease_seconds", 900)))
         self.result_ttl_seconds = max(60.0, float(cfg.get("result_ttl_seconds", 259200)))
         self.max_attempts = max(1, int(cfg.get("max_attempts", 2)))

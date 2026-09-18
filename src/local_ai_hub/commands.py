@@ -163,7 +163,7 @@ class CommandBroker:
         cfg = config.get("commands", {})
         self.enabled = bool(cfg.get("enabled", True))
         self.policy_blocking = bool(cfg.get("policy_blocking", False))
-        self.timeout = int(cfg.get("timeout_seconds", 900))
+        self.timeout = int(cfg.get("timeout_seconds", 1800))
         self.max_output_chars = int(cfg.get("max_output_chars", 2_000_000))
         self.inline_chars = int(cfg.get("inline_output_chars", 5000))
         self.coalesce_wait_seconds = max(1.0, float(cfg.get("coalesced_wait_seconds", 90.0)))

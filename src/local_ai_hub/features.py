@@ -196,7 +196,7 @@ class FeatureSet:
         if not self.tasks or not self.has_any_model():
             return []
         return [
-            "delegate", "reason", "continue", "review", "second_opinion", "compress",
+            "delegate", "explore", "reason", "continue", "review", "second_opinion", "compress",
             "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report",
             "submit", "status", "wait", "result", "cancel", "candidate_create",
             "candidate_promote", "speculative_draft", "vision", "transcribe",
@@ -285,7 +285,7 @@ class FeatureSet:
         if self.rag:
             lines.append("- semantic retrieval after indexed paths are insufficient: `local_ai_rag`")
         if self.tasks and self.has_any_model():
-            lines.append("- bounded local generation or second opinion: `local_ai_task`")
+            lines.append('- semantic generation, exploration, reasoning, review, second opinion and compression: `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")`')
         if self.work_orchestrator:
             lines.append("- closed whole-task delegation with verified handoff: `local_ai_work`")
         lines.extend(self.specialized_trigger_lines())
@@ -346,6 +346,8 @@ class FeatureSet:
             lines.append(f'- Recipe — Change: gather indexed evidence, use `local_ai_repo(action="solve")` before edits,{lease_hint} then run indexed impact/review before validation.')
         if self.commands:
             lines.append("- Recipe — Validate: route repeatable commands through `local_ai_command`, reuse cached results, use `review_diff` or `security_audit` when relevant.")
+        if self.tasks and self.has_any_model():
+            lines.append('- Recipe — Semantic work: use `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` for bounded semantic tasks after needed evidence; deterministic/indexed tools remain for exact facts, symbols, diff and tests.')
         if self.agent_os:
             lines.append("- Recipe — Durable execution: create a task contract before substantial work, checkpoint phase changes, attach validation receipts, and complete only after `verify_completion` passes.")
         elif self.repo:
@@ -363,7 +365,7 @@ class FeatureSet:
         if self.commands:
             parts.append("`local_ai_command` for bounded repeatable commands")
         if self.tasks and self.has_any_model():
-            parts.append("`local_ai_task` for small local-model work and second opinions")
+            parts.append("`local_ai_task` for bounded semantic generation, exploration, reasoning, review, independent second opinions and semantic compression")
         if self.work_orchestrator:
             parts.append("`local_ai_work` for a complete bounded repository task with planning, edits, validation and handoff")
         if self.rag:

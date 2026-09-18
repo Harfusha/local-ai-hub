@@ -21,7 +21,7 @@ def isolated_profile_catalog(monkeypatch):
 
 def test_public_action_parameters_are_explicit_literals() -> None:
     expected = {
-        "local_ai_task": {"delegate", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait", "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe", "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold"},
+        "local_ai_task": {"delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait", "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe", "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold"},
         "local_ai_rag": {"index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram"},
         "local_ai_coord": {"claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat", "memory_record", "memory_get", "memory_find", "memory_promote", "memory_reap", "context_compile", "verify_receipt", "verify_completion", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "relation_record", "relation_find", "relation_traverse", "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree"},
         "local_ai_command": {"run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix", "run_affected", "format", "lint_fix", "spawn_daemon", "daemon_status", "stop_daemon", "http_probe", "stash_save", "stash_restore", "record_mock", "replay_mock", "diff_hunk_stage", "flaky_detect", "webhook_replay", "mock_server", "mock_server_start", "mock_server_stop", "mock_server_status", "patch_and_verify", "preflight"},
@@ -97,7 +97,10 @@ def test_dynamic_descriptions_make_first_choice_routing_explicit() -> None:
     assert "exact source or log slice" in descriptions["artifact"]
     assert "test, lint, typecheck, or build" in descriptions["command"]
     assert "ownership, checkpoints, and verification receipts" in descriptions["coord"]
-    assert "local diagnosis, boilerplate, or second opinion" in descriptions["task"]
+    assert "semantic generation" in descriptions["task"]
+    assert "independent second opinions" in descriptions["task"]
+    assert "semantic generation" in descriptions["repo"]
+    assert "exact facts, symbols, diff and tests" in descriptions["repo"]
     assert "closed, low-risk work" in descriptions["work"]
     assert "terminal=true and retryable=false" in descriptions["repo"]
     assert "terminal=true and retryable=false" in descriptions["command"]
@@ -111,12 +114,31 @@ def test_durable_routing_requires_checkpointed_contracts_and_closed_handoffs() -
         "work": local_ai_mcp._desc_work(),
     }
 
-    assert "deterministic command parsing" in descriptions["task"]
+    assert "deterministic/indexed tools" in descriptions["task"]
     assert "task contracts" in descriptions["coord"]
     assert "checkpoints" in descriptions["coord"]
     assert "verified handoff" in descriptions["work"]
     assert "micro-edits" in descriptions["work"]
     assert "live discussion" in descriptions["work"]
+
+
+def test_local_task_description_matches_actions_and_semantic_boundary() -> None:
+    description = local_ai_mcp._desc_task()
+    supported = local_ai_mcp.FEATURES.supported_task_actions()
+
+    assert all(action in description for action in supported)
+    assert "reason" in description
+    assert "delegate" in description
+    assert "second_opinion" in description
+    assert "compress" in description
+    assert "generation" in description
+    assert "deterministic" in description
+    assert "facts" in description
+    assert "diff" in description
+    assert "tests" in description
+    assert "`ask`" not in description
+    assert "`generate`" not in description
+    assert "`eval`" not in description
 
 
 def test_invalid_repo_action_lists_next_bounded_actions() -> None:
@@ -247,6 +269,54 @@ def test_local_ai_task_forwards_continue_with_opaque_conversation_id(monkeypatch
         "task": "Doplň detaily.",
         "context": "",
     }
+
+
+def test_local_ai_task_explore_uses_semantic_delegate_endpoint(monkeypatch) -> None:
+    captured = {}
+
+    def fake_post(path, payload, **kwargs):
+        captured.update({"path": path, **payload})
+        return {"success": True, "text": "exploration"}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    result = local_ai_mcp.local_ai_task(
+        action="explore",
+        task="Prozkoumej možné příčiny problému.",
+        context="bounded context",
+        max_tokens=320,
+    )
+
+    assert result["success"] is True
+    assert captured["path"] == "/api/delegate"
+    assert captured["task"] == "Prozkoumej možné příčiny problému."
+    assert captured["context"] == "bounded context"
+    assert captured["max_tokens"] == 320
+
+
+def test_second_opinion_keeps_its_projection_kind(monkeypatch) -> None:
+    captured = {}
+
+    def fake_post(path, payload, **kwargs):
+        captured["path"] = path
+        captured["payload"] = payload
+        return {"success": True, "text": "lokální názor"}
+
+    def fake_compact(value, task_kind="general", extra_fields=None):
+        captured["task_kind"] = task_kind
+        return value
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    monkeypatch.setattr(local_ai_mcp, "_compact", fake_compact)
+
+    result = local_ai_mcp.local_ai_task(
+        action="second_opinion",
+        task="Je tento návrh bezpečný?",
+        candidate="návrh řešení",
+    )
+
+    assert result["success"] is True
+    assert captured["path"] == "/api/second-opinion"
+    assert captured["task_kind"] == "second_opinion"
 
 
 def test_invalid_ollama_profile_returns_structured_error() -> None:

@@ -20,6 +20,12 @@ DEFAULT_CODE_TERMS = {
     "api", "repository", "repo", "refactor", "implementation",
 }
 DEFAULT_REVIEW_TERMS = {"review", "audit", "inspect", "critique", "second opinion", "check this"}
+DEFAULT_SEMANTIC_TERMS = {
+    "explore", "exploring", "understand", "explain", "summarize", "summarise",
+    "compare", "brainstorm", "propose", "suggest", "alternative", "counterargument",
+    "prozkoumej", "prozkoumat", "vysvětli", "vysvetli", "shrň", "srovnej",
+    "druhý názor", "druhy nazor", "zamysli",
+}
 
 
 def review_diff_complexity(
@@ -55,6 +61,7 @@ class ModelRouter:
         self.reason_terms = set(self.routing.get("reason_terms", DEFAULT_REASON_TERMS))
         self.code_terms = set(self.routing.get("code_terms", DEFAULT_CODE_TERMS))
         self.review_terms = set(self.routing.get("review_terms", DEFAULT_REVIEW_TERMS))
+        self.semantic_terms = set(self.routing.get("semantic_terms", DEFAULT_SEMANTIC_TERMS))
 
     def complexity_score(self, task: str, context: str = "") -> int:
         text = f"{task}\n{context}".lower()
@@ -73,15 +80,20 @@ class ModelRouter:
 
     def classify(self, task: str, context: str = "", task_type: str = "auto", complexity: str = "auto") -> dict[str, Any]:
         text = f"{task}\n{context}".lower()
+        task_text = str(task).lower()
         score = self.complexity_score(task, context)
+        semantic_request = (
+            task_type in {"general", "reasoning", "review"}
+            or any(term in task_text for term in self.semantic_terms | self.reason_terms | self.review_terms)
+        )
 
         if task_type == "auto":
-            if any(term in text for term in self.review_terms):
+            if any(term in task_text for term in self.review_terms):
                 task_type = "review"
+            elif any(term in task_text for term in self.semantic_terms | self.reason_terms):
+                task_type = "reasoning"
             elif any(term in text for term in self.code_terms):
                 task_type = "code"
-            elif any(term in text for term in self.reason_terms):
-                task_type = "reasoning"
             else:
                 task_type = "general"
 
@@ -103,7 +115,13 @@ class ModelRouter:
         else:
             model = self.models["general"]
 
-        return {"task_type": task_type, "complexity_score": score, "complexity": "heavy" if heavy else "fast", "model": model}
+        return {
+            "task_type": task_type,
+            "complexity_score": score,
+            "complexity": "heavy" if heavy else "fast",
+            "model": model,
+            "semantic_required": semantic_request,
+        }
 
     def apply_model_override(self, route: dict[str, Any], requested_model: str = "") -> dict[str, Any]:
         requested = str(requested_model or "").strip()

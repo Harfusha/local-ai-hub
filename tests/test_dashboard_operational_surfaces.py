@@ -32,6 +32,18 @@ def test_rag_reliability_and_events_have_operational_filters() -> None:
     assert "Event source" in DASHBOARD_HTML
 
 
+def test_live_events_with_trace_id_link_to_trace_inspector() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderEvents(events=liveEvents)") : DASHBOARD_HTML.index(
+            "async function pollEvents()"
+        )
+    ]
+    assert "traceId=e.trace_id" in source
+    assert "traceAttr=traceId?" in source
+    assert "data-trace-id" in source
+    assert "data-detail=\"${id}\"" in source
+
+
 def test_destructive_controls_describe_scope_and_impact() -> None:
     assert "Restart hub service" in DASHBOARD_HTML
     assert "Purge expired cache" in DASHBOARD_HTML

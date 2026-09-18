@@ -549,7 +549,7 @@ def test_trace_inspector_formats_generic_model_objects_without_object_coercion()
         )
     ]
     script = source + "console.log(promptText({answer:'structured'}));"
-    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
     assert "structured" in result.stdout
     assert "[object Object]" not in result.stdout
 
@@ -928,8 +928,7 @@ def test_trace_inspector_has_request_specific_renderer_contracts() -> None:
             "status",
             "timing",
             "error",
-            "No request captured",
-            "No response captured",
+            "tracePresentationColumns",
         ],
     }
     for function, markers in contracts.items():
@@ -1384,7 +1383,7 @@ def test_trace_unknown_malformed_and_missing_content_use_safe_bounded_fallbacks(
     assert "malformed input" in rendered["malformed"] and "kept" in rendered["malformed"]
     assert "malformed output" in rendered["malformed"]
     assert "No prompt captured" in rendered["missing"]
-    assert "No response captured" in rendered["missing"]
+    assert "No response captured" not in rendered["missing"]
     for html in rendered.values():
         assert "[object Object]" not in html
         assert not re.search(r"\{\s*[\"'][A-Za-z_$][\w$]*\s*:", html)
@@ -1560,6 +1559,45 @@ def test_trace_model_runtime_labels_prompt_and_response_as_primary_content() -> 
     html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
     assert "Prompt" in html and "Response" in html
     assert "Explain traces" in html and "They show inputs and outputs." in html
+
+
+def test_trace_model_runtime_exposes_capture_state_and_detail_controls() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {"kind": "model_chat", "modelInput": {"prompt": "Explain traces"}},
+        "events": [],
+        "session": {"final_response_status": "empty"},
+        "actor": {}, "correlations": {}, "identity": {},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        + source
+        + f"const m={{...{json.dumps(fixture)},captureStates:{{output:'empty'}}}};"
+        + "console.log(JSON.stringify({html:renderModelChatPresentation(m),state:traceCaptureState('', 'empty')}));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    rendered = json.loads(result.stdout)
+    assert rendered["state"] == "empty"
+    assert "Final response" in rendered["html"]
+    assert "Empty" in rendered["html"]
+    assert "data-trace-expand-all" in rendered["html"]
+    assert "data-trace-collapse-all" in rendered["html"]
+    assert "data-trace-copy-final" in rendered["html"]
+
+
+def test_trace_detail_controls_are_present_and_technical_details_start_closed() -> None:
+    detail_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
+            "function setTraceView(view)"
+        )
+    ]
+    handler_source = DASHBOARD_HTML
+    assert "presentationMarkup" in detail_source
+    assert "traceTechnicalDetails" in detail_source
+    assert "setTraceDetailsOpen(true)" in handler_source
+    assert "setTraceDetailsOpen(false)" in handler_source
 
 
 def test_trace_history_surfaces_project_before_technical_metadata() -> None:
@@ -1932,6 +1970,29 @@ def test_trace_primary_presentations_use_semantic_value_renderers() -> None:
         assert any(marker in output for marker in semantic_markers), function_name
         assert "[object Object]" not in output
         assert not re.search(r"\{\s*[\"'][A-Za-z_$][\w$]*[\"']\s*:", output)
+
+
+def test_trace_primary_columns_are_compact_collapsible_groups() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        + source
+        + "const html=tracePresentationColumns('Demo',[traceSummaryCard('request','body',traceRenderBudget())],[],traceRenderBudget());"
+        + "const missing=tracePresentationColumns('Empty',[],[],traceRenderBudget());"
+        + "console.log(JSON.stringify({html,missing}));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    rendered = json.loads(result.stdout)
+    html = rendered["html"]
+    assert html.count('class="trace-primary-group"') == 1
+    assert 'class="trace-primary-group" data-group="request" data-trace-collapsible' in html
+    assert '<summary><span>Request details</span>' in html
+    assert 'open' not in html
+    assert 'No request details captured' not in html
+    assert '<article' not in html
+    assert 'No result details captured' not in rendered["missing"]
 
 
 def test_trace_technical_details_are_closed_by_default() -> None:
@@ -2371,3 +2432,29 @@ def test_trace_sanitizer_redacts_sensitive_object_values_by_key() -> None:
     assert sanitized["authorization"] == "<redacted>"
     assert sanitized["nested"]["token"] == "<redacted>"
     assert sanitized["nested"]["safe"] == "kept"
+
+
+def test_trace_sanitizer_keeps_accounting_metrics_and_model_thinking_expandable() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    redact = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function redactDiagnostic(") : DASHBOARD_HTML.index(
+            "// Lightweight pure-canvas"
+        )
+    ]
+    sanitizer = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceSensitiveField(") : DASHBOARD_HTML.index(
+            "function traceRecorded("
+        )
+    ]
+    fixture = {
+        "prompt_budget_tokens": 24000,
+        "estimated_tokens": 342,
+        "token_saving": {"compact_output_tokens_avoided_est": 12},
+    }
+    script = f"let traceRevealRedactedDetails=false;{redact}{sanitizer}console.log(JSON.stringify(traceSanitizeValue({json.dumps(fixture)})));"
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    sanitized = json.loads(result.stdout)
+    assert sanitized == fixture
+    assert "trace-thinking" in DASHBOARD_HTML
+    assert "Thinking / reasoning" in DASHBOARD_HTML
+    assert "model.thinking" in DASHBOARD_HTML

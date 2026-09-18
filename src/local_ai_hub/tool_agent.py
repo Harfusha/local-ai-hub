@@ -459,7 +459,10 @@ class ToolAwareLocalAgent:
                 trace_observer = observer()
                 if trace_observer is not None:
                     trace_observer.model_request(request_payload)
-                    response = self.services.runtime.request_stream("/api/chat", request_payload, trace_observer.output_delta)
+                    response = self.services.runtime.request_stream(
+                        "/api/chat", request_payload, trace_observer.output_delta,
+                        on_thinking=getattr(trace_observer, "thinking_delta", None),
+                    )
                 else:
                     response = self.services.runtime.request("/api/chat", request_payload)
                 if "error" in response or response.get("_lah_repetition_loop_detected"):
@@ -516,7 +519,10 @@ class ToolAwareLocalAgent:
             trace_observer = observer()
             if trace_observer is not None:
                 trace_observer.model_request(request_payload)
-                response = self.services.runtime.request_stream("/api/chat", request_payload, trace_observer.output_delta)
+                response = self.services.runtime.request_stream(
+                    "/api/chat", request_payload, trace_observer.output_delta,
+                    on_thinking=getattr(trace_observer, "thinking_delta", None),
+                )
             else:
                 response = self.services.runtime.request("/api/chat", request_payload)
             if "error" in response:

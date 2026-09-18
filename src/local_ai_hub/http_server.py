@@ -260,7 +260,8 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
 class Handler(BaseHTTPRequestHandler):
     DEBUG_TRACE_REQUEST_CAPTURE_BYTES = 8 * 1024
     _DEBUG_TRACE_SENSITIVE_KEY = re.compile(
-        r"(?:api[_-]?key|authorization|token|secret|password|passwd|credential)", re.IGNORECASE
+        r"^(?:token|api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|auth[_-]?token|id[_-]?token|bearer[_-]?token|authorization|secret|password|passwd|credential|cookie|set[-_]?cookie|private[-_]?key|privatekey|passphrase|pem|ssh[-_]?key|certificate)$",
+        re.IGNORECASE,
     )
     protocol_version = "HTTP/1.1"
 
@@ -776,7 +777,7 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(events, list) or len(events) > 64:
                 raise RequestBodyError("events must be a list of at most 64 entries")
             for event in events:
-                if not isinstance(event, dict) or len(event) > 24:
+                if not isinstance(event, dict) or len(event) > 40:
                     raise RequestBodyError("each accounting event must be a small object")
                 if "tool" in event:
                     text(event["tool"], "tool", 80)
