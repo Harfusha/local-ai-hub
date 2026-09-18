@@ -797,22 +797,18 @@ class LocalAIApp:
             return {"success": False, "error": f"bundle version must match Local AI Hub {__version__}"}
 
         bundle_format = str(data.get("format", ""))
-        if bundle_format == "local-ai-hub-agent-state-bundle":
-            records = data.get("records", [])
+
+        def restore_agent_memory_records(records: Any) -> tuple[int, str | None]:
             if not isinstance(records, list):
-                return {"success": False, "error": "bundle records are missing"}
-            canonical = json_dumps(records, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            expected = str(data.get("records_sha256", ""))
-            if not expected or not hmac.compare_digest(hashlib.sha256(canonical).hexdigest(), expected):
-                return {"success": False, "error": "bundle integrity check failed"}
+                return 0, "bundle records are missing"
             restored = 0
             for item in records:
                 if not isinstance(item, dict):
-                    return {"success": False, "error": "invalid agent-state bundle record"}
+                    return 0, "invalid agent-state bundle record"
                 rtype = item.get("type")
                 rdata = item.get("data", {})
                 if not isinstance(rdata, dict):
-                    return {"success": False, "error": "invalid agent-state bundle payload"}
+                    return 0, "invalid agent-state bundle payload"
                 if rtype == "memory" and getattr(self, "agent_memory", None):
                     from_dict = getattr(MemoryRecord, "from_dict", None)
                     if callable(from_dict) and all(
@@ -840,6 +836,19 @@ class LocalAIApp:
                         )
                     self.agent_memory.record(rec, actor="bundle_import")
                     restored += 1
+            return restored, None
+
+        if bundle_format == "local-ai-hub-agent-state-bundle":
+            records = data.get("records", [])
+            if not isinstance(records, list):
+                return {"success": False, "error": "bundle records are missing"}
+            canonical = json_dumps(records, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            expected = str(data.get("records_sha256", ""))
+            if not expected or not hmac.compare_digest(hashlib.sha256(canonical).hexdigest(), expected):
+                return {"success": False, "error": "bundle integrity check failed"}
+            restored, error = restore_agent_memory_records(records)
+            if error:
+                return {"success": False, "error": error}
             return {"success": True, "version": __version__, "restored_records": restored}
 
         if bundle_format != "local-ai-hub-project-bundle":
@@ -976,6 +985,12 @@ class LocalAIApp:
                                 (scope_key, workspace, str(c.get("path", "")), int(c.get("chunk_no", 0) or 0), str(c.get("content_hash", "")), str(c.get("text", "")), c.get("embedding", "")))
                 con.commit()
 
+        restored_agent_records = 0
+        if "agent_state_records" in data:
+            restored_agent_records, error = restore_agent_memory_records(data.get("agent_state_records"))
+            if error:
+                return {"success": False, "error": error}
+
         return {
             "success": True,
             "version": __version__,
@@ -984,6 +999,7 @@ class LocalAIApp:
             "files_imported": len(rows("file_refs")),
             "cards_imported": len(rows("content_cards")),
             "rag_chunks_imported": len(rows("rag_chunks")),
+            "agent_state_records_imported": restored_agent_records,
         }
 
     def __enter__(self) -> "LocalAIApp":
