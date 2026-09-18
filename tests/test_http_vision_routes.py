@@ -62,6 +62,13 @@ def test_browser_capability_capture_and_review_routes_are_explicit_and_tenant_sc
         assert capability["success"] is True
         assert capability["one_use"] is True
 
+        missing_tab = _post(
+            f"{base}/api/browser/capability",
+            {"origin": "chrome-extension://fixture"},
+        )
+        assert missing_tab["terminal"] is True
+        assert "tab_id" in missing_tab["error"]
+
         unsupported = _post(
             f"{base}/api/browser/capture",
             {"capability": capability["capability"], "tab_id": 7, "capture_error": "permission_denied"},

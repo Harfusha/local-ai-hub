@@ -70,6 +70,16 @@ function collectRuntimeRefs() {
   return {console_refs, network_refs};
 }
 
+function safeDomHtml() {
+  const clone = document.documentElement.cloneNode(true);
+  clone.querySelectorAll('input[type="password"]').forEach((passwordInput) => {
+    passwordInput.removeAttribute("value");
+    passwordInput["value"] = "";
+    passwordInput["defaultValue"] = "";
+  });
+  return clone.outerHTML;
+}
+
 function captureCurrentTab() {
   const allElements = Array.from(document.querySelectorAll("*"));
   const elements = allElements.slice(0, 256).map((element) => ({
@@ -81,8 +91,10 @@ function captureCurrentTab() {
   return {
     success: true,
     url: location.href,
+    target_origin: location.origin,
+    captured_at: new Date().toISOString(),
     title: document.title,
-    dom: {redaction: "none", html: document.documentElement.outerHTML, elements},
+    dom: {redaction: "none", password_values_sanitized: true, html: safeDomHtml(), elements},
     accessibility: {snapshot: collectAccessibleProjection(allElements.slice(0, 256))},
     computed_styles: collectVisibleComputedStyles(allElements.slice(0, 256)),
     runtime: collectRuntimeRefs(),

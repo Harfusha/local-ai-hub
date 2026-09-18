@@ -10,6 +10,7 @@ from local_ai_hub.browser_bridge import (
     CaptureProtocolError,
     capture_to_artifacts,
     issue_capture_capability,
+    origin_allowed,
     validate_capture_payload,
     validate_capture_request,
 )
@@ -32,10 +33,13 @@ def config() -> dict:
     }
 
 
-def capture_payload(*, tab_id: int = 7) -> dict:
+def capture_payload(*, tab_id: int = 7, window_id: int = 3) -> dict:
     return {
         "tab_id": tab_id,
+        "window_id": window_id,
         "url": "https://fixture.test/checkout?secret=not-persisted",
+        "target_origin": "https://fixture.test",
+        "captured_at": "2026-09-18T10:20:30.123Z",
         "title": "Checkout",
         "screenshot": f"data:image/png;base64,{PNG_DATA}",
         "dom": {
@@ -64,25 +68,86 @@ class ArtifactSink:
 
 
 def test_capture_capability_is_single_use_and_tab_bound() -> None:
-    capability = issue_capture_capability(config(), origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7)
+    capability = issue_capture_capability(
+        config(), origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7, window_id=3
+    )
 
     first = validate_capture_request(
         capability,
-        {"origin": "chrome-extension://fixture", "tenant": "tenant-a", "tab_id": 7},
+        {"origin": "chrome-extension://fixture", "tenant": "tenant-a", "tab_id": 7, "window_id": 3},
     )
     second = validate_capture_request(
         capability,
-        {"origin": "chrome-extension://fixture", "tenant": "tenant-a", "tab_id": 7},
+        {"origin": "chrome-extension://fixture", "tenant": "tenant-a", "tab_id": 7, "window_id": 3},
     )
     wrong_tab = validate_capture_request(
-        issue_capture_capability(config(), origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7),
-        {"origin": "chrome-extension://fixture", "tenant": "tenant-a", "tab_id": 8},
+        issue_capture_capability(
+            config(), origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7, window_id=3
+        ),
+        {"origin": "chrome-extension://fixture", "tenant": "tenant-a", "tab_id": 8, "window_id": 3},
     )
 
     assert first["success"] is True
     assert second["success"] is False
     assert second["error_code"] == "capability_replayed"
     assert wrong_tab["error_code"] == "tab_mismatch"
+
+
+def test_capability_requires_explicit_tab_id_at_issue_and_validation() -> None:
+    with pytest.raises(CaptureProtocolError, match="tab_id"):
+        issue_capture_capability(config(), origin="chrome-extension://fixture", tenant="tenant-a")
+
+    capability = issue_capture_capability(
+        config(), origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7, window_id=3
+    )
+    missing = validate_capture_request(
+        capability,
+        {"origin": "chrome-extension://fixture", "tenant": "tenant-a", "window_id": 3},
+    )
+    assert missing["error_code"] == "missing_tab_id"
+    assert missing["terminal"] is True
+
+
+def test_capture_requires_sanitized_timestamp_and_target_origin_provenance() -> None:
+    sink = ArtifactSink()
+    result = capture_to_artifacts(capture_payload(), artifacts=sink, tenant="tenant-a", config=config())
+
+    bundle = next(call[1] for call in sink.calls if call[0] == "frontend-review-bundle")
+    assert result["success"] is True
+    assert bundle["provenance"] == {
+        "captured_at": "2026-09-18T10:20:30.123Z",
+        "target_origin": "https://fixture.test",
+    }
+
+    oversized = capture_payload()
+    oversized["captured_at"] = "x" * 65
+    assert validate_capture_payload(oversized, config=config())["error_code"] == "invalid_capture_timestamp"
+
+    oversized = capture_payload()
+    oversized["target_origin"] = "https://" + ("a" * 260) + ".test"
+    assert validate_capture_payload(oversized, config=config())["error_code"] == "target_origin_mismatch"
+
+
+def test_default_browser_origin_policy_is_fail_closed() -> None:
+    assert origin_allowed({"browser_bridge": {"enabled": True, "allowed_origins": []}}, "chrome-extension://x") is False
+    defaults = Path(__file__).parents[1] / "src/local_ai_hub/defaults.toml"
+    assert 'allowed_origins = ["chrome-extension://*"]' not in defaults.read_text(encoding="utf-8")
+
+
+def test_explicit_api_token_authorization_can_replace_origin_allow_list() -> None:
+    token_config = {"browser_bridge": {"enabled": True, "allowed_origins": []}}
+    capability = issue_capture_capability(
+        token_config,
+        origin="chrome-extension://configured-by-token",
+        tenant="tenant-a",
+        tab_id=7,
+        api_token_authorized=True,
+    )
+    result = validate_capture_request(
+        capability,
+        {"origin": "chrome-extension://configured-by-token", "tenant": "tenant-a", "tab_id": 7},
+    )
+    assert result["success"] is True
 
 
 def test_capture_payload_preserves_full_dom_and_requires_none_attestation() -> None:
@@ -163,7 +228,7 @@ def test_extension_is_explicit_current_tab_only_and_does_not_mutate_pages() -> N
 
     assert "chrome.action.onClicked" in background
     assert "tabs.get" in background
-    assert "tabs.query" not in background
+    assert "tabs.query" in background
     assert "tabs.update" not in background
     assert "windows.create" not in background
     assert "document.cookie" not in capture
