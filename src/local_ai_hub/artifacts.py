@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
 
+import base64
 import hashlib
 import json
 import re
@@ -15,13 +16,35 @@ from typing import Any
 from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
 
 
+DEFAULT_MAX_BINARY_BYTES = 4_000_000
+DEFAULT_MAX_JSON_BYTES = 4_000_000
+
+
+class ArtifactTransportError(ValueError):
+    """Bounded, caller-safe artifact transport failure."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
 class ArtifactStore:
     """Stores verbose local outputs outside the agent context and returns compact references."""
 
-    def __init__(self, state_dir: Path, ttl_hours: int = 72, max_inline_chars: int = 6000):
+    def __init__(
+        self,
+        state_dir: Path,
+        ttl_hours: int = 72,
+        max_inline_chars: int = 6000,
+        max_binary_bytes: int = DEFAULT_MAX_BINARY_BYTES,
+        max_json_bytes: int = DEFAULT_MAX_JSON_BYTES,
+    ):
         self.path = state_dir / "artifacts.sqlite3"
         self.ttl_seconds = max(3600, int(ttl_hours) * 3600)
         self.max_inline_chars = max(1000, int(max_inline_chars))
+        self.max_binary_bytes = max(1, int(max_binary_bytes))
+        self.max_json_bytes = max(1, int(max_json_bytes))
         self._last_purge = 0.0
         self._purge_interval = 1800.0
         state_dir.mkdir(parents=True, exist_ok=True)
@@ -53,9 +76,26 @@ class ArtifactStore:
                             created_at REAL NOT NULL,
                             tenant TEXT NOT NULL,
                             kind TEXT NOT NULL,
-                            text TEXT NOT NULL
+                            text TEXT NOT NULL DEFAULT '',
+                            mime_type TEXT,
+                            encoding TEXT,
+                            blob BLOB,
+                            size_bytes INTEGER,
+                            checksum TEXT,
+                            identity_json TEXT
                         )"""
                     )
+                    columns = {str(row[1]) for row in con.execute("PRAGMA table_info(artifacts)")}
+                    for name, definition in (
+                        ("mime_type", "TEXT"),
+                        ("encoding", "TEXT"),
+                        ("blob", "BLOB"),
+                        ("size_bytes", "INTEGER"),
+                        ("checksum", "TEXT"),
+                        ("identity_json", "TEXT"),
+                    ):
+                        if name not in columns:
+                            con.execute(f"ALTER TABLE artifacts ADD COLUMN {name} {definition}")
                     con.execute("CREATE INDEX IF NOT EXISTS idx_artifacts_created ON artifacts(created_at)")
                     con.commit()
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
@@ -81,6 +121,112 @@ class ArtifactStore:
                 con.commit()
         retry_busy(_do_put, retries=4)
         return artifact_id
+
+    def put_bytes(
+        self,
+        data: bytes,
+        tenant: str,
+        kind: str,
+        mime_type: str,
+    ) -> str:
+        """Store complete image bytes without interpreting or truncating them."""
+        if not isinstance(data, bytes):
+            raise ArtifactTransportError("invalid_bytes", "artifact bytes must be bytes")
+        normalized_mime = str(mime_type or "").strip().lower()
+        if not normalized_mime.startswith("image/"):
+            raise ArtifactTransportError("invalid_mime_type", "image MIME type required")
+        if len(data) > self.max_binary_bytes:
+            raise ArtifactTransportError("artifact_too_large", "artifact size exceeds configured limit")
+
+        checksum = hashlib.sha256(data).hexdigest()
+        artifact_id = "art_" + hashlib.sha256(
+            (str(kind) + "\0" + normalized_mime + "\0" + checksum).encode("utf-8")
+        ).hexdigest()[:24]
+        identity = {"artifact_id": artifact_id, "kind": str(kind)}
+
+        def _do_put() -> None:
+            with closing(self._connect()) as con:
+                self._purge(con)
+                con.execute(
+                    """INSERT OR REPLACE INTO artifacts(
+                        artifact_id, created_at, tenant, kind, text, mime_type,
+                        encoding, blob, size_bytes, checksum, identity_json
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        artifact_id,
+                        time.time(),
+                        str(tenant),
+                        str(kind),
+                        "",
+                        normalized_mime,
+                        "base64",
+                        sqlite3.Binary(data),
+                        len(data),
+                        checksum,
+                        json_dumps(identity, ensure_ascii=False),
+                    ),
+                )
+                con.commit()
+
+        retry_busy(_do_put, retries=4)
+        return artifact_id
+
+    def put_json(self, value: dict[str, Any], tenant: str, kind: str) -> str:
+        """Store a bounded JSON artifact, preserving full DOM payload semantics."""
+        if not isinstance(value, dict):
+            raise ArtifactTransportError("invalid_json", "JSON artifact must be an object")
+        text = json_dumps(value, ensure_ascii=False, sort_keys=True)
+        if len(text.encode("utf-8")) > self.max_json_bytes:
+            raise ArtifactTransportError("artifact_too_large", "JSON artifact size exceeds configured limit")
+        return self.put(text, tenant, kind)
+
+    @staticmethod
+    def _binary_failure(message: str) -> dict[str, Any]:
+        return {"success": False, "error": message[:160]}
+
+    def get_binary(self, artifact_id: str) -> dict[str, Any]:
+        """Return one complete, integrity-checked binary artifact or a safe failure."""
+        cutoff = time.time() - self.ttl_seconds
+
+        def _do_get() -> tuple[Any, ...] | None:
+            with closing(self._connect()) as con:
+                return con.execute(
+                    """SELECT artifact_id, kind, mime_type, encoding, blob,
+                              size_bytes, checksum, identity_json
+                       FROM artifacts WHERE artifact_id=? AND created_at>=?""",
+                    (str(artifact_id), cutoff),
+                ).fetchone()
+
+        row = retry_busy(_do_get, retries=3)
+        if not row:
+            return self._binary_failure("artifact not found or expired")
+        if row[4] is None or not row[2] or not row[3]:
+            return self._binary_failure("artifact is not binary")
+
+        data = bytes(row[4])
+        expected_size = int(row[5]) if row[5] is not None else -1
+        checksum = str(row[6] or "")
+        if expected_size != len(data) or checksum != hashlib.sha256(data).hexdigest():
+            return self._binary_failure("artifact integrity check failed")
+        try:
+            identity = json.loads(str(row[7] or "{}"))
+        except (TypeError, ValueError):
+            return self._binary_failure("artifact identity is invalid")
+        if not isinstance(identity, dict):
+            return self._binary_failure("artifact identity is invalid")
+
+        return {
+            "success": True,
+            "artifact_id": str(row[0]),
+            "kind": str(row[1]),
+            "mime_type": str(row[2]),
+            "encoding": str(row[3]),
+            "size_bytes": len(data),
+            "checksum": checksum,
+            "sha256": checksum,
+            "identity": identity,
+            "data_base64": base64.b64encode(data).decode("ascii"),
+        }
 
     @staticmethod
     def _section_map(text: str) -> dict[str, tuple[int, int]]:
@@ -141,12 +287,14 @@ class ArtifactStore:
                 # Reads stay read-only; expiry cleanup happens on writes. This avoids
                 # turning every artifact slice fetch into a WAL writer.
                 return con.execute(
-                    "SELECT kind, text, created_at FROM artifacts WHERE artifact_id=? AND created_at>=?",
+                    "SELECT kind, text, mime_type, created_at FROM artifacts WHERE artifact_id=? AND created_at>=?",
                     (artifact_id, cutoff),
                 ).fetchone()
         row = retry_busy(_do_get, retries=3)
         if not row:
             return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
+        if row[2]:
+            return {"success": False, "error": "binary artifact requires binary retrieval"}
         text = row[1]
         section = str(section or "").strip()
         sections = self._section_map(text)
