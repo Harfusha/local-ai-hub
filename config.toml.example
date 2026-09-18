@@ -16,6 +16,7 @@ auto_tune = true
 # reasoning = "qwen2.5-coder:7b"
 # background_code = "qwen2.5-coder:0.5b"
 # general = "qwen2.5-coder:3b"
+# vision = "qwen3-vl:4b"
 
 # Optional local llama.cpp SYCL model router for Intel GPU inference. It listens
 # on loopback port 12438 and loads one model at a time. Auto-routing applies on

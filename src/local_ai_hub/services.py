@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import time
 import threading
+from dataclasses import asdict
 from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,7 @@ from .state_paths import configured_state_dir
 from .telemetry import TelemetryStore
 from .trace_context import observer
 from .treesitter_parser import parse_treesitter
+from .vision_contracts import parse_vision_result
 
 
 def normalize_generation_cache_prompt(prompt: str) -> str:
@@ -1285,7 +1287,18 @@ class LocalAIServices:
         """Multimodal image understanding via local vision model."""
         image_path = str(args.get("image", args.get("image_path", "")))
         prompt = str(args.get("prompt", args.get("task", "Describe this image in detail.")))
-        model = str(args.get("model") or self.config.get("models", {}).get("vision", "llava"))
+        models = self.config.get("models", {})
+        configured_model = models.get("vision", "qwen3-vl:4b") if isinstance(models, dict) else "qwen3-vl:4b"
+        model = str(args.get("model") or configured_model or "").strip()
+        if not model:
+            return {
+                "success": False,
+                "unsupported": True,
+                "degraded": True,
+                "terminal": True,
+                "retryable": False,
+                "error": "Vision model is not configured; set models.vision to qwen3-vl:4b or another Ollama vision model.",
+            }
 
         images = []
         if image_path:
@@ -1300,25 +1313,102 @@ class LocalAIServices:
             else:
                 images.append(image_path)
 
+        image_artifact_id = str(args.get("image_artifact_id") or "").strip()
+        bundle_artifact_id = str(args.get("bundle_artifact_id") or "").strip()
+        if image_artifact_id and not images:
+            try:
+                artifact = self.artifacts.get(image_artifact_id)
+                artifact_data = artifact.get("text") if isinstance(artifact, dict) else ""
+                if artifact_data:
+                    images.append(str(artifact_data))
+            except Exception:
+                pass
+
         if not images:
             return {"success": False, "error": "image path or base64 data required"}
 
+        schema = args.get("json_schema")
         payload = {
             "model": model,
             "prompt": prompt,
             "images": images,
             "stream": False,
+            "format": schema if isinstance(schema, dict) else "json",
         }
+        payload["prompt"] += (
+            "\n\nReturn only a JSON object matching this contract: "
+            "{\"summary\": string, \"findings\": [{\"id\": string, "
+            "\"severity\": \"blocker|high|medium|low|info\", "
+            "\"category\": \"layout|responsive|accessibility|interaction|visual-regression|runtime\", "
+            "\"problem\": string, \"confidence\": number, "
+            "\"element_ids\": [string], \"bbox\": [number, number, number, number] or null, "
+            "\"evidence\": [string], \"likely_cause\": string, \"fix_hint\": string, "
+            "\"needs_runtime_check\": boolean}], "
+            "\"unknowns\": [string], \"recommended_checks\": [string]} ."
+        )
+        payload, _profile = self.model_policy.apply_payload(
+            model,
+            payload,
+            role="vision",
+            output_tokens=int(args.get("max_tokens", 1200)),
+        )
+        timeout = float(
+            self.config.get("resilience", {}).get(
+                "vision_timeout_seconds",
+                self.config.get("server", {}).get("request_timeout_seconds", 300),
+            )
+        )
+        timeout = max(0.05, min(timeout, 300.0))
         try:
-            res = self.runtime.request("/api/generate", payload)
+            res = self.runtime.request("/api/generate", payload, timeout=timeout)
+            if not isinstance(res, dict):
+                return {"success": False, "model": model, "terminal": True, "retryable": False, "error": "Vision runtime returned an invalid response."}
+            if res.get("error"):
+                return {
+                    "success": False,
+                    "model": model,
+                    "unsupported": True,
+                    "degraded": True,
+                    "terminal": True,
+                    "retryable": False,
+                    "error": f"Vision model '{model}' is unavailable. Install it with 'ollama pull {model}' or configure models.vision. Runtime detail: {type(res['error']).__name__}.",
+                }
+            raw_output = str(res.get("response", ""))
+            raw_artifact_id = ""
+            try:
+                raw_artifact_id = str(self.artifacts.put(raw_output, tenant, "vision-output"))
+            except Exception:
+                pass
+            parsed = parse_vision_result(raw_output)
+            if parsed.terminal:
+                return {
+                    "success": False,
+                    "model": model,
+                    "terminal": True,
+                    "retryable": False,
+                    "error": parsed.error,
+                    "raw_output_artifact_id": raw_artifact_id,
+                }
             return {
                 "success": True,
                 "model": model,
-                "response": res.get("response", ""),
+                "response": raw_output,
+                "review": asdict(parsed),
                 "prompt": prompt,
+                "image_artifact_id": image_artifact_id,
+                "bundle_artifact_id": bundle_artifact_id,
+                "raw_output_artifact_id": raw_artifact_id,
             }
         except Exception as exc:
-            return {"success": False, "error": f"Vision model inference failed: {exc}", "model": model}
+            return {
+                "success": False,
+                "model": model,
+                "unsupported": True,
+                "degraded": True,
+                "terminal": True,
+                "retryable": False,
+                "error": f"Vision model '{model}' is unavailable; check Ollama and the configured model. Runtime error: {type(exc).__name__}.",
+            }
 
     def transcribe(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         """Transcribe audio recording to text via local Whisper / STT CLI or fallback."""
