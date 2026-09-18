@@ -1317,8 +1317,8 @@ def test_trace_async_and_request_response_outputs_keep_full_human_code_blocks() 
     ):
         assert "trace-code-card" in html
         assert marker in html
-        assert len(html) > 12000
-        assert payload.endswith("x" * 100 if marker == "async-output-" else "y" * 100)
+        assert len(html) < 24000
+        assert html.count("x" if marker == "async-output-" else "y") < 10000
         assert "[object Object]" not in html
         assert not re.search(r"\{\s*[\"'][A-Za-z_][\w-]*[\"']\s*:", html)
 
@@ -1336,6 +1336,7 @@ def test_trace_async_job_primary_state_and_worker_details_are_separated() -> Non
                 "queue_wait_ms": 12,
                 "retries": 2,
                 "worker_input": {"prompt": "hidden worker payload"},
+                "worker_output": {"result": "hidden worker output"},
                 "result": "partial result",
             },
         },
@@ -1355,7 +1356,8 @@ def test_trace_async_job_primary_state_and_worker_details_are_separated() -> Non
         assert value in primary
     assert "hidden worker payload" not in primary
     assert "JOB_ID_SHOULD_BE_SECONDARY" not in primary
-    assert "Worker payload" in rendered["html"]
+    assert "Worker input" in rendered["html"]
+    assert "Worker output" in rendered["html"]
     assert "Correlations" in rendered["html"]
 
 
@@ -1418,6 +1420,32 @@ def test_trace_generic_fallback_keeps_captured_values_outside_technical_details(
     for value in ["captured input", "captured output", "captured error"]:
         assert value in rendered["primary"]
     assert "trace-primary" in rendered["primary"]
+
+
+def test_trace_task5_handles_incomplete_empty_malformed_and_bounded_states() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        + source
+        + "const huge='payload-'+ 'x'.repeat(50000);"
+        + "const incomplete=renderAsyncJobPresentation({presentation:{kind:'async_job',asyncJob:{status:'incomplete',result:'partial'}},lifecycle:{state:'incomplete'}});"
+        + "const empty=renderRequestResponsePresentation({presentation:{kind:'request_response'},session:{request:{}},lifecycle:{state:'queued'}});"
+        + "const malformed=renderRequestResponsePresentation({presentation:{kind:'request_response'},session:{request:'broken'},input:{payload:'malformed'},output:{result:'kept'}});"
+        + "const bounded=renderAsyncJobPresentation({presentation:{kind:'async_job',asyncJob:{status:'running',result:huge}},lifecycle:{state:'running',terminal:false}});"
+        + "console.log(JSON.stringify({incomplete,empty,malformed,bounded}));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    rendered = json.loads(result.stdout)
+    assert "incomplete" in rendered["incomplete"]
+    assert "finished" not in rendered["incomplete"]
+    empty_primary = rendered["empty"].split('<details class="trace-secondary-details', 1)[0]
+    assert '<section class="trace-primary' not in empty_primary
+    assert "malformed" in rendered["malformed"] and "kept" in rendered["malformed"]
+    assert "[object Object]" not in rendered["malformed"]
+    assert len(rendered["bounded"]) < 24000
+    assert "payload-" in rendered["bounded"]
 
 
 def test_trace_request_renderers_expose_reviewer_gap_contracts() -> None:
@@ -1692,8 +1720,9 @@ def test_trace_unknown_malformed_and_missing_content_use_safe_bounded_fallbacks(
         assert "[object Object]" not in html
         assert not re.search(r"\{\s*[\"'][A-Za-z_$][\w$]*\s*:", html)
     assert "fallback-secret" not in rendered["bounded"]
-    assert len(rendered["bounded"]) > 12000
-    assert oversized[-100:] in rendered["bounded"]
+    assert len(rendered["bounded"]) < 24000
+    assert "bounded-output-" in rendered["bounded"]
+    assert rendered["bounded"].count("x") < 10000
 
 
 def test_trace_review_severity_runtime_merges_counts_map_and_findings() -> None:
