@@ -3270,6 +3270,18 @@ def test_trace_rag_aggregate_budget_structured_truncation_and_malformed_results(
     ]
     fixtures = {
         "large": {"presentation": {"kind": "rag_search", "retrieval": {"query": "large", "results": large_results}}},
+        "oversized": {
+            "presentation": {
+                "kind": "rag_search",
+                "retrieval": {
+                    "query": "oversized",
+                    "answer": "answer-start-" + ("a" * 100000) + "-ANSWER_TAIL",
+                    "root": "root-start-" + ("r" * 100000) + "-ROOT_TAIL",
+                    "provider": "provider-start-" + ("p" * 100000) + "-PROVIDER_TAIL",
+                    "results": [{"title": "primary result", "snippet": "primary snippet", "score": 1}],
+                },
+            }
+        },
         "structured": {
             "presentation": {
                 "kind": "rag_search",
@@ -3288,7 +3300,7 @@ def test_trace_rag_aggregate_budget_structured_truncation_and_malformed_results(
         "let traceRevealRedactedDetails=false;"
         + source
         + f"const fixtures={json.dumps(fixtures)};"
-        + "console.log(JSON.stringify({large:renderRagSearchPresentation(fixtures.large),structured:renderRagSearchPresentation(fixtures.structured),malformed:renderRagSearchPresentation(fixtures.malformed)}));"
+        + "console.log(JSON.stringify({large:renderRagSearchPresentation(fixtures.large),oversized:renderRagSearchPresentation(fixtures.oversized),structured:renderRagSearchPresentation(fixtures.structured),malformed:renderRagSearchPresentation(fixtures.malformed)}));"
     )
     result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
     rendered = json.loads(result.stdout)
@@ -3298,6 +3310,15 @@ def test_trace_rag_aggregate_budget_structured_truncation_and_malformed_results(
     assert "Aggregate output truncated" in large
     assert "ranked results" in large
     assert "Result 0" in large
+
+    oversized = rendered["oversized"]
+    assert len(oversized) <= 24000
+    assert "primary result" in oversized
+    assert "primary snippet" in oversized
+    assert "Aggregate output truncated" in oversized
+    assert "ANSWER_TAIL" not in oversized
+    assert "ROOT_TAIL" not in oversized
+    assert "PROVIDER_TAIL" not in oversized
 
     structured = rendered["structured"]
     assert "server result limit" in structured
