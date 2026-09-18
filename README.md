@@ -80,10 +80,10 @@ The bootstrapper finds or installs a suitable Python 3.11+ runtime where the pla
 
 - the Local AI Hub virtual environment, core dependencies, and Token Economy Suite (`tokcount`, `trim-run`, `repo-map`);
 - external CLI tools (`ripgrep` / `rg`, `fd`, `ast-grep`, `repomix`, `jq`);
-- The configured local inference backend and all four Qwen tiers (`qwen2.5-coder:0.5b`, `qwen2.5-coder:1.5b`, `qwen2.5-coder:3b`, `qwen2.5-coder:7b`), plus embedding models (`bge-m3`);
+- The configured local inference backend and all four Qwen tiers (`qwen2.5-coder:0.5b`, `qwen2.5-coder:1.5b`, `qwen2.5-coder:3b`, `qwen2.5-coder:7b`), plus the default embedding model (`BAAI/bge-small-en-v1.5`);
 - Serena and CodeGraphContext in isolated tool environments;
 - local SentenceTransformers/reranker dependencies and model cache;
-- optional OpenVINO dependencies/models when the selected Intel integrated profile requests NPU/iGPU retrieval acceleration;
+- optional OpenVINO dependencies/models when OpenVINO is configured, NPU hardware is detected, or an Intel GPU is detected with the `integrated` profile, subject to the OpenVINO and feature install flags;
 - MCP server registration into Codex, Claude Desktop, Gemini, Cursor, Windsurf, and VS Code/Copilot;
 - companion agent skills (`local-ai-orchestrator`, `token-economizer`, `caveman`, `tool-orchestration`, `ollama-quality-routing`) and policies (`LOCAL AI HUB TOOL POLICY`, `TOKEN ECONOMY POLICY`);
 - a per-user headless service/supervisor.

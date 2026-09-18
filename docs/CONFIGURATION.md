@@ -45,7 +45,7 @@ Use `preload_profile` to select a named project profile. Defaults have no mandat
 
 The guard uses these phase values: `plan` (contract, scope, unknowns), `edit` (reuse candidates and exact symbols), `review` (drift and changed paths), `test` (receipts and affected tests), and `handoff` (decisions, checkpoints, and next actions). Each deterministic fact carries an opaque `evidence_id`; retain and cite those IDs when composing or validating work. `repo_revision`, `stale`, and `context_id` identify freshness and pack identity.
 
-Warnings are machine-readable objects with `severity`, `code`, `message`, `evidence_ids`, `affected_paths`, `recommended_action`, and `requires_approval`. Canonical soft-stop severities are `info`, `warning`, `boundary`, and `high-risk`. `info` does not interrupt; `warning` needs a concise override reason; `boundary` and `high-risk` move an active task to recoverable waiting/approval until an authorized approval is present. Warnings never delete edits or rewrite history.
+Guard warnings are machine-readable objects with `severity`, `code`, `message`, `evidence_ids`, `affected_paths`, `recommended_action`, and `requires_approval`. Context-compiler fallback warnings are smaller objects with `code`, `message`, and relevant path/error details. Canonical soft-stop severities are `info`, `warning`, `boundary`, and `high-risk`. `info` does not interrupt; `warning` needs a concise override reason; `boundary` and `high-risk` move an active task to recoverable waiting/approval until an authorized approval is present. Warnings never delete edits or rewrite history.
 
 Agent OS memory is authoritative only while fresh and provenance-linked. Promotion from task/repository scope to project, user, or global scope requires explicit approval. A relevant repository revision change marks affected records `stale`; stale/conflicting records remain visible in diagnostics but are excluded from authoritative context until superseded or revalidated.
 
@@ -86,10 +86,10 @@ Deterministic/indexed evidence is authoritative. Local-model passes may rank evi
 ## Agent Operating System state
 
 `[agent_state]` controls the local agent operating system state layer. It is enabled by default (`enabled = true`). When enabled, state is stored in `agent_state.sqlite3` under `server.state_dir`.
-- `retention_days = 30`: TTL for terminal tasks, incidents, and unconfirmed memory candidates.
-- `snapshot_interval_events = 100`: Periodic state snapshot interval.
-- `max_event_bytes = 65536`: Event payload size ceiling.
-- `sqlite_busy_timeout_seconds = 5.0` and `sqlite_write_retries = 5`: Bounded concurrency handling with backoff.
+- `event_retention_days = 30`: Retention period for agent-state events and snapshots.
+- `max_payload_bytes = 65536`: Event payload size ceiling.
+- `snapshot_interval_events = 50`: Periodic state snapshot interval.
+- `cleanup_batch_size = 100`: Maximum cleanup batch size.
 - Governed promotion: Global memory and learned policy promotion strictly require explicit user approval.
 
 ## Dashboard-managed overrides

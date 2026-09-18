@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import tomllib
 from pathlib import Path
 
 from local_ai_hub import __version__
@@ -87,19 +88,53 @@ def test_guarded_context_release_contract_documents_default_flow_and_fallbacks()
     )
     assert all(term in combined for term in required)
 
-    for code in (
-        "preload_missing",
-        "code_intelligence_unavailable",
-        "local_model_timeout",
-        "agent_state_disabled",
-    ):
+    for code in ("preload_missing_file", "agent_state_disabled"):
         assert f'"{code}"' in http_api
+
+    assert '"preload_missing"' not in http_api
+    assert "context_source" in http_api and "deterministic-fast" in http_api
+    assert "continuation" in http_api
+    assert "model_degraded" in http_api and "model_degraded_reason" in http_api
+    assert "code_intelligence_unavailable" not in http_api
+    assert "local_model_timeout" not in http_api
 
     warning_fields = (
         "severity", "code", "message", "evidence_ids", "affected_paths",
         "recommended_action", "requires_approval",
     )
     assert all(field in http_api for field in warning_fields)
+
+
+def test_release_docs_match_stable_defaults_and_ci_gate():
+    defaults = tomllib.loads((ROOT / "defaults.toml").read_text(encoding="utf-8"))
+    assert defaults["agent_state"] == {
+        "enabled": True,
+        "event_retention_days": 30,
+        "max_payload_bytes": 65536,
+        "snapshot_interval_events": 50,
+        "cleanup_batch_size": 100,
+    }
+
+    configuration = (ROOT / "docs" / "CONFIGURATION.md").read_text(encoding="utf-8")
+    for claim in (
+        "event_retention_days = 30",
+        "max_payload_bytes = 65536",
+        "snapshot_interval_events = 50",
+        "cleanup_batch_size = 100",
+    ):
+        assert claim in configuration
+    assert "`retention_days = 30`" not in configuration
+    assert "max_event_bytes = 65536" not in configuration
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "BAAI/bge-small-en-v1.5" in readme
+    assert "bge-m3" not in readme
+    assert "NPU hardware is detected" in readme
+    assert "Intel GPU is detected with the `integrated` profile" in readme
+
+    testing = (ROOT / "docs" / "TESTING.md").read_text(encoding="utf-8")
+    for step in ("release_check.py", "release_check.py --post-test", "git clean -fdX", "check_dashboard.py"):
+        assert step in testing
 
 
 def test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources():
