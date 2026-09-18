@@ -1,3 +1,14 @@
+from typing import TypedDict
+
+
+class SemanticHandoffHint(TypedDict):
+    required: bool
+    tool: str
+    actions: list[str]
+    bypass_tool: str
+    bypass_action: str
+
+
 _SEMANTIC_ACTIONS = (
     "delegate",
     "explore",
@@ -32,7 +43,7 @@ _EVIDENCE_ACTIONS = frozenset(
 
 def semantic_handoff_hint(
     tool: str, action: str, local_tasks_enabled: bool
-) -> dict | None:
+) -> SemanticHandoffHint | None:
     if (
         not local_tasks_enabled
         or tool != "local_ai_repo"
