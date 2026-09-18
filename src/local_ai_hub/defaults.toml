@@ -891,6 +891,15 @@ max_payload_bytes = 65536
 snapshot_interval_events = 50
 cleanup_batch_size = 100
 
+[context.preloads]
+# Empty by default: repositories opt into bounded files, patterns, and memory kinds.
+files = []
+patterns = []
+memory_kinds = []
+max_files = 8
+max_bytes = 16000
+max_memory = 8
+
 [agent_output]
 ultra_compact = true
 strip_empty = true
