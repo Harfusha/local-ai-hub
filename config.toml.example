@@ -16,7 +16,8 @@ auto_tune = true
 # reasoning = "qwen2.5-coder:7b"
 # background_code = "qwen2.5-coder:0.5b"
 # general = "qwen2.5-coder:3b"
-# vision = "qwen3-vl:4b"
+# Vision model follows hardware profile: qwen3.5:9b on balanced/high/max,
+# qwen3-vl:4b on cpu/integrated/low. Override only when needed.
 
 # Optional local llama.cpp SYCL model router for Intel GPU inference. It listens
 # on loopback port 12438 and loads one model at a time. Auto-routing applies on
@@ -88,6 +89,7 @@ allow_unknown = false
 
 [features]
 tasks = true              # local model inference worker (local_ai_task)
+vision = true             # image understanding/frontend review (set false to disable)
 local_diagnostic_dispatch = false # opt-in L1 failure diagnosis; direct non-mutating validation commands only
 enriched_search = false   # rollout only: source-enriched repository search
 batch_replacement = false # rollout only: atomic repository batch replacement

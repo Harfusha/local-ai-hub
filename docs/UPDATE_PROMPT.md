@@ -34,7 +34,7 @@ Follow these execution phases:
 
 ### PHASE 2: RUN UPDATE / RE-SETUP
 
-Run the platform installer with the active hardware profile to apply dependency updates, regenerate MCP schemas/manifests, and update skills. The installer must inspect the active config first: install/start/pull Ollama only when `server.auto_start_ollama = true` and `llama_cpp.fallback_to_ollama = true`; when llama.cpp is exclusive (`llama_cpp.mode = "on"` and `fallback_to_ollama = false`), skip all Ollama installation and model pulls:
+Run the platform installer with the active hardware profile to apply dependency updates, regenerate MCP schemas/manifests, and update skills. The installer must inspect the active config first: install/start/pull Ollama only when `server.auto_start_ollama = true` and `llama_cpp.fallback_to_ollama = true`; pull `models.vision` only when `features.vision = true`; when llama.cpp is exclusive (`llama_cpp.mode = "on"` and `fallback_to_ollama = false`), skip all Ollama installation and model pulls. With `headless.manage_ollama = true`, never start a separate `ollama serve`; the Hub supervisor owns the local Ollama process and takes over an unmanaged local process during setup/restart:
 
 - **Windows (PowerShell)**:
   ```powershell
@@ -76,7 +76,7 @@ Run the platform installer with the active hardware profile to apply dependency 
    - On Intel-only systems, follow `docs/LLAMA_CPP_SYCL.md` and verify that the official SYCL `llama-server.exe --list-devices` lists the Intel GPU before enabling `llama_cpp.mode = "on"`. The installed Hub selects the SYCL backend in `auto` mode when its Intel hardware profile and routes are present. Do not set `OLLAMA_VULKAN` for Intel inference.
    - NVIDIA/AMD discrete GPUs continue through the configured Ollama CUDA/ROCm path. AMD iGPU is not an Intel SYCL target and retains its configured Ollama route. Do not enable llama.cpp SYCL on non-Intel hardware.
    - If an NPU (Intel AI Boost / AMD XDNA) or Intel iGPU is present:
-     Ensure OpenVINO dependencies are installed in the venv to offload embeddings and reranking from CPU:
+     Ensure OpenVINO dependencies are installed in the venv only when active hardware/configuration selects OpenVINO for embeddings or reranking. Do not install OpenVINO on NVIDIA-only systems merely because the feature permission is true:
      ```powershell
      & "$HOME\.local-ai-hub\.venv\Scripts\pip.exe" install -r "$HOME\.local-ai-hub\requirements-openvino.txt"
      & "$HOME\.local-ai-hub\.venv\Scripts\python.exe" "$HOME\.local-ai-hub\tools\prefetch_openvino.py"

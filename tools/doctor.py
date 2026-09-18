@@ -15,7 +15,7 @@ sys.path.insert(0, str(root / "src"))
 from local_ai_hub import __version__
 from local_ai_hub.client import HubClient
 from local_ai_hub.config import load_config
-from local_ai_hub.doctor_support import probe_hub_status
+from local_ai_hub.doctor_support import installed_models_from_status, probe_hub_status
 from local_ai_hub.http_server import validate_network_security
 
 
@@ -88,8 +88,13 @@ for key in ("background_code", "fast_code", "heavy_code", "reasoning", "general"
     model = str(models.get(key, ""))
     if model and model not in configured_generation:
         configured_generation.append(model)
-installed = set(status.get("installed_models", [])) if isinstance(status, dict) else set()
+features = cfg.get("features", {}) if isinstance(cfg.get("features", {}), dict) else {}
+vision_enabled = bool(features.get("vision", True))
+vision_model = str(models.get("vision", "") or "") if vision_enabled else ""
+installed = installed_models_from_status(status, cfg=cfg)
 missing_models = [m for m in configured_generation if installed and m not in installed]
+vision_installed = bool(vision_model and installed and vision_model in installed)
+vision_missing = bool(vision_model and installed and vision_model not in installed)
 
 mcp_file = root / "src" / "local_ai_hub" / "mcp_server.py"
 state_dir = Path(cfg.get("server", {}).get("state_dir", "~/.local-ai-hub/state")).expanduser()
@@ -133,6 +138,10 @@ if status.get("hub_online", False) and not status.get("ollama_online", False):
     warnings.append("Ollama is not online")
 if missing_models:
     warnings.append("Missing configured Ollama models: " + ", ".join(missing_models))
+if vision_enabled and not vision_model:
+    warnings.append("Vision capability is enabled but models.vision is not configured")
+if vision_missing:
+    warnings.append("Missing configured vision model: " + vision_model)
 if not mcp_file.exists():
     warnings.append(f"Selected MCP surface file is missing: {mcp_file}")
 telemetry_summary = ((telemetry_report.get("report") or {}).get("summary") or {}) if isinstance(telemetry_report, dict) else {}
@@ -237,6 +246,7 @@ report = {
         "active_model": (status.get("scheduler") or {}).get("active_model") if isinstance(status, dict) else None,
         "configured_generation_models": configured_generation,
         "missing_generation_models": missing_models,
+        "vision": {"enabled": vision_enabled, "model": vision_model, "installed": vision_installed, "status_known": bool(installed)},
         "model_execution": execution_summary,
         "loaded_model_details": loaded_details,
         "ollama_profile": ollama_profile,
@@ -332,6 +342,14 @@ def format_doctor_report(rep: dict[str, Any]) -> str:
         lines.append(f"  [✗] Missing Models:   {', '.join(missing)}")
     else:
         lines.append(f"  [✓] Configured:       {', '.join(cfg_models) if cfg_models else 'None'}")
+    vision = rt.get("vision", {}) if isinstance(rt, dict) else {}
+    if not vision.get("enabled", True):
+        lines.append("  [—] Vision:           Disabled")
+    elif vision.get("status_known") and not vision.get("installed"):
+        lines.append(f"  [✗] Vision:           Missing {vision.get('model') or 'configured model'}")
+    else:
+        suffix = "" if vision.get("status_known") else " (presence unknown)"
+        lines.append(f"  [✓] Vision:           {vision.get('model') or 'Not configured'}{suffix}")
     lines.append("")
 
     lines.append("CLI Tools:")
