@@ -469,6 +469,25 @@ def test_claims_without_request_accept_deterministic_path_hash_evidence(reposito
     assert guard.check_claims(evidence, [{"claim": "UserService exists", "evidence_ids": ["deterministic-no-request"]}]) == ()
 
 
+def test_check_drift_does_not_use_snapshot_after_diff_path_failure(repository: Path, monkeypatch):
+    guard = _guard(repository)
+    request = _request(repository)
+    contract = guard.build_contract(request)
+    monkeypatch.setattr(
+        guard.repository_tools,
+        "git_diff",
+        lambda *_args, **_kwargs: {
+            "success": False,
+            "paths_complete": False,
+            "retryable": True,
+            "error": "path capture failed",
+        },
+    )
+    monkeypatch.setattr(guard.repository_tools, "git_snapshot", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("incomplete paths used")))
+
+    assert guard.check_drift(request, contract, (), None) == ()
+
+
 def test_soft_warning_has_required_fields(repository: Path):
     warning = GuardWarning(
         severity="warning",

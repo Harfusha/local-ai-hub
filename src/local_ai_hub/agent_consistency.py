@@ -632,17 +632,20 @@ class AgentConsistencyGuard:
         if diff is None:
             try:
                 diff = self.repository_tools.git_diff(request.root, base=request.base, staged=request.staged, max_tokens=request.token_budget)
-            except Exception:
-                diff = {}
+            except Exception as exc:
+                diff = {"success": False, "paths_complete": False, "error": _text(exc, 240)}
         diff_data: Mapping[str, Any] = diff if isinstance(diff, Mapping) else {}
+        diff_unavailable = diff_data.get("success") is False or diff_data.get("paths_complete") is False
         if not paths:
             paths = list(_tuple(diff_data.get("changed_paths") or diff_data.get("changed_files")))
+        if not paths and diff_unavailable:
+            return ()
         if not paths:
             try:
                 paths = list(_bounded_sequence(self.repository_tools.git_snapshot(request.root).changed_paths, _MAX_ITEMS))
             except Exception:
                 paths = []
-        if paths and not diff_data.get("impact"):
+        if paths and not diff_data.get("impact") and not diff_unavailable:
             try:
                 impact = self.repository_tools.impact_analysis(request.root, base=request.base, staged=request.staged)
                 if isinstance(impact, Mapping) and impact.get("success"):
