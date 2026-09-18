@@ -2552,7 +2552,7 @@ function openModal(obj,title='',entityType=''){
   else if(type==='scheduler_job')renderSchedulerJobModal(obj);
   else if(type==='http_request')renderHttpRequestModal(obj);
   else renderHumanModal(obj);
-  $('modalBg').classList.add('open');
+  if($('modalBg'))$('modalBg').classList.add('open');
   if($('modalBody'))$('modalBody').scrollTop=0;
 }
 
@@ -2830,9 +2830,9 @@ async function transitionTaskAction(taskId){
 }
 
 function openCreateTaskModal(){
-  $('modalTitle').textContent='Create Durable Agent Task';
-  $('modalLive').textContent='';
-  $('modalBody').innerHTML=`
+  if($('modalTitle'))$('modalTitle').textContent='Create Durable Agent Task';
+  if($('modalLive'))$('modalLive').textContent='';
+  if($('modalBody'))$('modalBody').innerHTML=`
     <div class="modal-body-wrap">
       <form class="modal-form" onsubmit="submitCreateTask(event)">
         <div class="form-group">
@@ -2866,13 +2866,13 @@ function openCreateTaskModal(){
         </div>
         <div id="createTaskStatus" class="tiny"></div>
         <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px">
-          <button type="button" class="btn" onclick="$('modalClose').click()">Cancel</button>
+          <button type="button" class="btn" onclick="$('modalClose')?.click()">Cancel</button>
           <button type="submit" class="btn ok">Create Task</button>
         </div>
       </form>
     </div>
   `;
-  $('modalBg').classList.add('open');
+  if($('modalBg'))$('modalBg').classList.add('open');
   setTimeout(()=>$('newTaskGoal')?.focus(),50);
 }
 
@@ -2989,9 +2989,9 @@ async function deleteMemoryAction(key,scope){
 }
 
 function openRecordMemoryModal(){
-  $('modalTitle').textContent='Record Agent Memory';
-  $('modalLive').textContent='';
-  $('modalBody').innerHTML=`
+  if($('modalTitle'))$('modalTitle').textContent='Record Agent Memory';
+  if($('modalLive'))$('modalLive').textContent='';
+  if($('modalBody'))$('modalBody').innerHTML=`
     <div class="modal-body-wrap">
       <form class="modal-form" onsubmit="submitRecordMemory(event)">
         <div class="form-group">
@@ -3028,13 +3028,13 @@ function openRecordMemoryModal(){
         </div>
         <div id="recordMemStatus" class="tiny"></div>
         <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px">
-          <button type="button" class="btn" onclick="$('modalClose').click()">Cancel</button>
+          <button type="button" class="btn" onclick="$('modalClose')?.click()">Cancel</button>
           <button type="submit" class="btn ok">Record Memory</button>
         </div>
       </form>
     </div>
   `;
-  $('modalBg').classList.add('open');
+  if($('modalBg'))$('modalBg').classList.add('open');
   setTimeout(()=>$('newMemKey')?.focus(),50);
 }
 
@@ -3167,9 +3167,9 @@ async function resolveIncidentAction(id){
 }
 
 function openRecordIncidentModal(){
-  $('modalTitle').textContent='Record Failure Anti-Pattern';
-  $('modalLive').textContent='';
-  $('modalBody').innerHTML=`
+  if($('modalTitle'))$('modalTitle').textContent='Record Failure Anti-Pattern';
+  if($('modalLive'))$('modalLive').textContent='';
+  if($('modalBody'))$('modalBody').innerHTML=`
     <div class="modal-body-wrap">
       <form class="modal-form" onsubmit="submitRecordIncident(event)">
         <div class="form-group">
@@ -3192,13 +3192,13 @@ function openRecordIncidentModal(){
         </div>
         <div id="recordIncStatus" class="tiny"></div>
         <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px">
-          <button type="button" class="btn" onclick="$('modalClose').click()">Cancel</button>
+          <button type="button" class="btn" onclick="$('modalClose')?.click()">Cancel</button>
           <button type="submit" class="btn warn">Record Anti-Pattern</button>
         </div>
       </form>
     </div>
   `;
-  $('modalBg').classList.add('open');
+  if($('modalBg'))$('modalBg').classList.add('open');
   setTimeout(()=>$('newIncClass')?.focus(),50);
 }
 
@@ -3231,9 +3231,9 @@ async function submitRecordIncident(e){
 }
 
 function openCleanupModal(){
-  $('modalTitle').textContent='Cleanup Stale Agent OS State';
-  $('modalLive').textContent='';
-  $('modalBody').innerHTML=`
+  if($('modalTitle'))$('modalTitle').textContent='Cleanup Stale Agent OS State';
+  if($('modalLive'))$('modalLive').textContent='';
+  if($('modalBody'))$('modalBody').innerHTML=`
     <div class="modal-body-wrap">
       <div class="modal-card">
         <div class="modal-card-head"><span>Agent OS Maintenance</span></div>
@@ -3249,12 +3249,12 @@ function openCleanupModal(){
       </div>
       <div id="cleanupStatus" class="tiny"></div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn" onclick="$('modalClose').click()">Cancel</button>
+        <button class="btn" onclick="$('modalClose')?.click()">Cancel</button>
         <button class="btn warn" onclick="executeCleanupAction()">🧹 Execute Cleanup</button>
       </div>
     </div>
   `;
-  $('modalBg').classList.add('open');
+  if($('modalBg'))$('modalBg').classList.add('open');
 }
 
 async function executeCleanupAction(){
@@ -3435,9 +3435,9 @@ function renderProjectModal(p){
 }
 
 function openRegisterProjectModal(){
-  $('modalTitle').textContent='Register Project for Preprocessing';
-  $('modalLive').textContent='';
-  $('modalBody').innerHTML=`
+  if($('modalTitle'))$('modalTitle').textContent='Register Project for Preprocessing';
+  if($('modalLive'))$('modalLive').textContent='';
+  if($('modalBody'))$('modalBody').innerHTML=`
     <div class="modal-body-wrap">
       <form class="modal-form" onsubmit="submitRegisterProject(event)">
         <div class="form-group">
@@ -3454,13 +3454,13 @@ function openRegisterProjectModal(){
         </div>
         <div id="regProjStatus" class="tiny"></div>
         <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px">
-          <button type="button" class="btn" onclick="$('modalClose').click()">Cancel</button>
+          <button type="button" class="btn" onclick="$('modalClose')?.click()">Cancel</button>
           <button type="submit" class="btn ok">+ Register Project</button>
         </div>
       </form>
     </div>
   `;
-  $('modalBg').classList.add('open');
+  if($('modalBg'))$('modalBg').classList.add('open');
   setTimeout(()=>$('regProjRoot')?.focus(),50);
 }
 
@@ -3475,7 +3475,7 @@ async function submitRegisterProject(e){
   try{
     const r=await post('/api/preprocess',{root,action:force?'refresh':'register'});
     if(r.success){
-      $('modalClose').click();
+      $('modalClose')?.click();
       await pollStatus();
     }else{
       if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(r.error||'Failed')}</span>`;
@@ -3486,9 +3486,9 @@ async function submitRegisterProject(e){
 }
 
 function openDeleteProjectModal(root,name){
-  $('modalTitle').textContent='Unregister Project';
-  $('modalLive').textContent='';
-  $('modalBody').innerHTML=`
+  if($('modalTitle'))$('modalTitle').textContent='Unregister Project';
+  if($('modalLive'))$('modalLive').textContent='';
+  if($('modalBody'))$('modalBody').innerHTML=`
     <div class="modal-body-wrap">
       <div style="font-size:13px">
         Unregister project <b>${esc(name)}</b>?
@@ -3516,12 +3516,12 @@ function openDeleteProjectModal(root,name){
       <div id="delProjStatus" class="tiny"></div>
 
       <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px">
-        <button class="btn" onclick="$('modalClose').click()">Cancel</button>
+        <button class="btn" onclick="$('modalClose')?.click()">Cancel</button>
         <button class="btn bad" id="confirmDeleteProjectBtn" onclick="confirmDeleteProject(${escJs(root)})">Confirm Unregister / Purge</button>
       </div>
     </div>
   `;
-  $('modalBg').classList.add('open');
+  if($('modalBg'))$('modalBg').classList.add('open');
   const confirmBtn=$('confirmDeleteProjectBtn');
   if(confirmBtn)confirmBtn.onclick=()=>confirmDeleteProject(root);
 }
@@ -3536,7 +3536,7 @@ async function confirmDeleteProject(root){
       if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(r.error||'Failed to unregister')}</span>`;
       return;
     }
-    $('modalClose').click();
+    $('modalClose')?.click();
     await pollStatus();
   }catch(e){
     if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(e.message||e)}</span>`;
@@ -3544,9 +3544,9 @@ async function confirmDeleteProject(root){
 }
 
 function openCleanMissingModal(){
-  $('modalTitle').textContent='Prune Missing Worktrees';
-  $('modalLive').textContent='';
-  $('modalBody').innerHTML=`
+  if($('modalTitle'))$('modalTitle').textContent='Prune Missing Worktrees';
+  if($('modalLive'))$('modalLive').textContent='';
+  if($('modalBody'))$('modalBody').innerHTML=`
     <div class="modal-body-wrap">
       <div class="modal-card">
         <div class="modal-card-head"><span>Clean Missing Worktree Directories</span></div>
@@ -3557,12 +3557,12 @@ function openCleanMissingModal(){
       </div>
       <div id="cleanMissingStatus" class="tiny"></div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn" onclick="$('modalClose').click()">Cancel</button>
+        <button class="btn" onclick="$('modalClose')?.click()">Cancel</button>
         <button class="btn warn" onclick="confirmCleanMissing()">🧹 Prune Missing Projects</button>
       </div>
     </div>
   `;
-  $('modalBg').classList.add('open');
+  if($('modalBg'))$('modalBg').classList.add('open');
 }
 
 async function confirmCleanMissing(){
@@ -3570,7 +3570,7 @@ async function confirmCleanMissing(){
   if(statusEl)statusEl.textContent='Scanning and cleaning…';
   try{
     const r=await post('/api/preprocess',{action:'cleanup_deleted'});
-    $('modalClose').click();
+    $('modalClose')?.click();
     await pollStatus();
   }catch(e){
     if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(e.message||e)}</span>`;
@@ -3625,12 +3625,12 @@ function renderDoctorModal(d){
 
 async function openDoctorModal(){
   openModal({},'Local AI Hub Doctor Health Diagnostics','doctor');
-  $('modalBody').innerHTML='<div class="modal-body-wrap"><div class="tiny muted">Running comprehensive health diagnostics across Hub, Ollama, GPU, databases and preprocessor…</div></div>';
+  if($('modalBody'))$('modalBody').innerHTML='<div class="modal-body-wrap"><div class="tiny muted">Running comprehensive health diagnostics across Hub, Ollama, GPU, databases and preprocessor…</div></div>';
   try{
     const r=await post('/api/doctor',{});
     renderDoctorModal(r);
   }catch(e){
-    $('modalBody').innerHTML=`<div class="modal-body-wrap"><div class="bad-t">Doctor failed: ${esc(e.message||e)}</div></div>`;
+    if($('modalBody'))$('modalBody').innerHTML=`<div class="modal-body-wrap"><div class="bad-t">Doctor failed: ${esc(e.message||e)}</div></div>`;
   }
 }
 
@@ -4239,13 +4239,13 @@ function renderHttpRequestModal(r){
   `;
 }
 
-$('modalClose').onclick=()=>{$('modalBg').classList.remove('open');activeTraceId='';activeTraceData=null;if(traceTimer)clearInterval(traceTimer);traceTimer=null};
-$('modalBg').onclick=e=>{if(e.target===$('modalBg'))$('modalClose').click()};
+if($('modalClose'))$('modalClose').onclick=()=>{if($('modalBg'))$('modalBg').classList.remove('open');activeTraceId='';activeTraceData=null;if(traceTimer)clearInterval(traceTimer);traceTimer=null};
+if($('modalBg'))$('modalBg').onclick=e=>{if(e.target===$('modalBg'))$('modalClose')?.click()};
 
 document.addEventListener('click',e=>{
   const closeBtn=e.target.closest?.('button');
   if(closeBtn && (closeBtn.getAttribute('onclick')?.includes('modalClose') || closeBtn.dataset.modalClose!==undefined || (closeBtn.textContent?.trim()==='Cancel' && closeBtn.closest('#modalBody')))){
-    $('modalClose').click();
+    $('modalClose')?.click();
     return;
   }
   const copyFinal=e.target.closest?.('[data-trace-copy-final]');if(copyFinal){copyTraceFinalResponse(copyFinal);return}
@@ -4352,12 +4352,13 @@ $('cfgSave').onclick=async()=>{
   $('cfgStatus').textContent=r.success?'saved · restart hub to apply':('error: '+(r.error||'failed'));
   if(r.success)loadConfigView();
 };
-$('cfgReset').onclick=async()=>{
-  $('modalTitle').textContent='Reset dashboard overrides';
-  $('modalLive').textContent='Confirmation required';
-  $('modalBody').innerHTML=`<div class="modal-body-wrap"><div class="modal-card"><div class="modal-card-head"><span>Scope and impact</span></div><div class="modal-card-body"><p><b>Scope:</b> Dashboard-managed configuration override sidecar only.</p><p style="margin-bottom:0"><b>Impact:</b> Removes override values. Base configuration and project data stay unchanged; restart applies result.</p></div></div><div class="modal-actions-bar" style="justify-content:flex-end"><button class="btn" onclick="$('modalClose').click()">Cancel</button><button class="btn warn" id="confirmConfigReset">Reset overrides</button></div></div>`;
-  $('modalBg').classList.add('open');
-  $('confirmConfigReset').onclick=async()=>{const r=await post('/api/config/update',{action:'reset'});$('cfgStatus').textContent=r.success?'overrides reset · restart hub to apply':('error: '+(r.error||'failed'));if(r.success)loadConfigView();$('modalClose').click();};
+if($('cfgReset'))$('cfgReset').onclick=async()=>{
+  if($('modalTitle'))$('modalTitle').textContent='Reset dashboard overrides';
+  if($('modalLive'))$('modalLive').textContent='Confirmation required';
+  if($('modalBody'))$('modalBody').innerHTML=`<div class="modal-body-wrap"><div class="modal-card"><div class="modal-card-head"><span>Scope and impact</span></div><div class="modal-card-body"><p><b>Scope:</b> Dashboard-managed configuration override sidecar only.</p><p style="margin-bottom:0"><b>Impact:</b> Removes override values. Base configuration and project data stay unchanged; restart applies result.</p></div></div><div class="modal-actions-bar" style="justify-content:flex-end"><button class="btn" onclick="$('modalClose')?.click()">Cancel</button><button class="btn warn" id="confirmConfigReset">Reset overrides</button></div></div>`;
+  if($('modalBg'))$('modalBg').classList.add('open');
+  const confirmBtn=$('confirmConfigReset');
+  if(confirmBtn)confirmBtn.onclick=async()=>{const r=await post('/api/config/update',{action:'reset'});if($('cfgStatus'))$('cfgStatus').textContent=r.success?'overrides reset · restart hub to apply':('error: '+(r.error||'failed'));if(r.success)loadConfigView();$('modalClose')?.click();};
 };
 
 let logLines=['Click Refresh to load logs.'];
@@ -4509,11 +4510,12 @@ function openControlConfirmation(action){
     purge_cache:{title:'Purge expired cache',scope:'Cache entries older than 7 days in configured state directory.',impact:'Expired cached responses removed. Project source and indexes remain intact.'},
   }[action];
   if(!details)return;
-  $('modalTitle').textContent=details.title;
-  $('modalLive').textContent='Confirmation required';
-  $('modalBody').innerHTML=`<div class="modal-body-wrap"><div class="modal-card"><div class="modal-card-head"><span>Scope and impact</span></div><div class="modal-card-body"><p><b>Scope:</b> ${esc(details.scope)}</p><p style="margin-bottom:0"><b>Impact:</b> ${esc(details.impact)}</p></div></div><div class="modal-actions-bar" style="justify-content:flex-end"><button class="btn" onclick="$('modalClose').click()">Cancel</button><button class="btn ${action==='stop_service'?'bad':action==='purge_cache'?'warn':''}" id="confirmControlAction">${esc(details.title)}</button></div></div>`;
-  $('modalBg').classList.add('open');
-  $('confirmControlAction').onclick=async()=>{try{if(action==='purge_cache')await post('/api/maintenance/purge_cache',{days:7});else await post('/api/control',{action});if(action==='stop_service'){$('conn').textContent='stopping';$('conn').className='pill warn-t';}$('modalClose').click();}catch(error){$('modalLive').textContent='Action failed: '+String(error?.message||error);}};
+  if($('modalTitle'))$('modalTitle').textContent=details.title;
+  if($('modalLive'))$('modalLive').textContent='Confirmation required';
+  if($('modalBody'))$('modalBody').innerHTML=`<div class="modal-body-wrap"><div class="modal-card"><div class="modal-card-head"><span>Scope and impact</span></div><div class="modal-card-body"><p><b>Scope:</b> ${esc(details.scope)}</p><p style="margin-bottom:0"><b>Impact:</b> ${esc(details.impact)}</p></div></div><div class="modal-actions-bar" style="justify-content:flex-end"><button class="btn" onclick="$('modalClose')?.click()">Cancel</button><button class="btn ${action==='stop_service'?'bad':action==='purge_cache'?'warn':''}" id="confirmControlAction">${esc(details.title)}</button></div></div>`;
+  if($('modalBg'))$('modalBg').classList.add('open');
+  const confirmBtn=$('confirmControlAction');
+  if(confirmBtn)confirmBtn.onclick=async()=>{try{if(action==='purge_cache')await post('/api/maintenance/purge_cache',{days:7});else await post('/api/control',{action});if(action==='stop_service'){if($('conn')){$('conn').textContent='stopping';$('conn').className='pill warn-t';}}$('modalClose')?.click();}catch(error){if($('modalLive'))$('modalLive').textContent='Action failed: '+String(error?.message||error);}};
 }
 $('restartHub').onclick=()=>openControlConfirmation('restart_hub');
 $('stopService').onclick=()=>openControlConfirmation('stop_service');
