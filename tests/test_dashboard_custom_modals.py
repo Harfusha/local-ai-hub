@@ -2591,6 +2591,129 @@ def test_trace_review_object_severity_uses_human_text() -> None:
     assert "[object Object]" not in html
 
 
+def test_trace_command_primary_and_closed_details_show_execution_contract() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    stdout = "stdout-preview-" + ("x" * 12000)
+    fixture = {
+        "presentation": {
+            "kind": "command",
+            "command": {
+                "command": "python -m pytest",
+                "args": ["-q", "tests/test_dashboard_custom_modals.py"],
+                "success": False,
+                "exit_code": 2,
+                "duration_ms": 1234,
+                "stdout": stdout,
+                "stderr": "assertion failed",
+                "cwd": "C:/workspace",
+                "paths": ["src/local_ai_hub/dashboard.py"],
+                "retries": 2,
+                "criterion": "focused dashboard tests",
+                "raw_payload": {"authorization": "COMMAND_HEADER_MARKER", "detail": "raw command"},
+                "error": "command failed",
+            },
+        },
+        "lifecycle": {"state": "failed"},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"const html=renderCommandPresentation({json.dumps(fixture)});console.log(JSON.stringify(html));"
+    )
+    html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    primary = html.split('<details class="trace-secondary-details', 1)[0]
+    assert all(marker in primary for marker in [
+        "python -m pytest", "arguments", "exit state", "Failed", "exit code", "2",
+        "duration", "1234", "stdout-preview-", "stderr", "Command failed",
+    ])
+    assert len(primary) < 7000
+    assert all(marker in html for marker in [
+        "Command details", "C:/workspace", "dashboard.py", "retries", "criterion",
+        "raw command", "Full stdout", stdout[-100:], "COMMAND_HEADER_MARKER",
+    ]) is False
+    assert "COMMAND_HEADER_MARKER" not in html
+    assert "Full stdout" in html and stdout[-100:] in html
+    assert "C:/workspace" in html and "focused dashboard tests" in html
+
+
+def test_trace_command_and_review_render_explicit_empty_live_and_failure_states() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixtures = {
+        "command_empty": {"presentation": {"kind": "command", "command": {}}, "lifecycle": {}},
+        "command_live": {
+            "presentation": {"kind": "command", "command": {"command": "pytest"}},
+            "lifecycle": {"state": "running"},
+        },
+        "command_failed": {
+            "presentation": {"kind": "command", "command": {"command": "pytest", "success": False, "error": "boom"}},
+            "lifecycle": {"state": "complete"},
+        },
+        "review_empty": {"presentation": {"kind": "review", "review": {"findings": []}}, "lifecycle": {}},
+        "review_live": {"presentation": {"kind": "review", "review": {"request": "target"}}, "lifecycle": {"state": "running"}},
+        "review_failed": {"presentation": {"kind": "review", "review": {"error": "review crashed"}}, "lifecycle": {"state": "failed"}},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"const f={json.dumps(fixtures)};console.log(JSON.stringify({{command_empty:renderCommandPresentation(f.command_empty),command_live:renderCommandPresentation(f.command_live),command_failed:renderCommandPresentation(f.command_failed),review_empty:renderReviewPresentation(f.review_empty),review_live:renderReviewPresentation(f.review_live),review_failed:renderReviewPresentation(f.review_failed)}}));"
+    )
+    rendered = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    assert "No command captured" in rendered["command_empty"] or "No output captured" in rendered["command_empty"]
+    assert "Live" in rendered["command_live"] or "running" in rendered["command_live"]
+    assert "Command failed" in rendered["command_failed"] and "boom" in rendered["command_failed"]
+    assert "No findings" in rendered["review_empty"]
+    assert "Live" in rendered["review_live"] or "running" in rendered["review_live"]
+    assert "Review failed" in rendered["review_failed"] and "review crashed" in rendered["review_failed"]
+
+
+def test_trace_review_primary_groups_findings_and_closes_review_evidence() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {
+            "kind": "review",
+            "review": {
+                "target": "src/local_ai_hub/dashboard.py",
+                "scope": ["renderCommandPresentation", "renderReviewPresentation"],
+                "status": "changes requested",
+                "severity_counts": {"critical": 1, "high": 1, "medium": 0, "low": 0},
+                "findings": [
+                    {"severity": "critical", "rule": "SEC-1", "message": "leaks secret", "metadata": {"token": "REVIEW_TOKEN_MARKER"}},
+                    {"severity": "high", "rule": "UX-2", "message": "missing state"},
+                ],
+                "recommendation": "fix before merge",
+                "diff": "+ review diff",
+                "context": {"files": ["dashboard.py"], "summary": "review context"},
+                "raw_review_metadata": {"authorization": "REVIEW_HEADER_MARKER", "engine": "reviewer"},
+            },
+        },
+        "lifecycle": {"state": "complete"},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"console.log(JSON.stringify(renderReviewPresentation({json.dumps(fixture)})));"
+    )
+    html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    primary = html.split('<details class="trace-secondary-details', 1)[0]
+    assert all(marker in primary for marker in [
+        "src/local_ai_hub/dashboard.py", "scope", "changes requested", "severity counts",
+        "critical: 1", "high: 1", "Critical", "leaks secret", "High", "missing state",
+        "fix before merge",
+    ])
+    assert all(marker in html for marker in ["Review evidence", "review diff", "review context", "Full finding metadata", "reviewer"])
+    assert "REVIEW_TOKEN_MARKER" not in html and "REVIEW_HEADER_MARKER" not in html
+    assert "[object Object]" not in html
+
+
 def test_trace_model_chat_runtime_keeps_request_envelope_visible_and_bounded() -> None:
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     source = _trace_presentation_runtime_source()
