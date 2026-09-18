@@ -148,6 +148,8 @@ def test_generated_repo_schema_declares_guarded_context_and_compact_controls():
     assert properties["focus"] == {"type": "array", "items": {"type": "string"}}
     assert properties["changed_paths"] == {"type": "array", "items": {"type": "string"}}
     assert properties["approval"]["type"] == ["boolean", "string"]
+    assert properties["response_profile"]["default"] == "compact"
+    assert "" not in properties["response_profile"]["enum"]
 
     guidance = schema["description"].lower()
     for phrase in (
@@ -158,5 +160,17 @@ def test_generated_repo_schema_declares_guarded_context_and_compact_controls():
         "override_reason",
         "deterministic/indexed evidence is authoritative",
         "raw model/debug fields",
+        "3200",
     ):
         assert phrase in guidance
+
+
+def test_http_context_docs_match_guarded_warning_and_degraded_fields():
+    docs = (ROOT / "docs/HTTP_API.md").read_text(encoding="utf-8")
+
+    assert "`guarded`" in docs
+    for field in (
+        "`warnings`", "`model_warnings`", "`degraded`", "`context_source`",
+        "`continuation`", "`model_degraded`", "`model_degraded_reason`",
+    ):
+        assert field in docs

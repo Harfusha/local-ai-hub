@@ -445,6 +445,71 @@ _CURRENT_EXTRA_FIELDS: contextvars.ContextVar[list[str] | None] = contextvars.Co
 _CURRENT_RESPONSE_OPTIONS: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar("_CURRENT_RESPONSE_OPTIONS", default={})
 _REUSE_DIGESTS: OrderedDict[str, str] = OrderedDict()
 _REUSE_VALUES: OrderedDict[str, Any] = OrderedDict()
+_GUARDED_CONTEXT_TOP_LEVEL = frozenset({
+    "success", "status", "status_code", "terminal", "retryable", "error", "warning", "message",
+    "context", "context_source", "continuation", "evidence", "evidence_ids", "warnings", "warning_ids",
+    "adaptive_context_pack", "context_pack", "context_id", "repo_revision", "revision", "memory_revision",
+    "changed_paths", "stale", "since_hash", "delta_from", "guarded", "delivery_mode", "degraded",
+    "fallback_used", "requires_override", "requires_approval", "decision_recorded", "decision_persisted",
+    "task_status", "waiting", "contract", "reuse", "reuse_candidates", "mappings", "model_warnings",
+    "relevance", "model_degraded", "model_degraded_reason", "response_budget", "reuse_key", "reused",
+    "unchanged", "preload_profile", "preload_evidence_ids",
+})
+_GUARDED_CONTEXT_PACK = frozenset({
+    "contract", "reuse_candidates", "mappings", "warnings", "evidence", "repo_revision", "changed_paths",
+    "stale", "context_id", "phase", "focus", "preload_profile", "memory_revision", "model_warnings",
+    "delta_from", "since_hash",
+})
+_GUARDED_RAW_FIELDS = frozenset({
+    "raw", "prompt", "model_debug", "raw_model_output", "raw_output", "model_output", "model_response",
+    "debug", "debug_trace", "trace", "full_trace", "completion", "response_raw",
+})
+
+
+def _guarded_field_is_safe(name: str, extra_fields: set[str]) -> bool:
+    normalized = re.sub(r"[-\s]+", "_", name.strip().lower())
+    if normalized in extra_fields:
+        return True
+    if normalized in _GUARDED_RAW_FIELDS:
+        return False
+    return not any(marker in normalized for marker in ("raw_", "_raw", "prompt", "debug", "trace"))
+
+
+def _guarded_context_input(value: Any, *, extra_fields: list[str] | None = None, depth: int = 0, parent: str = "") -> Any:
+    extra = {re.sub(r"[-\s]+", "_", str(item).strip().lower()) for item in (extra_fields or ()) if str(item).strip()}
+    if isinstance(value, list):
+        return [_guarded_context_input(item, extra_fields=list(extra), depth=depth + 1, parent=parent) for item in value[:64]]
+    if not isinstance(value, dict):
+        return value
+    safe: dict[str, Any] = {}
+    for raw_key, item in list(value.items())[:64]:
+        key = str(raw_key)
+        normalized = re.sub(r"[-\s]+", "_", key.strip().lower())
+        if not _guarded_field_is_safe(key, extra):
+            continue
+        if depth == 0 and normalized not in _GUARDED_CONTEXT_TOP_LEVEL and normalized not in extra:
+            continue
+        if depth == 1 and parent in {"adaptive_context_pack", "context_pack"} and normalized not in _GUARDED_CONTEXT_PACK and normalized not in extra:
+            continue
+        safe[key] = _guarded_context_input(item, extra_fields=list(extra), depth=depth + 1, parent=normalized)
+    return safe
+
+
+def _subminimum_budget_rejection(options: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        requested = int(options.get("max_response_tokens") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if requested <= 0 or requested >= 128:
+        return None
+    return {
+        "success": False,
+        "status_code": 400,
+        "terminal": True,
+        "retryable": False,
+        "error": "max_response_tokens must be at least 128",
+        "response_budget": {"requested_tokens": requested, "minimum_tokens": 128, "rejected": True},
+    }
 
 
 def _response_budget(task_kind: str, options: dict[str, Any]) -> tuple[int, str, str, bool]:
@@ -506,11 +571,14 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
     # instrumented MCP boundary and never enters agent context.
     if extra_fields is None:
         extra_fields = _CURRENT_EXTRA_FIELDS.get()
+    options = _CURRENT_RESPONSE_OPTIONS.get()
+    rejection = _subminimum_budget_rejection(options)
+    if rejection is not None:
+        return rejection
     raw_value = value
     value = attach_accounting(value)
     projected = PROJECTOR.project(value, AGENT_NAME, task_kind, extra_fields=extra_fields)
     compacted = compact_result(projected, max_text_chars=MAX_TEXT, max_evidence=MAX_EVIDENCE, extra_fields=extra_fields)
-    options = _CURRENT_RESPONSE_OPTIONS.get()
     requested, profile, reuse_key, enabled = _response_budget(task_kind, options)
     if enabled:
         repeated, previous = _reuse_state(reuse_key, compacted)
@@ -1119,13 +1187,20 @@ def _bound_context_json(value: Any, depth: int = 0) -> Any:
 def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = None) -> Any:
     if not isinstance(value, dict):
         return {"success": False, "status_code": 502, "terminal": True, "retryable": True, "error": "context pack response must be a JSON object"}
-    projected = _compact(value, "context", extra_fields=extra_fields)
+    options = _CURRENT_RESPONSE_OPTIONS.get()
+    rejection = _subminimum_budget_rejection(options)
+    if rejection is not None:
+        return rejection
+    safe_value = _guarded_context_input(value, extra_fields=extra_fields) if (
+        bool(value.get("guarded")) or "adaptive_context_pack" in value or "context_pack" in value
+    ) else value
+    projected = _compact(safe_value, "context", extra_fields=extra_fields)
     if not isinstance(projected, dict):
         return projected
 
     # Guard output is deterministic. Reattach its decision-grade fields after the
     # generic response budget so model/postprocess fields cannot replace them.
-    pack = value.get("adaptive_context_pack") or value.get("context_pack")
+    pack = safe_value.get("adaptive_context_pack") or safe_value.get("context_pack")
     pack = pack if isinstance(pack, dict) else {}
     authoritative: dict[str, Any] = {}
     for key in (
@@ -1134,8 +1209,8 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
     ):
         if key in pack:
             authoritative[key] = pack[key]
-        elif key in value:
-            authoritative[key] = value[key]
+        elif key in safe_value:
+            authoritative[key] = safe_value[key]
     evidence = pack.get("evidence")
     if isinstance(evidence, list):
         ids = [item.get("evidence_id") for item in evidence if isinstance(item, dict) and item.get("evidence_id")]
@@ -1143,15 +1218,15 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
     if "evidence_ids" not in authoritative:
         if "evidence_ids" in pack:
             authoritative["evidence_ids"] = pack["evidence_ids"]
-        elif "evidence_ids" in value:
-            authoritative["evidence_ids"] = value["evidence_ids"]
+        elif "evidence_ids" in safe_value:
+            authoritative["evidence_ids"] = safe_value["evidence_ids"]
     for key in (
         "revision", "guarded", "delivery_mode", "since_hash", "delta_from", "degraded", "stale",
         "fallback_used", "requires_override", "requires_approval", "decision_recorded",
         "decision_persisted", "task_status", "waiting",
     ):
-        if key in value and key not in authoritative:
-            authoritative[key] = value[key]
+        if key in safe_value and key not in authoritative:
+            authoritative[key] = safe_value[key]
     for key, item in authoritative.items():
         projected[key] = _bound_context_json(item)
 

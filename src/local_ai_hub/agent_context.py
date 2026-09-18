@@ -508,6 +508,16 @@ class ContextCompiler:
                     ))
         return elements
 
+    def preload_elements(
+        self, request: ContextRequest,
+    ) -> tuple[tuple[ContextElement, ...], tuple[dict[str, Any], ...]]:
+        """Load only configured repository preloads for another context service."""
+        if not isinstance(request, ContextRequest):
+            raise TypeError("context preload request must be ContextRequest")
+        warnings: list[dict[str, Any]] = []
+        elements = tuple(element for _, element in self._load_preloads(request, warnings))
+        return elements, tuple(warnings[:32])
+
     @staticmethod
     def _phase_priority(request: ContextRequest, priority: int, element: ContextElement) -> int:
         phase = request.phase.strip().lower()

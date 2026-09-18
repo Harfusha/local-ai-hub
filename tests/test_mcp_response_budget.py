@@ -83,3 +83,15 @@ def test_mcp_compact_delta_profile_returns_changed_payload_only(monkeypatch) -> 
     assert result["success"] is True
     assert result["delta"]["changed"] == {"summary": "new", "items": ["b"]}
     assert result["result_id"]
+
+
+def test_mcp_compact_rejects_subminimum_budget_without_exceeding_request() -> None:
+    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set(_options(max_response_tokens=64))
+    try:
+        result = mcp_server._compact({"success": True, "summary": "too small"}, "search")
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
+
+    assert result["success"] is False
+    assert result["response_budget"]["requested_tokens"] == 64
+    assert json_tokens(result) <= 64

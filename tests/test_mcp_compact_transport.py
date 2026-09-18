@@ -197,6 +197,43 @@ def test_local_ai_repo_context_returns_bounded_deterministic_projection(monkeypa
     assert calls[0][1]["guarded"] is True
 
 
+def test_local_ai_repo_guarded_projection_drops_nested_raw_model_fields(monkeypatch) -> None:
+    response = {
+        "success": True,
+        "context": "safe deterministic context",
+        "adaptive_context_pack": {
+            "context_id": "ctx-safe",
+            "evidence": [{"evidence_id": "e1", "path": "src/app.py"}],
+            "model_debug": {
+                "prompt": "private prompt should not escape",
+                "raw_model_output": "private raw model output should not escape",
+            },
+            "relevance": {
+                "claims": [{"output": "nested raw equivalent"}],
+                "debug_trace": "private trace",
+            },
+        },
+        "postprocess": {
+            "prompt": "private postprocess prompt",
+            "raw_model_output": "private postprocess output",
+        },
+    }
+    _capture_client(monkeypatch, response)
+
+    result = local_ai_mcp.local_ai_repo(
+        action="context", root="C:/repo", query="guarded", task_id="task-1", phase="review",
+        guarded=True, max_response_tokens=500,
+    )
+
+    encoded = json.dumps(result, separators=(",", ":"))
+    for secret in (
+        "model_debug", "raw_model_output", "private prompt should not escape",
+        "private raw model output should not escape", "debug_trace", "nested raw equivalent",
+    ):
+        assert secret not in encoded
+    assert result["context_id"] == "ctx-safe"
+
+
 def test_local_ai_repo_context_bounds_oversized_authoritative_fields(monkeypatch) -> None:
     response = {
         "success": True,
