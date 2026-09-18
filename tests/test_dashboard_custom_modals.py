@@ -1874,6 +1874,127 @@ def test_trace_agent_loop_runtime_surfaces_primary_state_ordered_tools_and_close
         assert f"<summary>{marker}" in html
 
 
+def test_trace_agent_loop_runtime_exposes_missing_states_and_one_empty_state() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    redact = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function redactDiagnostic(") : DASHBOARD_HTML.index(
+            "// Lightweight pure-canvas"
+        )
+    ]
+    fixture = {"presentation": {"kind": "agent_loop"}, "correlations": {}}
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        + redact
+        + "let traceRevealRedactedDetails=false;"
+        + source
+        + f"console.log(JSON.stringify(renderAgentLoopPresentation({json.dumps(fixture)})));"
+    )
+    html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    primary = html.split('<details class="trace-secondary-details', 1)[0]
+    assert "Objective not captured" in primary
+    assert "Input not captured" in primary
+    assert "Final result not captured" in primary
+    assert "No agent trace events captured" in primary
+    assert "Raw tool payloads" not in html
+    assert "Full event metadata" not in html
+    assert "Correlations" not in html
+    assert "Execution timeline" not in html
+    assert html.count('class="trace-secondary-details') == 1
+
+
+def test_trace_agent_loop_runtime_prioritizes_failure_and_preserves_safe_correlations() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    redact = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function redactDiagnostic(") : DASHBOARD_HTML.index(
+            "// Lightweight pure-canvas"
+        )
+    ]
+    fixtures = {
+        "failure_without_lifecycle": {
+            "presentation": {"kind": "agent_loop"},
+            "errors": {"message": "failed worker"},
+        },
+        "success_false_without_lifecycle": {
+            "presentation": {"kind": "agent_loop"},
+            "success": False,
+            "events": [{"event_type": "tool_call", "payload": {"name": "search"}}],
+        },
+        "interrupted": {"presentation": {"kind": "agent_loop"}, "lifecycle": {"state": "interrupted"}},
+        "queued": {"presentation": {"kind": "agent_loop"}, "lifecycle": {"state": "queued"}},
+        "running": {"presentation": {"kind": "agent_loop"}, "lifecycle": {"state": "running"}},
+        "live": {
+            "presentation": {"kind": "agent_loop"},
+            "events": [{"event_type": "model_request", "payload": {"prompt": "work"}}],
+        },
+        "correlations": {
+            "presentation": {"kind": "agent_loop"},
+            "correlations": {
+                "scope": "workspace",
+                "relationship": "parent-child",
+                "request_id": "INTERNAL_ID",
+                "headers": {"authorization": "CORRELATION_SECRET"},
+                "apiToken": "CORRELATION_TOKEN",
+            },
+        },
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        + redact
+        + "let traceRevealRedactedDetails=false;"
+        + source
+        + f"const fixtures={json.dumps(fixtures)};const output=Object.fromEntries(Object.entries(fixtures).map(([k,v])=>[k,renderAgentLoopPresentation(v)]));console.log(JSON.stringify(output));"
+    )
+    rendered = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    for key in ["failure_without_lifecycle", "success_false_without_lifecycle"]:
+        assert "failed" in rendered[key].split('<details class="trace-secondary-details', 1)[0]
+    assert "interrupted" in rendered["interrupted"]
+    assert "queued" in rendered["queued"]
+    assert "running" in rendered["running"]
+    assert "live" in rendered["live"]
+    correlation_html = rendered["correlations"]
+    assert "Correlations" in correlation_html
+    assert "workspace" in correlation_html and "parent-child" in correlation_html
+    for marker in ["INTERNAL_ID", "CORRELATION_SECRET", "CORRELATION_TOKEN", "request_id", "authorization", "apiToken"]:
+        assert marker not in correlation_html
+
+
+def test_trace_agent_loop_runtime_bounds_malformed_redacted_and_truncated_values() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    redact = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function redactDiagnostic(") : DASHBOARD_HTML.index(
+            "// Lightweight pure-canvas"
+        )
+    ]
+    oversized = "payload-" + ("z" * 50000)
+    fixture = {
+        "presentation": {
+            "kind": "agent_loop",
+            "objective": oversized,
+            "modelInput": {"messages": [{"role": "user", "content": oversized}]},
+            "modelOutput": {"apiToken": "REDACTED_TOKEN", "value": oversized},
+        },
+        "events": [
+            {"event_type": "broken", "payload": "MALFORMED_PAYLOAD"},
+            {"event_type": "tool_result", "payload": {"error": {"apiToken": "REDACTED_SECRET"}, "result": {"value": oversized}}},
+        ],
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        + redact
+        + "let traceRevealRedactedDetails=false;"
+        + source
+        + f"console.log(JSON.stringify(renderAgentLoopPresentation({json.dumps(fixture)})));"
+    )
+    html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    assert "Malformed event payload" in html
+    assert "REDACTED_TOKEN" not in html and "REDACTED_SECRET" not in html
+    assert "payload budget" in html.lower()
+    assert len(html) < 80000
+
+
 def test_trace_detail_controls_are_present_and_technical_details_start_closed() -> None:
     detail_source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(

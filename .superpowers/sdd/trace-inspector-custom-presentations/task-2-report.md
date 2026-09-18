@@ -35,3 +35,18 @@
 
 - `git diff --check`: passed.
 - Indexed Hub diff review could not split one minified dashboard fragment under its 512-token review limit; performed bounded manual diff review instead.
+
+## Round 1 reviewer fixes
+
+- Added explicit `not captured` / `empty` primary cards for objective, input, and final result.
+- Made failure evidence outrank lifecycle fallback; added failed, interrupted, queued, running, live, and empty state coverage.
+- Added safe correlation summaries; internal IDs, headers, and tokens stay unavailable/redacted.
+- Omitted raw payload, metadata, correlation, and timeline secondary sections when their source data is absent; empty traces show one useful empty-state card.
+- Routed agent primary fields, tool summaries, event metadata, and timeline events through existing bounded/safe rendering helpers.
+- Added regression coverage for missing, empty, live, failed, malformed, redacted, truncated, and correlation-only cases.
+
+## Round 1 validation
+
+- Focused: `34 passed, 74 deselected`.
+- Full dashboard file: `108 passed`.
+- `git diff --check`: passed.
