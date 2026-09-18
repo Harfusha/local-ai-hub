@@ -14,4 +14,6 @@ short-lived, tenant-bound, origin-bound, and bound to the explicit tab/window.
 Capture aborts if the active tab changes before or after the screenshot, and
 returns explicit timeout, permission, closed-tab, or mismatch errors. Password
 input values/defaults are cleared only on a cloned DOM snapshot; the page itself
-is not mutated. Bundles include bounded capture-time and target-origin provenance.
+is not mutated. A bounded URL/origin/document token is attested before and after
+the screenshot; same-tab navigation aborts with `target_changed`. Bundles include
+bounded capture-time and target-origin provenance.

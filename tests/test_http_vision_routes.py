@@ -57,7 +57,7 @@ def test_browser_capability_capture_and_review_routes_are_explicit_and_tenant_sc
         base = f"http://127.0.0.1:{server.server_address[1]}"
         capability = _post(
             f"{base}/api/browser/capability",
-            {"origin": "chrome-extension://fixture", "tab_id": 7},
+            {"origin": "chrome-extension://fixture", "tab_id": 7, "window_id": 3},
         )
         assert capability["success"] is True
         assert capability["one_use"] is True
@@ -69,16 +69,23 @@ def test_browser_capability_capture_and_review_routes_are_explicit_and_tenant_sc
         assert missing_tab["terminal"] is True
         assert "tab_id" in missing_tab["error"]
 
+        missing_window = _post(
+            f"{base}/api/browser/capability",
+            {"origin": "chrome-extension://fixture", "tab_id": 7},
+        )
+        assert missing_window["terminal"] is True
+        assert "window_id" in missing_window["error"]
+
         unsupported = _post(
             f"{base}/api/browser/capture",
-            {"capability": capability["capability"], "tab_id": 7, "capture_error": "permission_denied"},
+            {"capability": capability["capability"], "tab_id": 7, "window_id": 3, "capture_error": "permission_denied"},
         )
         assert unsupported["success"] is False
         assert unsupported["error_code"] == "permission_denied"
 
         cross_tenant = _post(
             f"{base}/api/browser/capture",
-            {"capability": capability["capability"], "tab_id": 7, "capture_error": "closed_tab"},
+            {"capability": capability["capability"], "tab_id": 7, "window_id": 3, "capture_error": "closed_tab"},
             tenant="tenant-b",
         )
         assert cross_tenant["success"] is False
@@ -86,14 +93,29 @@ def test_browser_capability_capture_and_review_routes_are_explicit_and_tenant_sc
 
         capability = _post(
             f"{base}/api/browser/capability",
-            {"origin": "chrome-extension://fixture", "tab_id": 7},
+            {"origin": "chrome-extension://fixture", "tab_id": 7, "window_id": 3},
         )
         captured = _post(
             f"{base}/api/browser/capture",
             {
                 "capability": capability["capability"],
                 "tab_id": 7,
+                "window_id": 3,
                 "url": "https://fixture.test/checkout?session=preserved",
+                "target_origin": "https://fixture.test",
+                "captured_at": "2026-09-18T10:20:30.123Z",
+                "capture_identity": {
+                    "initial": {
+                        "url": "https://fixture.test/checkout?session=preserved",
+                        "target_origin": "https://fixture.test",
+                        "document_token": "document:fixture:1",
+                    },
+                    "final": {
+                        "url": "https://fixture.test/checkout?session=preserved",
+                        "target_origin": "https://fixture.test",
+                        "document_token": "document:fixture:1",
+                    },
+                },
                 "title": "Signed-in checkout",
                 "screenshot": "data:image/png;base64," + base64.b64encode(b"png-fixture").decode("ascii"),
                 "dom": {

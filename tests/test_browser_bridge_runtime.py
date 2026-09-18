@@ -23,4 +23,4 @@ def test_actual_current_tab_fixture_preserves_login_and_never_falls_back() -> No
     )
     evidence = json.loads(result.stdout)
     assert evidence["success"] is True
-    assert evidence["cases"] == ["success", "timeout", "tab-switch", "password", "timestamp", "origin"]
+    assert evidence["cases"] == ["success", "timeout", "tab-switch", "same-tab-navigation", "password", "timestamp", "origin"]

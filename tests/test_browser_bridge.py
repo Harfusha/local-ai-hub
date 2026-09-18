@@ -40,6 +40,18 @@ def capture_payload(*, tab_id: int = 7, window_id: int = 3) -> dict:
         "url": "https://fixture.test/checkout?secret=not-persisted",
         "target_origin": "https://fixture.test",
         "captured_at": "2026-09-18T10:20:30.123Z",
+        "capture_identity": {
+            "initial": {
+                "url": "https://fixture.test/checkout?secret=not-persisted",
+                "target_origin": "https://fixture.test",
+                "document_token": "document:fixture:1",
+            },
+            "final": {
+                "url": "https://fixture.test/checkout?secret=not-persisted",
+                "target_origin": "https://fixture.test",
+                "document_token": "document:fixture:1",
+            },
+        },
         "title": "Checkout",
         "screenshot": f"data:image/png;base64,{PNG_DATA}",
         "dom": {
@@ -108,6 +120,21 @@ def test_capability_requires_explicit_tab_id_at_issue_and_validation() -> None:
     assert missing["terminal"] is True
 
 
+def test_capability_requires_exact_window_id_at_issue_and_validation() -> None:
+    with pytest.raises(CaptureProtocolError, match="window_id"):
+        issue_capture_capability(config(), origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7)
+
+    capability = issue_capture_capability(
+        config(), origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7, window_id=3
+    )
+    missing = validate_capture_request(
+        capability,
+        {"origin": "chrome-extension://fixture", "tenant": "tenant-a", "tab_id": 7},
+    )
+    assert missing["error_code"] == "missing_window_id"
+    assert missing["terminal"] is True
+
+
 def test_capture_requires_sanitized_timestamp_and_target_origin_provenance() -> None:
     sink = ArtifactSink()
     result = capture_to_artifacts(capture_payload(), artifacts=sink, tenant="tenant-a", config=config())
@@ -117,6 +144,7 @@ def test_capture_requires_sanitized_timestamp_and_target_origin_provenance() -> 
     assert bundle["provenance"] == {
         "captured_at": "2026-09-18T10:20:30.123Z",
         "target_origin": "https://fixture.test",
+        "document_token": "document:fixture:1",
     }
 
     oversized = capture_payload()
@@ -126,6 +154,16 @@ def test_capture_requires_sanitized_timestamp_and_target_origin_provenance() -> 
     oversized = capture_payload()
     oversized["target_origin"] = "https://" + ("a" * 260) + ".test"
     assert validate_capture_payload(oversized, config=config())["error_code"] == "target_origin_mismatch"
+
+
+def test_capture_aborts_same_tab_navigation_before_artifact_commit() -> None:
+    payload = capture_payload()
+    payload["capture_identity"]["final"]["url"] = "https://fixture.test/other"
+    result = validate_capture_payload(payload, config=config())
+
+    assert result["success"] is False
+    assert result["error_code"] == "target_changed"
+    assert result["status"] == 409
 
 
 def test_default_browser_origin_policy_is_fail_closed() -> None:
@@ -141,11 +179,12 @@ def test_explicit_api_token_authorization_can_replace_origin_allow_list() -> Non
         origin="chrome-extension://configured-by-token",
         tenant="tenant-a",
         tab_id=7,
+        window_id=3,
         api_token_authorized=True,
     )
     result = validate_capture_request(
         capability,
-        {"origin": "chrome-extension://configured-by-token", "tenant": "tenant-a", "tab_id": 7},
+        {"origin": "chrome-extension://configured-by-token", "tenant": "tenant-a", "tab_id": 7, "window_id": 3},
     )
     assert result["success"] is True
 
@@ -178,7 +217,7 @@ def test_capture_rejects_credentials_and_network_bodies() -> None:
 
 @pytest.mark.parametrize(
     ("error_code", "status"),
-    [("unsupported", 501), ("permission_denied", 403), ("closed_tab", 410), ("timeout", 408)],
+    [("unsupported", 501), ("permission_denied", 403), ("closed_tab", 410), ("timeout", 408), ("target_changed", 409)],
 )
 def test_capture_failure_codes_are_explicit(error_code: str, status: int) -> None:
     from local_ai_hub.browser_bridge import capture_failure
