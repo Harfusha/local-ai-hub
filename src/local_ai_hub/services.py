@@ -2711,7 +2711,7 @@ class LocalAIServices:
             "task_status": task_status,
             "waiting": bool(waiting),
         })
-        snapshotter = getattr(self.telemetry, "record_snapshot", None)
+        snapshotter = getattr(getattr(self, "telemetry", None), "record_snapshot", None)
         metrics_getter = getattr(guard, "metrics_snapshot", None)
         if callable(snapshotter) and callable(metrics_getter):
             try:
