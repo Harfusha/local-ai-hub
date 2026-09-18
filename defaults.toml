@@ -403,6 +403,13 @@ timeout_seconds = 900
 # Duplicate agents wait only this long for an identical owner; the owner continues
 # and the waiter receives an in-progress response instead of hanging for the full build.
 coalesced_wait_seconds = 90
+
+[speculative_lint]
+# Opt-in only. Runs read-only lint after a quiet period against caller-supplied changed paths.
+enabled = false
+debounce_seconds = 1.0
+max_paths = 64
+timeout_seconds = 120
 terminate_grace_seconds = 2
 post_kill_drain_seconds = 2
 success_ttl_seconds = 43200

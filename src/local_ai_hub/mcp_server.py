@@ -357,7 +357,7 @@ def _desc_rag() -> str:
 
 def _desc_command() -> str:
     if LEAN_SCHEMAS:
-        return "Safe CLI command broker for test, lint, typecheck, or build commands with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Native fallback requires terminal=true and retryable=false. Mutations never cache or single-flight. Actions: run, auto_fix, format, patch_and_verify, repair_loop."
+        return "Safe CLI command broker for test, lint, typecheck, or build commands with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Native fallback requires terminal=true and retryable=false. Mutations never cache or single-flight. Speculative lint is opt-in, read-only, debounced, changed-path scoped, and cancellable. Actions: run, auto_fix, format, patch_and_verify, repair_loop, speculative_lint."
     agent_os_note = " Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts." if FEATURES.agent_os else ""
     return (
         "Bounded broker for test, lint, typecheck, or build commands; also repeatable analysis/read-only commands."
@@ -462,7 +462,7 @@ CommandAction: TypeAlias = Literal[
     "stash_save", "stash_restore", "record_mock", "replay_mock",
     "diff_hunk_stage", "flaky_detect", "webhook_replay",
     "mock_server", "mock_server_start", "mock_server_stop", "mock_server_status", "patch_and_verify",
-    "preflight",
+    "preflight", "speculative_lint",
 ]
 CoordAction: TypeAlias = Literal[
     "claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete",
@@ -1629,12 +1629,15 @@ def local_ai_command(
     rollback_on_failure: bool = False,
     patch: str = "",
     auto_rollback: bool = True,
+    paths: list[str] | None = None,
+    job_id: str = "",
+    lint_action: str = "submit",
     extra_fields: list[str] | None = None,
     max_response_tokens: int = 0,
     response_profile: str = "",
     reuse_key: str = "",
 ) -> dict[str, Any]:
-    """Bounded command broker for the main agent. MANDATORY for repeatable test/lint/typecheck/static-analysis/build/read-only commands whenever possible. Shared safe CLI broker. Actions: run, cancel, classify, discover, stats, repair_loop, auto_fix, run_affected, format, patch_and_verify. Optional auto_fix=true or action=repair_loop runs autonomous self-healing test loop with safe rollback on failure. Action patch_and_verify applies a unified diff, verifies with test command, and rolls back cleanly on error. Optional snapshot=true or rollback_on_failure=true captures git state and automatically reverts dirty changes if validation commands fail. Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts. Optional stream=true or stream_id streams real-time stdout/stderr lines as command.log SSE events. Results are keyed by command + bounded repo state and duplicate runs coalesce across agents. Reuse fresh results. If run returns in_progress=true, DO NOT start the command natively or with force; continue independent work and retry later so the owner can populate the cache. Cancel a concurrent mutation only with its opaque execution_id from stats or run results. force=true is exceptional recovery/admin behavior, never a retry button. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
+    """Bounded command broker for the main agent. MANDATORY for repeatable test/lint/typecheck/static-analysis/build/read-only commands whenever possible. Shared safe CLI broker. Actions: run, cancel, classify, discover, stats, repair_loop, auto_fix, run_affected, format, patch_and_verify, speculative_lint. Optional auto_fix=true or action=repair_loop runs autonomous self-healing test loop with safe rollback on failure. Speculative lint is disabled by default; explicit opt-in submits a read-only debounced job limited to caller-supplied changed paths and supports status/cancel through lint_action. Action patch_and_verify applies a unified diff, verifies with test command, and rolls back cleanly on error. Optional snapshot=true or rollback_on_failure=true captures git state and automatically reverts dirty changes if validation commands fail. Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts. Optional stream=true or stream_id streams real-time stdout/stderr lines as command.log SSE events. Results are keyed by command + bounded repo state and duplicate runs coalesce across agents. Reuse fresh results. If run returns in_progress=true, DO NOT start the command natively or with force; continue independent work and retry later so the owner can populate the cache. Cancel a concurrent mutation only with its opaque execution_id from stats or run results. force=true is exceptional recovery/admin behavior, never a retry button. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
     if not FEATURES.commands:
         return {"success": False, "unsupported": True, "error": "local_ai_command is disabled in configuration"}
     action = _resolve_action("command", action)
@@ -1648,6 +1651,15 @@ def local_ai_command(
     effective_command_timeout = max(1, min(requested_timeout, max(1, int(host_timeout) - 30)))
     if action not in CommandAction.__args__:
         return _invalid_action("local_ai_command", action, tuple(CommandAction.__args__), "Use this broker for bounded commands; keep peer-agent orchestration in Codex.")
+    if action == "speculative_lint":
+        payload = {
+            "action": str(lint_action or "submit").strip().lower().replace("-", "_"),
+            "root": eff_cwd,
+            "paths": paths or [],
+            "command": command,
+            "job_id": job_id or execution_id,
+        }
+        return _compact(CLIENT.post("/api/speculative-lint", payload, timeout=host_timeout), "command")
     if action.startswith("mock_server"):
         sub_act = "start" if action in {"mock_server", "mock_server_start"} else "stop" if action == "mock_server_stop" else "status"
         port_val = int(command) if (command and command.isdigit()) else 11440

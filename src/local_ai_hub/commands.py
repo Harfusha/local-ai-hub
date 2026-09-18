@@ -1147,6 +1147,7 @@ class CommandBroker:
         rollback_on_failure: bool = False,
         sandbox: str = "local",
         docker_image: str = "python:3.11-slim",
+        bypass_cache: bool = False,
     ) -> dict[str, Any]:
         if not self.enabled:
             return {"success": False, "error": "command broker disabled"}
@@ -1174,7 +1175,7 @@ class CommandBroker:
                     "budget_exhausted": True,
                 }
         attempt_key = self._attempt_key(command, cwd)
-        if not force and not is_mutating:
+        if not force and not bypass_cache and not is_mutating:
             suppressed = self.suppression_cache.get(attempt_key)
             if isinstance(suppressed, dict):
                 self.suppressed += 1
@@ -1262,7 +1263,7 @@ class CommandBroker:
                         pass
                 return self._compact(result, tenant, command)
 
-        singleflight = not is_mutating
+        singleflight = not is_mutating and not bypass_cache
         event: threading.Event | None = None
         if singleflight:
             with self._lock:

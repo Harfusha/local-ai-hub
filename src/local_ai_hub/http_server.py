@@ -912,6 +912,21 @@ class Handler(BaseHTTPRequestHandler):
             edits = payload.get("edits") or payload.get("replacements")
             if not isinstance(edits, list) or not edits:
                 raise RequestBodyError("edits must be a non-empty list of replacement operations")
+        elif path in {"/api/speculative-lint", "/api/command/speculative-lint"}:
+            action = text(payload.get("action", "submit"), "action", 32).strip().lower().replace("-", "_")
+            if action not in {"submit", "status", "cancel"}:
+                raise RequestBodyError("unsupported speculative lint action")
+            if action == "submit":
+                required_text("root", maximum=4096)
+                paths = payload.get("paths")
+                if not isinstance(paths, list) or not paths or len(paths) > 256:
+                    raise RequestBodyError("paths must be a non-empty list of at most 256 entries")
+                for item in paths:
+                    text(item, "changed path", 4096)
+                if "command" in payload:
+                    text(payload["command"], "command", 4000)
+            else:
+                required_text("job_id", maximum=128)
         elif path == "/api/code-intelligence/query":
             action = text(payload.get("action", "search"), "action", 80).strip().lower().replace("-", "_")
             if action not in {"dead_code", "dead", "stats", "repository_stats"}:
@@ -1859,6 +1874,19 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "cancel":
                     self._send(200, APP.async_jobs.cancel(tenant, str(payload.get("job_id", "")))); return
                 self._send(400, {"success": False, "error": "unknown async job action", "terminal": True, "retryable": False}); return
+            if path in {"/api/speculative-lint", "/api/command/speculative-lint"}:
+                action = str(payload.get("action", "submit")).strip().lower().replace("-", "_")
+                if action == "submit":
+                    self._send(200, APP.speculative_lint.submit(
+                        tenant,
+                        str(payload.get("root", ".")),
+                        payload.get("paths") or [],
+                        str(payload.get("command", "")),
+                    )); return
+                if action == "status":
+                    self._send(200, APP.speculative_lint.status(tenant, str(payload.get("job_id", "")))); return
+                if action == "cancel":
+                    self._send(200, APP.speculative_lint.cancel(tenant, str(payload.get("job_id", "")))); return
             if path == "/api/agent-state/tasks":
                 if not getattr(APP, "agent_tasks", None) or not APP.agent_tasks.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
