@@ -380,6 +380,7 @@ def test_text_only_vision_override_is_explicitly_unsupported(tmp_path: Path) -> 
     assert "vision" in result["error"].lower()
     assert len(runtime.request.call_args_list) == 1
     assert runtime.request.call_args.args[0] == "/api/show"
+    assert runtime.request.call_args.args[1] == {"name": "text-only:latest"}
 
 
 def test_capabilities_expose_configured_vision_model() -> None:
