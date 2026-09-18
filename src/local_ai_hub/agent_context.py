@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Collection
 
 from .agent_events import AgentStateStore
-from .agent_memory import MemoryStatus, _memory_matches_request_scope
+from .agent_memory import MemoryStatus
 from .sqlite_support import connect_sqlite, retry_busy
 
 
@@ -382,23 +382,10 @@ class ContextCompiler:
                     limit=20,
                 )
             else:
+                # A generic store cannot guarantee SQL-side status/scope/root
+                # filtering before its limit. Omit memory rather than allowing
+                # unrelated records to crowd out matching context.
                 records = []
-                for status in (MemoryStatus.ACTIVE, MemoryStatus.CONFIRMED):
-                    records.extend(self.memory_store.find(status=status, limit=20, semantic=False))
-                records = [
-                    record for record in records
-                    if _memory_matches_request_scope(
-                        scope=record.scope,
-                        scope_id=record.scope_id,
-                        provenance=record.provenance,
-                        root=request.root,
-                        task_id=request.task_id,
-                        tenant=request.tenant,
-                        clone_id=request.clone_id,
-                        worktree_id=request.worktree_id,
-                        branch=request.branch,
-                    )
-                ][:20]
             excluded_memory: dict[str, dict[str, Any]] = {
                 status: {"count": 0, "ids": []}
                 for status in (
