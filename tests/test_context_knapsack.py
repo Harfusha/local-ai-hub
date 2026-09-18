@@ -37,6 +37,7 @@ def test_context_knapsack_pins_goal_and_packs_by_value_density(tmp_path: Path):
             value="X" * 100,
             kind=MemoryKind.FACT,
             scope="task",
+            scope_id="rover-1",
             confidence=0.5,
         )
     )
@@ -49,6 +50,7 @@ def test_context_knapsack_pins_goal_and_packs_by_value_density(tmp_path: Path):
             value="192.168.1.10",
             kind=MemoryKind.FACT,
             scope="task",
+            scope_id="rover-1",
             confidence=1.0,
         )
     )

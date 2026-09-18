@@ -489,6 +489,24 @@ def test_authoritative_memory_is_root_and_task_session_scoped(tmp_path: Path):
             status=MemoryStatus.CONFIRMED,
         )
     )
+    unscoped_task = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope="task",
+            key="unscoped-task",
+            value="exclude",
+            status=MemoryStatus.CONFIRMED,
+        )
+    )
+    unscoped_session = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope="session",
+            key="unscoped-session",
+            value="exclude",
+            status=MemoryStatus.CONFIRMED,
+        )
+    )
 
     context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
         ContextRequest(task_id="task-1", tenant="session-1", root=current_root, token_budget=300)
@@ -501,3 +519,5 @@ def test_authoritative_memory_is_root_and_task_session_scoped(tmp_path: Path):
     assert wrong_root.record_id not in element_ids
     assert wrong_task.record_id not in element_ids
     assert wrong_session.record_id not in element_ids
+    assert unscoped_task.record_id not in element_ids
+    assert unscoped_session.record_id not in element_ids
