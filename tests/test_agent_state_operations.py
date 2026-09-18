@@ -4,6 +4,7 @@ import io
 import json
 import time
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 import pytest
 
@@ -111,6 +112,53 @@ def test_selective_export_and_import_valid_records(tmp_path: Path):
         found = app2.agent_memory.find(key="repo_fact")
         assert len(found) == 1
         assert found[0].value == {"architecture": "modular"}
+
+
+def test_selective_bundle_roundtrips_memory_metadata(tmp_path: Path):
+    expiry = time.time() + 3600
+    provenance = {
+        "root": str(tmp_path / "repo"),
+        "repository_revision": "rev-7",
+        "path_refs": ["src/parser.py"],
+        "symbol_refs": ["Parser.parse"],
+        "related_task": "task-7",
+    }
+    with app_with_agent_state(tmp_path / "source") as app1:
+        record = replace(
+            MemoryRecord.create(
+                kind=MemoryKind.FINDING,
+                scope=AgentScope.REPOSITORY,
+                key="metadata-rich",
+                value={"answer": 42},
+                scope_id="repo-7",
+                confidence=0.63,
+                status=MemoryStatus.CONFIRMED,
+                source="reviewer",
+                evidence_ids=("evidence-1", "evidence-2"),
+                sensitivity="sensitive",
+                provenance=provenance,
+                expires_at=expiry,
+            ),
+            contradicts_record_id="record-old",
+            supersedes_record_id="record-older",
+        )
+        saved = app1.agent_memory.record(record, actor="user")
+        bundle_bytes = app1.export_bundle(agent_state_record_ids=[saved.record_id])
+
+    with app_with_agent_state(tmp_path / "target") as app2:
+        result = app2.import_bundle(bundle_bytes)
+        assert result["success"] is True
+        restored = app2.agent_memory.get(saved.record_id)
+        assert restored is not None
+        assert restored.provenance == provenance
+        assert restored.confidence == 0.63
+        assert restored.evidence_ids == ("evidence-1", "evidence-2")
+        assert restored.source == "reviewer"
+        assert restored.sensitivity == "sensitive"
+        assert restored.expires_at == expiry
+        assert restored.status is MemoryStatus.CONFIRMED
+        assert restored.contradicts_record_id == "record-old"
+        assert restored.supersedes_record_id == "record-older"
 
 
 

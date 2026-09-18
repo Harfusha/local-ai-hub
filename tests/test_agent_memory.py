@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import json
+import os
 from pathlib import Path
 import pytest
 
@@ -13,6 +15,7 @@ from local_ai_hub.agent_memory import (
     MemoryStatus,
     MemoryStore,
 )
+from local_ai_hub.sqlite_support import connect_sqlite
 
 
 @pytest.fixture
@@ -190,6 +193,94 @@ def test_mark_stale_for_revision_guards_revision_paths_root_and_repeats(store: M
     assert sorted(results) == [0, 1]
     events = store.state_store.events(stream_id=f"memory:{AgentScope.REPOSITORY.value}:guarded")
     assert [event.kind for event in events].count("memory.staled") == 1
+    assert store.get(record.record_id).status is MemoryStatus.STALE
+
+
+def test_mark_stale_for_revision_matches_beyond_100k_rows(store: MemoryStore, tmp_path: Path):
+    root = str(tmp_path)
+    rows = [
+        (
+            f"bulk-{index}",
+            MemoryKind.FINDING.value,
+            AgentScope.REPOSITORY.value,
+            "",
+            f"bulk-{index}",
+            json.dumps("unrelated"),
+            MemoryStatus.CONFIRMED.value,
+            1.0,
+            "agent",
+            "[]",
+            "normal",
+            None,
+            None,
+            None,
+            json.dumps({"root": root, "repository_revision": "rev-1", "path_refs": [f"src/other-{index}.py"]}),
+            float(index + 2),
+            float(index + 2),
+            None,
+        )
+        for index in range(100_000)
+    ]
+    rows.append(
+        (
+            "bulk-match",
+            MemoryKind.FINDING.value,
+            AgentScope.REPOSITORY.value,
+            "",
+            "bulk-match",
+            json.dumps("matching"),
+            MemoryStatus.CONFIRMED.value,
+            1.0,
+            "agent",
+            "[]",
+            "normal",
+            None,
+            None,
+            None,
+            json.dumps({"root": root, "repository_revision": "rev-1", "path_refs": ["src/match.py"]}),
+            1.0,
+            1.0,
+            None,
+        )
+    )
+    con = connect_sqlite(store.state_store.db_path)
+    try:
+        con.executemany(
+            """
+            INSERT INTO agent_memory_records (
+                record_id, kind, scope, scope_id, key, value, status, confidence, source,
+                evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id,
+                quarantine_reason, provenance, created_at, updated_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    assert store.mark_stale_for_revision(root, "rev-2", ["src/match.py"]) == 1
+    assert store.get("bulk-match").status is MemoryStatus.STALE
+
+
+def test_mark_stale_for_revision_matches_relative_and_absolute_roots(store: MemoryStore, tmp_path: Path):
+    relative_root = os.path.relpath(tmp_path, Path.cwd())
+    record = store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope=AgentScope.REPOSITORY,
+            key="relative-root",
+            value="evidence",
+            status=MemoryStatus.CONFIRMED,
+            provenance={
+                "root": relative_root,
+                "repository_revision": "rev-1",
+                "path_refs": ["src/relative.py"],
+            },
+        )
+    )
+
+    assert store.mark_stale_for_revision(str(tmp_path), "rev-2", ["src/relative.py"]) == 1
     assert store.get(record.record_id).status is MemoryStatus.STALE
 
 

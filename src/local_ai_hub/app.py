@@ -814,14 +814,30 @@ class LocalAIApp:
                 if not isinstance(rdata, dict):
                     return {"success": False, "error": "invalid agent-state bundle payload"}
                 if rtype == "memory" and getattr(self, "agent_memory", None):
-                    rec = MemoryRecord.create(
-                        kind=MemoryKind(rdata.get("kind", "fact")),
-                        scope=AgentScope.parse(rdata.get("scope", "task")),
-                        key=str(rdata.get("key", "")),
-                        value=rdata.get("value"),
-                        scope_id=str(rdata.get("scope_id", "")),
-                        status=MemoryStatus(rdata.get("status", "candidate")),
-                    )
+                    from_dict = getattr(MemoryRecord, "from_dict", None)
+                    if callable(from_dict) and all(
+                        field in rdata for field in ("record_id", "status", "provenance")
+                    ):
+                        try:
+                            rec = from_dict(rdata)
+                        except (KeyError, TypeError, ValueError):
+                            rec = MemoryRecord.create(
+                                kind=MemoryKind(rdata.get("kind", "fact")),
+                                scope=AgentScope.parse(rdata.get("scope", "task")),
+                                key=str(rdata.get("key", "")),
+                                value=rdata.get("value"),
+                                scope_id=str(rdata.get("scope_id", "")),
+                                status=MemoryStatus(rdata.get("status", "candidate")),
+                            )
+                    else:
+                        rec = MemoryRecord.create(
+                            kind=MemoryKind(rdata.get("kind", "fact")),
+                            scope=AgentScope.parse(rdata.get("scope", "task")),
+                            key=str(rdata.get("key", "")),
+                            value=rdata.get("value"),
+                            scope_id=str(rdata.get("scope_id", "")),
+                            status=MemoryStatus(rdata.get("status", "candidate")),
+                        )
                     self.agent_memory.record(rec, actor="bundle_import")
                     restored += 1
             return {"success": True, "version": __version__, "restored_records": restored}
