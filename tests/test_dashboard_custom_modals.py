@@ -1003,8 +1003,8 @@ TRACE_PRESENTATION_CONTRACT_FIXTURES = {
         "presentation": {"kind": "agent_loop"},
         "input": {"prompt": "Inspect the repository"},
         "events": [
-            {"event_type": "tool_call", "payload": {"name": "search", "arguments": {"query": "trace"}}},
-            {"event_type": "tool_result", "payload": {"name": "search", "result": "one match"}},
+            {"event_type": "tool_call", "seq": "AGENT_SEQUENCE_MARKER", "payload": {"name": "search", "call_id": "AGENT_CALL_ID_MARKER", "arguments": {"query": "trace", "options": {"headers": {"authorization": "AGENT_HEADER_MARKER"}, "timeout": 5}}}},
+            {"event_type": "tool_result", "seq": "AGENT_RESULT_SEQUENCE_MARKER", "payload": {"name": "search", "call_id": "AGENT_CALL_ID_MARKER", "status": "completed", "result": "one match"}},
         ],
     },
     "command": {
@@ -1089,7 +1089,7 @@ def test_trace_inspector_shared_presentation_contract_covers_all_kinds() -> None
     rendered = json.loads(result.stdout)
     expected_values = {
         "model_chat": ["Explain trace retention", "Model returned an empty final response"],
-        "agent_loop": ["search", "one match"],
+        "agent_loop": ["search", "completed", "one match"],
         "command": ["pytest", "1 passed"],
         "review": ["Review renderer contract", "Add coverage"],
         "repo_intelligence": ["local-ai-hub", "tracePresentationShell"],
@@ -1117,6 +1117,9 @@ def test_trace_inspector_shared_presentation_contract_covers_all_kinds() -> None
             "REQUEST_ID_MARKER",
         ]:
             assert marker not in primary
+        if kind == "agent_loop":
+            for marker in ["AGENT_CALL_ID_MARKER", "AGENT_SEQUENCE_MARKER", "AGENT_RESULT_SEQUENCE_MARKER", "AGENT_HEADER_MARKER"]:
+                assert marker not in primary
         if kind == "model_chat":
             assert "Model returned an empty final response" in primary
             assert "Final response not captured" not in primary
@@ -1846,7 +1849,7 @@ def test_trace_agent_loop_runtime_renders_nested_tool_errors_and_successes() -> 
     assert "error" in html
     assert "&lt;failure&gt;" in html
     assert "success" in html
-    assert "bad-1" in html and "ok-1" in html
+    assert "bad-1" not in html and "ok-1" not in html
 
 
 def test_trace_model_chat_runtime_renders_one_chronological_codex_timeline() -> None:
@@ -1873,7 +1876,7 @@ def test_trace_model_chat_runtime_renders_one_chronological_codex_timeline() -> 
     markers = ["Model input", "Thinking", "Tool call", "Tool result", "Assistant output", "Turn boundary"]
     assert [html.index(marker) for marker in markers] == sorted(html.index(marker) for marker in markers)
     assert '<details class="trace-thinking"' in html
-    assert "run" in html and "failed" in html and "c1" in html
+    assert "run" in html and "failed" in html and "c1" not in html
 
 
 def test_trace_model_chat_runtime_has_clear_empty_timeline_state() -> None:
