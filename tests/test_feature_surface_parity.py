@@ -133,3 +133,30 @@ def test_guarded_context_extends_existing_repo_tool_without_duplicate_surface():
     names = list(local_ai_mcp.mcp._tool_manager._tools)
     assert names.count("local_ai_repo") == 1
     assert not any(name in {"local_ai_context", "local_ai_context_pack"} for name in names)
+
+
+def test_generated_repo_schema_declares_guarded_context_and_compact_controls():
+    schema = generate_mcp_tool_schemas(_config())["local_ai_repo"]
+    properties = schema["parameters"]["properties"]
+
+    assert {
+        "task", "task_id", "max_tokens", "token_budget", "workspace",
+        "phase", "focus", "preload_profile", "guarded", "changed_paths",
+        "since_hash", "approval", "override_reason", "max_response_tokens",
+        "response_profile", "reuse_key", "extra_fields",
+    }.issubset(properties)
+    assert properties["focus"] == {"type": "array", "items": {"type": "string"}}
+    assert properties["changed_paths"] == {"type": "array", "items": {"type": "string"}}
+    assert properties["approval"]["type"] == ["boolean", "string"]
+
+    guidance = schema["description"].lower()
+    for phrase in (
+        "default adaptive context pack",
+        "planning, edit, review or test",
+        "evidence ids",
+        "reuse candidates first",
+        "override_reason",
+        "deterministic/indexed evidence is authoritative",
+        "raw model/debug fields",
+    ):
+        assert phrase in guidance

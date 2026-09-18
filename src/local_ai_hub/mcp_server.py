@@ -247,7 +247,7 @@ def _desc_task() -> str:
 
 def _desc_repo() -> str:
     if LEAN_SCHEMAS:
-        return "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. `context` accepts guarded task/phase context-pack fields and preserves legacy fast/full behavior when omitted. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
+        return "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. `context` is the default adaptive context pack before non-trivial planning, edit, review or test; it accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields stay omitted unless requested through extra_fields. Omit guarded fields to preserve legacy fast/full behavior. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
     semantic_hint = ""
     if FEATURES.has_semantic():
         semantic_hint = f" -> {FEATURES.semantic_hint()} for relationships"
@@ -260,7 +260,7 @@ def _desc_repo() -> str:
         " CALL THIS BEFORE broad repository reads/searches for any non-trivial repo task. MANDATORY GATE."
         f" Use deterministic, code_index/search,{' ' + FEATURES.semantic_hint() + ',' if FEATURES.has_semantic() else ''}"
         " context and solve for bounded evidence and implementation support."
-        " `context` accepts guarded task/phase context-pack fields while preserving legacy fast/full behavior when omitted."
+        " `context` is the default adaptive context pack before non-trivial planning, edit, review or test; reuse existing evidence and reuse candidates first, require evidence IDs, treat deterministic/indexed evidence as authoritative, and limit local models to ranking/compression of structured evidence. Guarded overrides require `override_reason` and approval when requested. Raw model/debug fields stay omitted unless requested through `extra_fields`; omitting guarded fields preserves legacy fast/full behavior."
         " For implementation, diagnosis, refactoring or complex review, call `solve` after evidence and before native edits."
         f"{' When generating, use `' + FEATURES.fast_model + '` for quick tasks, `' + FEATURES.smart_model + '` for complex work, and `' + FEATURES.reasoning_model + '` for hardest reasoning.' if FEATURES.has_any_model() else ''}"
         " `review_diff` and `security_audit` are targeted local checks."
