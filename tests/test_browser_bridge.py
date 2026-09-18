@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -45,11 +46,13 @@ def capture_payload(*, tab_id: int = 7, window_id: int = 3) -> dict:
                 "url": "https://fixture.test/checkout?secret=not-persisted",
                 "target_origin": "https://fixture.test",
                 "document_token": "document:fixture:1",
+                "document_state_token": "state:fixture:1",
             },
             "final": {
                 "url": "https://fixture.test/checkout?secret=not-persisted",
                 "target_origin": "https://fixture.test",
                 "document_token": "document:fixture:1",
+                "document_state_token": "state:fixture:1",
             },
         },
         "title": "Checkout",
@@ -145,6 +148,7 @@ def test_capture_requires_sanitized_timestamp_and_target_origin_provenance() -> 
         "captured_at": "2026-09-18T10:20:30.123Z",
         "target_origin": "https://fixture.test",
         "document_token": "document:fixture:1",
+        "document_state_token": "state:fixture:1",
     }
 
     oversized = capture_payload()
@@ -164,6 +168,13 @@ def test_capture_aborts_same_tab_navigation_before_artifact_commit() -> None:
     assert result["success"] is False
     assert result["error_code"] == "target_changed"
     assert result["status"] == 409
+
+
+def test_packaged_browser_bridge_defaults_match_source_defaults() -> None:
+    root = Path(__file__).parents[1]
+    source = tomllib.loads((root / "src/local_ai_hub/defaults.toml").read_text(encoding="utf-8"))
+    packaged = tomllib.loads((root / "defaults.toml").read_text(encoding="utf-8"))
+    assert packaged["browser_bridge"] == source["browser_bridge"]
 
 
 def test_default_browser_origin_policy_is_fail_closed() -> None:

@@ -80,6 +80,23 @@ function safeDomHtml() {
   return clone.outerHTML;
 }
 
+function stableStateHash(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+function currentDocumentStateToken() {
+  let historyState = "";
+  try {
+    historyState = JSON.stringify(globalThis.history && globalThis.history.state) || "";
+  } catch (_) {}
+  return `state:${stableStateHash(`${safeDomHtml()}\n${historyState}`)}`.slice(0, 256);
+}
+
 function currentDocumentIdentity() {
   const navigation = performance.getEntriesByType("navigation")[0] || {};
   const document_token = `document:${String(performance.timeOrigin || "unknown")}:${String(navigation.startTime || 0)}:${String(navigation.type || "navigate")}`.slice(0, 256);
@@ -87,6 +104,7 @@ function currentDocumentIdentity() {
     url: String(location.href).slice(0, 4096),
     target_origin: String(location.origin).slice(0, 256),
     document_token,
+    document_state_token: currentDocumentStateToken(),
   };
 }
 
@@ -104,6 +122,7 @@ function captureCurrentTab() {
     url: initial_identity.url,
     target_origin: initial_identity.target_origin,
     document_token: initial_identity.document_token,
+    document_state_token: initial_identity.document_state_token,
     captured_at: new Date().toISOString(),
     title: document.title,
     capture_identity: {initial: initial_identity},

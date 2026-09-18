@@ -54,10 +54,6 @@ class FakeElement {
   }
 
   get outerHTML() {
-    if (this.tagName === "HTML") {
-      const password = this.querySelectorAll('input[type="password"]')[0];
-      return fixture.replace("</body>", `${password ? password.outerHTML : ""}</body>`);
-    }
     const attrs = Object.entries(this.attributes).map(([key, value]) => ` ${key}="${value}"`).join("");
     if (this.tagName === "INPUT") return `<input${attrs}>`;
     return `<${this.tagName.toLowerCase()}${attrs}>${this.textContent}${this.children.map((child) => child.outerHTML).join("")}</${this.tagName.toLowerCase()}>`;
@@ -77,6 +73,7 @@ const captureContext = {
     querySelectorAll: (selector) => html.querySelectorAll(selector),
   },
   location: {href: "https://fixture.test/checkout?session=preserved", origin: "https://fixture.test"},
+  history: {state: {step: 1}, replaceState(value) { this.state = value; }},
   performance: {timeOrigin: 1000, getEntriesByType: (type) => type === "navigation" ? [{startTime: 0, type: "navigate"}] : [{name: "https://fixture.test/app.js?token=hidden", initiatorType: "script", duration: 2, transferSize: 10}]},
   getComputedStyle: () => ({display: "block", visibility: "visible", position: "static", color: "black", backgroundColor: "white", fontSize: "16px", lineHeight: "20px", width: "100px", height: "20px"}),
   innerWidth: 1280,
@@ -96,22 +93,29 @@ assert.equal(html.querySelectorAll('input[type="password"]')[0].value, "do-not-e
 assert.match(page.target_origin, /^https:\/\/fixture\.test$/);
 assert.match(page.captured_at, /T/);
 
-async function runBackground({timeout = null, switchTab = false, switchAfterScreenshot = false, screenshotTimeout = false, closed = false, permission = false, navigateAfterScreenshot = false, missingUrl = false, emptyUrl = false} = {}) {
+async function runBackground({timeout = null, hubTimeout = null, queryTimeout = false, getTimeout = false, switchTab = false, switchAfterScreenshot = false, screenshotTimeout = false, closed = false, permission = false, navigateAfterScreenshot = false, mutateDocumentAfterScreenshot = false, missingUrl = false, emptyUrl = false, token = ""} = {}) {
   let activeId = closed ? null : 7;
   const posts = [];
   const currentTab = {id: 7, windowId: 3};
   if (!missingUrl) currentTab.url = emptyUrl ? "" : page.url;
   const bgContext = {
     __LOCAL_AI_CAPTURE_TIMEOUT_MS__: timeout || 8000,
+    __LOCAL_AI_HUB_REQUEST_TIMEOUT_MS__: hubTimeout || 5000,
+    __LOCAL_AI_HUB_API_TOKEN__: token,
     chrome: {
       runtime: {getURL: () => "chrome-extension://fixture/"},
       action: {onClicked: {addListener: () => {}}},
       tabs: {
-        get: async () => ({...currentTab}),
-        query: async () => { if (permission) throw new Error("permission denied"); return activeId === null ? [] : [{id: activeId, windowId: 3}]; },
+        get: async () => { if (getTimeout) return new Promise(() => {}); return {...currentTab}; },
+        query: async () => { if (queryTimeout) return new Promise(() => {}); if (permission) throw new Error("permission denied"); return activeId === null ? [] : [{id: activeId, windowId: 3}]; },
         sendMessage: async (tabId, message) => {
           if (message.type === "LOCAL_AI_VERIFY_CURRENT_TAB" && navigateAfterScreenshot) {
-            return {...page, url: "https://fixture.test/other", target_origin: "https://fixture.test", document_token: "document:new"};
+            return {...page, url: "https://fixture.test/other", target_origin: "https://fixture.test", document_token: "document:new", document_state_token: "state:new"};
+          }
+          if (message.type === "LOCAL_AI_VERIFY_CURRENT_TAB" && mutateDocumentAfterScreenshot) {
+            captureContext.history.replaceState({step: 2}, "", captureContext.location.href);
+            main.append(new FakeElement("p", {}, "DOM changed after screenshot"));
+            return {...page, ...captureContext.verifyCurrentTab()};
           }
           if (switchTab) activeId = 8;
           return page;
@@ -124,8 +128,10 @@ async function runBackground({timeout = null, switchTab = false, switchAfterScre
       },
     },
     fetch: async (_url, options) => {
+      if (hubTimeout) return new Promise(() => {});
       const body = JSON.parse(options.body);
       posts.push(body);
+      if (token) assert.equal(options.headers["X-LocalAI-Token"], token);
       const value = body.capture_error ? {success: false, error_code: body.capture_error} : body.capability ? {success: true, bundle_artifact_id: "bundle"} : {success: true, capability: "cap"};
       return {ok: true, status: 200, json: async () => value};
     },
@@ -159,6 +165,15 @@ async function runBackground({timeout = null, switchTab = false, switchAfterScre
   const screenshotTimeout = await runBackground({timeout: 5, screenshotTimeout: true});
   assert.equal(screenshotTimeout.result.error_code, "timeout");
   assert.equal(screenshotTimeout.posts.at(-1).capture_error, "timeout");
+  const hubTimeoutResult = await runBackground({hubTimeout: 5});
+  assert.equal(hubTimeoutResult.result.error_code, "timeout");
+  assert.equal(hubTimeoutResult.posts.length, 0);
+  const queryTimeoutResult = await runBackground({timeout: 5, queryTimeout: true});
+  assert.equal(queryTimeoutResult.result.error_code, "timeout");
+  assert.equal(queryTimeoutResult.posts.length, 0);
+  const getTimeoutResult = await runBackground({timeout: 5, getTimeout: true});
+  assert.equal(getTimeoutResult.result.error_code, "timeout");
+  assert.equal(getTimeoutResult.posts.length, 0);
 
   const switched = await runBackground({switchTab: true});
   assert.equal(switched.result.error_code, "tab_mismatch");
@@ -172,6 +187,12 @@ async function runBackground({timeout = null, switchTab = false, switchAfterScre
   assert.equal(navigated.result.error_code, "target_changed");
   assert.equal(navigated.posts.at(-1).capture_error, "target_changed");
   assert.equal(navigated.posts.some((post) => post.screenshot), false);
+  const mutated = await runBackground({mutateDocumentAfterScreenshot: true});
+  assert.equal(captureContext.history.state.step, 2);
+  assert.match(captureContext.document.documentElement.outerHTML, /DOM changed after screenshot/);
+  assert.equal(mutated.result.error_code, "target_changed");
+  assert.equal(mutated.posts.at(-1).capture_error, "target_changed");
+  assert.equal(mutated.posts.some((post) => post.screenshot), false);
   for (const options of [{missingUrl: true}, {emptyUrl: true}]) {
     const missingOrEmpty = await runBackground(options);
     assert.equal(missingOrEmpty.result.error_code, "target_changed");
@@ -180,5 +201,7 @@ async function runBackground({timeout = null, switchTab = false, switchAfterScre
   }
   assert.equal((await runBackground({closed: true})).result.error_code, "closed_tab");
   assert.equal((await runBackground({permission: true})).result.error_code, "permission_denied");
-  process.stdout.write(JSON.stringify({success: true, fixture: "login-preserving", cases: ["success", "timeout", "tab-switch", "same-tab-navigation", "missing-tab-url", "empty-tab-url", "password", "timestamp", "origin"]}));
+  const tokenRun = await runBackground({token: "0123456789abcdef"});
+  assert.equal(tokenRun.result.success, true);
+  process.stdout.write(JSON.stringify({success: true, fixture: "login-preserving", cases: ["success", "timeout", "screenshot-timeout", "hub-timeout", "query-timeout", "get-timeout", "tab-switch", "same-tab-navigation", "same-url-state-race", "missing-tab-url", "empty-tab-url", "password", "timestamp", "origin", "token"]}));
 })().catch((error) => { console.error(error); process.exitCode = 1; });
