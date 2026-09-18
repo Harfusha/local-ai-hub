@@ -80,6 +80,21 @@ _REVIEW_DIFF_CONTEXT_FRACTION = 0.5
 _MAX_REVIEW_DIFF_CHUNKS = 8
 _REVIEW_SYNTHESIS_CONTEXT_TOKENS = 6000
 _UNIFIED_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
+_GUARD_REASON_SECRET_RE = re.compile(
+    r"(?i)\b((?:token|api[-_]?key|access[-_]?token|refresh[-_]?token|auth(?:orization)?|bearer|secret|password|passwd|credential|cookie|private[-_]?key)\b\s*[:=]\s*)([\"']?)([^\"'\s,;]+)\2"
+)
+_GUARD_REASON_PROMPT_RE = re.compile(r"(?is)\b(?:system\s+|user\s+)?(?:prompt|instructions?)\s*[:=].*$")
+
+
+def _redact_guard_reason(reason: Any) -> str:
+    """Keep a short operator reason without persisting secret or prompt content."""
+    text = str(reason or "").strip()
+    if not text:
+        return ""
+    text = _GUARD_REASON_SECRET_RE.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
+    text = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [REDACTED]", text)
+    text = _GUARD_REASON_PROMPT_RE.sub("prompt: [REDACTED]", text)
+    return text[:500]
 
 
 def _review_text_error(value: Any) -> str | None:
@@ -488,23 +503,29 @@ class LocalAIServices:
 
     def _guard_decision(self, request: ConsistencyRequest, revision: str, *, reason: str = "", approval: Any = "") -> tuple[bool, bool]:
         """Persist bounded operator decisions through the guard's existing memory store."""
-        if not reason and not self._guard_truthy(approval):
+        reason_text = str(reason or "").strip()
+        if not reason_text and not self._guard_truthy(approval):
             return False, False
         store = getattr(self.consistency_guard, "memory_store", None)
         if store is None or not callable(getattr(store, "record", None)):
+            return True, False
+        state_store = getattr(store, "state_store", None)
+        if state_store is not None and getattr(state_store, "enabled", True) is False:
+            return True, False
+        if getattr(store, "enabled", True) is False:
             return True, False
         try:
             from .agent_identity import AgentScope
             from .agent_memory import MemoryKind, MemoryRecord
 
             token = hashlib.sha256(
-                f"{request.task_id}:{request.phase}:{revision}:{reason}:{approval}".encode("utf-8", "replace")
+                f"{request.root}:{request.task_id}:{request.phase}:{revision}:{reason_text}:{approval}".encode("utf-8", "replace")
             ).hexdigest()[:16]
             record = MemoryRecord.create(
                 kind=MemoryKind.DECISION,
                 scope=AgentScope.REPOSITORY,
                 key=f"consistency_decision:{token}",
-                value={"approved": self._guard_truthy(approval), "reason": str(reason)[:500]},
+                value={"approved": self._guard_truthy(approval), "reason": _redact_guard_reason(reason_text)},
                 source="consistency_guard",
                 repository_revision=revision,
                 path_refs=tuple(request.changed_paths),
@@ -512,10 +533,10 @@ class LocalAIServices:
                 provenance={"root": request.root, "phase": request.phase, "guard": "agent_consistency"},
             )
             try:
-                store.record(record, actor="consistency_guard", idempotency_key=f"consistency-decision:{token}")
+                saved = store.record(record, actor="consistency_guard", idempotency_key=f"consistency-decision:{token}")
             except TypeError:
-                store.record(record)
-            return True, True
+                saved = store.record(record)
+            return True, saved is not None and saved is not False
         except Exception:
             return True, False
 
@@ -593,7 +614,8 @@ class LocalAIServices:
         try:
             refreshed = store.get(request.task_id)
             refreshed_status = getattr(getattr(refreshed, "status", None), "value", getattr(refreshed, "status", ""))
-            return str(refreshed_status), bool(boundary and not approved)
+            refreshed_status = str(refreshed_status)
+            return refreshed_status, bool(refreshed_status.lower() == "waiting" or (boundary and not approved))
         except Exception:
             return str(status), bool(boundary and not approved)
 
@@ -2479,7 +2501,9 @@ class LocalAIServices:
         ordinary = any(not (item.requires_approval or item.severity.lower() in {"boundary", "high", "high-risk"}) for item in warnings)
         decision_recorded, decision_persisted = self._guard_decision(request, revision, reason=request.override_reason, approval=request.approval)
         task_status, waiting = self._guard_task_state(request, warnings, revision)
-        approved = self._guard_truthy(request.approval) or self._guard_existing_approval(request) or bool(boundary and request.task_id and task_status == "active")
+        approved = self._guard_truthy(request.approval) or self._guard_existing_approval(request)
+        if str(task_status).lower() == "waiting":
+            approved = False
         result = dict(base)
         result.update({
             "guarded": True,
@@ -2497,7 +2521,7 @@ class LocalAIServices:
             "changed_paths": list(changed_paths),
             "since_hash": str(since_hash)[:200],
             "delta_from": str(since_hash)[:200] if since_hash else "",
-            "requires_override": bool(ordinary and not request.override_reason and not approved),
+            "requires_override": bool(ordinary and not str(request.override_reason or "").strip() and not approved),
             "requires_approval": bool(boundary and not approved),
             "decision_recorded": bool(decision_recorded),
             "decision_persisted": bool(decision_persisted),

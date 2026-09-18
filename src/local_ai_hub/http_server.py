@@ -2963,15 +2963,28 @@ class Handler(BaseHTTPRequestHandler):
                 )); return
             if path == "/api/context/pack":
                 root = str(payload.get("root", ".")); query_text = str(payload.get("query", ""))
-                max_tokens = int(payload.get("max_tokens", APP.config.get("token_saving", {}).get("default_repo_context_tokens", 4200)))
+                raw_max_tokens = payload.get("max_tokens", APP.config.get("token_saving", {}).get("default_repo_context_tokens", 4200))
+                if isinstance(raw_max_tokens, bool):
+                    self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "max_tokens must be an integer"}); return
+                try:
+                    max_tokens = int(raw_max_tokens)
+                except (TypeError, ValueError, OverflowError):
+                    self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "max_tokens must be an integer"}); return
+                if max_tokens < 0:
+                    self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "max_tokens must be non-negative"}); return
                 mode = str(payload.get("mode", "fast")).strip().lower()
                 if mode not in {"full", "fast"}:
                     self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "context mode must be full or fast"}); return
                 guarded = payload.get("guarded", False)
+                if not isinstance(guarded, bool):
+                    self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "guarded must be boolean"}); return
                 guarded_requested = bool(guarded) or bool(str(payload.get("task_id", "")).strip()) or bool(str(payload.get("phase", "")).strip())
+                if not guarded_requested:
+                    guard_fields = ("focus", "preload_profile", "changed_paths", "base", "staged", "since_hash", "approval", "override_reason", "token_budget")
+                    unexpected = next((field for field in guard_fields if field in payload), None)
+                    if unexpected is not None:
+                        self._send(400, {"success": False, "terminal": True, "retryable": False, "error": f"guard-related fields require guarded=true, task_id, or phase: {unexpected}"}); return
                 if guarded_requested:
-                    if not isinstance(guarded, bool):
-                        self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "guarded must be boolean"}); return
                     if payload.get("focus") is not None and not isinstance(payload.get("focus"), list):
                         self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "focus must be a list"}); return
                     if payload.get("changed_paths") is not None and not isinstance(payload.get("changed_paths"), list):
