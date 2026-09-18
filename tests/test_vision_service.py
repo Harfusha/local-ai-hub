@@ -6,6 +6,8 @@ import tomllib
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from local_ai_hub.app import LocalAIApp
 from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.model_policy import ModelExecutionPolicy
@@ -51,6 +53,47 @@ def test_vision_defaults_to_qwen_model_and_requests_json(tmp_path: Path) -> None
     payload = runtime.request.call_args.args[1]
     assert payload["format"] == "json"
     assert payload["images"] == ["ZmFrZS1pbWFnZQ=="]
+
+
+def test_vision_rejects_oversized_inline_context_before_json_loads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    raw = json.dumps({"runtime": "x" * 12_000})
+    original_loads = json.loads
+
+    def fail_if_called(value: object, *args: object, **kwargs: object) -> object:
+        if value is raw:
+            raise AssertionError("oversized inline JSON reached json.loads")
+        return original_loads(value, *args, **kwargs)
+
+    monkeypatch.setattr(json, "loads", fail_if_called)
+    result = services.vision({"image": str(image), "runtime": raw}, "tenant-a")
+
+    assert result["terminal"] is True
+    assert result["error"]["code"] == "frontend_context_too_large"
+    assert runtime.request.call_count == 0
+
+
+@pytest.mark.parametrize("field_name", ["dom", "accessibility", "computed_styles", "runtime"])
+def test_vision_rejects_deep_inline_context_before_parser_recursion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field_name: str
+) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    raw = '{"next":' * 32 + "{}" + "}" * 32
+    original_loads = json.loads
+
+    def fail_with_recursion(value: object, *args: object, **kwargs: object) -> object:
+        if value == raw:
+            raise RecursionError("simulated parser recursion")
+        return original_loads(value, *args, **kwargs)
+
+    monkeypatch.setattr(json, "loads", fail_with_recursion)
+    result = services.vision({"image": str(image), field_name: raw}, "tenant-a")
+
+    assert result["terminal"] is True
+    assert result["error"]["code"] == "frontend_context_too_deep"
+    assert runtime.request.call_count == 0
 
 
 def test_vision_resolves_network_artifact_with_console_ref_for_tenant(tmp_path: Path) -> None:

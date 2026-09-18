@@ -4,8 +4,11 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from local_ai_hub.frontend_review import (
     build_model_context,
+    FrontendReviewError,
     project_live_dom,
 )
 from local_ai_hub.services import LocalAIServices
@@ -116,6 +119,53 @@ def test_model_context_rejects_excessive_nesting() -> None:
         assert getattr(exc, "code", "") == "frontend_context_too_deep"
     else:
         raise AssertionError("deep runtime context must be terminal")
+
+
+def test_inline_json_size_is_rejected_before_json_loads(monkeypatch: pytest.MonkeyPatch) -> None:
+    raw = json.dumps({"runtime": "x" * 12_000})
+    original_loads = json.loads
+
+    def fail_if_called(value: object, *args: object, **kwargs: object) -> object:
+        if value is raw:
+            raise AssertionError("oversized inline JSON reached json.loads")
+        return original_loads(value, *args, **kwargs)
+
+    monkeypatch.setattr(json, "loads", fail_if_called)
+    with pytest.raises(FrontendReviewError) as raised:
+        build_model_context(
+            prompt="Review",
+            screenshot_data_url="data:image/png;base64,AA==",
+            dom={"redaction": "none", "elements": [{"element_id": "root"}]},
+            accessibility={},
+            computed_styles={},
+            viewport={},
+            runtime=raw,
+        )
+
+    assert raised.value.code == "frontend_context_too_large"
+
+
+def test_deep_inline_json_is_rejected_before_recursion(monkeypatch: pytest.MonkeyPatch) -> None:
+    raw = '{"next":' * 32 + "{}" + "}" * 32
+
+    def fail_with_recursion(value: object, *args: object, **kwargs: object) -> object:
+        if value == raw:
+            raise RecursionError("simulated parser recursion")
+        return json.loads(value, *args, **kwargs)
+
+    monkeypatch.setattr(json, "loads", fail_with_recursion)
+    with pytest.raises(FrontendReviewError) as raised:
+        build_model_context(
+            prompt="Review",
+            screenshot_data_url="data:image/png;base64,AA==",
+            dom={"redaction": "none", "elements": [{"element_id": "root"}]},
+            accessibility={},
+            computed_styles={},
+            viewport={},
+            runtime=raw,
+        )
+
+    assert raised.value.code == "frontend_context_too_deep"
 
 
 def test_project_live_dom_rejects_duplicate_element_ids() -> None:
