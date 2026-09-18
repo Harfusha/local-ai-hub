@@ -24,6 +24,26 @@ def _reasoning_tier_label(cfg: dict[str, Any], fs: FeatureSet) -> str:
     return "the configured hardest-reasoning tier"
 
 
+def _semantic_handoff_contract(fs: FeatureSet) -> str:
+    bypass = (
+        ' If local inference is unavailable or intentionally excluded by a permitted boundary, report the bypass through `local_ai_status(adoption_signal="bypassed", target_tool="local_ai_task", target_action="reason")`.'
+        if fs.status
+        else " If local inference is unavailable or intentionally excluded by a permitted boundary, report the permitted bypass explicitly without using unavailable status tooling."
+    )
+    return (
+        "Semantic handoff is mandatory: after deterministic/indexed evidence, planning, interpretation, synthesis, generation, review, compression, and second-opinion work must call `local_ai_task` before cloud reasoning. The cloud agent integrates the bounded local result and does not redo semantic work."
+        + bypass
+        + " Preserve exceptions for architecture, security, mutations, open-ended coding, exact evidence, and verification."
+    )
+
+
+def _trigger_map_lines(fs: FeatureSet) -> list[str]:
+    lines = fs.trigger_map_lines()
+    if not fs.status:
+        lines = [line for line in lines if "local_ai_status" not in line]
+    return lines
+
+
 def _actions_note(actions: list[str]) -> str:
     """Keep generated tool descriptions aligned with each active action enum."""
     return f" Supported actions: {', '.join(actions)}." if actions else " No actions are enabled."
@@ -57,13 +77,14 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     fs = FeatureSet.from_config(cfg)
     reasoning_tier = _reasoning_tier_label(cfg, fs)
 
-    trigger_lines = "\n".join(fs.trigger_map_lines()) if fs.trigger_map_lines() else "- (all Hub tools currently disabled in configuration)"
+    trigger_map = _trigger_map_lines(fs)
+    trigger_lines = "\n".join(trigger_map) if trigger_map else "- (all Hub tools currently disabled in configuration)"
     recipe_lines = "\n".join(fs.recipe_lines())
 
     # Delegation section
     if fs.tasks and fs.has_any_model():
         delegation_task = (
-            f"- Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression."
+            f"- {_semantic_handoff_contract(fs)} Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression."
             f" Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks,"
             f" `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning."
             " Deterministic/indexed tools remain for exact facts, symbols, diff and tests; they do not replace these semantic tasks."
@@ -176,7 +197,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         routing_lines.append(f'{r_idx}. `local_ai_rag` — semantic fallback only when indexed evidence is insufficient.')
         r_idx += 1
     if fs.tasks and fs.has_any_model():
-        routing_lines.append(f'{r_idx}. `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` — semantic generation, exploration, reasoning, review, independent second opinions and compression. Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks, `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning. Deterministic/indexed tools remain for exact facts, symbols, diff and tests.')
+        routing_lines.append(f'{r_idx}. `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` — {_semantic_handoff_contract(fs)} Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks, `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning. Deterministic/indexed tools remain for exact facts, symbols, diff and tests.')
         r_idx += 1
     if fs.commands:
         routing_lines.append(f'{r_idx}. `local_ai_command(action="run")` — tests, lint, typecheck, builds and repeatable read-only commands before native execution.')
@@ -330,6 +351,8 @@ def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
     """Generate dynamic reference documents for skills/local-ai-orchestrator/references/."""
     fs = FeatureSet.from_config(cfg)
     reasoning_tier = _reasoning_tier_label(cfg, fs)
+    local_semantic_enabled = fs.tasks and fs.has_any_model()
+    semantic_handoff = _semantic_handoff_contract(fs) if local_semantic_enabled else ""
     work_owner_note = (
         "A submitted `local_ai_work` order may own its bounded internal planning, edits, validation and integration until handoff."
         if fs.work_orchestrator
@@ -357,6 +380,10 @@ def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
     if fs.status:
         status_detail_note = ", Agent OS task/incident state" if fs.agent_os else ""
         tool_bullets.append(f"- `local_ai_status`: bounded health/cache/telemetry{status_detail_note} inspection; no polling loops.")
+    if local_semantic_enabled:
+        tool_bullets.append(f"- Semantic routing contract: {semantic_handoff}")
+    else:
+        tool_bullets.append("- Local model inference is disabled; use deterministic/indexed evidence only.")
 
     tool_lines = "\n".join(tool_bullets) if tool_bullets else "- *(All tools disabled)*"
     agent_os_reference = ""
@@ -388,7 +415,10 @@ The active tool surface reflects your configuration:
         step_i += 1
         wf_steps.append(f"{step_i}. Retrieve deterministic facts, then code-index/search evidence.")
         step_i += 1
-        wf_steps.append(f"{step_i}. Use `context` for compact evidence; call `solve` after evidence for repository implementation support. Explicit semantic wording keeps one bounded local pass; use `local_ai_task` directly for semantic generation, exploration, reasoning, review, independent second opinions or semantic compression.")
+        if local_semantic_enabled:
+            wf_steps.append(f"{step_i}. Retrieve deterministic/indexed evidence, then {semantic_handoff} Use `context` for compact evidence and call `solve` after evidence for repository implementation support.")
+        else:
+            wf_steps.append(f"{step_i}. Retrieve deterministic/indexed evidence only; use available deterministic/indexed tools for exact facts, symbols, diff, tests, and verification.")
         step_i += 1
         lease_note = "claim `local_ai_coord` leases for overlapping paths; " if fs.coord else ""
         wf_steps.append(f"{step_i}. Edit in the main agent; {lease_note}use `impact` before risky dependent changes.")
@@ -401,10 +431,10 @@ The active tool surface reflects your configuration:
     wf_lines = "\n".join(wf_steps)
     task_notes = ""
     if fs.tasks and fs.has_any_model():
-        task_notes = """
+        task_notes = f"""
 ## Local semantic work
 
-Use `local_ai_task(action="delegate")` for bounded creation or implementation guidance, `local_ai_task(action="explore")` for semantic exploration, `local_ai_task(action="reason")` for reasoning, `local_ai_task(action="review")` for a semantic review, `local_ai_task(action="second_opinion")` for independent critique, and `local_ai_task(action="compress")` for semantic condensation. Use `local_ai_repo`, `local_ai_artifact` and `local_ai_command` for exact facts, symbols, diff and tests; those deterministic paths do not replace the semantic worker.
+{semantic_handoff} Use `local_ai_task(action="delegate")` for bounded creation or implementation guidance, `local_ai_task(action="explore")` for semantic exploration, `local_ai_task(action="reason")` for reasoning, `local_ai_task(action="review")` for a semantic review, `local_ai_task(action="second_opinion")` for independent critique, and `local_ai_task(action="compress")` for semantic condensation. Use `local_ai_repo`, `local_ai_artifact` and `local_ai_command` for exact facts, symbols, diff and tests; those deterministic paths do not replace the semantic worker.
 
 ## Local second opinion
 
@@ -472,13 +502,15 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     fs = FeatureSet.from_config(cfg)
     reasoning_tier = _reasoning_tier_label(cfg, fs)
 
-    trigger_lines = "\n".join(fs.trigger_map_lines()) if fs.trigger_map_lines() else "- (all Hub tools currently disabled)"
+    trigger_map = _trigger_map_lines(fs)
+    trigger_lines = "\n".join(trigger_map) if trigger_map else "- (all Hub tools currently disabled)"
     recipe_lines = "\n".join(fs.recipe_lines())
 
     task_delegation = ""
     if fs.tasks and fs.has_any_model():
         task_delegation = (
-            f"\n- Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression."
+            f"\n- {_semantic_handoff_contract(fs)}"
+            f" Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression."
             f" Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks,"
             f" `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning."
             " Deterministic/indexed tools remain for exact facts, symbols, diff and tests; they do not replace these semantic tasks."
@@ -666,13 +698,20 @@ Load and follow this skill before any coding or repository task. Apply its disco
 def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
     """Generate the standard TOKEN ECONOMY POLICY block."""
     fast_model = "qwen2.5-coder:1.5b"
+    local_model_enabled = True
     if cfg:
         try:
             fs = FeatureSet.from_config(cfg)
+            local_model_enabled = fs.tasks and fs.has_any_model()
             if fs.fast_model:
                 fast_model = fs.fast_model
         except Exception:
             pass
+    local_model_line = (
+        f"- Local model delegation: Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression; use `{fast_model}` only for quick/simple microtasks and configured higher tiers for ordinary, involved and hardest work. Deterministic/indexed tools remain for exact facts, symbols, diff and tests.\n"
+        if local_model_enabled
+        else ""
+    )
     return (
         "<!-- BEGIN TOKEN ECONOMY POLICY -->\n"
         "- Before any repository task, load and follow the `token-economizer` skill when it is installed; this trigger applies even under deadline pressure.\n"
@@ -682,8 +721,8 @@ def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
         "- Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.\n"
         "- Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.\n"
         "- Surgical edits: Prefer targeted block replacements over rewriting entire files.\n"
-        f"- Local model delegation: Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression; use `{fast_model}` only for quick/simple microtasks and configured higher tiers for ordinary, involved and hardest work. Deterministic/indexed tools remain for exact facts, symbols, diff and tests.\n"
-        "<!-- END TOKEN ECONOMY POLICY -->"
+        + local_model_line
+        + "<!-- END TOKEN ECONOMY POLICY -->"
     )
 
 
@@ -737,6 +776,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Generate compact JSON tool schemas for all enabled tools."""
     fs = FeatureSet.from_config(cfg)
     reasoning_tier = _reasoning_tier_label(cfg, fs)
+    local_semantic_enabled = fs.tasks and fs.has_any_model()
     schemas: dict[str, dict[str, Any]] = {}
 
     if fs.status:
@@ -759,9 +799,14 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
     if fs.repo:
         repo_actions = fs.supported_repo_actions()
+        repo_semantic_contract = (
+            f" {_semantic_handoff_contract(fs)}"
+            if local_semantic_enabled
+            else " Local model inference is disabled; use deterministic/indexed evidence only."
+        )
         schemas["local_ai_repo"] = {
             "name": "local_ai_repo",
-            "description": "Primary bounded repository worker; use deterministic/indexed evidence first, then semantic/graph as enabled; use review_diff/security_audit before model inference." + _actions_note(repo_actions),
+            "description": "Primary bounded repository worker; use deterministic/indexed evidence first, then semantic/graph as enabled; use review_diff/security_audit before model inference." + repo_semantic_contract + _actions_note(repo_actions),
             "parameters": {
                 "type": "object",
                 "required": ["action"],
@@ -797,7 +842,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         task_actions = fs.supported_task_actions()
         schemas["local_ai_task"] = {
             "name": "local_ai_task",
-            "description": f"Tiered bounded local-model work ({fs.fast_model} quick, {fs.general_model} ordinary, {fs.smart_model} more involved, {reasoning_tier} hardest) for semantic generation, reasoning, review, independent second opinions and semantic compression; use deterministic/indexed tools for exact facts, symbols, diff and tests." + _actions_note(task_actions),
+            "description": f"Tiered bounded local-model work ({fs.fast_model} quick, {fs.general_model} ordinary, {fs.smart_model} more involved, {reasoning_tier} hardest) for semantic generation, reasoning, review, independent second opinions and semantic compression; use deterministic/indexed tools for exact facts, symbols, diff and tests. {_semantic_handoff_contract(fs)}" + _actions_note(task_actions),
             "parameters": {
                 "type": "object",
                 "required": ["action"],

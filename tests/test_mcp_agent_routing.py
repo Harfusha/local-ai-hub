@@ -11,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from local_ai_hub import mcp_server as local_ai_mcp  # noqa: E402
 from local_ai_hub.features import FeatureSet  # noqa: E402
+from local_ai_hub.routing import semantic_handoff_hint  # noqa: E402
+from local_ai_hub.adoption_metrics import AdoptionMetricsStore  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -105,6 +107,156 @@ def test_dynamic_descriptions_make_first_choice_routing_explicit() -> None:
     assert "terminal=true and retryable=false" in descriptions["repo"]
     assert "terminal=true and retryable=false" in descriptions["command"]
     assert "Mutations never cache or single-flight" in descriptions["command"]
+
+
+def test_mcp_descriptions_require_semantic_handoff_before_cloud_reasoning() -> None:
+    descriptions = local_ai_mcp._desc_task() + local_ai_mcp._desc_repo()
+    normalized = descriptions.lower()
+
+    assert "semantic handoff is mandatory" in normalized
+    assert "before cloud reasoning" in normalized
+    assert "report the bypass" in normalized
+    assert "local_ai_task" in descriptions
+    assert "semantic handoff" in normalized
+
+
+def test_disabled_local_task_description_does_not_claim_mandatory_local_execution(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", False)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: False)
+
+    description = local_ai_mcp._desc_task()
+
+    assert "must call `local_ai_task` before cloud reasoning" not in description
+    assert "mandatory local execution" not in description
+
+
+@pytest.mark.parametrize("lean", [True, False])
+@pytest.mark.parametrize("tasks,has_model", [(False, True), (True, False)])
+def test_disabled_descriptions_omit_local_routing_without_models(monkeypatch, lean, tasks, has_model) -> None:
+    monkeypatch.setattr(local_ai_mcp, "LEAN_SCHEMAS", lean)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", tasks)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: has_model)
+
+    descriptions = local_ai_mcp._desc_task() + local_ai_mcp._desc_repo()
+
+    assert "local_ai_task" not in descriptions
+    assert "semantic handoff" not in descriptions.lower()
+    assert "bypass" not in descriptions.lower()
+    assert "deterministic/indexed" in descriptions
+
+
+@pytest.mark.parametrize("lean", [True, False])
+def test_enabled_descriptions_preserve_local_routing_contract(monkeypatch, lean) -> None:
+    monkeypatch.setattr(local_ai_mcp, "LEAN_SCHEMAS", lean)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+
+    descriptions = local_ai_mcp._desc_task() + local_ai_mcp._desc_repo()
+    normalized = descriptions.lower()
+
+    assert "local_ai_task" in descriptions
+    assert "semantic handoff is mandatory" in normalized
+    assert "before cloud reasoning" in normalized
+
+
+@pytest.mark.parametrize("lean", [True, False])
+def test_status_disabled_descriptions_omit_unavailable_bypass_tool(monkeypatch, lean) -> None:
+    monkeypatch.setattr(local_ai_mcp, "LEAN_SCHEMAS", lean)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "status", False)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+
+    descriptions = local_ai_mcp._desc_task() + local_ai_mcp._desc_repo()
+    normalized = descriptions.lower()
+
+    assert "semantic handoff is mandatory" in normalized
+    assert "before cloud reasoning" in normalized
+    assert "local_ai_status" not in descriptions
+
+
+def test_successful_repo_evidence_exposes_typed_semantic_handoff(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True, "matches": []})
+
+    result = local_ai_mcp.local_ai_repo(action="search", query="routing")
+
+    assert result["routing"]["semantic_handoff"] == semantic_handoff_hint("local_ai_repo", "search", True)
+
+
+def test_status_disabled_repo_evidence_omits_status_bypass_metadata(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "status", False)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True})
+
+    result = local_ai_mcp.local_ai_repo(action="search", query="routing")
+
+    assert "local_ai_status" not in repr(result)
+    assert result["routing"]["semantic_handoff"] == semantic_handoff_hint(
+        "local_ai_repo", "search", True, status_enabled=False
+    )
+
+
+@pytest.mark.parametrize("existing_routing", ["legacy", ["legacy", "value"]])
+def test_non_dict_routing_is_preserved_with_semantic_handoff(
+    monkeypatch, tmp_path: Path, existing_routing
+) -> None:
+    store = AdoptionMetricsStore(tmp_path)
+    monkeypatch.setattr(local_ai_mcp, "ADOPTION_METRICS", store)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(
+        local_ai_mcp.CLIENT,
+        "post",
+        lambda *_args, **_kwargs: {"success": True, "routing": existing_routing},
+    )
+
+    result = local_ai_mcp.local_ai_repo(action="search", query="routing")
+
+    assert result["routing"]["value"] == existing_routing
+    assert result["routing"]["semantic_handoff"] == semantic_handoff_hint(
+        "local_ai_repo", "search", True
+    )
+    assert store.report(days=1)["totals"]["recommended"] == 1
+
+
+def test_repo_evidence_recommendation_preserves_used_adoption(monkeypatch, tmp_path: Path) -> None:
+    store = AdoptionMetricsStore(tmp_path)
+    monkeypatch.setattr(local_ai_mcp, "ADOPTION_METRICS", store)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True})
+
+    local_ai_mcp.local_ai_repo(action="search", query="routing")
+
+    totals = store.report(days=1)["totals"]
+    assert totals["used"] == 1
+    assert totals["recommended"] == 1
+
+
+def test_prepopulated_handoff_is_not_counted_as_new_recommendation(monkeypatch, tmp_path: Path) -> None:
+    store = AdoptionMetricsStore(tmp_path)
+    monkeypatch.setattr(local_ai_mcp, "ADOPTION_METRICS", store)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+    existing_hint = {"required": False, "tool": "external", "actions": [], "bypass_tool": "", "bypass_action": ""}
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True, "routing": {"semantic_handoff": existing_hint}})
+
+    result = local_ai_mcp.local_ai_repo(action="search", query="routing")
+
+    assert result["routing"]["semantic_handoff"]
+    assert store.report(days=1)["totals"]["recommended"] == 0
+
+
+def test_artifact_and_command_success_do_not_expose_semantic_handoff(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True})
+
+    artifact = local_ai_mcp.local_ai_artifact("artifact-1")
+    command = local_ai_mcp.local_ai_command(action="run", command="true")
+
+    assert "routing" not in artifact
+    assert "routing" not in command
 
 
 def test_durable_routing_requires_checkpointed_contracts_and_closed_handoffs() -> None:

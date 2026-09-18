@@ -17,6 +17,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 from local_ai_hub.generator import (
+    generate_token_economy_policy,
     generate_skill_markdown,
     generate_skill_references,
     generate_global_policy,
@@ -128,6 +129,53 @@ class TestSkillReferences:
         assert "local_ai_command" not in refs["tools.md"]
         assert "preprocessing.md" not in refs
 
+    def test_references_require_semantic_handoff_before_cloud_reasoning(self):
+        refs = generate_skill_references({})
+        skill = generate_skill_markdown({})
+
+        for generated in (skill, refs["workflows.md"]):
+            normalized = generated.lower()
+            assert "semantic handoff is mandatory" in normalized
+            assert "after deterministic/indexed evidence" in normalized
+            assert "before cloud reasoning" in normalized
+            assert "cloud agent integrates" in normalized
+            assert "local_ai_status" in generated
+
+    def test_references_gate_status_bypass_wording(self):
+        cfg = {"features": {"status": False}}
+        refs = generate_skill_references(cfg)
+        skill = generate_skill_markdown(cfg)
+        policy = generate_global_policy(cfg)
+
+        for generated in (skill, refs["tools.md"], refs["workflows.md"], policy):
+            normalized = generated.lower()
+            assert "semantic handoff is mandatory" in normalized
+            assert "before cloud reasoning" in normalized
+            assert "local_ai_status" not in generated
+            assert "permitted bypass" in normalized
+
+    @pytest.mark.parametrize(
+        "cfg",
+        [
+            {"features": {"tasks": False}},
+            {"features": {"tasks": True}, "server": {"auto_start_ollama": False}},
+        ],
+    )
+    def test_references_gate_semantic_handoff_when_local_tasks_unavailable(self, cfg):
+        refs = generate_skill_references(cfg)
+
+        for generated in (refs["tools.md"], refs["workflows.md"]):
+            normalized = generated.lower()
+            assert "deterministic/indexed evidence only" in normalized
+            assert "semantic handoff is mandatory" not in normalized
+            assert "local_ai_task" not in generated
+
+    def test_references_include_semantic_handoff_in_tools_card_when_enabled(self):
+        refs = generate_skill_references({})
+
+        assert "semantic handoff is mandatory" in refs["tools.md"].lower()
+        assert "before cloud reasoning" in refs["tools.md"].lower()
+
 
 class TestGlobalPolicyGeneration:
     def test_policy_markers_and_content(self):
@@ -152,6 +200,42 @@ class TestGlobalPolicyGeneration:
         assert "exact-match once" in policy
         assert "rolls back write failures" in policy
         assert "no auto-commit" in policy
+
+    def test_policy_requires_semantic_handoff_before_cloud_reasoning(self):
+        policy = generate_global_policy({})
+        normalized = policy.lower()
+
+        assert "semantic handoff is mandatory" in normalized
+        assert "before cloud reasoning" in normalized
+        assert "report the bypass" in normalized
+        assert "local_ai_task" in policy
+        assert "semantic handoff" in normalized
+
+    def test_disabled_local_tasks_do_not_claim_mandatory_local_execution(self):
+        policy = generate_global_policy({"features": {"tasks": False}})
+
+        assert "local_ai_task" not in policy
+        assert "must call `local_ai_task` before cloud reasoning" not in policy
+        assert "mandatory local execution" not in policy
+
+
+class TestTokenEconomyPolicyGeneration:
+    @pytest.mark.parametrize(
+        "cfg",
+        [
+            {"features": {"tasks": False}},
+            {"features": {"tasks": True}, "server": {"auto_start_ollama": False}},
+        ],
+    )
+    def test_policy_omits_local_task_when_local_tasks_unavailable(self, cfg):
+        policy = generate_token_economy_policy(cfg)
+
+        assert "local_ai_task" not in policy
+
+    def test_policy_keeps_local_task_wording_when_enabled(self):
+        policy = generate_token_economy_policy({})
+
+        assert "- Local model delegation: Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression; use `qwen2.5-coder:1.5b` only for quick/simple microtasks and configured higher tiers for ordinary, involved and hardest work. Deterministic/indexed tools remain for exact facts, symbols, diff and tests." in policy
 
 
 class TestMcpSchemasGeneration:
@@ -207,6 +291,37 @@ class TestMcpSchemasGeneration:
         assert "batch_replace" not in actions
         assert "edits" not in properties
         assert "dry_run" not in properties
+
+    def test_schema_descriptions_include_enabled_semantic_handoff_contract(self):
+        schemas = generate_mcp_tool_schemas({})
+
+        for name in ("local_ai_repo", "local_ai_task"):
+            normalized = schemas[name]["description"].lower()
+            assert "semantic handoff is mandatory" in normalized
+            assert "before cloud reasoning" in normalized
+
+    def test_schema_handoff_contract_respects_status_gate(self):
+        schemas = generate_mcp_tool_schemas({"features": {"status": False}})
+
+        for name in ("local_ai_repo", "local_ai_task"):
+            description = schemas[name]["description"]
+            assert "semantic handoff is mandatory" in description.lower()
+            assert "local_ai_status" not in description
+
+    @pytest.mark.parametrize(
+        "cfg",
+        [
+            {"features": {"tasks": False}},
+            {"features": {"tasks": True}, "server": {"auto_start_ollama": False}},
+        ],
+    )
+    def test_disabled_repo_schema_uses_deterministic_evidence_only(self, cfg):
+        schemas = generate_mcp_tool_schemas(cfg)
+
+        normalized = schemas["local_ai_repo"]["description"].lower()
+        assert "deterministic/indexed evidence only" in normalized
+        assert "semantic handoff is mandatory" not in normalized
+        assert "local_ai_task" not in schemas["local_ai_repo"]["description"]
 
 
 class TestWriteAllGenerated:
