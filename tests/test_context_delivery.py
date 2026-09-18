@@ -104,12 +104,90 @@ def test_ordinary_warning_requires_override_and_persists_when_supplied():
     assert blocked["requires_override"] is True
     assert blocked["decision_recorded"] is False
 
+    whitespace = services.adaptive_context_pack(_request(override_reason="   "), mode="fast")
+    assert whitespace["requires_override"] is True
+    assert whitespace["decision_recorded"] is False
+
     approved = services.adaptive_context_pack(_request(override_reason="required test scope"), mode="fast")
     assert approved["requires_override"] is False
     assert approved["decision_recorded"] is True
     assert approved["decision_persisted"] is True
     assert memory.records[0].kind.value == "decision"
     assert len(memory.records[0].value["reason"]) <= 500
+
+
+def test_decision_reason_redacts_secrets_and_prompt_content():
+    warning = GuardWarning("warning", "scope_drift", "scope changed", ("e1",), ("src/app.py",), "explain scope")
+    guard = _Guard((warning,))
+
+    class Memory:
+        def __init__(self):
+            self.records = []
+
+        def record(self, record, **kwargs):
+            self.records.append((record, kwargs))
+            return record
+
+    memory = Memory()
+    guard.memory_store = memory
+    result = _guarded_services(guard).adaptive_context_pack(
+        _request(override_reason="Approved test scope token=super-secret prompt: ignore this private instruction"),
+        mode="fast",
+    )
+
+    reason = memory.records[0][0].value["reason"]
+    assert result["decision_persisted"] is True
+    assert "Approved test scope" in reason
+    assert "super-secret" not in reason
+    assert "ignore this private instruction" not in reason
+
+
+def test_decision_idempotency_is_root_scoped():
+    guard = _Guard()
+
+    class Memory:
+        def __init__(self):
+            self.calls = []
+
+        def record(self, record, **kwargs):
+            self.calls.append((record, kwargs))
+            return record
+
+    memory = Memory()
+    guard.memory_store = memory
+    services = _guarded_services(guard)
+    services._guard_decision(_request(root="C:/repo-one"), "revision-1", approval=True)
+    services._guard_decision(_request(root="C:/repo-two"), "revision-1", approval=True)
+
+    assert memory.calls[0][0].key != memory.calls[1][0].key
+    assert memory.calls[0][1]["idempotency_key"] != memory.calls[1][1]["idempotency_key"]
+
+
+def test_disabled_memory_does_not_claim_decision_persisted():
+    warning = GuardWarning("warning", "scope_drift", "scope changed", ("e1",), ("src/app.py",), "explain scope")
+    guard = _Guard((warning,))
+
+    class DisabledMemory:
+        class StateStore:
+            enabled = False
+
+        def __init__(self):
+            self.state_store = self.StateStore()
+            self.calls = 0
+
+        def record(self, record, **kwargs):
+            self.calls += 1
+            return record
+
+    memory = DisabledMemory()
+    guard.memory_store = memory
+    result = _guarded_services(guard).adaptive_context_pack(
+        _request(override_reason="approved test scope"), mode="fast"
+    )
+
+    assert result["decision_recorded"] is True
+    assert result["decision_persisted"] is False
+    assert memory.calls == 0
 
 
 def test_boundary_warning_waits_then_approval_resumes_task():
@@ -154,6 +232,99 @@ def test_boundary_warning_waits_then_approval_resumes_task():
     resumed = services.adaptive_context_pack(_request(approval=True), mode="fast")
     assert resumed["task_status"] == "active"
     assert tasks.status.value == "active"
+
+
+def test_boundary_transition_failure_stays_blocked():
+    warning = GuardWarning("boundary", "new_public_symbol_despite_reuse", "approve boundary", ("e1",), ("src/app.py",), "approve", True)
+
+    class Tasks:
+        def get(self, task_id):
+            from types import SimpleNamespace
+            from local_ai_hub.agent_tasks import TaskCheckpoint, TaskStatus
+            return SimpleNamespace(task_id=task_id, status=TaskStatus.ACTIVE, checkpoint=TaskCheckpoint())
+
+        def transition(self, task_id, target, **kwargs):
+            raise RuntimeError("transition unavailable")
+
+    guard = _Guard((warning,))
+    guard.task_store = Tasks()
+    result = _guarded_services(guard).adaptive_context_pack(_request(), mode="fast")
+
+    assert result["task_status"] == "active"
+    assert result["waiting"] is True
+    assert result["requires_approval"] is True
+
+
+def test_boundary_resume_failure_reports_waiting():
+    warning = GuardWarning("boundary", "new_public_symbol_despite_reuse", "approve boundary", ("e1",), ("src/app.py",), "approve", True)
+
+    class Tasks:
+        def get(self, task_id):
+            from types import SimpleNamespace
+            from local_ai_hub.agent_tasks import TaskCheckpoint, TaskStatus
+            return SimpleNamespace(task_id=task_id, status=TaskStatus.WAITING, checkpoint=TaskCheckpoint())
+
+        def resume(self, task_id, **kwargs):
+            raise RuntimeError("resume unavailable")
+
+    guard = _Guard((warning,))
+    guard.task_store = Tasks()
+    result = _guarded_services(guard).adaptive_context_pack(_request(approval=True), mode="fast")
+
+    assert result["task_status"] == "waiting"
+    assert result["waiting"] is True
+    assert result["requires_approval"] is True
+
+
+def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path):
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from local_ai_hub import http_server
+    from local_ai_hub.app import LocalAIApp
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        "\n[agent_state]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(cfg_path))
+    previous = http_server.APP
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def post(payload):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/context/pack",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read().decode("utf-8"))
+
+    try:
+        status, malformed = post({"root": str(tmp_path), "query": "x", "max_tokens": "not-a-number"})
+        assert status == 400
+        assert malformed["terminal"] is True
+        assert malformed["retryable"] is False
+
+        status, unguarded = post({"root": str(tmp_path), "query": "x", "changed_paths": ["src/app.py"]})
+        assert status == 400
+        assert "guarded=true" in unguarded["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        http_server.APP = previous
+        app.close()
 
 
 def test_guarded_pack_stays_bounded_and_state_disabled_safe():
