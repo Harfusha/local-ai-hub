@@ -57,6 +57,12 @@ reranker = "BAAI/bge-reranker-v2-m3"
 reranker_backend = "torch"
 reranker_device = "cpu"
 
+[vision]
+# Local Qwen3-VL is authoritative. Cloud fallback is opt-in and fails closed
+# until an explicit provider integration is configured by the operator.
+cloud_fallback_enabled = false
+cloud_provider = ""
+
 [llama_cpp]
 # On Intel-only systems, use the loopback SYCL model router when ready.
 # NVIDIA/AMD systems keep Ollama routing; the default permits Ollama fallback.

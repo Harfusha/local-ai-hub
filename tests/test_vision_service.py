@@ -55,6 +55,27 @@ def test_vision_defaults_to_qwen_model_and_requests_json(tmp_path: Path) -> None
     assert payload["images"] == ["ZmFrZS1pbWFnZQ=="]
 
 
+def test_vision_cloud_fallback_is_explicitly_disabled_by_default(tmp_path: Path) -> None:
+    services, runtime, image = _services(tmp_path)
+
+    result = services.vision({"image": str(image), "cloud_fallback": True}, "tenant")
+
+    assert result["success"] is False
+    assert result["error_code"] == "vision_cloud_fallback_disabled"
+    runtime.request.assert_not_called()
+
+
+def test_vision_cloud_fallback_enabled_without_provider_fails_closed(tmp_path: Path) -> None:
+    services, runtime, image = _services(tmp_path)
+    services.config["vision"] = {"cloud_fallback_enabled": True, "cloud_provider": ""}
+
+    result = services.vision({"image": str(image), "cloud_fallback": True}, "tenant")
+
+    assert result["success"] is False
+    assert result["error_code"] == "vision_cloud_fallback_unavailable"
+    runtime.request.assert_not_called()
+
+
 def test_vision_image_path_checks_size_before_reading_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     services, runtime, image = _services(tmp_path)
     image.write_bytes(b"x" * (VISION_MAX_IMAGE_BYTES + 1))
