@@ -3,8 +3,191 @@ from __future__ import annotations
 import re
 import json
 import subprocess
+from html.parser import HTMLParser
+from html import escape
 from shutil import which
 from local_ai_hub.dashboard import DASHBOARD_HTML
+
+
+class _TraceMarkupParser(HTMLParser):
+    """Inspect visible content and balanced containers without a browser dependency."""
+
+    def __init__(self, markup):
+        super().__init__(convert_charrefs=True)
+        self.stack = []
+        self.visible = []
+        self.keys = []
+        self.errors = []
+        self.primary_length = 0
+        self.feed(markup)
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        hidden = any(entry[1] for entry in self.stack) or (tag == 'details' and 'open' not in attrs)
+        if not hidden:
+            self.primary_length += len(self.get_starttag_text())
+        if 'data-trace-key' in attrs:
+            self.keys.append(attrs['data-trace-key'])
+        if tag not in {'br', 'hr', 'input', 'img', 'meta', 'link', 'wbr'}:
+            self.stack.append((tag, hidden))
+
+    def handle_endtag(self, tag):
+        if self.stack and not any(entry[1] for entry in self.stack):
+            self.primary_length += len(tag) + 3
+        if not self.stack or self.stack[-1][0] != tag:
+            self.errors.append(tag)
+        else:
+            self.stack.pop()
+
+    def handle_data(self, data):
+        if not any(entry[1] for entry in self.stack):
+            self.visible.append(data)
+            self.primary_length += len(escape(data))
+
+
+def _trace_remediation_probe(expression):
+    source = _trace_presentation_runtime_source()
+    model_source = DASHBOARD_HTML[DASHBOARD_HTML.index('function traceDisplayModel(detail)'):
+                                  DASHBOARD_HTML.index('function traceAvailability(model')]
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "const n=v=>String(v??0);let traceRevealRedactedDetails=false;"
+        + _trace_redaction_runtime_source() + source + model_source
+        + "function probe(session,events=[]){const model=traceDisplayModel({session,events});return tracePrimaryFallback(renderTracePresentation(model),model.panels,model);}"
+        + f"console.log(JSON.stringify({expression}));"
+    )
+    result = subprocess.run(['node'], input=script, text=True, capture_output=True, timeout=20, check=True)
+    return json.loads(result.stdout)
+
+
+def test_trace_remediation_large_model_and_wide_command_are_bounded():
+    rendered = _trace_remediation_probe("""({
+      chat:probe({action:'/api/chat',request:{prompt:'PROMPT-'+ 'p'.repeat(100000)},output:'ANSWER-'+ 'a'.repeat(100000)}),
+      command:probe({action:'/api/command',request:{command:'pytest'},output:{exit_code:0,stdout:Object.fromEntries(Array.from({length:50},(_,i)=>['field'+i,Object.fromEntries(Array.from({length:50},(_,j)=>['value'+j,'x'.repeat(300)]))]))}})
+    })""")
+    for html in rendered.values():
+        assert len(html) < 100000
+        assert 'truncat' in html.lower()
+        parsed = _TraceMarkupParser(html)
+        assert not parsed.errors and not parsed.stack
+    assert 'PROMPT-' in rendered['chat'] and 'ANSWER-' in rendered['chat']
+    assert 'pytest' in rendered['command'] and 'stdout' in rendered['command']
+
+
+def test_trace_remediation_command_without_exit_is_incomplete_and_keeps_fallback():
+    html = _trace_remediation_probe("probe({action:'/api/command',state:'complete',request:{command:'pytest'},output:'Captured plain command result'})")
+    visible = ''.join(_TraceMarkupParser(html).visible)
+    assert 'Success' not in visible
+    assert 'Incomplete' in visible
+    assert 'Captured plain command result' in visible
+
+
+def test_trace_remediation_specialized_shell_keeps_unmapped_input_and_error():
+    html = _trace_remediation_probe("probe({request:{payload_hint:'Opaque captured input'},error:'Captured model failure'})")
+    visible = ''.join(_TraceMarkupParser(html).visible)
+    assert 'Opaque captured input' in visible
+    assert 'Captured model failure' in visible
+
+
+def test_trace_remediation_tool_defaults_follow_actual_result_presence():
+    rendered = _trace_remediation_probe("""(()=>{
+      const call={event_type:'tool_call',payload:{call_id:'c1',name:'lookup',arguments:{query:'x'}}};
+      const result={event_type:'tool_result',payload:{call_id:'c1',result:'found'}};
+      const pending=traceDisplayModel({session:{request:{prompt:'lookup'}},events:[call]});
+      return {chat:renderModelChatPresentation(pending),agent:probe({request:{prompt:'lookup'}},[call,result])};
+    })()""")
+    assert 'pending' in ''.join(_TraceMarkupParser(rendered['chat']).visible)
+    agent = ''.join(_TraceMarkupParser(rendered['agent']).visible)
+    assert 'complete' in agent and 'pending' not in agent and 'found' in agent
+
+
+def test_trace_remediation_review_preserves_first_findings_when_truncated():
+    html = _trace_remediation_probe("probe({action:'/api/review',output:{status:'complete',findings:Array.from({length:20},(_,i)=>({severity:'high',message:'Finding '+i+' '+ 'm'.repeat(900)}))}})")
+    visible = ''.join(_TraceMarkupParser(html).visible)
+    assert 'Finding 0' in visible
+    assert 'omitted' in visible.lower()
+    assert 0 < html.count('class="trace-finding-item"') < 20
+
+
+def test_trace_remediation_normalization_preserves_async_and_repo_fields():
+    rendered = _trace_remediation_probe("""({
+      job:probe({kind:'async_job'},[{event_type:'job_progress',payload:{job_type:'index-project',progress:'42 percent',worker_output:'worker evidence'}}]),
+      repo:probe({action:'/api/repo'},[{event_type:'repo_result',payload:{context:'Useful repository answer',graph:{nodes:['Graph evidence']},evidence:['Source evidence']}}])
+    })""")
+    job = ''.join(_TraceMarkupParser(rendered['job']).visible)
+    assert 'index-project' in job and '42 percent' in job
+    assert 'worker evidence' in rendered['job']
+    repo = ''.join(_TraceMarkupParser(rendered['repo']).visible)
+    assert 'Useful repository answer' in repo
+    assert 'No result summary captured' not in repo
+    assert 'Graph evidence' in rendered['repo'] and 'Source evidence' in rendered['repo']
+
+
+def test_trace_remediation_primary_filters_structured_internal_metadata():
+    rendered = _trace_remediation_probe("""({
+      chat:probe({request:{prompt:'hello'},output:{message:'Useful answer',request_id:'private-request',headers:{'X-Internal':'private-header'}}}),
+      tools:renderModelChatPresentation(traceDisplayModel({session:{request:{prompt:'hello'}},events:[{event_type:'tool_call',payload:{name:'lookup',call_id:'c'}},{event_type:'tool_result',payload:{call_id:'c',result:{message:'Useful tool result',requestId:'camel-output',headers:{'X-Internal':'private-header'}}}}]})),
+      agent:probe({request:{prompt:'hello',requestId:'camel-private'},output:{message:'Useful result',requestId:'camel-output'}},[{event_type:'tool_call',payload:{name:'lookup'}}])
+    })""")
+    for html in rendered.values():
+        visible = ''.join(_TraceMarkupParser(html).visible)
+        assert 'Useful' in visible
+        for marker in ['private-request', 'private-header', 'camel-private', 'camel-output', 'request_id', 'requestId']:
+            assert marker not in visible
+
+
+def test_trace_remediation_rag_limits_preserve_html_and_stable_open_identity():
+    result = _trace_remediation_probe("""(()=>{
+      const a={id:'a',path:'a.py',text:'Alpha'},b={id:'b',path:'b.py',text:'Beta'};
+      const first=probe({action:'/api/search',output:{results:[a,b]}}),second=probe({action:'/api/search',output:{results:[b,a]}});
+      const large=probe({action:'/api/search',output:{query:'<'.repeat(4000),answer:'<'.repeat(6000),results:[{path:'first.py',text:'<'.repeat(20000)}]}});
+      return {first,second,large};
+    })()""")
+    large = _TraceMarkupParser(result['large'])
+    assert not large.errors and not large.stack
+    assert len(result['large']) < 26000
+    first = [k for k in _TraceMarkupParser(result['first']).keys if k.startswith('rag-result:')]
+    second = [k for k in _TraceMarkupParser(result['second']).keys if k.startswith('rag-result:')]
+    assert len(first) == 2 and first == second[::-1]
+    state = _trace_remediation_probe("""(()=>{
+      const node=key=>({dataset:{traceKey:key},open:false});const a=node('rag-result:a'),b=node('rag-result:b');a.open=true;
+      const saved=captureTraceCollapsibleDetails({querySelectorAll:()=>[a,b]});a.open=false;
+      restoreTraceCollapsibleDetails({querySelectorAll:()=>[b,a]},saved);return [b.open,a.open];
+    })()""")
+    assert state == [False, True]
+
+
+def test_trace_remediation_aggregate_preview_escapes_text_once():
+    html = _trace_remediation_probe("renderRequestResponsePresentation(traceDisplayModel({session:{action:'/transport',request:{body:'<tag>'+ 'x'.repeat(20000)},output:'<reply>'+ 'y'.repeat(20000),error:'<failure>'+ 'z'.repeat(20000)}}))")
+    assert '&amp;lt;' not in html
+    visible = ''.join(_TraceMarkupParser(html).visible)
+    assert '<tag>' in visible and '<reply>' in visible and '<failure>' in visible
+
+
+def test_trace_remediation_all_kinds_bound_escaped_aggregate_and_keep_core_values():
+    rendered = _trace_remediation_probe("""(()=>{
+      const huge='<&\"'+'x'.repeat(40000),wide=Object.fromEntries(Array.from({length:50},(_,i)=>['field'+i,{message:huge}]));
+      const output={message:'Core result',data:wide};
+      const model=(kind,payload)=>{const m=traceDisplayModel({session:payload,events:[]});m.presentation.kind=kind;return tracePrimaryFallback(renderTracePresentation(m),m.panels,m);};
+      return {
+        model_chat:model('model_chat',{request:{prompt:'Core prompt '+huge},output}),
+        agent_loop:model('agent_loop',{request:{prompt:'Core prompt '+huge},output}),
+        command:model('command',{request:{command:'Core command',args:[huge],input:wide},output:{stdout:wide,stderr:wide,exit_code:1}}),
+        review:model('review',{output:{request:'Core review',findings:Array.from({length:50},(_,i)=>({severity:'high',message:'Finding '+i+huge})),recommendation:huge}}),
+        repo:model('repo_intelligence',{action:'/api/repo',request:{operation:'Core operation',query:huge,files:Array(50).fill(huge),symbols:Array(50).fill(huge)},output:{result:'Core result '+huge,evidence:wide}}),
+        rag:model('rag_search',{request:{query:'Core query '+huge},output:{answer:'Core answer '+huge,results:Array.from({length:50},(_,i)=>({id:i,text:huge,path:'Core path '+i}))}}),
+        async:model('async_job',{request:{job_type:'Core job',progress:huge},output:{result:'Core result '+huge,error:huge}}),
+        transport:model('request_response',{request:{method:'POST',path:'/core',body:'Core body '+huge},output:'Core result '+huge,response:'Core response '+huge,error:huge}),
+        unknown:model('unknown',{request:'Core input '+huge,output:'Core output '+huge,error:huge})
+      };
+    })()""")
+    for kind, html in rendered.items():
+        parsed = _TraceMarkupParser(html)
+        assert not parsed.errors and not parsed.stack, kind
+        assert parsed.primary_length < 26000, (kind, parsed.primary_length)
+        assert len(html) < 100000, (kind, len(html))
+        assert 'Core' in ''.join(parsed.visible), kind
+        assert 'truncat' in html.lower(), kind
 
 
 def test_dashboard_modal_css_classes_present() -> None:
@@ -404,7 +587,7 @@ def test_trace_inspector_renders_structured_model_content_without_object_coercio
         )
     ]
     assert "function traceReadableMarkup(value,budget,limit=8000)" in source
-    assert "function traceHumanReadableMarkup(value)" in DASHBOARD_HTML
+    assert "function traceHumanReadableMarkup(value,limit=8000)" in DASHBOARD_HTML
     assert "safe&&typeof safe==='object'?renderAny(safe):`<pre class=\"trace-output\">${esc(traceHumanText(safe))}</pre>`" in DASHBOARD_HTML
     assert "traceReadableMarkup(safeOutput,budget,8000)" in source
 
@@ -1370,7 +1553,7 @@ def test_trace_request_response_primary_fields_and_technical_metadata() -> None:
         "session": {
             "request": {
                 "method": "POST",
-                "path": "/v1/chat",
+                "path": "/api/chat",
                 "headers": {"authorization": "HEADER_MARKER"},
             },
             "state": "complete",
@@ -1392,7 +1575,7 @@ def test_trace_request_response_primary_fields_and_technical_metadata() -> None:
     result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
     rendered = json.loads(result.stdout)
     primary = rendered["primary"]
-    for value in ["POST", "/v1/chat", "chat.completions", "42", "hello", "world"]:
+    for value in ["POST", "/api/chat", "chat.completions", "42", "hello", "world"]:
         assert value in primary
     for value in ["HEADER_MARKER", "REQUEST_ID_MARKER", "fixture-agent", "fixture-tenant", "128"]:
         assert value not in primary
@@ -3210,7 +3393,7 @@ def test_trace_display_model_bounds_events_and_raw_fields_before_sanitization() 
             "function traceRaw("
         )
     ]
-    assert "value.slice(0,limit)" in projection_source
+    assert "value.slice(0,room)" in projection_source
     assert "traceRawBoundValue(rawSession.request)" in projection_source
 
 
