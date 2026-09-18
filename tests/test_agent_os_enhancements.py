@@ -214,14 +214,28 @@ enabled = true
         assert r2["task"]["checkpoint"]["phase"] == "validation"
 
         # 3. Flat memory_record
-        r3 = post_json("/api/agent-state/memory", {"action": "record", "key": "flat_k", "value": "flat_v", "kind": "finding"})
+        r3 = post_json(
+            "/api/agent-state/memory",
+            {
+                "action": "record",
+                "key": "flat_k",
+                "value": "flat_v",
+                "kind": "finding",
+                "scope": "repository",
+                "provenance": {"root": str(tmp_path)},
+            },
+        )
         assert r3["success"] is True
         assert r3["record"]["key"] == "flat_k"
+        assert r3["record"]["provenance"]["root"] == str(tmp_path)
 
         # 4. Memory find with query
-        r4 = post_json("/api/agent-state/memory", {"action": "find", "query": "flat_v"})
+        r4 = post_json(
+            "/api/agent-state/memory",
+            {"action": "find", "query": "flat_v", "root": str(tmp_path)},
+        )
         assert r4["success"] is True
-        assert len(r4["records"]) == 1
+        assert [record["key"] for record in r4["records"]] == ["flat_k"]
     finally:
         server.shutdown()
         server.server_close()
