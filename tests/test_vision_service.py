@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from local_ai_hub.app import LocalAIApp
+from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.model_policy import ModelExecutionPolicy
 from local_ai_hub.services import LocalAIServices
 
@@ -214,7 +215,7 @@ def test_vision_stat_error_never_forwards_path_to_ollama(tmp_path: Path, monkeyp
 
 def test_vision_missing_image_artifact_is_explicit_and_safe(tmp_path: Path) -> None:
     services, runtime, _image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
-    services.artifacts.get.return_value = {
+    services.artifacts.get_binary.return_value = {
         "success": False,
         "error": "artifact not found or expired",
         "artifact_id": "img-secret-id",
@@ -232,11 +233,12 @@ def test_vision_missing_image_artifact_is_explicit_and_safe(tmp_path: Path) -> N
 
 def test_vision_rejects_truncated_image_artifact(tmp_path: Path) -> None:
     services, runtime, _image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
-    services.artifacts.get.return_value = {
+    services.artifacts.get_binary.return_value = {
         "success": True,
-        "text": "partial-base64",
-        "total_chars": 60_000,
-        "next_offset": 50_000,
+        "mime_type": "image/png",
+        "encoding": "base64",
+        "data_base64": "cGFydGlhbA==",
+        "size_bytes": 60_000,
     }
 
     result = services.vision({"image_artifact_id": "img-1"}, "t")
@@ -251,7 +253,7 @@ def test_vision_rejects_truncated_image_artifact(tmp_path: Path) -> None:
 
 def test_vision_artifact_backend_failure_is_retryable_and_safe(tmp_path: Path) -> None:
     services, runtime, _image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
-    services.artifacts.get.side_effect = RuntimeError("C:\\private\\artifact-db-secret")
+    services.artifacts.get_binary.side_effect = RuntimeError("C:\\private\\artifact-db-secret")
 
     result = services.vision({"image_artifact_id": "img-1"}, "t")
 
@@ -261,6 +263,37 @@ def test_vision_artifact_backend_failure_is_retryable_and_safe(tmp_path: Path) -
     assert "artifact-db-secret" not in result["error"]
     assert "private" not in result["error"]
     runtime.request.assert_not_called()
+
+
+def test_vision_resolves_binary_screenshot_and_bundle_text_refs(tmp_path: Path) -> None:
+    services, runtime, _image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    screenshot_id = artifacts.put_bytes(b"binary-image", "tenant", "vision-image", "image/png")
+    dom_id = artifacts.put("<main><button>Save</button></main>", "tenant", "live-dom")
+    accessibility_id = artifacts.put("button Save is reachable", "tenant", "accessibility")
+    styles_id = artifacts.put("button { color: red; }", "tenant", "computed-styles")
+    bundle_id = artifacts.put_json(
+        {
+            "schema_version": "1",
+            "screenshot": {"artifact_id": screenshot_id, "mime_type": "image/png"},
+            "dom": {"artifact_id": dom_id, "format": "live-dom", "redaction": "none"},
+            "accessibility": {"artifact_id": accessibility_id},
+            "computed_styles": {"artifact_id": styles_id, "scope": "visible-elements"},
+        },
+        "tenant",
+        "frontend_review_bundle",
+    )
+    services.artifacts = artifacts
+
+    result = services.vision({"bundle_artifact_id": bundle_id}, "tenant")
+
+    assert result["success"] is True
+    payload = runtime.request.call_args.args[1]
+    assert payload["images"] == ["YmluYXJ5LWltYWdl"]
+    assert "<main><button>Save</button></main>" in payload["prompt"]
+    assert "button Save is reachable" in payload["prompt"]
+    assert "button { color: red; }" in payload["prompt"]
+    assert result["image_artifact_id"] == screenshot_id
 
 
 def test_vision_bundle_artifact_is_resolved_with_bounded_context(tmp_path: Path) -> None:

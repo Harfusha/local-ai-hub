@@ -61,6 +61,11 @@ class ArtifactStore:
             pass
         return con
 
+    @staticmethod
+    def _tenant_identity(tenant: str) -> str:
+        """Persist stable tenant identity without retaining caller-controlled text."""
+        return hashlib.sha256(str(tenant).encode("utf-8")).hexdigest()
+
     def _init_db(self) -> None:
         if self._initialized:
             return
@@ -75,6 +80,7 @@ class ArtifactStore:
                             artifact_id TEXT PRIMARY KEY,
                             created_at REAL NOT NULL,
                             tenant TEXT NOT NULL,
+                            tenant_identity TEXT,
                             kind TEXT NOT NULL,
                             text TEXT NOT NULL DEFAULT '',
                             mime_type TEXT,
@@ -87,6 +93,7 @@ class ArtifactStore:
                     )
                     columns = {str(row[1]) for row in con.execute("PRAGMA table_info(artifacts)")}
                     for name, definition in (
+                        ("tenant_identity", "TEXT"),
                         ("mime_type", "TEXT"),
                         ("encoding", "TEXT"),
                         ("blob", "BLOB"),
@@ -96,6 +103,15 @@ class ArtifactStore:
                     ):
                         if name not in columns:
                             con.execute(f"ALTER TABLE artifacts ADD COLUMN {name} {definition}")
+                    for rowid, tenant, stored_identity in con.execute("SELECT rowid, tenant, tenant_identity FROM artifacts"):
+                        identity = str(stored_identity or "")
+                        if not re.fullmatch(r"[0-9a-f]{64}", identity):
+                            identity = self._tenant_identity(str(tenant))
+                        if str(tenant) != identity or stored_identity != identity:
+                            con.execute(
+                                "UPDATE artifacts SET tenant=?, tenant_identity=? WHERE rowid=?",
+                                (identity, identity, rowid),
+                            )
                     con.execute("CREATE INDEX IF NOT EXISTS idx_artifacts_created ON artifacts(created_at)")
                     con.commit()
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
@@ -111,12 +127,13 @@ class ArtifactStore:
     def put(self, text: str, tenant: str, kind: str) -> str:
         digest = hashlib.sha256((kind + "\0" + text).encode("utf-8")).hexdigest()[:24]
         artifact_id = f"art_{digest}"
+        tenant_identity = self._tenant_identity(tenant)
         def _do_put() -> None:
             with closing(self._connect()) as con:
                 self._purge(con)
                 con.execute(
-                    "INSERT OR REPLACE INTO artifacts(artifact_id, created_at, tenant, kind, text) VALUES(?,?,?,?,?)",
-                    (artifact_id, time.time(), tenant, kind, text),
+                    "INSERT OR REPLACE INTO artifacts(artifact_id, created_at, tenant, tenant_identity, kind, text) VALUES(?,?,?,?,?,?)",
+                    (artifact_id, time.time(), tenant_identity, tenant_identity, kind, text),
                 )
                 con.commit()
         retry_busy(_do_put, retries=4)
@@ -142,24 +159,34 @@ class ArtifactStore:
         artifact_id = "art_" + hashlib.sha256(
             (str(kind) + "\0" + normalized_mime + "\0" + checksum).encode("utf-8")
         ).hexdigest()[:24]
-        identity = {"artifact_id": artifact_id, "kind": str(kind)}
+        encoding = "base64"
+        identity = {
+            "artifact_id": artifact_id,
+            "kind": str(kind),
+            "mime_type": normalized_mime,
+            "encoding": encoding,
+            "size_bytes": len(data),
+            "checksum": checksum,
+        }
+        tenant_identity = self._tenant_identity(tenant)
 
         def _do_put() -> None:
             with closing(self._connect()) as con:
                 self._purge(con)
                 con.execute(
                     """INSERT OR REPLACE INTO artifacts(
-                        artifact_id, created_at, tenant, kind, text, mime_type,
+                        artifact_id, created_at, tenant, tenant_identity, kind, text, mime_type,
                         encoding, blob, size_bytes, checksum, identity_json
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         artifact_id,
                         time.time(),
-                        str(tenant),
+                        tenant_identity,
+                        tenant_identity,
                         str(kind),
                         "",
                         normalized_mime,
-                        "base64",
+                        encoding,
                         sqlite3.Binary(data),
                         len(data),
                         checksum,
@@ -204,8 +231,12 @@ class ArtifactStore:
             return self._binary_failure("artifact is not binary")
 
         data = bytes(row[4])
+        mime_type = str(row[2])
+        encoding = str(row[3])
         expected_size = int(row[5]) if row[5] is not None else -1
         checksum = str(row[6] or "")
+        if not mime_type.startswith("image/") or encoding != "base64":
+            return self._binary_failure("artifact integrity check failed")
         if expected_size != len(data) or checksum != hashlib.sha256(data).hexdigest():
             return self._binary_failure("artifact integrity check failed")
         try:
@@ -215,12 +246,23 @@ class ArtifactStore:
         if not isinstance(identity, dict):
             return self._binary_failure("artifact identity is invalid")
 
+        expected_identity = {
+            "artifact_id": str(row[0]),
+            "kind": str(row[1]),
+            "mime_type": mime_type,
+            "encoding": encoding,
+            "size_bytes": expected_size,
+            "checksum": checksum,
+        }
+        if any(identity.get(key) != value for key, value in expected_identity.items()):
+            return self._binary_failure("artifact integrity check failed")
+
         return {
             "success": True,
             "artifact_id": str(row[0]),
             "kind": str(row[1]),
-            "mime_type": str(row[2]),
-            "encoding": str(row[3]),
+            "mime_type": mime_type,
+            "encoding": encoding,
             "size_bytes": len(data),
             "checksum": checksum,
             "sha256": checksum,

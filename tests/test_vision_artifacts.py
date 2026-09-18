@@ -4,6 +4,8 @@ import base64
 import hashlib
 import json
 import sqlite3
+import threading
+import urllib.request
 from contextlib import closing
 from pathlib import Path
 
@@ -41,7 +43,14 @@ def test_binary_image_round_trips_with_complete_identity_metadata(tmp_path: Path
         "size_bytes": len(PNG),
         "checksum": hashlib.sha256(PNG).hexdigest(),
         "sha256": hashlib.sha256(PNG).hexdigest(),
-        "identity": {"artifact_id": artifact_id, "kind": "vision-image"},
+        "identity": {
+            "artifact_id": artifact_id,
+            "kind": "vision-image",
+            "mime_type": "image/png",
+            "encoding": "base64",
+            "size_bytes": len(PNG),
+            "checksum": hashlib.sha256(PNG).hexdigest(),
+        },
         "data_base64": base64.b64encode(PNG).decode("ascii"),
     }
 
@@ -130,6 +139,110 @@ def test_existing_text_schema_is_migrated_without_losing_text_artifacts(tmp_path
     result = store.get("art_legacy")
     assert result["success"] is True
     assert result["text"] == "legacy"
+
+    with closing(sqlite3.connect(db_path)) as connection:
+        stored_tenant = connection.execute("SELECT tenant FROM artifacts WHERE artifact_id=?", ("art_legacy",)).fetchone()[0]
+    assert stored_tenant != "tenant"
+    assert len(stored_tenant) == 64
+
+
+def test_new_text_and_binary_artifacts_store_only_tenant_identity(tmp_path: Path) -> None:
+    store = ArtifactStore(tmp_path)
+    sensitive_tenant = r"C:\Users\secret\auth-profile"
+
+    text_id = store.put("response", sensitive_tenant, "vision-output")
+    image_id = store.put_bytes(PNG, sensitive_tenant, "vision-image", "image/png")
+
+    with closing(sqlite3.connect(store.path)) as connection:
+        rows = connection.execute(
+            "SELECT tenant, tenant_identity FROM artifacts WHERE artifact_id IN (?, ?) ORDER BY artifact_id",
+            (text_id, image_id),
+        ).fetchall()
+    stored_tenants = [str(row[0]) for row in rows]
+    stored_values = [str(value) for row in rows for value in row]
+    assert sensitive_tenant not in json.dumps(stored_values)
+    assert all(len(value) == 64 for value in stored_values)
+    assert all(value == hashlib.sha256(sensitive_tenant.encode()).hexdigest() for value in stored_values)
+
+    ArtifactStore(tmp_path)
+    with closing(sqlite3.connect(store.path)) as connection:
+        reopened_values = [row[0] for row in connection.execute("SELECT tenant FROM artifacts").fetchall()]
+    assert reopened_values == stored_tenants
+
+
+@pytest.mark.parametrize("column,value", [
+    ("mime_type", "text/plain"),
+    ("size_bytes", 999),
+    ("checksum", "0" * 64),
+    ("identity_json", '{"artifact_id":"art_wrong","kind":"vision-image"}'),
+])
+def test_binary_integrity_rejects_mismatched_stored_identity(tmp_path: Path, column: str, value: object) -> None:
+    store = ArtifactStore(tmp_path)
+    artifact_id = store.put_bytes(PNG, "tenant", "vision-image", "image/png")
+
+    with closing(sqlite3.connect(store.path)) as connection:
+        connection.execute(f"UPDATE artifacts SET {column}=? WHERE artifact_id=?", (value, artifact_id))
+        connection.commit()
+
+    result = store.get_binary(artifact_id)
+    assert result == {"success": False, "error": "artifact integrity check failed"}
+
+
+def test_http_binary_artifact_get_returns_complete_payload(tmp_path: Path) -> None:
+    from local_ai_hub import http_server
+    from local_ai_hub.app import LocalAIApp
+
+    state_dir = tmp_path / "state"
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state_dir.as_posix()}"\n',
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(config_path))
+    artifact_id = app.artifacts.put_bytes(PNG, "tenant", "vision-image", "image/png")
+    previous_app = http_server.APP
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/artifact/get",
+            data=json.dumps({"artifact_id": artifact_id, "binary": True}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        assert payload["success"] is True
+        assert base64.b64decode(payload["data_base64"]) == PNG
+    finally:
+        server.shutdown()
+        server.server_close()
+        http_server.APP = previous_app
+        app.close()
+
+
+def test_mcp_binary_artifact_response_is_metadata_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    from local_ai_hub import mcp_server
+
+    monkeypatch.setattr(
+        mcp_server.CLIENT,
+        "post",
+        lambda *_args, **_kwargs: {
+            "success": True,
+            "artifact_id": "art_image",
+            "mime_type": "image/png",
+            "size_bytes": len(PNG),
+            "data_base64": base64.b64encode(PNG).decode("ascii"),
+        },
+    )
+
+    result = mcp_server.local_ai_artifact("art_image", binary=True)
+
+    assert result["success"] is True
+    assert "data_base64" not in result
+    assert result["binary_payload"] == "available through /api/artifact/get with binary=true"
 
 
 def test_json_bundle_size_is_bounded(tmp_path: Path) -> None:
