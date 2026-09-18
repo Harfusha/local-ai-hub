@@ -822,6 +822,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "accessibility_artifact_id": {"type": "string", "default": ""},
                     "computed_styles_artifact_id": {"type": "string", "default": ""},
                     "runtime_artifact_id": {"type": "string", "default": ""},
+                    "network_artifact_id": {"type": "string", "default": ""},
                     "source": {"type": "string", "default": ""},
                     "cloud_fallback": {"type": "boolean", "default": False},
                     "dom": {"type": ["string", "object"]},

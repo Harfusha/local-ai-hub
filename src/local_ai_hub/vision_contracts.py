@@ -39,6 +39,9 @@ class VisionFinding:
     category: str
     problem: str
     confidence: float
+    observed: str = ""
+    hypothesized: str = ""
+    uncertainty: tuple[str, ...] = ()
     element_ids: tuple[str, ...] = ()
     bbox: tuple[float, float, float, float] | None = None
     evidence: tuple[str, ...] = ()
@@ -68,6 +71,7 @@ class FrontendReviewBundle:
     accessibility_artifact_id: str = ""
     computed_styles_artifact_id: str = ""
     runtime_artifact_id: str = ""
+    network_artifact_id: str = ""
     viewport: dict[str, int | float] = field(default_factory=dict)
     page: dict[str, str] = field(default_factory=dict)
     dom_redaction: str = "none"
@@ -84,6 +88,9 @@ class FrontendReviewBundle:
         accessibility = payload.get("accessibility") or {}
         styles = payload.get("computed_styles") or {}
         runtime = payload.get("runtime") or {}
+        dom_redaction = dom.get("redaction", "none") if isinstance(dom, dict) else "none"
+        if dom_redaction != "none":
+            raise ValueError("dom redaction must be explicitly none; semantic DOM redaction is not allowed")
         return cls(
             schema_version=str(payload.get("schema_version", "1")),
             source=str(payload.get("source", "upload")),
@@ -96,6 +103,7 @@ class FrontendReviewBundle:
             runtime_artifact_id=str(
                 runtime.get("artifact_id", runtime.get("console_artifact_id", ""))
             ),
+            network_artifact_id=str(runtime.get("network_artifact_id", "")),
             viewport=dict(payload.get("viewport") or {}),
             page=dict(payload.get("page") or {}),
             dom_redaction=str(dom.get("redaction", "none")),
@@ -122,7 +130,9 @@ def _coder_error(message: str) -> dict[str, Any]:
     }
 
 
-def parse_vision_result(raw: str) -> VisionParseResult:
+def parse_vision_result(
+    raw: str, *, require_observation_fields: bool = False
+) -> VisionParseResult:
     try:
         payload = json.loads(_json_text(raw))
         if not isinstance(payload, dict) or not isinstance(payload.get("findings"), list):
@@ -136,6 +146,12 @@ def parse_vision_result(raw: str) -> VisionParseResult:
                 for name in ("id", "problem", "confidence")
                 if name not in item or item[name] in (None, "")
             ]
+            if require_observation_fields:
+                missing.extend(
+                    name
+                    for name in ("observed", "hypothesized", "uncertainty")
+                    if name not in item or item[name] in (None, "")
+                )
             if missing:
                 return _terminal_error(
                     "finding missing required fields: " + ", ".join(missing)
@@ -146,6 +162,9 @@ def parse_vision_result(raw: str) -> VisionParseResult:
                 return _terminal_error(f"invalid severity: {severity}")
             if category not in CATEGORIES:
                 return _terminal_error(f"invalid category: {category}")
+            for field_name in ("observed", "hypothesized"):
+                if field_name in item and not isinstance(item[field_name], str):
+                    return _terminal_error(f"{field_name} must be a string")
             confidence = float(item.get("confidence", 0.0))
             if not math.isfinite(confidence):
                 return _terminal_error("confidence must be finite")
@@ -156,7 +175,7 @@ def parse_vision_result(raw: str) -> VisionParseResult:
                 bbox = tuple(float(value) for value in bbox)
                 if not all(math.isfinite(value) for value in bbox):
                     return _terminal_error("bbox coordinates must be finite")
-            for field_name in ("element_ids", "evidence"):
+            for field_name in ("element_ids", "evidence", "uncertainty"):
                 value = item.get(field_name, [])
                 if not isinstance(value, list) or not all(
                     isinstance(entry, str) for entry in value
@@ -169,6 +188,9 @@ def parse_vision_result(raw: str) -> VisionParseResult:
                     category=category,
                     problem=str(item.get("problem", "")),
                     confidence=max(0.0, min(1.0, confidence)),
+                    observed=str(item.get("observed", item.get("problem", ""))),
+                    hypothesized=str(item.get("hypothesized", item.get("likely_cause", ""))),
+                    uncertainty=tuple(str(value) for value in item.get("uncertainty", [])),
                     element_ids=tuple(str(value) for value in item.get("element_ids", [])),
                     bbox=bbox,
                     evidence=tuple(str(value) for value in item.get("evidence", [])),
@@ -205,6 +227,9 @@ def bound_vision_result(result: VisionParseResult) -> VisionParseResult:
             finding,
             finding_id=bound(finding.finding_id),
             problem=bound(finding.problem),
+            observed=bound(finding.observed),
+            hypothesized=bound(finding.hypothesized),
+            uncertainty=tuple(bound(value) for value in finding.uncertainty[:VISION_MAX_LIST_ITEMS]),
             element_ids=tuple(bound(value) for value in finding.element_ids[:VISION_MAX_LIST_ITEMS]),
             evidence=tuple(bound(value) for value in finding.evidence[:VISION_MAX_LIST_ITEMS]),
             likely_cause=bound(finding.likely_cause),

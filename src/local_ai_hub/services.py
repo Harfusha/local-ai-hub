@@ -1397,6 +1397,7 @@ class LocalAIServices:
                 args.get("runtime_artifact_id") or args.get("runtime_context_artifact_id") or ""
             ).strip(),
         }
+        network_artifact_id = str(args.get("network_artifact_id") or "").strip()
 
         def resolve_artifact(artifact_id: str, max_chars: int) -> tuple[str, dict[str, Any] | None]:
             try:
@@ -1499,11 +1500,37 @@ class LocalAIServices:
                 image_artifact_id = str(screenshot_ref)
             for field_name in ("dom", "accessibility", "computed_styles", "runtime"):
                 value = resolved.get(field_name)
+                if field_name == "runtime":
+                    runtime_refs: dict[str, str] = {}
+                    if isinstance(value, dict):
+                        for ref_key in ("artifact_id", "console_artifact_id", "network_artifact_id"):
+                            ref = str(value.get(ref_key, "")).strip()
+                            if ref:
+                                runtime_refs[ref_key] = ref
+                    for ref_key in ("runtime_artifact_id", "network_artifact_id"):
+                        ref = str(resolved.get(ref_key, "")).strip()
+                        if ref:
+                            runtime_refs.setdefault(
+                                "console_artifact_id" if ref_key == "runtime_artifact_id" else ref_key,
+                                ref,
+                            )
+                    if runtime_refs:
+                        runtime_value = dict(value) if isinstance(value, dict) else {}
+                        for ref_key, ref in runtime_refs.items():
+                            content, error = resolve_artifact(ref, VISION_MAX_BUNDLE_CHARS)
+                            if error:
+                                return "", error
+                            content_key = {
+                                "artifact_id": "content",
+                                "console_artifact_id": "console_content",
+                                "network_artifact_id": "network_content",
+                            }[ref_key]
+                            runtime_value[content_key] = content
+                        resolved[field_name] = runtime_value
+                    continue
                 reference = value.get("artifact_id", "") if isinstance(value, dict) else ""
                 if not reference:
                     reference = resolved.get(f"{field_name}_artifact_id", "")
-                if field_name == "runtime" and not reference and isinstance(value, dict):
-                    reference = value.get("console_artifact_id", "")
                 if not reference:
                     continue
                 content, error = resolve_artifact(str(reference), VISION_MAX_BUNDLE_CHARS)
@@ -1587,7 +1614,18 @@ class LocalAIServices:
                 context_value = parse_context_value(field_name, content)
             except FrontendReviewError as exc:
                 return exc.as_result()
-            frontend_bundle[field_name] = {"artifact_id": artifact_id, **context_value}
+            ref_key = "console_artifact_id" if field_name == "runtime" else "artifact_id"
+            frontend_bundle[field_name] = {ref_key: artifact_id, **context_value}
+        if network_artifact_id:
+            content, error = resolve_artifact(network_artifact_id, VISION_MAX_BUNDLE_CHARS)
+            if error:
+                return error
+            runtime_value = frontend_bundle.get("runtime")
+            runtime_value = dict(runtime_value) if isinstance(runtime_value, dict) else {}
+            runtime_value.update(
+                {"network_artifact_id": network_artifact_id, "network_content": content}
+            )
+            frontend_bundle["runtime"] = runtime_value
 
         inline_aliases = {
             "dom": ("dom", "html"),
@@ -1674,7 +1712,8 @@ class LocalAIServices:
             "{\"summary\": string, \"findings\": [{\"id\": string, "
             "\"severity\": \"blocker|high|medium|low|info\", "
             "\"category\": \"layout|responsive|accessibility|interaction|visual-regression|runtime\", "
-            "\"problem\": string, \"confidence\": number, "
+            "\"problem\": string, \"observed\": string, \"hypothesized\": string, "
+            "\"uncertainty\": [string], \"confidence\": number, "
             "\"element_ids\": [string], \"bbox\": [number, number, number, number] or null, "
             "\"evidence\": [string], \"likely_cause\": string, \"fix_hint\": string, "
             "\"needs_runtime_check\": boolean}], "
@@ -1855,7 +1894,9 @@ class LocalAIServices:
                 raw_artifact_id = str(self.artifacts.put(raw_output, tenant, "vision-output"))
             except Exception:
                 pass
-            parsed = parse_vision_result(raw_output)
+            parsed = parse_vision_result(
+                raw_output, require_observation_fields=model_context is not None
+            )
             if parsed.terminal:
                 return {
                     "success": False,

@@ -30,6 +30,32 @@ def test_bundle_rejects_missing_screenshot() -> None:
         )
 
 
+@pytest.mark.parametrize("redaction", ["content", "semantic", "pii", ""])
+def test_bundle_rejects_semantic_dom_redaction(redaction: str) -> None:
+    with pytest.raises(ValueError, match="redaction"):
+        FrontendReviewBundle.from_payload(
+            {
+                "screenshot": {"artifact_id": "art_img", "mime_type": "image/png"},
+                "dom": {"redaction": redaction},
+            }
+        )
+
+
+def test_bundle_forwards_network_runtime_artifact_id() -> None:
+    bundle = FrontendReviewBundle.from_payload(
+        {
+            "screenshot": {"artifact_id": "art_img", "mime_type": "image/png"},
+            "runtime": {
+                "console_artifact_id": "console-1",
+                "network_artifact_id": "network-1",
+            },
+        }
+    )
+
+    assert bundle.runtime_artifact_id == "console-1"
+    assert bundle.network_artifact_id == "network-1"
+
+
 def test_vision_result_accepts_fenced_json_and_clamps_confidence() -> None:
     result = parse_vision_result(
         "```json\n"
@@ -41,6 +67,62 @@ def test_vision_result_accepts_fenced_json_and_clamps_confidence() -> None:
 
     assert result.findings[0].finding_id == "f1"
     assert result.findings[0].confidence == 1.0
+
+
+def test_dom_vision_result_preserves_observation_hypothesis_uncertainty() -> None:
+    result = parse_vision_result(
+        '{"findings":[{"id":"f1","severity":"high","category":"layout",'
+        '"problem":"CTA hidden","observed":"display is none",'
+        '"hypothesized":"hydration rule hides CTA",'
+        '"uncertainty":["runtime state not captured"],"confidence":0.8,'
+        '"evidence":["computed style"]}]}',
+        require_observation_fields=True,
+    )
+
+    assert result.terminal is False
+    finding = result.findings[0]
+    assert finding.observed == "display is none"
+    assert finding.hypothesized == "hydration rule hides CTA"
+    assert finding.uncertainty == ("runtime state not captured",)
+    assert finding.evidence == ("computed style",)
+
+
+@pytest.mark.parametrize("missing", ["observed", "hypothesized", "uncertainty"])
+def test_dom_vision_result_rejects_missing_observation_contract(missing: str) -> None:
+    finding = {
+        "id": "f1",
+        "severity": "high",
+        "category": "layout",
+        "problem": "CTA hidden",
+        "observed": "display is none",
+        "hypothesized": "hydration rule hides CTA",
+        "uncertainty": ["runtime state not captured"],
+        "confidence": 0.8,
+    }
+    del finding[missing]
+
+    result = parse_vision_result(
+        '{"findings":[' + str(finding).replace("'", '"') + "]}",
+        require_observation_fields=True,
+    )
+
+    assert result.terminal is True
+    assert missing in result.error["message"]
+
+
+@pytest.mark.parametrize("field", ["observed", "hypothesized"])
+def test_dom_vision_result_rejects_non_string_observation_fields(field: str) -> None:
+    result = parse_vision_result(
+        '{\"findings\":[{\"id\":\"f1\",\"severity\":\"high\",\"category\":\"layout\",'
+        '\"problem\":\"CTA hidden\",\"observed\":\"display is none\",'
+        '\"hypothesized\":\"hydration rule hides CTA\",'
+        '\"uncertainty\":[],\"confidence\":0.8,'
+        '\"' + field + '\":42}]}',
+        require_observation_fields=True,
+    )
+
+    assert result.terminal is True
+    assert field in result.error["message"]
 
 
 @pytest.mark.parametrize("missing", ["id", "problem", "confidence"])
