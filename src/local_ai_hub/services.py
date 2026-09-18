@@ -1472,7 +1472,7 @@ class LocalAIServices:
         try:
             capability_response = self.runtime.request(
                 "/api/show",
-                {"model": model},
+                {"name": model},
                 timeout=min(timeout, 1.0),
             )
             if not isinstance(capability_response, dict):
