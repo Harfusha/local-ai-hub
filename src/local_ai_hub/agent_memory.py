@@ -92,13 +92,20 @@ def _memory_conflict_context_matches(left: MemoryRecord, right: MemoryRecord) ->
     right_scope = right.scope.value if hasattr(right.scope, "value") else str(right.scope)
     if left_scope != right_scope or left.scope_id != right.scope_id:
         return False
-    if left_scope != AgentScope.REPOSITORY.value:
-        return True
-    left_root = str((left.provenance or {}).get("root") or "")
-    right_root = str((right.provenance or {}).get("root") or "")
-    if not left_root or not right_root:
-        return not left_root and not right_root
-    return _normalise_scope_root(left_root) == _normalise_scope_root(right_root)
+    left_provenance = left.provenance or {}
+    right_provenance = right.provenance or {}
+    left_root = str(left_provenance.get("root") or "")
+    right_root = str(right_provenance.get("root") or "")
+    if bool(left_root) != bool(right_root):
+        return False
+    if left_root and _normalise_scope_root(left_root) != _normalise_scope_root(right_root):
+        return False
+    for field in ("repository_id", "tenant", "task_id", "session_id", "clone_id", "worktree_id", "branch"):
+        left_value = str(left_provenance.get(field) or "")
+        right_value = str(right_provenance.get(field) or "")
+        if bool(left_value) != bool(right_value) or (left_value and left_value != right_value):
+            return False
+    return True
 
 
 _CONTEXT_ROOT_VALUE_SQL = (
@@ -109,6 +116,15 @@ _CONTEXT_ROOT_SQL = (
     "CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.root'))"
 )
 _MAX_STALE_CHANGED_PATHS = 32
+MAX_MEMORY_QUERY_LIMIT = 100
+
+
+def _bounded_memory_limit(limit: int, cap: int = MAX_MEMORY_QUERY_LIMIT) -> int:
+    try:
+        value = int(limit)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("memory limit must be an integer") from exc
+    return max(1, min(value, max(1, int(cap))))
 
 
 def _context_scope_sql(
@@ -379,6 +395,8 @@ class MemoryRecord:
 
 
 class MemoryStore:
+    max_query_limit = MAX_MEMORY_QUERY_LIMIT
+
     def __init__(self, state_store: AgentStateStore) -> None:
         self.state_store = state_store
         self._lock = threading.RLock()
@@ -553,37 +571,11 @@ class MemoryStore:
             if target_record.status not in (MemoryStatus.QUARANTINED, MemoryStatus.REJECTED):
                 target_record = target_record.with_status(MemoryStatus.CANDIDATE)
 
-        # Check for conflicts among high-confidence records
-        if target_record.status in (MemoryStatus.ACTIVE, MemoryStatus.CONFIRMED):
-            target_provenance = target_record.provenance or {}
-            target_scope_value = target_record.scope.value if hasattr(target_record.scope, "value") else str(target_record.scope)
-            existing_records = self.find(
-                scope=target_record.scope,
-                key=target_record.key,
-                scope_id=target_record.scope_id,
-                root=target_provenance.get("root") if target_scope_value == AgentScope.REPOSITORY.value else None,
-                repository_id=target_provenance.get("repository_id") if target_scope_value == AgentScope.REPOSITORY.value else None,
-                tenant=target_provenance.get("tenant") if target_scope_value == AgentScope.SESSION.value else None,
-            )
-            for ex in existing_records:
-                if not _memory_conflict_context_matches(ex, target_record):
-                    continue
-                if ex.status in (MemoryStatus.ACTIVE, MemoryStatus.CONFIRMED):
-                    if ex.confidence >= 0.8 and target_record.confidence >= 0.8 and ex.value != target_record.value:
-                        target_record = target_record.with_status(
-                            MemoryStatus.QUARANTINED,
-                            reason=f"Conflicting high-confidence record exists: {ex.record_id}",
-                        )
-                        break
-
-        event = AgentEvent.create(
-            stream_id=f"memory:{target_record.scope.value}:{target_record.key or target_record.record_id}",
-            kind="memory.recorded",
-            payload=target_record.to_dict(),
-            idempotency_key=idempotency_key or f"rec_{target_record.record_id}",
+        saved_record, duplicate, _ = self._record_event_and_save(
+            target_record,
             actor=actor,
+            idempotency_key=idempotency_key,
         )
-        saved_record, duplicate, _ = self._record_event_and_save(target_record, event)
         if not duplicate:
             self._auto_link_record(saved_record, actor=actor)
         return saved_record
@@ -591,28 +583,26 @@ class MemoryStore:
     def _record_event_and_save(
         self,
         record: MemoryRecord,
-        event: AgentEvent,
+        *,
+        actor: str,
+        idempotency_key: str,
     ) -> tuple[MemoryRecord, bool, AgentEvent | None]:
         if not self.state_store.enabled:
             self._save_record(record)
             return record, False, None
         self._init_table()
-        payload_bytes = json_dumps(event.payload, separators=(",", ":")).encode("utf-8")
-        if len(payload_bytes) > self.state_store.max_payload_bytes:
-            raise ValueError(
-                f"payload exceeds maximum allowed {self.state_store.max_payload_bytes} bytes (got {len(payload_bytes)})"
-            )
-
         def _do_record() -> tuple[MemoryRecord, bool, AgentEvent | None]:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
                 con.execute("BEGIN IMMEDIATE")
+                stream_id = f"memory:{record.scope.value}:{record.key or record.record_id}"
+                event_idempotency_key = idempotency_key or f"rec_{record.record_id}"
                 existing = con.execute(
                     """
                     SELECT stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at
                     FROM agent_events WHERE stream_id = ? AND idempotency_key = ?
                     """,
-                    (event.stream_id, event.idempotency_key),
+                    (stream_id, event_idempotency_key),
                 ).fetchone()
                 if existing:
                     existing_event = AgentEvent.from_row(existing)
@@ -634,6 +624,19 @@ class MemoryStore:
                     con.execute("COMMIT")
                     return existing_record, True, None
 
+                final_record = self._resolve_conflict_in_transaction(con, record)
+                event = AgentEvent.create(
+                    stream_id=stream_id,
+                    kind="memory.recorded",
+                    payload=final_record.to_dict(),
+                    idempotency_key=event_idempotency_key,
+                    actor=actor,
+                )
+                payload_bytes = json_dumps(event.payload, separators=(",", ":")).encode("utf-8")
+                if len(payload_bytes) > self.state_store.max_payload_bytes:
+                    raise ValueError(
+                        f"payload exceeds maximum allowed {self.state_store.max_payload_bytes} bytes (got {len(payload_bytes)})"
+                    )
                 seq_row = con.execute(
                     "SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_events WHERE stream_id = ?",
                     (event.stream_id,),
@@ -658,9 +661,9 @@ class MemoryStore:
                         event.created_at,
                     ),
                 )
-                self._save_record_row(con, record)
+                self._save_record_row(con, final_record)
                 con.execute("COMMIT")
-                return record, False, event.with_seq(new_seq)
+                return final_record, False, event.with_seq(new_seq)
             except Exception:
                 try:
                     con.execute("ROLLBACK")
@@ -678,6 +681,40 @@ class MemoryStore:
         if persisted_event is not None:
             self.state_store._publish(persisted_event)
         return saved_record, duplicate, persisted_event
+
+    def _resolve_conflict_in_transaction(self, con: Any, record: MemoryRecord) -> MemoryRecord:
+        """Resolve high-confidence contradictions while write lock is held."""
+        if record.status not in (MemoryStatus.ACTIVE, MemoryStatus.CONFIRMED):
+            return record
+        scope_value = record.scope.value if hasattr(record.scope, "value") else str(record.scope)
+        rows = con.execute(
+            """
+            SELECT record_id, kind, scope, scope_id, key, value, status, confidence, source,
+                   evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id,
+                   quarantine_reason, provenance, created_at, updated_at, expires_at
+            FROM agent_memory_records
+            WHERE scope = ? AND scope_id = ? AND key = ?
+              AND status IN (?, ?)
+            ORDER BY updated_at DESC
+            """,
+            (
+                scope_value,
+                record.scope_id,
+                record.key,
+                MemoryStatus.ACTIVE.value,
+                MemoryStatus.CONFIRMED.value,
+            ),
+        ).fetchall()
+        for row in rows:
+            existing = self._row_to_record(row)
+            if not _memory_conflict_context_matches(existing, record):
+                continue
+            if existing.confidence >= 0.8 and record.confidence >= 0.8 and existing.value != record.value:
+                return record.with_status(
+                    MemoryStatus.QUARANTINED,
+                    reason=f"Conflicting high-confidence record exists: {existing.record_id}",
+                )
+        return record
 
     def _auto_link_record(self, record: MemoryRecord, actor: str = "agent") -> None:
         """Automatically create entity relations for recorded memory items."""
@@ -1161,7 +1198,7 @@ class MemoryStore:
             sql += f" AND kind IN ({placeholders})"
             params.extend(kinds)
         sql += " ORDER BY updated_at DESC LIMIT ?"
-        params.append(max(1, min(20, int(limit))))
+        params.append(max(1, min(20, _bounded_memory_limit(limit, 20))))
         con = connect_sqlite(self.state_store.db_path)
         try:
             con.create_function(
@@ -1348,7 +1385,7 @@ class MemoryStore:
             params.extend([pat, pat])
 
         sql += " ORDER BY updated_at DESC LIMIT ?"
-        params.append(max(1, int(limit)))
+        params.append(_bounded_memory_limit(limit, self.max_query_limit))
 
         con = connect_sqlite(self.state_store.db_path)
         try:
