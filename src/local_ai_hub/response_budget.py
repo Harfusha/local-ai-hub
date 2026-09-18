@@ -19,6 +19,7 @@ _POINTER_KEYS = (
     "action", "task_id", "work_id", "cache_hit", "coalesced", "in_progress",
     "terminal", "retryable", "artifact_id", "artifact_ids", "evidence_id",
     "evidence_ids", "changed_paths", "affected_tests", "summary", "text",
+    "context_id", "repo_revision", "stale", "warnings", "delta_from", "since_hash",
 )
 
 
@@ -29,23 +30,37 @@ def _safe_limit(value: Any, default: int) -> int:
         return default
 
 
-def _pointer_envelope(value: Any, *, max_tokens: int, reuse_key: str = "", reused: bool = False) -> dict[str, Any]:
+def _bounded_pointer_item(value: Any, *, budget_chars: int, depth: int = 0) -> Any:
+    if depth > 3:
+        return "[…depth…]"
+    if isinstance(value, str):
+        return syntax_aware_truncate(value, budget_chars)
+    if isinstance(value, list):
+        return [_bounded_pointer_item(item, budget_chars=budget_chars, depth=depth + 1) for item in value[:8]]
+    if isinstance(value, dict):
+        return {
+            str(key)[:160]: _bounded_pointer_item(item, budget_chars=budget_chars, depth=depth + 1)
+            for key, item in list(value.items())[:8]
+        }
+    return value
+
+
+def _pointer_envelope(
+    value: Any,
+    *,
+    max_tokens: int,
+    reuse_key: str = "",
+    reused: bool = False,
+    protected_keys: tuple[str, ...] = (),
+) -> dict[str, Any]:
     """Keep status, IDs and a bounded summary while omitting bulk detail."""
     budget_chars = max(96, max_tokens * 3)
     out: dict[str, Any] = {}
     if isinstance(value, dict):
-        for key in _POINTER_KEYS:
+        for key in dict.fromkeys((*_POINTER_KEYS, *protected_keys)):
             if key not in value:
                 continue
-            item = value[key]
-            if isinstance(item, str):
-                out[key] = syntax_aware_truncate(item, budget_chars)
-            elif isinstance(item, list):
-                out[key] = item[:8]
-            elif isinstance(item, dict):
-                out[key] = {k: item[k] for k in list(item)[:8]}
-            else:
-                out[key] = item
+            out[key] = _bounded_pointer_item(value[key], budget_chars=budget_chars)
     elif isinstance(value, str):
         out["text"] = syntax_aware_truncate(value, budget_chars)
     else:
@@ -57,31 +72,47 @@ def _pointer_envelope(value: Any, *, max_tokens: int, reuse_key: str = "", reuse
     return out
 
 
-def _fit_to_tokens(value: dict[str, Any], max_tokens: int) -> dict[str, Any]:
+def _fit_to_tokens(
+    value: dict[str, Any], max_tokens: int, *, protected_keys: tuple[str, ...] = ()
+) -> dict[str, Any]:
     """Drop optional envelope fields until the aggregate estimate fits."""
+    protected = set(protected_keys)
     optional = (
         "text", "message", "warning", "changed_paths", "affected_tests",
         "evidence_ids", "evidence_id", "artifact_ids", "summary",
     )
     for key in optional:
+        if key in protected:
+            continue
         if json_tokens(value) <= max_tokens:
             break
         value.pop(key, None)
     if json_tokens(value) > max_tokens:
         for key, item in list(value.items()):
-            if key == "response_budget" or not isinstance(item, str):
+            if key == "response_budget" or key in protected or not isinstance(item, str):
                 continue
             value[key] = syntax_aware_truncate(item, max(32, max_tokens * 2))
             if json_tokens(value) <= max_tokens:
                 break
     if json_tokens(value) > max_tokens:
-        keep = {key: value[key] for key in ("success", "status", "error", "artifact_id", "reuse_key", "reused", "response_budget") if key in value}
+        keep_keys = (
+            "success", "status", "error", "artifact_id", "reuse_key", "reused",
+            "response_budget", *protected_keys,
+        )
+        keep = {key: value[key] for key in dict.fromkeys(keep_keys) if key in value}
         value.clear()
         value.update(keep)
     return value
 
 
-def _with_budget_meta(value: dict[str, Any], *, requested: int, original: int, reused: bool = False) -> dict[str, Any]:
+def _with_budget_meta(
+    value: dict[str, Any],
+    *,
+    requested: int,
+    original: int,
+    reused: bool = False,
+    protected_keys: tuple[str, ...] = (),
+) -> dict[str, Any]:
     value["response_budget"] = {
         "requested_tokens": requested,
         "original_tokens": original,
@@ -89,9 +120,31 @@ def _with_budget_meta(value: dict[str, Any], *, requested: int, original: int, r
         "truncated": True,
         "reused": reused,
     }
-    _fit_to_tokens(value, requested)
+    _fit_to_tokens(value, requested, protected_keys=protected_keys)
     value["response_budget"]["returned_tokens"] = min(requested, json_tokens(value))
     return value
+
+
+def _budget_rejection(*, requested: int, original: int) -> dict[str, Any]:
+    """Return bounded deterministic error when required metadata cannot fit."""
+    value: dict[str, Any] = {
+        "success": False,
+        "status_code": 400,
+        "terminal": True,
+        "retryable": False,
+        "error": "max_response_tokens too small for authoritative context envelope",
+    }
+    value["response_budget"] = {
+        "requested_tokens": requested,
+        "original_tokens": original,
+        "returned_tokens": 0,
+        "truncated": True,
+        "rejected": True,
+    }
+    if json_tokens(value) <= requested:
+        value["response_budget"]["returned_tokens"] = json_tokens(value)
+        return value
+    return {"success": False, "error": "max_response_tokens too small"}
 
 
 def result_id(value: Any) -> str:
@@ -129,13 +182,29 @@ def budget_response(
     artifact_backed: bool = True,
     reuse_key: str = "",
     reuse_only: bool = False,
+    protected_keys: tuple[str, ...] = (),
 ) -> Any:
     """Apply a hard aggregate estimate to an already projected MCP value."""
     requested = _safe_limit(max_tokens, 1200)
     original = json_tokens(value)
     if reuse_only:
-        envelope = _pointer_envelope(value, max_tokens=requested, reuse_key=reuse_key, reused=True)
-        return _with_budget_meta(envelope, requested=requested, original=original, reused=True)
+        envelope = _pointer_envelope(
+            value,
+            max_tokens=requested,
+            reuse_key=reuse_key,
+            reused=True,
+            protected_keys=protected_keys,
+        )
+        result = _with_budget_meta(
+            envelope,
+            requested=requested,
+            original=original,
+            reused=True,
+            protected_keys=protected_keys,
+        )
+        if protected_keys and json_tokens(result) > requested:
+            return _budget_rejection(requested=requested, original=original)
+        return result
     if original <= requested:
         return value
 
@@ -152,13 +221,38 @@ def budget_response(
     candidates = [
         compact_result(value, max_text_chars=text_chars, max_evidence=evidence, max_items=items),
         compact_result(value, max_text_chars=max(180, text_chars // 2), max_evidence=max(1, evidence // 2), max_items=max(1, items // 2)),
-        _pointer_envelope(value, max_tokens=requested, reuse_key=reuse_key),
+        _pointer_envelope(
+            value,
+            max_tokens=requested,
+            reuse_key=reuse_key,
+            protected_keys=protected_keys,
+        ),
     ]
     for candidate in candidates:
         if json_tokens(candidate) <= requested:
             if isinstance(candidate, dict):
-                return _with_budget_meta(candidate, requested=requested, original=original)
+                result = _with_budget_meta(
+                    candidate,
+                    requested=requested,
+                    original=original,
+                    protected_keys=protected_keys,
+                )
+                if json_tokens(result) <= requested or not protected_keys:
+                    return result
             return candidate
 
-    envelope = _pointer_envelope(value, max_tokens=max(64, requested // 2), reuse_key=reuse_key)
-    return _with_budget_meta(envelope, requested=requested, original=original)
+    envelope = _pointer_envelope(
+        value,
+        max_tokens=max(64, requested // 2),
+        reuse_key=reuse_key,
+        protected_keys=protected_keys,
+    )
+    result = _with_budget_meta(
+        envelope,
+        requested=requested,
+        original=original,
+        protected_keys=protected_keys,
+    )
+    if protected_keys and json_tokens(result) > requested:
+        return _budget_rejection(requested=requested, original=original)
+    return result
