@@ -166,7 +166,7 @@ class TestGlobalPolicyGeneration:
     def test_disabled_local_tasks_do_not_claim_mandatory_local_execution(self):
         policy = generate_global_policy({"features": {"tasks": False}})
 
-        assert "Local model inference is disabled" in policy
+        assert "local_ai_task" not in policy
         assert "must call `local_ai_task` before cloud reasoning" not in policy
         assert "mandatory local execution" not in policy
 
