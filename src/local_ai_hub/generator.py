@@ -492,12 +492,6 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
             f" `{fs.general_model}` handles ordinary tasks, `{fs.smart_model}` handles more involved work, and {reasoning_tier} handles the hardest or highest-risk reasoning."
             " Use deterministic and indexed Hub actions first for exact facts, symbols, diff and tests. For semantic generation, reasoning, review, independent second opinions and semantic compression, call `local_ai_task`."
         )
-    elif not fs.tasks or not fs.has_any_model():
-        model_default = (
-            "\nLocal model inference is disabled in this configuration; do not claim that cloud reasoning must use a local model."
-            " If a permitted boundary excludes local inference, report the bypass through"
-            " `local_ai_status(adoption_signal=\"bypassed\", target_tool=\"local_ai_task\", target_action=\"reason\")`."
-        )
 
     repo_task_first = ""
     if fs.repo:
