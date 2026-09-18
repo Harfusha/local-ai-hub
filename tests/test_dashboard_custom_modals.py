@@ -1995,6 +1995,68 @@ def test_trace_agent_loop_runtime_bounds_malformed_redacted_and_truncated_values
     assert len(html) < 80000
 
 
+def test_trace_presentations_treat_empty_containers_as_empty_not_missing() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    redact = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function redactDiagnostic(") : DASHBOARD_HTML.index(
+            "// Lightweight pure-canvas"
+        )
+    ]
+    fixtures = {
+        "model": {
+            "presentation": {"kind": "model_chat", "modelInput": {}, "modelOutput": []},
+            "session": {},
+        },
+        "agent": {
+            "presentation": {"kind": "agent_loop", "objective": {}, "modelInput": [], "modelOutput": {}},
+        },
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        + redact
+        + "let traceRevealRedactedDetails=false;"
+        + source
+        + f"const f={json.dumps(fixtures)};console.log(JSON.stringify({{model:renderModelChatPresentation(f.model),agent:renderAgentLoopPresentation(f.agent),objectState:traceCaptureState({{}},''),arrayState:traceCaptureState([], '')}}));"
+    )
+    rendered = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    assert rendered["objectState"] == "empty"
+    assert rendered["arrayState"] == "empty"
+    assert "Prompt is empty" in rendered["model"]
+    assert 'data-capture-state="empty"' in rendered["model"]
+    assert "Model returned an empty final response" in rendered["model"]
+    for marker in ["Objective empty", "Input empty", "Final result empty"]:
+        assert marker in rendered["agent"]
+
+
+def test_trace_model_chat_oversized_final_output_adds_one_assistant_event() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    redact = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function redactDiagnostic(") : DASHBOARD_HTML.index(
+            "// Lightweight pure-canvas"
+        )
+    ]
+    fixture = {
+        "presentation": {
+            "kind": "model_chat",
+            "modelInput": {"prompt": "Summarize"},
+            "modelOutput": "final-" + ("x" * 12000),
+        },
+        "events": [{"event_type": "model_request", "payload": {"prompt": "Summarize"}}],
+        "session": {"model": "fixture-model"},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        + redact
+        + "let traceRevealRedactedDetails=false;"
+        + source
+        + f"console.log(JSON.stringify(renderModelChatPresentation({json.dumps(fixture)})));"
+    )
+    html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    assert html.count('data-event-type="assistant_output"') == 1
+
+
 def test_trace_detail_controls_are_present_and_technical_details_start_closed() -> None:
     detail_source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(

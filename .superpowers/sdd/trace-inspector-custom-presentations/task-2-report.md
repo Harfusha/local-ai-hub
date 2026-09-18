@@ -34,6 +34,18 @@
 ## Review
 
 - `git diff --check`: passed.
+
+## Round 2 reviewer fixes
+
+- `traceCaptureState` now distinguishes missing (`null` / `undefined`) from explicit empty `{}` / `[]`; model prompts and agent objective/input/result cards show exact empty wording.
+- Added runtime assertions for empty object/array values and capture states.
+- `traceCodexTimeline` accepts already-materialized events; model-chat and agent-loop timelines no longer re-run event materialization or duplicate oversized final assistant output.
+- Added oversized-final-output regression coverage asserting one `assistant_output` event.
+
+## Round 2 validation
+
+- Focused: `30 passed, 80 deselected`.
+- Full dashboard file: `110 passed`.
 - Indexed Hub diff review could not split one minified dashboard fragment under its 512-token review limit; performed bounded manual diff review instead.
 
 ## Round 1 reviewer fixes
