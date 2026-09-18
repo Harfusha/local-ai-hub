@@ -81,6 +81,25 @@ def test_git_diff_on_non_git_root_is_a_terminal_client_result(tmp_path: Path):
     assert result["error"] == "git diff requires a Git repository"
 
 
+def test_repository_tools_returns_revision_and_changed_paths_for_guard(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tracked = repo / "main.py"
+    tracked.write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-qm", "initial"],
+        check=True,
+    )
+    tracked.write_text("VALUE = 2\n", encoding="utf-8")
+
+    result = RepositoryTools(_cfg(tmp_path)).git_diff(str(repo))
+
+    assert result["revision"]
+    assert result["changed_paths"] == ["main.py"]
+
+
 def test_search_returns_bounded_retryable_result_after_accelerator_timeouts(tmp_path: Path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
