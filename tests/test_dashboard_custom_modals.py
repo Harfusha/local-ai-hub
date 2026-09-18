@@ -2682,6 +2682,39 @@ def test_trace_command_and_review_direct_malformed_redacted_and_truncated_payloa
         assert len(html) < 60000
 
 
+def test_trace_review_finding_metadata_keeps_aggregate_bound_with_many_large_findings() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    findings = [
+        {
+            "severity": "high" if index % 2 else "medium",
+            "rule": f"RULE-{index}",
+            "message": f"finding-{index}-" + ("m" * 5000),
+            "details": {"context": "c" * 3000},
+        }
+        for index in range(80)
+    ]
+    fixture = {
+        "presentation": {
+            "kind": "review",
+            "review": {"target": "dashboard.py", "findings": findings, "recommendation": "bounded"},
+        }
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "let traceRevealRedactedDetails=false;"
+        + _trace_redaction_runtime_source()
+        + source
+        + f"console.log(JSON.stringify(renderReviewPresentation({json.dumps(fixture)})));"
+    )
+    html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    evidence = html.split('<summary>Review evidence</summary>', 1)[1].split('</details>', 1)[0]
+    finding_metadata = evidence.split('<h3>Full finding metadata</h3>', 1)[1].split('</section>', 1)[0]
+    assert len(finding_metadata) < 20000
+    assert "payload budget truncated" in finding_metadata or "truncated" in finding_metadata.lower()
+    assert len(html) < 60000
+
+
 def test_trace_command_primary_and_closed_details_show_execution_contract() -> None:
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     source = _trace_presentation_runtime_source()
