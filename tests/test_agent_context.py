@@ -12,6 +12,7 @@ from local_ai_hub.agent_context import (
 )
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import ScopeContext
+from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
 from local_ai_hub.agent_tasks import GoalContract, TaskStore
 from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
 
@@ -70,3 +71,60 @@ def test_change_invalidates_only_linked_records(compiler: ContextCompiler):
     active_links = compiler.get_active_links("src/other.py")
     assert len(active_links) == 1
     assert compiler.get_active_links("src/changed.py") == []
+
+
+def test_stale_memory_is_excluded_from_authoritative_context(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    memory_store = MemoryStore(state_store)
+    stale = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope="repository",
+            key="stale-finding",
+            value="old evidence",
+            status=MemoryStatus.STALE,
+            provenance={"root": str(tmp_path), "repository_revision": "rev-1", "path_refs": ["src/a.py"]},
+        )
+    )
+    fresh = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope="repository",
+            key="fresh-finding",
+            value="current evidence",
+            status=MemoryStatus.CONFIRMED,
+            provenance={"root": str(tmp_path), "repository_revision": "rev-2", "path_refs": ["src/b.py"]},
+        )
+    )
+
+    context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
+        ContextRequest(task_id="task-1", root=str(tmp_path), token_budget=120)
+    )
+
+    assert stale.record_id not in {element.element_id for element in context.elements}
+    assert fresh.record_id in {element.element_id for element in context.elements}
+    fresh_element = next(element for element in context.elements if element.element_id == fresh.record_id)
+    assert fresh_element.to_dict()["provenance"]["repository_revision"] == "rev-2"
+
+
+def test_stale_memory_remains_visible_as_diagnostic(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    memory_store = MemoryStore(state_store)
+    stale = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope="repository",
+            key="stale-finding",
+            value="old evidence",
+            status=MemoryStatus.STALE,
+            provenance={"root": str(tmp_path), "repository_revision": "rev-1", "path_refs": ["src/a.py"]},
+        )
+    )
+
+    context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
+        ContextRequest(task_id="task-1", root=str(tmp_path), token_budget=120, include_diagnostics=True)
+    )
+
+    diagnostics = [element for element in context.elements if element.source_kind == "memory_diagnostics"]
+    assert len(diagnostics) == 1
+    assert stale.record_id in diagnostics[0].content

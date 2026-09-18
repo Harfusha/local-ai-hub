@@ -86,3 +86,73 @@ def test_conflicting_high_confidence_records_are_quarantined(store: MemoryStore)
     saved_r2 = store.record(r2, actor="user", idempotency_key="r2")
     assert saved_r2.status is MemoryStatus.QUARANTINED
     assert "conflict" in (saved_r2.quarantine_reason or "").lower()
+
+
+def test_consistency_memory_kinds_round_trip():
+    kinds = (
+        MemoryKind.FINDING,
+        MemoryKind.REUSABLE_CANDIDATE,
+        MemoryKind.CONTRACT_MAPPING,
+        MemoryKind.REJECTED_APPROACH,
+        MemoryKind.UNKNOWN,
+        MemoryKind.VALIDATION,
+    )
+
+    for kind in kinds:
+        record = MemoryRecord.create(kind=kind, scope=AgentScope.TASK, key=kind.value, value={"kind": kind.value})
+        restored = MemoryRecord.from_dict(record.to_dict())
+        assert restored.kind is kind
+
+
+def test_repository_revision_is_preserved_in_provenance(store: MemoryStore, tmp_path: Path):
+    record = MemoryRecord.create(
+        kind=MemoryKind.FINDING,
+        scope=AgentScope.REPOSITORY,
+        key="parser",
+        value="uses Pratt parsing",
+        provenance={
+            "root": str(tmp_path),
+            "repository_revision": "rev-1",
+            "path_refs": ["src/parser.py"],
+            "symbol_refs": ["Parser.parse"],
+            "related_task": "task-1",
+        },
+    )
+
+    saved = store.record(record)
+    restored = store.get(saved.record_id)
+
+    assert restored is not None
+    assert restored.repository_revision == "rev-1"
+    assert restored.path_refs == ("src/parser.py",)
+    assert restored.symbol_refs == ("Parser.parse",)
+    assert restored.provenance["related_task"] == "task-1"
+
+
+def test_mark_stale_for_revision_preserves_metadata_and_emits_event(store: MemoryStore, tmp_path: Path):
+    record = store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope=AgentScope.REPOSITORY,
+            key="parser",
+            value="old evidence",
+            status=MemoryStatus.CONFIRMED,
+            provenance={
+                "root": str(tmp_path),
+                "repository_revision": "rev-1",
+                "path_refs": ["src/parser.py"],
+            },
+        )
+    )
+
+    assert store.mark_stale_for_revision(str(tmp_path), "rev-2", ["src/parser.py"]) == 1
+
+    stale = store.get(record.record_id)
+    assert stale is not None
+    assert stale.status is MemoryStatus.STALE
+    assert stale.provenance["repository_revision"] == "rev-1"
+    assert stale.provenance["staled_by_revision"] == "rev-2"
+    assert stale.provenance["superseded_metadata"]["status"] == "confirmed"
+    assert any(event.kind == "memory.staled" for event in store.state_store.events(
+        stream_id=f"memory:{AgentScope.REPOSITORY.value}:parser"
+    ))
