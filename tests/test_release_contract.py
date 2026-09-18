@@ -63,6 +63,45 @@ def test_release_has_compact_mcp_surface_and_tool_first_policy(tmp_path: Path):
     assert "semantic" in skill and "CodeGraphContext" in skill and "local_ai_command" in skill
 
 
+def test_guarded_context_release_contract_documents_default_flow_and_fallbacks():
+    configuration = (ROOT / "docs" / "CONFIGURATION.md").read_text(encoding="utf-8")
+    http_api = (ROOT / "docs" / "HTTP_API.md").read_text(encoding="utf-8")
+    testing = (ROOT / "docs" / "TESTING.md").read_text(encoding="utf-8")
+    policy = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    combined = "\n".join((configuration, http_api, testing, policy))
+
+    required = (
+        "[context.preloads]",
+        'local_ai_repo(action=\"context\")',
+        "plan",
+        "edit",
+        "review",
+        "test",
+        "handoff",
+        "evidence_ids",
+        "repo_revision",
+        "stale",
+        "requires_approval",
+        "Deterministic/indexed evidence is authoritative",
+        "legacy fast/full",
+    )
+    assert all(term in combined for term in required)
+
+    for code in (
+        "preload_missing",
+        "code_intelligence_unavailable",
+        "local_model_timeout",
+        "agent_state_disabled",
+    ):
+        assert f'"{code}"' in http_api
+
+    warning_fields = (
+        "severity", "code", "message", "evidence_ids", "affected_paths",
+        "recommended_action", "requires_approval",
+    )
+    assert all(field in http_api for field in warning_fields)
+
+
 def test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources():
     forbidden = ("C:" + "\\Users\\" + "Adam", "/Users/" + "Adam", "DROP" + "IN", "RTX " + "4060")
     skip_parts = {

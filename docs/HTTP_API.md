@@ -11,6 +11,23 @@ The service defaults to `127.0.0.1:11435`. `/health` is a lightweight liveness e
 
 Repository endpoints cover profile/map/code-index/deterministic/search/context, code symbols/diagnostics/AST, import resolution, dependency/security/test/refactor/dead-code/callgraph analysis and git status. Code-intelligence queries use `/api/code-intelligence/query`; session management uses `/api/code-intelligence/control`.
 
+`local_ai_repo(action="context")` and `POST /api/context/pack` share the adaptive context contract. For non-trivial work, pass `task_id` or `phase`, or `guarded: true`; this is default-on guidance for agent integrations. Omit those fields to preserve legacy `fast`/`full` behavior.
+
+Guarded request fields are `task_id`, `phase`, `focus`, `preload_profile`, `changed_paths`, `base`, `staged`, `since_hash`, `approval`, `override_reason`, and `token_budget`. Supported phases are `plan`, `edit`, `review`, `test`, and `handoff`. The response includes a bounded `adaptive_context_pack`/`context_pack`, `context_id`, `repo_revision`, `stale`, `evidence_ids`, `warnings`, and (when supplied) `delta_from`/`since_hash` metadata. A matching revision/hash may be reused as an unchanged delta pack; callers should keep the prior useful pack and avoid duplicate discovery.
+
+Every warning is a concise JSON object: `severity`, `code`, `message`, `evidence_ids`, `affected_paths`, `recommended_action`, and `requires_approval`. Use `info`, `warning`, `boundary`, and `high-risk` as severity levels. `boundary` and `high-risk` warnings are recoverable soft-stops: the task may enter `waiting` until approval. Ordinary warnings require an `override_reason`; decisions are persisted only when Agent OS is enabled.
+
+Fallback behavior remains useful and explicit:
+
+* Missing preload file: omit that input and emit `code: "preload_missing"` with deterministic context intact.
+* Unavailable Serena/CodeGraphContext: use deterministic/indexed search and emit `code: "code_intelligence_unavailable"`.
+* Local-model timeout/failure: return deterministic/indexed evidence and emit `code: "local_model_timeout"` or `"local_model_unavailable"`; model text cannot override evidence.
+* Disabled Agent OS: return a stateless repository pack and emit `code: "agent_state_disabled"`; no memory, decision, task, or receipt is persisted.
+* Unchanged delta: return `unchanged: true` or equivalent `delta_from` metadata and retain the previous useful pack.
+* Legacy caller: omit guarded fields and receive the existing fast/full response shape.
+
+Memory promotion requires explicit approval. Relevant repository revision changes mark affected memory `stale`; stale/conflicting records remain available as diagnostics, not authoritative context, until revalidated. Evidence IDs and repository revision must be preserved through local-model composition and post-processing.
+
 Operational endpoints cover doctor, DB optimization, cache purge, log tail and service control. Bundles export as ZIP and import only as raw `application/zip` or `application/octet-stream`. Commands must pass `/api/command` policy classification.
 
 JSON requests require a JSON content type and bounded `Content-Length`; malformed JSON returns 400 and oversized bodies 413. Authenticated deployments use `X-LocalAI-Token`. Errors are JSON objects with `success:false` where applicable.
