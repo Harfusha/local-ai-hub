@@ -375,9 +375,10 @@ def _capture_identity(value: Any) -> dict[str, str] | None:
     url = str(value.get("url", ""))
     origin = _safe_origin(value.get("target_origin"))
     token = str(value.get("document_token", ""))
-    if not url or len(url) > 4096 or not origin or not token or len(token) > 256:
+    state_token = str(value.get("document_state_token", ""))
+    if not url or len(url) > 4096 or not origin or not token or len(token) > 256 or not state_token or len(state_token) > 256:
         return None
-    return {"url": url, "target_origin": origin, "document_token": token}
+    return {"url": url, "target_origin": origin, "document_token": token, "document_state_token": state_token}
 
 
 def _safe_runtime(runtime: Mapping[str, Any]) -> dict[str, Any]:
@@ -422,6 +423,7 @@ def capture_to_artifacts(payload: Mapping[str, Any], *, artifacts: Any, tenant: 
                 or datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
                 "target_origin": _capture_identity(value["capture_identity"]["initial"])["target_origin"],
                 "document_token": _capture_identity(value["capture_identity"]["initial"])["document_token"],
+                "document_state_token": _capture_identity(value["capture_identity"]["initial"])["document_state_token"],
             },
             "screenshot": {"artifact_id": screenshot_id, "mime_type": mime},
             "dom": {"artifact_id": dom_id, "format": "live-dom", "redaction": "none"},

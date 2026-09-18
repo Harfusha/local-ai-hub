@@ -321,20 +321,26 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
-        request_origin = self.headers.get("Origin", "").strip()
+        request_headers = getattr(self, "headers", None)
+        if not hasattr(request_headers, "get"):
+            request_headers = {}
+        header = lambda name, default="": request_headers.get(name, default)
+        request_origin = str(header("Origin", "") or "").strip()
         bridge_path = str(getattr(self, "path", "")).startswith("/api/browser/") or str(getattr(self, "path", "")) == "/api/vision/review"
+        requested_headers = str(header("Access-Control-Request-Headers", "") or "").lower()
+        token_preflight = str(getattr(self, "command", "")) == "OPTIONS" and ("x-localai-token" in requested_headers or "authorization" in requested_headers)
         if request_origin and bridge_path and APP is not None and origin_allowed(APP.config, request_origin):
             self.send_header("Access-Control-Allow-Origin", request_origin)
             self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-LocalAI-Tenant")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-LocalAI-Tenant, X-LocalAI-Token, Authorization")
             self.send_header("Vary", "Origin")
         elif request_origin and bridge_path and APP is not None:
             expected_token = str(APP.config.get("security", {}).get("api_token", ""))
-            supplied_token = self.headers.get("X-LocalAI-Token", "")
-            auth_header = self.headers.get("Authorization", "")
+            supplied_token = str(header("X-LocalAI-Token", "") or "")
+            auth_header = str(header("Authorization", "") or "")
             if auth_header.lower().startswith("bearer "):
                 supplied_token = auth_header[7:].strip()
-            if expected_token and hmac.compare_digest(supplied_token, expected_token):
+            if expected_token and (hmac.compare_digest(supplied_token, expected_token) or token_preflight):
                 self.send_header("Access-Control-Allow-Origin", request_origin)
                 self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
                 self.send_header("Access-Control-Allow-Headers", "Content-Type, X-LocalAI-Tenant, X-LocalAI-Token, Authorization")
@@ -636,7 +642,11 @@ class Handler(BaseHTTPRequestHandler):
         """Validate Host and Origin headers to protect against DNS rebinding and cross-origin attacks."""
         if APP is None:
             return True
-        host_header = self.headers.get("Host", "").strip()
+        request_headers = getattr(self, "headers", None)
+        if not hasattr(request_headers, "get"):
+            request_headers = {}
+        header = lambda name, default="": request_headers.get(name, default)
+        host_header = str(header("Host", "") or "").strip()
         if host_header:
             host_name = host_header.split(":", 1)[0].strip("[]").lower()
             allowed_hosts = {"127.0.0.1", "localhost", "::1", "testserver"}
@@ -655,7 +665,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(403, {"success": False, "error": "forbidden: invalid Host header"})
                     return False
 
-        origin_header = self.headers.get("Origin", "").strip()
+        origin_header = str(header("Origin", "") or "").strip()
         if origin_header:
             parsed_origin = urlparse(origin_header)
             origin_host = str(parsed_origin.hostname or "").lower()
@@ -676,11 +686,13 @@ class Handler(BaseHTTPRequestHandler):
                 if str(getattr(self, "path", "")).startswith("/api/browser/") or str(getattr(self, "path", "")) == "/api/vision/review":
                     bridge_origin = origin_allowed(APP.config, origin_header)
                     expected_token = str(APP.config.get("security", {}).get("api_token", ""))
-                    supplied_token = self.headers.get("X-LocalAI-Token", "")
-                    auth_header = self.headers.get("Authorization", "")
+                    supplied_token = str(header("X-LocalAI-Token", "") or "")
+                    auth_header = str(header("Authorization", "") or "")
                     if auth_header.lower().startswith("bearer "):
                         supplied_token = auth_header[7:].strip()
-                    bridge_token = bool(expected_token and hmac.compare_digest(supplied_token, expected_token))
+                    requested_headers = str(header("Access-Control-Request-Headers", "") or "").lower()
+                    token_preflight = str(getattr(self, "command", "")) == "OPTIONS" and ("x-localai-token" in requested_headers or "authorization" in requested_headers)
+                    bridge_token = bool(expected_token and (hmac.compare_digest(supplied_token, expected_token) or token_preflight))
                 if origin_host not in allowed_origins and not bridge_origin and not bridge_token:
                     self._send(403, {"success": False, "error": "forbidden: cross-origin requests are not allowed"})
                     return False
@@ -1141,7 +1153,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(503, {"success": False, "error": "hub starting up; please retry", "retryable": True})
             return
         path = urlparse(self.path).path
-        if not path.startswith("/api/browser/") or not self._validate_host_and_origin():
+        bridge_route = path.startswith("/api/browser/") or path == "/api/vision/review"
+        if not bridge_route or not self._validate_host_and_origin():
             self._send(404, {"success": False, "error": "unsupported browser bridge route", "terminal": True, "retryable": False})
             return
         try:
