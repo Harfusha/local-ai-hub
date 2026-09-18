@@ -39,6 +39,7 @@ class ModelExecutionPolicy:
         self.cfg = config.get("model_execution", {})
         self.fast_model = str(self.models.get("fast_code", ""))
         self.background_model = str(self.models.get("background_code", ""))
+        self.vision_model = str(self.models.get("vision", ""))
         self.smart_models = {
             str(x) for x in (
                 self.models.get("heavy_code", ""),
@@ -48,6 +49,8 @@ class ModelExecutionPolicy:
 
     def tier_for(self, model: str) -> str:
         model = str(model or "")
+        if self.vision_model and model == self.vision_model:
+            return "vision"
         if model in self.smart_models:
             return "smart"
         if self.background_model and model == self.background_model:
@@ -69,6 +72,8 @@ class ModelExecutionPolicy:
     def _model_context_limit(model: str) -> int | None:
         if "qwen2.5-coder" in str(model or "").lower():
             return 32768
+        if "qwen3-vl" in str(model or "").lower():
+            return 8192
         return None
 
     def profile(
@@ -83,7 +88,8 @@ class ModelExecutionPolicy:
         force_think: bool | None = None,
         vram_free_mb: int | None = None,
     ) -> ExecutionProfile:
-        tier = self.tier_for(model)
+        role_l = str(role or "").lower()
+        tier = "vision" if role_l == "vision" else self.tier_for(model)
         cfg = self._tier_cfg(tier)
         default_hint = 32768 if tier in {"fast", "background"} else 49152
         default_ctx = max(4096, int(cfg.get("context_tokens", default_hint)))
@@ -119,7 +125,6 @@ class ModelExecutionPolicy:
 
         target = min(max_ctx, max(4096, target))
 
-        role_l = str(role or "").lower()
         default_think = bool(cfg.get("thinking", False))
         think_roles = {str(x).lower() for x in cfg.get("thinking_roles", ["reasoning", "critic", "second-opinion"])}
         think = default_think or role_l in think_roles
@@ -200,7 +205,7 @@ class ModelExecutionPolicy:
     def summary(self) -> dict[str, Any]:
         models = []
         seen: set[str] = set()
-        for key in ("background_code", "fast_code", "heavy_code", "reasoning", "general"):
+        for key in ("background_code", "fast_code", "heavy_code", "reasoning", "general", "vision"):
             model = str(self.models.get(key, "") or "")
             if not model or model in seen:
                 continue

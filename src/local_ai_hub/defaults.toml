@@ -36,6 +36,7 @@ fast_code = "qwen2.5-coder:1.5b"
 heavy_code = "qwen2.5-coder:3b"
 reasoning = "qwen2.5-coder:7b"
 general = "qwen2.5-coder:3b"
+vision = "qwen3-vl:4b"
 embedding = "BAAI/bge-small-en-v1.5"
 embedding_backend = "sentence-transformers"
 embedding_device = "cpu"
@@ -124,6 +125,17 @@ background_context_tokens = 16384
 parallel = 1
 max_prompt_tokens = 24000
 context_reserve_tokens = 2048
+thinking = false
+
+[model_execution.vision]
+# Screenshot review uses a separate conservative single-slot role.
+context_tokens = 8192
+large_context_tokens = 8192
+max_context_tokens = 8192
+background_context_tokens = 8192
+parallel = 1
+max_prompt_tokens = 6000
+context_reserve_tokens = 1024
 thinking = false
 
 [routing]

@@ -96,6 +96,7 @@ class FeatureSet:
         self.reasoning_model: str = str(mdl.get("reasoning", "qwen2.5-coder:7b"))
         self.general_model: str = str(mdl.get("general", self.smart_model))
         self.background_model: str = str(mdl.get("background_code", "qwen2.5-coder:0.5b"))
+        self.vision_model: str = str(mdl.get("vision", "qwen3-vl:4b"))
         self.embedding_model: str = str(mdl.get("embedding", "BAAI/bge-small-en-v1.5"))
         self.reranker_model: str = str(mdl.get("reranker", "BAAI/bge-reranker-v2-m3"))
 
@@ -308,7 +309,7 @@ class FeatureSet:
 
         task_actions = set(self.supported_task_actions())
         if "vision" in task_actions:
-            lines.append("- image understanding: `local_ai_task(action=\"vision\")`")
+            lines.append(f"- image understanding/frontend review via `{self.vision_model}`: `local_ai_task(action=\"vision\")`")
         if "transcribe" in task_actions:
             lines.append("- audio transcription: `local_ai_task(action=\"transcribe\")`")
         if task_actions & {"benchmark", "hardware_benchmark"}:
