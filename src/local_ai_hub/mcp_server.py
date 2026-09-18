@@ -1613,6 +1613,7 @@ def local_ai_coord(
     if not FEATURES.coord:
         return {"success": False, "unsupported": True, "error": "local_ai_coord is disabled in configuration"}
     action = _resolve_action("coord", action)
+    requested_root = str(root or "").strip()
     root = _client_root(root)
     if action == "task_sync":
         sync_act = status.lower() if status in ("export", "import") else "export"
@@ -1642,8 +1643,9 @@ def local_ai_coord(
         memory_kwargs = dict(
             action=action, record=record, record_id=record_id,
             target_scope=target_scope, approver=approver, key=key,
-            value=value, query=query, root=root, scope=scope, scope_id=scope_id,
-            task_id=task_id, session_id=session_id, repository_id=repository_id, tenant=tenant,
+            value=value, query=query, root=(root if requested_root else ""), scope=scope, scope_id=scope_id,
+            task_id=task_id, session_id=session_id, clone_id=clone_id,
+            worktree_id=worktree_id, branch=branch, repository_id=repository_id, tenant=tenant,
         )
         if ttl_seconds is not None and ttl_seconds > 0:
             memory_kwargs["ttl_seconds"] = ttl_seconds

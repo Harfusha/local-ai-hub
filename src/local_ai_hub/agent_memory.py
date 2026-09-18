@@ -1017,12 +1017,15 @@ class MemoryStore:
         tenant: str | None = None,
         task_id: str | None = None,
         session_id: str | None = None,
+        clone_id: str | None = None,
+        worktree_id: str | None = None,
+        branch: str | None = None,
         allow_legacy_unscoped: bool = False,
     ) -> MemoryRecord | None:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return None
         if any(value is not None for value in (scope, scope_id, root, repository_id, tenant)) or any(
-            str(value or "").strip() for value in (task_id, session_id)
+            str(value or "").strip() for value in (task_id, session_id, clone_id, worktree_id, branch)
         ) or allow_legacy_unscoped:
             records = self.find(
                 scope=scope,
@@ -1034,6 +1037,9 @@ class MemoryStore:
                 tenant=tenant,
                 task_id=task_id,
                 session_id=session_id,
+                clone_id=clone_id,
+                worktree_id=worktree_id,
+                branch=branch,
                 include_expired=include_expired,
                 semantic=False,
                 limit=1,
@@ -1133,6 +1139,9 @@ class MemoryStore:
         tenant: str | None = None,
         task_id: str | None = None,
         session_id: str | None = None,
+        clone_id: str | None = None,
+        worktree_id: str | None = None,
+        branch: str | None = None,
     ) -> list[MemoryRecord]:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return []
@@ -1147,10 +1156,27 @@ class MemoryStore:
         scope_val: str | None = None
         task_id_val = str(task_id or "").strip()
         session_id_val = str(session_id or "").strip()
+        clone_id_val = str(clone_id or "").strip()
+        worktree_id_val = str(worktree_id or "").strip()
+        branch_val = str(branch or "").strip()
         scope_id_val = str(scope_id or "").strip()
+        root = str(root or "").strip()
+        repository_id = str(repository_id or "").strip()
+        tenant = str(tenant or "").strip()
+        identity_scopes = [
+            (task_id_val, AgentScope.TASK.value),
+            (session_id_val, AgentScope.SESSION.value),
+            (clone_id_val, AgentScope.CLONE.value),
+            (worktree_id_val, AgentScope.WORKTREE.value),
+            (branch_val, AgentScope.BRANCH.value),
+        ]
+        identity_scopes = [(value, scope_name) for value, scope_name in identity_scopes if value]
         legacy_allowed = allow_legacy_unscoped and not any(
             str(value or "").strip()
-            for value in (scope, scope_id_val, task_id_val, session_id_val, root, repository_id, tenant)
+            for value in (
+                scope, scope_id_val, task_id_val, session_id_val, clone_id_val,
+                worktree_id_val, branch_val, root, repository_id, tenant,
+            )
         )
         if not include_expired:
             sql += " AND (expires_at IS NULL OR expires_at > ?)"
@@ -1161,35 +1187,50 @@ class MemoryStore:
                 scope_val = "repository"
             sql += " AND scope = ?"
             params.append(scope_val)
-        elif task_id_val or session_id_val:
-            if task_id_val and session_id_val:
-                sql += " AND 0"
-            else:
-                scope_val = AgentScope.TASK.value if task_id_val else AgentScope.SESSION.value
-                scope_id_val = task_id_val or session_id_val
-                sql += " AND scope = ? AND scope_id = ?"
-                params.extend([scope_val, scope_id_val])
-        if scope_val in {AgentScope.TASK.value, AgentScope.SESSION.value}:
-            expected_scope_id = task_id_val if scope_val == AgentScope.TASK.value else session_id_val
-            if expected_scope_id and scope_id_val and scope_id_val != expected_scope_id:
-                sql += " AND 0"
-            elif expected_scope_id and not scope_id_val:
-                scope_id_val = expected_scope_id
+        elif len(identity_scopes) == 1:
+            scope_val = identity_scopes[0][1]
+            sql += " AND scope = ?"
+            params.append(scope_val)
             if not scope_id_val:
-                if any(str(value or "").strip() for value in (task_id_val, session_id_val, root, repository_id, tenant)):
+                scope_id_val = identity_scopes[0][0]
+        elif len(identity_scopes) > 1:
+            sql += " AND 0"
+        elif root or repository_id or tenant:
+            scope_val = AgentScope.REPOSITORY.value if (root or repository_id) else AgentScope.SESSION.value
+            sql += " AND scope = ?"
+            params.append(scope_val)
+            if scope_val == AgentScope.SESSION.value and tenant and not scope_id_val:
+                scope_id_val = str(tenant).strip()
+        elif scope_id_val:
+            sql += " AND 0"
+
+        if identity_scopes:
+            if len(identity_scopes) == 1:
+                expected_scope_id, expected_scope = identity_scopes[0]
+                if scope_val != expected_scope:
+                    sql += " AND 0"
+                elif scope_id_val and scope_id_val != expected_scope_id:
                     sql += " AND 0"
                 else:
-                    sql += " AND scope_id = ''"
+                    scope_id_val = expected_scope_id
             else:
-                if scope is not None or task_id_val or session_id_val:
-                    sql += " AND scope_id = ?"
-                    params.append(scope_id_val)
-        elif scope is not None and scope_val != AgentScope.GLOBAL.value and scope_id is not None:
-            sql += " AND scope_id = ?"
-            params.append(scope_id_val)
-        if task_id_val and scope_val != AgentScope.TASK.value:
-            sql += " AND 0"
-        if session_id_val and scope_val != AgentScope.SESSION.value:
+                sql += " AND 0"
+
+        if scope_val != AgentScope.GLOBAL.value:
+            if scope_id_val:
+                sql += " AND scope_id = ?"
+                params.append(scope_id_val)
+            elif scope_val is not None:
+                has_identity = bool(root or repository_id or tenant or identity_scopes)
+                if scope_val == AgentScope.REPOSITORY.value:
+                    sql += " AND scope_id = ''"
+                elif scope_val in {AgentScope.TASK.value, AgentScope.SESSION.value} and not has_identity:
+                    sql += " AND scope_id = ''"
+                elif scope_val == AgentScope.SESSION.value and tenant:
+                    pass
+                else:
+                    sql += " AND 0"
+        elif scope_id_val:
             sql += " AND 0"
         if key is not None:
             sql += " AND key = ?"
@@ -1203,23 +1244,23 @@ class MemoryStore:
         if legacy_allowed:
             sql += " AND (scope NOT IN (?, ?) OR scope_id = '')"
             params.extend([AgentScope.TASK.value, AgentScope.SESSION.value])
-        if root and scope_val == AgentScope.REPOSITORY.value:
-            sql += f" AND (scope = ? OR {_CONTEXT_ROOT_SQL} = ?)"
-            params.extend([AgentScope.GLOBAL.value, _normalise_scope_root(root)])
-        if repository_id and scope_val == AgentScope.REPOSITORY.value:
+        if root:
+            sql += f" AND {_CONTEXT_ROOT_SQL} = ?"
+            params.append(_normalise_scope_root(root))
+        if repository_id:
             provenance_repository_id = (
                 "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
                 "'$.repository_id')"
             )
             sql += f" AND {provenance_repository_id} = ?"
-            params.append(str(repository_id))
-        if tenant and scope_val == AgentScope.SESSION.value:
+            params.append(repository_id)
+        if tenant:
             provenance_tenant = (
                 "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
                 "'$.tenant')"
             )
-            sql += f" AND ({provenance_tenant} IS NULL OR {provenance_tenant} = ?)"
-            params.append(str(tenant))
+            sql += f" AND {provenance_tenant} = ?"
+            params.append(tenant)
 
         base_sql = sql
         base_params = list(params)

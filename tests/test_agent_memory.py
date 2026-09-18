@@ -93,6 +93,55 @@ def test_legacy_unscoped_lookup_rejects_nonempty_task_and_session_context(store:
     assert store.get(scoped_task.record_id, task_id="task-1").value == "task value"
 
 
+def test_memory_find_enforces_root_repository_and_tenant_identity(store: MemoryStore):
+    repo_a = store.record(MemoryRecord.create(
+        kind=MemoryKind.FINDING,
+        scope=AgentScope.REPOSITORY,
+        key="shared-repo",
+        value="repo-a",
+        provenance={"root": "C:/repo-a", "repository_id": "repo-a"},
+    ))
+    repo_b = store.record(MemoryRecord.create(
+        kind=MemoryKind.FINDING,
+        scope=AgentScope.REPOSITORY,
+        key="shared-repo",
+        value="repo-b",
+        provenance={"root": "C:/repo-b", "repository_id": "repo-b"},
+    ))
+    repo_missing_id = store.record(MemoryRecord.create(
+        kind=MemoryKind.FINDING,
+        scope=AgentScope.REPOSITORY,
+        key="shared-repo",
+        value="repo-missing-id",
+        provenance={"root": "C:/repo-a"},
+    ))
+    tenant_one = store.record(MemoryRecord.create(
+        kind=MemoryKind.FINDING,
+        scope=AgentScope.SESSION,
+        scope_id="tenant-1",
+        key="shared-tenant",
+        value="tenant-1",
+        provenance={"tenant": "tenant-1"},
+    ))
+    tenant_two = store.record(MemoryRecord.create(
+        kind=MemoryKind.FINDING,
+        scope=AgentScope.SESSION,
+        scope_id="tenant-2",
+        key="shared-tenant",
+        value="tenant-2",
+        provenance={"tenant": "tenant-2"},
+    ))
+
+    assert {record.record_id for record in store.find(scope=AgentScope.REPOSITORY, root="C:/repo-a", key="shared-repo")} == {
+        repo_a.record_id,
+        repo_missing_id.record_id,
+    }
+    assert [record.record_id for record in store.find(scope=AgentScope.REPOSITORY, root="C:/repo-b", key="shared-repo")] == [repo_b.record_id]
+    assert [record.record_id for record in store.find(scope=AgentScope.REPOSITORY, repository_id="repo-a", key="shared-repo")] == [repo_a.record_id]
+    assert [record.record_id for record in store.find(scope=AgentScope.SESSION, tenant="tenant-1", key="shared-tenant")] == [tenant_one.record_id]
+    assert [record.record_id for record in store.find(scope=AgentScope.SESSION, tenant="tenant-2", key="shared-tenant")] == [tenant_two.record_id]
+
+
 def test_global_promotion_requires_user_approval(store: MemoryStore):
     record = confirmed_repository_record(store)
     with pytest.raises(ApprovalRequiredError):
