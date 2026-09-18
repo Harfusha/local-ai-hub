@@ -1169,12 +1169,22 @@ class Handler(BaseHTTPRequestHandler):
                 rec_id = (query.get("record_id") or [""])[0]
                 if rec_id:
                     scope_raw = (query.get("scope") or [None])[0]
-                    scope_val = AgentScope.parse(scope_raw, default=None) if scope_raw else AgentScope.GLOBAL
+                    scope_val = AgentScope.parse(scope_raw, default=None) if scope_raw else None
                     scope_id_val = (query.get("scope_id") or [None])[0]
                     root_val = (query.get("root") or [None])[0]
                     repository_id_val = (query.get("repository_id") or [None])[0]
                     tenant_val = (query.get("tenant") or [None])[0]
-                    if scope_val in {AgentScope.TASK, AgentScope.SESSION} and not str(scope_id_val or "").strip():
+                    task_id_val = (query.get("task_id") or [None])[0]
+                    session_id_val = (query.get("session_id") or [None])[0]
+                    if not any(
+                        str(value or "").strip()
+                        for value in (scope_val, scope_id_val, task_id_val, session_id_val, root_val, repository_id_val, tenant_val)
+                    ):
+                        scope_val = AgentScope.GLOBAL
+                    if scope_val in {AgentScope.TASK, AgentScope.SESSION} and not str(scope_id_val or "").strip() and not (
+                        (scope_val is AgentScope.TASK and str(task_id_val or "").strip())
+                        or (scope_val is AgentScope.SESSION and str(session_id_val or "").strip())
+                    ):
                         rec = None
                     elif scope_val is AgentScope.REPOSITORY and not any(
                         str(value or "").strip() for value in (scope_id_val, root_val, repository_id_val)
@@ -1188,6 +1198,8 @@ class Handler(BaseHTTPRequestHandler):
                             root=str(root_val) if root_val else None,
                             repository_id=str(repository_id_val) if repository_id_val else None,
                             tenant=str(tenant_val) if tenant_val else None,
+                            task_id=str(task_id_val) if task_id_val else None,
+                            session_id=str(session_id_val) if session_id_val else None,
                             limit=1,
                         )
                         rec = matches[0] if matches else None
@@ -1210,8 +1222,11 @@ class Handler(BaseHTTPRequestHandler):
                 root_val = (query.get("root") or [None])[0]
                 repository_id_val = (query.get("repository_id") or [None])[0]
                 tenant_val = (query.get("tenant") or [None])[0]
+                task_id_val = (query.get("task_id") or [None])[0]
+                session_id_val = (query.get("session_id") or [None])[0]
                 legacy_unscoped = scope_val is None and not any(
-                    str(value or "").strip() for value in (scope_id_val, root_val, repository_id_val, tenant_val)
+                    str(value or "").strip()
+                    for value in (scope_id_val, task_id_val, session_id_val, root_val, repository_id_val, tenant_val)
                 )
                 if legacy_unscoped:
                     records = APP.agent_memory.find(
@@ -1222,10 +1237,13 @@ class Handler(BaseHTTPRequestHandler):
                         status=status_val,
                         limit=limit_val,
                     )
-                elif scope_val is None:
+                elif scope_val is None and not any(str(value or "").strip() for value in (task_id_val, session_id_val)):
                     scope_val = AgentScope.GLOBAL
                 if not legacy_unscoped:
-                    if scope_val in {AgentScope.TASK, AgentScope.SESSION} and not str(scope_id_val or "").strip():
+                    if scope_val in {AgentScope.TASK, AgentScope.SESSION} and not str(scope_id_val or "").strip() and not (
+                        (scope_val is AgentScope.TASK and str(task_id_val or "").strip())
+                        or (scope_val is AgentScope.SESSION and str(session_id_val or "").strip())
+                    ):
                         records = []
                     elif scope_val is AgentScope.REPOSITORY and not any(
                         str(value or "").strip() for value in (scope_id_val, root_val, repository_id_val)
@@ -1238,6 +1256,8 @@ class Handler(BaseHTTPRequestHandler):
                             root=str(root_val) if root_val else None,
                             repository_id=str(repository_id_val) if repository_id_val else None,
                             tenant=str(tenant_val) if tenant_val else None,
+                            task_id=str(task_id_val) if task_id_val else None,
+                            session_id=str(session_id_val) if session_id_val else None,
                             key=key_val,
                             query=query_val,
                             status=status_val,
@@ -1998,14 +2018,27 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "get":
                     scope_raw = payload.get("scope")
-                    scope_val = AgentScope.parse(scope_raw, default=None) if scope_raw else AgentScope.GLOBAL
+                    scope_val = AgentScope.parse(scope_raw, default=None) if scope_raw else None
+                    scope_id_val = payload.get("scope_id")
+                    root_val = payload.get("root")
+                    repository_id_val = payload.get("repository_id")
+                    tenant_val = payload.get("tenant")
+                    task_id_val = payload.get("task_id")
+                    session_id_val = payload.get("session_id")
+                    if not any(
+                        str(value or "").strip()
+                        for value in (scope_val, scope_id_val, task_id_val, session_id_val, root_val, repository_id_val, tenant_val)
+                    ):
+                        scope_val = AgentScope.GLOBAL
                     rec = APP.agent_memory.get(
                         str(payload.get("record_id", "")),
                         scope=scope_val,
-                        scope_id=str(payload.get("scope_id")) if payload.get("scope_id") is not None else None,
-                        root=str(payload.get("root")) if payload.get("root") else None,
-                        repository_id=str(payload.get("repository_id")) if payload.get("repository_id") else None,
-                        tenant=str(payload.get("tenant")) if payload.get("tenant") else None,
+                        scope_id=str(scope_id_val) if scope_id_val is not None else None,
+                        root=str(root_val) if root_val else None,
+                        repository_id=str(repository_id_val) if repository_id_val else None,
+                        tenant=str(tenant_val) if tenant_val else None,
+                        task_id=str(task_id_val) if task_id_val else None,
+                        session_id=str(session_id_val) if session_id_val else None,
                     )
                     if not rec:
                         self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
@@ -2020,8 +2053,11 @@ class Handler(BaseHTTPRequestHandler):
                     root_val = payload.get("root")
                     repository_id_val = payload.get("repository_id")
                     tenant_val = payload.get("tenant")
+                    task_id_val = payload.get("task_id")
+                    session_id_val = payload.get("session_id")
                     legacy_unscoped = scope_val is None and not any(
-                        str(value or "").strip() for value in (scope_id_val, root_val, repository_id_val, tenant_val)
+                        str(value or "").strip()
+                        for value in (scope_id_val, task_id_val, session_id_val, root_val, repository_id_val, tenant_val)
                     )
                     if legacy_unscoped:
                         records = APP.agent_memory.find(
@@ -2032,10 +2068,13 @@ class Handler(BaseHTTPRequestHandler):
                             status=status_val,
                             limit=limit_val,
                         )
-                    elif scope_val is None:
+                    elif scope_val is None and not any(str(value or "").strip() for value in (task_id_val, session_id_val)):
                         scope_val = AgentScope.GLOBAL
                     if not legacy_unscoped:
-                        if scope_val in {AgentScope.TASK, AgentScope.SESSION} and not str(scope_id_val or "").strip():
+                        if scope_val in {AgentScope.TASK, AgentScope.SESSION} and not str(scope_id_val or "").strip() and not (
+                            (scope_val is AgentScope.TASK and str(task_id_val or "").strip())
+                            or (scope_val is AgentScope.SESSION and str(session_id_val or "").strip())
+                        ):
                             records = []
                         elif scope_val is AgentScope.REPOSITORY and not any(
                             str(value or "").strip() for value in (scope_id_val, root_val, repository_id_val)
@@ -2048,6 +2087,8 @@ class Handler(BaseHTTPRequestHandler):
                                 root=str(root_val) if root_val else None,
                                 repository_id=str(repository_id_val) if repository_id_val else None,
                                 tenant=str(tenant_val) if tenant_val else None,
+                                task_id=str(task_id_val) if task_id_val else None,
+                                session_id=str(session_id_val) if session_id_val else None,
                                 key=key_val,
                                 query=query_val,
                                 status=status_val,

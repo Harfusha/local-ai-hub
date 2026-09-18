@@ -302,8 +302,10 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
     records = (
         MemoryRecord.create(kind="finding", scope=AgentScope.TASK, scope_id="task-one", key="shared", value="task-one"),
         MemoryRecord.create(kind="finding", scope=AgentScope.TASK, scope_id="task-two", key="shared", value="task-two"),
+        MemoryRecord.create(kind="finding", scope=AgentScope.TASK, key="shared", value="legacy-task"),
         MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-one", key="shared", value="session-one"),
         MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-two", key="shared", value="session-two"),
+        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, key="shared", value="legacy-session"),
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one", provenance={"root": str(repo_one), "repository_id": "repository-one"}),
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one-missing-id", provenance={"root": str(repo_one)}),
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-two", provenance={"root": str(repo_two), "repository_id": "repository-two"}),
@@ -338,6 +340,10 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         assert [item["value"] for item in task_result["records"]] == ["task-one"]
         session_result = get(scope="session", scope_id="session-one", key="shared")
         assert [item["value"] for item in session_result["records"]] == ["session-one"]
+        task_without_scope = get(task_id="task-one", key="shared")
+        assert [item["value"] for item in task_without_scope["records"]] == ["task-one"]
+        session_without_scope = get(session_id="session-one", key="shared")
+        assert [item["value"] for item in session_without_scope["records"]] == ["session-one"]
         repo_result = get(scope="repository", root=str(repo_one), repository_id="repository-one", key="shared")
         assert [item["value"] for item in repo_result["records"]] == ["repo-one"]
         direct = post({
@@ -347,6 +353,12 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
             "scope_id": "task-one",
         })
         assert direct["record"]["value"] == "task-one"
+        direct_without_scope = post({
+            "action": "get",
+            "record_id": records[0].record_id,
+            "task_id": "task-one",
+        })
+        assert direct_without_scope["record"]["value"] == "task-one"
         with pytest.raises(urllib.error.HTTPError) as mismatch:
             post({
                 "action": "get",
@@ -355,6 +367,13 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
                 "scope_id": "task-two",
             })
         assert mismatch.value.code == 404
+        with pytest.raises(urllib.error.HTTPError) as task_mismatch_without_scope:
+            post({
+                "action": "get",
+                "record_id": records[0].record_id,
+                "task_id": "task-two",
+            })
+        assert task_mismatch_without_scope.value.code == 404
     finally:
         server.shutdown()
         thread.join(timeout=5)

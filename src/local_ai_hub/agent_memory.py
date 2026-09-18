@@ -1015,11 +1015,15 @@ class MemoryStore:
         root: str | None = None,
         repository_id: str | None = None,
         tenant: str | None = None,
+        task_id: str | None = None,
+        session_id: str | None = None,
         allow_legacy_unscoped: bool = False,
     ) -> MemoryRecord | None:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return None
-        if any(value is not None for value in (scope, scope_id, root, repository_id, tenant)) or allow_legacy_unscoped:
+        if any(value is not None for value in (scope, scope_id, root, repository_id, tenant)) or any(
+            str(value or "").strip() for value in (task_id, session_id)
+        ) or allow_legacy_unscoped:
             records = self.find(
                 scope=scope,
                 record_id=record_id,
@@ -1028,6 +1032,8 @@ class MemoryStore:
                 root=root,
                 repository_id=repository_id,
                 tenant=tenant,
+                task_id=task_id,
+                session_id=session_id,
                 include_expired=include_expired,
                 semantic=False,
                 limit=1,
@@ -1125,6 +1131,8 @@ class MemoryStore:
         root: str | None = None,
         repository_id: str | None = None,
         tenant: str | None = None,
+        task_id: str | None = None,
+        session_id: str | None = None,
     ) -> list[MemoryRecord]:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return []
@@ -1137,6 +1145,13 @@ class MemoryStore:
         )
         params: list[Any] = []
         scope_val: str | None = None
+        task_id_val = str(task_id or "").strip()
+        session_id_val = str(session_id or "").strip()
+        scope_id_val = str(scope_id or "").strip()
+        legacy_allowed = allow_legacy_unscoped and not any(
+            str(value or "").strip()
+            for value in (scope, scope_id_val, task_id_val, session_id_val, root, repository_id, tenant)
+        )
         if not include_expired:
             sql += " AND (expires_at IS NULL OR expires_at > ?)"
             params.append(time.time())
@@ -1146,15 +1161,33 @@ class MemoryStore:
                 scope_val = "repository"
             sql += " AND scope = ?"
             params.append(scope_val)
-            if scope_val in {AgentScope.TASK.value, AgentScope.SESSION.value}:
-                if not str(scope_id or "").strip():
-                    sql += " AND 0"
-                else:
+        elif task_id_val or session_id_val:
+            if task_id_val and session_id_val:
+                sql += " AND 0"
+            else:
+                scope_val = AgentScope.TASK.value if task_id_val else AgentScope.SESSION.value
+                scope_id_val = task_id_val or session_id_val
+                sql += " AND scope = ? AND scope_id = ?"
+                params.extend([scope_val, scope_id_val])
+        if scope_val in {AgentScope.TASK.value, AgentScope.SESSION.value}:
+            expected_scope_id = task_id_val if scope_val == AgentScope.TASK.value else session_id_val
+            if expected_scope_id and scope_id_val and scope_id_val != expected_scope_id:
+                sql += " AND 0"
+            elif expected_scope_id and not scope_id_val:
+                scope_id_val = expected_scope_id
+            if not scope_id_val:
+                sql += " AND 0"
+            else:
+                if scope is not None or task_id_val or session_id_val:
                     sql += " AND scope_id = ?"
-                    params.append(str(scope_id))
-            elif scope_val != AgentScope.GLOBAL.value and scope_id is not None:
-                sql += " AND scope_id = ?"
-                params.append(str(scope_id))
+                    params.append(scope_id_val)
+        elif scope is not None and scope_val != AgentScope.GLOBAL.value and scope_id is not None:
+            sql += " AND scope_id = ?"
+            params.append(scope_id_val)
+        if task_id_val and scope_val != AgentScope.TASK.value:
+            sql += " AND 0"
+        if session_id_val and scope_val != AgentScope.SESSION.value:
+            sql += " AND 0"
         if key is not None:
             sql += " AND key = ?"
             params.append(key)
@@ -1164,7 +1197,7 @@ class MemoryStore:
         if record_id is not None:
             sql += " AND record_id = ?"
             params.append(str(record_id))
-        if allow_legacy_unscoped:
+        if legacy_allowed:
             sql += " AND (scope NOT IN (?, ?) OR scope_id = '')"
             params.extend([AgentScope.TASK.value, AgentScope.SESSION.value])
         if root and scope_val == AgentScope.REPOSITORY.value:

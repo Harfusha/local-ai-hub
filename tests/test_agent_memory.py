@@ -53,6 +53,42 @@ def test_model_conclusion_is_candidate_not_repository_memory(store: MemoryStore)
     assert record.status is MemoryStatus.CANDIDATE
 
 
+def test_legacy_unscoped_lookup_rejects_nonempty_task_and_session_context(store: MemoryStore):
+    legacy_task = MemoryRecord.create(
+        kind=MemoryKind.FINDING,
+        scope=AgentScope.TASK,
+        key="legacy-task",
+        value="must not leak",
+    )
+    scoped_task = MemoryRecord.create(
+        kind=MemoryKind.FINDING,
+        scope=AgentScope.TASK,
+        scope_id="task-1",
+        key="scoped-task",
+        value="task value",
+    )
+    legacy_session = MemoryRecord.create(
+        kind=MemoryKind.FINDING,
+        scope=AgentScope.SESSION,
+        key="legacy-session",
+        value="must not leak",
+    )
+    scoped_session = MemoryRecord.create(
+        kind=MemoryKind.FINDING,
+        scope=AgentScope.SESSION,
+        scope_id="session-1",
+        key="scoped-session",
+        value="session value",
+    )
+    for record in (legacy_task, scoped_task, legacy_session, scoped_session):
+        store.record(record, actor="user")
+
+    assert [record.value for record in store.find(allow_legacy_unscoped=True, task_id="task-1")] == ["task value"]
+    assert [record.value for record in store.find(allow_legacy_unscoped=True, session_id="session-1")] == ["session value"]
+    assert store.get(legacy_task.record_id, task_id="task-1") is None
+    assert store.get(scoped_task.record_id, task_id="task-1").value == "task value"
+
+
 def test_global_promotion_requires_user_approval(store: MemoryStore):
     record = confirmed_repository_record(store)
     with pytest.raises(ApprovalRequiredError):
