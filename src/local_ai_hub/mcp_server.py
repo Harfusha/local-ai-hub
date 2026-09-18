@@ -1128,7 +1128,10 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
     pack = value.get("adaptive_context_pack") or value.get("context_pack")
     pack = pack if isinstance(pack, dict) else {}
     authoritative: dict[str, Any] = {}
-    for key in ("warnings", "repo_revision", "changed_paths"):
+    for key in (
+        "context_id", "warnings", "repo_revision", "changed_paths", "stale",
+        "delta_from", "since_hash",
+    ):
         if key in pack:
             authoritative[key] = pack[key]
         elif key in value:
@@ -1137,14 +1140,17 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
     if isinstance(evidence, list):
         ids = [item.get("evidence_id") for item in evidence if isinstance(item, dict) and item.get("evidence_id")]
         authoritative["evidence_ids"] = ids[:24]
-    if "evidence_ids" not in authoritative and "evidence_ids" in value:
-        authoritative["evidence_ids"] = value["evidence_ids"]
+    if "evidence_ids" not in authoritative:
+        if "evidence_ids" in pack:
+            authoritative["evidence_ids"] = pack["evidence_ids"]
+        elif "evidence_ids" in value:
+            authoritative["evidence_ids"] = value["evidence_ids"]
     for key in (
         "revision", "guarded", "delivery_mode", "since_hash", "delta_from", "degraded", "stale",
         "fallback_used", "requires_override", "requires_approval", "decision_recorded",
         "decision_persisted", "task_status", "waiting",
     ):
-        if key in value:
+        if key in value and key not in authoritative:
             authoritative[key] = value[key]
     for key, item in authoritative.items():
         projected[key] = _bound_context_json(item)
@@ -1165,6 +1171,7 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
             max_tokens=requested,
             profile=profile,
             reuse_key=reuse_key,
+            protected_keys=tuple(authoritative),
         )
     return _normalize_deterministic(final)
 

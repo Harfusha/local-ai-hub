@@ -219,6 +219,41 @@ def test_local_ai_repo_context_bounds_oversized_authoritative_fields(monkeypatch
     assert result["response_budget"]["requested_tokens"] == 220
 
 
+def test_local_ai_repo_context_low_budget_preserves_authoritative_envelope(monkeypatch) -> None:
+    response = {
+        "success": True,
+        "adaptive_context_pack": {
+            "context_id": "ctx-123",
+            "repo_revision": "revision-1",
+            "stale": True,
+            "warnings": [{"code": "scope_drift", "message": "warning"}],
+            "evidence": [{"evidence_id": "evidence-1"}],
+            "delta_from": "ctx-previous",
+            "since_hash": "hash-1",
+        },
+    }
+    _capture_client(monkeypatch, response)
+
+    result = local_ai_mcp.local_ai_repo(
+        action="context",
+        root="C:/repo",
+        query="guarded",
+        task_id="task-1",
+        phase="review",
+        guarded=True,
+        max_response_tokens=128,
+    )
+
+    assert json_tokens(result) <= 128
+    assert result["context_id"] == "ctx-123"
+    assert result["repo_revision"] == "revision-1"
+    assert result["stale"] is True
+    assert result["warnings"] == [{"code": "scope_drift", "message": "warning"}]
+    assert result["delta_from"] == "ctx-previous"
+    assert result["since_hash"] == "hash-1"
+    assert result["evidence_ids"] == ["evidence-1"]
+
+
 def test_local_ai_repo_context_propagates_bounded_http_error(monkeypatch) -> None:
     calls = _capture_client(monkeypatch, {
         "success": False, "status_code": 400, "terminal": True, "retryable": False,
