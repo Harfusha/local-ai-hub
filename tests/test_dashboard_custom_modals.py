@@ -418,7 +418,7 @@ def test_trace_inspector_uses_raw_model_input_for_primary_prompt() -> None:
     assert "input=model.input??presentation.modelInput" in source
     assert "output=model.output??presentation.modelOutput" in source
     assert "traceModelChatEventTypes" in source
-    assert "traceCodexTimeline({...model,events:timelineEvents,presentation:presentation}" in source
+    assert "traceCodexTimeline({...model,events:timelineEvents,presentation:{...presentation,modelOutput:output,finalResponseStatus:finalStatus}}" in source
 
 
 def test_trace_inspector_has_universal_redacted_display_model() -> None:
@@ -946,8 +946,6 @@ def test_trace_inspector_has_request_specific_renderer_contracts() -> None:
             "worker input",
             "result",
             "error",
-            "job id",
-            "correlation",
         ],
         "renderRequestResponsePresentation(model)": [
             "request",
@@ -996,7 +994,7 @@ TRACE_PRESENTATION_CONTRACT_FIXTURES = {
     "model_chat": {
         "presentation": {
             "kind": "model_chat",
-            "modelInput": {"prompt": "Explain trace retention"},
+            "modelInput": {"prompt": "Explain trace retention", "headers": {"authorization": "MODEL_HEADER_MARKER"}},
             "modelOutput": None,
         },
         "session": {"final_response_status": "empty"},
@@ -1060,11 +1058,12 @@ TRACE_PRESENTATION_CONTRACT_FIXTURES = {
             "kind": "async_job",
             "asyncJob": {"status": "failed", "error": "worker timeout", "result": ""},
         },
+        "correlations": {"async_job_id": "ASYNC_JOB_ID_MARKER", "request_id": "CORRELATION_ID_MARKER"},
         "lifecycle": {"state": "failed"},
     },
     "request_response": {
         "presentation": {"kind": "request_response"},
-        "session": {"request": {"method": "POST", "path": "/trace"}},
+        "session": {"request": {"method": "POST", "path": "/trace", "headers": {"authorization": "REQUEST_HEADER_MARKER"}, "request_id": "REQUEST_ID_MARKER"}},
         "response": {"message": "accepted"},
         "output": "request completed",
         "lifecycle": {"state": "complete"},
@@ -1100,14 +1099,62 @@ def test_trace_inspector_shared_presentation_contract_covers_all_kinds() -> None
     }
     for kind, values in expected_values.items():
         html = rendered[kind]
-        assert 'class="trace-primary-section"' in html
+        primary = html.split('<details class="trace-secondary-details', 1)[0]
+        assert re.search(r'class="[^"]*\btrace-primary-section\b[^"]*"', html)
         assert '<details class="trace-secondary-details' in html
         assert 'data-trace-primary-group="Technical details"' in html
         assert not re.search(r'<details class="trace-secondary-details[^>]*\bopen(?:=|\s|>)', html)
+        assert len(re.findall(r'<section[^>]*class="[^"]*\btrace-primary-section\b[^"]*"', html)) == 1
         for value in values:
-            assert value in html, f"{kind} renderer omitted {value!r}"
+            assert value in primary, f"{kind} renderer omitted visible primary value {value!r}"
         assert "[object Object]" not in html
-        assert "TRACE_SECRET_MARKER" not in html
+        for marker in [
+            "TRACE_SECRET_MARKER",
+            "MODEL_HEADER_MARKER",
+            "ASYNC_JOB_ID_MARKER",
+            "CORRELATION_ID_MARKER",
+            "REQUEST_HEADER_MARKER",
+            "REQUEST_ID_MARKER",
+        ]:
+            assert marker not in primary
+        if kind == "model_chat":
+            assert "Model returned an empty final response" in primary
+            assert "Final response not captured" not in primary
+
+
+def test_trace_inspector_shell_sanitizes_prebuilt_attention_markup() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + "console.log(tracePresentationShell('title','subtitle','<p>primary</p>','<p>secondary</p>','<section class=\"trace-attention-section\"><img src=x onerror=bad></section>'));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    assert "<img" not in result.stdout
+    assert "&lt;section class=&quot;trace-attention-section&quot;&gt;" in result.stdout
+
+
+def test_trace_inspector_restores_all_collapsible_presentation_details() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    assert "function captureTraceCollapsibleDetails(" in DASHBOARD_HTML
+    assert "function restoreTraceCollapsibleDetails(" in DASHBOARD_HTML
+    assert 'data-trace-key="model-timeline"' in DASHBOARD_HTML
+    assert 'data-trace-key="model-context"' in DASHBOARD_HTML
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceCollapsibleKey(") : DASHBOARD_HTML.index(
+            "function traceEventList("
+        )
+    ]
+    script = (
+        source
+        + "const nodes=[{dataset:{traceKey:'model-timeline'},open:true},{dataset:{traceKey:'model-context'},open:false}];"
+        + "const root={querySelectorAll:()=>nodes};const state=captureTraceCollapsibleDetails(root);nodes.forEach(node=>node.open=false);restoreTraceCollapsibleDetails(root,state);console.log(JSON.stringify(nodes.map(node=>node.open)));"
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    assert json.loads(result.stdout) == [True, False]
 
 
 def test_trace_renderers_render_per_kind_fixtures_as_semantic_output() -> None:
@@ -2305,11 +2352,12 @@ def test_trace_model_chat_runtime_keeps_request_envelope_visible_and_bounded() -
     )
     result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
     html = json.loads(result.stdout)
-    for value in ["fixture-model", "stream", "Options", "request id", "system", "developer", "user"]:
+    for value in ["fixture-model", "stream", "Options", "/chat", "system", "developer", "user"]:
         assert value.lower() in html.lower()
     assert "system &lt;safe&gt;" in html
     assert "secret" not in html
-    assert "No model output captured" in html
+    assert "Final response was empty" in html
+    assert "No model output captured" not in html
 
 
 def test_trace_model_chat_runtime_redacts_cookie_headers_and_private_key_fields() -> None:
@@ -2350,7 +2398,8 @@ def test_trace_model_chat_runtime_redacts_cookie_headers_and_private_key_fields(
     html = json.loads(result.stdout)
     for secret in ["cookie-secret", "set-cookie-secret", "private-key-secret"]:
         assert secret not in html
-    assert "redacted" in html.lower()
+    for field in ["cookie", "set-cookie", "private-key"]:
+        assert field not in html.lower()
 
 
 def test_trace_model_chat_runtime_keeps_full_human_prompt() -> None:
