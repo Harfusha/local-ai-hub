@@ -500,7 +500,7 @@ def test_trace_inspector_keeps_universal_summary_inside_optional_panels() -> Non
     ]
     assert "traceDisplayModel(d)" in source
     assert "universalSummary=traceSummary(model,unavailableCopy)" in source
-    assert "${header}${presentationMarkup}${optionalMarkup}" in source
+    assert "${header}${primaryMarkup}${optionalMarkup}" in source
     assert "${universalSummary}<nav" in source
     for marker in [
         "Input unavailable for this request type",
@@ -528,6 +528,34 @@ def test_trace_inspector_prioritizes_input_output_and_demotes_technical_detail()
     assert "trace-optional-details" in detail_source
     assert "traceFirstRecorded(events,['prompt'" in model_source
     assert "traceFirstRecorded(events,['output'" in model_source
+
+
+def test_trace_inspector_exposes_core_panels_when_human_presentation_is_empty() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    helper_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function tracePrimaryFallback(") : DASHBOARD_HTML.index(
+            "function traceDisplayModel(detail)"
+        )
+    ]
+    script = (
+        helper_source
+        + "const panels=[{id:'input',available:true,render:()=>'<section>input</section>'},{id:'output',available:true,render:()=>'<section>output</section>'},{id:'timeline',available:true,render:()=>'<section>timeline</section>'}];"
+        + "console.log(tracePrimaryFallback('',panels));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    rendered = result.stdout
+    assert "input" in rendered
+    assert "output" in rendered
+    assert "timeline" not in rendered
+
+    detail_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
+            "function setTraceView(view)"
+        )
+    ]
+    assert "function tracePrimaryFallback(" in DASHBOARD_HTML
+    assert "primaryMarkup=tracePrimaryFallback(presentationMarkup,panels)" in detail_source
+    assert "${header}${primaryMarkup}${optionalMarkup}" in detail_source
 
 
 def test_trace_inspector_stacks_primary_and_model_chat_panels_full_width() -> None:
@@ -561,13 +589,13 @@ def test_trace_inspector_dispatches_primary_body_before_optional_technical_detai
             "function setTraceView(view)"
         )
     ]
-    assert "const presentationMarkup=renderTracePresentation(model);" in source
+    assert "const presentationMarkup=renderTracePresentation(model),primaryMarkup=tracePrimaryFallback(presentationMarkup,panels);" in source
     assert "const optionalMarkup=`<details class=\"trace-optional-details\"" in source
     assert source.index("renderTracePresentation(model)") < source.index(
         "const optionalMarkup="
     )
-    assert "${header}${presentationMarkup}${optionalMarkup}" in source
-    assert "const primaryMarkup=" not in source
+    assert "${header}${primaryMarkup}${optionalMarkup}" in source
+    assert "tracePrimaryFallback(presentationMarkup,panels)" in source
 
 
 def test_trace_detail_runtime_keeps_primary_first_and_technical_details_closed() -> None:
@@ -758,7 +786,7 @@ def test_trace_inspector_keeps_optional_details_open_and_summary_visible() -> No
     assert "traceOptionalDetailsOpen" in detail_source
     assert "existingOptionalDetails.open" in detail_source
     assert "traceOptionalDetailsOpen?' open':''" in detail_source
-    assert "${header}${presentationMarkup}${optionalMarkup}" in detail_source
+    assert "${header}${primaryMarkup}${optionalMarkup}" in detail_source
     assert "${universalSummary}<nav" in detail_source
     assert "tracePanel('summary'" not in model_source
 
