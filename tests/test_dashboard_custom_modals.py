@@ -1793,6 +1793,87 @@ def test_trace_model_runtime_exposes_capture_state_and_detail_controls() -> None
     assert "data-trace-copy-final" in rendered["html"]
 
 
+def test_trace_model_chat_runtime_surfaces_primary_summary_and_closed_focus_sections() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {
+            "kind": "model_chat",
+            "modelInput": {
+                "model": "fixture-model",
+                "messages": [{"role": "user", "content": "Explain traces"}],
+                "options": {"temperature": 0.2},
+                "request": {"path": "/model"},
+            },
+            "modelOutput": "They show inputs and outputs.",
+            "thinking": "Reasoning stays secondary.",
+        },
+        "toolCalls": [
+            {
+                "call": {"name": "search", "arguments": {"query": "traces"}},
+                "result": {"status": "completed", "result": {"value": "one match"}},
+            }
+        ],
+        "session": {"model": "fixture-model", "final_response_status": "complete"},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        + source
+        + f"console.log(JSON.stringify(renderModelChatPresentation({json.dumps(fixture)})));"
+    )
+    html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    primary = html.split('<details class="trace-secondary-details', 1)[0]
+    assert "Explain traces" in primary
+    assert "They show inputs and outputs." in primary
+    assert "Final response" in primary and "Produced" in primary
+    assert "Tool summary" in primary and "search" in primary and "completed" in primary
+    assert "Request envelope" in html
+    assert '<details class="trace-optional-details trace-thinking-panel"' in html
+    assert '<details class="trace-optional-details trace-model-context"' in html
+    assert '<details class="trace-optional-details trace-model-timeline"' in html
+    for marker in ["Thinking / reasoning", "Model context", "Request envelope", "Execution timeline"]:
+        assert f"<summary>{marker}" in html
+
+
+def test_trace_agent_loop_runtime_surfaces_primary_state_ordered_tools_and_closed_raw_details() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {
+            "kind": "agent_loop",
+            "objective": "Inspect the repository",
+            "modelInput": {"prompt": "Inspect the repository"},
+            "modelOutput": {"summary": "one match"},
+        },
+        "input": {"prompt": "Inspect the repository"},
+        "output": {"summary": "one match"},
+        "errors": {"message": "worker timeout"},
+        "lifecycle": {"state": "failed", "phase": "tool execution"},
+        "correlations": {"request_id": "hidden-correlation"},
+        "events": [
+            {"event_type": "tool_call", "payload": {"name": "search", "call_id": "c1", "arguments": {"query": "trace"}}},
+            {"event_type": "tool_result", "payload": {"name": "search", "call_id": "c1", "status": "completed", "result": {"value": "one match"}}},
+        ],
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        + source
+        + f"console.log(JSON.stringify(renderAgentLoopPresentation({json.dumps(fixture)})));"
+    )
+    html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    primary = html.split('<details class="trace-secondary-details', 1)[0]
+    assert "Objective" in primary and "Inspect the repository" in primary
+    assert "Lifecycle" in primary and "failed" in primary
+    assert "Final result" in primary and "one match" in primary
+    assert "Failure summary" in primary and "worker timeout" in primary
+    assert "Tool summary" in primary and "search" in primary and "completed" in primary
+    assert "hidden-correlation" not in primary
+    for marker in ["Raw tool payloads", "Full event metadata", "Correlations", "Execution timeline"]:
+        assert f"<summary>{marker}" in html
+
+
 def test_trace_detail_controls_are_present_and_technical_details_start_closed() -> None:
     detail_source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
