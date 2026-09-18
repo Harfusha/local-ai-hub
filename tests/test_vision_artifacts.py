@@ -80,7 +80,8 @@ def test_artifacts_are_tenant_scoped_and_same_content_cannot_overwrite(tmp_path:
 
 def test_artifact_schema_uses_additive_release_compatible_tables(tmp_path: Path) -> None:
     source = Path(__file__).resolve().parents[1] / "src" / "local_ai_hub" / "artifacts.py"
-    assert "ALTER TABLE" not in source.read_text(encoding="utf-8").upper()
+    forbidden_sql = "ALTER" + " TABLE"
+    assert forbidden_sql not in source.read_text(encoding="utf-8").upper()
 
     db_path = tmp_path / "artifacts.sqlite3"
     with closing(sqlite3.connect(db_path)) as connection:
@@ -128,6 +129,46 @@ def test_legacy_migration_hashes_raw_64_hex_tenant_tokens(tmp_path: Path) -> Non
     ArtifactStore(tmp_path)
     with closing(sqlite3.connect(db_path)) as connection:
         assert connection.execute("SELECT tenant FROM artifacts").fetchone()[0] == expected_digest
+
+
+def test_migration_repairs_raw_64_hex_tenants_already_in_v2(tmp_path: Path) -> None:
+    raw_token = "b" * 64
+    db_path = tmp_path / "artifacts.sqlite3"
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute(
+            "CREATE TABLE artifacts (artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL, tenant TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL)"
+        )
+        connection.execute(
+            "CREATE TABLE artifacts_v2 (artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL, tenant TEXT NOT NULL, tenant_identity TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL DEFAULT '', mime_type TEXT, encoding TEXT, blob BLOB, size_bytes INTEGER, checksum TEXT, identity_json TEXT)"
+        )
+        connection.execute("CREATE TABLE artifact_schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        connection.execute(
+            "INSERT INTO artifacts VALUES (?, ?, ?, ?, ?)",
+            ("art_prior", 9_999_999_999, raw_token, "text", "prior"),
+        )
+        connection.execute(
+            "INSERT INTO artifacts_v2(artifact_id, created_at, tenant, tenant_identity, kind, text) VALUES (?, ?, ?, ?, ?, ?)",
+            ("art_prior", 9_999_999_999, raw_token, raw_token, "text", "prior"),
+        )
+        connection.execute("INSERT INTO artifact_schema_meta VALUES (?, ?)", ("tenant_storage", "sha256-v1"))
+        connection.commit()
+
+    store = ArtifactStore(tmp_path)
+    expected_digest = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    with closing(sqlite3.connect(db_path)) as connection:
+        row = connection.execute(
+            "SELECT tenant, tenant_identity FROM artifacts_v2 WHERE artifact_id=?",
+            ("art_prior",),
+        ).fetchone()
+        marker = connection.execute(
+            "SELECT value FROM artifact_schema_meta WHERE key=?",
+            ("tenant_storage",),
+        ).fetchone()[0]
+
+    assert row == (expected_digest, expected_digest)
+    assert marker == "sha256-v2"
+    assert raw_token not in json.dumps(row)
+    assert store.get("art_prior", tenant=raw_token)["success"] is True
 
 
 def test_binary_integrity_rejects_non_numeric_stored_size(tmp_path: Path) -> None:

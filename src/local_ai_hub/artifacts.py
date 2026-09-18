@@ -69,6 +69,11 @@ class ArtifactStore:
         """Persist stable tenant identity without retaining caller-controlled text."""
         return hashlib.sha256(str(tenant).encode("utf-8")).hexdigest()
 
+    @classmethod
+    def _tenant_identities(cls, tenant: str) -> tuple[str, str]:
+        primary = cls._tenant_identity(tenant)
+        return primary, cls._tenant_identity(primary)
+
     def _init_db(self) -> None:
         if self._initialized:
             return
@@ -85,14 +90,18 @@ class ArtifactStore:
                         "SELECT value FROM artifact_schema_meta WHERE key=?",
                         ("tenant_storage",),
                     ).fetchone()
-                    tenant_storage_scrubbed = bool(marker and marker[0] == "sha256-v1")
+                    marker_value = str(marker[0]) if marker else ""
+                    v2_exists = bool(con.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                        (_ARTIFACT_V2_TABLE,),
+                    ).fetchone())
                     full_schema = {
                         "artifact_id", "created_at", "tenant", "tenant_identity", "kind", "text",
                         "mime_type", "encoding", "blob", "size_bytes", "checksum", "identity_json",
                     }
                     table_info = list(con.execute("PRAGMA table_info(artifacts)"))
                     existing_columns = {str(row[1]) for row in table_info}
-                    if not existing_columns:
+                    if not existing_columns and not v2_exists:
                         con.execute(
                             """CREATE TABLE IF NOT EXISTS artifacts (
                             artifact_id TEXT PRIMARY KEY,
@@ -129,23 +138,49 @@ class ArtifactStore:
                                 identity_json TEXT
                             )"""
                         )
-                        legacy_rows = list(con.execute(
-                            "SELECT rowid, artifact_id, created_at, tenant, kind, text FROM artifacts"
-                        ))
-                        for rowid, artifact_id, created_at, tenant, kind, text in legacy_rows:
-                            raw_tenant = str(tenant)
-                            identity = raw_tenant if tenant_storage_scrubbed else self._tenant_identity(raw_tenant)
-                            con.execute("UPDATE artifacts SET tenant=? WHERE rowid=?", (identity, rowid))
-                            con.execute(
-                                """INSERT OR IGNORE INTO artifacts_v2(
-                                    artifact_id, created_at, tenant, tenant_identity, kind, text
-                                ) VALUES(?,?,?,?,?,?)""",
-                                (artifact_id, created_at, identity, identity, kind, text),
-                            )
+                        if existing_columns:
+                            legacy_rows = list(con.execute(
+                                "SELECT artifact_id, created_at, tenant, kind, text FROM artifacts"
+                            ))
+                            for artifact_id, created_at, tenant, kind, text in legacy_rows:
+                                raw_tenant = str(tenant)
+                                if con.execute(
+                                    "SELECT 1 FROM artifacts_v2 WHERE artifact_id=?",
+                                    (artifact_id,),
+                                ).fetchone() is None:
+                                    con.execute(
+                                        """INSERT INTO artifacts_v2(
+                                            artifact_id, created_at, tenant, tenant_identity, kind, text
+                                        ) VALUES(?,?,?,?,?,?)""",
+                                        (artifact_id, created_at, raw_tenant, raw_tenant, kind, text),
+                                    )
                         self._table = _ARTIFACT_V2_TABLE
+                    if marker_value != "sha256-v2":
+                        def _repair_tenants(table: str, *, has_identity: bool) -> None:
+                            rows = list(con.execute(f"SELECT rowid, tenant FROM {table}"))
+                            for rowid, tenant in rows:
+                                digest = self._tenant_identity(str(tenant))
+                                if has_identity:
+                                    con.execute(
+                                        f"UPDATE {table} SET tenant=?, tenant_identity=? WHERE rowid=?",
+                                        (digest, digest, rowid),
+                                    )
+                                else:
+                                    con.execute(
+                                        f"UPDATE {table} SET tenant=? WHERE rowid=?",
+                                        (digest, rowid),
+                                    )
+
+                        if existing_columns:
+                            _repair_tenants(
+                                _ARTIFACT_TABLE,
+                                has_identity=full_schema.issubset(existing_columns),
+                            )
+                        if v2_exists or self._table == _ARTIFACT_V2_TABLE:
+                            _repair_tenants(_ARTIFACT_V2_TABLE, has_identity=True)
                     con.execute(
                         "INSERT OR REPLACE INTO artifact_schema_meta(key, value) VALUES(?, ?)",
-                        ("tenant_storage", "sha256-v1"),
+                        ("tenant_storage", "sha256-v2"),
                     )
                     con.execute(f"CREATE INDEX IF NOT EXISTS idx_{self._table}_created ON {self._table}(created_at)")
                     con.commit()
@@ -165,7 +200,7 @@ class ArtifactStore:
             (base_id,),
         ).fetchone()
         existing_identity = str((row[0] if row and row[0] else row[1]) if row else "")
-        if not row or existing_identity == tenant_identity:
+        if not row or existing_identity in {tenant_identity, self._tenant_identity(tenant_identity)}:
             return base_id
         return f"{base_id}_{tenant_identity}"
 
@@ -277,8 +312,8 @@ class ArtifactStore:
                 )
                 params: list[Any] = [str(artifact_id), cutoff]
                 if tenant is not None:
-                    query += " AND tenant_identity=?"
-                    params.append(self._tenant_identity(tenant))
+                    query += " AND tenant_identity IN (?, ?)"
+                    params.extend(self._tenant_identities(tenant))
                 return con.execute(query, params).fetchone()
 
         row = retry_busy(_do_get, retries=3)
@@ -393,8 +428,8 @@ class ArtifactStore:
                 query = f"SELECT kind, text, mime_type, created_at FROM {self._table} WHERE artifact_id=? AND created_at>=?"
                 params: list[Any] = [artifact_id, cutoff]
                 if tenant is not None:
-                    query += " AND tenant_identity=?"
-                    params.append(self._tenant_identity(tenant))
+                    query += " AND tenant_identity IN (?, ?)"
+                    params.extend(self._tenant_identities(tenant))
                 return con.execute(query, params).fetchone()
         row = retry_busy(_do_get, retries=3)
         if not row:
