@@ -3253,3 +3253,57 @@ def test_trace_repo_and_rag_presentations_are_result_first_and_bounded() -> None
     assert "No results found" in empty
     assert "truncated results" in empty
     assert "missing" in empty
+
+
+def test_trace_rag_aggregate_budget_structured_truncation_and_malformed_results() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    large_results = [
+        {
+            "title": f"Result {index}",
+            "source": "index",
+            "score": 100 - index,
+            "snippet": "large result snippet",
+            "content": "x" * 8000,
+        }
+        for index in range(50)
+    ]
+    fixtures = {
+        "large": {"presentation": {"kind": "rag_search", "retrieval": {"query": "large", "results": large_results}}},
+        "structured": {
+            "presentation": {
+                "kind": "rag_search",
+                "retrieval": {
+                    "query": "structured truncation",
+                    "results": [{"title": "kept", "snippet": "kept snippet"}],
+                    "truncated": {"reason": "server result limit", "shown": 2, "total": 20},
+                },
+            }
+        },
+        "malformed": {"presentation": {"kind": "rag_search", "retrieval": {"query": "malformed", "results": {"reason": "expected array"}}}},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"const fixtures={json.dumps(fixtures)};"
+        + "console.log(JSON.stringify({large:renderRagSearchPresentation(fixtures.large),structured:renderRagSearchPresentation(fixtures.structured),malformed:renderRagSearchPresentation(fixtures.malformed)}));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    rendered = json.loads(result.stdout)
+
+    large = rendered["large"]
+    assert len(large) < 40000
+    assert "Aggregate output truncated" in large
+    assert "ranked results" in large
+    assert "Result 0" in large
+
+    structured = rendered["structured"]
+    assert "server result limit" in structured
+    assert "Shown: 2" in structured
+    assert "Total: 20" in structured
+
+    malformed = rendered["malformed"]
+    assert "Malformed results" in malformed
+    assert "Results payload must be an array" in malformed
