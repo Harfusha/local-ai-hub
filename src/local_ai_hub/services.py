@@ -1399,22 +1399,91 @@ class LocalAIServices:
                 )
             return text[:max_chars], None
 
+        def resolve_binary_artifact(artifact_id: str, max_bytes: int) -> tuple[str, dict[str, Any] | None]:
+            try:
+                artifact = self.artifacts.get_binary(artifact_id)
+            except Exception:
+                return "", {
+                    "success": False,
+                    "terminal": False,
+                    "retryable": True,
+                    "error": "Vision artifact store is unavailable; retry the request.",
+                }
+            if not isinstance(artifact, dict) or not artifact.get("success"):
+                detail = str(artifact.get("error", "")).lower() if isinstance(artifact, dict) else ""
+                if any(marker in detail for marker in ("not found", "expired", "missing")):
+                    return "", input_error("Vision artifact was not found or has expired.")
+                return "", input_error("Vision image artifact failed integrity validation.", "vision_artifact_integrity")
+            mime_type = str(artifact.get("mime_type", ""))
+            encoded = artifact.get("data_base64")
+            try:
+                size_bytes = int(artifact.get("size_bytes", -1))
+            except (TypeError, ValueError, OverflowError):
+                size_bytes = -1
+            if not mime_type.startswith("image/") or not isinstance(encoded, str) or size_bytes < 0 or size_bytes > max_bytes:
+                return "", input_error("Vision image artifact exceeds the bounded integrity contract.", "vision_artifact_integrity")
+            try:
+                decoded = base64.b64decode(encoded, validate=True)
+            except (ValueError, TypeError):
+                return "", input_error("Vision image artifact is not valid base64.", "vision_artifact_integrity")
+            if len(decoded) != size_bytes:
+                return "", input_error("Vision image artifact is truncated or incomplete.", "vision_artifact_truncated")
+            return encoded, None
+
+        def resolve_bundle_context(raw: str) -> tuple[str, dict[str, Any] | None]:
+            nonlocal image_artifact_id
+            try:
+                bundle = json.loads(raw)
+            except (TypeError, ValueError):
+                return raw, None
+            if not isinstance(bundle, dict):
+                return raw, None
+            resolved = dict(bundle)
+            screenshot = resolved.get("screenshot")
+            screenshot_ref = screenshot.get("artifact_id", "") if isinstance(screenshot, dict) else ""
+            if screenshot_ref and not images:
+                image_data, error = resolve_binary_artifact(str(screenshot_ref), VISION_MAX_IMAGE_CHARS)
+                if error:
+                    return "", error
+                error = append_image(image_data)
+                if error:
+                    return "", error
+                image_artifact_id = str(screenshot_ref)
+            for field_name in ("dom", "accessibility", "computed_styles"):
+                value = resolved.get(field_name)
+                reference = value.get("artifact_id", "") if isinstance(value, dict) else ""
+                if not reference:
+                    reference = resolved.get(f"{field_name}_artifact_id", "")
+                if not reference:
+                    continue
+                content, error = resolve_artifact(str(reference), VISION_MAX_BUNDLE_CHARS)
+                if error:
+                    return "", error
+                if isinstance(value, dict):
+                    resolved[field_name] = {**value, "content": content}
+                else:
+                    resolved[field_name] = {"artifact_id": str(reference), "content": content}
+            return json_dumps(resolved, ensure_ascii=False), None
+
         if image_artifact_id and not images:
-            artifact_data, error = resolve_artifact(image_artifact_id, VISION_MAX_IMAGE_CHARS)
+            artifact_data, error = resolve_binary_artifact(image_artifact_id, VISION_MAX_IMAGE_CHARS)
             if error:
                 return error
             error = append_image(artifact_data)
             if error:
                 return error
 
-        if not images:
-            return input_error("Vision image path, base64 data, or image artifact is required.")
-
         bundle_context = ""
         if bundle_artifact_id:
             bundle_context, error = resolve_artifact(bundle_artifact_id, VISION_MAX_BUNDLE_CHARS)
             if error:
                 return error
+            bundle_context, error = resolve_bundle_context(bundle_context)
+            if error:
+                return error
+
+        if not images:
+            return input_error("Vision image path, base64 data, or image artifact is required.")
 
         try:
             requested_max_tokens = int(args.get("max_tokens", 1200))
