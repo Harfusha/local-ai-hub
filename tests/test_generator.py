@@ -153,6 +153,23 @@ class TestGlobalPolicyGeneration:
         assert "rolls back write failures" in policy
         assert "no auto-commit" in policy
 
+    def test_policy_requires_semantic_handoff_before_cloud_reasoning(self):
+        policy = generate_global_policy({})
+        normalized = policy.lower()
+
+        assert "semantic handoff is mandatory" in normalized
+        assert "before cloud reasoning" in normalized
+        assert "report the bypass" in normalized
+        assert "local_ai_task" in policy
+        assert "semantic handoff" in normalized
+
+    def test_disabled_local_tasks_do_not_claim_mandatory_local_execution(self):
+        policy = generate_global_policy({"features": {"tasks": False}})
+
+        assert "Local model inference is disabled" in policy
+        assert "must call `local_ai_task` before cloud reasoning" not in policy
+        assert "mandatory local execution" not in policy
+
 
 class TestMcpSchemasGeneration:
     def test_response_schema_exposes_delta_profile(self):
