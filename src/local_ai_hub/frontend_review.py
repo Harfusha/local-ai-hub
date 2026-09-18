@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from .vision_contracts import (
     UNTRUSTED_CONTEXT_INSTRUCTION,
@@ -434,3 +434,77 @@ def build_coder_context(
         }
     )
     return packet
+
+
+def run_repair_recheck(
+    review: dict[str, Any],
+    bundle: dict[str, Any],
+    repo_context: dict[str, Any] | None,
+    *,
+    repair: Callable[[dict[str, Any], int], dict[str, Any]],
+    recheck: Callable[[dict[str, Any], int], dict[str, Any]],
+    max_attempts: int = 3,
+) -> dict[str, Any]:
+    """Run an explicit, bounded coder repair followed by browser/test recheck.
+
+    The hub owns orchestration and evidence shape; the caller owns the actual
+    edit and browser probe. This keeps screenshot-only review advisory and
+    prevents an implicit model response from mutating a repository.
+    """
+    packet = build_coder_context(review, bundle, repo_context=repo_context)
+    if not packet.get("success"):
+        return packet
+    attempts = max(1, min(int(max_attempts), 5))
+    history: list[dict[str, Any]] = []
+    current = dict(packet)
+    for attempt in range(1, attempts + 1):
+        try:
+            edit = repair(current, attempt)
+        except Exception as exc:
+            history.append({"attempt": attempt, "stage": "edit", "error": str(exc)[:300]})
+            continue
+        if not isinstance(edit, dict) or not edit.get("success", True):
+            history.append({"attempt": attempt, "stage": "edit", "result": edit})
+            continue
+        try:
+            checked = recheck(edit, attempt)
+        except Exception as exc:
+            history.append({"attempt": attempt, "stage": "recheck", "error": str(exc)[:300]})
+            continue
+        if not isinstance(checked, dict):
+            history.append({"attempt": attempt, "stage": "recheck", "error": "recheck must return an object"})
+            continue
+        remaining = checked.get("findings", [])
+        if not isinstance(remaining, list):
+            history.append({"attempt": attempt, "stage": "recheck", "error": "recheck.findings must be a list"})
+            continue
+        active = [
+            item for item in remaining
+            if isinstance(item, dict) and str(item.get("status", "active")).lower() not in {"cleared", "resolved", "fixed"}
+        ]
+        history.append({
+            "attempt": attempt,
+            "stage": "recheck",
+            "success": not active,
+            "remaining_finding_ids": [str(item.get("finding_id", "")) for item in active],
+        })
+        if not active:
+            return {
+                "success": True,
+                "repaired": True,
+                "attempts": attempt,
+                "coder_context": current,
+                "recheck": checked,
+                "history": history,
+            }
+        current = {**current, "recheck": checked}
+    return {
+        "success": False,
+        "terminal": True,
+        "retryable": False,
+        "error_code": "frontend_repair_exhausted",
+        "error": {"code": "frontend_repair_exhausted", "message": "frontend repair attempts exhausted"},
+        "attempts": attempts,
+        "history": history,
+        "coder_context": packet,
+    }
