@@ -46,7 +46,12 @@ from .vision_contracts import (
     bound_vision_result,
     parse_vision_result,
 )
-from .frontend_review import FrontendReviewError, build_coder_context, build_model_context
+from .frontend_review import (
+    FrontendReviewError,
+    build_coder_context,
+    build_model_context,
+    parse_bounded_context,
+)
 
 
 def normalize_generation_cache_prompt(prompt: str) -> str:
@@ -1482,12 +1487,17 @@ class LocalAIServices:
 
         def resolve_bundle_context(raw: str) -> tuple[str, dict[str, Any] | None]:
             nonlocal image_artifact_id
+            if not raw.lstrip().startswith(("{", "[")):
+                return raw, None
             try:
-                bundle = json.loads(raw)
-            except (TypeError, ValueError):
-                return raw, None
-            if not isinstance(bundle, dict):
-                return raw, None
+                bundle = parse_bounded_context(raw, "frontend_bundle")
+            except FrontendReviewError as exc:
+                if exc.code == "invalid_frontend_context":
+                    return "", input_error(
+                        "Vision frontend bundle is not valid JSON.",
+                        "vision_bundle_invalid",
+                    )
+                return "", exc.as_result()
             resolved = dict(bundle)
             screenshot = resolved.get("screenshot")
             screenshot_ref = screenshot.get("artifact_id", "") if isinstance(screenshot, dict) else ""
@@ -1561,36 +1571,22 @@ class LocalAIServices:
                 return error
 
         def parse_context_value(field_name: str, value: Any) -> Any:
-            if isinstance(value, dict):
-                return dict(value)
-            if isinstance(value, str):
-                try:
-                    parsed = json.loads(value)
-                except (TypeError, ValueError):
-                    if field_name == "dom":
-                        return {"html": value}
-                    return {"text": value}
-                if isinstance(parsed, dict):
-                    return parsed
-            raise FrontendReviewError(
-                "invalid_frontend_context",
-                f"{field_name} context must be an object",
-            )
+            return parse_bounded_context(value, field_name)
 
         frontend_bundle: dict[str, Any] = {}
         if bundle_context:
-            try:
-                decoded_bundle = json.loads(bundle_context)
-            except (TypeError, ValueError):
-                if bundle_context.lstrip().startswith(("{", "[")):
-                    return input_error("Vision frontend bundle is not valid JSON.", "vision_bundle_invalid")
-                decoded_bundle = None
-            if decoded_bundle is None:
+            if not bundle_context.lstrip().startswith(("{", "[")):
                 frontend_bundle = {}
-            elif not isinstance(decoded_bundle, dict):
-                return input_error("Vision frontend bundle must be a JSON object.", "vision_bundle_invalid")
             else:
-                frontend_bundle = decoded_bundle
+                try:
+                    frontend_bundle = parse_bounded_context(bundle_context, "frontend_bundle")
+                except FrontendReviewError as exc:
+                    if exc.code == "invalid_frontend_context":
+                        return input_error(
+                            "Vision frontend bundle is not valid JSON.",
+                            "vision_bundle_invalid",
+                        )
+                    return exc.as_result()
                 frontend_bundle["bundle_artifact_id"] = bundle_artifact_id
 
         inline_bundle = args.get("bundle") or args.get("frontend_bundle") or args.get("dom_bundle")

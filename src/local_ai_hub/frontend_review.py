@@ -9,6 +9,7 @@ from typing import Any
 from .vision_contracts import (
     UNTRUSTED_CONTEXT_INSTRUCTION,
     VISION_MAX_BUNDLE_CHARS,
+    VISION_MAX_CONTEXT_DEPTH,
     VisionContextBoundsError,
     build_coder_packet,
     validate_bounded_context,
@@ -72,19 +73,72 @@ class FrontendModelContext:
         }
 
 
-def _mapping(value: Any, name: str) -> dict[str, Any]:
+def _raw_json_depth(value: str) -> int:
+    depth = 0
+    maximum = 0
+    in_string = False
+    escaped = False
+    for char in value:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            maximum = max(maximum, depth)
+        elif char in "]}":
+            depth = max(0, depth - 1)
+    return maximum
+
+
+def parse_bounded_context(value: Any, name: str) -> dict[str, Any]:
+    """Parse caller-provided context only after cheap raw size/depth checks."""
     if value is None:
         return {}
     if isinstance(value, dict):
         return dict(value)
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except (TypeError, ValueError) as exc:
-            raise FrontendReviewError("invalid_frontend_context", f"{name} must contain JSON") from exc
-        if isinstance(parsed, dict):
-            return parsed
-    raise FrontendReviewError("invalid_frontend_context", f"{name} must be an object")
+    if not isinstance(value, str):
+        raise FrontendReviewError("invalid_frontend_context", f"{name} context must be an object")
+    if len(value) > VISION_MAX_BUNDLE_CHARS:
+        raise FrontendReviewError(
+            "frontend_context_too_large",
+            f"{name} raw context exceeds the bounded character limit",
+        )
+    if _raw_json_depth(value) > VISION_MAX_CONTEXT_DEPTH:
+        raise FrontendReviewError(
+            "frontend_context_too_deep",
+            f"{name} raw context exceeds the nesting limit",
+        )
+    looks_like_json = value.lstrip().startswith(("{", "["))
+    try:
+        parsed = json.loads(value)
+    except RecursionError as exc:
+        raise FrontendReviewError(
+            "frontend_context_too_deep",
+            f"{name} raw context exceeds the nesting limit",
+        ) from exc
+    except (TypeError, ValueError) as exc:
+        if looks_like_json:
+            raise FrontendReviewError(
+                "invalid_frontend_context",
+                f"{name} must contain valid JSON",
+            ) from exc
+        return {"html": value} if name in {"dom", "html"} else {"text": value}
+    if isinstance(parsed, dict):
+        return parsed
+    raise FrontendReviewError("invalid_frontend_context", f"{name} context must be an object")
+
+
+def _mapping(value: Any, name: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    return parse_bounded_context(value, name)
 
 
 def _strip_transport_metadata(payload: dict[str, Any]) -> dict[str, Any]:
@@ -227,10 +281,9 @@ def _context_value(value: Any, name: str) -> dict[str, Any]:
     result = _mapping(value, name)
     content = result.get("content")
     if isinstance(content, str):
-        try:
-            decoded = json.loads(content)
-        except (TypeError, ValueError):
-            decoded = content
+        decoded = parse_bounded_context(content, name)
+        if set(decoded) in ({"text"}, {"html"}) and next(iter(decoded.values())) == content:
+            return result
         if isinstance(decoded, dict):
             result = {**decoded, **{key: value for key, value in result.items() if key != "content"}}
     return result
