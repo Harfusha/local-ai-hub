@@ -400,12 +400,12 @@ class AgentConsistencyGuard:
 
     def _current_claim_evidence(self, evidence: tuple[Any, ...], request: ConsistencyRequest | None) -> dict[str, Mapping[str, Any]]:
         """Return only deterministic evidence verified against this checkout."""
-        if request is None:
-            return {}
-        try:
-            revision = _text(self.repository_tools.git_snapshot(request.root).revision, 200)
-        except Exception:
-            revision = ""
+        revision = ""
+        if request is not None:
+            try:
+                revision = _text(self.repository_tools.git_snapshot(request.root).revision, 200)
+            except Exception:
+                revision = ""
         records: list[Mapping[str, Any]] = []
         by_id: dict[str, Mapping[str, Any]] = {}
         for item in evidence:
@@ -416,7 +416,7 @@ class AgentConsistencyGuard:
             if item.get("path") and item.get("file_sha256"):
                 records.append(item)
         statuses: dict[str, str] = {}
-        if records:
+        if request is not None and records:
             try:
                 checked = self.repository_tools.verify_evidence(request.root, list(records))
                 checked_rows = _bounded_sequence(checked.get("checked", ()), _MAX_ITEMS) if isinstance(checked, Mapping) else ()
@@ -426,6 +426,16 @@ class AgentConsistencyGuard:
             except Exception:
                 statuses = {}
         current: dict[str, Mapping[str, Any]] = {}
+        if request is None:
+            for evidence_id, item in by_id.items():
+                if _safe_bool(item.get("stale")):
+                    continue
+                status = _text(item.get("status"), 40).casefold()
+                if status in {"stale", "missing", "invalid", "invalid-path"}:
+                    continue
+                if item.get("path") and item.get("file_sha256"):
+                    current[evidence_id] = item
+            return current
         root_text = _text(request.root, 400)
         try:
             root_text = _text(Path(request.root).resolve(), 400)
@@ -445,8 +455,7 @@ class AgentConsistencyGuard:
             if item_revision and (not revision or item_revision != revision):
                 continue
             status = statuses.get(evidence_id, "")
-            explicit_status = _text(item.get("status"), 40).casefold()
-            if status == "current" or (not item.get("file_sha256") and explicit_status == "current" and item_revision == revision and revision):
+            if status == "current":
                 current[evidence_id] = item
         return current
 

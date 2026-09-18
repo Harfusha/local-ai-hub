@@ -1142,64 +1142,76 @@ class RepositoryTools:
         elif base:
             cmd.append(base)
         budget_chars = max(1, chars_for_tokens(max_tokens))
-        # Drain both pipes concurrently. Only the bounded prefix is retained;
-        # stdout's digest/count still cover the complete stream.
-        stdout_retained = bytearray()
-        stderr_retained = bytearray()
-        stdout_digest = hashlib.sha256()
-        stdout_total = 0
+        def bounded_process(command: list[str], retain_limit: int, on_stdout_chunk: Any = None, digest_output: bool = False) -> dict[str, Any]:
+            retained = bytearray()
+            stderr_retained = bytearray()
+            digest = hashlib.sha256() if digest_output else None
+            total = 0
 
-        def drain(stream: Any, retained: bytearray, digest: Any | None = None) -> None:
-            nonlocal stdout_total
-            try:
-                while True:
-                    chunk = stream.read(65536)
-                    if not chunk:
-                        return
-                    if digest is not None:
-                        digest.update(chunk)
-                        stdout_total += len(chunk)
-                    remaining = max(0, budget_chars - len(retained))
-                    if remaining:
-                        retained.extend(chunk[:remaining])
-            except Exception:
-                return
+            def drain(stream: Any, output: bytearray, digest_value: Any = None) -> None:
+                nonlocal total
+                try:
+                    while True:
+                        chunk = stream.read(65536)
+                        if not chunk:
+                            return
+                        if digest_value is not None:
+                            digest_value.update(chunk)
+                            total += len(chunk)
+                        if on_stdout_chunk is not None and output is retained:
+                            try:
+                                on_stdout_chunk(chunk)
+                            except Exception:
+                                pass
+                        remaining = max(0, retain_limit - len(output))
+                        if remaining:
+                            output.extend(chunk[:remaining])
+                except Exception:
+                    return
 
-        try:
-            completed = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                **hidden_run_kwargs(),
-            )
-            stdout_thread = threading.Thread(target=drain, args=(completed.stdout, stdout_retained, stdout_digest), daemon=True)
-            stderr_thread = threading.Thread(target=drain, args=(completed.stderr, stderr_retained), daemon=True)
-            stdout_thread.start()
-            stderr_thread.start()
+            process = None
             try:
-                returncode = completed.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                completed.kill()
-                returncode = completed.wait(timeout=5)
+                process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **hidden_run_kwargs())
+                stdout_thread = threading.Thread(target=drain, args=(process.stdout, retained, digest), daemon=True)
+                stderr_thread = threading.Thread(target=drain, args=(process.stderr, stderr_retained), daemon=True)
+                stdout_thread.start()
+                stderr_thread.start()
+                try:
+                    returncode = process.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+                    stdout_thread.join(timeout=5)
+                    stderr_thread.join(timeout=5)
+                    return {"returncode": None, "error": "git diff timed out", "retryable": True}
                 stdout_thread.join(timeout=5)
                 stderr_thread.join(timeout=5)
-                for stream in (completed.stdout, completed.stderr):
-                    try:
-                        stream.close()
-                    except Exception:
-                        pass
-                return {"success": False, "error": "git diff timed out", "retryable": True}
-            stdout_thread.join(timeout=5)
-            stderr_thread.join(timeout=5)
-            for stream in (completed.stdout, completed.stderr):
-                try:
-                    stream.close()
-                except Exception:
-                    pass
-        except Exception as exc:
-            return {"success": False, "error": str(exc)}
-        stderr_text = bytes(stderr_retained).decode("utf-8", errors="replace").strip()
-        if returncode != 0:
+                return {
+                    "returncode": returncode,
+                    "stdout": bytes(retained),
+                    "stderr": bytes(stderr_retained),
+                    "total": total,
+                    "sha256": digest.hexdigest() if digest is not None else "",
+                }
+            except Exception as exc:
+                return {"returncode": None, "error": str(exc)}
+            finally:
+                if process is not None:
+                    for stream in (process.stdout, process.stderr):
+                        try:
+                            stream.close()
+                        except Exception:
+                            pass
+
+        content_result = bounded_process(cmd, budget_chars, digest_output=True)
+        if content_result.get("returncode") is None:
+            return {"success": False, "error": content_result.get("error", "git diff failed"), "retryable": content_result.get("retryable", False)}
+        stderr_text = bytes(content_result.get("stderr", b"")).decode("utf-8", errors="replace").strip()
+        if content_result["returncode"] != 0:
             return {"success": False, "error": stderr_text or "git diff failed"}
-        text = bytes(stdout_retained).decode("utf-8", errors="replace")
+        stdout_retained = bytes(content_result.get("stdout", b""))
+        stdout_total = int(content_result.get("total", len(stdout_retained)))
+        text = stdout_retained.decode("utf-8", errors="replace")
         truncated = stdout_total > len(stdout_retained) or len(text) > budget_chars
         if len(text) > budget_chars:
             text = text[:budget_chars]
@@ -1207,22 +1219,45 @@ class RepositoryTools:
         if truncated:
             text += "\n\n[... additional diff sections omitted to fit local review budget ...]\n"
         changed: list[str] = []
-        retained_stdout = bytes(stdout_retained).decode("utf-8", errors="replace")
+        retained_stdout = stdout_retained.decode("utf-8", errors="replace")
         for line in retained_stdout.splitlines():
             if not line.startswith("diff --git a/"):
                 continue
             match = re.match(r"diff --git a/(.+?) b/(.+)$", line)
             if match:
                 changed.append(match.group(2))
+        path_names: list[str] = []
+        path_pending = bytearray()
+
+        def collect_path_chunk(chunk: bytes) -> None:
+            if len(path_names) >= 4096:
+                return
+            data = bytes(path_pending) + chunk
+            pieces = data.split(b"\0")
+            path_pending.clear()
+            path_pending.extend(pieces.pop()[-4096:])
+            for piece in pieces:
+                if piece and len(path_names) < 4096:
+                    path_names.append(piece[:4096].decode("utf-8", errors="replace"))
+
+        path_cmd = ["git", "-C", str(repo), "diff", "--no-ext-diff", "--name-only", "-z"]
+        if staged:
+            path_cmd.append("--cached")
+        elif base:
+            path_cmd.append(base)
+        path_result = bounded_process(path_cmd, 0, on_stdout_chunk=collect_path_chunk)
+        if path_pending and len(path_names) < 4096:
+            path_names.append(bytes(path_pending)[:4096].decode("utf-8", errors="replace"))
         snapshot = self.git_snapshot(str(repo))
-        changed_paths = list(dict.fromkeys(changed + list(snapshot.changed_paths)))
+        changed_files = list(dict.fromkeys(path_names + changed))
+        changed_paths = list(dict.fromkeys(changed_files + list(snapshot.changed_paths)))
         return {
-            "success": True, "root": str(repo), "diff": text, "changed_files": changed,
+            "success": True, "root": str(repo), "diff": text, "changed_files": changed_files,
             "changed_paths": changed_paths, "revision": snapshot.revision,
             "repository_revision": snapshot.repository_revision,
             "estimated_tokens": estimate_tokens(text),
             "original_estimated_tokens": max(estimate_tokens(text), (stdout_total + 3) // 4),
-            "truncated": truncated, "diff_sha256": stdout_digest.hexdigest(),
+            "truncated": truncated, "diff_sha256": content_result["sha256"],
         }
 
 
