@@ -359,6 +359,7 @@ class LocalAIApp:
                 "agent_os": fs.agent_os,
                 "dashboard": fs.dashboard,
                 "work_orchestrator": fs.work_orchestrator,
+                "vision": fs.vision,
             },
             "models": {
                 "vision": fs.vision_model,

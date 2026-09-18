@@ -145,6 +145,22 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         )
     tiering_section = "\n".join(tiering_bullets)
 
+    manage_ollama = bool(cfg.get("headless", {}).get("manage_ollama", True))
+    if manage_ollama:
+        ollama_ownership_section = (
+            "## Ollama process ownership\n\n"
+            "When `headless.manage_ollama = true`, Ollama is owned by the Local AI Hub supervisor. "
+            "Never run `ollama serve` or add a separate Ollama startup task; use `python tools/service.py start|restart`. "
+            "The supervisor takes over a local unmanaged Ollama process and applies the configured profile. "
+            "Set `headless.manage_ollama = false` only when intentionally using an external Ollama owner."
+        )
+    else:
+        ollama_ownership_section = (
+            "## Ollama process ownership\n\n"
+            "`headless.manage_ollama = false` leaves Ollama user-managed. Keep its startup and environment outside the Hub, "
+            "and do not expect the Hub to verify or apply the foreground Ollama profile."
+        )
+
     # Read-only audit contract
     if fs.commands:
         audit_fallback = (
@@ -324,6 +340,8 @@ Delegation is the default for any task with useful bounded independent work.
     The main agent owns task boundaries, permissions, unresolved decisions and the final user answer. {work_owner_note}
 
 {tiering_section}
+
+{ollama_ownership_section}
 
 ## READ-ONLY AUDIT CONTRACT
 

@@ -214,9 +214,14 @@ def test_agent_prompts_require_durable_task_checkpoints_and_one_bounded_wait():
         assert "one bounded wait" in prompt
 
 
-def test_generated_skills_are_not_required_in_source_tree():
-    assert not (ROOT / "skills" / "local-ai-orchestrator" / "SKILL.md").exists()
-    assert not (ROOT / "skills" / "token-economizer" / "SKILL.md").exists()
+def test_generated_skills_are_ignored_in_source_tree():
+    gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    for pattern in (
+        "/skills/local-ai-orchestrator/SKILL.md",
+        "/skills/local-ai-orchestrator/references/*.md",
+        "/skills/token-economizer/SKILL.md",
+    ):
+        assert pattern in gitignore
 
 
 def test_update_prompt_uses_branch_safe_pull_and_generated_artifact_wording():

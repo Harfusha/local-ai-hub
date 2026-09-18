@@ -26,7 +26,9 @@ def test_compact_mcp_surface_is_exactly_eight_tools():
 
 
 def test_packaged_defaults_match_source_defaults():
-    assert (ROOT / "defaults.toml").read_bytes() == (ROOT / "src" / "local_ai_hub" / "defaults.toml").read_bytes()
+    packaged = (ROOT / "defaults.toml").read_text(encoding="utf-8").replace("\r\n", "\n")
+    source = (ROOT / "src" / "local_ai_hub" / "defaults.toml").read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert packaged == source
 
 
 def test_browser_bridge_files_are_in_source_and_wheel_manifests():

@@ -170,18 +170,35 @@ class LlamaCppRoutingTests(unittest.TestCase):
         self.assertTrue(amd["ollama"]["allow_integrated_gpu"])
         self.assertTrue(amd["ollama"]["enable_vulkan"])
 
-    def test_hardware_profiles_share_the_four_model_roles(self):
+    def test_hardware_profiles_select_model_roles(self):
         expected = {
             "background_code": "qwen2.5-coder:0.5b",
             "fast_code": "qwen2.5-coder:1.5b",
             "heavy_code": "qwen2.5-coder:3b",
             "reasoning": "qwen2.5-coder:7b",
-            "general": "qwen2.5-coder:1.5b",
+        }
+        expected_vision = {
+            "cpu": "qwen3-vl:4b",
+            "integrated": "qwen3-vl:4b",
+            "low": "qwen3-vl:4b",
+            "balanced": "qwen3.5:9b",
+            "high": "qwen3.5:9b",
+            "max": "qwen3.5:9b",
+        }
+        expected_general = {
+            "cpu": "qwen2.5-coder:1.5b",
+            "integrated": "qwen2.5-coder:1.5b",
+            "low": "qwen2.5-coder:1.5b",
+            "balanced": "qwen3.5:9b",
+            "high": "qwen3.5:9b",
+            "max": "qwen3.5:9b",
         }
         for name in ("cpu", "integrated", "low", "balanced", "high", "max"):
             with self.subTest(profile=name):
                 profile = profile_overrides(name, {"gpus": [], "ram": {"total_gb": 32}})
-                self.assertEqual(profile["models"], expected)
+                self.assertEqual({k: profile["models"][k] for k in expected}, expected)
+                self.assertEqual(profile["models"]["general"], expected_general[name])
+                self.assertEqual(profile["models"]["vision"], expected_vision[name])
 
 
 if __name__ == "__main__":

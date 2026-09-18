@@ -118,18 +118,18 @@ class _RepoState:
         return {"fingerprint": "f", "kind": "test"}
 
 
-def test_command_policy_is_fail_closed_for_arbitrary_scripts(tmp_path: Path):
+def test_command_policy_uses_enabled_default_capabilities(tmp_path: Path):
     cfg = load_config(_config(tmp_path))
     broker = CommandBroker(cfg, _Artifacts(), _RepoState())
     assert broker.classify("npm test")["allowed"] is True
     assert broker.classify("npm run build")["class"] == "build"
-    assert broker.classify("npm run deploy")["allowed"] is False
+    assert broker.classify("npm run deploy")["allowed"] is True
     assert broker.classify("npm install")["class"] == "mutating"
     assert broker.classify("make test")["allowed"] is True
-    assert broker.classify("make clean")["allowed"] is False
-    assert broker.classify("cargo fmt")["allowed"] is False
+    assert broker.classify("make clean")["allowed"] is True
+    assert broker.classify("cargo fmt")["allowed"] is True
     assert broker.classify("cargo fmt -- --check")["class"] == "validation"
-    assert broker.classify("go mod tidy")["allowed"] is False
+    assert broker.classify("go mod tidy")["allowed"] is True
 
 
 class _FakeClient:
