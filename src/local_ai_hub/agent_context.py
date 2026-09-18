@@ -27,6 +27,8 @@ class ContextRequest:
     clone_id: str = ""
     worktree_id: str = ""
     branch: str = ""
+    repository_id: str = ""
+    session_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -370,12 +372,13 @@ class ContextCompiler:
 
         # 3. Active memory records (priority: 70)
         if self.memory_store is not None:
+            context_tenant = request.tenant or request.session_id
             find_for_context = getattr(self.memory_store, "find_for_context", None)
             if callable(find_for_context):
                 records = find_for_context(
                     root=request.root,
                     task_id=request.task_id,
-                    tenant=request.tenant,
+                    tenant=context_tenant,
                     clone_id=request.clone_id,
                     worktree_id=request.worktree_id,
                     branch=request.branch,
@@ -404,7 +407,7 @@ class ContextCompiler:
                         id_limit=8,
                         root=request.root,
                         task_id=request.task_id,
-                        tenant=request.tenant,
+                        tenant=context_tenant,
                         clone_id=request.clone_id,
                         worktree_id=request.worktree_id,
                         branch=request.branch,

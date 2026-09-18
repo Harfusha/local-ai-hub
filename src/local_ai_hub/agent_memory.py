@@ -90,6 +90,7 @@ _CONTEXT_ROOT_SQL = (
     "canonical_scope_root(json_extract("
     "CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.root'))"
 )
+_MAX_STALE_CHANGED_PATHS = 32
 
 
 def _context_scope_sql(
@@ -632,11 +633,19 @@ class MemoryStore:
             raw_changed_paths = (changed_paths,)
         else:
             raw_changed_paths = changed_paths or ()
-        changed = tuple(
-            self._canonical_repo_path(root, path)
-            for path in raw_changed_paths
-            if path is not None and str(path).strip() and str(path).strip().lower() != "none"
-        )
+        changed_values: list[str] = []
+        seen_paths: set[str] = set()
+        for path in raw_changed_paths:
+            if path is None or not str(path).strip() or str(path).strip().lower() == "none":
+                continue
+            normalized_path = self._canonical_repo_path(root, str(path))
+            if normalized_path in seen_paths:
+                continue
+            seen_paths.add(normalized_path)
+            changed_values.append(normalized_path)
+            if len(changed_values) >= _MAX_STALE_CHANGED_PATHS:
+                break
+        changed = tuple(changed_values)
         if not changed:
             return 0
 

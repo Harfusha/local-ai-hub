@@ -749,6 +749,13 @@ class LocalAIApp:
         }
         if exported_agent_records:
             bundle_data["agent_state_records"] = exported_agent_records
+            agent_records_canonical = json_dumps(
+                exported_agent_records,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            bundle_data["agent_state_records_sha256"] = hashlib.sha256(agent_records_canonical).hexdigest()
         raw_json = json_dumps(bundle_data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         if len(raw_json) > max_json:
             raise ValueError(f"bundle.json exceeds configured limit ({max_json} bytes)")
@@ -798,7 +805,10 @@ class LocalAIApp:
 
         bundle_format = str(data.get("format", ""))
 
-        def restore_agent_memory_records(records: Any) -> tuple[int, str | None]:
+        def restore_agent_memory_records(
+            records: Any,
+            target_root_path: str | None = None,
+        ) -> tuple[int, str | None]:
             if not isinstance(records, list):
                 return 0, "bundle records are missing"
             restored = 0
@@ -810,29 +820,39 @@ class LocalAIApp:
                 if not isinstance(rdata, dict):
                     return 0, "invalid agent-state bundle payload"
                 if rtype == "memory" and getattr(self, "agent_memory", None):
+                    record_data = dict(rdata)
+                    scope_value = str(record_data.get("scope", "")).strip().lower()
+                    provenance = record_data.get("provenance")
+                    if target_root_path and scope_value in {"repo", "repository"} and isinstance(provenance, dict):
+                        source_root = provenance.get("root")
+                        if source_root:
+                            rebased_provenance = dict(provenance)
+                            rebased_provenance["source_root"] = str(source_root)
+                            rebased_provenance["root"] = target_root_path
+                            record_data["provenance"] = rebased_provenance
                     from_dict = getattr(MemoryRecord, "from_dict", None)
                     if callable(from_dict) and all(
-                        field in rdata for field in ("record_id", "status", "provenance")
+                        field in record_data for field in ("record_id", "status", "provenance")
                     ):
                         try:
-                            rec = from_dict(rdata)
+                            rec = from_dict(record_data)
                         except (KeyError, TypeError, ValueError):
                             rec = MemoryRecord.create(
-                                kind=MemoryKind(rdata.get("kind", "fact")),
-                                scope=AgentScope.parse(rdata.get("scope", "task")),
-                                key=str(rdata.get("key", "")),
-                                value=rdata.get("value"),
-                                scope_id=str(rdata.get("scope_id", "")),
-                                status=MemoryStatus(rdata.get("status", "candidate")),
+                                kind=MemoryKind(record_data.get("kind", "fact")),
+                                scope=AgentScope.parse(record_data.get("scope", "task")),
+                                key=str(record_data.get("key", "")),
+                                value=record_data.get("value"),
+                                scope_id=str(record_data.get("scope_id", "")),
+                                status=MemoryStatus(record_data.get("status", "candidate")),
                             )
                     else:
                         rec = MemoryRecord.create(
-                            kind=MemoryKind(rdata.get("kind", "fact")),
-                            scope=AgentScope.parse(rdata.get("scope", "task")),
-                            key=str(rdata.get("key", "")),
-                            value=rdata.get("value"),
-                            scope_id=str(rdata.get("scope_id", "")),
-                            status=MemoryStatus(rdata.get("status", "candidate")),
+                            kind=MemoryKind(record_data.get("kind", "fact")),
+                            scope=AgentScope.parse(record_data.get("scope", "task")),
+                            key=str(record_data.get("key", "")),
+                            value=record_data.get("value"),
+                            scope_id=str(record_data.get("scope_id", "")),
+                            status=MemoryStatus(record_data.get("status", "candidate")),
                         )
                     self.agent_memory.record(rec, actor="bundle_import")
                     restored += 1
@@ -861,6 +881,21 @@ class LocalAIApp:
         expected = str(data.get("tables_sha256", ""))
         if not expected or not hmac.compare_digest(hashlib.sha256(canonical).hexdigest(), expected):
             return {"success": False, "error": "bundle integrity check failed"}
+        if "agent_state_records" in data:
+            agent_records = data.get("agent_state_records")
+            if not isinstance(agent_records, list):
+                return {"success": False, "error": "invalid agent-state bundle records"}
+            agent_records_canonical = json_dumps(
+                agent_records,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            agent_records_expected = str(data.get("agent_state_records_sha256", ""))
+            if not agent_records_expected or not hmac.compare_digest(
+                hashlib.sha256(agent_records_canonical).hexdigest(), agent_records_expected
+            ):
+                return {"success": False, "error": "bundle integrity check failed"}
         try:
             tables = self._bundle_decode(encoded_tables)
         except Exception as exc:
@@ -987,7 +1022,7 @@ class LocalAIApp:
 
         restored_agent_records = 0
         if "agent_state_records" in data:
-            restored_agent_records, error = restore_agent_memory_records(data.get("agent_state_records"))
+            restored_agent_records, error = restore_agent_memory_records(data.get("agent_state_records"), root_path)
             if error:
                 return {"success": False, "error": error}
 
