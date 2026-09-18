@@ -219,22 +219,21 @@ def _semantic_handoff_contract(enabled: bool) -> str:
 
 
 def _desc_task() -> str:
+    local_enabled = FEATURES.tasks and FEATURES.has_any_model()
+    if not local_enabled:
+        return (
+            "Local inference is disabled on this installation for this tool."
+            " Returns unsupported=true for local-model actions."
+            " Use deterministic/indexed evidence only."
+        )
     if LEAN_SCHEMAS:
         return (
             "Bounded local-model worker for semantic generation, exploration, reasoning, review, independent second opinions, and semantic compression. "
             "Use deterministic/indexed tools for exact facts, symbols, diff and tests; they are not substitutes for these semantic tasks. "
-            f"{_semantic_handoff_contract(FEATURES.tasks and FEATURES.has_any_model())}"
+            f"{_semantic_handoff_contract(local_enabled)}"
             "Command failure diagnosis remains disabled by default; never pass raw logs or open-ended coding. "
             "Local AI Hub does not route or manage native Codex agents. "
             f"{_actions_note(FEATURES.supported_task_actions())}"
-        )
-    if not FEATURES.has_any_model():
-        return (
-            "Local-model worker — disabled on this installation (no local model backend configured)."
-            " Returns unsupported=true for all actions."
-            " Use when: never (no local inference available). Skip when: always use indexed evidence only."
-            f"{_semantic_handoff_contract(False)}"
-            " Local AI Hub does not route or manage external agents."
         )
     profile_note = ""
     if FEATURES.subagents and FEATURES.subagent_profiles:
@@ -249,7 +248,7 @@ def _desc_task() -> str:
         f" Explicit model overrides must match a configured model tag."
         f"{profile_note}"
         " Use deterministic/indexed tools for exact facts, symbols, diff and tests; use this worker for semantic generation, exploration, reasoning, review, independent second opinions and semantic compression after any needed evidence."
-        f"{_semantic_handoff_contract(FEATURES.tasks and FEATURES.has_any_model())}"
+        f"{_semantic_handoff_contract(local_enabled)}"
         " Command failure diagnosis is disabled by default; enable `features.local_diagnostic_dispatch=true` only for one local diagnostic after low-confidence deterministic command parsing with an artifact reference and narrow preview, never raw logs."
         " Never automatically dispatch local inference for architecture, security, mutations, or open-ended coding."
         " Use it for bounded generation, exploration, reasoning, boilerplate, review, independent second opinions and semantic compression after any needed indexed evidence."
@@ -268,12 +267,20 @@ def _desc_task() -> str:
 
 
 def _desc_repo() -> str:
+    local_enabled = FEATURES.tasks and FEATURES.has_any_model()
+    if not local_enabled:
+        return (
+            "Primary repository worker for repository navigation, symbols, and impact."
+            " Local inference is disabled on this installation."
+            " Use deterministic/indexed evidence only for exact facts, symbols, diff, tests, and verification."
+            " Native fallback requires terminal=true and retryable=false."
+        )
     if LEAN_SCHEMAS:
         local_semantic = ""
-        if FEATURES.tasks and FEATURES.has_any_model():
+        if local_enabled:
             local_semantic = (
                 " use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression."
-                + _semantic_handoff_contract(True)
+                + _semantic_handoff_contract(local_enabled)
             )
         return "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Use deterministic/indexed actions for exact facts, symbols, diff and tests;" + local_semantic + " `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
     semantic_hint = ""
@@ -289,10 +296,10 @@ def _desc_repo() -> str:
         f" Use deterministic, code_index/search,{' ' + FEATURES.semantic_hint() + ',' if FEATURES.has_semantic() else ''}"
         " context and solve for bounded evidence and implementation support."
         " For implementation, diagnosis, refactoring or complex review, call `solve` after evidence and before native edits."
-        f"{' When generating, use `' + FEATURES.fast_model + '` for quick tasks, `' + FEATURES.smart_model + '` for complex work, and `' + FEATURES.reasoning_model + '` for hardest reasoning.' if FEATURES.has_any_model() else ''}"
+        f"{' When generating, use `' + FEATURES.fast_model + '` for quick tasks, `' + FEATURES.smart_model + '` for complex work, and `' + FEATURES.reasoning_model + '` for hardest reasoning.' if local_enabled else ''}"
         " `review_diff` and `security_audit` are targeted local checks."
-        f"{'  After any needed indexed evidence, use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong.' if FEATURES.has_any_model() else ''}"
-        f"{_semantic_handoff_contract(FEATURES.tasks and FEATURES.has_any_model())}"
+        f"{'  After any needed indexed evidence, use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong.' if local_enabled else ''}"
+        f"{_semantic_handoff_contract(local_enabled)}"
         " Codex separately decides whether to use native Codex subagents;"
         " Local AI Hub does not route or manage those agents."
         " On first use of a stable absolute root call action=preprocess exactly once and continue immediately;"

@@ -130,16 +130,33 @@ def test_disabled_local_task_description_does_not_claim_mandatory_local_executio
     assert "mandatory local execution" not in description
 
 
+@pytest.mark.parametrize("lean", [True, False])
 @pytest.mark.parametrize("tasks,has_model", [(False, True), (True, False)])
-def test_lean_repo_description_omits_local_routing_without_models(monkeypatch, tasks, has_model) -> None:
-    monkeypatch.setattr(local_ai_mcp, "LEAN_SCHEMAS", True)
+def test_disabled_descriptions_omit_local_routing_without_models(monkeypatch, lean, tasks, has_model) -> None:
+    monkeypatch.setattr(local_ai_mcp, "LEAN_SCHEMAS", lean)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", tasks)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: has_model)
 
-    description = local_ai_mcp._desc_repo()
+    descriptions = local_ai_mcp._desc_task() + local_ai_mcp._desc_repo()
 
-    assert "local_ai_task" not in description
-    assert "semantic handoff" not in description.lower()
+    assert "local_ai_task" not in descriptions
+    assert "semantic handoff" not in descriptions.lower()
+    assert "bypass" not in descriptions.lower()
+    assert "deterministic/indexed" in descriptions
+
+
+@pytest.mark.parametrize("lean", [True, False])
+def test_enabled_descriptions_preserve_local_routing_contract(monkeypatch, lean) -> None:
+    monkeypatch.setattr(local_ai_mcp, "LEAN_SCHEMAS", lean)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+
+    descriptions = local_ai_mcp._desc_task() + local_ai_mcp._desc_repo()
+    normalized = descriptions.lower()
+
+    assert "local_ai_task" in descriptions
+    assert "semantic handoff is mandatory" in normalized
+    assert "before cloud reasoning" in normalized
 
 
 def test_successful_repo_evidence_exposes_typed_semantic_handoff(monkeypatch) -> None:
