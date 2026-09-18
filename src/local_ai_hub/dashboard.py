@@ -794,7 +794,7 @@ function consumeFrontendVisionCapture(result){
   if(payload.success!==true){setFrontendVisionCaptureState('not_captured','Capture failed');setFrontendVisionCaptureError(payload.error||payload.error_code||'Current-tab capture failed.');return;}
   window.frontendVisionCapture=payload;setFrontendVisionCaptureState('produced','Captured current tab');setFrontendVisionCaptureError('');
 }
-window.addEventListener('message',event=>{if(event?.data?.type==='LOCAL_AI_VISION_CAPTURE_RESULT')consumeFrontendVisionCapture(event.data.result||event.data)});
+if(typeof window!=='undefined')window.addEventListener('message',event=>{if(event?.data?.type==='LOCAL_AI_VISION_CAPTURE_RESULT')consumeFrontendVisionCapture(event.data.result||event.data)});
 function readFrontendVisionFile(file){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onerror=()=>reject(new Error('Screenshot could not be read.'));reader.onload=()=>resolve(String(reader.result||''));reader.readAsDataURL(file);});}
 function renderFrontendVisionReviewResult(result){const target=$('visionReviewResult');if(!target)return;const model={output:result,session:{model:result?.model||'',source:result?.source||'upload'},identity:{action:'/api/vision/review'},lifecycle:{state:result?.success===false?'failed':'completed'}};target.innerHTML=typeof renderVisionReviewPresentation==='function'?renderVisionReviewPresentation(model):`<pre>${esc(JSON.stringify(result||{},null,2))}</pre>`;}
 async function submitFrontendVisionReview(){
