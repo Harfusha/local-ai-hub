@@ -2967,6 +2967,47 @@ class Handler(BaseHTTPRequestHandler):
                 mode = str(payload.get("mode", "fast")).strip().lower()
                 if mode not in {"full", "fast"}:
                     self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "context mode must be full or fast"}); return
+                guarded = payload.get("guarded", False)
+                guarded_requested = bool(guarded) or bool(str(payload.get("task_id", "")).strip()) or bool(str(payload.get("phase", "")).strip())
+                if guarded_requested:
+                    if not isinstance(guarded, bool):
+                        self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "guarded must be boolean"}); return
+                    if payload.get("focus") is not None and not isinstance(payload.get("focus"), list):
+                        self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "focus must be a list"}); return
+                    if payload.get("changed_paths") is not None and not isinstance(payload.get("changed_paths"), list):
+                        self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "changed_paths must be a list"}); return
+                    if payload.get("staged") is not None and not isinstance(payload.get("staged"), bool):
+                        self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "staged must be boolean"}); return
+                    for field in ("task_id", "phase", "query", "preload_profile", "base", "since_hash", "override_reason"):
+                        if payload.get(field) is not None and not isinstance(payload.get(field), str):
+                            self._send(400, {"success": False, "terminal": True, "retryable": False, "error": f"{field} must be string"}); return
+                    approval = payload.get("approval", "")
+                    if not isinstance(approval, (bool, str)):
+                        self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "approval must be boolean or string"}); return
+                    from .agent_consistency import ConsistencyRequest
+
+                    request = ConsistencyRequest(
+                        root=root,
+                        task_id=str(payload.get("task_id", "")),
+                        query=query_text,
+                        phase=str(payload.get("phase", "")),
+                        focus=tuple(str(item) for item in (payload.get("focus") or [])),
+                        workspace=str(payload.get("workspace", "")),
+                        preload_profile=str(payload.get("preload_profile", "")),
+                        token_budget=max_tokens,
+                        changed_paths=tuple(str(item) for item in (payload.get("changed_paths") or [])),
+                        base=str(payload.get("base", "HEAD")),
+                        staged=bool(payload.get("staged", False)),
+                        tenant=tenant,
+                        override_reason=str(payload.get("override_reason", "")),
+                        approval=approval,
+                    )
+                    result = APP.services.adaptive_context_pack(
+                        request,
+                        mode=mode,
+                        since_hash=str(payload.get("since_hash", "")),
+                    )
+                    self._send(200, result); return
                 result = APP.services.fast_context(root, query_text, max_tokens) if mode == "fast" else APP.services._hybrid_context(
                     root, query_text, tenant, payload.get("workspace"), max_tokens,
                 )

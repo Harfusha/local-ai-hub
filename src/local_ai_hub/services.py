@@ -3,6 +3,7 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import copy
+import hashlib
 import json
 import re
 import shutil
@@ -32,6 +33,7 @@ from .state_paths import configured_state_dir
 from .telemetry import TelemetryStore
 from .trace_context import observer
 from .treesitter_parser import parse_treesitter
+from .agent_consistency import AdaptiveContextPack, ConsistencyRequest, GuardWarning
 
 
 def normalize_generation_cache_prompt(prompt: str) -> str:
@@ -322,6 +324,7 @@ class LocalAIServices:
     tool_agent: Any = None
     blackboard: Any = None
     agent_state: Any = None
+    consistency_guard: Any = None
 
     def __init__(
         self,
@@ -373,6 +376,7 @@ class LocalAIServices:
         self.swarm: Any | None = None
         self.blackboard: Any | None = None
         self.agent_state: Any | None = None
+        self.consistency_guard: Any | None = None
         self.flight_group = SingleFlightGroup(shards=32, default_timeout_seconds=60.0)
 
         cache_cfg = config.get("cache", {})
@@ -472,6 +476,126 @@ class LocalAIServices:
 
     def set_agent_state(self, store: Any) -> None:
         self.agent_state = store
+
+    def set_consistency_guard(self, guard: Any) -> None:
+        self.consistency_guard = guard
+
+    @staticmethod
+    def _guard_truthy(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        return str(value or "").strip().lower() not in {"", "0", "false", "no", "off", "none"}
+
+    def _guard_decision(self, request: ConsistencyRequest, revision: str, *, reason: str = "", approval: Any = "") -> tuple[bool, bool]:
+        """Persist bounded operator decisions through the guard's existing memory store."""
+        if not reason and not self._guard_truthy(approval):
+            return False, False
+        store = getattr(self.consistency_guard, "memory_store", None)
+        if store is None or not callable(getattr(store, "record", None)):
+            return True, False
+        try:
+            from .agent_identity import AgentScope
+            from .agent_memory import MemoryKind, MemoryRecord
+
+            token = hashlib.sha256(
+                f"{request.task_id}:{request.phase}:{revision}:{reason}:{approval}".encode("utf-8", "replace")
+            ).hexdigest()[:16]
+            record = MemoryRecord.create(
+                kind=MemoryKind.DECISION,
+                scope=AgentScope.REPOSITORY,
+                key=f"consistency_decision:{token}",
+                value={"approved": self._guard_truthy(approval), "reason": str(reason)[:500]},
+                source="consistency_guard",
+                repository_revision=revision,
+                path_refs=tuple(request.changed_paths),
+                related_task=request.task_id or None,
+                provenance={"root": request.root, "phase": request.phase, "guard": "agent_consistency"},
+            )
+            try:
+                store.record(record, actor="consistency_guard", idempotency_key=f"consistency-decision:{token}")
+            except TypeError:
+                store.record(record)
+            return True, True
+        except Exception:
+            return True, False
+
+    def _guard_existing_approval(self, request: ConsistencyRequest) -> bool:
+        store = getattr(self.consistency_guard, "memory_store", None)
+        finder = getattr(store, "find", None)
+        if not callable(finder) or not request.task_id:
+            return False
+        try:
+            records = finder(root=request.root, limit=12, semantic=False)
+        except TypeError:
+            try:
+                records = finder(limit=12)
+            except Exception:
+                return False
+        except Exception:
+            return False
+        for record in records or ():
+            kind = getattr(getattr(record, "kind", None), "value", getattr(record, "kind", ""))
+            value = getattr(record, "value", {})
+            provenance = getattr(record, "provenance", {}) or {}
+            if kind != "decision" or provenance.get("related_task") != request.task_id:
+                continue
+            if isinstance(value, dict) and self._guard_truthy(value.get("approved") or value.get("approval")):
+                return True
+        return False
+
+    def _guard_task_state(self, request: ConsistencyRequest, warnings: tuple[GuardWarning, ...], revision: str) -> tuple[str, bool]:
+        store = getattr(self.consistency_guard, "task_store", None)
+        if store is None or not request.task_id or not callable(getattr(store, "get", None)):
+            return "", False
+        try:
+            state = store.get(request.task_id)
+        except Exception:
+            return "", False
+        if state is None:
+            return "", False
+        status = getattr(getattr(state, "status", None), "value", getattr(state, "status", ""))
+        boundary = tuple(item for item in warnings if item.requires_approval or item.severity.lower() in {"boundary", "high", "high-risk"})
+        checkpoint_data = getattr(getattr(state, "checkpoint", None), "state_data", {}) or {}
+        checkpoint_approval = checkpoint_data.get("approval") or checkpoint_data.get("approved") or checkpoint_data.get("coordinator_decision")
+        approved = self._guard_truthy(request.approval) or self._guard_existing_approval(request) or self._guard_truthy(checkpoint_approval)
+        if boundary and not approved and status == "active":
+            warning_ids = tuple(dict.fromkeys(evidence_id for item in boundary for evidence_id in item.evidence_ids))[:24]
+            try:
+                from .agent_tasks import TaskCheckpoint, TaskStatus
+
+                store.transition(
+                    request.task_id,
+                    TaskStatus.WAITING,
+                    reason="consistency guard boundary warning",
+                    actor="consistency_guard",
+                    idempotency_key=f"guard-wait:{request.task_id}:{revision}",
+                )
+                store.checkpoint(
+                    request.task_id,
+                    TaskCheckpoint(
+                        phase=request.phase,
+                        next_action=boundary[0].recommended_action or "obtain approval before continuing",
+                        affected_paths=tuple(request.changed_paths),
+                        evidence_ids=warning_ids,
+                        blockers=tuple(item.code for item in boundary)[:24],
+                        state_data={"warning_ids": list(warning_ids), "repository_revision": revision},
+                    ),
+                    actor="consistency_guard",
+                    idempotency_key=f"guard-checkpoint:{request.task_id}:{revision}",
+                )
+            except Exception:
+                pass
+        elif approved and status == "waiting":
+            try:
+                store.resume(request.task_id, actor="consistency_guard", idempotency_key=f"guard-resume:{request.task_id}:{revision}")
+            except Exception:
+                pass
+        try:
+            refreshed = store.get(request.task_id)
+            refreshed_status = getattr(getattr(refreshed, "status", None), "value", getattr(refreshed, "status", ""))
+            return str(refreshed_status), bool(boundary and not approved)
+        except Exception:
+            return str(status), bool(boundary and not approved)
 
     def _touch_project(self, root: str) -> None:
         # Local AI: repository reads refresh only explicitly registered projects.
@@ -2302,6 +2426,85 @@ class LocalAIServices:
             "diff", root, {"base": base, "staged": staged, "max_tokens": max_tokens},
             lambda: self.repo_tools.git_diff(root, base, staged, max_tokens),
         )
+
+    def adaptive_context_pack(self, request: ConsistencyRequest, *, mode: str = "fast", since_hash: str = "") -> dict[str, Any]:
+        """Build deterministic context plus bounded, soft consistency findings."""
+        if not isinstance(request, ConsistencyRequest):
+            raise TypeError("guarded context request must be ConsistencyRequest")
+        if mode == "full":
+            base = self._hybrid_context(request.root, request.query, request.tenant, request.workspace or None, request.token_budget)
+        else:
+            base = self.fast_context(request.root, request.query, request.token_budget)
+        if not isinstance(base, dict):
+            base = {"success": False, "context": "", "evidence": []}
+        guard = self.consistency_guard
+        if guard is None:
+            return {**base, "guarded": False, "context_pack": AdaptiveContextPack().to_dict()}
+
+        try:
+            snapshot = self.repo_tools.git_snapshot(request.root)
+            revision = str(getattr(snapshot, "revision", "") or "")[:200]
+            snapshot_paths = tuple(str(path) for path in (getattr(snapshot, "changed_paths", ()) or ()))[:64]
+        except Exception:
+            revision, snapshot_paths = "", ()
+        evidence = tuple(item for item in (base.get("evidence") or ()) if isinstance(item, dict))[:24]
+        changed_paths = tuple(request.changed_paths or base.get("changed_paths") or snapshot_paths)[:64]
+        if since_hash and since_hash == revision:
+            changed_paths = ()
+        contract = guard.build_contract(request)
+        candidates = tuple(guard.find_reuse_candidates(request, contract))[:24]
+        mappings, mapping_warnings = guard.build_contract_mappings(request, evidence)
+        diff: Any = None
+        try:
+            diff = self.repo_tools.git_diff(request.root, base=request.base, staged=request.staged, max_tokens=request.token_budget)
+            if since_hash and isinstance(diff, dict):
+                diff = {**diff, "diff_sha256": since_hash}
+        except Exception:
+            pass
+        drift_warnings = guard.check_drift(request, contract, changed_paths, diff)
+        warnings = tuple(dict.fromkeys((*mapping_warnings, *drift_warnings)))[:24]
+        pack = AdaptiveContextPack(
+            contract=contract,
+            reuse_candidates=candidates,
+            mappings=tuple(mappings),
+            warnings=warnings,
+            evidence=evidence,
+            repo_revision=revision,
+            changed_paths=changed_paths,
+            stale=False,
+            context_id=hashlib.sha256(f"{request.root}:{revision}:{request.task_id}:{request.phase}:{request.query}".encode("utf-8", "replace")).hexdigest()[:24],
+        )
+        pack_data = pack.to_dict()
+        boundary = any(item.requires_approval or item.severity.lower() in {"boundary", "high", "high-risk"} for item in warnings)
+        ordinary = any(not (item.requires_approval or item.severity.lower() in {"boundary", "high", "high-risk"}) for item in warnings)
+        decision_recorded, decision_persisted = self._guard_decision(request, revision, reason=request.override_reason, approval=request.approval)
+        task_status, waiting = self._guard_task_state(request, warnings, revision)
+        approved = self._guard_truthy(request.approval) or self._guard_existing_approval(request) or bool(boundary and request.task_id and task_status == "active")
+        result = dict(base)
+        result.update({
+            "guarded": True,
+            "delivery_mode": mode,
+            "adaptive_context_pack": pack_data,
+            "context_pack": pack_data,
+            "contract": pack_data["contract"],
+            "reuse": pack_data["reuse_candidates"],
+            "reuse_candidates": pack_data["reuse_candidates"],
+            "mappings": pack_data["mappings"],
+            "warnings": pack_data["warnings"],
+            "evidence_ids": list(dict.fromkeys(item.get("evidence_id", "") for item in evidence if item.get("evidence_id")))[:24],
+            "warning_ids": list(dict.fromkeys(evidence_id for item in warnings for evidence_id in item.evidence_ids))[:24],
+            "repo_revision": revision,
+            "changed_paths": list(changed_paths),
+            "since_hash": str(since_hash)[:200],
+            "delta_from": str(since_hash)[:200] if since_hash else "",
+            "requires_override": bool(ordinary and not request.override_reason and not approved),
+            "requires_approval": bool(boundary and not approved),
+            "decision_recorded": bool(decision_recorded),
+            "decision_persisted": bool(decision_persisted),
+            "task_status": task_status,
+            "waiting": bool(waiting),
+        })
+        return result
 
     def fast_context(self, root: str, query: str, max_tokens: int) -> dict[str, Any]:
         """Return bounded deterministic context when foreground SLO excludes hybrid retrieval."""

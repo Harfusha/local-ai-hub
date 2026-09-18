@@ -14,6 +14,7 @@ from local_ai_hub.agent_tasks import GoalContract, TaskStatus
 from local_ai_hub.agent_identity import AgentScope, ScopeContext
 from local_ai_hub.agent_memory import MemoryRecord, MemoryKind, MemoryStatus
 from local_ai_hub.agent_incidents import IncidentRecord, IncidentFingerprint
+from local_ai_hub.agent_consistency import AgentConsistencyGuard
 
 
 def app_with_agent_state(tmp_path: Path) -> LocalAIApp:
@@ -38,6 +39,16 @@ def active_contract() -> GoalContract:
 
 def task_context() -> ScopeContext:
     return ScopeContext(task_id="task-active-1")
+
+
+def test_app_constructs_one_consistency_guard_reusing_existing_stores(tmp_path: Path):
+    with app_with_agent_state(tmp_path) as app:
+        assert isinstance(app.consistency_guard, AgentConsistencyGuard)
+        assert app.services.consistency_guard is app.consistency_guard
+        assert app.consistency_guard.repository_tools is app.repo_tools
+        assert app.consistency_guard.task_store is app.agent_tasks
+        assert app.consistency_guard.memory_store is app.agent_memory
+        assert app.consistency_guard.verification_store is app.agent_verification
 
 
 def create_expired_incident(app: LocalAIApp) -> IncidentRecord:

@@ -52,6 +52,7 @@ from .agent_incidents import IncidentStore
 from .agent_verification import VerificationStore
 from .agent_policy import PolicyEngine
 from .agent_context import ContextCompiler
+from .agent_consistency import AgentConsistencyGuard
 from .agent_routing import RoutingEngine
 from .agent_learning import LearningStore
 from .agent_blackboard import BlackboardStore
@@ -177,6 +178,13 @@ class LocalAIApp:
         self.services.set_incident_store(self.agent_incidents)
         self.services.set_agent_state(self.agent_state)
         self.services.set_blackboard(self.agent_blackboard)
+        self.consistency_guard = AgentConsistencyGuard(
+            self.repo_tools,
+            task_store=self.agent_tasks,
+            memory_store=self.agent_memory,
+            verification_store=self.agent_verification,
+        )
+        self.services.set_consistency_guard(self.consistency_guard)
         self.swarm = SwarmCoordinator(state_dir / "agent_state.sqlite3", leases=self.leases, blackboard=self.agent_blackboard, verifications=self.agent_verification)
         self.services.set_swarm(self.swarm)
         self.rag = RAGStore(self.config, self.services, self.reranker)
