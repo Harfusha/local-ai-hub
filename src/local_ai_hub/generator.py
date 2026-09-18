@@ -38,14 +38,15 @@ def context_pack_guidance() -> str:
         "models may rank, select, or compress structured evidence only and must not invent repository "
         "facts. Guarded scope or drift overrides require an explicit `override_reason` and approval when "
         "requested. Omit raw model/debug fields unless explicitly requested through `extra_fields`; "
-        "responses remain compact. Omitting guarded fields preserves legacy `mode=fast|full` behavior."
+        "responses remain compact; aggregate response budget defaults to approximately 3200 tokens. "
+        "Omitting guarded fields preserves legacy `mode=fast|full` behavior."
     )
 
 
 def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
     """Single short contract shared by skills, policies, and routing references."""
     features = FeatureSet.from_config(cfg or {})
-    budget = 1200
+    budget = 3200
     try:
         section = (cfg or {}).get("mcp", {}).get("response_budget", {})
         budget = int(section.get("default_tokens", budget)) if isinstance(section, dict) else budget
@@ -54,7 +55,7 @@ def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
     batch_line = '- Use the existing `local_ai_task(action="batch")` for independent local tasks; keep each item bounded and consume compact per-item results.' if features.tasks else ''
     return f"""## Context economy contract
 
-- Every Hub response is aggregate-bounded (default ≈{budget} tokens); use `max_response_tokens` only when a different bounded size is needed.
+- Every Hub response is aggregate-bounded (default ≈{budget} tokens); explicit `max_response_tokens` below 128 are rejected, never silently raised.
 - Prefer `response_profile=\"minimal\"`/`\"compact\"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls return a pointer, not missing data.
 {batch_line}
@@ -736,7 +737,7 @@ def _apply_response_budget_schema(schemas: dict[str, dict[str, Any]], cfg: dict[
     """Add one compact response contract to every enabled public tool."""
     fields = {
         "max_response_tokens": {"type": "integer", "minimum": 0, "default": 0},
-        "response_profile": {"type": "string", "enum": ["minimal", "compact", "standard", "debug", "delta"], "default": ""},
+        "response_profile": {"type": "string", "enum": ["minimal", "compact", "standard", "debug", "delta"], "default": "compact"},
         "reuse_key": {"type": "string", "default": ""},
     }
     for schema in schemas.values():
@@ -808,7 +809,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "receipt": {"type": "object"},
                     "extra_fields": {"type": "array", "items": {"type": "string"}},
                     "max_response_tokens": {"type": "integer", "default": 0},
-                    "response_profile": {"type": "string", "enum": ["", "minimal", "compact", "standard", "debug", "delta"], "default": ""},
+                    "response_profile": {"type": "string", "enum": ["minimal", "compact", "standard", "debug", "delta"], "default": "compact"},
                     "reuse_key": {"type": "string", "default": ""},
                 },
             },

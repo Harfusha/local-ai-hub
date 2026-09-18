@@ -34,6 +34,8 @@ from .telemetry import TelemetryStore
 from .trace_context import observer
 from .treesitter_parser import parse_treesitter
 from .agent_consistency import AdaptiveContextPack, ConsistencyRequest, GuardWarning
+from .agent_context import ContextCompiler, ContextRequest
+from .agent_events import AgentStateStore
 
 
 def normalize_generation_cache_prompt(prompt: str) -> str:
@@ -2512,6 +2514,76 @@ class LocalAIServices:
                 return str(value)[:200]
         return ""
 
+    def _context_preload_source(self) -> ContextCompiler | None:
+        compiler = getattr(self, "context_compiler", None)
+        if compiler is not None:
+            return compiler
+        try:
+            compiler = ContextCompiler(
+                AgentStateStore(
+                    configured_state_dir(getattr(self, "config", {}), create=False) / "agent_state.sqlite3",
+                    enabled=False,
+                ),
+                config=getattr(self, "config", {}),
+            )
+        except Exception:
+            return None
+        self.context_compiler = compiler
+        return compiler
+
+    def _apply_context_preloads(
+        self, request: ConsistencyRequest, base: dict[str, Any],
+    ) -> tuple[dict[str, Any], tuple[GuardWarning, ...]]:
+        compiler = self._context_preload_source()
+        if compiler is None:
+            return base, ()
+        try:
+            elements, preload_warnings = compiler.preload_elements(ContextRequest(
+                task_id=request.task_id,
+                token_budget=max(1, int(request.token_budget)),
+                changed_paths=tuple(request.changed_paths or ()),
+                root=request.root,
+                tenant=request.tenant,
+                phase=request.phase,
+                focus=tuple(request.focus or ()),
+                preload_profile=request.preload_profile,
+            ))
+        except Exception:
+            return base, ()
+        if not elements and not preload_warnings:
+            return base, ()
+
+        enriched = dict(base)
+        evidence = [dict(item) for item in (base.get("evidence") or ()) if isinstance(item, dict)]
+        context = str(base.get("context", "") or "").strip()
+        for element in elements:
+            content = str(element.content or "")
+            context = "\n\n".join(item for item in (context, content) if item)
+            provenance = dict(element.provenance or {})
+            evidence.append({
+                "evidence_id": element.element_id,
+                "source_kind": element.source_kind,
+                "path": provenance.get("path", ""),
+                "text": content,
+                "reason": element.reason,
+            })
+        enriched["context"] = context
+        enriched["evidence"] = evidence[:64]
+        enriched["preload_profile"] = request.preload_profile
+        enriched["preload_evidence_ids"] = [element.element_id for element in elements[:32]]
+        warning_objects = tuple(
+            GuardWarning(
+                "warning",
+                str(item.get("code", "preload_warning")),
+                str(item.get("message", "preload warning")),
+                affected_paths=(str(item["path"]),) if item.get("path") else (),
+                recommended_action="review configured context preload",
+            )
+            for item in preload_warnings
+            if isinstance(item, dict)
+        )
+        return enriched, warning_objects
+
     def _adaptive_relevance(self, request: ConsistencyRequest, evidence: tuple[dict[str, Any], ...], revision: str, memory_revision: str) -> dict[str, Any]:
         guard = self.consistency_guard
         if guard is None or not evidence:
@@ -2634,9 +2706,12 @@ class LocalAIServices:
             base = self.fast_context(request.root, request.query, request.token_budget)
         if not isinstance(base, dict):
             base = {"success": False, "context": "", "evidence": []}
+        else:
+            base = dict(base)
+        base, preload_warnings = self._apply_context_preloads(request, base)
         guard = self.consistency_guard
         if guard is None:
-            return {**base, "guarded": False, "context_pack": AdaptiveContextPack().to_dict()}
+            return {**base, "guarded": False, "context_pack": AdaptiveContextPack(warnings=preload_warnings).to_dict()}
 
         try:
             snapshot = self.repo_tools.git_snapshot(request.root)
@@ -2659,7 +2734,7 @@ class LocalAIServices:
         except Exception:
             pass
         drift_warnings = guard.check_drift(request, contract, changed_paths, diff)
-        warnings = tuple(dict.fromkeys((*mapping_warnings, *drift_warnings)))[:24]
+        warnings = tuple(dict.fromkeys((*preload_warnings, *mapping_warnings, *drift_warnings)))[:24]
         boundary = any(item.requires_approval or item.severity.lower() in {"boundary", "high", "high-risk"} for item in warnings)
         stop_code = self._guard_stop_code(request, boundary)
         if stop_code:

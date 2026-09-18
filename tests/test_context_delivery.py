@@ -85,6 +85,23 @@ def test_guarded_context_routes_task_and_phase_through_single_guard():
     assert result["context_pack"]["contract"]["goal"] == "find route"
 
 
+def test_guarded_context_uses_configured_preload_profile(tmp_path):
+    preload = tmp_path / "review-notes.md"
+    preload.write_text("configured review preload", encoding="utf-8")
+    guard = _Guard()
+    services = _guarded_services(guard)
+    services.config["context"] = {
+        "preloads": {"profiles": {"review": {"files": ["review-notes.md"]}}}
+    }
+
+    result = services.adaptive_context_pack(
+        _request(root=str(tmp_path), preload_profile="review"), mode="fast"
+    )
+
+    assert "configured review preload" in result["context"]
+    assert any(item.get("source_kind") == "preload" for item in result["evidence"])
+
+
 def test_ordinary_warning_requires_override_and_persists_when_supplied():
     warning = GuardWarning("warning", "scope_drift", "scope changed", ("e1",), ("src/app.py",), "explain scope")
     guard = _Guard((warning,))
