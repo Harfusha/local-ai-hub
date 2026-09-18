@@ -205,16 +205,24 @@ def test_drift_without_evidence_gets_stable_synthetic_trace(repository: Path, mo
     monkeypatch.setattr(guard.repository_tools, "search", lambda *_args, **_kwargs: {"success": True, "results": []})
     request = _request(repository, changed_paths=("backend/users.py",))
     contract = guard.build_contract(request)
-    diff = {"changed_paths": ["frontend/users.ts"]}
+    diff = {"changed_paths": ["frontend/users.ts"], "diff": "+class FirstChange"}
 
     first = guard.check_drift(request, contract, ("frontend/users.ts",), diff)
     repeat = guard.check_drift(request, contract, ("frontend/users.ts",), diff)
+    changed = guard.check_drift(
+        request,
+        contract,
+        ("frontend/users.ts",),
+        {"changed_paths": ["frontend/users.ts"], "diff": "+class DifferentChange"},
+    )
 
     first_scope = next(warning for warning in first if warning.code == "scope_drift")
     repeat_scope = next(warning for warning in repeat if warning.code == "scope_drift")
     assert first_scope.evidence_ids
     assert first_scope.evidence_ids == repeat_scope.evidence_ids
     assert first_scope.evidence_ids[0].startswith("synthetic-drift-")
+    changed_scope = next(warning for warning in changed if warning.code == "scope_drift")
+    assert changed_scope.evidence_ids != first_scope.evidence_ids
 
 
 def test_forged_decision_evidence_id_is_replaced_by_synthetic_trace(repository: Path):

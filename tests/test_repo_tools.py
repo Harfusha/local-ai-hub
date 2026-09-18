@@ -86,6 +86,8 @@ def test_repository_tools_returns_revision_and_changed_paths_for_guard(tmp_path:
     repo.mkdir()
     tracked = repo / "main.py"
     tracked.write_text("VALUE = 1\n", encoding="utf-8")
+    (repo / "clean_one.py").write_text("VALUE = 10\n", encoding="utf-8")
+    (repo / "clean_two.py").write_text("VALUE = 20\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
     subprocess.run(
@@ -95,9 +97,11 @@ def test_repository_tools_returns_revision_and_changed_paths_for_guard(tmp_path:
     tracked.write_text("VALUE = 2\n", encoding="utf-8")
 
     result = RepositoryTools(_cfg(tmp_path)).git_diff(str(repo))
+    snapshot = RepositoryTools(_cfg(tmp_path)).git_snapshot(str(repo))
 
     assert result["revision"]
     assert result["changed_paths"] == ["main.py"]
+    assert snapshot.changed_paths == ("main.py",)
 
 
 def test_search_returns_bounded_retryable_result_after_accelerator_timeouts(tmp_path: Path, monkeypatch):

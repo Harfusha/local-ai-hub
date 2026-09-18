@@ -385,8 +385,8 @@ class AgentConsistencyGuard:
         return "synthetic-claim-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
     @staticmethod
-    def _synthetic_drift_evidence_id(request: ConsistencyRequest, paths: tuple[str, ...], revision: str) -> str:
-        payload = "\0".join((request.task_id, request.phase, request.base, str(request.staged), _text(revision, 200), *sorted(paths)))
+    def _synthetic_drift_evidence_id(request: ConsistencyRequest, paths: tuple[str, ...], revision: str, diff_fingerprint: str) -> str:
+        payload = "\0".join((request.task_id, request.phase, request.base, str(request.staged), _text(revision, 200), _text(diff_fingerprint, 200), *sorted(paths)))
         return "synthetic-drift-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
     @staticmethod
@@ -598,7 +598,11 @@ class AgentConsistencyGuard:
                 revision = _text(self.repository_tools.git_snapshot(request.root).revision, 200)
         except Exception:
             revision = ""
-        synthetic_drift_id = self._synthetic_drift_evidence_id(request, tuple(paths), revision)
+        raw_diff = diff if isinstance(diff, str) else diff_data.get("diff", "")
+        content_hash = hashlib.sha256(_text(raw_diff, 12000).encode("utf-8")).hexdigest()
+        supplied_hash = _text(diff_data.get("diff_sha256"), 200)
+        diff_fingerprint = f"{supplied_hash}:{content_hash}" if supplied_hash else content_hash
+        synthetic_drift_id = self._synthetic_drift_evidence_id(request, tuple(paths), revision, diff_fingerprint)
         drift_trace_ids = (synthetic_drift_id,)
         candidates = self.find_reuse_candidates(request, contract)
         candidate_ids = {item.candidate_id for item in candidates}
