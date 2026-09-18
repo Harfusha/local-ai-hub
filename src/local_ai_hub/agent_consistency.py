@@ -398,6 +398,58 @@ class AgentConsistencyGuard:
     def _raw(item: Mapping[str, Any]) -> str:
         return _text(item.get("raw") or item.get("text") or item.get("content"), 5000)
 
+    def _current_claim_evidence(self, evidence: tuple[Any, ...], request: ConsistencyRequest | None) -> dict[str, Mapping[str, Any]]:
+        """Return only deterministic evidence verified against this checkout."""
+        if request is None:
+            return {}
+        try:
+            revision = _text(self.repository_tools.git_snapshot(request.root).revision, 200)
+        except Exception:
+            revision = ""
+        records: list[Mapping[str, Any]] = []
+        by_id: dict[str, Mapping[str, Any]] = {}
+        for item in evidence:
+            if not isinstance(item, Mapping) or _is_local_model_evidence(item):
+                continue
+            evidence_id = self._evidence_id(item)
+            by_id[evidence_id] = item
+            if item.get("path") and item.get("file_sha256"):
+                records.append(item)
+        statuses: dict[str, str] = {}
+        if records:
+            try:
+                checked = self.repository_tools.verify_evidence(request.root, list(records))
+                checked_rows = _bounded_sequence(checked.get("checked", ()), _MAX_ITEMS) if isinstance(checked, Mapping) else ()
+                for item, row in zip(records, checked_rows):
+                    if isinstance(row, Mapping):
+                        statuses[self._evidence_id(item)] = _text(row.get("status"), 40).casefold()
+            except Exception:
+                statuses = {}
+        current: dict[str, Mapping[str, Any]] = {}
+        root_text = _text(request.root, 400)
+        try:
+            root_text = _text(Path(request.root).resolve(), 400)
+        except Exception:
+            pass
+        for evidence_id, item in by_id.items():
+            if _safe_bool(item.get("stale")):
+                continue
+            evidence_root = item.get("root") or item.get("repository_root")
+            if evidence_root:
+                try:
+                    if _text(Path(_text(evidence_root, 400)).resolve(), 400) != root_text:
+                        continue
+                except Exception:
+                    continue
+            item_revision = _text(item.get("repository_revision") or item.get("revision"), 200)
+            if item_revision and (not revision or item_revision != revision):
+                continue
+            status = statuses.get(evidence_id, "")
+            explicit_status = _text(item.get("status"), 40).casefold()
+            if status == "current" or (not item.get("file_sha256") and explicit_status == "current" and item_revision == revision and revision):
+                current[evidence_id] = item
+        return current
+
     def find_reuse_candidates(self, request: ConsistencyRequest, contract: GoalContract) -> tuple[ReuseCandidate, ...]:
         query = " ".join(x for x in (request.query, contract.goal, *contract.constraints, *request.focus) if x)
         if request.changed_paths:
@@ -498,11 +550,7 @@ class AgentConsistencyGuard:
                 if isinstance(item, Mapping)
             )
         )[:_MAX_ITEMS]
-        authoritative: dict[str, Mapping[str, Any]] = {}
-        for item in bounded_evidence:
-            if not isinstance(item, Mapping) or _is_local_model_evidence(item):
-                continue
-            authoritative[self._evidence_id(item)] = item
+        authoritative = self._current_claim_evidence(bounded_evidence, request)
         warnings: list[GuardWarning] = []
         for claim in _bounded_sequence(claims, _MAX_ITEMS):
             if isinstance(claim, Mapping):

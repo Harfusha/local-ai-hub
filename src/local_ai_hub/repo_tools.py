@@ -1141,34 +1141,74 @@ class RepositoryTools:
             cmd.append("--cached")
         elif base:
             cmd.append(base)
+        budget_chars = max(1, chars_for_tokens(max_tokens))
+        # Drain both pipes concurrently. Only the bounded prefix is retained;
+        # stdout's digest/count still cover the complete stream.
+        stdout_retained = bytearray()
+        stderr_retained = bytearray()
+        stdout_digest = hashlib.sha256()
+        stdout_total = 0
+
+        def drain(stream: Any, retained: bytearray, digest: Any | None = None) -> None:
+            nonlocal stdout_total
+            try:
+                while True:
+                    chunk = stream.read(65536)
+                    if not chunk:
+                        return
+                    if digest is not None:
+                        digest.update(chunk)
+                        stdout_total += len(chunk)
+                    remaining = max(0, budget_chars - len(retained))
+                    if remaining:
+                        retained.extend(chunk[:remaining])
+            except Exception:
+                return
+
         try:
-            completed = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=30, check=False,
-                encoding="utf-8", errors="replace",
+            completed = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 **hidden_run_kwargs(),
             )
+            stdout_thread = threading.Thread(target=drain, args=(completed.stdout, stdout_retained, stdout_digest), daemon=True)
+            stderr_thread = threading.Thread(target=drain, args=(completed.stderr, stderr_retained), daemon=True)
+            stdout_thread.start()
+            stderr_thread.start()
+            try:
+                returncode = completed.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                completed.kill()
+                returncode = completed.wait(timeout=5)
+                stdout_thread.join(timeout=5)
+                stderr_thread.join(timeout=5)
+                for stream in (completed.stdout, completed.stderr):
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+                return {"success": False, "error": "git diff timed out", "retryable": True}
+            stdout_thread.join(timeout=5)
+            stderr_thread.join(timeout=5)
+            for stream in (completed.stdout, completed.stderr):
+                try:
+                    stream.close()
+                except Exception:
+                    pass
         except Exception as exc:
             return {"success": False, "error": str(exc)}
-        if completed.returncode != 0:
-            return {"success": False, "error": completed.stderr.strip() or "git diff failed"}
-        text = completed.stdout
-        original_tokens = estimate_tokens(text)
-        budget_chars = chars_for_tokens(max_tokens)
-        truncated = len(text) > budget_chars
+        stderr_text = bytes(stderr_retained).decode("utf-8", errors="replace").strip()
+        if returncode != 0:
+            return {"success": False, "error": stderr_text or "git diff failed"}
+        text = bytes(stdout_retained).decode("utf-8", errors="replace")
+        truncated = stdout_total > len(stdout_retained) or len(text) > budget_chars
+        if len(text) > budget_chars:
+            text = text[:budget_chars]
+            truncated = True
         if truncated:
-            # Prefer complete file sections over arbitrary tail/head truncation.
-            sections = text.split("\ndiff --git ")
-            kept: list[str] = []
-            used = 0
-            for i, section in enumerate(sections):
-                rendered = section if i == 0 else "diff --git " + section
-                if used + len(rendered) > budget_chars:
-                    break
-                kept.append(rendered)
-                used += len(rendered)
-            text = "\n".join(kept) + "\n\n[... additional diff sections omitted to fit local review budget ...]\n"
+            text += "\n\n[... additional diff sections omitted to fit local review budget ...]\n"
         changed: list[str] = []
-        for line in completed.stdout.splitlines():
+        retained_stdout = bytes(stdout_retained).decode("utf-8", errors="replace")
+        for line in retained_stdout.splitlines():
             if not line.startswith("diff --git a/"):
                 continue
             match = re.match(r"diff --git a/(.+?) b/(.+)$", line)
@@ -1180,8 +1220,9 @@ class RepositoryTools:
             "success": True, "root": str(repo), "diff": text, "changed_files": changed,
             "changed_paths": changed_paths, "revision": snapshot.revision,
             "repository_revision": snapshot.repository_revision,
-            "estimated_tokens": estimate_tokens(text), "original_estimated_tokens": original_tokens,
-            "truncated": truncated, "diff_sha256": hashlib.sha256(completed.stdout.encode("utf-8")).hexdigest(),
+            "estimated_tokens": estimate_tokens(text),
+            "original_estimated_tokens": max(estimate_tokens(text), (stdout_total + 3) // 4),
+            "truncated": truncated, "diff_sha256": stdout_digest.hexdigest(),
         }
 
 

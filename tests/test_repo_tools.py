@@ -1,10 +1,37 @@
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from pathlib import Path
 
 from local_ai_hub.config import load_config
 from local_ai_hub.repo_tools import RepositoryTools
+
+
+def test_git_diff_retains_bounded_text_but_hashes_full_stream(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / "large.txt"
+    baseline = "\n".join(f"base-{index}" for index in range(1200)) + "\n"
+    target.write_text(baseline, encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "large.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base"], check=True)
+
+    first = "\n".join(f"changed-{index}" for index in range(1200)) + "\nTAIL-A\n"
+    target.write_text(first, encoding="utf-8")
+    tools = RepositoryTools(_cfg(tmp_path))
+    result_a = tools.git_diff(str(repo), max_tokens=32)
+
+    second = "\n".join(f"changed-{index}" for index in range(1200)) + "\nTAIL-B\n"
+    target.write_text(second, encoding="utf-8")
+    result_b = tools.git_diff(str(repo), max_tokens=32)
+
+    assert result_a["success"] and result_b["success"]
+    assert result_a["truncated"] and result_b["truncated"]
+    assert len(result_a["diff"]) < len(first) * 2
+    assert len(result_a["diff_sha256"]) == 64
+    assert result_a["diff_sha256"] != result_b["diff_sha256"]
 
 
 def _cfg(tmp_path: Path):
