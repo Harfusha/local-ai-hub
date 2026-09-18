@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+import inspect
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -11,6 +12,7 @@ from local_ai_hub.generator import (
     generate_skill_markdown,
     generate_skill_references,
 )
+from local_ai_hub import mcp_server as local_ai_mcp
 
 
 def _config(*, agent_os: bool = True, work_orchestrator: bool = False) -> dict:
@@ -119,3 +121,15 @@ def test_whole_task_tool_obeys_its_feature_gate():
     assert "local_ai_work" in enabled_refs["tools.md"]
     assert "local_ai_work" in enabled_refs["multi-agent.md"]
     assert "local_ai_work" in enabled_schemas
+
+
+def test_guarded_context_extends_existing_repo_tool_without_duplicate_surface():
+    parameters = inspect.signature(local_ai_mcp.local_ai_repo).parameters
+    assert {
+        "phase", "focus", "preload_profile", "changed_paths", "base", "staged",
+        "task_id", "guarded", "since_hash", "approval", "override_reason", "token_budget",
+    }.issubset(parameters)
+
+    names = list(local_ai_mcp.mcp._tool_manager._tools)
+    assert names.count("local_ai_repo") == 1
+    assert not any(name in {"local_ai_context", "local_ai_context_pack"} for name in names)
