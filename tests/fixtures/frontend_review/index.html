@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Frontend review fixture</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <main id="app" data-testid="frontend-review-app">
+    <header class="topbar">
+      <a class="brand" href="#app">Northstar</a>
+      <button class="icon-button" data-testid="icon-button" type="button">
+        <span aria-hidden="true">☰</span>
+      </button>
+    </header>
+
+    <section class="hero" aria-labelledby="hero-title">
+      <p class="eyebrow">Private workspace</p>
+      <h1 id="hero-title">Ship a clearer interface.</h1>
+      <p class="muted" data-testid="contrast-copy">Review the next release with your team.</p>
+      <div class="auth-state" data-testid="fake-auth-state" data-authenticated="true">
+        Signed in as demo user (fixture only)
+      </div>
+      <a class="mobile-cta" data-testid="mobile-cta" href="#start">Start review</a>
+    </section>
+
+    <section id="start" class="details" aria-labelledby="details-title">
+      <h2 id="details-title">A deterministic review target</h2>
+      <p>This page contains intentional visual and accessibility defects.</p>
+    </section>
+  </main>
+
+  <script>
+    // Deliberate runtime signal for the offline vision-review fixture.
+    console.error("frontend-review-fixture: deliberate console error");
+  </script>
+</body>
+</html>

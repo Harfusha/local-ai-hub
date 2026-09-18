@@ -419,9 +419,9 @@ def _desc_work() -> str:
 
 def _desc_artifact() -> str:
     if LEAN_SCHEMAS:
-        return "Fetch an exact source or log slice with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: get, slice, list."
+        return "Fetch an exact source or log slice or bounded binary artifact metadata; binary retrieval never inlines payloads; optional max_response_tokens, response_profile, reuse_key. Actions: get, slice, list."
     return (
-        "Fetch one exact source or log slice. Evidence IDs start with E."
+        "Fetch one exact source or log slice or bounded binary artifact metadata. Binary payloads are never inlined in MCP responses. Evidence IDs start with E."
         " Use when: exact source or evidence text is required after indexed discovery."
         " Skip when: no source slice is needed or the existing compact result is sufficient."
     )
@@ -928,6 +928,27 @@ def local_ai_task(
     model: str = "",
     context: str = "",
     candidate: str = "",
+    image_artifact_id: str = "",
+    screenshot_artifact_id: str = "",
+    bundle_artifact_id: str = "",
+    dom_artifact_id: str = "",
+    accessibility_artifact_id: str = "",
+    computed_styles_artifact_id: str = "",
+    runtime_artifact_id: str = "",
+    network_artifact_id: str = "",
+    source: str = "",
+    cloud_fallback: bool = False,
+    dom: str | dict[str, Any] | None = None,
+    accessibility: str | dict[str, Any] | None = None,
+    computed_styles: str | dict[str, Any] | None = None,
+    runtime: str | dict[str, Any] | None = None,
+    bundle: str | dict[str, Any] | None = None,
+    html: str | None = None,
+    accessibility_snapshot: str | dict[str, Any] | None = None,
+    computed_style_data: str | dict[str, Any] | None = None,
+    runtime_context: str | dict[str, Any] | None = None,
+    viewport: dict[str, Any] | None = None,
+    page: dict[str, Any] | None = None,
     complexity: str = "auto",
     max_tokens: int = 0,
     tasks: list[dict[str, Any]] | None = None,
@@ -1086,9 +1107,40 @@ def local_ai_task(
             "task": task or prompt, "file": candidate or workspace, "context": context, "root": root,
         }, timeout=_timeout("model")), "delegate")
     if action == "vision":
-        return _compact(CLIENT.post("/api/task/vision", {
-            "prompt": prompt or task, "image": candidate or context, "model": model,
-        }, timeout=_timeout("model")), "delegate")
+        payload = {
+            "prompt": prompt or task,
+            "image": candidate or context,
+            "model": model,
+            "image_artifact_id": image_artifact_id,
+            "screenshot_artifact_id": screenshot_artifact_id,
+            "bundle_artifact_id": bundle_artifact_id,
+            "dom_artifact_id": dom_artifact_id,
+            "accessibility_artifact_id": accessibility_artifact_id,
+            "computed_styles_artifact_id": computed_styles_artifact_id,
+            "runtime_artifact_id": runtime_artifact_id,
+            "network_artifact_id": network_artifact_id,
+            "source": source,
+            "cloud_fallback": cloud_fallback,
+            "root": root,
+        }
+        if json_schema:
+            payload["json_schema"] = json_schema
+        for name, value in {
+            "dom": dom,
+            "accessibility": accessibility,
+            "computed_styles": computed_styles,
+            "runtime": runtime,
+            "viewport": viewport,
+            "page": page,
+            "bundle": bundle,
+            "html": html,
+            "accessibility_snapshot": accessibility_snapshot,
+            "computed_style_data": computed_style_data,
+            "runtime_context": runtime_context,
+        }.items():
+            if value is not None:
+                payload[name] = value
+        return _compact(CLIENT.post("/api/task/vision", payload, timeout=_timeout("model")), "delegate")
     if action == "transcribe":
         return _compact(CLIENT.post("/api/task/transcribe", {
             "audio_path": candidate or context or task or prompt, "model": model,
@@ -1848,15 +1900,23 @@ def local_ai_work(
 
 @mcp.tool()
 @_instrumented_tool()
-def local_ai_artifact(artifact_id: str, offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "") -> dict[str, Any]:
+def local_ai_artifact(artifact_id: str, offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", binary: bool = False) -> dict[str, Any]:
     """Fetch one needed artifact section or exact evidence slice. Evidence IDs start with E. Use when: exact source or evidence text is required after indexed discovery. Skip when: no source slice is needed or the existing compact result is sufficient."""
     if not FEATURES.artifacts:
         return {"success": False, "unsupported": True, "error": "local_ai_artifact is disabled in configuration"}
     if artifact_id.startswith("E"):
         return _compact(CLIENT.post("/api/evidence/get", {"evidence_id": artifact_id, "verify": True}), "artifact")
-    return _compact(CLIENT.post("/api/artifact/get", {
-        "artifact_id": artifact_id, "offset": offset, "max_chars": max(512, min(max_chars, 12000)), "section": section,
-    }), "artifact")
+    result = CLIENT.post("/api/artifact/get", {
+        "artifact_id": artifact_id,
+        "offset": offset,
+        "max_chars": max(512, min(max_chars, 12000)),
+        "section": section,
+        "binary": bool(binary),
+    })
+    if binary and isinstance(result, dict) and result.get("success"):
+        result = {key: value for key, value in result.items() if key != "data_base64"}
+        result["binary_payload"] = "available through /api/artifact/get with binary=true"
+    return _compact(result, "artifact")
 
 
 # Unregister tools that are disabled in current configuration so MCP clients do not receive them

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
 
+import base64
 import hashlib
 import json
 import re
@@ -15,18 +16,43 @@ from typing import Any
 from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
 
 
+DEFAULT_MAX_BINARY_BYTES = 4_000_000
+DEFAULT_MAX_JSON_BYTES = 4_000_000
+_ARTIFACT_TABLE = "artifacts"
+_ARTIFACT_V2_TABLE = "artifacts_v2"
+
+
+class ArtifactTransportError(ValueError):
+    """Bounded, caller-safe artifact transport failure."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
 class ArtifactStore:
     """Stores verbose local outputs outside the agent context and returns compact references."""
 
-    def __init__(self, state_dir: Path, ttl_hours: int = 72, max_inline_chars: int = 6000):
+    def __init__(
+        self,
+        state_dir: Path,
+        ttl_hours: int = 72,
+        max_inline_chars: int = 6000,
+        max_binary_bytes: int = DEFAULT_MAX_BINARY_BYTES,
+        max_json_bytes: int = DEFAULT_MAX_JSON_BYTES,
+    ):
         self.path = state_dir / "artifacts.sqlite3"
         self.ttl_seconds = max(3600, int(ttl_hours) * 3600)
         self.max_inline_chars = max(1000, int(max_inline_chars))
+        self.max_binary_bytes = max(1, int(max_binary_bytes))
+        self.max_json_bytes = max(1, int(max_json_bytes))
         self._last_purge = 0.0
         self._purge_interval = 1800.0
         state_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._initialized = False
+        self._table = _ARTIFACT_TABLE
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -38,6 +64,11 @@ class ArtifactStore:
             pass
         return con
 
+    @staticmethod
+    def _tenant_identity(tenant: str) -> str:
+        """Persist stable tenant identity without retaining caller-controlled text."""
+        return hashlib.sha256(str(tenant).encode("utf-8")).hexdigest()
+
     def _init_db(self) -> None:
         if self._initialized:
             return
@@ -48,15 +79,122 @@ class ArtifactStore:
                 with closing(self._connect()) as con:
                     initialize_wal(con)
                     con.execute(
-                        """CREATE TABLE IF NOT EXISTS artifacts (
+                        "CREATE TABLE IF NOT EXISTS artifact_schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+                    )
+                    marker = con.execute(
+                        "SELECT value FROM artifact_schema_meta WHERE key=?",
+                        ("tenant_storage",),
+                    ).fetchone()
+                    marker_value = str(marker[0]) if marker else ""
+                    v2_exists = bool(con.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                        (_ARTIFACT_V2_TABLE,),
+                    ).fetchone())
+                    full_schema = {
+                        "artifact_id", "created_at", "tenant", "tenant_identity", "kind", "text",
+                        "mime_type", "encoding", "blob", "size_bytes", "checksum", "identity_json",
+                    }
+                    table_info = list(con.execute("PRAGMA table_info(artifacts)"))
+                    existing_columns = {str(row[1]) for row in table_info}
+                    if not existing_columns and not v2_exists:
+                        con.execute(
+                            """CREATE TABLE IF NOT EXISTS artifacts (
                             artifact_id TEXT PRIMARY KEY,
                             created_at REAL NOT NULL,
                             tenant TEXT NOT NULL,
+                            tenant_identity TEXT,
                             kind TEXT NOT NULL,
-                            text TEXT NOT NULL
+                            text TEXT NOT NULL DEFAULT '',
+                            mime_type TEXT,
+                            encoding TEXT,
+                            blob BLOB,
+                            size_bytes INTEGER,
+                            checksum TEXT,
+                            identity_json TEXT
                         )"""
+                        )
+                        self._table = _ARTIFACT_TABLE
+                    elif full_schema.issubset(existing_columns):
+                        self._table = _ARTIFACT_TABLE
+                    else:
+                        con.execute(
+                            """CREATE TABLE IF NOT EXISTS artifacts_v2 (
+                                artifact_id TEXT PRIMARY KEY,
+                                created_at REAL NOT NULL,
+                                tenant TEXT NOT NULL,
+                                tenant_identity TEXT NOT NULL,
+                                kind TEXT NOT NULL,
+                                text TEXT NOT NULL DEFAULT '',
+                                mime_type TEXT,
+                                encoding TEXT,
+                                blob BLOB,
+                                size_bytes INTEGER,
+                                checksum TEXT,
+                                identity_json TEXT
+                            )"""
+                        )
+                        if existing_columns:
+                            legacy_rows = list(con.execute(
+                                "SELECT artifact_id, created_at, tenant, kind, text FROM artifacts"
+                            ))
+                            for artifact_id, created_at, tenant, kind, text in legacy_rows:
+                                raw_tenant = str(tenant)
+                                if con.execute(
+                                    "SELECT 1 FROM artifacts_v2 WHERE artifact_id=?",
+                                    (artifact_id,),
+                                ).fetchone() is None:
+                                    con.execute(
+                                        """INSERT INTO artifacts_v2(
+                                            artifact_id, created_at, tenant, tenant_identity, kind, text
+                                        ) VALUES(?,?,?,?,?,?)""",
+                                        (artifact_id, created_at, raw_tenant, raw_tenant, kind, text),
+                                    )
+                        self._table = _ARTIFACT_V2_TABLE
+                    def _repair_tenants(table: str, *, has_identity: bool) -> None:
+                        rows = list(con.execute(f"SELECT rowid, tenant FROM {table}"))
+                        for rowid, tenant in rows:
+                            digest = self._tenant_identity(str(tenant))
+                            if has_identity:
+                                con.execute(
+                                    f"UPDATE {table} SET tenant=?, tenant_identity=? WHERE rowid=?",
+                                    (digest, digest, rowid),
+                                )
+                            else:
+                                con.execute(
+                                    f"UPDATE {table} SET tenant=? WHERE rowid=?",
+                                    (digest, rowid),
+                                )
+
+                    if marker_value in {"", "legacy-raw-v1"}:
+                        if existing_columns:
+                            _repair_tenants(
+                                _ARTIFACT_TABLE,
+                                has_identity=full_schema.issubset(existing_columns),
+                            )
+                        if v2_exists or self._table == _ARTIFACT_V2_TABLE:
+                            _repair_tenants(_ARTIFACT_V2_TABLE, has_identity=True)
+                    elif marker_value == "sha256-v1" and v2_exists and existing_columns and not full_schema.issubset(existing_columns):
+                        source_tenants = {
+                            str(artifact_id): str(tenant)
+                            for artifact_id, tenant in con.execute("SELECT artifact_id, tenant FROM artifacts")
+                        }
+                        for rowid, artifact_id, tenant, tenant_identity in con.execute(
+                            "SELECT rowid, artifact_id, tenant, tenant_identity FROM artifacts_v2"
+                        ):
+                            source_tenant = source_tenants.get(str(artifact_id))
+                            if source_tenant is None:
+                                continue
+                            if str(tenant) != source_tenant or str(tenant_identity) != source_tenant:
+                                repaired = source_tenant if str(tenant) == source_tenant else self._tenant_identity(str(tenant))
+                                con.execute(
+                                    "UPDATE artifacts_v2 SET tenant=?, tenant_identity=? WHERE rowid=?",
+                                    (repaired, repaired, rowid),
+                                )
+                    con.execute(
+                        "INSERT OR REPLACE INTO artifact_schema_meta(key, value) VALUES(?, ?)",
+                        ("tenant_storage", "sha256-v1"),
                     )
-                    con.execute("CREATE INDEX IF NOT EXISTS idx_artifacts_created ON artifacts(created_at)")
+                    con.execute(f"CREATE INDEX IF NOT EXISTS idx_{self._table}_created ON {self._table}(created_at)")
                     con.commit()
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
             self._initialized = True
@@ -66,21 +204,180 @@ class ArtifactStore:
         if not force and (now - self._last_purge) < self._purge_interval:
             return
         self._last_purge = now
-        con.execute("DELETE FROM artifacts WHERE created_at < ?", (now - self.ttl_seconds,))
+        con.execute(f"DELETE FROM {self._table} WHERE created_at < ?", (now - self.ttl_seconds,))
+
+    def _scoped_artifact_id(self, con: sqlite3.Connection, base_id: str, tenant_identity: str) -> str:
+        row = con.execute(
+            f"SELECT tenant_identity, tenant FROM {self._table} WHERE artifact_id=?",
+            (base_id,),
+        ).fetchone()
+        existing_identity = str((row[0] if row and row[0] else row[1]) if row else "")
+        if not row or existing_identity == tenant_identity:
+            return base_id
+        return f"{base_id}_{tenant_identity}"
 
     def put(self, text: str, tenant: str, kind: str) -> str:
         digest = hashlib.sha256((kind + "\0" + text).encode("utf-8")).hexdigest()[:24]
         artifact_id = f"art_{digest}"
+        tenant_identity = self._tenant_identity(tenant)
+        stored_id = artifact_id
         def _do_put() -> None:
+            nonlocal stored_id
             with closing(self._connect()) as con:
                 self._purge(con)
+                scoped_id = self._scoped_artifact_id(con, artifact_id, tenant_identity)
                 con.execute(
-                    "INSERT OR REPLACE INTO artifacts(artifact_id, created_at, tenant, kind, text) VALUES(?,?,?,?,?)",
-                    (artifact_id, time.time(), tenant, kind, text),
+                    f"INSERT OR REPLACE INTO {self._table}(artifact_id, created_at, tenant, tenant_identity, kind, text) VALUES(?,?,?,?,?,?)",
+                    (scoped_id, time.time(), tenant_identity, tenant_identity, kind, text),
                 )
+                stored_id = scoped_id
                 con.commit()
         retry_busy(_do_put, retries=4)
+        return stored_id
+
+    def put_bytes(
+        self,
+        data: bytes,
+        tenant: str,
+        kind: str,
+        mime_type: str,
+    ) -> str:
+        """Store complete image bytes without interpreting or truncating them."""
+        if not isinstance(data, bytes):
+            raise ArtifactTransportError("invalid_bytes", "artifact bytes must be bytes")
+        normalized_mime = str(mime_type or "").strip().lower()
+        if not normalized_mime.startswith("image/"):
+            raise ArtifactTransportError("invalid_mime_type", "image MIME type required")
+        if len(data) > self.max_binary_bytes:
+            raise ArtifactTransportError("artifact_too_large", "artifact size exceeds configured limit")
+
+        checksum = hashlib.sha256(data).hexdigest()
+        base_artifact_id = "art_" + hashlib.sha256(
+            (str(kind) + "\0" + normalized_mime + "\0" + checksum).encode("utf-8")
+        ).hexdigest()[:24]
+        encoding = "base64"
+        identity = {
+            "artifact_id": base_artifact_id,
+            "kind": str(kind),
+            "mime_type": normalized_mime,
+            "encoding": encoding,
+            "size_bytes": len(data),
+            "checksum": checksum,
+        }
+        tenant_identity = self._tenant_identity(tenant)
+
+        artifact_id = ""
+        def _do_put() -> None:
+            nonlocal artifact_id
+            with closing(self._connect()) as con:
+                self._purge(con)
+                artifact_id = self._scoped_artifact_id(con, base_artifact_id, tenant_identity)
+                identity["artifact_id"] = artifact_id
+                con.execute(
+                    f"""INSERT OR REPLACE INTO {self._table}(
+                        artifact_id, created_at, tenant, tenant_identity, kind, text, mime_type,
+                        encoding, blob, size_bytes, checksum, identity_json
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        artifact_id,
+                        time.time(),
+                        tenant_identity,
+                        tenant_identity,
+                        str(kind),
+                        "",
+                        normalized_mime,
+                        encoding,
+                        sqlite3.Binary(data),
+                        len(data),
+                        checksum,
+                        json_dumps(identity, ensure_ascii=False),
+                    ),
+                )
+                con.commit()
+
+        retry_busy(_do_put, retries=4)
         return artifact_id
+
+    def put_json(self, value: dict[str, Any], tenant: str, kind: str) -> str:
+        """Store a bounded JSON artifact, preserving full DOM payload semantics."""
+        if not isinstance(value, dict):
+            raise ArtifactTransportError("invalid_json", "JSON artifact must be an object")
+        text = json_dumps(value, ensure_ascii=False, sort_keys=True)
+        if len(text.encode("utf-8")) > self.max_json_bytes:
+            raise ArtifactTransportError("artifact_too_large", "JSON artifact size exceeds configured limit")
+        return self.put(text, tenant, kind)
+
+    @staticmethod
+    def _binary_failure(message: str) -> dict[str, Any]:
+        return {"success": False, "error": message[:160]}
+
+    def get_binary(self, artifact_id: str, tenant: str | None = None) -> dict[str, Any]:
+        """Return one complete, integrity-checked binary artifact or a safe failure."""
+        cutoff = time.time() - self.ttl_seconds
+
+        def _do_get() -> tuple[Any, ...] | None:
+            with closing(self._connect()) as con:
+                query = (
+                    """SELECT artifact_id, kind, mime_type, encoding, blob,
+                              size_bytes, checksum, identity_json
+                       FROM """ + self._table + " WHERE artifact_id=? AND created_at>=?"
+                )
+                params: list[Any] = [str(artifact_id), cutoff]
+                if tenant is not None:
+                    query += " AND tenant_identity=?"
+                    params.append(self._tenant_identity(tenant))
+                return con.execute(query, params).fetchone()
+
+        row = retry_busy(_do_get, retries=3)
+        if not row:
+            return self._binary_failure("artifact not found or expired")
+        if row[4] is None or not row[2] or not row[3]:
+            return self._binary_failure("artifact is not binary")
+
+        data = bytes(row[4])
+        mime_type = str(row[2])
+        encoding = str(row[3])
+        try:
+            expected_size = int(row[5]) if row[5] is not None else -1
+        except (TypeError, ValueError, OverflowError):
+            return self._binary_failure("artifact integrity check failed")
+        if expected_size < 0:
+            return self._binary_failure("artifact integrity check failed")
+        checksum = str(row[6] or "")
+        if not mime_type.startswith("image/") or encoding != "base64":
+            return self._binary_failure("artifact integrity check failed")
+        if expected_size != len(data) or checksum != hashlib.sha256(data).hexdigest():
+            return self._binary_failure("artifact integrity check failed")
+        try:
+            identity = json.loads(str(row[7] or "{}"))
+        except (TypeError, ValueError):
+            return self._binary_failure("artifact identity is invalid")
+        if not isinstance(identity, dict):
+            return self._binary_failure("artifact identity is invalid")
+
+        expected_identity = {
+            "artifact_id": str(row[0]),
+            "kind": str(row[1]),
+            "mime_type": mime_type,
+            "encoding": encoding,
+            "size_bytes": expected_size,
+            "checksum": checksum,
+        }
+        if any(identity.get(key) != value for key, value in expected_identity.items()):
+            return self._binary_failure("artifact integrity check failed")
+
+        return {
+            "success": True,
+            "artifact_id": str(row[0]),
+            "kind": str(row[1]),
+            "mime_type": mime_type,
+            "encoding": encoding,
+            "size_bytes": len(data),
+            "checksum": checksum,
+            "sha256": checksum,
+            "identity": identity,
+            "data_base64": base64.b64encode(data).decode("ascii"),
+        }
 
     @staticmethod
     def _section_map(text: str) -> dict[str, tuple[int, int]]:
@@ -132,7 +429,7 @@ class ArtifactStore:
         }
         return result
 
-    def get(self, artifact_id: str, offset: int = 0, max_chars: int = 6000, section: str = "") -> dict[str, Any]:
+    def get(self, artifact_id: str, offset: int = 0, max_chars: int = 6000, section: str = "", tenant: str | None = None) -> dict[str, Any]:
         offset = max(0, int(offset))
         max_chars = max(256, min(int(max_chars), 50_000))
         cutoff = time.time() - self.ttl_seconds
@@ -140,13 +437,17 @@ class ArtifactStore:
             with closing(self._connect()) as con:
                 # Reads stay read-only; expiry cleanup happens on writes. This avoids
                 # turning every artifact slice fetch into a WAL writer.
-                return con.execute(
-                    "SELECT kind, text, created_at FROM artifacts WHERE artifact_id=? AND created_at>=?",
-                    (artifact_id, cutoff),
-                ).fetchone()
+                query = f"SELECT kind, text, mime_type, created_at FROM {self._table} WHERE artifact_id=? AND created_at>=?"
+                params: list[Any] = [artifact_id, cutoff]
+                if tenant is not None:
+                    query += " AND tenant_identity=?"
+                    params.append(self._tenant_identity(tenant))
+                return con.execute(query, params).fetchone()
         row = retry_busy(_do_get, retries=3)
         if not row:
             return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
+        if row[2]:
+            return {"success": False, "error": "binary artifact requires binary retrieval"}
         text = row[1]
         section = str(section or "").strip()
         sections = self._section_map(text)
