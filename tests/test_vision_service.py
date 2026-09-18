@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import tomllib
 from pathlib import Path
@@ -9,6 +10,7 @@ from local_ai_hub.app import LocalAIApp
 from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.model_policy import ModelExecutionPolicy
 from local_ai_hub.services import LocalAIServices
+from local_ai_hub.vision_contracts import VISION_MAX_IMAGE_BYTES, VISION_MAX_IMAGE_CHARS
 
 
 def _services(tmp_path: Path, *, models: dict[str, str] | None = None):
@@ -228,6 +230,7 @@ def test_vision_missing_image_artifact_is_explicit_and_safe(tmp_path: Path) -> N
     assert result["retryable"] is False
     assert "not found" in result["error"].lower()
     assert "img-secret-id" not in result["error"]
+    services.artifacts.get_binary.assert_called_once_with("img-secret-id", tenant="t")
     runtime.request.assert_not_called()
 
 
@@ -248,6 +251,44 @@ def test_vision_rejects_truncated_image_artifact(tmp_path: Path) -> None:
     assert result["retryable"] is False
     assert "truncated" in result["error"].lower()
     assert result["error_code"] == "vision_artifact_truncated"
+    runtime.request.assert_not_called()
+
+
+def test_vision_accepts_valid_image_at_byte_limit_with_larger_base64_transport(tmp_path: Path) -> None:
+    services, runtime, _image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    image_bytes = b"x" * VISION_MAX_IMAGE_BYTES
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    services.artifacts.get_binary.return_value = {
+        "success": True,
+        "mime_type": "image/png",
+        "encoding": "base64",
+        "data_base64": encoded,
+        "size_bytes": len(image_bytes),
+    }
+
+    result = services.vision({"image_artifact_id": "img-1"}, "tenant")
+
+    assert result["success"] is True
+    assert len(runtime.request.call_args.args[1]["images"][0]) == len(encoded)
+    assert len(encoded) > VISION_MAX_IMAGE_CHARS - 1
+
+
+def test_vision_reports_base64_transport_bound_separately(tmp_path: Path) -> None:
+    services, runtime, _image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    encoded = base64.b64encode(b"small-image").decode("ascii") + ("A" * VISION_MAX_IMAGE_CHARS)
+    services.artifacts.get_binary.return_value = {
+        "success": True,
+        "mime_type": "image/png",
+        "encoding": "base64",
+        "data_base64": encoded,
+        "size_bytes": len(b"small-image"),
+    }
+
+    result = services.vision({"image_artifact_id": "img-1"}, "tenant")
+
+    assert result["success"] is False
+    assert result["error_code"] == "vision_image_transport_too_large"
+    assert "transport" in result["error"].lower()
     runtime.request.assert_not_called()
 
 
@@ -295,6 +336,10 @@ def test_vision_resolves_binary_screenshot_and_bundle_text_refs(tmp_path: Path) 
     assert "button { color: red; }" in payload["prompt"]
     assert result["image_artifact_id"] == screenshot_id
 
+    cross_tenant = services.vision({"bundle_artifact_id": bundle_id}, "other-tenant")
+    assert cross_tenant["success"] is False
+    assert cross_tenant["error_code"] == "vision_input_error"
+
 
 def test_vision_bundle_artifact_is_resolved_with_bounded_context(tmp_path: Path) -> None:
     services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
@@ -332,7 +377,7 @@ def test_vision_rejects_unbounded_prompt_schema_and_image(tmp_path: Path) -> Non
         },
         "t",
     )
-    image_result = services.vision({"image": "A" * 5_000_000}, "t")
+    image_result = services.vision({"image": "A" * (VISION_MAX_IMAGE_CHARS + 1)}, "t")
 
     assert schema_result["success"] is False
     assert schema_result["terminal"] is True

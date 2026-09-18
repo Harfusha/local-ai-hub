@@ -18,6 +18,8 @@ from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
 
 DEFAULT_MAX_BINARY_BYTES = 4_000_000
 DEFAULT_MAX_JSON_BYTES = 4_000_000
+_ARTIFACT_TABLE = "artifacts"
+_ARTIFACT_V2_TABLE = "artifacts_v2"
 
 
 class ArtifactTransportError(ValueError):
@@ -50,6 +52,7 @@ class ArtifactStore:
         state_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._initialized = False
+        self._table = _ARTIFACT_TABLE
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -75,8 +78,15 @@ class ArtifactStore:
             def _setup() -> None:
                 with closing(self._connect()) as con:
                     initialize_wal(con)
-                    con.execute(
-                        """CREATE TABLE IF NOT EXISTS artifacts (
+                    full_schema = {
+                        "artifact_id", "created_at", "tenant", "tenant_identity", "kind", "text",
+                        "mime_type", "encoding", "blob", "size_bytes", "checksum", "identity_json",
+                    }
+                    table_info = list(con.execute("PRAGMA table_info(artifacts)"))
+                    existing_columns = {str(row[1]) for row in table_info}
+                    if not existing_columns:
+                        con.execute(
+                            """CREATE TABLE IF NOT EXISTS artifacts (
                             artifact_id TEXT PRIMARY KEY,
                             created_at REAL NOT NULL,
                             tenant TEXT NOT NULL,
@@ -90,29 +100,42 @@ class ArtifactStore:
                             checksum TEXT,
                             identity_json TEXT
                         )"""
-                    )
-                    columns = {str(row[1]) for row in con.execute("PRAGMA table_info(artifacts)")}
-                    for name, definition in (
-                        ("tenant_identity", "TEXT"),
-                        ("mime_type", "TEXT"),
-                        ("encoding", "TEXT"),
-                        ("blob", "BLOB"),
-                        ("size_bytes", "INTEGER"),
-                        ("checksum", "TEXT"),
-                        ("identity_json", "TEXT"),
-                    ):
-                        if name not in columns:
-                            con.execute(f"ALTER TABLE artifacts ADD COLUMN {name} {definition}")
-                    for rowid, tenant, stored_identity in con.execute("SELECT rowid, tenant, tenant_identity FROM artifacts"):
-                        identity = str(stored_identity or "")
-                        if not re.fullmatch(r"[0-9a-f]{64}", identity):
-                            identity = self._tenant_identity(str(tenant))
-                        if str(tenant) != identity or stored_identity != identity:
+                        )
+                        self._table = _ARTIFACT_TABLE
+                    elif full_schema.issubset(existing_columns):
+                        self._table = _ARTIFACT_TABLE
+                    else:
+                        con.execute(
+                            """CREATE TABLE IF NOT EXISTS artifacts_v2 (
+                                artifact_id TEXT PRIMARY KEY,
+                                created_at REAL NOT NULL,
+                                tenant TEXT NOT NULL,
+                                tenant_identity TEXT NOT NULL,
+                                kind TEXT NOT NULL,
+                                text TEXT NOT NULL DEFAULT '',
+                                mime_type TEXT,
+                                encoding TEXT,
+                                blob BLOB,
+                                size_bytes INTEGER,
+                                checksum TEXT,
+                                identity_json TEXT
+                            )"""
+                        )
+                        legacy_rows = list(con.execute(
+                            "SELECT rowid, artifact_id, created_at, tenant, kind, text FROM artifacts"
+                        ))
+                        for rowid, artifact_id, created_at, tenant, kind, text in legacy_rows:
+                            raw_tenant = str(tenant)
+                            identity = raw_tenant if re.fullmatch(r"[0-9a-f]{64}", raw_tenant) else self._tenant_identity(raw_tenant)
+                            con.execute("UPDATE artifacts SET tenant=? WHERE rowid=?", (identity, rowid))
                             con.execute(
-                                "UPDATE artifacts SET tenant=?, tenant_identity=? WHERE rowid=?",
-                                (identity, identity, rowid),
+                                """INSERT OR IGNORE INTO artifacts_v2(
+                                    artifact_id, created_at, tenant, tenant_identity, kind, text
+                                ) VALUES(?,?,?,?,?,?)""",
+                                (artifact_id, created_at, identity, identity, kind, text),
                             )
-                    con.execute("CREATE INDEX IF NOT EXISTS idx_artifacts_created ON artifacts(created_at)")
+                        self._table = _ARTIFACT_V2_TABLE
+                    con.execute(f"CREATE INDEX IF NOT EXISTS idx_{self._table}_created ON {self._table}(created_at)")
                     con.commit()
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
             self._initialized = True
@@ -122,22 +145,36 @@ class ArtifactStore:
         if not force and (now - self._last_purge) < self._purge_interval:
             return
         self._last_purge = now
-        con.execute("DELETE FROM artifacts WHERE created_at < ?", (now - self.ttl_seconds,))
+        con.execute(f"DELETE FROM {self._table} WHERE created_at < ?", (now - self.ttl_seconds,))
+
+    def _scoped_artifact_id(self, con: sqlite3.Connection, base_id: str, tenant_identity: str) -> str:
+        row = con.execute(
+            f"SELECT tenant_identity, tenant FROM {self._table} WHERE artifact_id=?",
+            (base_id,),
+        ).fetchone()
+        existing_identity = str((row[0] if row and row[0] else row[1]) if row else "")
+        if not row or existing_identity == tenant_identity:
+            return base_id
+        return f"{base_id}_{tenant_identity}"
 
     def put(self, text: str, tenant: str, kind: str) -> str:
         digest = hashlib.sha256((kind + "\0" + text).encode("utf-8")).hexdigest()[:24]
         artifact_id = f"art_{digest}"
         tenant_identity = self._tenant_identity(tenant)
+        stored_id = artifact_id
         def _do_put() -> None:
+            nonlocal stored_id
             with closing(self._connect()) as con:
                 self._purge(con)
+                scoped_id = self._scoped_artifact_id(con, artifact_id, tenant_identity)
                 con.execute(
-                    "INSERT OR REPLACE INTO artifacts(artifact_id, created_at, tenant, tenant_identity, kind, text) VALUES(?,?,?,?,?,?)",
-                    (artifact_id, time.time(), tenant_identity, tenant_identity, kind, text),
+                    f"INSERT OR REPLACE INTO {self._table}(artifact_id, created_at, tenant, tenant_identity, kind, text) VALUES(?,?,?,?,?,?)",
+                    (scoped_id, time.time(), tenant_identity, tenant_identity, kind, text),
                 )
+                stored_id = scoped_id
                 con.commit()
         retry_busy(_do_put, retries=4)
-        return artifact_id
+        return stored_id
 
     def put_bytes(
         self,
@@ -156,12 +193,12 @@ class ArtifactStore:
             raise ArtifactTransportError("artifact_too_large", "artifact size exceeds configured limit")
 
         checksum = hashlib.sha256(data).hexdigest()
-        artifact_id = "art_" + hashlib.sha256(
+        base_artifact_id = "art_" + hashlib.sha256(
             (str(kind) + "\0" + normalized_mime + "\0" + checksum).encode("utf-8")
         ).hexdigest()[:24]
         encoding = "base64"
         identity = {
-            "artifact_id": artifact_id,
+            "artifact_id": base_artifact_id,
             "kind": str(kind),
             "mime_type": normalized_mime,
             "encoding": encoding,
@@ -170,11 +207,15 @@ class ArtifactStore:
         }
         tenant_identity = self._tenant_identity(tenant)
 
+        artifact_id = ""
         def _do_put() -> None:
+            nonlocal artifact_id
             with closing(self._connect()) as con:
                 self._purge(con)
+                artifact_id = self._scoped_artifact_id(con, base_artifact_id, tenant_identity)
+                identity["artifact_id"] = artifact_id
                 con.execute(
-                    """INSERT OR REPLACE INTO artifacts(
+                    f"""INSERT OR REPLACE INTO {self._table}(
                         artifact_id, created_at, tenant, tenant_identity, kind, text, mime_type,
                         encoding, blob, size_bytes, checksum, identity_json
                     ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
@@ -211,18 +252,22 @@ class ArtifactStore:
     def _binary_failure(message: str) -> dict[str, Any]:
         return {"success": False, "error": message[:160]}
 
-    def get_binary(self, artifact_id: str) -> dict[str, Any]:
+    def get_binary(self, artifact_id: str, tenant: str | None = None) -> dict[str, Any]:
         """Return one complete, integrity-checked binary artifact or a safe failure."""
         cutoff = time.time() - self.ttl_seconds
 
         def _do_get() -> tuple[Any, ...] | None:
             with closing(self._connect()) as con:
-                return con.execute(
+                query = (
                     """SELECT artifact_id, kind, mime_type, encoding, blob,
                               size_bytes, checksum, identity_json
-                       FROM artifacts WHERE artifact_id=? AND created_at>=?""",
-                    (str(artifact_id), cutoff),
-                ).fetchone()
+                       FROM """ + self._table + " WHERE artifact_id=? AND created_at>=?"
+                )
+                params: list[Any] = [str(artifact_id), cutoff]
+                if tenant is not None:
+                    query += " AND tenant_identity=?"
+                    params.append(self._tenant_identity(tenant))
+                return con.execute(query, params).fetchone()
 
         row = retry_busy(_do_get, retries=3)
         if not row:
@@ -233,7 +278,12 @@ class ArtifactStore:
         data = bytes(row[4])
         mime_type = str(row[2])
         encoding = str(row[3])
-        expected_size = int(row[5]) if row[5] is not None else -1
+        try:
+            expected_size = int(row[5]) if row[5] is not None else -1
+        except (TypeError, ValueError, OverflowError):
+            return self._binary_failure("artifact integrity check failed")
+        if expected_size < 0:
+            return self._binary_failure("artifact integrity check failed")
         checksum = str(row[6] or "")
         if not mime_type.startswith("image/") or encoding != "base64":
             return self._binary_failure("artifact integrity check failed")
@@ -320,7 +370,7 @@ class ArtifactStore:
         }
         return result
 
-    def get(self, artifact_id: str, offset: int = 0, max_chars: int = 6000, section: str = "") -> dict[str, Any]:
+    def get(self, artifact_id: str, offset: int = 0, max_chars: int = 6000, section: str = "", tenant: str | None = None) -> dict[str, Any]:
         offset = max(0, int(offset))
         max_chars = max(256, min(int(max_chars), 50_000))
         cutoff = time.time() - self.ttl_seconds
@@ -328,10 +378,12 @@ class ArtifactStore:
             with closing(self._connect()) as con:
                 # Reads stay read-only; expiry cleanup happens on writes. This avoids
                 # turning every artifact slice fetch into a WAL writer.
-                return con.execute(
-                    "SELECT kind, text, mime_type, created_at FROM artifacts WHERE artifact_id=? AND created_at>=?",
-                    (artifact_id, cutoff),
-                ).fetchone()
+                query = f"SELECT kind, text, mime_type, created_at FROM {self._table} WHERE artifact_id=? AND created_at>=?"
+                params: list[Any] = [artifact_id, cutoff]
+                if tenant is not None:
+                    query += " AND tenant_identity=?"
+                    params.append(self._tenant_identity(tenant))
+                return con.execute(query, params).fetchone()
         row = retry_busy(_do_get, retries=3)
         if not row:
             return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
