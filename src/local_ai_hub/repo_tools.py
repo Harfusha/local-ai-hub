@@ -56,6 +56,23 @@ class GitSnapshot:
         object.__setattr__(self, "blobs", MappingProxyType(dict(self.blobs)))
         object.__setattr__(self, "renames", MappingProxyType(dict(self.renames)))
 
+    @property
+    def revision(self) -> str:
+        """Stable repository revision for bounded guard provenance."""
+        return self.head_oid or self.status_identity or ""
+
+    @property
+    def repository_revision(self) -> str:
+        return self.revision
+
+    @property
+    def changed_paths(self) -> tuple[str, ...]:
+        paths = set(self.status)
+        paths.update(self.deleted)
+        paths.update(self.renames)
+        paths.update(self.renames.values())
+        return tuple(sorted(path for path in paths if path))
+
 
 class RepositoryTools:
     def __init__(self, config: dict[str, Any]):
@@ -1157,8 +1174,12 @@ class RepositoryTools:
             match = re.match(r"diff --git a/(.+?) b/(.+)$", line)
             if match:
                 changed.append(match.group(2))
+        snapshot = self.git_snapshot(str(repo))
+        changed_paths = list(dict.fromkeys(changed + list(snapshot.changed_paths)))
         return {
             "success": True, "root": str(repo), "diff": text, "changed_files": changed,
+            "changed_paths": changed_paths, "revision": snapshot.revision,
+            "repository_revision": snapshot.repository_revision,
             "estimated_tokens": estimate_tokens(text), "original_estimated_tokens": original_tokens,
             "truncated": truncated, "diff_sha256": hashlib.sha256(completed.stdout.encode("utf-8")).hexdigest(),
         }
