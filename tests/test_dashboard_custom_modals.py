@@ -992,6 +992,124 @@ def test_trace_inspector_dispatches_request_specific_renderers() -> None:
         assert f"{renderer}(model)" in dispatcher
 
 
+TRACE_PRESENTATION_CONTRACT_FIXTURES = {
+    "model_chat": {
+        "presentation": {
+            "kind": "model_chat",
+            "modelInput": {"prompt": "Explain trace retention"},
+            "modelOutput": None,
+        },
+        "session": {"final_response_status": "empty"},
+    },
+    "agent_loop": {
+        "presentation": {"kind": "agent_loop"},
+        "input": {"prompt": "Inspect the repository"},
+        "events": [
+            {"event_type": "tool_call", "payload": {"name": "search", "arguments": {"query": "trace"}}},
+            {"event_type": "tool_result", "payload": {"name": "search", "result": "one match"}},
+        ],
+    },
+    "command": {
+        "presentation": {
+            "kind": "command",
+            "command": {
+                "command": "pytest",
+                "args": ["-q"],
+                "stdout": "1 passed",
+                "stderr": "",
+                "exit_code": 0,
+                "success": True,
+                "input": {"api_key": "TRACE_SECRET_MARKER", "note": "safe input"},
+            },
+        }
+    },
+    "review": {
+        "presentation": {
+            "kind": "review",
+            "review": {
+                "request": "Review renderer contract",
+                "findings": [{"severity": "high", "message": "Add coverage"}],
+                "recommendation": "Proceed after coverage",
+                "status": "changes requested",
+            },
+        }
+    },
+    "repo_intelligence": {
+        "presentation": {
+            "kind": "repo_intelligence",
+            "repoOperation": {
+                "repository": "local-ai-hub",
+                "operation": "search symbols",
+                "query": "tracePresentationShell",
+                "result": "one match",
+            },
+        }
+    },
+    "rag_search": {
+        "presentation": {
+            "kind": "rag_search",
+            "retrieval": {
+                "query": "renderer contract",
+                "sources": [{"path": "dashboard.py", "provider": "index", "score": 0.9, "snippet": "safe shell"}],
+                "answer": "Use bounded presentation helpers.",
+            },
+        }
+    },
+    "async_job": {
+        "presentation": {
+            "kind": "async_job",
+            "asyncJob": {"status": "failed", "error": "worker timeout", "result": ""},
+        },
+        "lifecycle": {"state": "failed"},
+    },
+    "request_response": {
+        "presentation": {"kind": "request_response"},
+        "session": {"request": {"method": "POST", "path": "/trace"}},
+        "response": {"message": "accepted"},
+        "output": "request completed",
+        "lifecycle": {"state": "complete"},
+        "timing": {"duration_ms": 18},
+    },
+}
+
+
+def test_trace_inspector_shared_presentation_contract_covers_all_kinds() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "const n=v=>String(v??0);function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"const fixtures={json.dumps(TRACE_PRESENTATION_CONTRACT_FIXTURES)};"
+        + "const renderers={model_chat:renderModelChatPresentation,agent_loop:renderAgentLoopPresentation,command:renderCommandPresentation,review:renderReviewPresentation,repo_intelligence:renderRepoIntelligencePresentation,rag_search:renderRagSearchPresentation,async_job:renderAsyncJobPresentation,request_response:renderRequestResponsePresentation};"
+        + "const rendered=Object.fromEntries(Object.entries(fixtures).map(([kind,model])=>[kind,renderers[kind](model)]));"
+        + "console.log(JSON.stringify(rendered));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    rendered = json.loads(result.stdout)
+    expected_values = {
+        "model_chat": ["Explain trace retention", "Model returned an empty final response"],
+        "agent_loop": ["search", "one match"],
+        "command": ["pytest", "1 passed"],
+        "review": ["Review renderer contract", "Add coverage"],
+        "repo_intelligence": ["local-ai-hub", "tracePresentationShell"],
+        "rag_search": ["renderer contract", "safe shell"],
+        "async_job": ["failed", "worker timeout"],
+        "request_response": ["/trace", "request completed"],
+    }
+    for kind, values in expected_values.items():
+        html = rendered[kind]
+        assert 'class="trace-primary-section"' in html
+        assert '<details class="trace-secondary-details' in html
+        assert 'data-trace-primary-group="Technical details"' in html
+        assert not re.search(r'<details class="trace-secondary-details[^>]*\bopen(?:=|\s|>)', html)
+        for value in values:
+            assert value in html, f"{kind} renderer omitted {value!r}"
+        assert "[object Object]" not in html
+        assert "TRACE_SECRET_MARKER" not in html
+
+
 def test_trace_renderers_render_per_kind_fixtures_as_semantic_output() -> None:
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     source = _trace_presentation_runtime_source()
@@ -1242,7 +1360,8 @@ def test_trace_request_renderers_runtime_show_severity_command_and_ranked_rag() 
     assert "none" not in rendered["command"]
     assert "rank" in rendered["rag"].lower() and "score" in rendered["rag"].lower()
     assert rendered["rag"].count("trace-search-result-row") == 2
-    assert "<details" not in rendered["rag"]
+    assert '<details class="trace-secondary-details' in rendered["rag"]
+    assert not re.search(r'<details class="trace-secondary-details[^>]*\bopen(?:=|\s|>)', rendered["rag"])
     assert "answer" in rendered["rag"]
 
 
