@@ -2637,6 +2637,18 @@ class LocalAIServices:
         warnings = tuple(dict.fromkeys((*mapping_warnings, *drift_warnings)))[:24]
         memory_revision = self._adaptive_memory_revision(request)
         relevance = self._adaptive_relevance(request, evidence, revision, memory_revision)
+        metric = getattr(guard, "record_metric", None)
+        if callable(metric):
+            if since_hash and since_hash == revision:
+                metric("duplicate_context_reuse")
+            if not isinstance(relevance, dict) or not relevance.get("success"):
+                metric("degraded_local_model_fallback")
+            relevance_warnings = tuple(relevance.get("warnings", ())) if isinstance(relevance, dict) else ()
+            for warning in relevance_warnings:
+                severity = getattr(warning, "severity", None)
+                if severity is None and isinstance(warning, dict):
+                    severity = warning.get("severity", "warning")
+                metric("warning", severity=str(severity or "warning"))
         model_warnings = tuple(relevance.get("warnings", ()))[:24] if isinstance(relevance, dict) else ()
         pack = AdaptiveContextPack(
             contract=contract,
@@ -2699,6 +2711,13 @@ class LocalAIServices:
             "task_status": task_status,
             "waiting": bool(waiting),
         })
+        snapshotter = getattr(self.telemetry, "record_snapshot", None)
+        metrics_getter = getattr(guard, "metrics_snapshot", None)
+        if callable(snapshotter) and callable(metrics_getter):
+            try:
+                snapshotter("consistency_guard", metrics_getter())
+            except Exception:
+                pass
         return result
 
     def fast_context(self, root: str, query: str, max_tokens: int) -> dict[str, Any]:

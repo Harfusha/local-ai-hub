@@ -370,6 +370,42 @@ def test_record_idempotency_reuses_existing_record(store: MemoryStore):
     )].count("memory.recorded") == 1
 
 
+def test_evidence_memory_persists_revision_metadata_and_is_idempotent(store: MemoryStore, tmp_path: Path):
+    record = MemoryRecord.create(
+        kind=MemoryKind.FINDING,
+        scope=AgentScope.REPOSITORY,
+        scope_id="repo",
+        key="guard:finding:stable:rev-1",
+        value={"status": "verified", "evidence_ids": ["ev-1"]},
+        evidence_ids=("ev-1",),
+        repository_revision="rev-1",
+        path_refs=("src/app.py",),
+        symbol_refs=("App.run",),
+        related_task="task-1",
+        expires_at=9999999999.0,
+    )
+    first = store.record(record, idempotency_key="guard:finding:stable:rev-1")
+    second = store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope=AgentScope.REPOSITORY,
+            scope_id="repo",
+            key="guard:finding:stable:rev-1",
+            value={"status": "changed"},
+            repository_revision="rev-1",
+        ),
+        idempotency_key="guard:finding:stable:rev-1",
+    )
+    restored = store.get(first.record_id)
+
+    assert second.record_id == first.record_id
+    assert restored is not None
+    assert restored.repository_revision == "rev-1"
+    assert restored.path_refs == ("src/app.py",)
+    assert restored.symbol_refs == ("App.run",)
+    assert restored.related_task == "task-1"
+
+
 def test_record_idempotency_is_atomic_under_concurrency(store: MemoryStore):
     def record_attempt(index: int) -> str:
         saved = store.record(

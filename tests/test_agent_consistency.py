@@ -9,6 +9,9 @@ from types import SimpleNamespace
 import pytest
 
 from local_ai_hub.config import load_config
+from local_ai_hub.agent_events import AgentStateStore
+from local_ai_hub.agent_memory import MemoryKind, MemoryStore
+from local_ai_hub.agent_verification import VerificationStore
 from local_ai_hub.agent_consistency import (
     AgentConsistencyGuard,
     AdaptiveContextPack,
@@ -565,3 +568,129 @@ def test_adaptive_context_pack_serializes_relevance_metadata(repository: Path):
     assert payload["preload_profile"] == "review"
     assert payload["memory_revision"] == "memory-1"
     assert payload["model_warnings"][0]["code"] == "unsupported_model_claim"
+
+
+def test_guard_records_verified_finding_after_discovery(repository: Path):
+    state = AgentStateStore(repository.parent / "guard-state.sqlite3")
+    memory = MemoryStore(state)
+    guard = AgentConsistencyGuard(RepositoryTools(_cfg(repository.parent)), memory_store=memory)
+    request = _request(repository)
+
+    saved = guard.record_finding(
+        request,
+        finding={"summary": "UserService is reusable", "raw": "secret source must not persist"},
+        evidence_ids=("ev-users",),
+        path_refs=("backend/users.py",),
+        symbol_refs=("UserService",),
+        confidence=0.91,
+    )
+    repeat = guard.record_finding(
+        request,
+        finding={"summary": "changed but same stable finding"},
+        evidence_ids=("ev-users",),
+        path_refs=("backend/users.py",),
+        symbol_refs=("UserService",),
+        confidence=0.91,
+    )
+
+    assert saved is not None
+    assert repeat is not None
+    assert saved.record_id == repeat.record_id
+    assert saved.kind is MemoryKind.FINDING
+    assert saved.repository_revision
+    assert saved.path_refs == ("backend/users.py",)
+    assert saved.symbol_refs == ("UserService",)
+    assert saved.related_task == request.task_id
+    assert saved.expires_at is not None
+    assert "secret source" not in json.dumps(saved.to_dict())
+
+
+def test_guard_records_reuse_decision_and_rejected_approach(repository: Path):
+    state = AgentStateStore(repository.parent / "guard-state.sqlite3")
+    memory = MemoryStore(state)
+    guard = AgentConsistencyGuard(RepositoryTools(_cfg(repository.parent)), memory_store=memory)
+    request = _request(repository)
+
+    accepted = guard.record_reuse_decision(
+        request, candidate_id="reuse-1", decision="accepted", evidence_ids=("ev-1",), reason="existing service fits"
+    )
+    rejected = guard.record_rejected_approach(
+        request, approach="new UserEndpoint", reason="reuse-1 covers the contract", evidence_ids=("ev-1",)
+    )
+
+    assert accepted is not None and accepted.kind is MemoryKind.REUSABLE_CANDIDATE
+    assert rejected is not None and rejected.kind is MemoryKind.REJECTED_APPROACH
+    assert accepted.provenance["related_task"] == request.task_id
+    assert rejected.repository_revision == accepted.repository_revision
+    assert memory.count() == 2
+
+
+def test_soft_stop_override_records_decision(repository: Path):
+    state = AgentStateStore(repository.parent / "guard-state.sqlite3")
+    memory = MemoryStore(state)
+    guard = AgentConsistencyGuard(RepositoryTools(_cfg(repository.parent)), memory_store=memory)
+
+    saved = guard.record_decision(
+        _request(repository, override_reason="boundary approved"),
+        decision="override",
+        reason="boundary approved",
+        approved=True,
+        evidence_ids=("synthetic-drift-1",),
+    )
+
+    assert saved is not None and saved.kind is MemoryKind.DECISION
+    assert saved.value["approved"] is True
+    assert saved.value["reason"] == "boundary approved"
+
+
+def test_guard_records_unknown_and_validation_receipt(repository: Path):
+    state = AgentStateStore(repository.parent / "guard-state.sqlite3")
+    memory = MemoryStore(state)
+    verification = VerificationStore(state)
+    guard = AgentConsistencyGuard(RepositoryTools(_cfg(repository.parent)), memory_store=memory, verification_store=verification)
+    request = _request(repository)
+
+    unknown = guard.record_unknown(request, claim="PaymentGateway exists", evidence_ids=("synthetic-claim-1",))
+    validation = guard.record_validation(request, criterion="tests", passed=True, evidence_ids=("ev-tests",))
+
+    assert unknown is not None and unknown.kind is MemoryKind.UNKNOWN
+    assert validation is not None and validation.kind is MemoryKind.VALIDATION
+    assert verification.completion(request.task_id).receipts[0].evidence_id == "ev-tests"
+
+
+def test_guard_metrics_store_categories_without_raw_prompt_or_source(repository: Path):
+    guard = _guard(repository)
+    guard.record_metric("reuse_candidates", 2)
+    guard.record_metric("reuse_accepted")
+    guard.record_metric("reuse_rejected")
+    guard.record_metric("warning", 3, severity="boundary")
+    guard.record_metric("unknown_claims")
+    guard.record_metric("contract_mismatches")
+    guard.record_metric("duplicate_context_reuse")
+    guard.record_metric("degraded_local_model_fallback")
+
+    metrics = guard.metrics_snapshot()
+    encoded = json.dumps(metrics)
+
+    assert metrics["reuse_candidates"] == 2
+    assert metrics["reuse_accepted"] == 1
+    assert metrics["reuse_rejected"] == 1
+    assert metrics["warning_boundary"] == 3
+    assert metrics["unknown_claims"] == 1
+    assert metrics["contract_mismatches"] == 1
+    assert metrics["duplicate_context_reuse"] == 1
+    assert metrics["degraded_local_model_fallback"] == 1
+    assert "prompt" not in encoded.lower()
+    assert "source snippet" not in encoded.lower()
+    assert "UserService" not in encoded
+
+
+def test_guard_memory_is_noop_when_store_disabled(repository: Path):
+    state = AgentStateStore(repository.parent / "disabled.sqlite3", enabled=False)
+    memory = MemoryStore(state)
+    guard = AgentConsistencyGuard(RepositoryTools(_cfg(repository.parent)), memory_store=memory)
+
+    saved = guard.record_unknown(_request(repository), claim="unknown service", evidence_ids=("ev-unknown",))
+
+    assert saved is None
+    assert memory.count() == 0

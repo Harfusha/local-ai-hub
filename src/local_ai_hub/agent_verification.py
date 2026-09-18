@@ -285,9 +285,10 @@ class CompletionResult:
     unsatisfied_criteria: tuple[str, ...]
     stale_criteria: tuple[str, ...]
     receipts: tuple[VerificationReceipt, ...]
+    consistency: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "task_id": self.task_id,
             "complete": self.complete,
             "satisfied_criteria": list(self.satisfied_criteria),
@@ -295,6 +296,9 @@ class CompletionResult:
             "stale_criteria": list(self.stale_criteria),
             "receipts": [r.to_dict() for r in self.receipts],
         }
+        if self.consistency:
+            payload["consistency"] = dict(self.consistency)
+        return payload
 
 
 class VerificationStore:
@@ -553,7 +557,20 @@ class VerificationStore:
         retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
         return outcome
 
-    def completion(self, task_id: str, now: float | None = None) -> CompletionResult:
+    def completion(
+        self,
+        task_id: str,
+        now: float | None = None,
+        *,
+        include_consistency: bool = False,
+        consistency_guard: Any | None = None,
+        repository_revision: str = "",
+        warnings: Any = (),
+        mappings: Any = (),
+        records: Any = (),
+        consistency: Mapping[str, Any] | None = None,
+    ) -> CompletionResult:
+        wants_consistency = bool(include_consistency or consistency_guard is not None or consistency is not None)
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return CompletionResult(
                 task_id=task_id,
@@ -562,6 +579,7 @@ class VerificationStore:
                 unsatisfied_criteria=(),
                 stale_criteria=(),
                 receipts=(),
+                consistency=dict(consistency) if isinstance(consistency, Mapping) and wants_consistency else {},
             )
         self._init_tables()
         current_time = float(time.time() if now is None else now)
@@ -628,6 +646,22 @@ class VerificationStore:
             and len(satisfied) == len(target_criteria)
         )
 
+        audit: dict[str, Any] = dict(consistency) if isinstance(consistency, Mapping) else {}
+        if wants_consistency and not audit and consistency_guard is not None:
+            auditor = getattr(consistency_guard, "completion_audit", None)
+            if callable(auditor):
+                try:
+                    audit = dict(auditor(
+                        criteria=target_criteria,
+                        receipts=tuple(latest_by_criterion.values()),
+                        warnings=warnings,
+                        mappings=mappings,
+                        records=records,
+                        repository_revision=repository_revision,
+                    ) or {})
+                except Exception:
+                    audit = {}
+
         return CompletionResult(
             task_id=task_id,
             complete=is_complete,
@@ -635,4 +669,5 @@ class VerificationStore:
             unsatisfied_criteria=tuple(unsatisfied),
             stale_criteria=tuple(stale),
             receipts=tuple(latest_by_criterion.values()),
+            consistency=audit,
         )
