@@ -71,7 +71,7 @@ def validate_config(data: dict[str, Any]) -> None:
     Local AI Hub deliberately leaves most feature-specific keys extensible. Validation
     focuses on transport, resource limits, and code-intelligence lifecycle settings.
     """
-    for name in ("server", "security", "hardware", "openvino", "scheduler", "commands", "client", "mcp", "code_intelligence", "bundles", "resilience", "ollama", "llama_cpp", "ollama_subagents", "agent_state", "work_orchestrator"):
+    for name in ("server", "security", "hardware", "openvino", "scheduler", "commands", "client", "mcp", "code_intelligence", "bundles", "resilience", "ollama", "llama_cpp", "ollama_subagents", "agent_state", "work_orchestrator", "browser_bridge"):
         if name in data and not isinstance(data[name], dict):
             raise ConfigError(f"[{name}] must be a TOML table")
 
@@ -102,6 +102,20 @@ def validate_config(data: dict[str, Any]) -> None:
         _number(agent_state, "max_payload_bytes", minimum=1024, maximum=10 * 1024 * 1024)
         _number(agent_state, "snapshot_interval_events", minimum=1, maximum=10000)
         _number(agent_state, "cleanup_batch_size", minimum=1, maximum=10000)
+
+    browser_bridge = data.get("browser_bridge", {})
+    if isinstance(browser_bridge, dict):
+        if "enabled" in browser_bridge and not isinstance(browser_bridge["enabled"], bool):
+            raise ConfigError("browser_bridge.enabled must be a boolean")
+        allowed_origins = browser_bridge.get("allowed_origins", [])
+        if not isinstance(allowed_origins, list) or len(allowed_origins) > 32 or not all(isinstance(item, str) and item.strip() for item in allowed_origins):
+            raise ConfigError("browser_bridge.allowed_origins must be a list of non-empty strings")
+        _number(browser_bridge, "capability_ttl_seconds", minimum=1, maximum=3600)
+        _number(browser_bridge, "max_payload_bytes", minimum=1024, maximum=64 * 1024 * 1024)
+        _number(browser_bridge, "max_screenshot_bytes", minimum=1024, maximum=32 * 1024 * 1024)
+        _number(browser_bridge, "max_dom_chars", minimum=1024, maximum=16 * 1024 * 1024)
+        _number(browser_bridge, "max_context_chars", minimum=1024, maximum=16 * 1024 * 1024)
+        _number(browser_bridge, "max_elements", minimum=1, maximum=4096)
 
     server = data.get("server", {})
     port = server.get("port", 11435)
