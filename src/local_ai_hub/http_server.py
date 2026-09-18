@@ -630,7 +630,26 @@ class Handler(BaseHTTPRequestHandler):
             self._trace_context_token = None
 
     def _tenant(self) -> str:
-        return self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID") or "http-default"
+        requested = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID") or "http-default"
+        path = str(getattr(self, "path", ""))
+        security = APP.config.get("security", {}) if APP is not None else {}
+        if APP is not None and (path.startswith("/api/browser/") or path == "/api/vision/review") and security.get("api_token"):
+            return str(APP.config.get("browser_bridge", {}).get("tenant", "http-default") or "http-default")
+        return requested
+
+    def _tenant_binding_allowed(self) -> bool:
+        if APP is None:
+            return True
+        path = str(getattr(self, "path", ""))
+        security = APP.config.get("security", {})
+        if not (path.startswith("/api/browser/") or path == "/api/vision/review") or not security.get("api_token"):
+            return True
+        configured = str(APP.config.get("browser_bridge", {}).get("tenant", "http-default") or "http-default")
+        requested = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
+        if requested and str(requested).strip() != configured:
+            self._send(403, {"success": False, "error": "browser bridge tenant is bound to its configured token tenant", "error_code": "tenant_binding_mismatch", "terminal": True, "retryable": False})
+            return False
+        return True
 
     def _agent(self) -> str:
         return self.headers.get("X-LocalAI-Agent") or "generic"
@@ -712,6 +731,8 @@ class Handler(BaseHTTPRequestHandler):
             return False
         if not self._authorized():
             self._send(401, {"success": False, "error": "unauthorized"})
+            return False
+        if not self._tenant_binding_allowed():
             return False
         # Rate limit is checked after auth to avoid leaking tenant existence to unauthenticated callers.
         srv = self.server

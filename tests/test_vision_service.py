@@ -55,6 +55,21 @@ def test_vision_defaults_to_qwen_model_and_requests_json(tmp_path: Path) -> None
     assert payload["images"] == ["ZmFrZS1pbWFnZQ=="]
 
 
+def test_vision_image_path_checks_size_before_reading_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    services, runtime, image = _services(tmp_path)
+    image.write_bytes(b"x" * (VISION_MAX_IMAGE_BYTES + 1))
+
+    def fail_read(_self: Path) -> bytes:
+        raise AssertionError("oversized image was read before preflight")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read)
+    result = services.vision({"image": str(image), "prompt": "Review UI"}, "tenant-a")
+
+    assert result["terminal"] is True
+    assert result["error_code"] == "vision_image_too_large"
+    runtime.request.assert_not_called()
+
+
 def test_vision_rejects_oversized_inline_context_before_json_loads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

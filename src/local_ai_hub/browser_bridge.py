@@ -14,7 +14,7 @@ import secrets
 import threading
 import time
 from datetime import datetime, timezone
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -51,6 +51,8 @@ _DEFAULTS = {
 }
 _MAX_STAGED_CAPTURES = 128
 _STAGE_REQUEST_ID_MAX = 128
+_MAX_TERMINAL_CAPTURES = 4096
+_TERMINAL_CAPTURE_TTL_SECONDS = 3600.0
 
 
 class CaptureProtocolError(ValueError):
@@ -64,6 +66,7 @@ class CaptureProtocolError(ValueError):
 
 _capabilities: dict[str, dict[str, Any]] = {}
 _staged_captures: dict[str, dict[str, Any]] = {}
+_terminal_captures: dict[str, dict[str, Any]] = {}
 _capability_lock = threading.RLock()
 
 
@@ -97,7 +100,7 @@ def _origin_allowed(origin: str, config: Any) -> bool:
     allowed = _allowed_origins(config)
     if not allowed:
         return False
-    return any(origin == item or (item.endswith("*") and origin.startswith(item[:-1])) for item in allowed)
+    return any("*" not in item and origin == item for item in allowed)
 
 
 def origin_allowed(config: Any, origin: str) -> bool:
@@ -126,13 +129,86 @@ def _safe_request_id(value: Any) -> str:
 
 
 def _cleanup_staged_locked(now: float) -> None:
+    for request_id, terminal in list(_terminal_captures.items()):
+        if float(terminal.get("expires_at", 0)) <= now:
+            _terminal_captures.pop(request_id, None)
     for request_id, stage in list(_staged_captures.items()):
         if float(stage.get("expires_at", 0)) > now:
+            continue
+        if stage.get("status") == "committing":
+            stage["cancel_requested"] = True
             continue
         _staged_captures.pop(request_id, None)
         record = _capabilities.get(str(stage.get("capability", "")))
         if record and record.get("staged_request_id") == request_id:
+            record["used"] = True
             record.pop("staged_request_id", None)
+        _remember_terminal_locked(
+            request_id,
+            stage,
+            _result_error("capture_expired", "capture stage expired before commit", status=408),
+            now=now,
+        )
+
+
+def _remember_terminal_locked(request_id: str, stage: Mapping[str, Any], result: Mapping[str, Any], *, now: float) -> None:
+    terminal = dict(result)
+    terminal.setdefault("request_id", request_id)
+    _terminal_captures[request_id] = {
+        "capability": str(stage.get("capability", "")),
+        "tenant": str(stage.get("tenant", "")),
+        "result": terminal,
+        "created_at": now,
+        "expires_at": now + _TERMINAL_CAPTURE_TTL_SECONDS,
+    }
+    while len(_terminal_captures) > _MAX_TERMINAL_CAPTURES:
+        oldest = min(_terminal_captures, key=lambda item: float(_terminal_captures[item].get("created_at", 0)))
+        _terminal_captures.pop(oldest, None)
+
+
+def _terminal_result_locked(request_id: str, capability: str, tenant: str, *, now: float) -> dict[str, Any] | None:
+    terminal = _terminal_captures.get(request_id)
+    if not terminal:
+        return None
+    if float(terminal.get("expires_at", 0)) <= now:
+        _terminal_captures.pop(request_id, None)
+        return None
+    if terminal.get("capability") != str(capability) or terminal.get("tenant") != str(tenant):
+        return _result_error("request_id_conflict", "capture request_id is already terminal for another capability", status=409)
+    return dict(terminal.get("result", {}))
+
+
+def _stage_cancel_requested(request_id: str, capability: str, tenant: str) -> bool:
+    with _capability_lock:
+        stage = _staged_captures.get(request_id)
+        return bool(
+            stage
+            and stage.get("capability") == str(capability)
+            and stage.get("tenant") == str(tenant)
+            and stage.get("cancel_requested")
+        )
+
+
+def _expire_staged_capture(request_id: str, capability: str) -> None:
+    with _capability_lock:
+        now = time.monotonic()
+        stage = _staged_captures.get(request_id)
+        if not stage or stage.get("capability") != str(capability) or float(stage.get("expires_at", 0)) > now:
+            return
+        if stage.get("status") == "committing":
+            stage["cancel_requested"] = True
+            return
+        _staged_captures.pop(request_id, None)
+        record = _capabilities.get(str(capability))
+        if record and record.get("staged_request_id") == request_id:
+            record["used"] = True
+            record.pop("staged_request_id", None)
+        _remember_terminal_locked(
+            request_id,
+            stage,
+            _result_error("capture_expired", "capture stage expired before commit", status=408),
+            now=now,
+        )
 
 
 def issue_capture_capability(
@@ -246,14 +322,19 @@ def stage_capture(capability: str, payload: Mapping[str, Any], *, tenant: str, c
     with _capability_lock:
         now = time.monotonic()
         _cleanup_staged_locked(now)
+        terminal = _terminal_result_locked(request_id, capability, tenant, now=now)
+        if terminal is not None:
+            return terminal
+        existing = _staged_captures.get(request_id)
+        if existing:
+            if existing.get("capability") != str(capability) or existing.get("tenant") != str(tenant):
+                return _result_error("request_id_conflict", "staged capture request_id is already in use", status=409)
+            if existing.get("status") == "committing":
+                return _result_error("capture_in_progress", "staged capture is already committing", status=409)
+            return {"success": True, "staged": True, "request_id": request_id}
         checked_request = _validate_capture_request_locked(capability, request, tenant=tenant, consume=False, request_id=request_id)
         if not checked_request.get("success"):
             return checked_request
-        existing = _staged_captures.get(request_id)
-        if existing:
-            if existing.get("capability") != str(capability):
-                return _result_error("request_id_conflict", "staged capture request_id is already in use", status=409)
-            return {"success": True, "staged": True, "request_id": request_id}
         checked_payload = validate_capture_payload(payload, config=config)
         if not checked_payload.get("success"):
             _capabilities[str(capability)].pop("staged_request_id", None)
@@ -268,7 +349,13 @@ def stage_capture(capability: str, payload: Mapping[str, Any], *, tenant: str, c
             "payload": checked_payload["payload"],
             "created_at": now,
             "expires_at": min(float(_capabilities[str(capability)]["expires_at"]), now + ttl),
+            "status": "staged",
+            "cancel_requested": False,
         }
+        expiry = max(1.0, float(_staged_captures[request_id]["expires_at"]) - now)
+        timer = threading.Timer(expiry, _expire_staged_capture, args=(request_id, str(capability)))
+        timer.daemon = True
+        timer.start()
     return {"success": True, "staged": True, "request_id": request_id}
 
 
@@ -280,19 +367,56 @@ def commit_staged_capture(
     tenant: str,
     config: Any,
 ) -> dict[str, Any]:
-    """Consume the live capability, then commit exactly one staged capture."""
+    """Commit one staged capture with cancellation and terminal idempotence."""
     request_id = _safe_request_id(request.get("request_id"))
     if not request_id:
         return _result_error("invalid_request_id", "capture commit requires a bounded request_id")
     with _capability_lock:
-        _cleanup_staged_locked(time.monotonic())
-        checked = _validate_capture_request_locked(capability, request, tenant=tenant, consume=True, request_id=request_id)
+        now = time.monotonic()
+        _cleanup_staged_locked(now)
+        terminal = _terminal_result_locked(request_id, capability, tenant, now=now)
+        if terminal is not None:
+            return terminal
+        stage = _staged_captures.get(request_id)
+        if not stage:
+            return _result_error("capture_stage_missing", "capture stage is missing, expired, or tenant-scoped elsewhere", status=409)
+        if stage.get("capability") != str(capability) or stage.get("tenant") != str(tenant):
+            return _result_error("request_id_conflict", "capture request_id is already in use", status=409)
+        checked = _validate_capture_request_locked(capability, request, tenant=tenant, consume=False, request_id=request_id)
         if not checked.get("success"):
             return checked
-        stage = _staged_captures.pop(request_id, None)
-    if not stage or stage.get("capability") != str(capability) or stage.get("tenant") != str(tenant):
-        return _result_error("capture_stage_missing", "capture stage is missing, expired, or tenant-scoped elsewhere", status=409)
-    return capture_to_artifacts(stage["payload"], artifacts=artifacts, tenant=tenant, config=config)
+        if stage.get("status") == "committing":
+            return _result_error("capture_in_progress", "capture commit is already in progress", status=409)
+        if stage.get("cancel_requested"):
+            result = _result_error("capture_cancelled", "capture was cancelled before commit", status=409)
+            _staged_captures.pop(request_id, None)
+            _capabilities[str(capability)]["used"] = True
+            _capabilities[str(capability)].pop("staged_request_id", None)
+            _remember_terminal_locked(request_id, stage, result, now=now)
+            return result
+        stage["status"] = "committing"
+    result = capture_to_artifacts(
+        stage["payload"],
+        artifacts=artifacts,
+        tenant=tenant,
+        config=config,
+        cancel_check=lambda: _stage_cancel_requested(request_id, capability, tenant),
+    )
+    with _capability_lock:
+        now = time.monotonic()
+        current = _staged_captures.get(request_id, stage)
+        if result.get("success") or result.get("error_code") == "capture_cancelled" or not result.get("retryable", False):
+            _staged_captures.pop(request_id, None)
+            record = _capabilities.get(str(capability))
+            if record:
+                record["used"] = True
+                record.pop("staged_request_id", None)
+            _remember_terminal_locked(request_id, current, result, now=now)
+        else:
+            current["status"] = "staged"
+    result = dict(result)
+    result.setdefault("request_id", request_id)
+    return result
 
 
 def abandon_staged_capture(capability: str, request: Mapping[str, Any], *, tenant: str) -> dict[str, Any]:
@@ -301,12 +425,30 @@ def abandon_staged_capture(capability: str, request: Mapping[str, Any], *, tenan
     if not request_id:
         return _result_error("invalid_request_id", "capture abandon requires a bounded request_id")
     with _capability_lock:
-        _cleanup_staged_locked(time.monotonic())
-        checked = _validate_capture_request_locked(capability, request, tenant=tenant, consume=True, request_id=request_id)
+        now = time.monotonic()
+        _cleanup_staged_locked(now)
+        terminal = _terminal_result_locked(request_id, capability, tenant, now=now)
+        if terminal is not None:
+            return terminal
+        stage = _staged_captures.get(request_id)
+        if not stage:
+            return _result_error("capture_stage_missing", "capture stage is missing, expired, or tenant-scoped elsewhere", status=409)
+        if stage.get("capability") != str(capability) or stage.get("tenant") != str(tenant):
+            return _result_error("request_id_conflict", "capture request_id is already in use", status=409)
+        checked = _validate_capture_request_locked(capability, request, tenant=tenant, consume=False, request_id=request_id)
         if not checked.get("success"):
             return checked
+        if stage.get("status") == "committing":
+            stage["cancel_requested"] = True
+            return {"success": True, "cancel_requested": True, "request_id": request_id}
         _staged_captures.pop(request_id, None)
-    return {"success": True, "abandoned": True, "request_id": request_id}
+        record = _capabilities.get(str(capability))
+        if record:
+            record["used"] = True
+            record.pop("staged_request_id", None)
+        result = {"success": True, "abandoned": True, "request_id": request_id}
+        _remember_terminal_locked(request_id, stage, result, now=now)
+        return result
 
 
 def _json_size(value: Any) -> int:
@@ -520,17 +662,34 @@ def _safe_runtime(runtime: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def capture_to_artifacts(payload: Mapping[str, Any], *, artifacts: Any, tenant: str, config: Any) -> dict[str, Any]:
+def capture_to_artifacts(
+    payload: Mapping[str, Any],
+    *,
+    artifacts: Any,
+    tenant: str,
+    config: Any,
+    cancel_check: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
     checked = validate_capture_payload(payload, config=config)
     if not checked.get("success"):
         return checked
     value = checked["payload"]
     try:
+        if cancel_check and cancel_check():
+            return _result_error("capture_cancelled", "capture was cancelled before artifact write", status=409)
         screenshot, mime = _screenshot_bytes(value["screenshot"], max_bytes=int(_setting(config, "max_screenshot_bytes")))
         dom_id = artifacts.put_json(dict(value["dom"]), tenant, "browser-dom")
+        if cancel_check and cancel_check():
+            return _result_error("capture_cancelled", "capture was cancelled during artifact write", status=409)
         accessibility_id = artifacts.put_json(dict(value.get("accessibility", {})), tenant, "browser-accessibility")
+        if cancel_check and cancel_check():
+            return _result_error("capture_cancelled", "capture was cancelled during artifact write", status=409)
         styles_id = artifacts.put_json(dict(value.get("computed_styles", {})), tenant, "browser-computed-styles")
+        if cancel_check and cancel_check():
+            return _result_error("capture_cancelled", "capture was cancelled during artifact write", status=409)
         runtime_id = artifacts.put_json(_safe_runtime(value.get("runtime", {})), tenant, "browser-runtime")
+        if cancel_check and cancel_check():
+            return _result_error("capture_cancelled", "capture was cancelled during artifact write", status=409)
         screenshot_id = artifacts.put_bytes(screenshot, tenant, "browser-screenshot", mime)
         bundle = {
             "version": 1,
@@ -551,6 +710,8 @@ def capture_to_artifacts(payload: Mapping[str, Any], *, artifacts: Any, tenant: 
             "runtime": {"artifact_id": runtime_id, "format": "runtime-refs"},
             "viewport": dict(value.get("viewport", {})) if isinstance(value.get("viewport"), Mapping) else {},
         }
+        if cancel_check and cancel_check():
+            return _result_error("capture_cancelled", "capture was cancelled before bundle write", status=409)
         bundle_id = artifacts.put_json(bundle, tenant, "frontend-review-bundle")
     except Exception as exc:
         return _result_error("artifact_store_error", "browser capture artifact storage failed; retry the request", status=503)

@@ -16,6 +16,7 @@ include requirements-openvino.txt
 include install.ps1
 include install.sh
 recursive-include tools *.py
+recursive-include browser_bridge *
 recursive-include skills *
 recursive-include tests *.py
 recursive-include .github *.yml

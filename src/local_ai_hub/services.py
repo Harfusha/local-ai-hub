@@ -1378,6 +1378,12 @@ class LocalAIServices:
                 if not is_file:
                     return input_error("Vision image path was not found; provide a readable image or base64 data.")
                 try:
+                    size_bytes = int(p.stat().st_size)
+                    encoded_chars = ((size_bytes + 2) // 3) * 4
+                    if size_bytes > VISION_MAX_IMAGE_BYTES:
+                        return input_error("Vision image exceeds the bounded decoded-byte limit.", "vision_image_too_large")
+                    if encoded_chars > VISION_MAX_IMAGE_CHARS:
+                        return input_error("Vision image transport exceeds the bounded character limit.", "vision_image_transport_too_large")
                     b64 = base64.b64encode(p.read_bytes()).decode("utf-8")
                     error = append_image(b64)
                     if error:

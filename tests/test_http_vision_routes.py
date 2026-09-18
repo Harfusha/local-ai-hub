@@ -171,7 +171,7 @@ def test_token_auth_supports_bridge_and_review_preflight_without_wildcard_origin
         "\n".join([
             "[server]", 'bind = "127.0.0.1"', "port = 11499", f'state_dir = "{state_dir.as_posix()}"',
             "[security]", f'api_token = "{token}"',
-            "[browser_bridge]", "enabled = true", "allowed_origins = []",
+            "[browser_bridge]", "enabled = true", "allowed_origins = []", 'tenant = "tenant-a"',
         ]), encoding="utf-8"
     )
     app = LocalAIApp(str(config_path))
@@ -219,6 +219,12 @@ def test_token_auth_supports_bridge_and_review_preflight_without_wildcard_origin
         finally:
             app.services.vision = original_vision
         assert review == {"success": True, "tenant": "tenant-a"}
+        denied = _post(
+            f"{base}/api/vision/review",
+            {"bundle_artifact_id": "tenant-a:frontend-review-bundle", "prompt": "Review"},
+            origin="chrome-extension://token-only", tenant="tenant-b", token=token,
+        )
+        assert denied["error_code"] == "tenant_binding_mismatch"
     finally:
         server.shutdown()
         server.server_close()

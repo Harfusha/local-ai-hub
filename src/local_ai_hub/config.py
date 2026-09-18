@@ -110,6 +110,11 @@ def validate_config(data: dict[str, Any]) -> None:
         allowed_origins = browser_bridge.get("allowed_origins", [])
         if not isinstance(allowed_origins, list) or len(allowed_origins) > 32 or not all(isinstance(item, str) and item.strip() for item in allowed_origins):
             raise ConfigError("browser_bridge.allowed_origins must be a list of non-empty strings")
+        if any("*" in item for item in allowed_origins):
+            raise ConfigError("browser_bridge.allowed_origins must contain exact origins; wildcards are not allowed")
+        bridge_tenant = browser_bridge.get("tenant", "http-default")
+        if not isinstance(bridge_tenant, str) or not bridge_tenant.strip() or len(bridge_tenant.strip()) > 256:
+            raise ConfigError("browser_bridge.tenant must be a non-empty string of at most 256 characters")
         _number(browser_bridge, "capability_ttl_seconds", minimum=1, maximum=3600)
         _number(browser_bridge, "max_payload_bytes", minimum=1024, maximum=64 * 1024 * 1024)
         _number(browser_bridge, "max_screenshot_bytes", minimum=1024, maximum=32 * 1024 * 1024)
