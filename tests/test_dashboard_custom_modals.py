@@ -406,7 +406,7 @@ def test_trace_inspector_renders_structured_model_content_without_object_coercio
     assert "function traceReadableMarkup(value,budget,limit=8000)" in source
     assert "function traceHumanReadableMarkup(value)" in DASHBOARD_HTML
     assert "safe&&typeof safe==='object'?renderAny(safe):`<pre class=\"trace-output\">${esc(traceHumanText(safe))}</pre>`" in DASHBOARD_HTML
-    assert "traceReadableMarkup(p.text??p.content??p.output??p.result??p,budget,8000)" in source
+    assert "traceReadableMarkup(safeOutput,budget,8000)" in source
 
 
 def test_trace_inspector_uses_raw_model_input_for_primary_prompt() -> None:
@@ -1003,8 +1003,10 @@ TRACE_PRESENTATION_CONTRACT_FIXTURES = {
         "presentation": {"kind": "agent_loop"},
         "input": {"prompt": "Inspect the repository"},
         "events": [
-            {"event_type": "tool_call", "seq": "AGENT_SEQUENCE_MARKER", "payload": {"name": "search", "call_id": "AGENT_CALL_ID_MARKER", "arguments": {"query": "trace", "options": {"headers": {"authorization": "AGENT_HEADER_MARKER"}, "timeout": 5}}}},
-            {"event_type": "tool_result", "seq": "AGENT_RESULT_SEQUENCE_MARKER", "payload": {"name": "search", "call_id": "AGENT_CALL_ID_MARKER", "status": "completed", "result": "one match"}},
+            {"event_type": "model_request", "step": "STEP_MARKER", "seq": "SEQ_MARKER", "payload": {"step": "PAYLOAD_STEP_MARKER", "requestId": "AGENT_REQUEST_ID_MARKER", "messages": [{"role": "user", "content": {"prompt": "inspect", "options": {"headers": {"authorization": "AGENT_REQUEST_HEADER_MARKER"}, "apiToken": "AGENT_REQUEST_TOKEN_MARKER"}}}]}},
+            {"event_type": "assistant_thinking", "step": "THINKING_STEP_MARKER", "seq": "THINKING_SEQ_MARKER", "payload": {"step": "THINKING_PAYLOAD_STEP_MARKER", "content": {"reason": "planning", "callId": "AGENT_THINKING_CALL_ID_MARKER", "sequenceId": "AGENT_THINKING_SEQUENCE_ID_MARKER", "options": {"headers": {"x-trace": "AGENT_THINKING_HEADER_MARKER"}, "token": "AGENT_THINKING_TOKEN_MARKER"}}}},
+            {"event_type": "tool_call", "step": "TOOL_STEP_MARKER", "seq": "TOOL_SEQ_MARKER", "payload": {"name": "search", "callId": "AGENT_CALL_ID_MARKER", "arguments": {"query": "trace", "options": {"headers": {"authorization": "AGENT_HEADER_MARKER"}, "timeout": 5, "accessToken": "AGENT_ACCESS_TOKEN_MARKER"}, "correlationId": "AGENT_CORRELATION_ID_MARKER"}}},
+            {"event_type": "tool_result", "step": "RESULT_STEP_MARKER", "seq": "RESULT_SEQ_MARKER", "payload": {"name": "search", "callId": "AGENT_RESULT_CALL_ID_MARKER", "status": "completed", "result": {"value": "one match", "request_id": "AGENT_RESULT_REQUEST_ID_MARKER", "headers": {"authorization": "AGENT_RESULT_HEADER_MARKER"}, "token": "AGENT_RESULT_TOKEN_MARKER"}}},
         ],
     },
     "command": {
@@ -1118,7 +1120,14 @@ def test_trace_inspector_shared_presentation_contract_covers_all_kinds() -> None
         ]:
             assert marker not in primary
         if kind == "agent_loop":
-            for marker in ["AGENT_CALL_ID_MARKER", "AGENT_SEQUENCE_MARKER", "AGENT_RESULT_SEQUENCE_MARKER", "AGENT_HEADER_MARKER"]:
+            for marker in [
+                "STEP_MARKER", "SEQ_MARKER", "PAYLOAD_STEP_MARKER", "THINKING_STEP_MARKER", "THINKING_SEQ_MARKER",
+                "THINKING_PAYLOAD_STEP_MARKER", "TOOL_STEP_MARKER", "TOOL_SEQ_MARKER", "RESULT_STEP_MARKER", "RESULT_SEQ_MARKER",
+                "AGENT_CALL_ID_MARKER", "AGENT_RESULT_CALL_ID_MARKER", "AGENT_THINKING_CALL_ID_MARKER",
+                "AGENT_REQUEST_ID_MARKER", "AGENT_CORRELATION_ID_MARKER", "AGENT_THINKING_SEQUENCE_ID_MARKER",
+                "AGENT_HEADER_MARKER", "AGENT_REQUEST_HEADER_MARKER", "AGENT_THINKING_HEADER_MARKER", "AGENT_RESULT_HEADER_MARKER",
+                "AGENT_ACCESS_TOKEN_MARKER", "AGENT_REQUEST_TOKEN_MARKER", "AGENT_THINKING_TOKEN_MARKER", "AGENT_RESULT_TOKEN_MARKER",
+            ]:
                 assert marker not in primary
         if kind == "model_chat":
             assert "Model returned an empty final response" in primary
