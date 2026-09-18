@@ -94,7 +94,17 @@ def project_live_dom(payload: dict[str, Any], *, max_chars: int) -> dict[str, An
         return FrontendReviewError("invalid_dom_bound", "DOM character bound must be positive").as_result()
 
     projected = _strip_transport_metadata(dict(payload))
+    if "redaction" in projected and projected.get("redaction") != "none":
+        return FrontendReviewError(
+            "semantic_dom_redaction_not_allowed",
+            "live DOM redaction must be explicitly none; semantic redaction is not allowed",
+        ).as_result()
     elements = projected.get("elements")
+    if "html" in projected and elements is None:
+        return FrontendReviewError(
+            "missing_dom_elements",
+            "live DOM html requires a stable elements list with element_id values",
+        ).as_result()
     if elements is not None:
         if not isinstance(elements, list):
             return FrontendReviewError("invalid_dom_bundle", "dom.elements must be a list").as_result()
@@ -160,6 +170,20 @@ def _artifact_id(value: Any) -> str:
     if isinstance(value, dict):
         return str(value.get("artifact_id", "")).strip()
     return ""
+
+
+def _runtime_artifact_refs(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    refs = {}
+    generic = str(value.get("artifact_id", "")).strip()
+    if generic:
+        refs["console_artifact_id"] = generic
+    for key in ("console_artifact_id", "network_artifact_id"):
+        ref = str(value.get(key, "")).strip()
+        if ref:
+            refs[key] = ref
+    return refs
 
 
 def _context_value(value: Any, name: str) -> dict[str, Any]:
@@ -266,10 +290,13 @@ def build_coder_context(
         kept_ids,
     )
     refs: dict[str, str] = {}
-    for name in ("screenshot", "dom", "accessibility", "computed_styles", "runtime"):
+    for name in ("screenshot", "dom", "accessibility", "computed_styles"):
         ref = _artifact_id(bundle.get(name))
         if ref:
             refs[name] = ref
+    runtime_refs = _runtime_artifact_refs(bundle.get("runtime"))
+    if runtime_refs:
+        refs["runtime"] = runtime_refs
     if dom_ref and "dom" not in refs:
         refs["dom"] = dom_ref
 

@@ -53,6 +53,52 @@ def test_vision_defaults_to_qwen_model_and_requests_json(tmp_path: Path) -> None
     assert payload["images"] == ["ZmFrZS1pbWFnZQ=="]
 
 
+def test_vision_resolves_network_artifact_with_console_ref_for_tenant(tmp_path: Path) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    services.artifacts.get.side_effect = [
+        {"success": True, "text": json.dumps({"errors": ["console error"]})},
+        {"success": True, "text": json.dumps({"requests": ["/api/items"]})},
+    ]
+    runtime.request.return_value = {
+        "response": json.dumps(
+            {
+                "summary": "runtime context",
+                "findings": [
+                    {
+                        "id": "f-1",
+                        "severity": "medium",
+                        "category": "runtime",
+                        "problem": "request failed",
+                        "observed": "network request is present",
+                        "hypothesized": "backend response blocks render",
+                        "uncertainty": ["response body not captured"],
+                        "confidence": 0.7,
+                    }
+                ],
+            }
+        )
+    }
+
+    result = services.vision(
+        {
+            "image": str(image),
+            "runtime_artifact_id": "console-1",
+            "network_artifact_id": "network-1",
+        },
+        "tenant-a",
+    )
+
+    assert result["success"] is True
+    payload = runtime.request.call_args.args[1]
+    assert "console error" in payload["prompt"]
+    assert "/api/items" in payload["prompt"]
+    assert result["coder_context"]["artifact_refs"]["runtime"] == {
+        "console_artifact_id": "console-1",
+        "network_artifact_id": "network-1",
+    }
+    assert all(call.kwargs["tenant"] == "tenant-a" for call in services.artifacts.get.call_args_list)
+
+
 def test_packaged_and_source_defaults_configure_qwen_vision_model() -> None:
     root = Path(__file__).resolve().parents[1]
     for relative in ("defaults.toml", "src/local_ai_hub/defaults.toml"):
@@ -310,7 +356,14 @@ def test_vision_resolves_binary_screenshot_and_bundle_text_refs(tmp_path: Path) 
     services, runtime, _image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
     artifacts = ArtifactStore(tmp_path / "artifacts")
     screenshot_id = artifacts.put_bytes(b"binary-image", "tenant", "vision-image", "image/png")
-    dom_id = artifacts.put("<main><button>Save</button></main>", "tenant", "live-dom")
+    dom_id = artifacts.put_json(
+        {
+            "html": "<main><button>Save</button></main>",
+            "elements": [{"element_id": "root", "tag": "main"}],
+        },
+        "tenant",
+        "live-dom",
+    )
     accessibility_id = artifacts.put("button Save is reachable", "tenant", "accessibility")
     styles_id = artifacts.put("button { color: red; }", "tenant", "computed-styles")
     bundle_id = artifacts.put_json(

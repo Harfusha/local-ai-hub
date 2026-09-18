@@ -29,14 +29,20 @@ def test_build_model_context_includes_screenshot_dom_and_prompt() -> None:
 
 def test_full_dom_is_not_semantically_redacted() -> None:
     projected = project_live_dom(
-        {"html": "<main>user@example.test</main>"}, max_chars=10_000
+        {
+            "html": "<main>user@example.test</main>",
+            "elements": [{"element_id": "root", "tag": "main"}],
+        },
+        max_chars=10_000,
     )
 
     assert "user@example.test" in projected["html"]
 
 
 def test_dom_limit_is_explicit() -> None:
-    projected = project_live_dom({"html": "x" * 20}, max_chars=10)
+    projected = project_live_dom(
+        {"html": "x" * 20, "elements": [{"element_id": "root"}]}, max_chars=10
+    )
 
     assert projected["truncated"] is True
     assert projected["original_chars"] == 20
@@ -59,6 +65,27 @@ def test_project_live_dom_rejects_duplicate_element_ids() -> None:
     assert projected["error"]["code"] == "duplicate_dom_element_id"
 
 
+def test_html_dom_requires_stable_elements_list() -> None:
+    projected = project_live_dom({"html": "<main />"}, max_chars=10_000)
+
+    assert projected["terminal"] is True
+    assert projected["error"]["code"] == "missing_dom_elements"
+
+
+def test_dom_rejects_semantic_redaction_without_silent_projection() -> None:
+    projected = project_live_dom(
+        {
+            "redaction": "semantic",
+            "html": "<main>secret</main>",
+            "elements": [{"element_id": "root"}],
+        },
+        max_chars=10_000,
+    )
+
+    assert projected["terminal"] is True
+    assert projected["error"]["code"] == "semantic_dom_redaction_not_allowed"
+
+
 def test_service_passes_screenshot_and_dom_bundle_to_vision_model(tmp_path: Path) -> None:
     runtime = MagicMock()
     runtime.request.side_effect = [
@@ -73,6 +100,9 @@ def test_service_passes_screenshot_and_dom_bundle_to_vision_model(tmp_path: Path
                             "severity": "high",
                             "category": "layout",
                             "problem": "CTA is hidden",
+                            "observed": "computed display is none",
+                            "hypothesized": "hydration rule hides CTA",
+                            "uncertainty": ["runtime visibility after hydration"],
                             "confidence": 0.91,
                             "element_ids": ["el-1"],
                             "evidence": ["display:none"],

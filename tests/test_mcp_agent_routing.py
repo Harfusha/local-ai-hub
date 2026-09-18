@@ -263,6 +263,7 @@ def test_local_ai_task_vision_forwards_frontend_review_context(monkeypatch) -> N
         model="qwen3-vl:4b",
         bundle_artifact_id="bundle-1",
         image_artifact_id="image-1",
+        network_artifact_id="network-1",
         source="current_tab",
         root=str(ROOT),
         cloud_fallback=False,
@@ -274,6 +275,7 @@ def test_local_ai_task_vision_forwards_frontend_review_context(monkeypatch) -> N
     assert captured["image"] == "legacy-image"
     assert captured["bundle_artifact_id"] == "bundle-1"
     assert captured["image_artifact_id"] == "image-1"
+    assert captured["network_artifact_id"] == "network-1"
     assert captured["source"] == "current_tab"
     assert captured["root"] == str(ROOT)
     assert captured["cloud_fallback"] is False
