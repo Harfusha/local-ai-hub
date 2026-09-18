@@ -385,6 +385,16 @@ class AgentConsistencyGuard:
         return "synthetic-claim-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
     @staticmethod
+    def _synthetic_drift_evidence_id(request: ConsistencyRequest, paths: tuple[str, ...], revision: str) -> str:
+        payload = "\0".join((request.task_id, request.phase, request.base, str(request.staged), _text(revision, 200), *sorted(paths)))
+        return "synthetic-drift-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _synthetic_decision_evidence_id(request: ConsistencyRequest, candidate_id: str, action: str, context_ids: tuple[str, ...], revision: str) -> str:
+        payload = "\0".join((request.task_id, _text(candidate_id, 200), _text(action, 80), _text(revision, 200), *sorted(context_ids)))
+        return "synthetic-decision-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
     def _raw(item: Mapping[str, Any]) -> str:
         return _text(item.get("raw") or item.get("text") or item.get("content"), 5000)
 
@@ -428,7 +438,7 @@ class AgentConsistencyGuard:
     def build_contract_mappings(self, request: ConsistencyRequest, evidence: Iterable[Mapping[str, Any]] | Mapping[str, Any]) -> tuple[tuple[ContractMapping, ...], tuple[GuardWarning, ...]]:
         if isinstance(evidence, Mapping):
             evidence = evidence.get("evidence") or evidence.get("results") or ()
-        items = [dict(item) for item in _bounded_sequence(evidence, _MAX_ITEMS) if isinstance(item, Mapping)]
+        items = [dict(item) for item in _bounded_sequence(evidence, _MAX_ITEMS) if isinstance(item, Mapping) and not _is_local_model_evidence(item)]
         back = [item for item in items if self._is_backend(item)]
         front = [item for item in items if not self._is_backend(item)]
         tests = [str(item.get("path")) for item in items if self._is_test(item)]
@@ -517,6 +527,8 @@ class AgentConsistencyGuard:
             revision = self.repository_tools.git_snapshot(request.root).revision
         except Exception:
             revision = ""
+        if not evidence_ids:
+            evidence_ids = (self._synthetic_claim_evidence_id(claim, (), (revision,) if revision else ()),)
         compact_claim = _text(claim, 240)
         key_digest = hashlib.sha256(f"{request.task_id}:{status}:{compact_claim}:{','.join(evidence_ids)}".encode("utf-8")).hexdigest()[:16]
         if self.memory_store is not None and callable(getattr(self.memory_store, "record", None)):
@@ -580,42 +592,78 @@ class AgentConsistencyGuard:
                     diff_data = {**diff_data, "impact": impact}
             except Exception:
                 pass
+        try:
+            revision = _text(diff_data.get("revision") or diff_data.get("repository_revision"), 200)
+            if not revision:
+                revision = _text(self.repository_tools.git_snapshot(request.root).revision, 200)
+        except Exception:
+            revision = ""
+        synthetic_drift_id = self._synthetic_drift_evidence_id(request, tuple(paths), revision)
+        drift_trace_ids = (synthetic_drift_id,)
         candidates = self.find_reuse_candidates(request, contract)
         candidate_ids = {item.candidate_id for item in candidates}
         decisions = diff_data.get("reuse_decisions") or ()
         bounded_evidence = _bounded_sequence(diff_data.get("evidence") or (), _MAX_ITEMS)
         diff_evidence_ids = self._deterministic_evidence_ids(bounded_evidence)
+        deterministic_context_ids = set(diff_evidence_ids)
+        deterministic_context_ids.update(evidence_id for candidate in candidates for evidence_id in candidate.evidence_ids)
         for decision in _bounded_sequence(decisions, _MAX_ITEMS):
             if not isinstance(decision, Mapping):
                 continue
             candidate_id = str(decision.get("candidate_id", ""))
             action = str(decision.get("decision", decision.get("action", ""))).lower()
             reason = str(decision.get("reason", "")).strip()
-            decision_evidence_ids = _tuple(decision.get("evidence_ids")) or diff_evidence_ids
+            decision_evidence_ids = tuple(
+                evidence_id
+                for evidence_id in _tuple(decision.get("evidence_ids"))
+                if evidence_id in deterministic_context_ids
+            )
+            if not decision_evidence_ids:
+                decision_evidence_ids = (
+                    self._synthetic_decision_evidence_id(
+                        request,
+                        candidate_id,
+                        action,
+                        tuple(sorted(deterministic_context_ids)),
+                        revision,
+                    ),
+                )
             if candidate_id not in candidate_ids:
                 warnings.append(GuardWarning("warning", "unknown_reuse_candidate", "reuse decision references no deterministic candidate", decision_evidence_ids, tuple(paths), "refresh deterministic reuse candidates"))
             elif action in {"reject", "rejected", "new"} and not reason:
                 candidate = next(item for item in candidates if item.candidate_id == candidate_id)
-                warnings.append(GuardWarning("warning", "reuse_rejection_reason_required", "rejected reuse candidate needs a concise reason", candidate.evidence_ids or decision_evidence_ids, tuple(paths), "record why reuse violates the contract or boundary"))
+                warnings.append(GuardWarning("warning", "reuse_rejection_reason_required", "rejected reuse candidate needs a concise reason", decision_evidence_ids or candidate.evidence_ids or drift_trace_ids, tuple(paths), "record why reuse violates the contract or boundary"))
         diff_text = diff if isinstance(diff, str) else str(diff_data.get("diff", ""))
         added_symbols = [match.group(1) for line in _text(diff_text, 12000).splitlines() if (match := _PUBLIC_SYMBOL.match(line))]
         if added_symbols and any(candidate.suitable for candidate in candidates):
             candidate_evidence_ids = tuple(evidence_id for candidate in candidates if candidate.suitable for evidence_id in candidate.evidence_ids)
-            warnings.append(GuardWarning("boundary", "new_public_symbol_despite_reuse", "new public symbol added while a suitable reuse candidate exists", candidate_evidence_ids or diff_evidence_ids, tuple(paths), "approve the boundary or reuse the existing symbol", True))
+            warnings.append(GuardWarning("boundary", "new_public_symbol_despite_reuse", "new public symbol added while a suitable reuse candidate exists", candidate_evidence_ids or diff_evidence_ids or drift_trace_ids, tuple(paths), "approve the boundary or reuse the existing symbol", True))
         if request.changed_paths:
             requested = set(request.changed_paths)
             outside = tuple(path for path in paths if path not in requested)
             if outside:
-                warnings.append(GuardWarning("warning", "scope_drift", "changed paths exceed the request scope", diff_evidence_ids, outside, "explain the scope expansion or narrow the change"))
+                warnings.append(GuardWarning("warning", "scope_drift", "changed paths exceed the request scope", diff_evidence_ids or drift_trace_ids, outside, "explain the scope expansion or narrow the change"))
         evidence = bounded_evidence
         if evidence:
             try:
                 checked = self.repository_tools.verify_evidence(request.root, list(_bounded_sequence(evidence, _MAX_ITEMS)))
                 if checked.get("stale"):
-                    warnings.append(GuardWarning("warning", "stale_evidence", "one or more evidence slices are stale", diff_evidence_ids, tuple(paths), "refresh evidence at the current repository revision"))
+                    warnings.append(GuardWarning("warning", "stale_evidence", "one or more evidence slices are stale", diff_evidence_ids or drift_trace_ids, tuple(paths), "refresh evidence at the current repository revision"))
             except Exception:
                 pass
-        return tuple(warnings[:_MAX_ITEMS])
+        return tuple(
+            warning if warning.evidence_ids else GuardWarning(
+                warning.severity,
+                warning.code,
+                warning.message,
+                drift_trace_ids,
+                warning.affected_paths,
+                warning.recommended_action,
+                warning.requires_approval,
+                warning.kind,
+            )
+            for warning in warnings[:_MAX_ITEMS]
+        )
 
     def _deterministic_evidence_ids(self, evidence: Iterable[Mapping[str, Any]]) -> tuple[str, ...]:
         ids: list[str] = []
