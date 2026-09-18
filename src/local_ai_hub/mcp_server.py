@@ -855,6 +855,26 @@ def local_ai_task(
     model: str = "",
     context: str = "",
     candidate: str = "",
+    image_artifact_id: str = "",
+    screenshot_artifact_id: str = "",
+    bundle_artifact_id: str = "",
+    dom_artifact_id: str = "",
+    accessibility_artifact_id: str = "",
+    computed_styles_artifact_id: str = "",
+    runtime_artifact_id: str = "",
+    source: str = "",
+    cloud_fallback: bool = False,
+    dom: str | dict[str, Any] | None = None,
+    accessibility: str | dict[str, Any] | None = None,
+    computed_styles: str | dict[str, Any] | None = None,
+    runtime: str | dict[str, Any] | None = None,
+    bundle: str | dict[str, Any] | None = None,
+    html: str | None = None,
+    accessibility_snapshot: str | dict[str, Any] | None = None,
+    computed_style_data: str | dict[str, Any] | None = None,
+    runtime_context: str | dict[str, Any] | None = None,
+    viewport: dict[str, Any] | None = None,
+    page: dict[str, Any] | None = None,
     complexity: str = "auto",
     max_tokens: int = 0,
     tasks: list[dict[str, Any]] | None = None,
@@ -1013,9 +1033,39 @@ def local_ai_task(
             "task": task or prompt, "file": candidate or workspace, "context": context, "root": root,
         }, timeout=_timeout("model")), "delegate")
     if action == "vision":
-        return _compact(CLIENT.post("/api/task/vision", {
-            "prompt": prompt or task, "image": candidate or context, "model": model,
-        }, timeout=_timeout("model")), "delegate")
+        payload = {
+            "prompt": prompt or task,
+            "image": candidate or context,
+            "model": model,
+            "image_artifact_id": image_artifact_id,
+            "screenshot_artifact_id": screenshot_artifact_id,
+            "bundle_artifact_id": bundle_artifact_id,
+            "dom_artifact_id": dom_artifact_id,
+            "accessibility_artifact_id": accessibility_artifact_id,
+            "computed_styles_artifact_id": computed_styles_artifact_id,
+            "runtime_artifact_id": runtime_artifact_id,
+            "source": source,
+            "cloud_fallback": cloud_fallback,
+            "root": root,
+        }
+        if json_schema:
+            payload["json_schema"] = json_schema
+        for name, value in {
+            "dom": dom,
+            "accessibility": accessibility,
+            "computed_styles": computed_styles,
+            "runtime": runtime,
+            "viewport": viewport,
+            "page": page,
+            "bundle": bundle,
+            "html": html,
+            "accessibility_snapshot": accessibility_snapshot,
+            "computed_style_data": computed_style_data,
+            "runtime_context": runtime_context,
+        }.items():
+            if value is not None:
+                payload[name] = value
+        return _compact(CLIENT.post("/api/task/vision", payload, timeout=_timeout("model")), "delegate")
     if action == "transcribe":
         return _compact(CLIENT.post("/api/task/transcribe", {
             "audio_path": candidate or context or task or prompt, "model": model,

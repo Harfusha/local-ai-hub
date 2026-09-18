@@ -1,0 +1,218 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from unittest.mock import MagicMock
+
+from local_ai_hub.frontend_review import (
+    build_model_context,
+    project_live_dom,
+)
+from local_ai_hub.services import LocalAIServices
+
+
+def test_build_model_context_includes_screenshot_dom_and_prompt() -> None:
+    context = build_model_context(
+        prompt="Why is the button missing?",
+        screenshot_data_url="data:image/png;base64,AA==",
+        dom={"elements": [{"element_id": "el-1", "tag": "button"}]},
+        accessibility={"el-1": {"role": "button"}},
+        computed_styles={"el-1": {"display": "none"}},
+        viewport={"width": 390, "height": 844},
+    )
+
+    assert context.prompt == "Why is the button missing?"
+    assert context.screenshot_data_url.endswith("AA==")
+    assert context.dom["elements"][0]["element_id"] == "el-1"
+    assert context.accessibility["el-1"]["role"] == "button"
+
+
+def test_full_dom_is_not_semantically_redacted() -> None:
+    projected = project_live_dom(
+        {"html": "<main>user@example.test</main>"}, max_chars=10_000
+    )
+
+    assert "user@example.test" in projected["html"]
+
+
+def test_dom_limit_is_explicit() -> None:
+    projected = project_live_dom({"html": "x" * 20}, max_chars=10)
+
+    assert projected["truncated"] is True
+    assert projected["original_chars"] == 20
+    assert projected["limit_chars"] == 10
+
+
+def test_project_live_dom_rejects_duplicate_element_ids() -> None:
+    projected = project_live_dom(
+        {
+            "html": "<button>Save</button>",
+            "elements": [
+                {"element_id": "el-1", "tag": "button"},
+                {"element_id": "el-1", "tag": "button"},
+            ],
+        },
+        max_chars=10_000,
+    )
+
+    assert projected["terminal"] is True
+    assert projected["error"]["code"] == "duplicate_dom_element_id"
+
+
+def test_service_passes_screenshot_and_dom_bundle_to_vision_model(tmp_path: Path) -> None:
+    runtime = MagicMock()
+    runtime.request.side_effect = [
+        {"capabilities": ["vision"]},
+        {
+            "response": json.dumps(
+                {
+                    "summary": "Hidden CTA",
+                    "findings": [
+                        {
+                            "id": "f-1",
+                            "severity": "high",
+                            "category": "layout",
+                            "problem": "CTA is hidden",
+                            "confidence": 0.91,
+                            "element_ids": ["el-1"],
+                            "evidence": ["display:none"],
+                        }
+                    ],
+                    "unknowns": ["runtime visibility after hydration"],
+                }
+            )
+        },
+    ]
+    artifacts = MagicMock()
+    artifacts.get_binary.return_value = {
+        "success": True,
+        "mime_type": "image/png",
+        "data_base64": "ZmFrZQ==",
+        "size_bytes": 4,
+    }
+    artifacts.get.side_effect = [
+        {
+            "success": True,
+            "text": json.dumps(
+                {
+                    "html": "<button id='save'>Save</button>",
+                    "elements": [
+                        {"element_id": "el-1", "tag": "button", "ancestor_ids": []}
+                    ],
+                }
+            ),
+            "next_offset": None,
+        },
+        {
+            "success": True,
+            "text": json.dumps({"el-1": {"role": "button"}}),
+            "next_offset": None,
+        },
+        {
+            "success": True,
+            "text": json.dumps({"el-1": {"display": "none"}}),
+            "next_offset": None,
+        },
+    ]
+    services = LocalAIServices(
+        config={"models": {"vision": "qwen3-vl:4b"}, "server": {"state_dir": str(tmp_path)}},
+        runtime=runtime,
+        scheduler=MagicMock(),
+        embeddings=MagicMock(),
+        artifacts=artifacts,
+        telemetry=MagicMock(),
+        repo_tools=MagicMock(),
+        deterministic=None,
+    )
+
+    result = services.vision(
+        {
+            "image_artifact_id": "img-1",
+            "dom_artifact_id": "dom-1",
+            "accessibility_artifact_id": "a11y-1",
+            "computed_styles_artifact_id": "styles-1",
+            "prompt": "Review CTA and tell coder how to fix it",
+        },
+        "tenant-a",
+    )
+
+    assert result["success"] is True
+    assert result["review"]["findings"][0]["element_ids"] == ("el-1",)
+    assert result["review"]["unknowns"] == ("runtime visibility after hydration",)
+    payload = runtime.request.call_args_list[-1].args[1]
+    assert payload["images"] == ["ZmFrZQ=="]
+    assert "<button id='save'>Save</button>" in payload["prompt"]
+    assert "el-1" in payload["prompt"]
+    assert result["coder_context"]["artifact_refs"]["dom"] == "dom-1"
+
+
+def test_service_rejects_missing_or_oversized_dom_refs(tmp_path: Path) -> None:
+    runtime = MagicMock()
+    artifacts = MagicMock()
+    artifacts.get_binary.return_value = {
+        "success": True,
+        "mime_type": "image/png",
+        "data_base64": "ZmFrZQ==",
+        "size_bytes": 4,
+    }
+    artifacts.get.return_value = {
+        "success": True,
+        "text": "x" * 12_001,
+        "total_chars": 12_001,
+        "next_offset": None,
+    }
+    services = LocalAIServices(
+        config={"models": {"vision": "qwen3-vl:4b"}, "server": {"state_dir": str(tmp_path)}},
+        runtime=runtime,
+        scheduler=MagicMock(),
+        embeddings=MagicMock(),
+        artifacts=artifacts,
+        telemetry=MagicMock(),
+        repo_tools=MagicMock(),
+        deterministic=None,
+    )
+
+    result = services.vision(
+        {"image_artifact_id": "img-1", "dom_artifact_id": "dom-too-large"},
+        "tenant-a",
+    )
+
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["error_code"] == "vision_artifact_too_large"
+    assert runtime.request.call_count == 0
+
+
+def test_service_rejects_malformed_frontend_bundle(tmp_path: Path) -> None:
+    runtime = MagicMock()
+    artifacts = MagicMock()
+    artifacts.get_binary.return_value = {
+        "success": True,
+        "mime_type": "image/png",
+        "data_base64": "ZmFrZQ==",
+        "size_bytes": 4,
+    }
+    artifacts.get.return_value = {
+        "success": True,
+        "text": "{not-json",
+        "next_offset": None,
+    }
+    services = LocalAIServices(
+        config={"models": {"vision": "qwen3-vl:4b"}, "server": {"state_dir": str(tmp_path)}},
+        runtime=runtime,
+        scheduler=MagicMock(),
+        embeddings=MagicMock(),
+        artifacts=artifacts,
+        telemetry=MagicMock(),
+        repo_tools=MagicMock(),
+        deterministic=None,
+    )
+
+    result = services.vision(
+        {"image_artifact_id": "img-1", "bundle_artifact_id": "bundle-bad"},
+        "tenant-a",
+    )
+
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["error_code"] == "vision_bundle_invalid"
