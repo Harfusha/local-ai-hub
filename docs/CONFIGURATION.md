@@ -26,6 +26,31 @@ Loopback is the default. Remote binding requires explicit remote access and a co
 
 `[workspace_cache]` keeps repository fingerprints off critical request paths. `fingerprint_ttl_seconds` controls the short in-memory reuse window. `git_probe_timeout_seconds` and `git_status_timeout_seconds` are hard foreground budgets; after a timeout, `slow_git_cooldown_seconds` temporarily reuses the last-good or bounded filesystem state rather than stalling the request. `max_changed_paths`, `max_untracked_walk_files`, and `degraded_fingerprint_max_files` bound work on unusually large repositories. Filesystem watchers remain the preferred warm-path invalidation source.
 
+## Adaptive context guard
+
+For non-trivial repository work, `local_ai_repo(action="context")` is the default-on guarded context flow. Supply `task_id` or `phase`, or set `guarded = true`, to receive an adaptive context pack. The pack is bounded, revision-aware, and additive: callers that omit guarded fields keep the legacy `fast`/`full` context behavior.
+
+`[context.preloads]` configures optional, bounded preload inputs. Preloads are indexed and fingerprinted; their full contents are not copied into every response. Missing files or empty patterns are soft fallbacks, not configuration failures.
+
+```toml
+[context.preloads]
+files = ["AGENTS.md", "README.md"]
+patterns = ["docs/**/*.md"]
+memory_kinds = ["finding", "reusable_candidate", "contract_mapping", "validation"]
+max_files = 24
+max_bytes = 120000
+```
+
+Use `preload_profile` to select a named project profile. Defaults have no mandatory project file, so repositories without optional preload paths still receive deterministic context.
+
+The guard uses these phase values: `plan` (contract, scope, unknowns), `edit` (reuse candidates and exact symbols), `review` (drift and changed paths), `test` (receipts and affected tests), and `handoff` (decisions, checkpoints, and next actions). Each deterministic fact carries an opaque `evidence_id`; retain and cite those IDs when composing or validating work. `repo_revision`, `stale`, and `context_id` identify freshness and pack identity.
+
+Guard warnings are machine-readable objects with `severity`, `code`, `message`, `evidence_ids`, `affected_paths`, `recommended_action`, and `requires_approval`. Context-compiler fallback warnings are smaller objects with `code`, `message`, and relevant path/error details. Canonical soft-stop severities are `info`, `warning`, `boundary`, and `high-risk`. `info` does not interrupt; `warning` needs a concise override reason; `boundary` and `high-risk` move an active task to recoverable waiting/approval until an authorized approval is present. Warnings never delete edits or rewrite history.
+
+Agent OS memory is authoritative only while fresh and provenance-linked. Promotion from task/repository scope to project, user, or global scope requires explicit approval. A relevant repository revision change marks affected records `stale`; stale/conflicting records remain visible in diagnostics but are excluded from authoritative context until superseded or revalidated.
+
+Deterministic/indexed evidence is authoritative. Local-model passes may rank evidence, find gaps, or compose bounded text only; they may not override, replace, or invent repository facts. If optional code intelligence or a local model is unavailable, the guard returns the deterministic/indexed pack plus a concise warning and preserves its useful evidence.
+
 ## Search/Git acceleration
 
 `[search].git_files_timeout_seconds` and `git_grep_timeout_seconds` are hard Git subprocess budgets. `git_files_cache_ttl_seconds` coalesces bursty inventories and `git_files_slow_cooldown_seconds` prevents repeated Git probes after a timeout; the hub falls back to bounded Python/indexed paths instead of wedging foreground work.
@@ -61,10 +86,10 @@ Loopback is the default. Remote binding requires explicit remote access and a co
 ## Agent Operating System state
 
 `[agent_state]` controls the local agent operating system state layer. It is enabled by default (`enabled = true`). When enabled, state is stored in `agent_state.sqlite3` under `server.state_dir`.
-- `retention_days = 30`: TTL for terminal tasks, incidents, and unconfirmed memory candidates.
-- `snapshot_interval_events = 100`: Periodic state snapshot interval.
-- `max_event_bytes = 65536`: Event payload size ceiling.
-- `sqlite_busy_timeout_seconds = 5.0` and `sqlite_write_retries = 5`: Bounded concurrency handling with backoff.
+- `event_retention_days = 30`: Retention period for agent-state events and snapshots.
+- `max_payload_bytes = 65536`: Event payload size ceiling.
+- `snapshot_interval_events = 50`: Periodic state snapshot interval.
+- `cleanup_batch_size = 100`: Maximum cleanup batch size.
 - Governed promotion: Global memory and learned policy promotion strictly require explicit user approval.
 
 ## Dashboard-managed overrides

@@ -5,6 +5,7 @@
 | Agent surface | 8 compact MCP tools with strong tool-first descriptions and agent-specific projection | Low schema/context overhead across coding agents |
 | Execution order | cache → deterministic facts/code index → Serena/CodeGraph → semantic retrieval → minimum local-LLM work | Lower latency and cloud-token use |
 | Built-in code intelligence | Incremental symbols, references, calls, imports, manifests, routes, tests, config and risk facts | Common repository questions without a model |
+| Adaptive context guard | `local_ai_repo(action="context")` default bounded pack before non-trivial planning/edit/review/test; reuse-first candidates, evidence IDs, guarded override reasons, compact deterministic/local-model composition | Consistent context without duplicate discovery or invented repository facts |
 | Serena | Managed project index + MCP symbol lookup/reference queries | Language-aware semantic navigation |
 | CodeGraphContext | Managed repository index + graph MCP relationship/dead-code/complexity queries | Call/dependency/impact graph analysis |
 | Preprocessing | Durable checkpointed inventory/hash/index/Serena/CodeGraph/RAG/card phases | Reuse expensive discovery across agents and restarts |

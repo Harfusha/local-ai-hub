@@ -4,6 +4,7 @@ from .json_utils import dumps as json_dumps
 
 import base64
 import copy
+import hashlib
 import json
 import os
 import re
@@ -55,6 +56,9 @@ from .frontend_review import (
     build_model_context,
     parse_bounded_context,
 )
+from .agent_consistency import AdaptiveContextPack, ConsistencyRequest, GuardWarning
+from .agent_context import ContextCompiler, ContextRequest
+from .agent_events import AgentStateStore
 
 
 def normalize_generation_cache_prompt(prompt: str) -> str:
@@ -101,6 +105,21 @@ _REVIEW_DIFF_CONTEXT_FRACTION = 0.5
 _MAX_REVIEW_DIFF_CHUNKS = 8
 _REVIEW_SYNTHESIS_CONTEXT_TOKENS = 6000
 _UNIFIED_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
+_GUARD_REASON_SECRET_RE = re.compile(
+    r"(?i)\b((?:token|api[-_]?key|access[-_]?token|refresh[-_]?token|auth(?:orization)?|bearer|secret|password|passwd|credential|cookie|private[-_]?key)\b\s*[:=]\s*)(?!Bearer\b)([\"']?)([^\"'\s,;]+)\2"
+)
+_GUARD_REASON_PROMPT_RE = re.compile(r"(?is)\b(?:system\s+|user\s+)?(?:prompt|instructions?)\s*[:=].*$")
+
+
+def _redact_guard_reason(reason: Any) -> str:
+    """Keep a short operator reason without persisting secret or prompt content."""
+    text = str(reason or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [REDACTED]", text)
+    text = _GUARD_REASON_SECRET_RE.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
+    text = _GUARD_REASON_PROMPT_RE.sub("prompt: [REDACTED]", text)
+    return text[:500]
 
 
 def _review_text_error(value: Any) -> str | None:
@@ -301,6 +320,11 @@ def generation_cache_key(
     think: Any,
     execution: Any,
     format: Any = None,
+    repository_revision: str = "",
+    phase: str = "",
+    memory_revision: str = "",
+    focus: Any = None,
+    preload_profile: str = "",
 ) -> str:
     return stable_hash({
         "model": model,
@@ -310,6 +334,11 @@ def generation_cache_key(
         "think": think,
         "execution": execution,
         "format": format,
+        "repository_revision": repository_revision,
+        "phase": phase,
+        "memory_revision": memory_revision,
+        "focus": focus,
+        "preload_profile": preload_profile,
         "app_version": __version__,
     })
 
@@ -346,6 +375,7 @@ class LocalAIServices:
     blackboard: Any = None
     agent_state: Any = None
     _VISION_MAX_OUTPUT_TOKENS = 4096
+    consistency_guard: Any = None
 
     def __init__(
         self,
@@ -397,6 +427,7 @@ class LocalAIServices:
         self.swarm: Any | None = None
         self.blackboard: Any | None = None
         self.agent_state: Any | None = None
+        self.consistency_guard: Any | None = None
         self.flight_group = SingleFlightGroup(shards=32, default_timeout_seconds=60.0)
 
         cache_cfg = config.get("cache", {})
@@ -508,6 +539,158 @@ class LocalAIServices:
 
     def set_agent_state(self, store: Any) -> None:
         self.agent_state = store
+
+    def set_consistency_guard(self, guard: Any) -> None:
+        self.consistency_guard = guard
+
+    @staticmethod
+    def _guard_truthy(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        return str(value or "").strip().lower() not in {"", "0", "false", "no", "off", "none"}
+
+    def _guard_decision(self, request: ConsistencyRequest, revision: str, *, reason: str = "", approval: Any = "") -> tuple[bool, bool]:
+        """Persist bounded operator decisions through the guard's existing memory store."""
+        reason_text = str(reason or "").strip()
+        if not reason_text and not self._guard_truthy(approval):
+            return False, False
+        store = getattr(self.consistency_guard, "memory_store", None)
+        if store is None or not callable(getattr(store, "record", None)):
+            return True, False
+        state_store = getattr(store, "state_store", None)
+        if state_store is not None and getattr(state_store, "enabled", True) is False:
+            return True, False
+        if getattr(store, "enabled", True) is False:
+            return True, False
+        try:
+            from .agent_identity import AgentScope
+            from .agent_memory import MemoryKind, MemoryRecord
+
+            token = hashlib.sha256(
+                f"{request.root}:{request.task_id}:{request.phase}:{revision}:{reason_text}:{approval}".encode("utf-8", "replace")
+            ).hexdigest()[:16]
+            record = MemoryRecord.create(
+                kind=MemoryKind.DECISION,
+                scope=AgentScope.REPOSITORY,
+                key=f"consistency_decision:{token}",
+                value={"approved": self._guard_truthy(approval), "reason": _redact_guard_reason(reason_text)},
+                source="consistency_guard",
+                repository_revision=revision,
+                path_refs=tuple(request.changed_paths),
+                related_task=request.task_id or None,
+                provenance={"root": request.root, "phase": request.phase, "guard": "agent_consistency"},
+            )
+            try:
+                saved = store.record(record, actor="consistency_guard", idempotency_key=f"consistency-decision:{token}")
+            except TypeError:
+                saved = store.record(record)
+            return True, saved is not None and saved is not False
+        except Exception:
+            return True, False
+
+    def _guard_existing_approval(self, request: ConsistencyRequest) -> bool:
+        store = getattr(self.consistency_guard, "memory_store", None)
+        finder = getattr(store, "find", None)
+        if not callable(finder) or not request.task_id:
+            return False
+        try:
+            records = finder(root=request.root, limit=12, semantic=False)
+        except TypeError:
+            try:
+                records = finder(limit=12)
+            except Exception:
+                return False
+        except Exception:
+            return False
+        for record in records or ():
+            kind = getattr(getattr(record, "kind", None), "value", getattr(record, "kind", ""))
+            value = getattr(record, "value", {})
+            provenance = getattr(record, "provenance", {}) or {}
+            if kind != "decision" or provenance.get("related_task") != request.task_id:
+                continue
+            if isinstance(value, dict) and self._guard_truthy(value.get("approved") or value.get("approval")):
+                return True
+        return False
+
+    def _guard_task_state(self, request: ConsistencyRequest, warnings: tuple[GuardWarning, ...], revision: str) -> tuple[str, bool]:
+        store = getattr(self.consistency_guard, "task_store", None)
+        if store is None or not request.task_id or not callable(getattr(store, "get", None)):
+            return "", False
+        try:
+            state = store.get(request.task_id)
+        except Exception:
+            return "", False
+        if state is None:
+            return "", False
+        status = getattr(getattr(state, "status", None), "value", getattr(state, "status", ""))
+        boundary = tuple(item for item in warnings if item.requires_approval or item.severity.lower() in {"boundary", "high", "high-risk"})
+        checkpoint_data = getattr(getattr(state, "checkpoint", None), "state_data", {}) or {}
+        checkpoint_approval = checkpoint_data.get("approval") or checkpoint_data.get("approved") or checkpoint_data.get("coordinator_decision")
+        approved = self._guard_truthy(request.approval) or self._guard_existing_approval(request) or self._guard_truthy(checkpoint_approval)
+        if boundary and not approved and status == "active":
+            warning_ids = tuple(dict.fromkeys(evidence_id for item in boundary for evidence_id in item.evidence_ids))[:24]
+            try:
+                from .agent_tasks import TaskCheckpoint, TaskStatus
+
+                store.transition(
+                    request.task_id,
+                    TaskStatus.WAITING,
+                    reason="consistency guard boundary warning",
+                    actor="consistency_guard",
+                    idempotency_key=f"guard-wait:{request.task_id}:{revision}",
+                )
+                store.checkpoint(
+                    request.task_id,
+                    TaskCheckpoint(
+                        phase=request.phase,
+                        next_action=boundary[0].recommended_action or "obtain approval before continuing",
+                        affected_paths=tuple(request.changed_paths),
+                        evidence_ids=warning_ids,
+                        blockers=tuple(item.code for item in boundary)[:24],
+                        state_data={"warning_ids": list(warning_ids), "repository_revision": revision},
+                    ),
+                    actor="consistency_guard",
+                    idempotency_key=f"guard-checkpoint:{request.task_id}:{revision}",
+                )
+            except Exception:
+                pass
+        elif approved and status == "waiting":
+            try:
+                store.resume(request.task_id, actor="consistency_guard", idempotency_key=f"guard-resume:{request.task_id}:{revision}")
+            except Exception:
+                pass
+        try:
+            refreshed = store.get(request.task_id)
+            refreshed_status = getattr(getattr(refreshed, "status", None), "value", getattr(refreshed, "status", ""))
+            refreshed_status = str(refreshed_status)
+            return refreshed_status, bool(refreshed_status.lower() == "waiting" or (boundary and not approved))
+        except Exception:
+            return str(status), bool(boundary and not approved)
+
+    def _guard_stop_code(self, request: ConsistencyRequest, boundary: bool) -> str:
+        """Return terminal stop code when high-risk delivery lacks Agent OS state."""
+        if not boundary:
+            return ""
+        if not request.task_id:
+            return "guard_task_id_required"
+        agent_state = getattr(self, "agent_state", None)
+        if agent_state is not None and getattr(agent_state, "enabled", True) is False:
+            return "agent_os_disabled"
+        store = getattr(self.consistency_guard, "task_store", None)
+        if store is None or getattr(store, "enabled", True) is False:
+            return "agent_os_disabled"
+        state_store = getattr(store, "state_store", None)
+        if state_store is not None and getattr(state_store, "enabled", True) is False:
+            return "agent_os_disabled"
+        getter = getattr(store, "get", None)
+        if not callable(getter):
+            return "guard_task_state_unavailable"
+        try:
+            if getter(request.task_id) is None:
+                return "guard_task_state_unavailable"
+        except Exception:
+            return "guard_task_state_unavailable"
+        return ""
 
     def _touch_project(self, root: str) -> None:
         # Local AI: repository reads refresh only explicitly registered projects.
@@ -3084,6 +3267,361 @@ class LocalAIServices:
             "diff", root, {"base": base, "staged": staged, "max_tokens": max_tokens},
             lambda: self.repo_tools.git_diff(root, base, staged, max_tokens),
         )
+
+    @staticmethod
+    def _adaptive_label(value: Any, limit: int = 160) -> str:
+        text = str(value or "")[:limit]
+        if re.search(r"(?i)(api[_ -]?key|access[_ -]?token|password|secret|authorization|bearer)\s*[:=]", text):
+            return "<redacted>"
+        return re.sub(r"[^A-Za-z0-9_./:@+ -]", " ", text).strip()[:limit]
+
+    def _adaptive_memory_revision(self, request: ConsistencyRequest) -> str:
+        explicit = str(getattr(request, "memory_revision", "") or "")[:200]
+        if explicit:
+            return explicit
+        store = getattr(self.consistency_guard, "memory_store", None)
+        for name in ("memory_revision", "revision"):
+            value = getattr(store, name, "") if store is not None else ""
+            if callable(value):
+                try:
+                    value = value(request.root)
+                except TypeError:
+                    try:
+                        value = value()
+                    except Exception:
+                        value = ""
+                except Exception:
+                    value = ""
+            if value:
+                return str(value)[:200]
+        return ""
+
+    def _context_preload_source(self) -> ContextCompiler | None:
+        compiler = getattr(self, "context_compiler", None)
+        if compiler is not None:
+            return compiler
+        try:
+            compiler = ContextCompiler(
+                AgentStateStore(
+                    configured_state_dir(getattr(self, "config", {}), create=False) / "agent_state.sqlite3",
+                    enabled=False,
+                ),
+                config=getattr(self, "config", {}),
+            )
+        except Exception:
+            return None
+        self.context_compiler = compiler
+        return compiler
+
+    def _apply_context_preloads(
+        self, request: ConsistencyRequest, base: dict[str, Any],
+    ) -> tuple[dict[str, Any], tuple[GuardWarning, ...]]:
+        compiler = self._context_preload_source()
+        if compiler is None:
+            return base, ()
+        try:
+            elements, preload_warnings = compiler.preload_elements(ContextRequest(
+                task_id=request.task_id,
+                token_budget=max(1, int(request.token_budget)),
+                changed_paths=tuple(request.changed_paths or ()),
+                root=request.root,
+                tenant=request.tenant,
+                phase=request.phase,
+                focus=tuple(request.focus or ()),
+                preload_profile=request.preload_profile,
+            ))
+        except Exception:
+            return base, ()
+        if not elements and not preload_warnings:
+            return base, ()
+
+        enriched = dict(base)
+        evidence = [dict(item) for item in (base.get("evidence") or ()) if isinstance(item, dict)]
+        context = str(base.get("context", "") or "").strip()
+        for element in elements:
+            content = str(element.content or "")
+            context = "\n\n".join(item for item in (context, content) if item)
+            provenance = dict(element.provenance or {})
+            evidence.append({
+                "evidence_id": element.element_id,
+                "source_kind": element.source_kind,
+                "path": provenance.get("path", ""),
+                "text": content,
+                "reason": element.reason,
+            })
+        enriched["context"] = context
+        enriched["evidence"] = evidence[:64]
+        enriched["preload_profile"] = request.preload_profile
+        enriched["preload_evidence_ids"] = [element.element_id for element in elements[:32]]
+        warning_objects = tuple(
+            GuardWarning(
+                "warning",
+                str(item.get("code", "preload_warning")),
+                str(item.get("message", "preload warning")),
+                affected_paths=(str(item["path"]),) if item.get("path") else (),
+                recommended_action="review configured context preload",
+            )
+            for item in preload_warnings
+            if isinstance(item, dict)
+        )
+        return enriched, warning_objects
+
+    def _adaptive_relevance(self, request: ConsistencyRequest, evidence: tuple[dict[str, Any], ...], revision: str, memory_revision: str) -> dict[str, Any]:
+        guard = self.consistency_guard
+        if guard is None or not evidence:
+            return {"success": False, "degraded": True, "degraded_reason": "no_authoritative_evidence", "warnings": []}
+        try:
+            projector = getattr(guard, "structured_evidence", None)
+            if callable(projector):
+                structured = list(projector(evidence, limit=24))
+            else:
+                structured = []
+                for item in evidence[:24]:
+                    if isinstance(item, dict):
+                        structured.append({
+                            "evidence_id": str(item.get("evidence_id") or item.get("id") or "")[:200],
+                            "authority": "deterministic",
+                            "path": self._adaptive_label(item.get("path"), 240),
+                            "start_line": max(0, int(item.get("start_line", 0) or 0)),
+                            "end_line": max(0, int(item.get("end_line", 0) or 0)),
+                        })
+            structured = [item for item in structured if isinstance(item, dict) and item.get("evidence_id")][:24]
+            if not structured:
+                return {"success": False, "degraded": True, "degraded_reason": "no_authoritative_evidence", "warnings": []}
+            focus = [self._adaptive_label(item, 80) for item in tuple(getattr(request, "focus", ()) or ())[:16]]
+            model_focus = ["focus-" + hashlib.sha256(item.encode("utf-8", "replace")).hexdigest()[:12] for item in focus if item]
+            phase = self._adaptive_label(request.phase, 80)
+            if phase.casefold() not in {"plan", "edit", "implementation", "review", "test", "handoff"}:
+                phase = "other"
+            preload_profile = self._adaptive_label(request.preload_profile, 120)
+            if preload_profile.casefold() not in {"", "default", "plan", "edit", "review", "test", "handoff"}:
+                preload_profile = "profile-" + hashlib.sha256(preload_profile.encode("utf-8", "replace")).hexdigest()[:12]
+            payload = {
+                "operation": "context_relevance",
+                "phase": phase,
+                "focus": model_focus,
+                "preload_profile": preload_profile,
+                "repository_revision": str(revision)[:200],
+                "memory_revision": str(memory_revision)[:200],
+                "evidence": structured,
+                "limits": {"max_selected_evidence": 12, "max_claims": 16, "max_gaps": 16, "max_wording_chars": 1200},
+            }
+            params = {
+                "repository_revision": str(revision)[:200],
+                "phase": self._adaptive_label(request.phase, 80),
+                "memory_revision": str(memory_revision)[:200],
+                "focus": tuple(focus),
+                "preload_profile": self._adaptive_label(request.preload_profile, 120),
+                "evidence_ids": tuple(str(item["evidence_id"])[:200] for item in structured),
+            }
+
+            def compute() -> dict[str, Any]:
+                try:
+                    models = getattr(self, "config", {}).get("models", {})
+                    model = getattr(self, "config", {}).get("context_relevance_model") or models.get("general") or models.get("fast_code") or "context-relevance"
+                    generated = self._generate(
+                        str(model),
+                        json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
+                        "Return JSON only. Use only supplied deterministic evidence IDs. Never invent repository facts, repeat source text, reveal secrets, or use the user prompt as evidence.",
+                        min(512, max(64, int(request.token_budget) // 4)),
+                        0.0,
+                        request.tenant or "context",
+                        "context-relevance",
+                        4,
+                        semantic_query="context relevance",
+                        semantic_context_fingerprint=stable_hash(params),
+                        internal=True,
+                        format={"type": "object"},
+                    )
+                except Exception:
+                    return {"success": False, "degraded": True, "degraded_reason": "model_error", "warnings": []}
+                if not isinstance(generated, dict) or not generated.get("success"):
+                    return {"success": False, "degraded": True, "degraded_reason": "model_unavailable", "warnings": []}
+                raw = generated.get("text") or generated.get("response") or ""
+                try:
+                    if isinstance(raw, dict):
+                        parsed = raw
+                    else:
+                        text = str(raw).strip()
+                        if text.startswith("```"):
+                            text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I | re.S)
+                        parsed = json.loads(text)
+                    if not isinstance(parsed, dict):
+                        raise ValueError("structured response required")
+                except Exception:
+                    return {"success": False, "degraded": True, "degraded_reason": "invalid_model_output", "warnings": []}
+                claims = parsed.get("claims") if isinstance(parsed.get("claims"), list) else []
+                postprocess = getattr(guard, "postprocess_model_claims", None)
+                if callable(postprocess):
+                    checked = postprocess(evidence, claims, request)
+                else:
+                    checked = {"claims": [], "unknowns": [], "warnings": []}
+                authoritative = set(checked.get("authoritative_evidence_ids", ()))
+                selected = [str(item)[:200] for item in (parsed.get("selected_evidence_ids") or ()) if str(item) in authoritative][:12]
+                gaps = [self._adaptive_label(item, 240) for item in (parsed.get("gaps") or ())][:16]
+                wording = self._adaptive_label(parsed.get("wording"), 1200)
+                warning_dicts = []
+                for warning in checked.get("warnings", ())[:24]:
+                    converter = getattr(warning, "to_dict", None)
+                    warning_dicts.append(converter() if callable(converter) else dict(warning) if isinstance(warning, dict) else {"code": "unsupported_model_claim", "message": self._adaptive_label(warning, 240)})
+                return {
+                    "success": True,
+                    "selected_evidence_ids": selected,
+                    "claims": list(checked.get("claims", ()))[:16],
+                    "unknowns": [self._adaptive_label(item, 240) for item in checked.get("unknowns", ())][:16],
+                    "gaps": [item for item in gaps if item],
+                    "wording": wording,
+                    "warnings": warning_dicts[:24],
+                }
+
+            return self._repo_cached("adaptive-relevance", request.root, params, compute)
+        except Exception:
+            return {"success": False, "degraded": True, "degraded_reason": "relevance_error", "warnings": []}
+
+    def adaptive_context_pack(self, request: ConsistencyRequest, *, mode: str = "fast", since_hash: str = "") -> dict[str, Any]:
+        """Build deterministic context plus bounded, soft consistency findings."""
+        if not isinstance(request, ConsistencyRequest):
+            raise TypeError("guarded context request must be ConsistencyRequest")
+        if mode == "full":
+            base = self._hybrid_context(request.root, request.query, request.tenant, request.workspace or None, request.token_budget)
+        else:
+            base = self.fast_context(request.root, request.query, request.token_budget)
+        if not isinstance(base, dict):
+            base = {"success": False, "context": "", "evidence": []}
+        else:
+            base = dict(base)
+        base, preload_warnings = self._apply_context_preloads(request, base)
+        guard = self.consistency_guard
+        if guard is None:
+            return {**base, "guarded": False, "context_pack": AdaptiveContextPack(warnings=preload_warnings).to_dict()}
+
+        try:
+            snapshot = self.repo_tools.git_snapshot(request.root)
+            revision = str(getattr(snapshot, "revision", "") or "")[:200]
+            snapshot_paths = tuple(str(path) for path in (getattr(snapshot, "changed_paths", ()) or ()))[:64]
+        except Exception:
+            revision, snapshot_paths = "", ()
+        evidence = tuple(item for item in (base.get("evidence") or ()) if isinstance(item, dict))[:24]
+        changed_paths = tuple(request.changed_paths or base.get("changed_paths") or snapshot_paths)[:64]
+        if since_hash and since_hash == revision:
+            changed_paths = ()
+        contract = guard.build_contract(request)
+        candidates = tuple(guard.find_reuse_candidates(request, contract))[:24]
+        mappings, mapping_warnings = guard.build_contract_mappings(request, evidence)
+        diff: Any = None
+        try:
+            diff = self.repo_tools.git_diff(request.root, base=request.base, staged=request.staged, max_tokens=request.token_budget)
+            if since_hash and isinstance(diff, dict):
+                diff = {**diff, "diff_sha256": since_hash}
+        except Exception:
+            pass
+        drift_warnings = guard.check_drift(request, contract, changed_paths, diff)
+        warnings = tuple(dict.fromkeys((*preload_warnings, *mapping_warnings, *drift_warnings)))[:24]
+        boundary = any(item.requires_approval or item.severity.lower() in {"boundary", "high", "high-risk"} for item in warnings)
+        stop_code = self._guard_stop_code(request, boundary)
+        if stop_code:
+            warning_payload = [
+                warning.to_dict() if hasattr(warning, "to_dict") else dict(warning)
+                for warning in warnings
+            ]
+            return {
+                **base,
+                "success": False,
+                "guarded": True,
+                "delivery_mode": mode,
+                "terminal": True,
+                "retryable": False,
+                "stop_code": stop_code,
+                "error": f"guarded context stopped: {stop_code}",
+                "warnings": warning_payload[:24],
+                "repo_revision": revision,
+                "changed_paths": list(changed_paths),
+                "task_status": "",
+                "waiting": False,
+            }
+        memory_revision = self._adaptive_memory_revision(request)
+        relevance = self._adaptive_relevance(request, evidence, revision, memory_revision)
+        metric = getattr(guard, "record_metric", None)
+        if callable(metric):
+            if since_hash and since_hash == revision:
+                metric("duplicate_context_reuse")
+            if not isinstance(relevance, dict) or not relevance.get("success"):
+                metric("degraded_local_model_fallback")
+            relevance_warnings = tuple(relevance.get("warnings", ())) if isinstance(relevance, dict) else ()
+            for warning in relevance_warnings:
+                severity = getattr(warning, "severity", None)
+                if severity is None and isinstance(warning, dict):
+                    severity = warning.get("severity", "warning")
+                metric("warning", severity=str(severity or "warning"))
+        model_warnings = tuple(relevance.get("warnings", ()))[:24] if isinstance(relevance, dict) else ()
+        pack = AdaptiveContextPack(
+            contract=contract,
+            reuse_candidates=candidates,
+            mappings=tuple(mappings),
+            warnings=warnings,
+            evidence=evidence,
+            repo_revision=revision,
+            changed_paths=changed_paths,
+            stale=False,
+            context_id=hashlib.sha256(f"{request.root}:{revision}:{request.task_id}:{request.phase}:{request.query}".encode("utf-8", "replace")).hexdigest()[:24],
+            phase=request.phase,
+            focus=request.focus,
+            preload_profile=request.preload_profile,
+            memory_revision=memory_revision,
+            model_warnings=model_warnings,
+        )
+        pack_data = pack.to_dict()
+        ordinary = any(not (item.requires_approval or item.severity.lower() in {"boundary", "high", "high-risk"}) for item in warnings)
+        decision_recorded, decision_persisted = self._guard_decision(request, revision, reason=request.override_reason, approval=request.approval)
+        task_status, waiting = self._guard_task_state(request, warnings, revision)
+        approved = self._guard_truthy(request.approval) or self._guard_existing_approval(request)
+        if str(task_status).lower() == "waiting":
+            approved = False
+        result = dict(base)
+        result.update({
+            "guarded": True,
+            "delivery_mode": mode,
+            "adaptive_context_pack": pack_data,
+            "context_pack": pack_data,
+            "contract": pack_data["contract"],
+            "reuse": pack_data["reuse_candidates"],
+            "reuse_candidates": pack_data["reuse_candidates"],
+            "mappings": pack_data["mappings"],
+            "warnings": [*pack_data["warnings"], *list(model_warnings)][:24],
+            "evidence_ids": list(dict.fromkeys(item.get("evidence_id", "") for item in evidence if item.get("evidence_id")))[:24],
+            "warning_ids": list(dict.fromkeys(
+                evidence_id
+                for item in (*warnings, *model_warnings)
+                for evidence_id in (item.evidence_ids if hasattr(item, "evidence_ids") else item.get("evidence_ids", ()) if isinstance(item, dict) else ())
+            ))[:24],
+            "model_warnings": list(model_warnings),
+            "relevance": {
+                key: relevance.get(key)
+                for key in ("selected_evidence_ids", "claims", "unknowns", "gaps", "wording")
+                if isinstance(relevance, dict) and key in relevance
+            },
+            "model_degraded": bool(not isinstance(relevance, dict) or not relevance.get("success")),
+            "model_degraded_reason": str(relevance.get("degraded_reason", ""))[:120] if isinstance(relevance, dict) else "relevance_error",
+            "repo_revision": revision,
+            "memory_revision": memory_revision,
+            "changed_paths": list(changed_paths),
+            "since_hash": str(since_hash)[:200],
+            "delta_from": str(since_hash)[:200] if since_hash else "",
+            "requires_override": bool(ordinary and not str(request.override_reason or "").strip() and not approved),
+            "requires_approval": bool(boundary and not approved),
+            "decision_recorded": bool(decision_recorded),
+            "decision_persisted": bool(decision_persisted),
+            "task_status": task_status,
+            "waiting": bool(waiting),
+        })
+        snapshotter = getattr(getattr(self, "telemetry", None), "record_snapshot", None)
+        metrics_getter = getattr(guard, "metrics_snapshot", None)
+        if callable(snapshotter) and callable(metrics_getter):
+            try:
+                snapshotter("consistency_guard", metrics_getter())
+            except Exception:
+                pass
+        return result
 
     def fast_context(self, root: str, query: str, max_tokens: int) -> dict[str, Any]:
         """Return bounded deterministic context when foreground SLO excludes hybrid retrieval."""
