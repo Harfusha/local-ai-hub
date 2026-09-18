@@ -97,6 +97,8 @@ When a feature is disabled:
 
 ### Regenerating Artifacts
 
+Generated skills, policies, MCP manifests, and schemas are installation artifacts. They are written to the selected installation/target directory and are intentionally ignored by Git; the generator source and static companion skills are the repository source of truth.
+
 Whenever you change feature toggles or models in `config.toml`:
 
 ```bash

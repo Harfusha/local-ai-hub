@@ -16,7 +16,8 @@ def test_action_aliases_resolution():
     assert _resolve_action("command", "fmt") == "format"
     assert _resolve_action("repo", "idx") == "code_index"
     assert _resolve_action("repo", "review") == "review_diff"
-    assert _resolve_action("task", "gen") == "generate"
+    assert _resolve_action("task", "gen") == "delegate"
+    assert _resolve_action("task", "explore") == "explore"
     # Unmapped action passes through unchanged
     assert _resolve_action("command", "run") == "run"
 

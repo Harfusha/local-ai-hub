@@ -658,7 +658,7 @@ class WorkOrchestrator:
             if not self._stop.is_set() and self._has_queued_work():
                 self._ensure_workers()
 
-    def _ask(self, tenant: str, root: str, task: str, context: str, max_tokens: int = 1200, *, review: bool = False) -> dict[str, Any]:
+    def _ask(self, tenant: str, root: str, task: str, context: str, max_tokens: int = 4096, *, review: bool = False) -> dict[str, Any]:
         if review:
             return self.services.second_opinion({"question": task, "candidate": context, "context": "", "max_tokens": max_tokens, "complexity": "auto"}, tenant)
         return self.services.delegate_repo({"root": root, "task": task, "context": context, "max_tokens": max_tokens, "complexity": "auto"}, tenant)

@@ -42,6 +42,20 @@ class AdaptivePlanner:
         confidence, components = self._confidence(graph, evidence_count)
         heavy = route.get("complexity") == "heavy" or int(route.get("complexity_score", 0)) >= 3
         task_type = str(route.get("task_type", "general"))
+        semantic_required = bool(route.get("semantic_required", False))
+
+        # Explicit semantic requests must not be short-circuited by strong exact
+        # evidence. One bounded explorer pass is enough in fast/adaptive mode;
+        # quality mode retains its normal multi-stage plan below.
+        if semantic_required and mode != "quality":
+            return {
+                "confidence": round(confidence, 4),
+                "confidence_components": components,
+                "explorer": True,
+                "worker": False,
+                "critic": False,
+                "reason": "semantic-request",
+            }
 
         if not self.enabled:
             return {

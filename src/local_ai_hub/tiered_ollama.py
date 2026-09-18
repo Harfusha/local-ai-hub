@@ -118,16 +118,16 @@ class TieredOllamaRuntime:
                 return {"error": str(exc), "retryable": True}
             return target.request(endpoint, payload, timeout)
 
-    def request_stream(self, endpoint: str, payload: dict[str, Any] | None, on_chunk: Any, timeout: float | None = None) -> dict[str, Any]:
+    def request_stream(self, endpoint: str, payload: dict[str, Any] | None, on_chunk: Any, timeout: float | None = None, *, on_thinking: Any | None = None) -> dict[str, Any]:
         model = str((payload or {}).get("model", ""))
         if not model:
-            return self.fast.request_stream(endpoint, payload, on_chunk, timeout)
+            return self.fast.request_stream(endpoint, payload, on_chunk, timeout, on_thinking=on_thinking)
         with self._lock:
             try:
                 target, _ = self._target(model)
             except RuntimeError as exc:
                 return {"error": str(exc), "retryable": True}
-            return target.request_stream(endpoint, payload, on_chunk, timeout)
+            return target.request_stream(endpoint, payload, on_chunk, timeout, on_thinking=on_thinking)
 
     def request_interruptible(self, endpoint: str, payload: dict[str, Any] | None, should_stop: Any, *, timeout: float | None = None) -> dict[str, Any]:
         model = str((payload or {}).get("model", ""))

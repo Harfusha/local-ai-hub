@@ -591,7 +591,7 @@ class LocalAIServices:
     ) -> dict[str, Any]:
         saving = self.config.get("token_saving", {})
         resilience = self.config.get("resilience", {})
-        max_tokens = max(64, min(int(max_tokens), int(saving.get("max_local_output_tokens", 2400))))
+        max_tokens = max(64, min(int(max_tokens), int(saving.get("max_local_output_tokens", 8192))))
         role = source.rsplit(":", 1)[-1].lower()
         if source == "second-opinion":
             role = "second-opinion"
@@ -687,7 +687,12 @@ class LocalAIServices:
                     trace_observer = observer()
                     if trace_observer is not None:
                         trace_observer.model_request(payload)
-                        response = self.runtime.request_stream("/api/generate", payload, trace_observer.output_delta)
+                        response = self.runtime.request_stream(
+                            "/api/generate", payload, trace_observer.output_delta,
+                            # Keep mixed-version MCP workers alive while the
+                            # trace observer API rolls forward independently.
+                            on_thinking=getattr(trace_observer, "thinking_delta", None),
+                        )
                     else:
                         response = self.runtime.request("/api/generate", payload)
                     if response.get("_lah_repetition_loop_detected"):
@@ -709,6 +714,8 @@ class LocalAIServices:
                     return {
                         "success": True, "model": candidate_model, "requested_model": requested_model,
                         "text": clean_text, "thinking": thinking,
+                        "final_response_produced": bool(clean_text.strip()),
+                        "final_response_status": "produced" if clean_text.strip() else "empty",
                         "load_duration_ns": response.get("load_duration", 0), "eval_count": response.get("eval_count", 0),
                         "prompt_eval_count": response.get("prompt_eval_count", 0),
                         "prompt_eval_duration_ns": response.get("prompt_eval_duration", 0),
@@ -716,7 +723,7 @@ class LocalAIServices:
                         "_lah_retry_count": int(response.get("_lah_retry_count", 0) or 0),
                         "execution_profile": candidate_profile.cache_scope(),
                         "_lah_cache_origin": "ollama", "fallback_used": candidate_model != requested_model,
-                        "_cacheable": candidate_model == requested_model,
+                        "_cacheable": candidate_model == requested_model and bool(clean_text.strip()),
                     }
 
                 try:
@@ -1019,7 +1026,7 @@ class LocalAIServices:
             ),
         }[task_type]
         prompt = self._conversation_user_prompt(task, context)
-        max_tokens = int(args.get("max_tokens", 1400))
+        max_tokens = int(args.get("max_tokens", 4096))
         temperature = float(args.get("temperature", 0.15))
         source = f"delegate:{task_type}"
         priority = int(args.get("priority", 5))
@@ -1099,14 +1106,14 @@ class LocalAIServices:
         payload["task_type"] = "review"
         payload["task"] = str(args.get("instructions", "Review the supplied code or diff and report actionable defects only."))
         payload["context"] = str(args.get("code", args.get("context", "")))
-        payload.setdefault("max_tokens", 1700)
+        payload.setdefault("max_tokens", 4096)
         return self.delegate(payload, tenant)
 
     def reason(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         payload = dict(args)
         payload["task_type"] = "reasoning"
         payload["task"] = str(args.get("problem", args.get("task", "")))
-        payload.setdefault("max_tokens", 1700)
+        payload.setdefault("max_tokens", 4096)
         return self.delegate(payload, tenant)
 
     def distill_command_error(self, failure: dict[str, Any]) -> str:
@@ -1144,7 +1151,7 @@ class LocalAIServices:
         result = self._generate(
             model, prompt,
             "You are an independent skeptical reviewer. Terse technical output only: zero conversational filler, pleasantries, or preamble. Do not merely agree and do not restate the candidate.",
-            int(args.get("max_tokens", 1500)), float(args.get("temperature", 0.2)),
+            int(args.get("max_tokens", 4096)), float(args.get("temperature", 0.2)),
             tenant, "second-opinion", int(args.get("priority", 6)),
             semantic_query=f"{question}\n{focus}", semantic_context_fingerprint=stable_hash({"candidate": candidate, "context": context}),
         )
@@ -1234,7 +1241,7 @@ class LocalAIServices:
         spec = str(args.get("spec", args.get("prompt", args.get("task", ""))))
         context = str(args.get("context", ""))
         language = str(args.get("language", "python"))
-        max_tokens = int(args.get("max_tokens", 1500))
+        max_tokens = int(args.get("max_tokens", 4096))
 
         if not spec:
             return {"success": False, "error": "spec or prompt is required"}
@@ -2244,7 +2251,7 @@ class LocalAIServices:
             # index, then resolve dependents/tests through SQLite refs/edges. A full
             # repository scan is only a bounded fallback for sparse indexes.
             if self.code_index is not None and hasattr(self.code_index, "impact"):
-                diff = self.repo_tools.git_diff(root, base, staged, max_tokens=3500)
+                diff = self.repo_tools.git_diff(root, base, staged, max_tokens=24000)
                 if diff.get("terminal"):
                     return diff
                 if diff.get("success"):
@@ -2529,7 +2536,7 @@ class LocalAIServices:
             "context": packed.get("context", ""),
             "task_type": str(args.get("task_type", "auto")),
             "complexity": str(args.get("complexity", "auto")),
-            "max_tokens": int(args.get("max_tokens", 1500)),
+            "max_tokens": int(args.get("max_tokens", 4096)),
             "priority": int(args.get("priority", 5)),
             # Packed local context is a diagnostic, not proof of cloud-side input
             # avoided: the agent may have used RG or another narrower tool.

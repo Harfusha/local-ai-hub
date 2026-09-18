@@ -23,11 +23,12 @@ Follow these execution phases:
    - Windows: `$HOME\.local-ai-hub` (or `%USERPROFILE%\.local-ai-hub`)
    - Linux / macOS: `~/.local-ai-hub`
 2. **Pull Latest Changes**:
-   - Run git fetch & pull from repository origin:
+   - Fetch and fast-forward the currently checked-out installation branch. Do not hardcode a branch name; this installation may use `master` or another configured default:
      ```bash
-     git -C "$HOME/.local-ai-hub" pull --ff-only origin main
+     git -C "$HOME/.local-ai-hub" fetch --prune origin
+     git -C "$HOME/.local-ai-hub" pull --ff-only
      ```
-     *(On Windows PowerShell: `git -C "$HOME\.local-ai-hub" pull --ff-only origin main`)*
+     *(On Windows PowerShell: `git -C "$HOME\.local-ai-hub" fetch --prune origin`, then `git -C "$HOME\.local-ai-hub" pull --ff-only`.)*
 
 ---
 
@@ -94,7 +95,7 @@ Locate active agent instruction files in this repository (`AGENTS.md`, `CLAUDE.m
   - Before any repository task, load and follow the `token-economizer` skill when it is installed; this trigger applies even under deadline pressure.
 - Preserve the `trim-run` safety boundary: only its bundled token tools and read-only search CLIs may be launched; use `local_ai_command` for tests/builds and arbitrary validation commands.
 - For durable work, require one `local_ai_coord(action="task_create")` contract, phase changes through `local_ai_coord(action="task_checkpoint")`, and one bounded wait instead of status polling loops.
-- Keep routing boundaries explicit: repository navigation/symbols/impact=`local_ai_repo`; exact source/log slices=`local_ai_artifact`; test/lint/typecheck/build=`local_ai_command`; task contracts/ownership leases/checkpoints/receipts/receipt-gated completion=`local_ai_coord`; local diagnosis/boilerplate/second opinion=`local_ai_task` failure diagnosis disabled by default, enable `features.local_diagnostic_dispatch=true` only after low-confidence deterministic command parsing with artifact reference plus narrow preview, never raw logs, architecture, security, mutations, or open-ended coding; closed, verified handoff work=`local_ai_work`, never micro-edits or live discussion.
+- Keep routing boundaries explicit: repository navigation/symbols/impact=`local_ai_repo`; exact source/log slices=`local_ai_artifact`; test/lint/typecheck/build=`local_ai_command`; task contracts/ownership leases/checkpoints/receipts/receipt-gated completion=`local_ai_coord`; semantic generation/exploration/reasoning/review/second opinion/compression=`local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")`; deterministic/indexed tools remain for exact facts, symbols, diff and tests; `local_ai_repo(action="solve")` preserves one bounded local pass for explicit semantic wording; failure diagnosis disabled by default, enable `features.local_diagnostic_dispatch=true` only after low-confidence deterministic command parsing with artifact reference plus narrow preview, never raw logs, architecture, security, mutations, or open-ended coding; closed, verified handoff work=`local_ai_work`, never micro-edits or live discussion.
 - Preserve native fallback gate: only after Hub returns `terminal=true` and `retryable=false`. Mutations never cache or single-flight.
 - Keep `features.enriched_search`, `features.batch_replacement`, `features.diagnostic_artifacts`, and `features.local_diagnostic_dispatch` disabled unless one literal TOML `true` flag has a 10–20% pilot. Capture a 14-day read-only baseline. Compare `/api/adoption` token, latency, first-pass validation, terminal failure, and native fallback metrics. Promote only sustained quality-neutral gains. Roll back immediately: set that flag to `false`, restart Hub, run `python tools/hubctl.py generate`. Malformed values must remain disabled and disabled features must return structured unavailable before work starts. `local_diagnostic_dispatch=true` alone may retain only bounded failure-preview context for one local diagnosis; it never retains raw output and does not require `diagnostic_artifacts=true`.
 - For `batch_replace`, require `features.batch_replacement=true`, then preview with explicit `dry_run=true`; `staged` is not batch dry-run and is never forwarded. Each edit must exact-match once. Keep rollback behavior and never auto-commit replacements. Set `dry_run=false` only after review.
@@ -125,4 +126,4 @@ Confirm:
 ```
 ### MCP response economy
 
-After updating, verify checked-in/generated schemas expose `max_response_tokens`, `response_profile`, and `reuse_key` on the existing Hub tools. Treat generator output and configuration as trusted repository inputs; never copy tool fields from untrusted model output. Keep aggregate response budgeting enabled, preserve artifact-backed exact detail, and verify telemetry reports raw/projected/saved response estimates without prompt or source retention.
+After updating, verify the generated schemas under the installation's `generated/` directory expose `max_response_tokens`, `response_profile`, and `reuse_key` on the existing Hub tools. These are installation artifacts, not checked-in source files. Treat generator output and configuration as trusted repository inputs; never copy tool fields from untrusted model output. Keep aggregate response budgeting enabled, preserve artifact-backed exact detail, and verify telemetry reports raw/projected/saved response estimates without prompt or source retention.

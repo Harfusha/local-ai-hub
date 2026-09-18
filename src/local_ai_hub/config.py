@@ -140,7 +140,7 @@ def validate_config(data: dict[str, Any]) -> None:
         mode = str(llama_cpp.get("mode", "auto")).strip().lower()
         if mode not in {"off", "auto", "on"}:
             raise ConfigError("llama_cpp.mode must be off, auto, or on")
-        _number(llama_cpp, "model_load_timeout_seconds", minimum=1, maximum=300)
+        _number(llama_cpp, "model_load_timeout_seconds", minimum=1, maximum=3600)
         models = llama_cpp.get("models", {})
         if not isinstance(models, dict):
             raise ConfigError("llama_cpp.models must be a TOML table")
@@ -177,7 +177,7 @@ def validate_config(data: dict[str, Any]) -> None:
                 raise ConfigError(f"ollama_subagents.profiles.{profile_name} must be a TOML table")
             _number(profile, "max_steps", minimum=1, maximum=8)
             _number(profile, "max_tool_calls", minimum=1, maximum=16)
-            _number(profile, "max_tokens", minimum=64, maximum=2400)
+            _number(profile, "max_tokens", minimum=64, maximum=8192)
             _number(profile, "temperature", minimum=0, maximum=1)
 
     client = data.get("client", {})

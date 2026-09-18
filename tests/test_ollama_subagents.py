@@ -10,6 +10,7 @@ from local_ai_hub.ollama_subagents import OllamaSubagentCatalog
 from local_ai_hub.tool_agent import TOOLS, ToolAwareLocalAgent
 from local_ai_hub.config import ConfigError, validate_config
 from local_ai_hub.services import LocalAIServices
+from local_ai_hub.generator import generate_skill_markdown
 
 
 def _catalog(extra: dict | None = None) -> OllamaSubagentCatalog:
@@ -75,7 +76,7 @@ def test_system_contract_requires_hub_tools_advisory_mode_and_matching_language(
 
 
 def test_profile_docs_describe_hub_tools_and_advisory_boundary() -> None:
-    text = Path("skills/local-ai-orchestrator/SKILL.md").read_text(encoding="utf-8")
+    text = generate_skill_markdown({"models": {"fast_code": "qwen2.5-coder:7b"}})
 
     assert "qwen-explorer" in text
     assert "qwen-drafter" in text

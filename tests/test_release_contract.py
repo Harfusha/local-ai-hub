@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 from local_ai_hub import __version__
+from local_ai_hub.generator import write_all_generated
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -52,11 +53,12 @@ def test_release_uses_only_current_local_ai_hub_contracts():
         } for part in path.parts):
             assert not historical_name.search(path.name), f"historical release name: {path.relative_to(ROOT)}"
 
-def test_release_has_compact_mcp_surface_and_tool_first_policy():
+def test_release_has_compact_mcp_surface_and_tool_first_policy(tmp_path: Path):
     source = (ROOT / "src" / "local_ai_hub" / "mcp_server.py").read_text(encoding="utf-8")
     assert source.count("@mcp.tool()") == 8
     assert "CALL THIS BEFORE broad repository reads" in source
-    skill = (ROOT / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
+    write_all_generated({"models": {"fast_code": "qwen2.5-coder:7b"}}, tmp_path)
+    skill = (tmp_path / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
     assert "before broad repository exploration" in skill
     assert "semantic" in skill and "CodeGraphContext" in skill and "local_ai_command" in skill
 
@@ -114,8 +116,9 @@ def test_bounded_runtime_and_sqlite_contracts():
     assert "max_caller_wait_timeout_seconds" in scheduler and "model_switch_failure_cooldown_seconds" in scheduler
 
 
-def test_agent_policy_and_packaging_hardening_contracts():
-    skill = (ROOT / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
+def test_agent_policy_and_packaging_hardening_contracts(tmp_path: Path):
+    write_all_generated({"models": {"fast_code": "qwen2.5-coder:7b"}}, tmp_path)
+    skill = (tmp_path / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
     assert "exactly once" in skill and "in_progress=true" in skill and "never poll" in skill
     for phrase in ("READ-ONLY AUDIT CONTRACT", "git worktree add", "terminal=true", "allow_write", "Codex controls subagent permissions per task"):
         assert phrase in skill
@@ -135,3 +138,16 @@ def test_agent_prompts_require_durable_task_checkpoints_and_one_bounded_wait():
         assert "task_create" in prompt
         assert "task_checkpoint" in prompt
         assert "one bounded wait" in prompt
+
+
+def test_generated_skills_are_not_required_in_source_tree():
+    assert not (ROOT / "skills" / "local-ai-orchestrator" / "SKILL.md").exists()
+    assert not (ROOT / "skills" / "token-economizer" / "SKILL.md").exists()
+
+
+def test_update_prompt_uses_branch_safe_pull_and_generated_artifact_wording():
+    prompt = (ROOT / "docs" / "UPDATE_PROMPT.md").read_text(encoding="utf-8")
+    assert "git pull --ff-only origin main" not in prompt
+    assert "pull --ff-only" in prompt
+    assert "checked-in/generated schemas" not in prompt
+    assert "generated schemas" in prompt

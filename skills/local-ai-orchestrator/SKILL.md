@@ -14,6 +14,8 @@ Trigger map:
 - non-trivial multi-step, long-running, or acceptance-criteria work: `local_ai_coord` Agent OS task contracts, checkpoints, context, and verified completion
 - semantic retrieval after indexed paths are insufficient: `local_ai_rag`
 - bounded local generation or second opinion: `local_ai_task`
+- semantic generation, exploration, reasoning, review, second opinion and compression: `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")`
+- closed whole-task delegation with verified handoff: `local_ai_work`
 - symbol or code-relationship questions: `local_ai_repo` semantic/graph actions (Serena symbol navigation; CodeGraph relationship/call-graph analysis); indexed fallback remains available
 - Agent OS task and incident state: `local_ai_status(detail="agent_state")`
 - image understanding: `local_ai_task(action="vision")`
@@ -31,13 +33,14 @@ Recipes (guidance, not gates):
 - Recipe — Explore: preprocess once, use the cheapest repository action, fetch only required evidence slices.
 - Recipe — Change: gather indexed evidence, use `local_ai_repo(action="solve")` before edits, claim `local_ai_coord` leases for overlapping paths, then run indexed impact/review before validation.
 - Recipe — Validate: route repeatable commands through `local_ai_command`, reuse cached results, use `review_diff` or `security_audit` when relevant.
+- Recipe — Semantic work: use `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` for bounded semantic tasks after needed evidence; deterministic/indexed tools remain for exact facts, symbols, diff and tests.
 - Recipe — Durable execution: create a task contract before substantial work, checkpoint phase changes, attach validation receipts, and complete only after `verify_completion` passes.
 - Recipe — Retrieve: use `local_ai_rag` only after deterministic/indexed paths are exhausted.
 - A recipe step may be skipped when irrelevant; one bounded fallback is allowed when Hub is unavailable.
 
 Delegation is the default for any task with useful bounded independent work.
-- Use `local_ai_task` for bounded local-model work when local inference is the right fit. Use `qwen2.5-coder:1.5b` only for quick/simple requests, `qwen2.5-coder:3b` for ordinary tasks, `qwen2.5-coder:3b` for more involved work, and `qwen2.5-coder:7b` for the hardest reasoning.
-
+- Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression. Use `qwen2.5-coder:7b` only for quick/simple requests, `qwen2.5-coder:7b` for ordinary tasks, `qwen3.5:9b` for more involved work, and `qwen3.5:9b` for the hardest reasoning. Deterministic/indexed tools remain for exact facts, symbols, diff and tests; they do not replace these semantic tasks.
+- **Closed whole task:** prefer `local_ai_work(action="submit")` when the Hub can own planning, bounded edits, validation and handoff end-to-end. Use `response_profile="compact"` and request only decision-grade fields; fetch the artifact only when details are needed.
 - Use the native Codex `multi_agent_v1__spawn_agent` path only for useful independent bounded work or an explicit Codex-subagent request.
 - Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
 - Do not duplicate the same scope across agents. Keep final decisions, edits, and integration in Codex.
@@ -49,8 +52,8 @@ Delegation is the default for any task with useful bounded independent work.
 
 - **Local AI Hub first:** its own precise bounded microtasks, repository facts, indexed search, preprocess, impact, diff/security review, safe commands, compression, local-model synthesis and second opinions.
 - **Native Codex subagents:** use only for useful independent bounded work; Codex assigns scope, write permission, workspace/worktree, timeout, sandbox, cancellation and integration.
-- **Tiered local models:** `qwen2.5-coder:0.5b` for preprocessing, `qwen2.5-coder:1.5b` for quick/simple requests, `qwen2.5-coder:3b` for ordinary tasks, `qwen2.5-coder:3b` for more involved work, and `qwen2.5-coder:7b` for the hardest or highest-risk reasoning. Run deterministic/indexed Hub actions first when they suffice.
-- **RAG:** use only after deterministic/indexed evidence and the basic local model are insufficient. Do not invoke a model to restate facts already available from the hub.
+- **Tiered local models:** `qwen2.5-coder:3b` for preprocessing, `qwen2.5-coder:7b` for quick/simple requests, `qwen2.5-coder:7b` for ordinary tasks, `qwen3.5:9b` for more involved work, and `qwen3.5:9b` for the hardest or highest-risk reasoning. Run deterministic/indexed Hub actions first for exact facts, symbols, diff and tests. Use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and semantic compression.
+- **RAG:** use only when deterministic/indexed evidence is insufficient for a bounded retrieval question. Do not invoke a model to restate facts already available from the hub.
 
 ## READ-ONLY AUDIT CONTRACT
 
@@ -75,7 +78,7 @@ Stop escalating when evidence is sufficient; reuse cached results and bounded ev
 
 ## Context economy contract
 
-- Every Hub response is aggregate-bounded (default ≈1200 tokens); use `max_response_tokens` only when a different bounded size is needed.
+- Every Hub response is aggregate-bounded (default ≈3200 tokens); use `max_response_tokens` only when a different bounded size is needed.
 - Prefer `response_profile="minimal"`/`"compact"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls return a pointer, not missing data.
 - Use the existing `local_ai_task(action="batch")` for independent local tasks; keep each item bounded and consume compact per-item results.
@@ -93,11 +96,12 @@ Stop escalating when evidence is sufficient; reuse cached results and bounded ev
 4. `local_ai_repo(action="semantic/graph")` — language-aware relationships via Serena/CodeGraphContext, callers/callees and impact.
 5. `local_ai_repo(action="context"|"solve")` — compact mixed evidence or bounded repository reasoning.
 6. `local_ai_repo(action="review_diff"|"security_audit"|"impact")` — targeted checks after or around edits.
-7. `local_ai_rag` — semantic fallback only when indexed evidence is insufficient.
-8. `local_ai_task(action="delegate"|"reason"|"review"|"second_opinion"|"compress")` — use `qwen2.5-coder:1.5b` only for quick/simple requests, `qwen2.5-coder:3b` for ordinary tasks, `qwen2.5-coder:3b` for more involved work, and `qwen2.5-coder:7b` for the hardest reasoning.
-9. `local_ai_command(action="run")` — tests, lint, typecheck, builds and repeatable read-only commands before native execution.
-10. `local_ai_artifact` — exact evidence/artifact slices only.
-11. `local_ai_coord` — leases before overlapping edits; memos before repeating investigation.
+7. `local_ai_work(action="submit")` — delegate one complete bounded repository task; Hub plans a DAG, edits transactionally, validates, verifies, and returns a compact handoff.
+8. `local_ai_rag` — semantic fallback only when indexed evidence is insufficient.
+9. `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` — semantic generation, exploration, reasoning, review, independent second opinions and compression. Use `qwen2.5-coder:7b` only for quick/simple requests, `qwen2.5-coder:7b` for ordinary tasks, `qwen3.5:9b` for more involved work, and `qwen3.5:9b` for the hardest reasoning. Deterministic/indexed tools remain for exact facts, symbols, diff and tests.
+10. `local_ai_command(action="run")` — tests, lint, typecheck, builds and repeatable read-only commands before native execution.
+11. `local_ai_artifact` — exact evidence/artifact slices only.
+12. `local_ai_coord` — leases before overlapping edits; memos before repeating investigation.
 
 ## Reuse and failure protocol
 

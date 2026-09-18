@@ -126,7 +126,7 @@ class LocalAgentPipeline:
         deterministic = self.services.deterministic_query(root, task, 30) if getattr(self.services, "deterministic", None) is not None else {"success": False, "confidence": 0.0}
         # Local AI fast path: pure lookup/discovery questions can be answered from parsed facts
         # and exact evidence without any RAG, reranker, embeddings or Ollama inference.
-        if mode != "quality" and deterministic.get("success") and deterministic.get("direct_answer"):
+        if mode != "quality" and deterministic.get("success") and deterministic.get("direct_answer") and not route.get("semantic_required", False):
             text = self.services.deterministic.render_answer(deterministic)
             return {
                 "success": True, "text": text,

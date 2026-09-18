@@ -39,6 +39,25 @@ def test_request_stream_aggregates_generate_chunks_and_notifies_callback(tmp_pat
     assert result["total_duration"] == 7
 
 
+def test_request_stream_separates_thinking_and_ignores_empty_output_chunks(tmp_path, monkeypatch):
+    response = _Response([
+        json.dumps({"model": "m", "thinking": "reason ", "response": "", "done": False}),
+        json.dumps({"thinking": "more", "response": "final", "done": True}),
+    ])
+    monkeypatch.setattr("local_ai_hub.ollama.urlopen", lambda *_args, **_kwargs: response)
+    chunks = []
+    thinking = []
+
+    result = _runtime(tmp_path).request_stream(
+        "/api/generate", {"model": "m", "prompt": "p"}, chunks.append, on_thinking=thinking.append
+    )
+
+    assert chunks == ["final"]
+    assert thinking == ["reason ", "more"]
+    assert result["response"] == "final"
+    assert result["thinking"] == "reason more"
+
+
 def test_request_stream_aggregates_chat_content_and_ignores_bad_lines(tmp_path, monkeypatch):
     response = _Response([
         b"not-json".decode(),
@@ -52,4 +71,3 @@ def test_request_stream_aggregates_chat_content_and_ignores_bad_lines(tmp_path, 
 
     assert chunks == ["one", " two"]
     assert result["message"]["content"] == "one two"
-

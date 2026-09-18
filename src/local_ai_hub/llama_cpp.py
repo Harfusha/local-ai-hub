@@ -307,6 +307,7 @@ class LlamaCppRouter:
         on_chunk: Any,
         timeout: float | None = None,
         should_stop: Any | None = None,
+        on_thinking: Any | None = None,
     ) -> dict[str, Any] | None:
         if endpoint not in {"/api/chat", "/api/generate"} or not isinstance(payload, dict):
             return None
@@ -323,7 +324,7 @@ class LlamaCppRouter:
         if requested_ctx and configured_ctx and requested_ctx > configured_ctx:
             return {"_lah_backend_unavailable": f"SYCL server context is {configured_ctx}, request needs {requested_ctx}"}
         total_timeout = max(0.05, float(timeout if timeout is not None else self.config.get("server", {}).get("request_timeout_seconds", 300)))
-        if not self.ensure_model(str(payload.get("model", "")), timeout=min(total_timeout, float(self.settings.get("model_load_timeout_seconds", 90))), should_stop=should_stop):
+        if not self.ensure_model(str(payload.get("model", "")), timeout=min(total_timeout, float(self.settings.get("model_load_timeout_seconds", 600))), should_stop=should_stop):
             return {"_lah_backend_unavailable": "local llama.cpp SYCL server is not ready"}
         try:
             from .ollama import RepetitionWatchdog

@@ -79,7 +79,7 @@ class OllamaSubagentCatalog:
             tools=self.READ_ONLY_TOOLS,
             max_steps=max(1, min(int(raw.get("max_steps", 3)), 8)),
             max_tool_calls=max(1, min(int(raw.get("max_tool_calls", 6)), 16)),
-            max_tokens=max(64, min(int(raw.get("max_tokens", 800)), 2400)),
+            max_tokens=max(64, min(int(raw.get("max_tokens", 2048)), 8192)),
             temperature=max(0.2, min(float(raw.get("temperature", 0.2)), 1.0)),
             model_fallback=model_fallback,
         )

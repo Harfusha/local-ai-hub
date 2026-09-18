@@ -36,6 +36,7 @@ def test_wmi_spawn_detached_passes_active_config(tmp_path, monkeypatch):
     spec.loader.exec_module(service)
 
     called = []
+    monkeypatch.setattr(service, "all_supervisor_pids", lambda: [])
     monkeypatch.setattr(service, "_ACTIVE_CONFIG_ARG", "C:\\custom\\config.toml")
     monkeypatch.setattr(service.shutil, "which", lambda name: "powershell.exe")
     monkeypatch.setattr(service, "run", lambda cmd, **kwargs: called.append(cmd) or subprocess.CompletedProcess([], 0))

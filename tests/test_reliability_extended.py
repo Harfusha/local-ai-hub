@@ -118,7 +118,7 @@ def test_watcher_edit_uses_incremental_inventory_and_invalidates_fast_fingerprin
             stats = con.execute("SELECT stats_json FROM projects WHERE root=?", (str(repo),)).fetchone()[0]
         assert row[0]
         assert row[1] == 0
-        assert '"incremental_watcher": true' in stats
+        assert json.loads(stats).get("incremental_watcher") is True
     finally:
         pre.close()
 

@@ -35,6 +35,26 @@ class ModelPolicySamplingFloorTests(unittest.TestCase):
         )
         self.assertEqual(payload["options"]["temperature"], 0.0)
 
+    def test_short_second_opinion_reserves_budget_for_final_answer(self):
+        payload, profile = self.policy.apply_payload(
+            "qwen3.5:9b",
+            {"options": {"num_predict": 120}},
+            role="second-opinion",
+            output_tokens=120,
+        )
+        self.assertFalse(profile.think)
+        self.assertFalse(payload["think"])
+
+    def test_bounded_second_opinion_reserves_budget_for_final_answer(self):
+        payload, profile = self.policy.apply_payload(
+            "qwen3.5:9b",
+            {"options": {"num_predict": 320}},
+            role="second-opinion",
+            output_tokens=320,
+        )
+        self.assertFalse(profile.think)
+        self.assertFalse(payload["think"])
+
     def test_qwen_coder_context_never_exceeds_its_32k_limit(self):
         policy = ModelExecutionPolicy({
             "models": {"reasoning": "qwen2.5-coder:7b"},

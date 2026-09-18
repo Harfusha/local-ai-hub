@@ -63,9 +63,10 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     # Delegation section
     if fs.tasks and fs.has_any_model():
         delegation_task = (
-            f"- Use `local_ai_task` for bounded local-model work when local inference is the right fit."
+            f"- Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression."
             f" Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks,"
             f" `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning."
+            " Deterministic/indexed tools remain for exact facts, symbols, diff and tests; they do not replace these semantic tasks."
         )
     else:
         delegation_task = (
@@ -100,11 +101,11 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         tiering_bullets.append(
             f"- **Tiered local models:** `{fs.background_model}` for preprocessing, `{fs.fast_model}` for quick/simple requests, "
             f"`{fs.general_model}` for ordinary tasks, `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest or highest-risk reasoning. "
-            "Run deterministic/indexed Hub actions first when they suffice."
+            "Run deterministic/indexed Hub actions first for exact facts, symbols, diff and tests. Use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and semantic compression."
         )
     if fs.rag:
         tiering_bullets.append(
-            "- **RAG:** use only after deterministic/indexed evidence and the basic local model are insufficient. Do not invoke a model to restate facts already available from the hub."
+            "- **RAG:** use only when deterministic/indexed evidence is insufficient for a bounded retrieval question. Do not invoke a model to restate facts already available from the hub."
         )
     tiering_section = "\n".join(tiering_bullets)
 
@@ -175,7 +176,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         routing_lines.append(f'{r_idx}. `local_ai_rag` — semantic fallback only when indexed evidence is insufficient.')
         r_idx += 1
     if fs.tasks and fs.has_any_model():
-        routing_lines.append(f'{r_idx}. `local_ai_task(action="delegate"|"reason"|"review"|"second_opinion"|"compress")` — use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks, `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning.')
+        routing_lines.append(f'{r_idx}. `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` — semantic generation, exploration, reasoning, review, independent second opinions and compression. Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks, `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning. Deterministic/indexed tools remain for exact facts, symbols, diff and tests.')
         r_idx += 1
     if fs.commands:
         routing_lines.append(f'{r_idx}. `local_ai_command(action="run")` — tests, lint, typecheck, builds and repeatable read-only commands before native execution.')
@@ -346,7 +347,7 @@ def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
     if fs.work_orchestrator:
         tool_bullets.append("- `local_ai_work`: durable whole-task orchestration with dependency planning, transactional edits, validation, whole-task verification and compact/lazy handoff.")
     if fs.tasks and fs.has_any_model():
-        tool_bullets.append(f"- `local_ai_task`: tiered local-model work (`{fs.fast_model}` quick, `{fs.general_model}` ordinary, `{fs.smart_model}` more involved, {reasoning_tier} hardest) after evidence exists.")
+        tool_bullets.append(f"- `local_ai_task`: tiered local-model work (`{fs.fast_model}` quick, `{fs.general_model}` ordinary, `{fs.smart_model}` more involved, {reasoning_tier} hardest) for semantic generation, reasoning, review, independent second opinions and semantic compression; use deterministic/indexed tools for exact facts, symbols, diff and tests. `local_ai_repo(action=\"solve\")` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong.")
     if fs.rag:
         tool_bullets.append("- `local_ai_rag`: semantic fallback only after deterministic/indexed retrieval.")
     if fs.artifacts:
@@ -387,7 +388,7 @@ The active tool surface reflects your configuration:
         step_i += 1
         wf_steps.append(f"{step_i}. Retrieve deterministic facts, then code-index/search evidence.")
         step_i += 1
-        wf_steps.append(f"{step_i}. Use `context` for compact evidence; for implementation, diagnosis, refactoring or complex review, call `solve` after evidence so the Hub-managed local pipeline is used.")
+        wf_steps.append(f"{step_i}. Use `context` for compact evidence; call `solve` after evidence for repository implementation support. Explicit semantic wording keeps one bounded local pass; use `local_ai_task` directly for semantic generation, exploration, reasoning, review, independent second opinions or semantic compression.")
         step_i += 1
         lease_note = "claim `local_ai_coord` leases for overlapping paths; " if fs.coord else ""
         wf_steps.append(f"{step_i}. Edit in the main agent; {lease_note}use `impact` before risky dependent changes.")
@@ -401,6 +402,10 @@ The active tool surface reflects your configuration:
     task_notes = ""
     if fs.tasks and fs.has_any_model():
         task_notes = """
+## Local semantic work
+
+Use `local_ai_task(action="delegate")` for bounded creation or implementation guidance, `local_ai_task(action="explore")` for semantic exploration, `local_ai_task(action="reason")` for reasoning, `local_ai_task(action="review")` for a semantic review, `local_ai_task(action="second_opinion")` for independent critique, and `local_ai_task(action="compress")` for semantic condensation. Use `local_ai_repo`, `local_ai_artifact` and `local_ai_command` for exact facts, symbols, diff and tests; those deterministic paths do not replace the semantic worker.
+
 ## Local second opinion
 
 Use `local_ai_task(action="second_opinion")` for a bounded candidate decision. Include the evidence and uncertainty.
@@ -473,9 +478,10 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     task_delegation = ""
     if fs.tasks and fs.has_any_model():
         task_delegation = (
-            f"\n- Use `local_ai_task` for bounded local-model work when local inference is the right fit."
+            f"\n- Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression."
             f" Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks,"
             f" `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning."
+            " Deterministic/indexed tools remain for exact facts, symbols, diff and tests; they do not replace these semantic tasks."
         )
 
     model_default = ""
@@ -483,7 +489,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         model_default = (
             f"\nLocal model policy: `{fs.background_model}` is preprocessing-only, `{fs.fast_model}` handles quick/simple tasks,"
             f" `{fs.general_model}` handles ordinary tasks, `{fs.smart_model}` handles more involved work, and {reasoning_tier} handles the hardest or highest-risk reasoning."
-            " Use deterministic and indexed Hub actions first when sufficient."
+            " Use deterministic and indexed Hub actions first for exact facts, symbols, diff and tests. For semantic generation, reasoning, review, independent second opinions and semantic compression, call `local_ai_task`."
         )
 
     repo_task_first = ""
@@ -676,7 +682,7 @@ def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
         "- Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.\n"
         "- Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.\n"
         "- Surgical edits: Prefer targeted block replacements over rewriting entire files.\n"
-        f"- Local model delegation: Use `{fast_model}` only for quick/simple microtasks; let `local_ai_task` route ordinary, more involved, and highest-risk work to their configured tiers.\n"
+        f"- Local model delegation: Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression; use `{fast_model}` only for quick/simple microtasks and configured higher tiers for ordinary, involved and hardest work. Deterministic/indexed tools remain for exact facts, symbols, diff and tests.\n"
         "<!-- END TOKEN ECONOMY POLICY -->"
     )
 
@@ -791,7 +797,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         task_actions = fs.supported_task_actions()
         schemas["local_ai_task"] = {
             "name": "local_ai_task",
-            "description": f"Tiered bounded local-model work ({fs.fast_model} quick, {fs.general_model} ordinary, {fs.smart_model} more involved, {reasoning_tier} hardest)." + _actions_note(task_actions),
+            "description": f"Tiered bounded local-model work ({fs.fast_model} quick, {fs.general_model} ordinary, {fs.smart_model} more involved, {reasoning_tier} hardest) for semantic generation, reasoning, review, independent second opinions and semantic compression; use deterministic/indexed tools for exact facts, symbols, diff and tests." + _actions_note(task_actions),
             "parameters": {
                 "type": "object",
                 "required": ["action"],
