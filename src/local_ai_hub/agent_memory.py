@@ -101,6 +101,9 @@ def _memory_conflict_context_matches(left: MemoryRecord, right: MemoryRecord) ->
     return _normalise_scope_root(left_root) == _normalise_scope_root(right_root)
 
 
+_CONTEXT_ROOT_VALUE_SQL = (
+    "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.root')"
+)
 _CONTEXT_ROOT_SQL = (
     "canonical_scope_root(json_extract("
     "CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.root'))"
@@ -423,6 +426,57 @@ class MemoryStore:
                             ON agent_memory_records (scope, key, status);
                             """
                         )
+                        con.execute(
+                            """
+                            CREATE INDEX IF NOT EXISTS idx_agent_memory_scope_identity
+                            ON agent_memory_records (scope, scope_id, status, updated_at DESC);
+                            """
+                        )
+                        con.execute(
+                            """
+                            CREATE INDEX IF NOT EXISTS idx_agent_memory_provenance_root
+                            ON agent_memory_records (
+                                scope,
+                                json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.root'),
+                                status,
+                                updated_at DESC
+                            );
+                            """
+                        )
+                        con.execute(
+                            """
+                            CREATE INDEX IF NOT EXISTS idx_agent_memory_provenance_repository
+                            ON agent_memory_records (
+                                scope,
+                                json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.repository_id'),
+                                status,
+                                updated_at DESC
+                            );
+                            """
+                        )
+                        con.execute(
+                            """
+                            CREATE INDEX IF NOT EXISTS idx_agent_memory_provenance_tenant
+                            ON agent_memory_records (
+                                scope,
+                                json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.tenant'),
+                                status,
+                                updated_at DESC
+                            );
+                            """
+                        )
+                        for identity_name in ("clone_id", "worktree_id", "branch"):
+                            con.execute(
+                                f"""
+                                CREATE INDEX IF NOT EXISTS idx_agent_memory_provenance_{identity_name}
+                                ON agent_memory_records (
+                                    scope,
+                                    json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{{}}' END, '$.{identity_name}'),
+                                    status,
+                                    updated_at DESC
+                                );
+                                """
+                            )
                         con.execute(
                             """
                             CREATE INDEX IF NOT EXISTS idx_agent_memory_updated
@@ -1171,6 +1225,13 @@ class MemoryStore:
             (branch_val, AgentScope.BRANCH.value),
         ]
         identity_scopes = [(value, scope_name) for value, scope_name in identity_scopes if value]
+        identity_fields = {
+            AgentScope.TASK.value: "task_id",
+            AgentScope.SESSION.value: "session_id",
+            AgentScope.CLONE.value: "clone_id",
+            AgentScope.WORKTREE.value: "worktree_id",
+            AgentScope.BRANCH.value: "branch",
+        }
         legacy_allowed = allow_legacy_unscoped and not any(
             str(value or "").strip()
             for value in (
@@ -1204,16 +1265,23 @@ class MemoryStore:
         elif scope_id_val:
             sql += " AND 0"
 
+        primary_identity = ""
+        if scope_val in {scope_name for _, scope_name in identity_scopes}:
+            primary_identity = next(value for value, scope_name in identity_scopes if scope_name == scope_val)
         if identity_scopes:
-            if len(identity_scopes) == 1:
-                expected_scope_id, expected_scope = identity_scopes[0]
-                if scope_val != expected_scope:
+            if scope is None:
+                if len(identity_scopes) > 1:
                     sql += " AND 0"
-                elif scope_id_val and scope_id_val != expected_scope_id:
+                elif scope_val != identity_scopes[0][1]:
                     sql += " AND 0"
                 else:
-                    scope_id_val = expected_scope_id
-            else:
+                    scope_id_val = identity_scopes[0][0]
+            elif primary_identity:
+                if scope_id_val and scope_id_val != primary_identity:
+                    sql += " AND 0"
+                else:
+                    scope_id_val = primary_identity
+            elif scope_val == AgentScope.GLOBAL.value:
                 sql += " AND 0"
 
         if scope_val != AgentScope.GLOBAL.value:
@@ -1226,8 +1294,6 @@ class MemoryStore:
                     sql += " AND scope_id = ''"
                 elif scope_val in {AgentScope.TASK.value, AgentScope.SESSION.value} and not has_identity:
                     sql += " AND scope_id = ''"
-                elif scope_val == AgentScope.SESSION.value and tenant:
-                    pass
                 else:
                     sql += " AND 0"
         elif scope_id_val:
@@ -1245,8 +1311,9 @@ class MemoryStore:
             sql += " AND (scope NOT IN (?, ?) OR scope_id = '')"
             params.extend([AgentScope.TASK.value, AgentScope.SESSION.value])
         if root:
-            sql += f" AND {_CONTEXT_ROOT_SQL} = ?"
-            params.append(_normalise_scope_root(root))
+            canonical_root = _normalise_scope_root(root)
+            sql += f" AND ({_CONTEXT_ROOT_VALUE_SQL} = ? OR {_CONTEXT_ROOT_SQL} = ?)"
+            params.extend([canonical_root, canonical_root])
         if repository_id:
             provenance_repository_id = (
                 "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
@@ -1261,6 +1328,16 @@ class MemoryStore:
             )
             sql += f" AND {provenance_tenant} = ?"
             params.append(tenant)
+        for identity_value, identity_scope in identity_scopes:
+            if identity_scope == scope_val:
+                continue
+            identity_field = identity_fields[identity_scope]
+            provenance_identity = (
+                "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
+                f"'$.{identity_field}')"
+            )
+            sql += f" AND {provenance_identity} = ?"
+            params.append(identity_value)
 
         base_sql = sql
         base_params = list(params)

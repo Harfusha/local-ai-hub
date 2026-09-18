@@ -131,6 +131,20 @@ def test_memory_find_enforces_root_repository_and_tenant_identity(store: MemoryS
         value="tenant-2",
         provenance={"tenant": "tenant-2"},
     ))
+    rich_task = store.record(MemoryRecord.create(
+        kind=MemoryKind.FINDING,
+        scope=AgentScope.TASK,
+        scope_id="task-rich",
+        key="rich-task",
+        value="rich",
+        provenance={
+            "root": "C:/repo-rich",
+            "repository_id": "repo-rich",
+            "clone_id": "clone-rich",
+            "worktree_id": "worktree-rich",
+            "branch": "branch-rich",
+        },
+    ))
 
     assert {record.record_id for record in store.find(scope=AgentScope.REPOSITORY, root="C:/repo-a", key="shared-repo")} == {
         repo_a.record_id,
@@ -138,8 +152,45 @@ def test_memory_find_enforces_root_repository_and_tenant_identity(store: MemoryS
     }
     assert [record.record_id for record in store.find(scope=AgentScope.REPOSITORY, root="C:/repo-b", key="shared-repo")] == [repo_b.record_id]
     assert [record.record_id for record in store.find(scope=AgentScope.REPOSITORY, repository_id="repo-a", key="shared-repo")] == [repo_a.record_id]
-    assert [record.record_id for record in store.find(scope=AgentScope.SESSION, tenant="tenant-1", key="shared-tenant")] == [tenant_one.record_id]
-    assert [record.record_id for record in store.find(scope=AgentScope.SESSION, tenant="tenant-2", key="shared-tenant")] == [tenant_two.record_id]
+    assert [record.record_id for record in store.find(scope=AgentScope.SESSION, scope_id="tenant-1", tenant="tenant-1", key="shared-tenant")] == [tenant_one.record_id]
+    assert [record.record_id for record in store.find(scope=AgentScope.SESSION, scope_id="tenant-2", tenant="tenant-2", key="shared-tenant")] == [tenant_two.record_id]
+    assert [record.record_id for record in store.find(
+        scope=AgentScope.TASK,
+        task_id="task-rich",
+        clone_id="clone-rich",
+        worktree_id="worktree-rich",
+        branch="branch-rich",
+        root="C:/repo-rich",
+        repository_id="repo-rich",
+        key="rich-task",
+    )] == [rich_task.record_id]
+    assert store.find(
+        scope=AgentScope.TASK,
+        task_id="task-rich",
+        clone_id="wrong-clone",
+        worktree_id="worktree-rich",
+        branch="branch-rich",
+        root="C:/repo-rich",
+        repository_id="repo-rich",
+        key="rich-task",
+    ) == []
+
+
+def test_memory_identity_indexes_exist_for_bounded_filtered_queries(store: MemoryStore):
+    con = connect_sqlite(store.state_store.db_path)
+    try:
+        names = {str(row[1]) for row in con.execute("PRAGMA index_list(agent_memory_records)").fetchall()}
+    finally:
+        con.close()
+    assert {
+        "idx_agent_memory_scope_identity",
+        "idx_agent_memory_provenance_root",
+        "idx_agent_memory_provenance_repository",
+        "idx_agent_memory_provenance_tenant",
+        "idx_agent_memory_provenance_clone_id",
+        "idx_agent_memory_provenance_worktree_id",
+        "idx_agent_memory_provenance_branch",
+    } <= names
 
 
 def test_global_promotion_requires_user_approval(store: MemoryStore):
