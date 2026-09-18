@@ -139,6 +139,28 @@ def test_local_ai_repo_context_preserves_legacy_fast_full_payload(monkeypatch) -
     )]
 
 
+def test_local_ai_repo_non_context_actions_ignore_guard_fields(monkeypatch) -> None:
+    calls = _capture_client(monkeypatch, {"success": True, "items": []})
+
+    local_ai_mcp.local_ai_repo(
+        action="search",
+        root="C:/repo",
+        query="route",
+        task_id="task-1",
+        phase="review",
+        guarded=True,
+        changed_paths=["src/app.py"],
+        token_budget=777,
+        approval=True,
+    )
+
+    assert calls == [(
+        "/api/search",
+        {"root": str(Path("C:/repo")), "query": "route", "top_k": 12, "enrich": False},
+        180.0,
+    )]
+
+
 def test_local_ai_repo_context_returns_bounded_deterministic_projection(monkeypatch) -> None:
     response = {
         "success": True,

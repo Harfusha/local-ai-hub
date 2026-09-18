@@ -19,6 +19,10 @@ Before native recursive search/tree/glob or opening many files for discovery, ro
 
 When an agent uses `local_ai_repo(action="solve")` with explicit semantic wording such as explore, explain, why, compare or second opinion, the planner keeps one bounded local pass even if exact evidence is already strong. Pure fact lookups still terminate deterministically.
 
+## Adaptive repository context
+
+Use `local_ai_repo(action="context")` as the default adaptive context pack before non-trivial planning, edit, review or test. Pass the existing task/budget/workspace and guarded fields (`phase`, `focus`, `preload_profile`, `guarded`, `changed_paths`, `since_hash`, `approval`, `override_reason`); omit them to preserve legacy `mode="fast"|"full"` behavior. Reuse existing evidence and reuse candidates first, require evidence IDs for factual claims, and treat deterministic/indexed evidence as authoritative. Local models may rank, select or compress structured evidence only; they may not invent repository facts. Scope or drift overrides require an explicit `override_reason` and approval when requested. Responses stay compact and omit raw model/debug fields unless requested through `extra_fields`.
+
 When generation is needed, use `qwen2.5-coder:1.5b` for quick work, `qwen2.5-coder:3b` for complex tasks, and `qwen2.5-coder:7b` for the hardest reasoning; reserve `qwen2.5-coder:0.5b` for preprocessing. Deterministic/indexed evidence still runs first.
 
 Exact source should be fetched through `E…` evidence or artifact slices only when inspection/editing requires it. Fresh hub discovery and command results should not be repeated natively. `force=true` and `preprocess_refresh` are exceptional controls, not retry mechanisms.
