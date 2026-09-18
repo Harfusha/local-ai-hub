@@ -7,10 +7,11 @@ import json
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Collection
 
 from .agent_events import AgentStateStore
+from .agent_memory import MemoryStatus
 from .sqlite_support import connect_sqlite, retry_busy
 
 
@@ -22,6 +23,7 @@ class ContextRequest:
     changed_paths: tuple[str, ...] = ()
     root: str = ""
     tenant: str = ""
+    include_diagnostics: bool = False
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,7 @@ class ContextElement:
     reason: str
     confidence: float = 1.0
     freshness: float = 0.0
+    provenance: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self, compact: bool = False) -> dict[str, Any]:
         if compact:
@@ -52,6 +55,7 @@ class ContextElement:
             "reason": self.reason,
             "confidence": self.confidence,
             "freshness": self.freshness,
+            **({"provenance": dict(self.provenance)} if self.provenance else {}),
         }
 
 
@@ -364,9 +368,34 @@ class ContextCompiler:
         # 3. Active memory records (priority: 70)
         if self.memory_store is not None:
             records = self.memory_store.find(limit=20)
+            excluded_memory: dict[str, dict[str, Any]] = {
+                status: {"count": 0, "ids": []}
+                for status in (
+                    MemoryStatus.STALE.value,
+                    MemoryStatus.QUARANTINED.value,
+                    MemoryStatus.REJECTED.value,
+                    MemoryStatus.SUPERSEDED.value,
+                )
+            }
             for rec in records:
-                if rec.status in ("active", "confirmed"):
+                status_value = rec.status.value if hasattr(rec.status, "value") else str(rec.status)
+                if status_value in excluded_memory:
+                    excluded_memory[status_value]["count"] += 1
+                    if len(excluded_memory[status_value]["ids"]) < 8:
+                        excluded_memory[status_value]["ids"].append(rec.record_id)
+                    continue
+                if status_value in (MemoryStatus.ACTIVE.value, MemoryStatus.CONFIRMED.value):
                     m_content = f"[{rec.kind.value.upper()}] {rec.key}: {rec.value}"
+                    memory_provenance = {
+                        key: value
+                        for key, value in {
+                            "repository_revision": rec.repository_revision,
+                            "path_refs": list(rec.path_refs),
+                            "symbol_refs": list(rec.symbol_refs),
+                            "related_task": rec.related_task,
+                        }.items()
+                        if value not in (None, [], ())
+                    }
                     candidates.append((
                         70,
                         ContextElement(
@@ -377,8 +406,32 @@ class ContextCompiler:
                             reason=f"relevant {rec.kind.value} memory",
                             confidence=rec.confidence,
                             freshness=rec.updated_at,
+                            provenance=memory_provenance,
                         ),
                     ))
+            if request.include_diagnostics:
+                stale = excluded_memory[MemoryStatus.STALE.value]
+                conflict = excluded_memory[MemoryStatus.QUARANTINED.value]
+                rejected = excluded_memory[MemoryStatus.REJECTED.value]
+                superseded = excluded_memory[MemoryStatus.SUPERSEDED.value]
+                diagnostic_content = (
+                    "[MEMORY DIAGNOSTICS] "
+                    f"stale_count={stale['count']} conflict_count={conflict['count']} "
+                    f"rejected_count={rejected['count']} superseded_count={superseded['count']} "
+                    f"stale_ids={','.join(stale['ids'])} conflict_ids={','.join(conflict['ids'])}"
+                )
+                candidates.append((
+                    55,
+                    ContextElement(
+                        element_id="memory_diagnostics",
+                        source_kind="memory_diagnostics",
+                        content=diagnostic_content[:1200],
+                        estimated_tokens=_estimate_tokens(diagnostic_content[:1200]),
+                        reason="bounded diagnostics for excluded memory records",
+                        confidence=1.0,
+                        freshness=time.time(),
+                    ),
+                ))
 
         # 4. Negative knowledge / incidents (priority: 60 / 50)
         if self.incident_store is not None:

@@ -4,12 +4,13 @@ from .json_utils import dumps as json_dumps
 
 import json
 import math
+import os
 import re
 import threading
 import time
 import uuid
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Mapping
 
@@ -32,6 +33,12 @@ class MemoryKind(str, Enum):
     PLAYBOOK = "playbook"
     CAPABILITY_OBSERVATION = "capability_observation"
     ENVIRONMENT_CAPSULE = "environment_capsule"
+    FINDING = "finding"
+    REUSABLE_CANDIDATE = "reusable_candidate"
+    CONTRACT_MAPPING = "contract_mapping"
+    REJECTED_APPROACH = "rejected_approach"
+    UNKNOWN = "unknown"
+    VALIDATION = "validation"
 
 
 class MemoryStatus(str, Enum):
@@ -41,6 +48,7 @@ class MemoryStatus(str, Enum):
     QUARANTINED = "quarantined"
     SUPERSEDED = "superseded"
     REJECTED = "rejected"
+    STALE = "stale"
 
 
 @dataclass(frozen=True)
@@ -79,6 +87,10 @@ class MemoryRecord:
         sensitivity: str = "normal",
         provenance: dict[str, Any] | None = None,
         expires_at: float | None = None,
+        repository_revision: str | None = None,
+        path_refs: tuple[str, ...] | list[str] = (),
+        symbol_refs: tuple[str, ...] | list[str] = (),
+        related_task: str | None = None,
     ) -> MemoryRecord:
         if isinstance(kind, str):
             try:
@@ -95,6 +107,16 @@ class MemoryRecord:
             else:
                 determined_status = MemoryStatus.ACTIVE
 
+        provenance_data = dict(provenance or {})
+        if repository_revision is not None:
+            provenance_data["repository_revision"] = repository_revision
+        if path_refs:
+            provenance_data["path_refs"] = list(path_refs)
+        if symbol_refs:
+            provenance_data["symbol_refs"] = list(symbol_refs)
+        if related_task is not None:
+            provenance_data["related_task"] = related_task
+
         return cls(
             record_id=f"mem_{uuid.uuid4().hex[:12]}",
             kind=kind,
@@ -110,11 +132,39 @@ class MemoryRecord:
             contradicts_record_id=None,
             supersedes_record_id=None,
             quarantine_reason=None,
-            provenance=dict(provenance or {}),
+            provenance=provenance_data,
             created_at=now,
             updated_at=now,
             expires_at=expires_at,
         )
+
+    @property
+    def repository_revision(self) -> str | None:
+        value = self.provenance.get("repository_revision") if isinstance(self.provenance, Mapping) else None
+        return str(value) if value is not None else None
+
+    @staticmethod
+    def _provenance_refs(value: Any) -> tuple[str, ...]:
+        if isinstance(value, str):
+            return (value,) if value else ()
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return tuple(str(item) for item in value if item is not None and str(item))
+        return ()
+
+    @property
+    def path_refs(self) -> tuple[str, ...]:
+        value = self.provenance.get("path_refs") if isinstance(self.provenance, Mapping) else None
+        return self._provenance_refs(value)
+
+    @property
+    def symbol_refs(self) -> tuple[str, ...]:
+        value = self.provenance.get("symbol_refs") if isinstance(self.provenance, Mapping) else None
+        return self._provenance_refs(value)
+
+    @property
+    def related_task(self) -> str | None:
+        value = self.provenance.get("related_task") if isinstance(self.provenance, Mapping) else None
+        return str(value) if value is not None else None
 
     def with_status(
         self,
@@ -473,6 +523,79 @@ class MemoryStore:
         self.state_store.append(event)
         self._save_record(quarantined)
         return quarantined
+
+    @staticmethod
+    def _normalise_path(value: str) -> str:
+        return os.path.normcase(os.path.normpath(str(value).replace("\\", "/"))).replace("\\", "/")
+
+    @classmethod
+    def _paths_overlap(cls, left: str, right: str) -> bool:
+        left_norm = cls._normalise_path(left).strip("/")
+        right_norm = cls._normalise_path(right).strip("/")
+        return bool(
+            left_norm
+            and right_norm
+            and (
+                left_norm == right_norm
+                or left_norm.endswith("/" + right_norm)
+                or right_norm.endswith("/" + left_norm)
+            )
+        )
+
+    def mark_stale_for_revision(self, root: str, revision: str, changed_paths: Any) -> int:
+        """Mark repository memories stale when changed paths invalidate their evidence."""
+        if not self.state_store.enabled or not self.state_store.db_path.exists():
+            return 0
+
+        changed = tuple(str(path) for path in changed_paths if str(path))
+        if not changed:
+            return 0
+
+        records = self.find(
+            scope=AgentScope.REPOSITORY,
+            limit=100000,
+            include_expired=True,
+            semantic=False,
+        )
+        root_norm = self._normalise_path(root)
+        stale_count = 0
+        for record in records:
+            record_root = record.provenance.get("root") if isinstance(record.provenance, Mapping) else None
+            if not record_root or self._normalise_path(str(record_root)) != root_norm:
+                continue
+            if record.status is MemoryStatus.STALE or record.repository_revision in (None, str(revision)):
+                continue
+            if not any(self._paths_overlap(ref, path) for ref in record.path_refs for path in changed):
+                continue
+
+            original = record.to_dict()
+            updated_provenance = dict(record.provenance)
+            updated_provenance["staled_by_revision"] = str(revision)
+            updated_provenance["staled_changed_paths"] = list(changed)[:32]
+            updated_provenance["superseded_metadata"] = original
+            stale = replace(
+                record,
+                status=MemoryStatus.STALE,
+                quarantine_reason=f"Repository revision changed to {revision}",
+                provenance=updated_provenance,
+                updated_at=time.time(),
+            )
+            event = AgentEvent.create(
+                stream_id=f"memory:{record.scope.value}:{record.key or record.record_id}",
+                kind="memory.staled",
+                payload={
+                    "record_id": record.record_id,
+                    "root": root,
+                    "revision": str(revision),
+                    "changed_paths": list(changed)[:32],
+                },
+                idempotency_key=f"stale_{record.record_id}_{revision}",
+                actor="system",
+            )
+            self.state_store.append(event)
+            self._save_record(stale)
+            stale_count += 1
+        return stale_count
 
     def get(self, record_id: str, *, include_expired: bool = False) -> MemoryRecord | None:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
