@@ -248,6 +248,38 @@ def test_local_ai_task_exposes_named_profile_fields() -> None:
     assert "workspace" in parameters
 
 
+def test_local_ai_task_vision_forwards_frontend_review_context(monkeypatch) -> None:
+    captured = {}
+
+    def fake_post(path, payload, **kwargs):
+        captured.update({"path": path, **payload})
+        return {"success": True, "review": {"findings": []}}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    result = local_ai_mcp.local_ai_task(
+        action="vision",
+        task="Review CTA",
+        candidate="legacy-image",
+        model="qwen3-vl:4b",
+        bundle_artifact_id="bundle-1",
+        image_artifact_id="image-1",
+        source="current_tab",
+        root=str(ROOT),
+        cloud_fallback=False,
+        json_schema={"type": "object"},
+    )
+
+    assert result["success"] is True
+    assert captured["path"] == "/api/task/vision"
+    assert captured["image"] == "legacy-image"
+    assert captured["bundle_artifact_id"] == "bundle-1"
+    assert captured["image_artifact_id"] == "image-1"
+    assert captured["source"] == "current_tab"
+    assert captured["root"] == str(ROOT)
+    assert captured["cloud_fallback"] is False
+    assert captured["json_schema"] == {"type": "object"}
+
+
 def test_local_ai_task_forwards_continue_with_opaque_conversation_id(monkeypatch) -> None:
     captured = {}
 

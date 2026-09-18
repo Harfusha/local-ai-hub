@@ -45,6 +45,7 @@ from .vision_contracts import (
     bound_vision_result,
     parse_vision_result,
 )
+from .frontend_review import FrontendReviewError, build_coder_context, build_model_context
 
 
 def normalize_generation_cache_prompt(prompt: str) -> str:
@@ -1378,8 +1379,24 @@ class LocalAIServices:
                 except (OSError, ValueError):
                     return input_error("Failed to read image file; verify the path and permissions.")
 
-        image_artifact_id = str(args.get("image_artifact_id") or "").strip()
-        bundle_artifact_id = str(args.get("bundle_artifact_id") or "").strip()
+        image_artifact_id = str(
+            args.get("image_artifact_id") or args.get("screenshot_artifact_id") or ""
+        ).strip()
+        bundle_artifact_id = str(
+            args.get("bundle_artifact_id") or args.get("frontend_bundle_artifact_id") or ""
+        ).strip()
+        direct_context_refs = {
+            "dom": str(args.get("dom_artifact_id") or args.get("html_artifact_id") or "").strip(),
+            "accessibility": str(
+                args.get("accessibility_artifact_id") or args.get("a11y_artifact_id") or ""
+            ).strip(),
+            "computed_styles": str(
+                args.get("computed_styles_artifact_id") or args.get("computed_style_artifact_id") or ""
+            ).strip(),
+            "runtime": str(
+                args.get("runtime_artifact_id") or args.get("runtime_context_artifact_id") or ""
+            ).strip(),
+        }
 
         def resolve_artifact(artifact_id: str, max_chars: int) -> tuple[str, dict[str, Any] | None]:
             try:
@@ -1480,11 +1497,13 @@ class LocalAIServices:
                 if error:
                     return "", error
                 image_artifact_id = str(screenshot_ref)
-            for field_name in ("dom", "accessibility", "computed_styles"):
+            for field_name in ("dom", "accessibility", "computed_styles", "runtime"):
                 value = resolved.get(field_name)
                 reference = value.get("artifact_id", "") if isinstance(value, dict) else ""
                 if not reference:
                     reference = resolved.get(f"{field_name}_artifact_id", "")
+                if field_name == "runtime" and not reference and isinstance(value, dict):
+                    reference = value.get("console_artifact_id", "")
                 if not reference:
                     continue
                 content, error = resolve_artifact(str(reference), VISION_MAX_BUNDLE_CHARS)
@@ -1512,6 +1531,127 @@ class LocalAIServices:
             bundle_context, error = resolve_bundle_context(bundle_context)
             if error:
                 return error
+
+        def parse_context_value(field_name: str, value: Any) -> Any:
+            if isinstance(value, dict):
+                return dict(value)
+            if isinstance(value, str):
+                try:
+                    parsed = json.loads(value)
+                except (TypeError, ValueError):
+                    if field_name == "dom":
+                        return {"html": value}
+                    return {"text": value}
+                if isinstance(parsed, dict):
+                    return parsed
+            raise FrontendReviewError(
+                "invalid_frontend_context",
+                f"{field_name} context must be an object",
+            )
+
+        frontend_bundle: dict[str, Any] = {}
+        if bundle_context:
+            try:
+                decoded_bundle = json.loads(bundle_context)
+            except (TypeError, ValueError):
+                if bundle_context.lstrip().startswith(("{", "[")):
+                    return input_error("Vision frontend bundle is not valid JSON.", "vision_bundle_invalid")
+                decoded_bundle = None
+            if decoded_bundle is None:
+                frontend_bundle = {}
+            elif not isinstance(decoded_bundle, dict):
+                return input_error("Vision frontend bundle must be a JSON object.", "vision_bundle_invalid")
+            else:
+                frontend_bundle = decoded_bundle
+                frontend_bundle["bundle_artifact_id"] = bundle_artifact_id
+
+        inline_bundle = args.get("bundle") or args.get("frontend_bundle") or args.get("dom_bundle")
+        if inline_bundle is not None:
+            try:
+                decoded_inline = (
+                    parse_context_value("bundle", inline_bundle)
+                    if not isinstance(inline_bundle, dict)
+                    else dict(inline_bundle)
+                )
+            except FrontendReviewError as exc:
+                return exc.as_result()
+            frontend_bundle.update(decoded_inline)
+
+        for field_name, artifact_id in direct_context_refs.items():
+            if not artifact_id:
+                continue
+            content, error = resolve_artifact(artifact_id, VISION_MAX_BUNDLE_CHARS)
+            if error:
+                return error
+            try:
+                context_value = parse_context_value(field_name, content)
+            except FrontendReviewError as exc:
+                return exc.as_result()
+            frontend_bundle[field_name] = {"artifact_id": artifact_id, **context_value}
+
+        inline_aliases = {
+            "dom": ("dom", "html"),
+            "accessibility": ("accessibility", "accessibility_snapshot"),
+            "computed_styles": ("computed_styles", "computed_style_data"),
+            "runtime": ("runtime", "runtime_context"),
+        }
+        for field_name, aliases in inline_aliases.items():
+            supplied = next((args[name] for name in aliases if name in args and args[name] is not None), None)
+            if supplied is not None:
+                try:
+                    frontend_bundle[field_name] = parse_context_value(field_name, supplied)
+                except FrontendReviewError as exc:
+                    return exc.as_result()
+        for field_name in ("viewport", "page", "source"):
+            if field_name in args and args.get(field_name) is not None:
+                frontend_bundle[field_name] = args[field_name]
+        if image_artifact_id:
+            frontend_bundle.setdefault("screenshot", {"artifact_id": image_artifact_id})
+
+        for field_name in ("dom", "accessibility", "computed_styles", "runtime"):
+            value = frontend_bundle.get(field_name)
+            if isinstance(value, dict) and isinstance(value.get("content"), str):
+                try:
+                    decoded_value = parse_context_value(field_name, value["content"])
+                except FrontendReviewError as exc:
+                    return exc.as_result()
+                ref = str(value.get("artifact_id", ""))
+                frontend_bundle[field_name] = {"artifact_id": ref, **decoded_value} if ref else decoded_value
+
+        model_context = None
+        if any(key in frontend_bundle for key in ("dom", "accessibility", "computed_styles", "runtime")):
+            try:
+                dom_value = frontend_bundle.get("dom") or {}
+                accessibility_value = frontend_bundle.get("accessibility") or {}
+                styles_value = frontend_bundle.get("computed_styles") or {}
+                runtime_value = frontend_bundle.get("runtime") or {}
+                model_context = build_model_context(
+                    prompt=prompt,
+                    screenshot_data_url=images[0] if images else "",
+                    dom=dom_value if isinstance(dom_value, dict) else parse_context_value("dom", dom_value),
+                    accessibility=accessibility_value if isinstance(accessibility_value, dict) else parse_context_value("accessibility", accessibility_value),
+                    computed_styles=styles_value if isinstance(styles_value, dict) else parse_context_value("computed_styles", styles_value),
+                    viewport=frontend_bundle.get("viewport") or {},
+                    runtime=runtime_value if isinstance(runtime_value, dict) else parse_context_value("runtime", runtime_value),
+                )
+                if model_context.dom.get("truncated"):
+                    return FrontendReviewError(
+                        "frontend_dom_context_truncated",
+                        "vision review requires complete live DOM within the configured bound",
+                        original_chars=model_context.dom.get("original_chars"),
+                        limit_chars=model_context.dom.get("limit_chars"),
+                    ).as_result()
+                for field_name, value in (
+                    ("dom", model_context.dom),
+                    ("accessibility", model_context.accessibility),
+                    ("computed_styles", model_context.computed_styles),
+                    ("runtime", model_context.runtime),
+                ):
+                    original = frontend_bundle.get(field_name)
+                    ref = original.get("artifact_id", "") if isinstance(original, dict) else ""
+                    frontend_bundle[field_name] = {"artifact_id": ref, **value} if ref else value
+            except FrontendReviewError as exc:
+                return exc.as_result()
 
         if not images:
             return input_error("Vision image path, base64 data, or image artifact is required.")
@@ -1541,7 +1681,11 @@ class LocalAIServices:
             "\"unknowns\": [string], \"recommended_checks\": [string]} ."
         )
         prompt_context = prompt
-        if bundle_context:
+        if model_context is not None:
+            prompt_context += "\n\nFrontend evidence bundle:\n" + json_dumps(
+                model_context.prompt_payload(), ensure_ascii=False
+            )
+        elif bundle_context:
             prompt_context += "\n\nFrontend evidence bundle:\n" + bundle_context
         prompt_budget = max(0, VISION_MAX_PROMPT_CHARS - len(prompt_suffix))
         prompt_context = prompt_context[:prompt_budget] + prompt_suffix
@@ -1722,7 +1866,7 @@ class LocalAIServices:
                     "raw_output_artifact_id": raw_artifact_id,
                 }
             parsed = bound_vision_result(parsed)
-            return {
+            result = {
                 "success": True,
                 "model": model,
                 "response": raw_output[:VISION_MAX_INLINE_RESPONSE_CHARS],
@@ -1732,6 +1876,43 @@ class LocalAIServices:
                 "bundle_artifact_id": bundle_artifact_id,
                 "raw_output_artifact_id": raw_artifact_id,
             }
+            if frontend_bundle:
+                repo_context = None
+                root = str(args.get("root") or "").strip()
+                fix_requested = any(
+                    marker in prompt.lower()
+                    for marker in ("fix", "repair", "implement", "change", "correct")
+                )
+                if root and fix_requested and self.repo_tools is not None:
+                    findings = asdict(parsed).get("findings", [])
+                    query = " ".join(
+                        [
+                            prompt,
+                            *[str(item.get("finding_id", "")) for item in findings],
+                            *[str(element_id) for item in findings for element_id in item.get("element_ids", [])],
+                            *[str(item.get("fix_hint", "")) for item in findings],
+                        ]
+                    ).strip()
+                    try:
+                        context_result = self.repo_tools.context_pack(root, query, max_tokens=2600)
+                        if isinstance(context_result, dict) and context_result.get("success", True):
+                            repo_context = context_result
+                    except Exception:
+                        repo_context = None
+                coder_context = build_coder_context(
+                    asdict(parsed), frontend_bundle, repo_context=repo_context
+                )
+                if coder_context.get("terminal"):
+                    return {
+                        "success": False,
+                        "model": model,
+                        "terminal": True,
+                        "retryable": False,
+                        "error": coder_context.get("error", {}).get("message", "Invalid coder context"),
+                        "error_code": coder_context.get("error", {}).get("code", "invalid_coder_context"),
+                    }
+                result["coder_context"] = coder_context
+            return result
         except Exception as exc:
             detail = str(exc).lower()
             transient = isinstance(exc, (TimeoutError, ConnectionError, OSError)) or any(
