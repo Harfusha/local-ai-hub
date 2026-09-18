@@ -7,6 +7,7 @@ import pytest
 
 from local_ai_hub import mcp_server as local_ai_mcp
 import mcp.types as t
+from local_ai_hub.token_accounting import json_tokens
 
 
 def test_python_direct_invocation_returns_dict() -> None:
@@ -172,6 +173,28 @@ def test_local_ai_repo_context_returns_bounded_deterministic_projection(monkeypa
     assert result["degraded"] is True
     assert result["fallback_used"] is True
     assert calls[0][1]["guarded"] is True
+
+
+def test_local_ai_repo_context_bounds_oversized_authoritative_fields(monkeypatch) -> None:
+    response = {
+        "success": True,
+        "context": "context",
+        "adaptive_context_pack": {
+            "warnings": [{"code": "scope_drift", "message": "w" * 10000} for _ in range(24)],
+            "evidence": [{"evidence_id": f"evidence-{i}-" + ("e" * 10000)} for i in range(24)],
+            "repo_revision": "revision-" + ("r" * 10000),
+            "changed_paths": ["src/" + ("p" * 10000) for _ in range(24)],
+        },
+    }
+    _capture_client(monkeypatch, response)
+
+    result = local_ai_mcp.local_ai_repo(
+        action="context", root="C:/repo", query="guarded", task_id="task-1", phase="review",
+        guarded=True, max_response_tokens=220,
+    )
+
+    assert json_tokens(result) <= 220
+    assert result["response_budget"]["requested_tokens"] == 220
 
 
 def test_local_ai_repo_context_propagates_bounded_http_error(monkeypatch) -> None:

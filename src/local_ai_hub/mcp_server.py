@@ -1148,7 +1148,25 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
             authoritative[key] = value[key]
     for key, item in authoritative.items():
         projected[key] = _bound_context_json(item)
-    return _normalize_deterministic(projected)
+
+    # Authoritative fields were attached after _compact's response budget. Run
+    # the final projection through the same bounds so they cannot bypass it.
+    final = compact_result(
+        projected,
+        max_text_chars=MAX_TEXT,
+        max_evidence=MAX_EVIDENCE,
+        extra_fields=extra_fields,
+    )
+    options = _CURRENT_RESPONSE_OPTIONS.get()
+    requested, profile, reuse_key, enabled = _response_budget("context", options)
+    if enabled:
+        final = budget_response(
+            final,
+            max_tokens=requested,
+            profile=profile,
+            reuse_key=reuse_key,
+        )
+    return _normalize_deterministic(final)
 
 
 def _local_ai_repo_impl(
