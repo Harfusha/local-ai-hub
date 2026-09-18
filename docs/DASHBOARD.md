@@ -16,14 +16,14 @@ The `Queue & requests` tab also contains bounded debug trace history for API req
 
 Each trace uses a request-specific primary presentation. Useful result-oriented content is visible immediately; reasoning, context, raw payloads and implementation metadata are kept in focused expandable sections.
 
-- **Model chat:** chronological user/input, streamed and final assistant output, tool-call/result pairs, and status are shown as a chat timeline. Thinking and raw event payloads are expandable.
+- **Model chat:** prompt, final response, capture state and tool-call/result summaries are shown first. Thinking, model context, request envelope and the chronological execution timeline are expandable.
 - **Agent loop:** the current objective, progress/status, final result or error, and meaningful step summaries are shown first. Context, correlations, per-step metadata and raw events are expandable.
 - **Command:** command, arguments, status, exit information and useful stdout/stderr are shown first. Environment, internal identifiers, raw input and full event data are expandable.
 - **Review:** review status, summary, finding counts and actionable finding text are shown first. Finding metadata, evidence payloads and raw review data are expandable.
 - **Repository intelligence:** the operation, result summary, matches or relationships, and useful answer are shown first. Evidence slices, graph payloads, ranking metadata and raw response data are expandable.
 - **RAG search:** the query, result count, ranked result summaries and useful snippets are shown first. Full evidence, payloads, retrieval metadata and raw response data are expandable.
 - **Async job:** job status, progress, queue wait, retry state, live/incomplete state, result or error are shown first. Worker input/output, timing, identifiers and raw job data are expandable.
-- **Request/response:** method, path/action, status, duration, response or error are shown first. Request body, response body, headers, correlations and raw transport data are expandable.
+- **Request/response:** method, path/action, status, duration, request body, response body and error are shown first. Headers, correlations, actor/tenant, retained bytes, timing and raw transport data are expandable.
 
 Primary views omit empty or none-like values, internal identifiers and duplicate metadata. Secrets are redacted, and large content is bounded with an explicit truncation indication. Malformed, empty, queued, running, live and incomplete traces get an explicit state or safe generic fallback so the available input, output or error remains visible. The original request, final response/error and compact status header remain available while a trace is queued or running; the detail view refreshes incrementally every second. Technical summary, event timeline, correlations, tabs and raw JSON remain available as optional expandable details, not as a prerequisite for understanding the result.
 
