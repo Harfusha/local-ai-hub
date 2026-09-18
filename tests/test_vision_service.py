@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -43,6 +44,15 @@ def test_vision_defaults_to_qwen_model_and_requests_json(tmp_path: Path) -> None
     assert payload["images"] == ["ZmFrZS1pbWFnZQ=="]
 
 
+def test_packaged_and_source_defaults_configure_qwen_vision_model() -> None:
+    root = Path(__file__).resolve().parents[1]
+    for relative in ("defaults.toml", "src/local_ai_hub/defaults.toml"):
+        with (root / relative).open("rb") as handle:
+            config = tomllib.load(handle)
+        assert config["models"]["vision"] == "qwen3-vl:4b"
+        assert config["model_execution"]["vision"]["parallel"] == 1
+
+
 def test_vision_explicit_model_override_is_preserved(tmp_path: Path) -> None:
     services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
 
@@ -50,6 +60,14 @@ def test_vision_explicit_model_override_is_preserved(tmp_path: Path) -> None:
 
     assert result["model"] == "custom-vl:latest"
     assert runtime.request.call_args.args[1]["model"] == "custom-vl:latest"
+
+
+def test_vision_bounds_requested_output_tokens(tmp_path: Path) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+
+    services.vision({"image": str(image), "max_tokens": 999999}, "t")
+
+    assert runtime.request.call_args.args[1]["options"]["num_predict"] == 4096
 
 
 def test_vision_returns_structured_findings_and_raw_artifact(tmp_path: Path) -> None:
@@ -101,6 +119,73 @@ def test_missing_vision_model_is_explicitly_unsupported(tmp_path: Path) -> None:
     assert result["unsupported"] is True
     assert result["degraded"] is True
     assert "qwen3-vl:4b" in result["error"]
+    runtime.request.assert_not_called()
+
+
+def test_missing_model_response_is_only_unsupported_failure(tmp_path: Path) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    runtime.request.return_value = {"error": "HTTP 404: model 'qwen3-vl:4b' not found"}
+
+    result = services.vision({"image": str(image)}, "t")
+
+    assert result["unsupported"] is True
+    assert result["degraded"] is True
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+
+
+def test_vision_timeout_is_retryable_not_unsupported(tmp_path: Path) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    runtime.request.side_effect = TimeoutError("secret timeout detail")
+
+    result = services.vision({"image": str(image)}, "t")
+
+    assert result["success"] is False
+    assert result["retryable"] is True
+    assert result["terminal"] is False
+    assert "unsupported" not in result
+    assert "secret timeout detail" not in result["error"]
+
+
+def test_vision_network_error_is_retryable_not_unsupported(tmp_path: Path) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    runtime.request.return_value = {"error": "Ollama unavailable"}
+
+    result = services.vision({"image": str(image)}, "t")
+
+    assert result["success"] is False
+    assert result["retryable"] is True
+    assert result["terminal"] is False
+    assert "unsupported" not in result
+
+
+def test_vision_runtime_failure_is_terminal_not_unsupported(tmp_path: Path) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    runtime.request.side_effect = RuntimeError("secret runtime detail")
+
+    result = services.vision({"image": str(image)}, "t")
+
+    assert result["success"] is False
+    assert result["retryable"] is False
+    assert result["terminal"] is True
+    assert "unsupported" not in result
+    assert "secret runtime detail" not in result["error"]
+
+
+def test_vision_file_read_error_is_sanitized(tmp_path: Path, monkeypatch) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+
+    def fail_read(_path):
+        raise OSError("C:\\private\\secret-image.png")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read)
+    result = services.vision({"image": str(image)}, "t")
+
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+    assert "private" not in result["error"]
+    assert "secret-image" not in result["error"]
     runtime.request.assert_not_called()
 
 

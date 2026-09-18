@@ -324,6 +324,7 @@ class LocalAIServices:
     tool_agent: Any = None
     blackboard: Any = None
     agent_state: Any = None
+    _VISION_MAX_OUTPUT_TOKENS = 4096
 
     def __init__(
         self,
@@ -1302,14 +1303,23 @@ class LocalAIServices:
 
         images = []
         if image_path:
-            p = Path(image_path)
-            if p.is_file():
+            try:
+                p = Path(image_path)
+                is_file = p.is_file()
+            except (OSError, ValueError):
+                is_file = False
+            if is_file:
                 import base64
                 try:
                     b64 = base64.b64encode(p.read_bytes()).decode("utf-8")
                     images.append(b64)
-                except Exception as e:
-                    return {"success": False, "error": f"Failed to read image file: {e}"}
+                except (OSError, ValueError):
+                    return {
+                        "success": False,
+                        "terminal": True,
+                        "retryable": False,
+                        "error": "Failed to read image file; verify the path and permissions.",
+                    }
             else:
                 images.append(image_path)
 
@@ -1327,6 +1337,11 @@ class LocalAIServices:
         if not images:
             return {"success": False, "error": "image path or base64 data required"}
 
+        try:
+            requested_max_tokens = int(args.get("max_tokens", 1200))
+        except (TypeError, ValueError, OverflowError):
+            requested_max_tokens = 1200
+        max_tokens = max(64, min(requested_max_tokens, self._VISION_MAX_OUTPUT_TOKENS))
         schema = args.get("json_schema")
         payload = {
             "model": model,
@@ -1334,6 +1349,7 @@ class LocalAIServices:
             "images": images,
             "stream": False,
             "format": schema if isinstance(schema, dict) else "json",
+            "options": {"num_predict": max_tokens},
         }
         payload["prompt"] += (
             "\n\nReturn only a JSON object matching this contract: "
@@ -1350,28 +1366,58 @@ class LocalAIServices:
             model,
             payload,
             role="vision",
-            output_tokens=int(args.get("max_tokens", 1200)),
+            output_tokens=max_tokens,
         )
-        timeout = float(
-            self.config.get("resilience", {}).get(
-                "vision_timeout_seconds",
-                self.config.get("server", {}).get("request_timeout_seconds", 300),
+        try:
+            timeout = float(
+                self.config.get("resilience", {}).get(
+                    "vision_timeout_seconds",
+                    self.config.get("server", {}).get("request_timeout_seconds", 300),
+                )
             )
-        )
+        except (TypeError, ValueError, OverflowError):
+            timeout = 300.0
         timeout = max(0.05, min(timeout, 300.0))
         try:
             res = self.runtime.request("/api/generate", payload, timeout=timeout)
             if not isinstance(res, dict):
-                return {"success": False, "model": model, "terminal": True, "retryable": False, "error": "Vision runtime returned an invalid response."}
-            if res.get("error"):
                 return {
                     "success": False,
                     "model": model,
-                    "unsupported": True,
-                    "degraded": True,
                     "terminal": True,
                     "retryable": False,
-                    "error": f"Vision model '{model}' is unavailable. Install it with 'ollama pull {model}' or configure models.vision. Runtime detail: {type(res['error']).__name__}.",
+                    "error": "Vision runtime returned an invalid response.",
+                }
+            if res.get("error"):
+                error_text = str(res.get("error", "")).lower()
+                missing_model = (
+                    "model not found" in error_text
+                    or "no such model" in error_text
+                    or ("not found" in error_text and "model" in error_text)
+                )
+                if missing_model:
+                    return {
+                        "success": False,
+                        "model": model,
+                        "unsupported": True,
+                        "degraded": True,
+                        "terminal": True,
+                        "retryable": False,
+                        "error": f"Vision model '{model}' is unavailable. Install it with 'ollama pull {model}' or configure models.vision.",
+                    }
+                transient = any(
+                    marker in error_text
+                    for marker in (
+                        "timeout", "timed out", "connection", "network", "handoff",
+                        "temporarily", "unavailable", "try again", "http 429", "http 502", "http 503",
+                    )
+                )
+                return {
+                    "success": False,
+                    "model": model,
+                    "terminal": not transient,
+                    "retryable": transient,
+                    "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision runtime returned an error; inspect Ollama health and configuration.",
                 }
             raw_output = str(res.get("response", ""))
             raw_artifact_id = ""
@@ -1400,14 +1446,16 @@ class LocalAIServices:
                 "raw_output_artifact_id": raw_artifact_id,
             }
         except Exception as exc:
+            detail = str(exc).lower()
+            transient = isinstance(exc, (TimeoutError, ConnectionError, OSError)) or any(
+                marker in detail for marker in ("timeout", "timed out", "connection", "network", "handoff", "temporarily", "unavailable")
+            )
             return {
                 "success": False,
                 "model": model,
-                "unsupported": True,
-                "degraded": True,
-                "terminal": True,
-                "retryable": False,
-                "error": f"Vision model '{model}' is unavailable; check Ollama and the configured model. Runtime error: {type(exc).__name__}.",
+                "terminal": not transient,
+                "retryable": transient,
+                "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision runtime failed; inspect Ollama health and configuration.",
             }
 
     def transcribe(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
