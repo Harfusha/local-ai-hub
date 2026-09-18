@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import pytest
 
@@ -156,3 +157,36 @@ def test_mark_stale_for_revision_preserves_metadata_and_emits_event(store: Memor
     assert any(event.kind == "memory.staled" for event in store.state_store.events(
         stream_id=f"memory:{AgentScope.REPOSITORY.value}:parser"
     ))
+
+
+def test_mark_stale_for_revision_guards_revision_paths_root_and_repeats(store: MemoryStore, tmp_path: Path):
+    record = store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope=AgentScope.REPOSITORY,
+            key="guarded",
+            value="evidence",
+            status=MemoryStatus.CONFIRMED,
+            provenance={
+                "root": str(tmp_path),
+                "repository_revision": "rev-1",
+                "path_refs": ["src/guarded.py"],
+            },
+        )
+    )
+
+    assert store.mark_stale_for_revision(str(tmp_path), "rev-1", ["src/guarded.py"]) == 0
+    assert store.mark_stale_for_revision(str(tmp_path), "rev-2", ["src/other.py"]) == 0
+    assert store.mark_stale_for_revision(str(tmp_path / "other"), "rev-2", ["src/guarded.py"]) == 0
+    assert store.mark_stale_for_revision(str(tmp_path), "rev-2", None) == 0
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(
+            lambda _: store.mark_stale_for_revision(str(tmp_path), "rev-2", ["src/guarded.py"]),
+            range(2),
+        ))
+
+    assert sorted(results) == [0, 1]
+    events = store.state_store.events(stream_id=f"memory:{AgentScope.REPOSITORY.value}:guarded")
+    assert [event.kind for event in events].count("memory.staled") == 1
+    assert store.get(record.record_id).status is MemoryStatus.STALE
