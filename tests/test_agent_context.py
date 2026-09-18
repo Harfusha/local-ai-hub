@@ -128,3 +128,39 @@ def test_stale_memory_remains_visible_as_diagnostic(tmp_path: Path):
     diagnostics = [element for element in context.elements if element.source_kind == "memory_diagnostics"]
     assert len(diagnostics) == 1
     assert stale.record_id in diagnostics[0].content
+
+
+def test_memory_diagnostics_aggregate_beyond_context_candidate_limit(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    memory_store = MemoryStore(state_store)
+    expected_counts = {
+        MemoryStatus.STALE: 25,
+        MemoryStatus.QUARANTINED: 21,
+        MemoryStatus.REJECTED: 22,
+        MemoryStatus.SUPERSEDED: 23,
+    }
+    for status, count in expected_counts.items():
+        for index in range(count):
+            memory_store.record(
+                MemoryRecord.create(
+                    kind=MemoryKind.FINDING,
+                    scope="repository",
+                    key=f"{status.value}-{index}",
+                    value="excluded",
+                    status=status,
+                    provenance={"root": str(tmp_path), "repository_revision": "rev-1", "path_refs": [f"src/{index}.py"]},
+                )
+            )
+
+    context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
+        ContextRequest(task_id="task-1", root=str(tmp_path), token_budget=300, include_diagnostics=True)
+    )
+
+    diagnostics = next(element for element in context.elements if element.source_kind == "memory_diagnostics")
+    assert "stale_count=25" in diagnostics.content
+    assert "quarantined_count=21" in diagnostics.content
+    assert "rejected_count=22" in diagnostics.content
+    assert "superseded_count=23" in diagnostics.content
+    for status in expected_counts:
+        ids = diagnostics.content.split(f"{status.value}_ids=", 1)[1].split(" ", 1)[0]
+        assert len([item for item in ids.split(",") if item]) <= 8

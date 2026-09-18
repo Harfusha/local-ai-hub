@@ -377,12 +377,27 @@ class ContextCompiler:
                     MemoryStatus.SUPERSEDED.value,
                 )
             }
+            diagnostic_summary = None
+            summary_fn = getattr(self.memory_store, "diagnostic_summary", None)
+            if request.include_diagnostics and callable(summary_fn):
+                try:
+                    diagnostic_summary = summary_fn(id_limit=8)
+                except Exception:
+                    diagnostic_summary = None
+            if diagnostic_summary is not None:
+                for status, data in diagnostic_summary.items():
+                    if status in excluded_memory and isinstance(data, dict):
+                        excluded_memory[status] = {
+                            "count": int(data.get("count", 0) or 0),
+                            "ids": [str(record_id) for record_id in list(data.get("ids") or [])[:8]],
+                        }
             for rec in records:
                 status_value = rec.status.value if hasattr(rec.status, "value") else str(rec.status)
                 if status_value in excluded_memory:
-                    excluded_memory[status_value]["count"] += 1
-                    if len(excluded_memory[status_value]["ids"]) < 8:
-                        excluded_memory[status_value]["ids"].append(rec.record_id)
+                    if diagnostic_summary is None:
+                        excluded_memory[status_value]["count"] += 1
+                        if len(excluded_memory[status_value]["ids"]) < 8:
+                            excluded_memory[status_value]["ids"].append(rec.record_id)
                     continue
                 if status_value in (MemoryStatus.ACTIVE.value, MemoryStatus.CONFIRMED.value):
                     m_content = f"[{rec.kind.value.upper()}] {rec.key}: {rec.value}"
@@ -417,8 +432,10 @@ class ContextCompiler:
                 diagnostic_content = (
                     "[MEMORY DIAGNOSTICS] "
                     f"stale_count={stale['count']} conflict_count={conflict['count']} "
-                    f"rejected_count={rejected['count']} superseded_count={superseded['count']} "
-                    f"stale_ids={','.join(stale['ids'])} conflict_ids={','.join(conflict['ids'])}"
+                    f"quarantined_count={conflict['count']} rejected_count={rejected['count']} "
+                    f"superseded_count={superseded['count']} stale_ids={','.join(stale['ids'])} "
+                    f"quarantined_ids={','.join(conflict['ids'])} conflict_ids={','.join(conflict['ids'])} "
+                    f"rejected_ids={','.join(rejected['ids'])} superseded_ids={','.join(superseded['ids'])}"
                 )
                 candidates.append((
                     55,
