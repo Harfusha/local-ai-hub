@@ -30,8 +30,14 @@ _EVIDENCE_ACTIONS = frozenset(
 )
 
 
-def semantic_handoff_hint(tool: str, action: str, enabled: bool) -> dict | None:
-    if not enabled or tool != "local_ai_repo" or action not in _EVIDENCE_ACTIONS:
+def semantic_handoff_hint(
+    tool: str, action: str, local_tasks_enabled: bool
+) -> dict | None:
+    if (
+        not local_tasks_enabled
+        or tool != "local_ai_repo"
+        or action not in _EVIDENCE_ACTIONS
+    ):
         return None
     return {
         "required": True,
