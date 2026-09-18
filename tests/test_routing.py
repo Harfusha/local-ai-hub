@@ -23,31 +23,33 @@ EVIDENCE_ACTIONS = [
     "map",
 ]
 
+EXPECTED_PAYLOAD = {
+    "required": True,
+    "tool": "local_ai_task",
+    "actions": [
+        "delegate",
+        "explore",
+        "reason",
+        "review",
+        "second_opinion",
+        "compress",
+    ],
+    "bypass_tool": "local_ai_status",
+    "bypass_action": "bypassed",
+}
+
 
 def test_semantic_repo_evidence_requires_local_model_handoff():
     assert semantic_handoff_hint(
         "local_ai_repo", "search", local_tasks_enabled=True
-    ) == {
-        "required": True,
-        "tool": "local_ai_task",
-        "actions": [
-            "delegate",
-            "explore",
-            "reason",
-            "review",
-            "second_opinion",
-            "compress",
-        ],
-        "bypass_tool": "local_ai_status",
-        "bypass_action": "bypassed",
-    }
+    ) == EXPECTED_PAYLOAD
 
 
 @pytest.mark.parametrize("action", EVIDENCE_ACTIONS)
 def test_all_semantic_repo_evidence_actions_require_handoff(action):
     assert semantic_handoff_hint(
         "local_ai_repo", action, local_tasks_enabled=True
-    ) is not None
+    ) == EXPECTED_PAYLOAD
 
 
 def test_disabled_local_tasks_return_none():
