@@ -388,6 +388,18 @@ class LocalAIServices:
             l1_ttl_seconds=int(cache_cfg.get("l1_generation_ttl_seconds", 1800)),
         )
         self.generation_cache = SingleFlightCache(generation_tier, enabled=bool(cache_cfg.get("generation", True)), wait_timeout_seconds=float(config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 45)))
+        embedding_cache = SQLiteCache(
+            Path(config["server"]["state_dir"]) / "cache.sqlite3",
+            namespace="embeddings",
+            ttl_seconds=int(cache_cfg.get("embedding_ttl_seconds", 30 * 86400)),
+            max_entries=int(cache_cfg.get("embedding_max_entries", 100000)),
+        )
+        self.embedding_cache = TieredCache(
+            embedding_cache,
+            l1_entries=int(cache_cfg.get("l1_embedding_entries", 16384)),
+            l1_ttl_seconds=int(cache_cfg.get("l1_embedding_ttl_seconds", 7200)),
+        )
+        self.embedding_cache_enabled = bool(cache_cfg.get("embeddings", True))
         workspace_cfg = config.get("workspace_cache", {})
         self.repo_cache = TieredCache(
             SQLiteCache(
@@ -1410,27 +1422,79 @@ class LocalAIServices:
 
 
 
+    @staticmethod
+    def _embedding_key(text: str, *, backend: str, model: str, query: bool) -> str:
+        return stable_hash({
+            "kind": "embedding",
+            "backend": backend,
+            "model": model,
+            "query": bool(query),
+            "text": str(text),
+            "app_version": __version__,
+        })
+
+    @staticmethod
+    def _json_embedding(vector: Any) -> list[float]:
+        if hasattr(vector, "tolist"):
+            vector = vector.tolist()
+        return [float(value) for value in vector]
+
     def embed(self, texts: list[str], tenant: str, priority: int = 3, query: bool = False, background: bool | None = None, wait_timeout: float | None = None) -> dict[str, Any]:
         backend = self.config["models"].get("embedding_backend", "sentence-transformers")
         model = str(self.config.get("models", {}).get("embedding", "qwen3-embedding:0.6b"))
-        if backend in {"sentence-transformers", "openvino"}:
-            return self.embeddings.encode(texts, query=query, priority=priority)
-
         if not texts:
             return {"success": True, "model": model, "backend": "ollama", "embeddings": []}
-        batch_size = int(self.config.get("rag", {}).get("embedding_batch_size", 12))
 
-        def run() -> dict[str, Any]:
-            all_vectors: list[list[float]] = []
-            for start in range(0, len(texts), batch_size):
-                response = self.runtime.request("/api/embed", {"model": model, "input": texts[start:start + batch_size]})
-                if "error" in response:
-                    return {"success": False, "error": response["error"], "model": model}
-                all_vectors.extend(response.get("embeddings", []))
-            return {"success": True, "model": model, "backend": "ollama", "embeddings": all_vectors}
+        def encode_uncached(batch: list[str]) -> dict[str, Any]:
+            if backend in {"sentence-transformers", "openvino"}:
+                return self.embeddings.encode(batch, query=query, priority=priority)
+            batch_size = int(self.config.get("rag", {}).get("embedding_batch_size", 12))
 
-        is_bg = background if background is not None else (priority <= 1)
-        return self.scheduler.submit(model, tenant, "embed", run, priority=priority, background=is_bg, wait_timeout=wait_timeout)
+            def run() -> dict[str, Any]:
+                all_vectors: list[list[float]] = []
+                for start in range(0, len(batch), batch_size):
+                    response = self.runtime.request("/api/embed", {"model": model, "input": batch[start:start + batch_size]})
+                    if "error" in response:
+                        return {"success": False, "error": response["error"], "model": model}
+                    all_vectors.extend(response.get("embeddings", []))
+                return {"success": True, "model": model, "backend": "ollama", "embeddings": all_vectors}
+
+            is_bg = background if background is not None else (priority <= 1)
+            return self.scheduler.submit(model, tenant, "embed", run, priority=priority, background=is_bg, wait_timeout=wait_timeout)
+
+        cache = getattr(self, "embedding_cache", None)
+        cache_enabled = bool(getattr(self, "embedding_cache_enabled", self.config.get("cache", {}).get("embeddings", True)))
+        if not cache_enabled or cache is None:
+            return encode_uncached(list(texts))
+
+        keys = [self._embedding_key(text, backend=backend, model=model, query=query) for text in texts]
+        vectors: list[list[float] | None] = [None] * len(texts)
+        missing: dict[str, list[int]] = {}
+        for index, key in enumerate(keys):
+            cached = cache.get(key)
+            if isinstance(cached, list):
+                vectors[index] = [float(value) for value in cached]
+            else:
+                missing.setdefault(key, []).append(index)
+
+        if missing:
+            missing_indices = [indices[0] for indices in missing.values()]
+            result = encode_uncached([texts[index] for index in missing_indices])
+            if not isinstance(result, dict) or not result.get("success"):
+                return result if isinstance(result, dict) else {"success": False, "error": "embedding failed"}
+            raw_vectors = result.get("embeddings", [])
+            if len(raw_vectors) != len(missing_indices):
+                return {"success": False, "error": f"embedding count mismatch: {len(raw_vectors)} != {len(missing_indices)}"}
+            for vector, key, indices in zip(raw_vectors, missing, missing.values()):
+                normalized = self._json_embedding(vector)
+                cache.set(key, normalized)
+                for index in indices:
+                    vectors[index] = normalized
+            result = dict(result)
+            result["embeddings"] = vectors
+            return result
+
+        return {"success": True, "model": model, "backend": backend, "embeddings": vectors}
 
     def _repo_cached(self, operation: str, root: str, params: dict[str, Any], compute: Any) -> dict[str, Any]:
         # Worktrees/temp repositories can disappear between an agent request and a
@@ -3581,7 +3645,6 @@ class LocalAIServices:
 
     def optimize_databases(self) -> dict[str, Any]:
         """Perform WAL checkpointing, page pruning and VACUUM/optimize across all SQLite stores."""
-        import sqlite3
         state_dir = Path(self.config["server"]["state_dir"])
         db_files = list(state_dir.glob("*.sqlite3"))
         optimized = []
@@ -3638,7 +3701,7 @@ class LocalAIServices:
                     verified_fix="Resolved by operator",
                     root_cause="Operator manual resolve",
                 )
-            except Exception as exc:
+            except Exception:
                 resolved_incidents = -1
 
         try:

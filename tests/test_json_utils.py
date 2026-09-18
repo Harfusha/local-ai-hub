@@ -1,6 +1,6 @@
 import json
 
-from local_ai_hub.json_utils import dumps
+from local_ai_hub.json_utils import backend_name, dumps, loads
 
 
 def test_dumps_is_compact_and_round_trips_unicode():
@@ -18,3 +18,10 @@ def test_dumps_preserves_explicit_sorting_and_default():
     assert encoded.startswith('{"a":1,"b":"<object object at ')
     assert " :" not in encoded
     assert ", " not in encoded
+
+
+def test_codec_reports_backend_and_loads_bytes():
+    encoded = dumps({"ok": True})
+
+    assert loads(encoded.encode("utf-8")) == {"ok": True}
+    assert backend_name() in {"stdlib", "orjson", "msgspec"}

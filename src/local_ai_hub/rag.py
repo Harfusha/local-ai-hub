@@ -224,6 +224,7 @@ class RAGStore:
             con.execute("INSERT OR REPLACE INTO rag_meta(key,value) VALUES('index_fingerprint',?)", (current,))
             con.execute("CREATE INDEX IF NOT EXISTS idx_chunks_workspace ON chunks(tenant, workspace)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_chunks_content_hash ON chunks(content_hash)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_chunks_tenant_hash ON chunks(tenant, content_hash)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_files_workspace ON files(tenant, workspace)")
             con.commit()
 
@@ -238,17 +239,32 @@ class RAGStore:
         extensions = {x.lower() for x in cfg.get("extensions", [])}
         ignored = {str(name).lower() for name in cfg.get("ignore_dirs", [])}
         max_bytes = int(cfg.get("max_file_bytes", 2_000_000))
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if d not in ignored]
-            for filename in filenames:
-                path = Path(dirpath) / filename
-                if extensions and path.suffix.lower() not in extensions:
-                    continue
+        pending = [Path(root)]
+        while pending:
+            current = pending.pop()
+            try:
+                entries = sorted(os.scandir(current), key=lambda entry: entry.name)
+            except OSError:
+                continue
+            child_dirs: list[Path] = []
+            for entry in entries:
                 try:
-                    if path.stat().st_size <= max_bytes:
+                    if entry.is_dir(follow_symlinks=False):
+                        if entry.name.lower() not in ignored:
+                            child_dirs.append(Path(entry.path))
+                        continue
+                    # Never follow directory symlinks, matching os.walk's default,
+                    # but preserve the historical behavior for symlinked files.
+                    if entry.is_symlink() and entry.is_dir(follow_symlinks=True):
+                        continue
+                    path = Path(entry.path)
+                    if extensions and path.suffix.lower() not in extensions:
+                        continue
+                    if entry.stat(follow_symlinks=True).st_size <= max_bytes:
                         yield path
                 except OSError:
                     continue
+            pending.extend(reversed(child_dirs))
 
     def _chunks(self, text: str, path: str = "") -> list[str]:
         """Split text into semantically meaningful chunks.
