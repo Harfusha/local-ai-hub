@@ -517,3 +517,51 @@ def test_soft_warning_has_required_fields(repository: Path):
     assert set(("severity", "code", "message", "evidence_ids", "affected_paths", "recommended_action", "requires_approval")).issubset(payload)
     assert payload["requires_approval"] is False
     assert json.loads(json.dumps(payload)) == payload
+
+
+def test_structured_evidence_excludes_raw_source_and_local_model_rows(repository: Path):
+    guard = _guard(repository)
+    projected = guard.structured_evidence([
+        {"evidence_id": "det-1", "path": "backend/users.py", "raw": "secret-value"},
+        {"evidence_id": "model-1", "path": "backend/users.py", "source": "local model", "raw": "invented"},
+    ])
+
+    assert len(projected) == 1
+    assert projected[0]["evidence_id"] == "det-1"
+    assert "secret-value" not in json.dumps(projected)
+    assert "raw" not in json.dumps(projected)
+
+
+def test_postprocess_drops_unsupported_claims(repository: Path):
+    guard = _guard(repository)
+    evidence = [{
+        "evidence_id": "det-1",
+        "path": "backend/users.py",
+        "file_sha256": hashlib.sha256((repository / "backend" / "users.py").read_bytes()).hexdigest(),
+    }]
+
+    result = guard.postprocess_model_claims(evidence, [
+        {"claim": "UserService exists", "evidence_ids": ["det-1"]},
+        {"claim": "PaymentGateway exists", "evidence_ids": ["forged-1"]},
+    ])
+
+    assert [claim["claim"] for claim in result["claims"]] == ["UserService exists"]
+    assert result["unknowns"] == ("PaymentGateway exists",)
+    assert result["warnings"][0].code == "unsupported_model_claim"
+    assert result["warnings"][0].kind == "unsupported_claim"
+
+
+def test_adaptive_context_pack_serializes_relevance_metadata(repository: Path):
+    payload = AdaptiveContextPack(
+        phase="review",
+        focus=("contracts",),
+        preload_profile="review",
+        memory_revision="memory-1",
+        model_warnings=(GuardWarning("warning", "unsupported_model_claim", "dropped"),),
+    ).to_dict()
+
+    assert payload["phase"] == "review"
+    assert payload["focus"] == ["contracts"]
+    assert payload["preload_profile"] == "review"
+    assert payload["memory_revision"] == "memory-1"
+    assert payload["model_warnings"][0]["code"] == "unsupported_model_claim"
