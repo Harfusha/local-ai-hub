@@ -635,11 +635,17 @@ class AgentConsistencyGuard:
             except Exception as exc:
                 diff = {"success": False, "paths_complete": False, "error": _text(exc, 240)}
         diff_data: Mapping[str, Any] = diff if isinstance(diff, Mapping) else {}
-        diff_unavailable = diff_data.get("success") is False or diff_data.get("paths_complete") is False
+        diff_unavailable = (
+            diff_data.get("success") is False
+            or diff_data.get("paths_complete") is False
+            or diff_data.get("truncated") is True
+            or diff_data.get("incomplete") is True
+            or "error" in diff_data
+        )
+        if diff_unavailable:
+            return ()
         if not paths:
             paths = list(_tuple(diff_data.get("changed_paths") or diff_data.get("changed_files")))
-        if not paths and diff_unavailable:
-            return ()
         if not paths:
             try:
                 paths = list(_bounded_sequence(self.repository_tools.git_snapshot(request.root).changed_paths, _MAX_ITEMS))

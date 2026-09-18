@@ -488,6 +488,20 @@ def test_check_drift_does_not_use_snapshot_after_diff_path_failure(repository: P
     assert guard.check_drift(request, contract, (), None) == ()
 
 
+def test_check_drift_refuses_incomplete_diff_even_with_supplied_paths(repository: Path):
+    guard = _guard(repository)
+    request = _request(repository)
+    contract = guard.build_contract(request)
+    for diff in (
+        {"success": False, "paths_complete": False, "error": "capture failed"},
+        {"success": True, "paths_complete": False},
+        {"success": True, "truncated": True},
+        {"success": True, "incomplete": True},
+        {"success": True, "error": "partial evidence"},
+    ):
+        assert guard.check_drift(request, contract, ("frontend/users.ts",), diff) == ()
+
+
 def test_soft_warning_has_required_fields(repository: Path):
     warning = GuardWarning(
         severity="warning",
