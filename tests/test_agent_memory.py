@@ -194,7 +194,7 @@ def test_memory_identity_indexes_exist_for_bounded_filtered_queries(store: Memor
 
 
 def test_memory_query_limit_is_hard_capped(store: MemoryStore):
-    for index in range(3):
+    for index in range(101):
         store.record(
             MemoryRecord.create(
                 kind=MemoryKind.FINDING,
@@ -205,8 +205,8 @@ def test_memory_query_limit_is_hard_capped(store: MemoryStore):
             idempotency_key=f"bounded-{index}",
         )
 
-    store.max_query_limit = 2
-    assert len(store.find(scope=AgentScope.GLOBAL, limit=100_000)) == 2
+    store.max_query_limit = 10_000
+    assert len(store.find(scope=AgentScope.GLOBAL, limit=100_000)) == 100
     with pytest.raises(ValueError, match="memory limit"):
         store.find(scope=AgentScope.GLOBAL, limit="invalid")
 

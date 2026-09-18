@@ -124,7 +124,8 @@ def _bounded_memory_limit(limit: int, cap: int = MAX_MEMORY_QUERY_LIMIT) -> int:
         value = int(limit)
     except (TypeError, ValueError) as exc:
         raise ValueError("memory limit must be an integer") from exc
-    return max(1, min(value, max(1, int(cap))))
+    effective_cap = max(1, min(int(cap), MAX_MEMORY_QUERY_LIMIT))
+    return max(1, min(value, effective_cap))
 
 
 def _context_scope_sql(
