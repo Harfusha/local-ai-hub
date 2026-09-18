@@ -667,6 +667,7 @@ def _instrumented_tool():
         @functools.wraps(fn)
         def wrapped(*args: Any, **kwargs: Any) -> Any:
             started = time.monotonic()
+            handoff_added = False
             try:
                 bound = signature.bind_partial(*args, **kwargs)
                 # Do not apply Python defaults: omitted optional arguments are not
@@ -702,9 +703,11 @@ def _instrumented_tool():
                     routing = clean.get("routing")
                     if routing is None:
                         clean["routing"] = {"semantic_handoff": hint}
+                        handoff_added = True
                     elif isinstance(routing, dict) and "semantic_handoff" not in routing:
                         routing["semantic_handoff"] = hint
-            _record_adoption(fn.__name__, arguments, clean, (time.monotonic() - started) * 1000)
+                        handoff_added = True
+            _record_adoption(fn.__name__, arguments, clean, (time.monotonic() - started) * 1000, recommended=handoff_added)
             try:
                 event = finalize_tool_accounting(
                     tool_name=fn.__name__, arguments=arguments, response=clean, measured=measured,
@@ -764,7 +767,7 @@ def _adoption_target(arguments: dict[str, Any]) -> tuple[str, str] | None:
     return tool, action
 
 
-def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration_ms: float, *, failed: bool = False) -> None:
+def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration_ms: float, *, failed: bool = False, recommended: bool = False) -> None:
     """Best-effort aggregate telemetry; never retain request/response values."""
     try:
         action = str(arguments.get("action") or "default").lower()
@@ -773,11 +776,6 @@ def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration
             tool, action = target
         intent = {"local_ai_repo": "repository", "local_ai_command": "validation", "local_ai_coord": "coordination"}.get(tool, "hub")
         payload = result if isinstance(result, dict) else {}
-        recommended = (
-            payload.get("success") is True
-            and isinstance(payload.get("routing"), dict)
-            and payload["routing"].get("semantic_handoff") is not None
-        )
         if target is not None:
             outcome, reason = "bypassed", "explicit_client_signal"
         elif failed:
