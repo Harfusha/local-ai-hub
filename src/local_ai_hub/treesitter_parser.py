@@ -6,7 +6,10 @@ and Python. Falls back gracefully when language grammars are missing.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import sys
+import threading
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -14,6 +17,7 @@ logger = logging.getLogger(__name__)
 _PARSERS: dict[str, Any] = {}
 _LANGUAGES: dict[str, Any] = {}
 _INIT_ATTEMPTED = False
+_PARSER_LOCK = threading.RLock()
 
 
 def _init_treesitter() -> bool:
@@ -21,6 +25,13 @@ def _init_treesitter() -> bool:
     if _INIT_ATTEMPTED:
         return bool(_PARSERS)
     _INIT_ATTEMPTED = True
+
+    # The bundled native Tree-sitter wheels currently access-violate on Windows
+    # with Python 3.13 while walking some Unity/Go syntax trees. All callers have
+    # safe language-specific fallbacks, so keep the Hub process stable here.
+    if os.name == "nt" and sys.version_info >= (3, 13):
+        logger.warning("Tree-sitter disabled on Windows Python 3.13+; using safe fallbacks")
+        return False
 
     try:
         from tree_sitter import Language, Parser
@@ -138,7 +149,11 @@ def parse_treesitter(
     parser = _PARSERS[key]
     source_bytes = text.encode("utf-8", errors="replace")
     try:
-        tree = parser.parse(source_bytes)
+        # Parser instances are mutable in the native Tree-sitter bindings and are
+        # shared per language. Serialize calls so concurrent preprocessing cannot
+        # corrupt parser state and crash the Python process.
+        with _PARSER_LOCK:
+            tree = parser.parse(source_bytes)
     except Exception as exc:
         logger.debug("Tree-sitter parse failed for %s: %s", language, exc)
         return None

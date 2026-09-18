@@ -50,6 +50,20 @@ def test_enabled_agent_os_and_tool_actions_are_discoverable():
     assert "Agent OS trigger and lifecycle" in references["tools.md"]
     assert "Agent OS through `local_ai_coord`" in references["multi-agent.md"]
     assert "create an Agent OS task" in schemas["local_ai_coord"]["description"]
+    for semantic_task in ("generation", "reasoning", "second opinion", "semantic compression"):
+        assert semantic_task in policy.lower()
+    assert "facts, symbols, diff and tests" in policy.lower()
+    tools_reference = references["tools.md"].lower()
+    workflows_reference = references["workflows.md"].lower()
+    assert "semantic generation" in tools_reference
+    assert "exact facts, symbols, diff and tests" in tools_reference
+    assert "preserves one bounded local pass" in tools_reference
+    assert 'local_ai_task(action="delegate")' in workflows_reference
+    assert 'local_ai_task(action="explore")' in workflows_reference
+    assert 'local_ai_task(action="reason")' in workflows_reference
+    assert 'local_ai_task(action="review")' in workflows_reference
+    assert 'local_ai_task(action="second_opinion")' in workflows_reference
+    assert 'local_ai_task(action="compress")' in workflows_reference
 
     expected_actions = {
         "local_ai_repo": features.supported_repo_actions(),

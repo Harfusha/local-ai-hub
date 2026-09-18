@@ -7,7 +7,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from local_ai_hub.debug_traces import DebugTraceStore
+from local_ai_hub.debug_traces import DebugTraceObserver, DebugTraceStore
 
 
 class DebugTraceRequestSummaryTests(unittest.TestCase):
@@ -38,6 +38,17 @@ class DebugTraceRequestSummaryTests(unittest.TestCase):
             self.assertEqual(item["request_summary"], "")
             self.assertNotIn("private prompt content", json.dumps(item))
 
+    def test_list_row_exposes_compact_project_label(self):
+        with tempfile.TemporaryDirectory() as state_dir:
+            store = self._store(state_dir)
+            trace_id = store.start(kind="api_request", tenant="test", action="/api/search", request_id="req-project")
+            store.update(trace_id, request={"root": "C:/workspace/hub", "query": "trace"})
+
+            item = store.list(limit=10)["items"][0]
+
+            self.assertEqual(item["project"], "hub")
+            self.assertNotIn("C:/workspace", json.dumps(item))
+
     def test_http_trace_capture_redacts_nested_sensitive_values_and_omits_large_or_binary_data(self):
         from local_ai_hub.http_server import Handler
 
@@ -60,6 +71,20 @@ class DebugTraceRequestSummaryTests(unittest.TestCase):
             ],
             "omitted",
         )
+
+    def test_observer_persists_thinking_separately_from_final_output(self):
+        with tempfile.TemporaryDirectory() as state_dir:
+            store = self._store(state_dir)
+            trace_id = store.start(kind="api_request", tenant="test", action="/api/review", request_id="req-thinking")
+            observer = DebugTraceObserver(store, trace_id)
+
+            observer.thinking_delta("private reasoning")
+            observer.output_delta("final answer")
+            detail = store.detail(trace_id)
+
+            assert detail["session"]["thinking"] == "private reasoning"
+            assert detail["session"]["output"] == "final answer"
+            assert [event["event_type"] for event in detail["events"]] == ["thinking", "output_delta"]
 
 
 if __name__ == "__main__":

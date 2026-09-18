@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import json
 import threading
 import time
@@ -435,7 +437,7 @@ class VerificationStore:
                         receipt.observed_at,
                         receipt.expires_at,
                         1 if receipt.passed else 0,
-                        json.dumps(receipt.details),
+                        json_dumps(receipt.details),
                     ),
                 )
                 con.execute("COMMIT")
@@ -487,8 +489,8 @@ class VerificationStore:
                     (
                         change.change_id,
                         change.task_id,
-                        json.dumps(list(change.affected_paths)),
-                        json.dumps(list(change.affected_symbols)),
+                        json_dumps(list(change.affected_paths)),
+                        json_dumps(list(change.affected_symbols)),
                         change.expected_impact,
                         change.rollback_description,
                         change.created_at,
@@ -534,7 +536,7 @@ class VerificationStore:
                         outcome.task_id,
                         outcome.kind,
                         outcome.actor,
-                        json.dumps(outcome.details),
+                        json_dumps(outcome.details),
                         outcome.created_at,
                     ),
                 )

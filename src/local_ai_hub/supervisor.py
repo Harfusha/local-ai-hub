@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import json
 import os
 import hashlib
@@ -20,7 +22,7 @@ from .process_utils import find_listening_pid, pid_alive, terminate_tree, hidden
 def atomic_json(path: Path, data: dict[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
-        tmp.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        tmp.write_text(json_dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
         for attempt in range(4):
             try:
                 os.replace(tmp, path)
@@ -51,6 +53,7 @@ class Supervisor:
         self.stopping = False
         self.started_at = time.time()
         self.restarts = 0
+        self.spawns = 0
         self.crashes: list[float] = []
         self._mutex_handle: int | None = None
 
@@ -71,11 +74,14 @@ class Supervisor:
         if os.name == "nt":
             try:
                 import ctypes
-                name_hash = hashlib.sha1(str(self.state_dir).lower().encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
-                handle = ctypes.windll.kernel32.CreateMutexW(None, False, f"Local\\LocalAIHubSupervisor-{name_hash}")
-                if not handle or ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+                resolved_state = str(self.state_dir.resolve()).lower().encode("utf-8")
+                name_hash = hashlib.sha1(resolved_state, usedforsecurity=False).hexdigest()[:16]
+                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                handle = kernel32.CreateMutexW(None, True, f"Local\\LocalAIHubSupervisor-{name_hash}")
+                err = ctypes.get_last_error()
+                if not handle or err == 183:  # ERROR_ALREADY_EXISTS
                     if handle:
-                        ctypes.windll.kernel32.CloseHandle(handle)
+                        kernel32.CloseHandle(handle)
                     return False
                 self._mutex_handle = int(handle)
                 self.lock_path.write_text(str(os.getpid()), encoding="utf-8")
@@ -102,8 +108,9 @@ class Supervisor:
         if self._mutex_handle and os.name == "nt":
             try:
                 import ctypes
-                ctypes.windll.kernel32.ReleaseMutex(self._mutex_handle)
-                ctypes.windll.kernel32.CloseHandle(self._mutex_handle)
+                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                kernel32.ReleaseMutex(self._mutex_handle)
+                kernel32.CloseHandle(self._mutex_handle)
             except Exception:
                 pass
             self._mutex_handle = None
@@ -325,9 +332,12 @@ class Supervisor:
                     self.crashes.clear()
                     continue
                 try:
+                    is_restart = self.spawns > 0
                     self.child = self.spawn_hub()
-                    self.restarts += 1
-                    self.crashes.append(now)
+                    self.spawns += 1
+                    if is_restart:
+                        self.restarts += 1
+                        self.crashes.append(now)
                     self.write_status("starting", ollama_online=ollama_online)
                 except Exception as exc:
                     self.log(f"hub spawn failed: {type(exc).__name__}: {exc}")

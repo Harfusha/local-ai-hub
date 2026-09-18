@@ -7,6 +7,8 @@ Inspects the active configuration via FeatureSet and generates:
 """
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import json
 import os
 from pathlib import Path
@@ -27,6 +29,29 @@ def _actions_note(actions: list[str]) -> str:
     return f" Supported actions: {', '.join(actions)}." if actions else " No actions are enabled."
 
 
+def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
+    """Single short contract shared by skills, policies, and routing references."""
+    features = FeatureSet.from_config(cfg or {})
+    budget = 1200
+    try:
+        section = (cfg or {}).get("mcp", {}).get("response_budget", {})
+        budget = int(section.get("default_tokens", budget)) if isinstance(section, dict) else budget
+    except (TypeError, ValueError, AttributeError):
+        pass
+    batch_line = '- Use the existing `local_ai_task(action="batch")` for independent local tasks; keep each item bounded and consume compact per-item results.' if features.tasks else ''
+    return f"""## Context economy contract
+
+- Every Hub response is aggregate-bounded (default ≈{budget} tokens); use `max_response_tokens` only when a different bounded size is needed.
+- Prefer `response_profile=\"minimal\"`/`\"compact\"`; request only decision-grade fields.
+- Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls return a pointer, not missing data.
+{batch_line}
+- The Hub keeps a bounded metadata-only context ledger; inspect it only with an explicit cache/status request, never by replaying the whole session.
+- Broad native shell reads are guarded by the optional host hook; use bounded limits or the Hub command/repository tools for discovery.
+- Fetch exact source, logs, or evidence only with `local_ai_artifact` slices. Never ask a broad tool for the same payload twice.
+- Commands return status, summary, changed paths, and failures; full stdout/stderr stays artifact-backed.
+- Do not bypass the budget with native broad reads unless Hub has one bounded terminal failure."""
+
+
 def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     """Generate a dynamic SKILL.md reflecting only enabled tools and models."""
     fs = FeatureSet.from_config(cfg)
@@ -38,9 +63,10 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     # Delegation section
     if fs.tasks and fs.has_any_model():
         delegation_task = (
-            f"- Use `local_ai_task` for bounded local-model work when local inference is the right fit."
+            f"- Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression."
             f" Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks,"
             f" `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning."
+            " Deterministic/indexed tools remain for exact facts, symbols, diff and tests; they do not replace these semantic tasks."
         )
     else:
         delegation_task = (
@@ -75,11 +101,11 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         tiering_bullets.append(
             f"- **Tiered local models:** `{fs.background_model}` for preprocessing, `{fs.fast_model}` for quick/simple requests, "
             f"`{fs.general_model}` for ordinary tasks, `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest or highest-risk reasoning. "
-            "Run deterministic/indexed Hub actions first when they suffice."
+            "Run deterministic/indexed Hub actions first for exact facts, symbols, diff and tests. Use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and semantic compression."
         )
     if fs.rag:
         tiering_bullets.append(
-            "- **RAG:** use only after deterministic/indexed evidence and the basic local model are insufficient. Do not invoke a model to restate facts already available from the hub."
+            "- **RAG:** use only when deterministic/indexed evidence is insufficient for a bounded retrieval question. Do not invoke a model to restate facts already available from the hub."
         )
     tiering_section = "\n".join(tiering_bullets)
 
@@ -150,7 +176,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         routing_lines.append(f'{r_idx}. `local_ai_rag` — semantic fallback only when indexed evidence is insufficient.')
         r_idx += 1
     if fs.tasks and fs.has_any_model():
-        routing_lines.append(f'{r_idx}. `local_ai_task(action="delegate"|"reason"|"review"|"second_opinion"|"compress")` — use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks, `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning.')
+        routing_lines.append(f'{r_idx}. `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` — semantic generation, exploration, reasoning, review, independent second opinions and compression. Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks, `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning. Deterministic/indexed tools remain for exact facts, symbols, diff and tests.')
         r_idx += 1
     if fs.commands:
         routing_lines.append(f'{r_idx}. `local_ai_command(action="run")` — tests, lint, typecheck, builds and repeatable read-only commands before native execution.')
@@ -281,6 +307,8 @@ Before native `find`, `rg`, `grep`, recursive glob/tree, or opening more than tw
 
 Stop escalating when evidence is sufficient; reuse cached results and bounded evidence instead of widening the search.
 
+{context_economy_contract(cfg)}
+
 ## Action routing
 
 {routing_section}
@@ -319,7 +347,7 @@ def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
     if fs.work_orchestrator:
         tool_bullets.append("- `local_ai_work`: durable whole-task orchestration with dependency planning, transactional edits, validation, whole-task verification and compact/lazy handoff.")
     if fs.tasks and fs.has_any_model():
-        tool_bullets.append(f"- `local_ai_task`: tiered local-model work (`{fs.fast_model}` quick, `{fs.general_model}` ordinary, `{fs.smart_model}` more involved, {reasoning_tier} hardest) after evidence exists.")
+        tool_bullets.append(f"- `local_ai_task`: tiered local-model work (`{fs.fast_model}` quick, `{fs.general_model}` ordinary, `{fs.smart_model}` more involved, {reasoning_tier} hardest) for semantic generation, reasoning, review, independent second opinions and semantic compression; use deterministic/indexed tools for exact facts, symbols, diff and tests. `local_ai_repo(action=\"solve\")` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong.")
     if fs.rag:
         tool_bullets.append("- `local_ai_rag`: semantic fallback only after deterministic/indexed retrieval.")
     if fs.artifacts:
@@ -347,6 +375,8 @@ The active tool surface reflects your configuration:
 
 {agent_os_reference}
 
+{context_economy_contract(cfg)}
+
     Keep assignments bounded. The main agent retains final acceptance; {work_owner_note}
 """
 
@@ -358,7 +388,7 @@ The active tool surface reflects your configuration:
         step_i += 1
         wf_steps.append(f"{step_i}. Retrieve deterministic facts, then code-index/search evidence.")
         step_i += 1
-        wf_steps.append(f"{step_i}. Use `context` for compact evidence; for implementation, diagnosis, refactoring or complex review, call `solve` after evidence so the Hub-managed local pipeline is used.")
+        wf_steps.append(f"{step_i}. Use `context` for compact evidence; call `solve` after evidence for repository implementation support. Explicit semantic wording keeps one bounded local pass; use `local_ai_task` directly for semantic generation, exploration, reasoning, review, independent second opinions or semantic compression.")
         step_i += 1
         lease_note = "claim `local_ai_coord` leases for overlapping paths; " if fs.coord else ""
         wf_steps.append(f"{step_i}. Edit in the main agent; {lease_note}use `impact` before risky dependent changes.")
@@ -372,6 +402,10 @@ The active tool surface reflects your configuration:
     task_notes = ""
     if fs.tasks and fs.has_any_model():
         task_notes = """
+## Local semantic work
+
+Use `local_ai_task(action="delegate")` for bounded creation or implementation guidance, `local_ai_task(action="explore")` for semantic exploration, `local_ai_task(action="reason")` for reasoning, `local_ai_task(action="review")` for a semantic review, `local_ai_task(action="second_opinion")` for independent critique, and `local_ai_task(action="compress")` for semantic condensation. Use `local_ai_repo`, `local_ai_artifact` and `local_ai_command` for exact facts, symbols, diff and tests; those deterministic paths do not replace the semantic worker.
+
 ## Local second opinion
 
 Use `local_ai_task(action="second_opinion")` for a bounded candidate decision. Include the evidence and uncertainty.
@@ -444,9 +478,10 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     task_delegation = ""
     if fs.tasks and fs.has_any_model():
         task_delegation = (
-            f"\n- Use `local_ai_task` for bounded local-model work when local inference is the right fit."
+            f"\n- Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression."
             f" Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks,"
             f" `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning."
+            " Deterministic/indexed tools remain for exact facts, symbols, diff and tests; they do not replace these semantic tasks."
         )
 
     model_default = ""
@@ -454,7 +489,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         model_default = (
             f"\nLocal model policy: `{fs.background_model}` is preprocessing-only, `{fs.fast_model}` handles quick/simple tasks,"
             f" `{fs.general_model}` handles ordinary tasks, `{fs.smart_model}` handles more involved work, and {reasoning_tier} handles the hardest or highest-risk reasoning."
-            " Use deterministic and indexed Hub actions first when sufficient."
+            " Use deterministic and indexed Hub actions first for exact facts, symbols, diff and tests. For semantic generation, reasoning, review, independent second opinions and semantic compression, call `local_ai_task`."
         )
 
     repo_task_first = ""
@@ -538,6 +573,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
            "Set `dry_run=false` only after review.\n\n" if fs.repo and fs.batch_replacement else "")
         + f"{fs.selection_guide()}\n"
         f"{model_default}\n"
+        f"{context_economy_contract(cfg)}\n"
         "<!-- END LOCAL AI HUB TOOL POLICY -->"
     )
 
@@ -619,6 +655,11 @@ Load and follow this skill before any coding or repository task. Apply its disco
 ### 5. Concise Output (Caveman Protocol)
 - Omit conversational filler, decorative preambles, and post-execution summaries of obvious changes.
 - Focus strictly on file links, diff summaries, and failure diagnostics.
+
+### 6. MCP Response Economy
+- Hub responses are aggregate-bounded; use `max_response_tokens` only for a bounded exception.
+- Prefer compact/minimal profiles, stable `reuse_key` values, cache reuse, and artifact slices.
+- Keep command output at summary/status level; fetch exact logs only when needed.
 """
 
 
@@ -641,7 +682,7 @@ def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
         "- Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.\n"
         "- Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.\n"
         "- Surgical edits: Prefer targeted block replacements over rewriting entire files.\n"
-        f"- Local model delegation: Use `{fast_model}` only for quick/simple microtasks; let `local_ai_task` route ordinary, more involved, and highest-risk work to their configured tiers.\n"
+        f"- Local model delegation: Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression; use `{fast_model}` only for quick/simple microtasks and configured higher tiers for ordinary, involved and hardest work. Deterministic/indexed tools remain for exact facts, symbols, diff and tests.\n"
         "<!-- END TOKEN ECONOMY POLICY -->"
     )
 
@@ -675,6 +716,21 @@ def generate_mcp_configs(
         if codegraph is not None and cfg.get("code_intelligence", {}).get("codegraph_enabled", True):
             entries["codegraph"] = {"command": str(codegraph), "args": ["mcp", "start"]}
     return entries
+
+
+def _apply_response_budget_schema(schemas: dict[str, dict[str, Any]], cfg: dict[str, Any]) -> None:
+    """Add one compact response contract to every enabled public tool."""
+    fields = {
+        "max_response_tokens": {"type": "integer", "minimum": 0, "default": 0},
+        "response_profile": {"type": "string", "enum": ["minimal", "compact", "standard", "debug", "delta"], "default": ""},
+        "reuse_key": {"type": "string", "default": ""},
+    }
+    for schema in schemas.values():
+        params = schema.setdefault("parameters", {})
+        props = params.setdefault("properties", {})
+        for name, spec in fields.items():
+            props.setdefault(name, dict(spec))
+        schema["description"] = str(schema.get("description", "")) + " Responses are aggregate-bounded; exact detail remains artifact-backed."
 
 
 def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -741,7 +797,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         task_actions = fs.supported_task_actions()
         schemas["local_ai_task"] = {
             "name": "local_ai_task",
-            "description": f"Tiered bounded local-model work ({fs.fast_model} quick, {fs.general_model} ordinary, {fs.smart_model} more involved, {reasoning_tier} hardest)." + _actions_note(task_actions),
+            "description": f"Tiered bounded local-model work ({fs.fast_model} quick, {fs.general_model} ordinary, {fs.smart_model} more involved, {reasoning_tier} hardest) for semantic generation, reasoning, review, independent second opinions and semantic compression; use deterministic/indexed tools for exact facts, symbols, diff and tests." + _actions_note(task_actions),
             "parameters": {
                 "type": "object",
                 "required": ["action"],
@@ -885,7 +941,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "budget": {"type": "object"},
                     "timeout_seconds": {"type": "number", "default": 90},
                     "answer": {"type": "string", "default": ""},
-                    "response_profile": {"type": "string", "enum": ["minimal", "compact", "standard", "debug"], "default": "compact"},
+                    "response_profile": {"type": "string", "enum": ["minimal", "compact", "standard", "debug", "delta"], "default": "compact"},
                     "return_fields": {"type": "array", "items": {"type": "string"}},
                     "max_output_tokens": {"type": "integer", "default": 0},
                     "keep_failed_workspace": {"type": "boolean", "default": False},
@@ -910,6 +966,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
             },
         }
 
+    _apply_response_budget_schema(schemas, cfg)
     return schemas
 
 
@@ -935,7 +992,7 @@ def write_all_generated(
     skill_dir = target_root / "skills" / "local-ai-orchestrator"
     skill_dir.mkdir(parents=True, exist_ok=True)
     skill_path = skill_dir / "SKILL.md"
-    skill_path.write_text(generate_skill_markdown(cfg), encoding="utf-8")
+    skill_path.write_text(generate_skill_markdown(cfg).rstrip() + "\n", encoding="utf-8")
     results["skill"].append(str(skill_path))
 
     refs_dir = skill_dir / "references"
@@ -967,11 +1024,11 @@ def write_all_generated(
     generic_mcp = generate_mcp_configs(cfg, target_root, python_bin, serena, codegraph, "generic")
     vscode_mcp = generate_mcp_configs(cfg, target_root, python_bin, serena, codegraph, "copilot")
     mcp_servers_path = gen_dir / "mcp-servers.json"
-    mcp_servers_path.write_text(json.dumps({"mcpServers": generic_mcp}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    mcp_servers_path.write_text(json_dumps({"mcpServers": generic_mcp}) + "\n", encoding="utf-8")
     results["mcp"].append(str(mcp_servers_path))
 
     vscode_mcp_path = gen_dir / "vscode-mcp.json"
-    vscode_mcp_path.write_text(json.dumps({"servers": {k: {"type": "stdio", **v} for k, v in vscode_mcp.items()}}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    vscode_mcp_path.write_text(json_dumps({"servers": {k: {"type": "stdio", **v} for k, v in vscode_mcp.items()}}) + "\n", encoding="utf-8")
     results["mcp"].append(str(vscode_mcp_path))
 
     # 4. Generated JSON tool schemas
@@ -986,7 +1043,7 @@ def write_all_generated(
     tool_schemas = generate_mcp_tool_schemas(cfg)
     for tool_name, schema in tool_schemas.items():
         tool_file = schemas_dir / f"{tool_name}.json"
-        tool_file.write_text(json.dumps(schema, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        tool_file.write_text(json_dumps(schema) + "\n", encoding="utf-8")
         results["schemas"].append(str(tool_file))
 
     return results
@@ -1022,7 +1079,7 @@ def main(argv: list[str] | None = None) -> int:
     target = Path(args.output_dir).resolve()
     py_bin = Path(args.python_bin) if args.python_bin else Path(sys.executable)
     res = write_all_generated(cfg, target, py_bin)
-    print(json.dumps({"success": True, "target": str(target), "generated": res}, indent=2, ensure_ascii=False))
+    print(json_dumps({"success": True, "target": str(target), "generated": res}, indent=2, ensure_ascii=False))
     return 0
 
 

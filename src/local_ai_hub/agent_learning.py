@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import json
 import threading
 import time
@@ -377,8 +379,8 @@ class LearningStore:
                         candidate.baseline_version,
                         candidate.candidate_version,
                         candidate.status.value,
-                        json.dumps(candidate.slo_thresholds),
-                        json.dumps(candidate.metrics),
+                        json_dumps(candidate.slo_thresholds),
+                        json_dumps(candidate.metrics),
                         candidate.approver,
                         candidate.created_at,
                         candidate.updated_at,

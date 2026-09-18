@@ -53,6 +53,7 @@ def test_wmi_spawn_detached_passes_active_config(tmp_path, monkeypatch):
     spec.loader.exec_module(service)
 
     called = []
+    monkeypatch.setattr(service, "all_supervisor_pids", lambda: [])
     monkeypatch.setattr(service, "_ACTIVE_CONFIG_ARG", "C:\\custom\\config.toml")
     monkeypatch.setattr(service.shutil, "which", lambda name: "powershell.exe")
     monkeypatch.setattr(service, "run", lambda cmd, **kwargs: called.append(cmd) or subprocess.CompletedProcess([], 0))
@@ -78,3 +79,43 @@ def test_doctor_text_output_survives_cp1250_console():
     )
     assert result.returncode == 0
     assert b"Traceback" not in result.stderr
+
+
+def test_native_start_does_not_spawn_duplicate_after_scheduler_race(monkeypatch):
+    module = importlib.util.spec_from_file_location(
+        "test_hub_service_native_start", Path(__file__).parents[1] / "tools" / "service.py"
+    )
+    service = importlib.util.module_from_spec(module)
+    module.loader.exec_module(service)
+
+    monkeypatch.setattr(service, "mark_managed", lambda: None)
+    monkeypatch.setattr(service, "mark_disabled", lambda _disabled: None)
+    monkeypatch.setattr(service, "run", lambda *args, **kwargs: subprocess.CompletedProcess([], 1))
+    monkeypatch.setattr(service, "all_supervisor_pids", iter([[], [4321]]).__next__)
+    spawn = MagicMock()
+    monkeypatch.setattr(service, "spawn_detached", spawn)
+
+    service.native_start()
+
+    spawn.assert_not_called()
+
+
+def test_all_supervisor_pids_does_not_match_its_own_powershell_query(monkeypatch):
+    module = importlib.util.spec_from_file_location(
+        "test_hub_service_process_query", Path(__file__).parents[1] / "tools" / "service.py"
+    )
+    service = importlib.util.module_from_spec(module)
+    module.loader.exec_module(service)
+
+    commands = []
+    monkeypatch.setattr(service, "supervisor_pid", lambda: 0)
+    monkeypatch.setattr(
+        service.subprocess,
+        "run",
+        lambda cmd, **kwargs: commands.append(cmd) or subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
+
+    assert service.all_supervisor_pids() == []
+    script = commands[0][-1]
+    assert "-Filter" in script
+    assert "python.exe" in script

@@ -20,7 +20,12 @@ def app_with_agent_state(tmp_path: Path) -> LocalAIApp:
 [server]
 bind = "127.0.0.1"
 port = 11487
+auto_start_ollama = false
 state_dir = "{tmp_path.as_posix()}/state"
+
+[headless]
+autostart_ollama = false
+manage_ollama = false
 
 [agent_state]
 enabled = true

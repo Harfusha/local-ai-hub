@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import json
 import sqlite3
 import threading
@@ -33,7 +35,7 @@ class AsyncJobManager:
         cfg = config.get("async_jobs", {})
         self.enabled = bool(cfg.get("enabled", True))
         self.max_pending = max(1, int(cfg.get("max_pending", 64)))
-        self.wait_max_seconds = max(1.0, min(90.0, float(cfg.get("wait_max_seconds", 90))))
+        self.wait_max_seconds = max(1.0, min(3600.0, float(cfg.get("wait_max_seconds", 600))))
         self.lease_seconds = max(30.0, float(cfg.get("lease_seconds", 900)))
         self.result_ttl_seconds = max(60.0, float(cfg.get("result_ttl_seconds", 259200)))
         self.max_attempts = max(1, int(cfg.get("max_attempts", 2)))
@@ -104,7 +106,7 @@ class AsyncJobManager:
         if action not in self.ACTIONS:
             return {"success": False, "error": f"unsupported async task action: {action}", "terminal": True, "retryable": False}
         clean = self._safe_payload(payload)
-        encoded = json.dumps(clean, ensure_ascii=False, separators=(",", ":"))
+        encoded = json_dumps(clean, ensure_ascii=False, separators=(",", ":"))
         if len(encoded.encode("utf-8")) > 2_000_000:
             return {"success": False, "error": "async task payload exceeds 2MB", "terminal": True, "retryable": False}
         request_hash = stable_hash({"tenant": tenant, "action": action, "payload": clean})
@@ -271,9 +273,9 @@ class AsyncJobManager:
                         pass
             elif result.get("success"):
                 artifact_id = ""
-                try: artifact_id = str(self.artifacts.put(json.dumps(result, ensure_ascii=False, separators=(",", ":")), tenant, "async-job"))
+                try: artifact_id = str(self.artifacts.put(json_dumps(result, ensure_ascii=False, separators=(",", ":")), tenant, "async-job"))
                 except Exception: pass
-                con.execute("UPDATE async_jobs SET state='done',result_json=?,artifact_id=?,lease_until=0,updated_at=? WHERE job_id=?", (json.dumps(result, ensure_ascii=False, separators=(",", ":")), artifact_id, time.time(), job_id))
+                con.execute("UPDATE async_jobs SET state='done',result_json=?,artifact_id=?,lease_until=0,updated_at=? WHERE job_id=?", (json_dumps(result, ensure_ascii=False, separators=(",", ":")), artifact_id, time.time(), job_id))
                 self._stats["completed"] += 1
                 final = result
                 if task_id and self.task_store is not None:
@@ -307,10 +309,10 @@ class AsyncJobManager:
                 cur_row = con.execute("SELECT attempts FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
                 attempts = int(cur_row["attempts"] if cur_row else 1)
                 if attempts < self.max_attempts and bool(result.get("retryable", True)):
-                    con.execute("UPDATE async_jobs SET state='queued',result_json=?,error=?,lease_until=0,updated_at=? WHERE job_id=?", (json.dumps(result, ensure_ascii=False, separators=(",", ":")), str(result.get("error", "async job failed"))[:500], time.time(), job_id))
+                    con.execute("UPDATE async_jobs SET state='queued',result_json=?,error=?,lease_until=0,updated_at=? WHERE job_id=?", (json_dumps(result, ensure_ascii=False, separators=(",", ":")), str(result.get("error", "async job failed"))[:500], time.time(), job_id))
                     final = result
                 else:
-                    con.execute("UPDATE async_jobs SET state='failed',result_json=?,error=?,lease_until=0,updated_at=? WHERE job_id=?", (json.dumps(result, ensure_ascii=False, separators=(",", ":")), str(result.get("error", "async job failed"))[:500], time.time(), job_id))
+                    con.execute("UPDATE async_jobs SET state='failed',result_json=?,error=?,lease_until=0,updated_at=? WHERE job_id=?", (json_dumps(result, ensure_ascii=False, separators=(",", ":")), str(result.get("error", "async job failed"))[:500], time.time(), job_id))
                     self._stats["failed"] += 1
                     final = result
                     if task_id and self.task_store is not None:

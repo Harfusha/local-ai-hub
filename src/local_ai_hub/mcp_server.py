@@ -10,12 +10,15 @@ import queue
 import re
 import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
 from urllib.parse import quote
 
 from local_ai_hub.client import HubClient
 from local_ai_hub.compact import compact_result
+from local_ai_hub.response_budget import budget_response, delta_response, result_id
+from local_ai_hub.context_ledger import ContextLedger
 from local_ai_hub.projection import AgentProjector
 from local_ai_hub.config import load_config
 from local_ai_hub.features import FeatureSet
@@ -27,8 +30,10 @@ from local_ai_hub.state_paths import configured_state_dir
 
 try:
     from mcp.server.fastmcp import FastMCP
+    import mcp.types as mcp_types
 except ImportError:
     FastMCP = None  # type: ignore[assignment,misc]
+    mcp_types = None  # type: ignore[assignment]
 
 class _MissingMCP:
     """Import-safe stand-in used only when the optional MCP SDK is unavailable.
@@ -67,9 +72,15 @@ try:
     MCP_CFG = CFG.get("mcp", {})
     PROJECTOR = AgentProjector(CFG)
     PROFILE_CATALOG = OllamaSubagentCatalog(CFG)
-    MAX_TEXT = int(MCP_CFG.get("compact_max_text_chars", 1800))
-    MAX_EVIDENCE = int(MCP_CFG.get("compact_max_evidence", 10))
+    MAX_TEXT = int(MCP_CFG.get("compact_max_text_chars", 6000))
+    MAX_EVIDENCE = int(MCP_CFG.get("compact_max_evidence", 16))
     LEAN_SCHEMAS = bool(MCP_CFG.get("lean_schemas", True))
+    RESPONSE_BUDGET_CFG = MCP_CFG.get("response_budget", {}) if isinstance(MCP_CFG.get("response_budget", {}), dict) else {}
+    RESPONSE_BUDGET_ENABLED = bool(RESPONSE_BUDGET_CFG.get("enabled", True))
+    RESPONSE_DEFAULT_TOKENS = max(128, int(RESPONSE_BUDGET_CFG.get("default_tokens", 3200)))
+    RESPONSE_TOOL_TOKENS = RESPONSE_BUDGET_CFG.get("tool_tokens", {}) if isinstance(RESPONSE_BUDGET_CFG.get("tool_tokens", {}), dict) else {}
+    RESPONSE_REUSE_LIMIT = max(16, int(RESPONSE_BUDGET_CFG.get("reuse_cache_size", 256)))
+    CONTEXT_LEDGER = ContextLedger(max_entries=int(RESPONSE_BUDGET_CFG.get("ledger_size", 512)))
     ADOPTION_METRICS = AdoptionMetricsStore(configured_state_dir(CFG))
 except Exception as _init_exc:  # pragma: no cover
     import sys
@@ -78,7 +89,7 @@ except Exception as _init_exc:  # pragma: no cover
 
 
 def _timeout(kind: str) -> float:
-    defaults = {"quick": 60.0, "context": 240.0, "model": 600.0, "long": 900.0}
+    defaults = {"quick": 180.0, "context": 600.0, "model": 1800.0, "long": 2400.0}
     return max(1.0, float(MCP_CFG.get(f"{kind}_timeout_seconds", defaults[kind])))
 
 
@@ -127,7 +138,7 @@ _ACTION_ALIASES: dict[str, dict[str, str]] = {
         "ctx": "context",
     },
     "task": {
-        "gen": "generate",
+        "gen": "delegate",
         "rev": "review",
         "del": "delegate",
     },
@@ -173,7 +184,7 @@ def _specialized_note(tool_name: str) -> str:
 
 def _desc_status() -> str:
     if LEAN_SCHEMAS:
-        return "Health, cache, telemetry, and agent_state inspector. Actions: brief, cache, telemetry, full, agent_state."
+        return "Health, cache, telemetry, and agent_state inspector. Aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: brief, cache, telemetry, full, agent_state."
     ollama_note = " ollama_online," if FEATURES.ollama else ""
     agent_state_note = " With Agent OS enabled, `detail=agent_state` summarizes durable task state." if FEATURES.agent_os else ""
     return (
@@ -190,7 +201,13 @@ def _desc_status() -> str:
 
 def _desc_task() -> str:
     if LEAN_SCHEMAS:
-        return "Bounded local-model worker for local diagnosis, boilerplate, or second opinion. Command failure diagnosis is disabled by default; enable features.local_diagnostic_dispatch only after low-confidence deterministic command parsing with an artifact reference and narrow preview. Never raw logs, architecture, security, mutations, or open-ended coding. Actions: ask, reason, review, delegate, generate, eval, benchmark."
+        return (
+            "Bounded local-model worker for semantic generation, exploration, reasoning, review, independent second opinions, and semantic compression. "
+            "Use deterministic/indexed tools for exact facts, symbols, diff and tests; they are not substitutes for these semantic tasks. "
+            "Command failure diagnosis remains disabled by default; never pass raw logs or open-ended coding. "
+            "Local AI Hub does not route or manage native Codex agents. "
+            f"{_actions_note(FEATURES.supported_task_actions())}"
+        )
     if not FEATURES.has_any_model():
         return (
             "Local-model worker — disabled on this installation (no local model backend configured)."
@@ -210,11 +227,11 @@ def _desc_task() -> str:
         f" Route preprocessing through `{FEATURES.background_model}`, quick tasks through `{FEATURES.fast_model}`, complex tasks through `{FEATURES.smart_model}`, and the hardest reasoning through `{FEATURES.reasoning_model}`."
         f" Explicit model overrides must match a configured model tag."
         f"{profile_note}"
-        " Deterministic compression and repository evidence run first when sufficient."
+        " Use deterministic/indexed tools for exact facts, symbols, diff and tests; use this worker for semantic generation, exploration, reasoning, review, independent second opinions and semantic compression after any needed evidence."
         " Command failure diagnosis is disabled by default; enable `features.local_diagnostic_dispatch=true` only for one local diagnostic after low-confidence deterministic command parsing with an artifact reference and narrow preview, never raw logs."
         " Never automatically dispatch local inference for architecture, security, mutations, or open-ended coding."
-        " Use it for local diagnosis, boilerplate, or one bounded review/second opinion after indexed evidence."
-        " It is not the orchestrator for native Codex subagents; those are managed directly by Codex outside Local AI Hub."
+        " Use it for bounded generation, exploration, reasoning, boilerplate, review, independent second opinions and semantic compression after any needed indexed evidence."
+         " Local AI Hub does not route or manage native Codex subagents; those are managed directly by Codex outside Local AI Hub."
         f"{_actions_note(FEATURES.supported_task_actions())}"
         f"{_specialized_note('local_ai_task')}"
         " `delivery=sync` preserves the foreground contract; `async` returns a durable job now;"
@@ -230,7 +247,7 @@ def _desc_task() -> str:
 
 def _desc_repo() -> str:
     if LEAN_SCHEMAS:
-        return "Primary repository worker for repository navigation, symbols, and impact. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
+        return "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
     semantic_hint = ""
     if FEATURES.has_semantic():
         semantic_hint = f" -> {FEATURES.semantic_hint()} for relationships"
@@ -246,12 +263,12 @@ def _desc_repo() -> str:
         " For implementation, diagnosis, refactoring or complex review, call `solve` after evidence and before native edits."
         f"{' When generating, use `' + FEATURES.fast_model + '` for quick tasks, `' + FEATURES.smart_model + '` for complex work, and `' + FEATURES.reasoning_model + '` for hardest reasoning.' if FEATURES.has_any_model() else ''}"
         " `review_diff` and `security_audit` are targeted local checks."
-        f"{'  After indexed evidence, use `local_ai_task` for one bounded local-model worker/review/second opinion.' if FEATURES.has_any_model() else ''}"
+         f"{'  After any needed indexed evidence, use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong.' if FEATURES.has_any_model() else ''}"
         " Codex separately decides whether to use native Codex subagents;"
         " Local AI Hub does not route or manage those agents."
         " On first use of a stable absolute root call action=preprocess exactly once and continue immediately;"
         " never poll/wait/force-refresh preprocessing."
-        f" Cheapest sufficient path: deterministic -> code_index/search{semantic_hint} -> context/solve{rag_hint}{model_hint} last;"
+        f" Cheapest sufficient path for repository evidence: deterministic -> code_index/search{semantic_hint} -> context/solve{rag_hint}; semantic generation, reasoning, review, independent second opinions and compression use `local_ai_task` after any needed evidence;"
         " STOP as soon as a cheaper layer is sufficient and never fan out overlapping retrieval layers for the same question."
         " Reuse fresh evidence/artifact slices and never repeat an identical root/query/action while repo state is unchanged."
         " `in_progress` means another owner is doing identical work; retryable/429/503 means back off;"
@@ -268,7 +285,7 @@ def _desc_repo() -> str:
 
 def _desc_rag() -> str:
     if LEAN_SCHEMAS:
-        return "Semantic RAG & documentation search. Actions: search, index, docset_search, ingest_document."
+        return "Semantic RAG & documentation search with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: search, index, docset_search, ingest_document."
     if not FEATURES.rag:
         return (
             "Semantic retrieval — RAG backend is disabled on this installation (`features.rag=false`)."
@@ -290,7 +307,7 @@ def _desc_rag() -> str:
 
 def _desc_command() -> str:
     if LEAN_SCHEMAS:
-        return "Safe CLI command broker for test, lint, typecheck, or build commands. Native fallback requires terminal=true and retryable=false. Mutations never cache or single-flight. Actions: run, auto_fix, format, patch_and_verify, repair_loop."
+        return "Safe CLI command broker for test, lint, typecheck, or build commands with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Native fallback requires terminal=true and retryable=false. Mutations never cache or single-flight. Actions: run, auto_fix, format, patch_and_verify, repair_loop."
     agent_os_note = " Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts." if FEATURES.agent_os else ""
     return (
         "Bounded broker for test, lint, typecheck, or build commands; also repeatable analysis/read-only commands."
@@ -310,7 +327,7 @@ def _desc_command() -> str:
 
 def _desc_coord() -> str:
     if LEAN_SCHEMAS:
-        return "Agent OS coordination for task contracts, ownership, checkpoints, and verification receipts. Actions: claim, release, memory_record, memory_find, context_compile, task_create, task_checkpoint."
+        return "Agent OS coordination for task contracts, ownership, checkpoints, and verification receipts with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: claim, release, memory_record, memory_find, context_compile, task_create, task_checkpoint."
     if FEATURES.agent_os:
         agent_os_note = (
             " For non-trivial multi-step, long-running, delegated, or acceptance-criteria work, create an Agent OS task contract first;"
@@ -340,7 +357,7 @@ def _desc_coord() -> str:
 
 def _desc_work() -> str:
     if LEAN_SCHEMAS:
-        return "Delegate closed, low-risk work with a verified handoff to local worker; skip micro-edits and live discussion. Actions: submit, status, wait, get, cancel."
+        return "Delegate closed, low-risk work with a verified handoff and aggregate-bounded response; optional max_response_tokens, response_profile, reuse_key. Skip micro-edits and live discussion. Actions: submit, status, wait, get, cancel."
     return (
         "Delegate one closed, low-risk work item with a verified handoff to Local AI Hub: plan a bounded dependency DAG, execute the smallest independently verifiable steps, "
         "apply transactional leased edits, run safe validation, verify the integrated result against the original request, and return a compact handoff. "
@@ -352,7 +369,7 @@ def _desc_work() -> str:
 
 def _desc_artifact() -> str:
     if LEAN_SCHEMAS:
-        return "Fetch an exact source or log slice. Actions: get, slice, list."
+        return "Fetch an exact source or log slice with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: get, slice, list."
     return (
         "Fetch one exact source or log slice. Evidence IDs start with E."
         " Use when: exact source or evidence text is required after indexed discovery."
@@ -361,7 +378,7 @@ def _desc_artifact() -> str:
 
 
 TaskAction: TypeAlias = Literal[
-    "delegate", "reason", "continue", "review", "second_opinion", "compress", "route", "batch",
+    "delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch",
     "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait",
     "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe",
     "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold",
@@ -424,6 +441,62 @@ def _invalid_action(tool: str, action: str, valid: tuple[str, ...], guidance: st
 
 
 _CURRENT_EXTRA_FIELDS: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar("_CURRENT_EXTRA_FIELDS", default=None)
+_CURRENT_RESPONSE_OPTIONS: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar("_CURRENT_RESPONSE_OPTIONS", default={})
+_REUSE_DIGESTS: OrderedDict[str, str] = OrderedDict()
+_REUSE_VALUES: OrderedDict[str, Any] = OrderedDict()
+
+
+def _response_budget(task_kind: str, options: dict[str, Any]) -> tuple[int, str, str, bool]:
+    requested_profile = str(options.get("response_profile") or "").strip().lower()
+    profile = requested_profile or "compact"
+    if profile not in {"minimal", "compact", "standard", "debug", "delta"}:
+        profile = "compact"
+    if not requested_profile:
+        profile = CONTEXT_LEDGER.adaptive_profile(profile)
+    try:
+        requested = int(options.get("max_response_tokens") or 0)
+    except (TypeError, ValueError, OverflowError):
+        requested = 0
+    tool_name = str(options.get("tool") or "")
+    configured = RESPONSE_TOOL_TOKENS.get(tool_name) or RESPONSE_TOOL_TOKENS.get(task_kind) or RESPONSE_DEFAULT_TOKENS
+    if not requested:
+        try:
+            requested = int(configured)
+        except (TypeError, ValueError, OverflowError):
+            requested = RESPONSE_DEFAULT_TOKENS
+    try:
+        max_allowed = max(RESPONSE_DEFAULT_TOKENS, int(RESPONSE_BUDGET_CFG.get("max_tokens", RESPONSE_DEFAULT_TOKENS * 2)))
+    except (TypeError, ValueError, OverflowError):
+        max_allowed = RESPONSE_DEFAULT_TOKENS * 2
+    requested = min(requested, max_allowed)
+    if profile == "minimal":
+        requested = min(requested, max(256, RESPONSE_DEFAULT_TOKENS // 2))
+    elif profile == "standard":
+        requested = max(requested, RESPONSE_DEFAULT_TOKENS)
+    elif profile == "debug":
+        requested = max(requested, int(RESPONSE_DEFAULT_TOKENS * 2))
+    return max(128, requested), profile, str(options.get("reuse_key") or "")[:160], RESPONSE_BUDGET_ENABLED
+
+
+def _reuse_only(key: str, value: Any) -> bool:
+    return _reuse_state(key, value)[0]
+
+
+def _reuse_state(key: str, value: Any) -> tuple[bool, Any]:
+    if not key:
+        return False, None
+    digest = hashlib.sha256(repr(_normalize_deterministic(value)).encode("utf-8", errors="replace")).hexdigest()
+    previous = _REUSE_DIGESTS.get(key)
+    previous_value = _REUSE_VALUES.get(key)
+    _REUSE_DIGESTS[key] = digest
+    _REUSE_VALUES[key] = value
+    _REUSE_DIGESTS.move_to_end(key)
+    _REUSE_VALUES.move_to_end(key)
+    while len(_REUSE_DIGESTS) > RESPONSE_REUSE_LIMIT:
+        _REUSE_DIGESTS.popitem(last=False)
+    while len(_REUSE_VALUES) > RESPONSE_REUSE_LIMIT:
+        _REUSE_VALUES.popitem(last=False)
+    return previous == digest, previous_value
 
 
 def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | None = None) -> Any:
@@ -436,6 +509,19 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
     value = attach_accounting(value)
     projected = PROJECTOR.project(value, AGENT_NAME, task_kind, extra_fields=extra_fields)
     compacted = compact_result(projected, max_text_chars=MAX_TEXT, max_evidence=MAX_EVIDENCE, extra_fields=extra_fields)
+    options = _CURRENT_RESPONSE_OPTIONS.get()
+    requested, profile, reuse_key, enabled = _response_budget(task_kind, options)
+    if enabled:
+        repeated, previous = _reuse_state(reuse_key, compacted)
+        if profile == "delta" and previous is not None and not repeated:
+            compacted = delta_response(previous, compacted, result_id=result_id(compacted))
+        compacted = budget_response(
+            compacted,
+            max_tokens=requested,
+            profile=profile,
+            reuse_key=reuse_key,
+            reuse_only=repeated and json_tokens(compacted) > requested // 2,
+        )
     return _normalize_deterministic(account_projection(raw_value, compacted))
 
 
@@ -589,6 +675,12 @@ def _instrumented_tool():
                 arguments = dict(kwargs)
             extra = arguments.get("extra_fields") or kwargs.get("extra_fields")
             token = _CURRENT_EXTRA_FIELDS.set(extra) if extra is not None else None
+            response_token = _CURRENT_RESPONSE_OPTIONS.set({
+                "max_response_tokens": arguments.get("max_response_tokens", 0),
+                "response_profile": arguments.get("response_profile", ""),
+                "reuse_key": arguments.get("reuse_key", ""),
+                "tool": fn.__name__,
+            })
             try:
                 result = fn(*args, **kwargs)
             except Exception:
@@ -597,6 +689,7 @@ def _instrumented_tool():
             finally:
                 if token is not None:
                     _CURRENT_EXTRA_FIELDS.reset(token)
+                _CURRENT_RESPONSE_OPTIONS.reset(response_token)
             clean, measured = pop_accounting(result)
             _record_adoption(fn.__name__, arguments, clean, (time.monotonic() - started) * 1000)
             try:
@@ -605,6 +698,16 @@ def _instrumented_tool():
                     schema_tokens_est=_tool_catalog_schema_tokens(),
                 )
                 event.update({"tenant": TENANT, "agent": AGENT_NAME, "created_at": time.time()})
+                CONTEXT_LEDGER.record(
+                    tool=fn.__name__,
+                    operation=str(arguments.get("action") or "default"),
+                    request_tokens=event.get("agent_tool_request_tokens_est", 0),
+                    response_tokens=event.get("agent_tool_response_tokens_est", 0),
+                    saved_tokens=event.get("projected_response_saved_tokens_est", 0),
+                    cache_outcome=event.get("cache_outcome", ""),
+                    result_id=clean.get("result_id", "") if isinstance(clean, dict) else "",
+                    session_id=TENANT,
+                )
                 _ACCOUNTING_REPORTER.record(event)
             except Exception:
                 pass
@@ -678,7 +781,7 @@ def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration
 
 @mcp.tool()
 @_instrumented_tool()
-def local_ai_status(detail: StatusDetail = "brief", scope: str = "process", extra_fields: list[str] | None = None, adoption_signal: Literal["", "bypassed"] = "", target_tool: str = "", target_action: str = "") -> dict[str, Any]:
+def local_ai_status(detail: StatusDetail = "brief", scope: str = "process", extra_fields: list[str] | None = None, adoption_signal: Literal["", "bypassed"] = "", target_tool: str = "", target_action: str = "", max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "") -> dict[str, Any]:
     """Health/queue/token-saving status. detail: brief, cache, telemetry, full, agent_state. scope: process (default) or window. To report a deliberate bypass, set adoption_signal=bypassed with validated target_tool and target_action; omitted means no bypass. Telemetry is metadata-only. Do not poll status during normal repository work or while preprocessing/model startup is in progress; one bounded health check is enough before native fallback. Use when: make one bounded health, cache, or telemetry check. Skip when: repository evidence or task work is needed."""
     if adoption_signal not in {"", "bypassed"}:
         return {"success": False, "error": "adoption_signal must be empty or bypassed"}
@@ -721,6 +824,7 @@ def local_ai_status(detail: StatusDetail = "brief", scope: str = "process", extr
             "embeddings": status.get("embeddings"),
             "reranker": status.get("reranker"),
             "token_saving": status.get("observability"),
+            "context_ledger": CONTEXT_LEDGER.snapshot(),
         }, "status")
     sched = status.get("scheduler", {}) if isinstance(status, dict) else {}
     saving = status.get("observability", {}) if isinstance(status, dict) else {}
@@ -776,8 +880,26 @@ def local_ai_task(
     json_schema: dict[str, Any] | None = None,
     language: str = "auto",
     extra_fields: list[str] | None = None,
+    max_response_tokens: int = 0,
+    response_profile: str = "",
+    reuse_key: str = "",
 ) -> dict[str, Any]:
-    """Bounded local-model worker. Use 0.5B for preprocessing, the fast tier for quick tasks, the heavy tier for complex work, and the reasoning tier for hardest reasoning. Explicit model overrides must match a configured model role. Named advisory profiles use read-only repository tools. Deterministic repository actions run first when sufficient. For command failures, use local_ai_task only after low-confidence deterministic parsing and provide an artifact reference plus narrow preview; never pass raw logs. It is not the orchestrator for native Codex subagents. Actions: delegate, reason, continue, review, second_opinion, compress, route, batch, benchmark, evaluation_record, evaluation_report, submit, status, wait, result, cancel, candidate_create, candidate_promote. delivery=sync preserves the foreground contract; async returns a durable job; auto requires a positive latency budget. Evaluation stores only opaque ids, booleans, and numeric metadata. Async wait is bounded to 90 seconds. Conversations are sync-only and process-memory only. Use when: one bounded generation, review, compression, routing or second-opinion task should run on a configured local model. Skip when: deterministic/indexed repository evidence suffices, or local-model tasks are disabled."""
+    """Run one bounded semantic local-model task.
+
+    Use deterministic/indexed tools for exact facts, symbols, diffs and tests;
+    use this worker for semantic generation, exploration, reasoning, review, independent
+    second opinions and semantic compression. Explicit model overrides must
+    match a configured model role. Named advisory profiles use read-only
+    repository tooling. Command-failure diagnosis remains opt-in and accepts
+    only a narrow artifact-backed preview, never raw logs. This tool is not the
+    orchestrator for native Codex subagents. The public action enum is
+    feature-gated and exposed by the MCP schema, so callers must use the
+    advertised actions rather than an inferred alias. Delivery and async
+    constraints remain bounded; conversations are sync-only and process-memory
+    only. Use when one bounded semantic task should run on a configured local
+    model. Use when: one bounded semantic task should run on a configured
+    local model. Skip when: local-model tasks are disabled or Codex-owned
+    subagent orchestration is the right owner; Local AI Hub does not route or manage native Codex agents."""
     if not FEATURES.tasks or not FEATURES.has_any_model():
         return {"success": False, "unsupported": True, "error": "Local model execution is disabled (features.tasks=false or no Ollama runtime configured)"}
     action = _resolve_action("task", action)
@@ -802,10 +924,10 @@ def local_ai_task(
                 "unsupported": True,
                 "error": "Named Ollama profiles require an explicit absolute repository root",
             }
-        if action not in {"delegate", "reason", "review", "second_opinion", "submit"}:
-            return {"success": False, "unsupported": True, "error": "Ollama profiles support delegate, reason, review, second_opinion and submit only"}
-    if conversation and action not in {"delegate", "reason"}:
-        return {"success": False, "error": "Conversations support delegate, reason and continue only", "terminal": True, "retryable": False}
+        if action not in {"delegate", "explore", "reason", "review", "second_opinion", "submit"}:
+            return {"success": False, "unsupported": True, "error": "Ollama profiles support delegate, explore, reason, review, second_opinion and submit only"}
+    if conversation and action not in {"delegate", "explore", "reason"}:
+        return {"success": False, "error": "Conversations support delegate, explore, reason and continue only", "terminal": True, "retryable": False}
     if conversation and delivery.strip().lower() != "sync":
         return {"success": False, "error": "Conversations require delivery=sync", "terminal": True, "retryable": False}
     if action in {"submit", "status", "wait", "result", "cancel"}:
@@ -822,19 +944,19 @@ def local_ai_task(
         }
         endpoint = "/api/delegate/repo" if root else "/api/delegate"
         return _compact(CLIENT.post(endpoint, payload, timeout=_timeout("model")), "delegate")
-    if action == "delegate":
+    if action in {"delegate", "explore"}:
         payload = {
-            "task": task, "context": context, "complexity": complexity, "max_tokens": max_tokens or 1100,
+            "task": task, "context": context, "complexity": complexity, "max_tokens": max_tokens or 4096,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model,
         }
         if format or json_schema:
             payload["format"] = format or json_schema
         if conversation:
             payload["conversation"] = True
-        return _compact(CLIENT.post("/api/delegate", payload), "delegate")
+        return _compact(CLIENT.post("/api/delegate", payload), "explore" if action == "explore" else "delegate")
     if action == "reason":
         payload = {
-            "problem": task, "context": context, "max_tokens": max_tokens or 1200,
+            "problem": task, "context": context, "max_tokens": max_tokens or 4096,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model,
         }
         if format or json_schema:
@@ -845,7 +967,7 @@ def local_ai_task(
     if action == "review":
         payload = {
             "code": context, "instructions": task or "Report actionable defects only.",
-            "complexity": complexity, "max_tokens": max_tokens or 1300,
+            "complexity": complexity, "max_tokens": max_tokens or 4096,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model,
         }
         if format or json_schema:
@@ -853,9 +975,9 @@ def local_ai_task(
         return _compact(CLIENT.post("/api/review", payload), "review")
     if action == "second_opinion":
         return _compact(CLIENT.post("/api/second-opinion", {
-            "question": task, "candidate": candidate, "context": context, "max_tokens": max_tokens or 1100,
+            "question": task, "candidate": candidate, "context": context, "max_tokens": max_tokens or 4096,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model,
-        }), "review")
+        }), "second_opinion")
     if action == "compress":
         return _compact(CLIENT.post("/api/compress", {
             "text": context, "instruction": task or "Compress while preserving facts, identifiers, numbers, errors, decisions and uncertainty.",
@@ -917,7 +1039,7 @@ def local_ai_task(
     if action == "scaffold":
         return _compact(CLIENT.post("/api/task/scaffold", {
             "spec": prompt or task, "context": context, "language": language if (language and language != "auto") else (candidate or "python"),
-            "max_tokens": max_tokens or 1500, "model": model,
+            "max_tokens": max_tokens or 4096, "model": model,
         }, timeout=_timeout("model")), "delegate")
     return _invalid_action("local_ai_task", action, tuple(TaskAction.__args__), "Use Local AI Hub only for bounded local-model work; use Codex-owned orchestration for peer subagents.")
 
@@ -944,8 +1066,25 @@ def _local_ai_repo_impl(
     include_code: bool = False,
     edits: list[dict[str, Any]] | None = None,
     extra_fields: list[str] | None = None,
+    max_response_tokens: int = 0,
+    response_profile: str = "",
+    reuse_key: str = "",
 ) -> dict[str, Any]:
-    """Primary bounded repository worker for the main agent. CALL THIS BEFORE broad repository reads/searches for any non-trivial repo task. MANDATORY GATE. Use deterministic, code_index/search, semantic/graph, context and solve for bounded evidence and implementation support. For implementation, diagnosis, refactoring or complex review, call solve after evidence and before native edits. When generation is needed, seed the basic fast tier before smart escalation. review_diff and security_audit are targeted local checks. After indexed evidence, use local_ai_task for one bounded local-model worker/review/second opinion. Codex separately decides whether to use native Codex subagents; Local AI Hub does not route or manage those agents. On first use of a stable absolute root call action=preprocess exactly once and continue immediately; never poll/wait/force-refresh preprocessing. Cheapest sufficient path: deterministic -> code_index/search -> semantic/graph for relationships -> context/solve -> RAG -> local model last; STOP as soon as a cheaper layer is sufficient and never fan out overlapping retrieval layers for the same question. Reuse fresh evidence/artifact slices and never repeat an identical root/query/action while repo state is unchanged. in_progress means another owner is doing identical work; retryable/429/503 means back off; degraded/stale means verify only the affected slice. Always pass the stable absolute project root; never rely on MCP cwd. Never loop or increase timeouts indefinitely. Use when: every non-trivial repository task needs indexed evidence or a bounded Hub operation. Skip when: the task is not repository-scoped or fresh evidence already answers it and no independent Hub scope exists."""
+    """Primary bounded repository worker for the main agent.
+
+    Call this before broad repository reads/searches for any non-trivial repo
+    task. Use deterministic, code-index/search, semantic/graph, context and
+    solve for repository evidence and implementation support. After needed
+    evidence, route semantic generation, reasoning, review, independent second
+    opinions and compression to local_ai_task; use local_ai_artifact for exact
+    slices and local_ai_command for repeatable validation. Use review_diff and
+    security_audit for targeted local checks. Never use this
+    evidence path as a substitute for semantic local-model work. Codex manages
+    native Codex subagents separately. Preprocess once per stable absolute root;
+    never poll or force-refresh it. Reuse fresh evidence and respect
+    in_progress, retryable and degraded states. Use when a non-trivial
+    repository task needs indexed evidence or bounded Hub support; skip when
+    the task is not repository-scoped and no independent Hub scope exists."""
     if not FEATURES.repo:
         return {"success": False, "unsupported": True, "error": "local_ai_repo is disabled in configuration"}
     action = _resolve_action("repo", action)
@@ -1022,7 +1161,7 @@ def _local_ai_repo_impl(
     if action == "delegate":
         return _compact(CLIENT.post("/api/delegate/repo", {
             "root": root, "task": task or query, "workspace": workspace or None,
-            "complexity": "auto", "context_tokens": max_tokens or 0, "max_tokens": 1200, "profile": profile,
+            "complexity": "auto", "context_tokens": max_tokens or 0, "max_tokens": max_tokens or 4096, "profile": profile,
         }, timeout=_timeout("model")), "delegate")
     if action == "solve":
         return _compact(CLIENT.post("/api/solve/repo", {
@@ -1033,7 +1172,7 @@ def _local_ai_repo_impl(
         return _compact(CLIENT.post("/api/review/diff", {
             "root": root, "base": base, "staged": staged,
             "instructions": task or "Report actionable defects, regressions, security/concurrency issues and missing tests only.",
-            "complexity": "auto", "max_tokens": max_tokens or 1400, "mode": mode,
+            "complexity": "auto", "max_tokens": max_tokens or 4096, "mode": mode,
         }, timeout=_timeout("model")), "review_diff")
     if action == "impact":
         return _compact(CLIENT.post("/api/repo/impact", {"root": root, "base": base, "staged": staged}, timeout=_timeout("context")), "impact")
@@ -1260,12 +1399,15 @@ def local_ai_repo(
     include_code: bool = False,
     edits: list[dict[str, Any]] | None = None,
     extra_fields: list[str] | None = None,
+    max_response_tokens: int = 0,
+    response_profile: str = "",
+    reuse_key: str = "",
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
     return _local_ai_repo_impl(
         action, root, query, diff, task, workspace, path, base, staged, dry_run,
         max_tokens, evidence, mode, relation, language, profile, receipt, task_id,
-        include_code, edits, extra_fields,
+        include_code, edits, extra_fields, max_response_tokens, response_profile, reuse_key,
     )
 
 
@@ -1302,6 +1444,9 @@ def local_ai_rag(
     query: str = "",
     top_k: int = 6,
     extra_fields: list[str] | None = None,
+    max_response_tokens: int = 0,
+    response_profile: str = "",
+    reuse_key: str = "",
 ) -> dict[str, Any]:
     """Fallback semantic retrieval after deterministic and indexed repository evidence. Use RAG only when cheaper Local AI Hub evidence is insufficient. Actions: index, search, list. Workspace is required for rag search. Use when: semantic retrieval is needed after cheaper code_index and search paths are insufficient. Skip when: deterministic manifests, symbols, or exact ripgrep search already locate the evidence."""
     if not FEATURES.rag:
@@ -1360,6 +1505,9 @@ def local_ai_command(
     patch: str = "",
     auto_rollback: bool = True,
     extra_fields: list[str] | None = None,
+    max_response_tokens: int = 0,
+    response_profile: str = "",
+    reuse_key: str = "",
 ) -> dict[str, Any]:
     """Bounded command broker for the main agent. MANDATORY for repeatable test/lint/typecheck/static-analysis/build/read-only commands whenever possible. Shared safe CLI broker. Actions: run, cancel, classify, discover, stats, repair_loop, auto_fix, run_affected, format, patch_and_verify. Optional auto_fix=true or action=repair_loop runs autonomous self-healing test loop with safe rollback on failure. Action patch_and_verify applies a unified diff, verifies with test command, and rolls back cleanly on error. Optional snapshot=true or rollback_on_failure=true captures git state and automatically reverts dirty changes if validation commands fail. Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts. Optional stream=true or stream_id streams real-time stdout/stderr lines as command.log SSE events. Results are keyed by command + bounded repo state and duplicate runs coalesce across agents. Reuse fresh results. If run returns in_progress=true, DO NOT start the command natively or with force; continue independent work and retry later so the owner can populate the cache. Cancel a concurrent mutation only with its opaque execution_id from stats or run results. force=true is exceptional recovery/admin behavior, never a retry button. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
     if not FEATURES.commands:
@@ -1367,7 +1515,7 @@ def local_ai_command(
     action = _resolve_action("command", action)
     eff_cwd = _client_root(cwd)
     host_timeout = _timeout("long")
-    configured_command_timeout = int(CFG.get("commands", {}).get("timeout_seconds", 900))
+    configured_command_timeout = int(CFG.get("commands", {}).get("timeout_seconds", 1800))
     requested_timeout = int(timeout or configured_command_timeout)
     # The command itself must finish before the MCP/HTTP caller's hard deadline so
     # there is always time to serialize the cached result instead of timing out at
@@ -1421,6 +1569,9 @@ def local_ai_coord(
     fingerprint: dict[str, Any] | None = None,
     tool_outcome: dict[str, Any] | None = None,
     extra_fields: list[str] | None = None,
+    max_response_tokens: int = 0,
+    response_profile: str = "",
+    reuse_key: str = "",
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. Actions: claim, release, leases, memo_put, memo_get, memo_search, memo_delete, task_create, task_get, task_checkpoint, task_rollback, task_transition, task_resume, task_list, task_complete, task_fail, task_heartbeat, memory_record, memory_get, memory_find, memory_promote, memory_reap, context_compile, verify_receipt, verify_completion, negative_knowledge_record, negative_knowledge_find, incident_decision, blackboard_update, blackboard_get, blackboard_list, blackboard_merge, blackboard_delete, swarm_dispatch, swarm_step, swarm_status, swarm_list, swarm_cancel. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool. Use when: Hub workers share edit paths, leases, or reusable findings. Skip when: work is isolated and no shared Hub state or memo is involved."""
     if not FEATURES.coord:
@@ -1603,6 +1754,8 @@ def local_ai_work(
     max_output_tokens: int = 0,
     keep_failed_workspace: bool = False,
     extra_fields: list[str] | None = None,
+    max_response_tokens: int = 0,
+    reuse_key: str = "",
 ) -> dict[str, Any]:
     """Whole-task local execution with durable verified handoff. See dynamic description for policy and response projection."""
     if not getattr(FEATURES, "work_orchestrator", False):
@@ -1622,7 +1775,7 @@ def local_ai_work(
 
 @mcp.tool()
 @_instrumented_tool()
-def local_ai_artifact(artifact_id: str, offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None) -> dict[str, Any]:
+def local_ai_artifact(artifact_id: str, offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "") -> dict[str, Any]:
     """Fetch one needed artifact section or exact evidence slice. Evidence IDs start with E. Use when: exact source or evidence text is required after indexed discovery. Skip when: no source slice is needed or the existing compact result is sufficient."""
     if not FEATURES.artifacts:
         return {"success": False, "unsupported": True, "error": "local_ai_artifact is disabled in configuration"}
@@ -1656,6 +1809,20 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools"):
     for _tool_name, _desc_fn in _all_desc_map.items():
         if _tool_name in mcp._tool_manager._tools:
             mcp._tool_manager._tools[_tool_name].description = _desc_fn()
+
+if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types is not None:
+    from local_ai_hub.json_utils import dumps as json_dumps
+
+    async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
+        raw = await mcp._tool_manager.call_tool(name, arguments, convert_result=False)
+        if isinstance(raw, (dict, list)):
+            return ([mcp_types.TextContent(type="text", text=json_dumps(raw))], raw)
+        if isinstance(raw, str):
+            return [mcp_types.TextContent(type="text", text=raw)]
+        return await mcp._tool_manager.call_tool(name, arguments, convert_result=True)
+
+    mcp.call_tool = _compact_mcp_call_tool
+    mcp._mcp_server.call_tool(validate_input=False)(_compact_mcp_call_tool)
 
 
 if __name__ == "__main__":

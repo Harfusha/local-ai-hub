@@ -83,3 +83,17 @@ def test_policy_blocks_and_cancellations_do_not_produce_incidents(store: Inciden
         cancelled=True,
     )
     assert store.capture(cancelled) is None
+
+
+def test_incident_store_resolve_all(store: IncidentStore):
+    inc1 = store.capture(failed_command_outcome("syntax error", revision="rev-1"))
+    inc2 = store.capture(failed_command_outcome("import error", revision="rev-1"))
+    assert inc1 is not None and inc2 is not None
+
+    count = store.resolve_all(verified_fix="Manual fix applied")
+    assert count >= 2
+    active = store.list_incidents(resolved=False)
+    assert len(active) == 0
+    resolved = store.list_incidents(resolved=True)
+    assert len(resolved) >= 2
+

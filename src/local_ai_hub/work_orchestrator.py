@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import base64
 import hashlib
 import json
@@ -342,7 +344,7 @@ class WorkOrchestrator:
             for entry in journal
         ]
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+        tmp.write_text(json_dumps(payload, separators=(",", ":")), encoding="utf-8")
         try:
             os.chmod(tmp, 0o600)
         except OSError:
@@ -407,7 +409,7 @@ class WorkOrchestrator:
                         (now, work_id),
                     )
                 else:
-                    result = json.dumps({
+                    result = json_dumps({
                         "summary": "work order recovery failed",
                         "error": "transaction journal could not be safely restored; manual inspection required",
                         "needs_agent": True,
@@ -493,7 +495,7 @@ class WorkOrchestrator:
                         con.execute("ROLLBACK")
                         return {"success": False, "error": "work-order queue is full", "retryable": True, "terminal": False}
                     con.execute("INSERT INTO work_orders(work_id,tenant,root,task,state,payload_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-                                (work_id, tenant, str(root), task, "queued", json.dumps(normalized, separators=(",", ":")), now, now))
+                                (work_id, tenant, str(root), task, "queued", json_dumps(normalized, separators=(",", ":")), now, now))
                     con.execute("COMMIT")
                 except Exception:
                     con.execute("ROLLBACK")
@@ -577,7 +579,7 @@ class WorkOrchestrator:
             return {"success": False, "error": "answer is required", "work_id": work_id}
         with closing(self._connect()) as con:
             con.execute("UPDATE work_orders SET state='queued',payload_json=?,cancel_requested=0,updated_at=? WHERE work_id=?",
-                        (json.dumps(payload, separators=(",", ":")), time.time(), work_id))
+                        (json_dumps(payload, separators=(",", ":")), time.time(), work_id))
         self._ensure_workers(); self._wake.set(); self._event(work_id).set()
         return {"success": True, "status": "queued", "work_id": work_id}
 
@@ -595,7 +597,7 @@ class WorkOrchestrator:
     def _set_state(self, work_id: str, state: str, result: dict[str, Any]) -> None:
         with closing(self._connect()) as con:
             con.execute("UPDATE work_orders SET state=?,result_json=?,updated_at=? WHERE work_id=?",
-                        (state, json.dumps(result, ensure_ascii=False, separators=(",", ":")), time.time(), work_id))
+                        (state, json_dumps(result, ensure_ascii=False, separators=(",", ":")), time.time(), work_id))
         with self._lock:
             event = self._waiters.get(work_id)
             if event is not None:
@@ -656,7 +658,7 @@ class WorkOrchestrator:
             if not self._stop.is_set() and self._has_queued_work():
                 self._ensure_workers()
 
-    def _ask(self, tenant: str, root: str, task: str, context: str, max_tokens: int = 1200, *, review: bool = False) -> dict[str, Any]:
+    def _ask(self, tenant: str, root: str, task: str, context: str, max_tokens: int = 4096, *, review: bool = False) -> dict[str, Any]:
         if review:
             return self.services.second_opinion({"question": task, "candidate": context, "context": "", "max_tokens": max_tokens, "complexity": "auto"}, tenant)
         return self.services.delegate_repo({"root": root, "task": task, "context": context, "max_tokens": max_tokens, "complexity": "auto"}, tenant)
@@ -668,11 +670,11 @@ class WorkOrchestrator:
             '{"summary":"...","needs_agent":false,"question":"","steps":[{"id":"s1","kind":"inspect|edit|validate|review|integrate","task":"...","depends_on":[],"acceptance":["..."]}],"validation_commands":[]}.'
             " Make steps the smallest independently executable+verifiable units, not trivial microsteps. Max 16 steps. "
             "Use deterministic inspection before edits. Include edit steps only if requested. Do not invent files unless evidence supports them.\n"
-            f"ORIGINAL TASK:\n{task}\nACCEPTANCE:\n{json.dumps(acceptance, ensure_ascii=False)}\n"
-            f"CONSTRAINTS:\n{json.dumps(payload.get('constraints') or [], ensure_ascii=False)}"
+            f"ORIGINAL TASK:\n{task}\nACCEPTANCE:\n{json_dumps(acceptance, ensure_ascii=False)}\n"
+            f"CONSTRAINTS:\n{json_dumps(payload.get('constraints') or [], ensure_ascii=False)}"
             + (f"\nAGENT ANSWER TO PRIOR BLOCKER:\n{str(payload.get('agent_answer',''))[:8000]}" if payload.get("agent_answer") else "")
         )
-        res = self._ask(tenant, root, prompt, json.dumps(context, ensure_ascii=False)[:14000], 1400)
+        res = self._ask(tenant, root, prompt, json_dumps(context, ensure_ascii=False)[:14000], 1400)
         parsed = _json_object(str(res.get("text", ""))) if isinstance(res, dict) and res.get("success", True) else None
         if not parsed or not isinstance(parsed.get("steps"), list):
             parsed = {"summary": task[:240], "needs_agent": False, "question": "", "steps": [
@@ -823,9 +825,9 @@ class WorkOrchestrator:
             current=self.services.repo_diff(root_s,"HEAD",False,6500)
             req=("REPLAN/REPAIR this whole-task implementation after new verification evidence. Return ONLY one unified git diff, no prose. "
                  "Make the smallest corrective change; preserve already-correct work and public APIs.\n"
-                 f"ORIGINAL TASK:\n{task}\nACCEPTANCE:\n{json.dumps(payload.get('acceptance_criteria',[]),ensure_ascii=False)}\n"
+                 f"ORIGINAL TASK:\n{task}\nACCEPTANCE:\n{json_dumps(payload.get('acceptance_criteria',[]),ensure_ascii=False)}\n"
                  f"NEW EVIDENCE / FAILURE:\n{reason[:4000]}")
-            res=self._ask(tenant,root_s,req,json.dumps(current,ensure_ascii=False)[:18000],1800); llm_calls+=1; replans+=1
+            res=self._ask(tenant,root_s,req,json_dumps(current,ensure_ascii=False)[:18000],1800); llm_calls+=1; replans+=1
             patch=_diff_from_text(str(res.get("text","")))
             if not patch:
                 return False
@@ -844,7 +846,7 @@ class WorkOrchestrator:
         if bool(plan.get("needs_agent")):
             self._set_state(work_id,"needs_agent",{"summary":str(plan.get("summary",task))[:600],"needs_agent":True,"question":str(plan.get("question","Clarification required"))[:1200],"plan":plan}); return
         if payload.get("mode") in {"plan","plan_only","dry_run"}:
-            art=self.artifacts.put(json.dumps({"task":task,"plan":plan},ensure_ascii=False,indent=2),tenant,"work-plan")
+            art=self.artifacts.put(json_dumps({"task":task,"plan":plan},ensure_ascii=False,indent=2),tenant,"work-plan")
             self._set_state(work_id,"complete",{"summary":str(plan.get("summary",task))[:600],"plan":plan,"artifact_id":art,"available_details":["plan"]}); return
         self._set_state(work_id,"executing",{"summary":str(plan.get("summary",task))[:600],"plan":plan,"progress":{"phase":"executing","completed":0,"total":len(plan["steps"])}})
         try:
@@ -879,9 +881,9 @@ class WorkOrchestrator:
                     for attempt in range(self.step_retry_limit + 1):
                         req=("Return ONLY a unified git diff that implements this bounded step. No prose. Preserve public APIs unless task requires otherwise. "
                              "Do not edit generated/vendor/cache files. Make the smallest coherent change and include tests when appropriate.\n"
-                             f"ORIGINAL TASK:\n{task}\nSTEP:\n{step['task']}\nACCEPTANCE:\n{json.dumps(step.get('acceptance',[]),ensure_ascii=False)}"
+                             f"ORIGINAL TASK:\n{task}\nSTEP:\n{step['task']}\nACCEPTANCE:\n{json_dumps(step.get('acceptance',[]),ensure_ascii=False)}"
                              + (f"\nPREVIOUS PATCH ERROR:\n{last_error}" if last_error else ""))
-                        res=self._ask(tenant,root_s,req,json.dumps(fast,ensure_ascii=False)[:16000],1800); llm_calls+=1
+                        res=self._ask(tenant,root_s,req,json_dumps(fast,ensure_ascii=False)[:16000],1800); llm_calls+=1
                         patch=_diff_from_text(str(res.get("text","")))
                         if not patch:
                             last_error = "local worker returned no unified diff"
@@ -917,8 +919,8 @@ class WorkOrchestrator:
                         q=("Verify this integrated change against the ORIGINAL TASK and acceptance criteria. Return STRICT JSON only: "
                            '{"passed":true,"summary":"...","criteria":[{"criterion":"...","passed":true}],"risks":[],"needs_agent":false,"question":""}. '
                            "Fail closed on missing validation, semantic mismatch, regression or unsupported assumption.\n"
-                           f"ORIGINAL TASK:\n{task}\nACCEPTANCE:\n{json.dumps(payload.get('acceptance_criteria',[]),ensure_ascii=False)}")
-                        vr=self._ask(tenant,root_s,q,json.dumps(diff,ensure_ascii=False)[:18000],1200,review=True); llm_calls+=1
+                           f"ORIGINAL TASK:\n{task}\nACCEPTANCE:\n{json_dumps(payload.get('acceptance_criteria',[]),ensure_ascii=False)}")
+                        vr=self._ask(tenant,root_s,q,json_dumps(diff,ensure_ascii=False)[:18000],1200,review=True); llm_calls+=1
                         parsed=_json_object(str(vr.get("text",""))) or {"passed":False,"summary":"verifier returned invalid result","risks":["invalid verifier response"]}
                         outcome["verification"]=parsed
                         if parsed.get("needs_agent"):
@@ -946,9 +948,9 @@ class WorkOrchestrator:
                 final_q=("FINAL WHOLE-TASK VERIFIER. Judge only against ORIGINAL TASK and explicit acceptance criteria. Return STRICT JSON only: "
                          '{"passed":true,"summary":"...","criteria":[{"criterion":"...","passed":true}],"risks":[]}. '
                          "A mutating task cannot pass without successful validation evidence from the current mutation generation.\n"
-                         f"ORIGINAL TASK:\n{task}\nACCEPTANCE:\n{json.dumps(criteria,ensure_ascii=False)}\n"
-                         f"VALIDATION:\n{json.dumps(validation,ensure_ascii=False)}")
-                final=self._ask(tenant,root_s,final_q,json.dumps(diff,ensure_ascii=False)[:22000],1200,review=True); llm_calls+=1
+                         f"ORIGINAL TASK:\n{task}\nACCEPTANCE:\n{json_dumps(criteria,ensure_ascii=False)}\n"
+                         f"VALIDATION:\n{json_dumps(validation,ensure_ascii=False)}")
+                final=self._ask(tenant,root_s,final_q,json_dumps(diff,ensure_ascii=False)[:22000],1200,review=True); llm_calls+=1
                 verification=_json_object(str(final.get("text",""))) or {"passed":False,"summary":"invalid final verifier response","risks":["invalid verifier response"]}
                 if changed and validated_generation != mutation_generation:
                     verification["passed"]=False
@@ -962,7 +964,7 @@ class WorkOrchestrator:
                 run_validations("replanned repair after final verification")
             changed = [str(x) for x in diff.get("changed_files", changed)] if isinstance(diff, dict) else changed
             report={"original_task":task,"plan":plan,"steps":step_results,"changed_files":changed,"diff":diff,"validation":validation,"verification":verification,"llm_calls":llm_calls,"replans":replans,"elapsed_seconds":round(time.monotonic()-started,2)}
-            artifact=self.artifacts.put(json.dumps(report,ensure_ascii=False,indent=2),tenant,"work-handoff")
+            artifact=self.artifacts.put(json_dumps(report,ensure_ascii=False,indent=2),tenant,"work-handoff")
             handoff={"summary":str(verification.get("summary") or plan.get("summary") or "work complete")[:900],"changed_files":changed,"validation":{"passed":all(v.get("success") for v in validation),"commands":len(validation)},"verification":verification,"risks":verification.get("risks",[])[:8],"handoff_id":artifact,"artifact_id":artifact,"available_details":["plan","steps","diff","validation","verification"]}
             self._clear_journal(work_id)
             self._set_state(work_id,"complete",handoff)
@@ -984,7 +986,7 @@ class WorkOrchestrator:
             except Exception:
                 failure_diff = {"success": False, "error": "diff unavailable"}
             report={"original_task":task,"plan":plan,"steps":step_results,"changed_files":changed,"diff":failure_diff,"validation":validation,"error":str(exc),"rolled_back":rolled,"llm_calls":llm_calls,"replans":replans}
-            artifact=self.artifacts.put(json.dumps(report,ensure_ascii=False,indent=2),tenant,"work-failure")
+            artifact=self.artifacts.put(json_dumps(report,ensure_ascii=False,indent=2),tenant,"work-failure")
             self._set_state(work_id,"failed",{"summary":"whole task failed" + (" and was rolled back" if rolled else ""),"error":str(exc)[:1200],"changed_files":changed,"validation":{"passed":False,"commands":len(validation)},"artifact_id":artifact,"available_details":["plan","steps","validation","failure_report"]})
         finally:
             for lid in lease_ids:

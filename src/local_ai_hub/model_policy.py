@@ -125,6 +125,10 @@ class ModelExecutionPolicy:
         think = default_think or role_l in think_roles
         if force_think is not None:
             think = bool(force_think)
+        # A bounded second-opinion budget must leave room for a visible answer;
+        # thinking-capable models can otherwise spend all tokens internally.
+        if role_l == "second-opinion" and 0 < int(output_tokens) < 768:
+            think = False
         think = bool(think and self._supports_thinking(model))
 
         reserve = max(1024, int(cfg.get("context_reserve_tokens", 2048)))

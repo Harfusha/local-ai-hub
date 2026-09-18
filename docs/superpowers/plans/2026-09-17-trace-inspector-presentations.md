@@ -1,372 +1,287 @@
-# Trace Inspector Request Presentations Implementation Plan
+# Trace Inspector Human-First Presentations Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Render each retained trace in the most useful request-specific format, with local-model traces presented as chat sessions and technical metadata kept optional.
+**Goal:** Replace JSON-shaped Trace Inspector primary views with concise, request-specific human presentations while preserving complete technical diagnostics behind a collapsed disclosure.
 
-**Architecture:** Keep the existing debug-trace API and SQLite schema unchanged. Extend the client-side `traceDisplayModel` with deterministic presentation classification and bounded normalized data, then dispatch to focused renderers from `renderTracePresentation(model)`. Preserve the current universal summary, redaction, incremental polling, and raw fallback under collapsed technical details.
+**Architecture:** Keep the existing client-side `tracePresentationKind`, normalized presentation payloads, specialized renderer functions, debug-trace API, SQLite data, polling, redaction, and raw fallback. Tighten the shared presentation-field layer so empty/internal/duplicate values disappear from the primary view, and use semantic cards/lists/code blocks/timeline rows for structured values instead of handing whole objects to the generic renderer.
 
-**Tech Stack:** Python-generated HTML, browser JavaScript/CSS embedded in `src/local_ai_hub/dashboard.py`, pytest contract tests, Node.js fixture snippets already used by dashboard tests.
+**Tech Stack:** Python-generated HTML, browser JavaScript/CSS embedded in `src/local_ai_hub/dashboard.py`, pytest source-contract tests, and Node.js runtime fixtures already used by `tests/test_dashboard_custom_modals.py`.
 
 ---
 
-## File map
+## Baseline and file map
 
-- Modify `src/local_ai_hub/dashboard.py:738-742` for presentation CSS and `:1985-2075` for trace data normalization/render dispatch.
-- Modify `tests/test_dashboard_custom_modals.py:330-470` for JavaScript contract and fixture tests.
-- Modify `docs/DASHBOARD.md:13-18` to document request-specific trace views.
-- Do not modify `src/local_ai_hub/debug_traces.py`, HTTP routes, or SQLite schema.
+- `src/local_ai_hub/dashboard.py:575-583` owns Trace Inspector CSS; `:2110-2245` owns normalized payload helpers and request-specific renderers; `:2290-2315` owns detail assembly and technical disclosure.
+- `tests/test_dashboard_custom_modals.py:328-1170` contains sanitizer, classifier, renderer, runtime, and integration contracts. Extend these tests before changing JavaScript.
+- `tests/test_dashboard_operational_surfaces.py` has an existing uncommitted live-event-to-trace link change. Preserve it byte-for-byte; do not stage or rewrite it as part of this work.
+- `src/local_ai_hub/dashboard.py` has an existing uncommitted `data-trace-id` change in `renderEvents`. Preserve that hunk byte-for-byte.
+- `docs/DASHBOARD.md` documents dashboard behavior and may receive one short Trace Inspector UX note.
+- Do not modify `src/local_ai_hub/debug_traces.py`, trace HTTP routes, persistence schema, or model execution behavior.
 
-### Task 1: Add classifier and normalized presentation fixtures
+Before editing, save the two existing diffs with `git diff -- src/local_ai_hub/dashboard.py tests/test_dashboard_operational_surfaces.py`. Never use reset/checkout to clean them.
+
+### Task 1: Characterize the human-first contract with failing tests
 
 **Files:**
-- Modify: `tests/test_dashboard_custom_modals.py`
-- Modify: `src/local_ai_hub/dashboard.py`
+- Test: `tests/test_dashboard_custom_modals.py`
+- Modify: `src/local_ai_hub/dashboard.py` only after the tests fail for the intended reason.
 
-- [ ] **Step 1: Write failing classifier tests**
-
-Add tests that extract the dashboard helper source and require these stable kinds and precedence:
+- [ ] **Step 1: Add the omission contract.** Append this test beside the existing Trace Inspector contracts:
 
 ```python
-def test_trace_inspector_classifies_request_presentations() -> None:
-    assert "function tracePresentationKind(model)" in DASHBOARD_HTML
+def test_trace_primary_fields_hide_empty_internal_and_duplicate_values() -> None:
     source = DASHBOARD_HTML[
-        DASHBOARD_HTML.index("function tracePresentationKind(model)") : DASHBOARD_HTML.index(
-            "function traceAvailability("
+        DASHBOARD_HTML.index("function tracePresentationField(") : DASHBOARD_HTML.index(
+            "function tracePresentationColumns("
         )
     ]
-    for kind in [
-        "agent_loop", "model_chat", "command", "review",
-        "repo_intelligence", "rag_search", "async_job", "request_response",
+    assert "traceMeaningfulValue" in source
+    assert "internal" in source.lower()
+    assert "duplicate" in source.lower()
+    assert "return ''" in source
+
+
+def test_trace_primary_presentations_use_semantic_value_renderers() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderCommandPresentation") : DASHBOARD_HTML.index(
+            "function traceHumanTitle("
+        )
+    ]
+    for marker in [
+        "traceSummaryCard",
+        "traceCodeBlock",
+        "traceList",
+        "traceTimeline",
     ]:
-        assert kind in source
-    assert source.index("agent_loop") < source.index("model_chat")
+        assert marker in source
+    assert "renderAny(value)" not in source
 
 
-def test_trace_inspector_normalizes_model_chat_turns_and_tools() -> None:
+def test_trace_technical_details_are_closed_by_default() -> None:
     source = DASHBOARD_HTML[
-        DASHBOARD_HTML.index("function tracePresentationData(model)") : DASHBOARD_HTML.index(
-            "function traceAvailability("
+        DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
+            "function setTraceView(view)"
         )
     ]
-    assert "chatTurns" in source
-    assert "toolInteractions" in source
-    assert "traceSanitizeValue" in source
-    assert "traceBoundedEvents" in source
+    assert '<details id="traceTechnicalDetails"' in source
+    assert "trace-optional-details" in source
+    assert ".open=true" not in source
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [ ] **Step 2: Run the new tests and confirm RED.**
 
 Run:
 
 ```bash
-python -m pytest -q tests/test_dashboard_custom_modals.py -k "classifies_request_presentations or normalizes_model_chat_turns" --tb=short
+python -m pytest -q tests/test_dashboard_custom_modals.py -k "primary_fields_hide or semantic_value_renderers or technical_details_are_closed" --tb=short
 ```
 
-Expected: FAIL because `tracePresentationKind` and `tracePresentationData` do not exist.
+Expected: FAIL because current field helpers allow generic object rendering and the new semantic helper markers do not yet exist. If collection fails before assertions, fix only the test slice boundaries and rerun until the failure is an assertion failure.
 
-- [ ] **Step 3: Implement deterministic classification**
-
-Insert before `traceDisplayModel`:
-
-```javascript
-function tracePresentationKind(model){
-  const action=String(model.identity?.action||model.session?.action||'').toLowerCase();
-  const kind=String(model.session?.kind||'').toLowerCase();
-  const events=model.events||[];
-  const hasModel=model.modelExecutions?.length>0||traceRecorded(model.input)||traceRecorded(model.output);
-  const hasTools=model.toolCalls?.length>0;
-  if(hasModel&&hasTools)return 'agent_loop';
-  if(hasModel)return 'model_chat';
-  if(kind==='async_job'||model.correlations?.async_job_id||model.correlations?.scheduler_job_id)return 'async_job';
-  if(action==='/api/command'||action.includes('/command'))return 'command';
-  if(/\/review|\/diff|review|diff/.test(action))return 'review';
-  if(/repo|code|git|symbol|impact|test|resolve|ast|topology/.test(action))return 'repo_intelligence';
-  if(/rag|search|query|retriev|embed/.test(action))return 'rag_search';
-  if(events.length||traceRecorded(model.response)||traceRecorded(model.input))return 'request_response';
-  return 'request_response';
-}
-```
-
-Keep `agent_loop` before `model_chat`; model traces with tools must not lose their tool presentation. Normalize action matching only; do not expose new raw fields.
-
-- [ ] **Step 4: Implement bounded normalized data**
-
-Add helpers:
-
-```javascript
-function traceChatTurns(events){
-  const turns=[],list=events||[];let current=null;
-  list.forEach(event=>{
-    const type=String(event?.event_type||''),payload=traceSanitizeValue(event?.payload||{});
-    if(type==='model_request'){
-      current={step:payload.step||turns.length+1,input:payload,output:'',tools:[]};
-      turns.push(current);
-    }else if(current&&(type==='output_stream'||type==='output_delta')){
-      current.output+=String(payload.text||'');
-    }else if(current&&type==='tool_call')current.tools.push({call:payload,result:null});
-    else if(current&&type==='tool_result'){
-      const callId=payload.call_id||'',match=current.tools.slice().reverse().find(item=>!item.result&&(!callId||item.call.call_id===callId));
-      if(match)match.result=payload;
-    }
-  });
-  return turns.slice(-100);
-}
-function tracePresentationData(model){
-  const events=model.events||[],turns=traceChatTurns(events);
-  return {kind:tracePresentationKind(model),chatTurns:turns,toolInteractions:model.toolCalls||[],requestEnvelope:model.session?.request||{},modelInput:model.input,modelOutput:model.output,command:traceFirstRecorded(events,['command','cmd']),review:traceFirstRecorded(events,['diff','findings','recommendation']),repoOperation:traceFirstRecorded(events,['root','query','symbols','files']),retrieval:traceFirstRecorded(events,['sources','results','hits','answer']),lifecycle:model.lifecycle};
-}
-```
-
-Use existing bounded/sanitized `model.events`; never re-read unbounded raw session fields. Extend `traceDisplayModel` with `presentation=tracePresentationData(model)` and return it.
-
-- [ ] **Step 5: Run focused tests and commit**
-
-Run:
+- [ ] **Step 3: Commit only the new tests.**
 
 ```bash
-python -m pytest -q tests/test_dashboard_custom_modals.py -k "classifies_request_presentations or normalizes_model_chat_turns" --tb=short
+git add tests/test_dashboard_custom_modals.py
+git commit -m "test(dashboard): define human-first trace presentation contract"
 ```
 
-Expected: PASS. Commit:
+Do not stage `src/local_ai_hub/dashboard.py` or `tests/test_dashboard_operational_surfaces.py` in this commit.
+
+### Task 2: Make shared primary-value rendering human-first
+
+**Files:**
+- Modify: `src/local_ai_hub/dashboard.py` in the Trace Inspector helper block immediately before `tracePresentationColumns`.
+- Test: `tests/test_dashboard_custom_modals.py` from Task 1.
+
+- [ ] **Step 1: Implement a single meaningful-value predicate.** Add a helper with this behavior:
+
+```javascript
+function traceMeaningfulValue(value,key=''){
+  const name=String(key||'').toLowerCase();
+  if(value===undefined||value===null||value==='')return false;
+  if(typeof value==='string'&&/^(empty|none|null|n\/a|unknown)$/i.test(value.trim()))return false;
+  if(Array.isArray(value))return value.some(item=>traceMeaningfulValue(item));
+  if(typeof value==='object')return Object.entries(value).some(([childKey,childValue])=>traceMeaningfulValue(childValue,childKey));
+  if(/(^|_)(id|ids|lease_id|session_id|clone_id|worktree_id|repository_id|task_id)$/.test(name))return false;
+  return true;
+}
+```
+
+Keep identifiers available in the technical disclosure; this predicate applies only to primary human fields. Do not alter `traceSanitizeValue` or redaction behavior.
+
+- [ ] **Step 2: Implement semantic primitives.** Add these helpers and route every primary renderer through them:
+
+```javascript
+function traceSummaryCard(title,value,budget,options={}){
+  if(!traceMeaningfulValue(value,options.key||title))return '';
+  return `<section class="trace-summary-card ${esc(options.tone||'')}" data-field="${esc(options.key||title)}"><h3>${esc(title)}</h3><div class="trace-summary-value">${traceReadableMarkup(value,budget,options.limit||4000)}</div></section>`;
+}
+function traceCodeBlock(title,value,budget,options={}){
+  if(!traceMeaningfulValue(value,options.key||title))return '';
+  return `<section class="trace-code-card"><h3>${esc(title)}</h3><pre class="trace-output">${esc(traceInlineText(value,options.limit||8000))}</pre></section>`;
+}
+function traceList(title,items,budget,renderItem){
+  const values=(Array.isArray(items)?items:[]).filter(item=>traceMeaningfulValue(item));
+  if(!values.length)return '';
+  return `<section class="trace-list-card"><h3>${esc(title)} <span class="tiny">${values.length}</span></h3><div>${values.map((item,index)=>renderItem(item,index,budget)).join('')}</div></section>`;
+}
+function traceHumanFields(fields,budget){
+  return fields.map(field=>field.kind==='code'?traceCodeBlock(field.label,field.value,budget,field):traceSummaryCard(field.label,field.value,budget,field)).join('');
+}
+```
+
+`traceInlineText` must stay bounded and escaped at the final HTML boundary. Never call `String(object)` for a structured value.
+
+- [ ] **Step 3: Replace generic object fields in `tracePresentationField`.** Preserve its current label/fallback API for technical panels, but add a primary-mode option. Primary mode returns an empty string for omitted values, uses `traceList` for arrays, `traceCodeBlock` for stdout/stderr/diff/prompt/output, and `traceSummaryCard` for scalar or small structured values. Technical mode continues to use the existing bounded `renderAny` output.
+
+- [ ] **Step 4: Run the Task 1 tests and the existing presentation contracts.**
+
+```bash
+python -m pytest -q tests/test_dashboard_custom_modals.py -k "primary_fields_hide or semantic_value_renderers or technical_details_are_closed or trace_inspector" --tb=short
+```
+
+Expected: the new omission and semantic tests pass, with no failure in existing sanitizer, redaction, classifier, or runtime contracts.
+
+- [ ] **Step 5: Commit the shared renderer change.**
 
 ```bash
 git add src/local_ai_hub/dashboard.py tests/test_dashboard_custom_modals.py
-git commit -m "feat(dashboard): classify trace presentations"
+git commit -m "feat(dashboard): hide trace presentation noise"
 ```
 
-### Task 2: Add model-chat and agent-loop renderers
+Before staging, confirm the pre-existing `renderEvents` `data-trace-id` hunk remains unchanged; if needed, stage only the Trace Inspector hunks.
+
+### Task 3: Convert every specialized presentation to semantic layouts
 
 **Files:**
-- Modify: `tests/test_dashboard_custom_modals.py`
-- Modify: `src/local_ai_hub/dashboard.py`
+- Modify: `src/local_ai_hub/dashboard.py:2214-2244` and adjacent Trace Inspector CSS.
+- Test: `tests/test_dashboard_custom_modals.py`.
 
-- [ ] **Step 1: Write failing renderer tests**
-
-Add static contracts:
+- [ ] **Step 1: Add renderer-specific failing assertions.** Extend the existing request-specific renderer test with these semantic markers:
 
 ```python
-def test_trace_inspector_has_model_chat_and_agent_loop_renderers() -> None:
-    for name in [
-        "renderModelChatPresentation",
-        "renderAgentLoopPresentation",
-        "trace-chat-output",
-        "trace-chat-input",
-        "trace-tool-interaction",
+def test_trace_renderers_do_not_dump_primary_structured_objects() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderCommandPresentation") : DASHBOARD_HTML.index(
+            "function traceHumanTitle("
+        )
+    ]
+    for function_name in [
+        "renderCommandPresentation",
+        "renderReviewPresentation",
+        "renderRepoIntelligencePresentation",
+        "renderRagSearchPresentation",
+        "renderAsyncJobPresentation",
+        "renderRequestResponsePresentation",
     ]:
-        assert name in DASHBOARD_HTML
-    source = DASHBOARD_HTML[
-        DASHBOARD_HTML.index("function renderModelChatPresentation") : DASHBOARD_HTML.index(
-            "function traceAvailability("
-        )
-    ]
-    assert "model output" in source.lower()
-    assert "model input" in source.lower()
-    assert "chatTurns" in source
+        start = source.index(f"function {function_name}")
+        end = source.find("\n function ", start + 10)
+        body = source[start:] if end < 0 else source[start:end]
+        assert "traceSummaryCard" in body or "traceList" in body or "traceCodeBlock" in body
+        assert "renderAny(" not in body
 ```
 
-- [ ] **Step 2: Run RED**
-
-Run:
+- [ ] **Step 2: Run RED.**
 
 ```bash
-python -m pytest -q tests/test_dashboard_custom_modals.py -k "model_chat_and_agent_loop" --tb=short
+python -m pytest -q tests/test_dashboard_custom_modals.py -k "do_not_dump_primary_structured_objects" --tb=short
 ```
 
-Expected: FAIL because renderers and CSS do not exist.
+Expected: FAIL for at least one current renderer because it still routes a structured value through `tracePresentationField`/generic rendering without a semantic primitive.
 
-- [ ] **Step 3: Add chat CSS**
+- [ ] **Step 3: Refine the model/agent layouts.** Keep `renderModelChatPresentation` as output-left/input-right on desktop and stacked on narrow screens. Render each message as a role-labelled card; render tool calls/results as timeline cards with name, status, and a collapsed bounded payload. Do not show IDs unless needed to pair a tool result.
 
-Add responsive styles beside the existing trace styles:
+- [ ] **Step 4: Refine command/review layouts.** Command view shows command, arguments only when meaningful, stdout/stderr as code blocks, and exit/retry/duration as compact status cards. Review view shows request/context/diff, findings as a severity list, and recommendation/status; omit empty columns.
 
-```css
-.trace-chat-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
-.trace-chat-column{min-width:0;border:1px solid #33485f;border-radius:8px;overflow:hidden;background:#0d141c}
-.trace-chat-column.output{border-color:#397658}.trace-chat-column.input{border-color:#41659a}
-.trace-chat-column>h3{margin:0;padding:9px 11px;background:#151d26;font-size:11px;text-transform:uppercase}
-.trace-chat-body{padding:10px;min-width:0}.trace-chat-message{border:1px solid #2d3d4e;border-radius:7px;margin:0 0 8px;overflow:hidden}
-.trace-chat-message-head{padding:7px 9px;background:#151d26;font-size:10px;font-weight:700}
-.trace-chat-message-body{padding:9px;overflow-wrap:anywhere}.trace-tool-interaction{margin:8px 0;border-left:3px solid #a78bfa}
-@media(max-width:760px){.trace-chat-grid{grid-template-columns:1fr}}
-```
+- [ ] **Step 5: Refine repository/RAG layouts.** Repository view shows operation, repository label, query, concise result, and files/symbols as lists. RAG view shows query, count, ranked source rows with path/location/provider/score, snippet, answer, and truncation; source payload objects remain collapsed.
 
-- [ ] **Step 4: Implement model-chat renderer**
+- [ ] **Step 6: Refine async/request-response/fallback layouts.** Async view shows lifecycle/status, queue wait, retries, result, and error. Request/response shows request, response, status, timing, and error. Unknown/malformed payloads use the same readable fallback with an explicit unavailable state only for fields necessary to understand the failure.
 
-Implement `renderModelChatPresentation(model)` with output left and input right. Each turn must render role-labelled input, output text, step number, model name, and explicit empty/unavailable states. Use `renderAny`, `promptBlock`, `esc`, and existing bounded values. Do not place universal metadata in either column.
-
-- [ ] **Step 5: Implement agent-loop renderer**
-
-Implement `renderAgentLoopPresentation(model)` by rendering the same two-column chat view and inserting each paired tool call/result as a collapsed `.trace-tool-interaction` card between turns. Show tool name, call ID, arguments, result/error, and status; use `renderAny` for payloads.
-
-- [ ] **Step 6: Wire focused dispatcher branch and verify GREEN**
-
-Add:
-
-```javascript
-function renderTracePresentation(model){
-  switch(model.presentation?.kind){
-    case 'agent_loop':return renderAgentLoopPresentation(model);
-    case 'model_chat':return renderModelChatPresentation(model);
-    default:return renderRequestResponsePresentation(model);
-  }
-}
-```
-
-Run:
+- [ ] **Step 7: Add compact responsive CSS and run renderer tests.** Add styles for `.trace-summary-card`, `.trace-code-card`, `.trace-list-card`, `.trace-timeline-row`, and narrow-screen stacking beside existing trace styles. Then run:
 
 ```bash
-python -m pytest -q tests/test_dashboard_custom_modals.py -k "model_chat_and_agent_loop or trace_inspector" --tb=short
+python -m pytest -q tests/test_dashboard_custom_modals.py -k "trace_renderer or trace_inspector or model_chat or agent_loop or review_severity" --tb=short
 ```
 
-Expected: PASS. Commit:
+Expected: all selected tests pass; no `[object Object]` appears in Node fixture output.
+
+- [ ] **Step 8: Commit specialized layouts.**
 
 ```bash
 git add src/local_ai_hub/dashboard.py tests/test_dashboard_custom_modals.py
-git commit -m "feat(dashboard): render model traces as chat sessions"
+git commit -m "feat(dashboard): render trace payloads as semantic views"
 ```
 
-### Task 3: Add command, review, repository, RAG, async, and fallback renderers
+### Task 4: Keep technical diagnostics complete but secondary
 
 **Files:**
-- Modify: `tests/test_dashboard_custom_modals.py`
-- Modify: `src/local_ai_hub/dashboard.py`
+- Modify: `src/local_ai_hub/dashboard.py:2294-2315`.
+- Test: `tests/test_dashboard_custom_modals.py`.
 
-- [ ] **Step 1: Write one contract test per renderer**
+- [ ] **Step 1: Add integration assertions.** Require the generated order to be header → `renderTracePresentation(model)` → closed `#traceTechnicalDetails`, and require the technical block to retain universal summary, tabs, timeline, raw JSON, and redaction controls.
 
-Add a test requiring named functions and primary labels:
-
-```python
-def test_trace_inspector_has_request_specific_renderers() -> None:
-    expected = {
-        "renderCommandPresentation": "stdout",
-        "renderReviewPresentation": "findings",
-        "renderRepoIntelligencePresentation": "repository",
-        "renderRagSearchPresentation": "retrieved",
-        "renderAsyncJobPresentation": "lifecycle",
-        "renderRequestResponsePresentation": "response",
-    }
-    for function_name, marker in expected.items():
-        assert function_name in DASHBOARD_HTML
-        assert marker in DASHBOARD_HTML
-```
-
-- [ ] **Step 2: Run RED**
-
-Run:
+- [ ] **Step 2: Run RED.**
 
 ```bash
-python -m pytest -q tests/test_dashboard_custom_modals.py -k request_specific_renderers --tb=short
+python -m pytest -q tests/test_dashboard_custom_modals.py -k "presentation_before_optional_details or preserves_outer_technical_details" --tb=short
 ```
 
-Expected: FAIL because the specialized functions do not exist.
+Expected: the test fails only if the current assembly still exposes a technical panel before the primary content or opens it by default.
 
-- [ ] **Step 3: Implement command and review renderers**
-
-`renderCommandPresentation(model)` renders command/arguments on top, then two scrollable columns for stdout and stderr, followed by exit state, retries, and duration. `renderReviewPresentation(model)` renders request/diff/context on the left and findings/recommendation on the right; severity counts stay in the header.
-
-- [ ] **Step 4: Implement repository and RAG renderers**
-
-`renderRepoIntelligencePresentation(model)` renders repository identity, operation/query, context summary, files/symbols/results. `renderRagSearchPresentation(model)` renders query, ranked retrieved sources with score/provider, answer, and truncation state. Long source payloads stay collapsed.
-
-- [ ] **Step 5: Implement async and generic renderers**
-
-`renderAsyncJobPresentation(model)` renders lifecycle state, queue wait, attempts/retries, worker input, result/error, and scheduler/job IDs. `renderRequestResponsePresentation(model)` renders request envelope, response, status, timing, and error with explicit unavailable states.
-
-- [ ] **Step 6: Complete dispatcher and verify GREEN**
-
-Extend the dispatcher with all kinds, keeping `request_response` as the default. Run:
-
-```bash
-python -m pytest -q tests/test_dashboard_custom_modals.py -k "request_specific_renderers or trace_inspector" --tb=short
-```
-
-Expected: PASS. Commit:
-
-```bash
-git add src/local_ai_hub/dashboard.py tests/test_dashboard_custom_modals.py
-git commit -m "feat(dashboard): add request-specific trace views"
-```
-
-### Task 4: Integrate primary presentation with optional technical details
-
-**Files:**
-- Modify: `tests/test_dashboard_custom_modals.py`
-- Modify: `src/local_ai_hub/dashboard.py:2050-2080`
-
-- [ ] **Step 1: Write failing integration contracts**
-
-Require `renderTracePresentation(model)` to appear before the collapsed technical details and require existing tabs/raw fallback to remain inside that details block.
-
-- [ ] **Step 2: Run RED**
-
-Run:
-
-```bash
-python -m pytest -q tests/test_dashboard_custom_modals.py -k "presentation_before_optional_details" --tb=short
-```
-
-Expected: FAIL until `renderTraceDetail` uses the dispatcher.
-
-- [ ] **Step 3: Replace primary card assembly**
-
-In `renderTraceDetail`, keep the existing header and universal summary data, then render:
+- [ ] **Step 3: Implement the disclosure order.** Keep the existing state capture/restore code. Generate:
 
 ```javascript
 const presentationMarkup=renderTracePresentation(model);
-const optionalMarkup=`<details class="trace-optional-details"><summary>Technical details · ${panels.length} optional views</summary><div class="trace-optional-body">${universalSummary}<nav class="trace-tabs" role="tablist" aria-label="Trace views">${tabs}</nav>${panelMarkup}</div></details>`;
-$('tracePageBody').innerHTML=`<div class="human-shell">${header}${presentationMarkup}${optionalMarkup}</div>`;
+const technicalMarkup=`<details id="traceTechnicalDetails" class="trace-optional-details"><summary>Technical details</summary><div class="trace-optional-body">${universalSummary}<nav class="trace-tabs" role="tablist" aria-label="Trace views">${tabs}</nav>${panelMarkup}</div></details>`;
+body.innerHTML=`<div class="human-shell">${header}${presentationMarkup}${technicalMarkup}</div>`;
 ```
 
-Preserve scroll capture/restore, redaction toggle, tab ARIA attributes, and incremental polling.
+Apply `traceOptionalDetailsOpen` only when restoring a previously opened disclosure; never add `open` on a first render. Preserve tab ARIA state, thinking-detail state, scroll positions, polling updates, and redaction reveal behavior.
 
-- [ ] **Step 4: Verify GREEN and run focused suite**
-
-Run:
+- [ ] **Step 4: Run integration and regression tests.**
 
 ```bash
-python -m pytest -q tests/test_dashboard_custom_modals.py tests/test_debug_traces.py tests/test_debug_trace_request_summary.py -k trace --tb=short
+python -m pytest -q tests/test_dashboard_custom_modals.py tests/test_debug_traces.py tests/test_debug_trace_request_summary.py -k "trace" --tb=short
 ```
 
-Expected: all selected tests pass. Commit:
+Expected: zero failures, including malformed event, bounded payload, redaction, and tab-preservation tests.
+
+- [ ] **Step 5: Commit integration.**
 
 ```bash
 git add src/local_ai_hub/dashboard.py tests/test_dashboard_custom_modals.py
-git commit -m "feat(dashboard): dispatch trace-specific primary views"
+git commit -m "feat(dashboard): make trace technical details optional"
 ```
 
-### Task 5: Document views and run full verification
+Do not stage the unrelated live-event link change when committing.
+
+### Task 5: Document, validate, and manually inspect
 
 **Files:**
-- Modify: `docs/DASHBOARD.md`
-- Modify: `tests/test_dashboard_custom_modals.py`
+- Modify: `docs/DASHBOARD.md` only if the Trace Inspector section exists and needs the new default behavior documented.
+- Test: `tests/test_dashboard_custom_modals.py`.
 
-- [ ] **Step 1: Update dashboard documentation**
+- [ ] **Step 1: Add one documentation paragraph.** State that Trace Inspector chooses a request-specific human layout, hides empty/internal/duplicate metadata by default, and keeps complete sanitized raw/technical views behind collapsed Technical details.
 
-Document that Trace Inspector selects model chat, tool loop, command, review, repository, RAG, async-job, or request/response layouts from existing trace fields; technical details remain collapsed and redaction remains enabled by default.
+- [ ] **Step 2: Run repository tools.** The bundled `ensure-tools.ps1` path is unavailable in this checkout, so use the repository command broker first and do one bounded native fallback only if it returns terminal/non-retryable:
 
-- [ ] **Step 2: Add missing-field and redaction contracts**
-
-Add tests proving unknown actions use `request_response`, missing prompt/output show explicit unavailable states, long payloads remain bounded, and sensitive keys stay redacted until reveal.
-
-- [ ] **Step 3: Run focused and full suites**
-
-Run:
-
-```bash
-python -m pytest -q tests/test_dashboard_custom_modals.py tests/test_debug_traces.py tests/test_debug_trace_request_summary.py --tb=short
-python -m pytest -q --tb=short
-git diff --check
+```text
+local_ai_command(action="run", command="python -m pytest -q tests/test_dashboard_custom_modals.py tests/test_debug_traces.py tests/test_debug_trace_request_summary.py --tb=short", cwd="C:\\Users\\Adam\\.local-ai-hub")
+local_ai_command(action="run", command="python -m compileall -q src mcp tools tests", cwd="C:\\Users\\Adam\\.local-ai-hub")
+local_ai_command(action="run", command="python tools/release_check.py", cwd="C:\\Users\\Adam\\.local-ai-hub")
+local_ai_command(action="run", command="python -m pytest -q --tb=short", cwd="C:\\Users\\Adam\\.local-ai-hub")
 ```
 
-Expected: focused tests pass; full suite reports zero failures; diff check is clean.
+Expected: each command reports success with zero failures. Also run `git diff --check` through the command broker.
 
-- [ ] **Step 4: Restart hub and manually inspect representative traces**
+- [ ] **Step 3: Inspect representative browser traces.** Use the existing dashboard service/browser and inspect one model chat, agent loop, command, review, repository, RAG, async-job, request/response, and malformed trace. Confirm the first screen is readable, empty rows are absent, technical details start closed, raw JSON remains available after expanding, and narrow layout stacks without horizontal overflow.
 
-Run `python tools/service.py restart`, then inspect one trace from each family in the browser. Confirm model output is left, full model input is right, filters do not hide content unexpectedly, optional details open correctly, and a trace without payloads remains readable.
+- [ ] **Step 4: Review the final diff and preserve existing work.** Run `git diff --stat`, `git diff --check`, and `git diff -- src/local_ai_hub/dashboard.py tests/test_dashboard_operational_surfaces.py`. Confirm the pre-existing live-event link hunk is unchanged and only intended Trace Inspector/docs/test changes were added.
 
-- [ ] **Step 5: Commit documentation and final changes**
+- [ ] **Step 5: Commit documentation and final scoped changes.** Stage only intended hunks; leave unrelated user edits unstaged if they are not part of the final patch.
 
 ```bash
-git add src/local_ai_hub/dashboard.py tests/test_dashboard_custom_modals.py docs/DASHBOARD.md
-git commit -m "feat(dashboard): specialize trace inspector views"
+git add docs/DASHBOARD.md tests/test_dashboard_custom_modals.py
+git commit -m "docs(dashboard): describe human-first trace inspector"
 ```

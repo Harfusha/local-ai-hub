@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 from urllib.parse import urlparse
 
 from .llama_cpp import LlamaCppRouter
+from .json_utils import dumps as json_dumps
 
 
 def _normalise_keep_alive(payload: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -200,7 +201,7 @@ class OllamaRuntime:
                 ]}
             return {"error": "Ollama fallback is disabled and this endpoint is not provided by llama.cpp SYCL"}
         payload = _normalise_keep_alive(payload)
-        body = json.dumps(payload).encode("utf-8") if payload is not None else None
+        body = json_dumps(payload).encode("utf-8") if payload is not None else None
         headers = {"Content-Type": "application/json"} if body is not None else {}
         attempts = max(1, int(self.config.get("ollama", {}).get("request_attempts", 2)))
         retry_delay = max(0.0, float(self.config.get("ollama", {}).get("retry_delay_seconds", 0.6)))
@@ -242,9 +243,9 @@ class OllamaRuntime:
                 time.sleep(min(retry_delay, remaining))
         return {"error": last_error, "_lah_retry_count": max(0, attempts - 1), "timed_out": time.monotonic() >= deadline}
 
-    def request_stream(self, endpoint: str, payload: dict[str, Any] | None, on_chunk: Any, timeout: float | None = None) -> dict[str, Any]:
+    def request_stream(self, endpoint: str, payload: dict[str, Any] | None, on_chunk: Any, timeout: float | None = None, *, on_thinking: Any | None = None) -> dict[str, Any]:
         llama_router = getattr(self, "llama_cpp", None)
-        llama_result = llama_router.request_stream(endpoint, payload, on_chunk, timeout=timeout) if llama_router is not None else None
+        llama_result = llama_router.request_stream(endpoint, payload, on_chunk, timeout=timeout, on_thinking=on_thinking) if llama_router is not None else None
         if llama_result is not None:
             if "_lah_backend_unavailable" not in llama_result:
                 return llama_result
@@ -257,7 +258,7 @@ class OllamaRuntime:
                 return {"error": "Ollama fallback is disabled and no llama.cpp SYCL route matches this model", "_lah_provider": "llama.cpp-sycl"}
         clean = dict(_normalise_keep_alive(payload) or {})
         clean["stream"] = True
-        body = json.dumps(clean, ensure_ascii=False).encode("utf-8")
+        body = json_dumps(clean).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         attempts = max(1, int(self.config.get("ollama", {}).get("request_attempts", 2)))
         retry_delay = max(0.0, float(self.config.get("ollama", {}).get("retry_delay_seconds", 0.6)))
@@ -270,6 +271,7 @@ class OllamaRuntime:
                 break
             generated: list[str] = []
             chat: list[str] = []
+            thinking_parts: list[str] = []
             final: dict[str, Any] = {}
             watchdog = RepetitionWatchdog(max_repeat=3)
             req = Request(f"{self.base_url}{endpoint}", data=body, headers=headers)
@@ -293,20 +295,33 @@ class OllamaRuntime:
                             break
                         delta = chunk.get("response")
                         if delta is not None:
-                            text = str(delta); generated.append(text)
-                            try: on_chunk(text)
-                            except Exception: pass
-                            if watchdog.push(text):
-                                final["_lah_repetition_loop_detected"] = True
-                                break
+                            text = str(delta)
+                            if text:
+                                generated.append(text)
+                                try: on_chunk(text)
+                                except Exception: pass
+                                if watchdog.push(text):
+                                    final["_lah_repetition_loop_detected"] = True
+                                    break
                         message = chunk.get("message")
                         if isinstance(message, dict) and message.get("content") is not None:
-                            text = str(message["content"]); chat.append(text)
-                            try: on_chunk(text)
-                            except Exception: pass
-                            if watchdog.push(text):
-                                final["_lah_repetition_loop_detected"] = True
-                                break
+                            text = str(message["content"])
+                            if text:
+                                chat.append(text)
+                                try: on_chunk(text)
+                                except Exception: pass
+                                if watchdog.push(text):
+                                    final["_lah_repetition_loop_detected"] = True
+                                    break
+                        thinking_delta = chunk.get("thinking")
+                        if thinking_delta is None and isinstance(message, dict):
+                            thinking_delta = message.get("thinking")
+                        if thinking_delta:
+                            thinking_text = str(thinking_delta)
+                            thinking_parts.append(thinking_text)
+                            if on_thinking is not None:
+                                try: on_thinking(thinking_text)
+                                except Exception: pass
                         final.update(chunk)
                         if chunk.get("done") is True:
                             break
@@ -329,6 +344,8 @@ class OllamaRuntime:
                         chat_text = watchdog.trim_trailing_loop(chat_text)
                     message["content"] = chat_text
                     final["message"] = message
+                if thinking_parts:
+                    final["thinking"] = "".join(thinking_parts)
                 if final and not final.get("error"):
                     final["_lah_retry_count"] = max(0, attempt - 1)
                     if backend_fallback:
@@ -396,7 +413,7 @@ class OllamaRuntime:
         clean = _normalise_keep_alive(payload) or {}
         clean = dict(clean)
         clean.setdefault("stream", True)
-        body = json.dumps(clean, ensure_ascii=False).encode("utf-8")
+        body = json_dumps(clean).encode("utf-8")
         req = Request(f"{self.base_url}{endpoint}", data=body, headers={"Content-Type": "application/json"})
         total_timeout = max(0.05, float(timeout if timeout is not None else self.timeout))
         deadline = time.monotonic() + total_timeout
@@ -779,7 +796,7 @@ class OllamaRuntime:
 
     def load_model(self, model: str, *, keep_alive: str | None = None) -> bool:
         if self.llama_cpp.supports_model(model):
-            if self.llama_cpp.ensure_model(model, timeout=float(self.config.get("llama_cpp", {}).get("model_load_timeout_seconds", 90))):
+            if self.llama_cpp.ensure_model(model, timeout=float(self.config.get("llama_cpp", {}).get("model_load_timeout_seconds", 600))):
                 return True
             if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)):
                 return False

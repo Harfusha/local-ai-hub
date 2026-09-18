@@ -5,7 +5,7 @@ port = 11435
 ollama_url = "http://127.0.0.1:11434"
 auto_start_ollama = true
 state_dir = "~/.local-ai-hub/state"
-request_timeout_seconds = 210
+request_timeout_seconds = 900
 # Slow/broken clients cannot occupy a handler while dribbling a request body.
 request_body_timeout_seconds = 15
 # Release idle HTTP/1.1 keep-alive sockets so they do not exhaust handler slots.
@@ -47,7 +47,7 @@ reranker_device = "cpu"
 # On Intel-only systems, use the loopback SYCL model router when ready.
 # NVIDIA/AMD systems keep Ollama routing; the default permits Ollama fallback.
 mode = "auto" # off | auto | on (on is an explicit manual override)
-model_load_timeout_seconds = 90
+model_load_timeout_seconds = 600
 fallback_to_ollama = true
 
 [llama_cpp.models."qwen2.5-coder:1.5b"]
@@ -176,15 +176,15 @@ switch_cooldown_seconds = 1
 # A failed model load fails queued callers immediately and briefly opens a circuit breaker.
 model_switch_failure_cooldown_seconds = 20
 # Absolute ceiling for any scheduler caller, including accidental unbounded waits.
-max_caller_wait_timeout_seconds = 900
+max_caller_wait_timeout_seconds = 1800
 
 [async_jobs]
 enabled = true
 max_pending = 64
-wait_max_seconds = 90
-lease_seconds = 900
+wait_max_seconds = 600
+lease_seconds = 1800
 result_ttl_seconds = 259200
-max_attempts = 2
+max_attempts = 1
 
 [work_orchestrator]
 # Whole-task delegation: plan -> bounded DAG -> transactional edits -> validation -> final handoff.
@@ -194,9 +194,9 @@ max_pending_work_orders = 32
 # Work workers are lazy and retire after this idle period; a new submit restarts them.
 worker_idle_seconds = 120
 max_steps = 32
-max_llm_steps = 16
+max_llm_steps = 24
 max_replans = 2
-max_seconds = 900
+max_seconds = 3600
 parallel_llm_steps = 1
 parallel_deterministic_steps = 2
 step_retry_limit = 2
@@ -208,7 +208,7 @@ allow_create = true
 allow_delete = true
 rollback_on_failure = true
 default_response_profile = "compact"
-default_max_output_tokens = 350
+default_max_output_tokens = 1200
 
 [debug_traces]
 enabled = true
@@ -231,9 +231,9 @@ flash_attention = true
 kv_cache_type = "q8_0"
 gpu_overhead_bytes = 268435456 # reserve 256 MiB so desktop VRAM pressure does not turn into an OOM
 keep_alive = "24h" # keep the active model resident until the scheduler intentionally switches it
-request_attempts = 2
+request_attempts = 1
 retry_delay_seconds = 0.6
-startup_timeout_seconds = 12
+startup_timeout_seconds = 60
 
 [smart_ollama]
 # Disabled by default: the foreground Ollama process remains user-managed.
@@ -258,34 +258,34 @@ language = "match_input"
 [ollama_subagents.profiles.qwen-explorer]
 model = "qwen2.5-coder:1.5b"
 role = "explorer"
-max_steps = 3
-max_tool_calls = 6
-max_tokens = 700
+max_steps = 8
+max_tool_calls = 16
+max_tokens = 2048
 temperature = 0.05
 
 [ollama_subagents.profiles.qwen-drafter]
 model = "qwen2.5-coder:3b"
 role = "drafter"
-max_steps = 3
-max_tool_calls = 6
-max_tokens = 1100
+max_steps = 8
+max_tool_calls = 16
+max_tokens = 4096
 temperature = 0.08
 
 [ollama_subagents.profiles.qwen-critic]
 model = "qwen2.5-coder:7b"
 role = "critic"
-max_steps = 3
-max_tool_calls = 6
-max_tokens = 800
+max_steps = 8
+max_tool_calls = 16
+max_tokens = 4096
 temperature = 0.03
 
 [token_saving]
 # The hub itself reads/searches repositories so broad source context never has to enter the cloud agent.
-default_repo_context_tokens = 3200
-max_diff_tokens = 8000
+default_repo_context_tokens = 8000
+max_diff_tokens = 24000
 max_local_input_tokens = 56000
-max_local_output_tokens = 2400
-compression_chunk_tokens = 4200
+max_local_output_tokens = 8192
+compression_chunk_tokens = 8000
 # Legacy fallback rate for telemetry rows without separate input/output counters.
 cloud_token_cost_usd_per_million = 3.0
 # Cloud model input/output rates used for channel-specific USD savings estimates.
@@ -506,21 +506,32 @@ extensions = [
 ignore_dirs = [
   ".git", ".svn", ".hg", ".idea", ".vscode", ".venv", "venv", "node_modules",
   "vendor", "dist", "build", "bin", "obj", "coverage", ".next", ".cache",
-  ".serena", ".codegraphcontext", ".local-ai-hub", "tool-envs", "site-packages", "__pycache__"
+  ".serena", ".codegraphcontext", ".local-ai-hub", "tool-envs", "site-packages", "__pycache__",
+  "Library", "Temp", "Logs", "UserSettings"
 ]
 
 
 [mcp]
 # One compact public MCP surface; Serena/CodeGraph stay behind it by default.
-compact_max_text_chars = 1800
-compact_max_evidence = 10
+compact_max_text_chars = 6000
+compact_max_evidence = 16
+
+[mcp.response_budget]
+# Aggregate agent-facing budgets are enforced after semantic projection. Exact
+# source/log detail remains available through local_ai_artifact.
+enabled = true
+default_tokens = 3200
+max_tokens = 8192
+reuse_cache_size = 256
+ledger_size = 512
+tool_tokens = { local_ai_status = 500, local_ai_task = 1000, local_ai_repo = 1200, local_ai_rag = 900, local_ai_command = 700, local_ai_coord = 800, local_ai_artifact = 900, local_ai_work = 800 }
 # MCP calls are intentionally bounded. Preprocessing is asynchronous, so no normal
 # foreground tool should need an unbounded multi-hour socket wait.
-quick_timeout_seconds = 60
-context_timeout_seconds = 240
-model_timeout_seconds = 600
-long_timeout_seconds = 900
-host_tool_timeout_seconds = 900
+quick_timeout_seconds = 180
+context_timeout_seconds = 600
+model_timeout_seconds = 1800
+long_timeout_seconds = 2400
+host_tool_timeout_seconds = 2400
 
 [workflow]
 direct_repo_context_tokens = 3000
@@ -582,9 +593,9 @@ explorer_skip_worker_confidence = 0.84
 direct_smart_enabled = true
 direct_smart_complexity_score = 4
 direct_smart_risk_score = 4
-explorer_max_tokens = 650
-worker_max_tokens = 1300
-critic_max_tokens = 750
+explorer_max_tokens = 2048
+worker_max_tokens = 4096
+critic_max_tokens = 4096
 canonical_max_chars = 6000
 # Foreground execution uses one fast-tier pass, then escalates to the smart tier only when justified.
 same_model_worker_passes = 1
@@ -600,8 +611,8 @@ watchdog_interval_seconds = 5
 journal_stale_seconds = 900
 circuit_failure_threshold = 3
 circuit_cooldown_seconds = 20
-scheduler_wait_timeout_seconds = 225
-singleflight_wait_timeout_seconds = 45
+scheduler_wait_timeout_seconds = 900
+singleflight_wait_timeout_seconds = 300
 model_fallback_enabled = true
 max_model_fallbacks = 2
 serve_stale_on_error = true
@@ -611,7 +622,7 @@ stale_generation_max_entries = 10000
 # Agent-specific projections happen after canonical local work, so they do not
 # fragment the expensive Ollama cache.
 [agent_output.codex]
-max_text = 1150
+max_text = 3000
 max_evidence = 7
 raw_evidence = 1
 risks = "critical"
@@ -619,7 +630,7 @@ relationships = false
 commands = true
 
 [agent_output.claude]
-max_text = 1700
+max_text = 4500
 max_evidence = 10
 raw_evidence = 3
 risks = "all"
@@ -627,7 +638,7 @@ relationships = true
 commands = true
 
 [agent_output.gemini]
-max_text = 1450
+max_text = 3500
 max_evidence = 9
 raw_evidence = 3
 risks = "important"
@@ -635,7 +646,7 @@ relationships = true
 commands = true
 
 [agent_output.cursor]
-max_text = 1250
+max_text = 3200
 max_evidence = 8
 raw_evidence = 2
 risks = "important"
@@ -643,7 +654,7 @@ relationships = true
 commands = true
 
 [agent_output.windsurf]
-max_text = 1250
+max_text = 3200
 max_evidence = 8
 raw_evidence = 2
 risks = "important"
@@ -651,7 +662,7 @@ relationships = true
 commands = true
 
 [agent_output.copilot]
-max_text = 1100
+max_text = 3000
 max_evidence = 7
 raw_evidence = 2
 risks = "important"
@@ -659,7 +670,7 @@ relationships = false
 commands = true
 
 [agent_output.generic]
-max_text = 1500
+max_text = 4000
 max_evidence = 8
 raw_evidence = 2
 risks = "important"
@@ -732,7 +743,7 @@ hot_query_top_k = 8
 hot_context_tokens = 1800
 lookup_file_cards = 5
 lookup_candidate_cards = 120
-background_request_timeout_seconds = 90
+background_request_timeout_seconds = 300
 background_scheduler_timeout_seconds = 75
 max_error_backoff_seconds = 300
 hot_queries = [
@@ -814,8 +825,8 @@ compression = true
 compression_confidence = 0.88
 # When parser/index facts reach this confidence, skip semantic retrieval and seed local models directly.
 context_confidence = 0.80
-context_max_chars = 5200
-context_raw_evidence = 5
+context_max_chars = 12000
+context_raw_evidence = 10
 
 [client]
 # MCP/CLI cold-start budgets. Stale startup locks are discarded immediately when their PID is gone.
@@ -824,7 +835,7 @@ startup_wait_seconds = 15.0
 startup_poll_seconds = 0.15
 start_lock_stale_seconds = 20.0
 # Hard client-side ceiling even if an MCP wrapper accidentally requests a larger wait.
-max_request_timeout_seconds = 900.0
+max_request_timeout_seconds = 1800.0
 
 [headless]
 enabled = true

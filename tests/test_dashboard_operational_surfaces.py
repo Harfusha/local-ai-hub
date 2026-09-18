@@ -9,6 +9,12 @@ def test_operations_views_name_distinct_records_and_trace_availability() -> None
     assert "function requestTraceAvailability(request)" in DASHBOARD_HTML
 
 
+def test_recent_request_table_reserves_trace_and_duration_columns() -> None:
+    assert ".work-panel-3 th:nth-child(8){width:12%}" in DASHBOARD_HTML
+    assert ".work-panel-3 th:nth-child(9){width:7%}" in DASHBOARD_HTML
+    assert ".work-panel-3 td:nth-child(8),.work-panel-3 td:nth-child(9){white-space:nowrap" in DASHBOARD_HTML
+
+
 def test_projects_and_bundles_expose_canonical_identity_and_readiness() -> None:
     assert "Repository identity" in DASHBOARD_HTML
     assert "Group worktrees" in DASHBOARD_HTML
@@ -24,6 +30,18 @@ def test_rag_reliability_and_events_have_operational_filters() -> None:
     assert "Failure trend" in DASHBOARD_HTML
     assert "Event severity" in DASHBOARD_HTML
     assert "Event source" in DASHBOARD_HTML
+
+
+def test_live_events_with_trace_id_link_to_trace_inspector() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderEvents(events=liveEvents)") : DASHBOARD_HTML.index(
+            "async function pollEvents()"
+        )
+    ]
+    assert "traceId=e.trace_id" in source
+    assert "traceAttr=traceId?" in source
+    assert "data-trace-id" in source
+    assert "data-detail=\"${id}\"" in source
 
 
 def test_destructive_controls_describe_scope_and_impact() -> None:
@@ -44,6 +62,20 @@ def test_reliability_summary_footer_padding_and_severity_contract() -> None:
     # Assert active crash rather than any historical crash determines attention severity
     assert "activeCrash" in DASHBOARD_HTML
     assert "failures||activeCrash?'attention':restarts?'warning':'healthy'" in DASHBOARD_HTML
+
+
+def test_operational_severity_resolve_errors_action() -> None:
+    assert 'id="resolveErrorsBtn"' in DASHBOARD_HTML
+    assert 'id="resolveAllErrorsBtn"' in DASHBOARD_HTML
+    assert 'function renderResolveErrorsModal(r)' in DASHBOARD_HTML
+    assert "/api/maintenance/resolve_errors" in DASHBOARD_HTML
+    assert "type==='resolve_errors'" in DASHBOARD_HTML
+    footer_idx = DASHBOARD_HTML.index('class="reliability-footer"')
+    trend_idx = DASHBOARD_HTML.index('id="reliabilityTrend"')
+    resolve_idx = DASHBOARD_HTML.index('id="resolveErrorsBtn"')
+    action_idx = DASHBOARD_HTML.index('id="reliabilityAction"')
+    assert footer_idx < trend_idx < resolve_idx < action_idx
+
 
 
 def test_dashboard_ux_refinements_and_empty_states() -> None:

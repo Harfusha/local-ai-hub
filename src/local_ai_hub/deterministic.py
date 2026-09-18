@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import ast
 import json
 import os
@@ -271,7 +273,7 @@ class DeterministicEngine:
             row = self._query_l1.get(cache_key)
             if row and now - row[0] <= self._query_l1_ttl:
                 self._stats["query_l1_hits"] += 1
-                return json.loads(json.dumps(row[1]))
+                return json.loads(json_dumps(row[1]))
             if row:
                 self._query_l1.pop(cache_key, None)
         try:
@@ -288,21 +290,21 @@ class DeterministicEngine:
                     if len(self._query_l1) > self._query_l1_max:
                         oldest = min(self._query_l1.items(), key=lambda kv: kv[1][0])[0]
                         self._query_l1.pop(oldest, None)
-                return json.loads(json.dumps(value))
+                return json.loads(json_dumps(value))
         except (sqlite3.DatabaseError, json.JSONDecodeError):
             return None
         return None
 
     def _query_cache_put(self, root: str, generation: int, key: str, value: dict[str, Any]) -> None:
         now = time.time(); cache_key = (root, generation, key)
-        copy = json.loads(json.dumps(value))
+        copy = json.loads(json_dumps(value))
         with self._lock:
             self._query_l1[cache_key] = (now, copy)
             if len(self._query_l1) > self._query_l1_max:
                 oldest = min(self._query_l1.items(), key=lambda kv: kv[1][0])[0]
                 self._query_l1.pop(oldest, None)
         try:
-            payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            payload = json_dumps(value, ensure_ascii=False, separators=(",", ":"))
             with self._lock, closing(self._connect()) as con:
                 con.execute(
                     "INSERT OR REPLACE INTO query_cache(root,generation,query_key,result_json,updated_at) VALUES(?,?,?,?,?)",
@@ -665,7 +667,7 @@ class DeterministicEngine:
                         for ns, target_dir in (autoload_dev.get("psr-4") or {}).items():
                             facts.append(self._fact("psr4_autoload", str(ns).rstrip("\\"), str(target_dir), 1, namespace=str(ns), path=str(target_dir), dev=True))
                     for script_name, cmd in (comp_data.get("scripts") or {}).items():
-                        cmd_val = cmd if isinstance(cmd, str) else json.dumps(cmd)
+                        cmd_val = cmd if isinstance(cmd, str) else json_dumps(cmd)
                         facts.append(self._fact("composer_script", str(script_name), str(cmd_val)[:300], 1, script=str(script_name)))
             except Exception:
                 pass
@@ -1099,7 +1101,7 @@ class DeterministicEngine:
         key = f"{content_hash}:{__version__}:{language}"
         self._fact_blob_l1.set(key, facts)
         try:
-            payload = json.dumps(facts, ensure_ascii=False, separators=(",", ":"))
+            payload = json_dumps(facts, ensure_ascii=False, separators=(",", ":"))
             with self._lock, closing(self._connect()) as con:
                 con.execute(
                     "INSERT OR REPLACE INTO fact_blobs(content_hash,analyzer_version,language,facts_json,updated_at) VALUES(?,?,?,?,?)",
@@ -1165,7 +1167,7 @@ class DeterministicEngine:
             )
             con.executemany(
                 "INSERT INTO facts(root,path,kind,name,value,line,extra_json) VALUES(?,?,?,?,?,?,?)",
-                [(root_s, path, f["kind"], f["name"], f["value"], f["line"], json.dumps(f["extra"], ensure_ascii=False, separators=(",", ":"))) for f in facts],
+                [(root_s, path, f["kind"], f["name"], f["value"], f["line"], json_dumps(f["extra"], ensure_ascii=False, separators=(",", ":"))) for f in facts],
             )
             try:
                 con.executemany(
@@ -1250,7 +1252,7 @@ class DeterministicEngine:
             facts = blob_map.get((content_hash, language))
             if facts is None:
                 facts = self._extract_source_facts(path, "\n".join(lines))
-                blob_rows.append((content_hash, __version__, language, json.dumps(facts, ensure_ascii=False, separators=(",", ":")), now))
+                blob_rows.append((content_hash, __version__, language, json_dumps(facts, ensure_ascii=False, separators=(",", ":")), now))
             else:
                 self._stats["fact_blob_hits"] += 1
             parsed_rows.append((path, content_hash, language, facts))
@@ -1267,7 +1269,7 @@ class DeterministicEngine:
                     except sqlite3.OperationalError:
                         pass
                     con.execute("INSERT OR REPLACE INTO files(root,path,content_hash,language,is_test,updated_at) VALUES(?,?,?,?,?,?)", (root_s, path, content_hash, language, int(self._is_test(path)), now))
-                    con.executemany("INSERT INTO facts(root,path,kind,name,value,line,extra_json) VALUES(?,?,?,?,?,?,?)", [(root_s, path, f["kind"], f["name"], f["value"], f["line"], json.dumps(f["extra"], ensure_ascii=False, separators=(",", ":"))) for f in facts])
+                    con.executemany("INSERT INTO facts(root,path,kind,name,value,line,extra_json) VALUES(?,?,?,?,?,?,?)", [(root_s, path, f["kind"], f["name"], f["value"], f["line"], json_dumps(f["extra"], ensure_ascii=False, separators=(",", ":"))) for f in facts])
                     try:
                         con.executemany("INSERT INTO fact_fts(root,path,kind,name,value) VALUES(?,?,?,?,?)", [(root_s, path, f["kind"], f["name"], f["value"]) for f in facts])
                     except sqlite3.OperationalError:
@@ -1341,7 +1343,7 @@ class DeterministicEngine:
             with self._lock, closing(self._connect()) as con:
                 con.execute(
                     "INSERT OR REPLACE INTO manifest_blobs(content_hash,analyzer_version,filename,deps_json,scripts_json,updated_at) VALUES(?,?,?,?,?,?)",
-                    (content_hash, __version__, filename.lower(), json.dumps(deps, ensure_ascii=False, separators=(",", ":")), json.dumps(scripts, ensure_ascii=False, separators=(",", ":")), now),
+                    (content_hash, __version__, filename.lower(), json_dumps(deps, ensure_ascii=False, separators=(",", ":")), json_dumps(scripts, ensure_ascii=False, separators=(",", ":")), now),
                 )
                 count = int(con.execute("SELECT COUNT(*) FROM manifest_blobs").fetchone()[0])
                 if count > self._manifest_blob_max:
@@ -2714,7 +2716,7 @@ class DeterministicEngine:
             "scripts": result.get("scripts", [])[:12], "test_candidates": result.get("test_candidates", [])[:10],
             "code_index": result.get("code_index", {}), "evidence": result.get("evidence", [])[:10],
         }
-        text = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+        text = json_dumps(compact, ensure_ascii=False, separators=(",", ":"))
         return text[:max_chars]
 
     def cross_project_graph(self, roots: list[str]) -> dict[str, Any]:
@@ -3119,7 +3121,7 @@ class DeterministicEngine:
         osv_url = str(cfg.get("osv_api_url", "https://api.osv.dev/api/querybatch"))
         request = urllib.request.Request(
             osv_url,
-            data=json.dumps({"queries": queries}).encode("utf-8"),
+            data=json_dumps({"queries": queries}).encode("utf-8"),
             headers={"Content-Type": "application/json", "User-Agent": "Local-AI-Hub/1"},
         )
         try:
@@ -4781,7 +4783,7 @@ def test_{sym}_regression_edge_cases():
                 lines.append(f"INSERT INTO {table} ({cols}) VALUES ({vals});")
             rendered = "\n".join(lines)
         else:
-            rendered = json.dumps(rows, indent=2)
+            rendered = json_dumps(rows, indent=2)
 
         return {
             "success": True,

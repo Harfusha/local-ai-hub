@@ -33,7 +33,7 @@ Execute the following phases deterministically:
 
 ### PHASE 2: RUN BOOTSTRAP INSTALLATION
 
-Run the platform installer from the repository root. This automatically configures Python 3.11+, virtual environment, Token Economy tools, Ollama models, Serena/CodeGraphContext environments, global MCP configs, and background supervisor. The default install deploys the `token-economizer` skill and registers its CLI directory on the user's persistent PATH; verify both after setup, then open a new terminal. Do not pass `--skip-token-economy` or `--skip-companion-skills` for the standard install.
+Run the platform installer from the repository root. This automatically configures Python 3.11+, virtual environment, Token Economy tools, backend-appropriate local model support, Serena/CodeGraphContext environments, global MCP configs, and background supervisor. Ollama is installed and its models are pulled only when `server.auto_start_ollama = true` and `llama_cpp.fallback_to_ollama = true`; an exclusive `llama_cpp.mode = "on"` configuration with `fallback_to_ollama = false` skips Ollama entirely. The default install deploys the `token-economizer` skill and registers its CLI directory on the user's persistent PATH; verify both after setup, then open a new terminal. Do not pass `--skip-token-economy` or `--skip-companion-skills` for the standard install.
 
 - **Windows (PowerShell)**:
   ```powershell
@@ -109,7 +109,7 @@ Trigger map:
 - exact source/log/evidence slice: `local_ai_artifact`
 - task contracts, ownership leases, checkpoints, verification receipts, and receipt-gated completion: `local_ai_coord`
 - semantic retrieval after indexed paths are insufficient: `local_ai_rag`
-- local diagnosis/boilerplate/second opinion: `local_ai_task` failure diagnosis is disabled by default. Enable `features.local_diagnostic_dispatch=true` only after low-confidence deterministic command parsing; provide artifact reference plus narrow preview, never raw logs. Automatic local inference never handles architecture, security, mutations, or open-ended coding.
+- semantic generation, exploration, reasoning, review, second opinion and compression: use `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` after any needed evidence. Deterministic/indexed tools remain for exact facts, symbols, diff and tests; they do not replace semantic local-model work. `local_ai_repo(action="solve")` preserves one bounded local pass when its task text explicitly requests explore/explain/why/compare/second-opinion semantics, even when exact evidence is strong. Failure diagnosis is disabled by default; enable `features.local_diagnostic_dispatch=true` only after low-confidence deterministic command parsing with an artifact reference plus narrow preview, never raw logs. Automatic local inference never handles architecture, security, mutations, or open-ended coding.
 - closed, verified handoff work: `local_ai_work`; skip micro-edits and live discussion
 
 Recipes (guidance, not gates):
@@ -121,7 +121,7 @@ Recipes (guidance, not gates):
 
 Delegation is the default for any task with useful bounded independent work.
 
-- Use `local_ai_task` for bounded local-model work when local inference is the right fit. Use `qwen2.5-coder:1.5b` only for quick/simple tasks, `qwen2.5-coder:3b` for ordinary and more involved work, `qwen2.5-coder:7b` for the hardest reasoning, and `qwen2.5-coder:0.5b` only for preprocessing.
+- Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression. Use `qwen2.5-coder:1.5b` only for quick/simple tasks, `qwen2.5-coder:3b` for ordinary and more involved work, `qwen2.5-coder:7b` for the hardest reasoning, and `qwen2.5-coder:0.5b` only for preprocessing.
 - Use the native Codex `multi_agent_v1__spawn_agent` path only for useful independent bounded work or an explicit Codex-subagent request.
 - Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
 - Do not duplicate the same scope across agents. Keep final decisions, edits, and integration in Codex.
@@ -140,7 +140,7 @@ For every non-trivial repository task, use Local AI Hub before broad native disc
 
 Adoption gate: `local_ai_command` alone is never sufficient for a repository task. The first useful Hub operation must be `local_ai_repo` (preprocess plus the cheapest applicable deterministic/code-index/search/context action); use the command broker only for commands, after repository evidence exists. For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence and before native edits. After edits, use the applicable indexed impact/review/security/evidence action before final validation.
 
-Cheapest path: deterministic -> code_index/search -> semantic/graph -> context/solve -> RAG -> qwen2.5-coder:1.5b quick/simple generation -> qwen2.5-coder:3b ordinary and more involved work -> qwen2.5-coder:7b hardest reasoning.
+Cheapest path for repository evidence: deterministic -> code_index/search -> semantic/graph -> context/solve -> RAG. Semantic generation, reasoning, review, independent second opinions and compression use `local_ai_task` after any needed evidence.
  Stop escalating as soon as a cheaper layer provides enough evidence. Do not fan out overlapping retrieval layers in parallel for the same question. Before native `find`/`rg`/`grep`/recursive glob/tree or opening more than two files for discovery, use that hub path first. Reuse fresh evidence IDs, artifact slices, memos and cache hits;
  do not repeat the same hub action with the same root/query while repository state is unchanged.
 
@@ -159,7 +159,7 @@ Batch edits require `features.batch_replacement=true`. Then use `local_ai_repo(a
 
 For durable work, create one `local_ai_coord(action="task_create")` contract, record phase changes with `local_ai_coord(action="task_checkpoint")`, then use one bounded wait on the durable job. Do not poll status loops.
 
-Local model policy: use `qwen2.5-coder:0.5b` only for preprocessing, `qwen2.5-coder:1.5b` only for quick/simple requests, `qwen2.5-coder:3b` for ordinary and more involved work, and `qwen2.5-coder:7b` for the hardest reasoning. Deterministic and indexed Hub actions run first.
+Local model policy: use `qwen2.5-coder:0.5b` only for preprocessing, `qwen2.5-coder:1.5b` only for quick/simple requests, `qwen2.5-coder:3b` for ordinary and more involved work, and `qwen2.5-coder:7b` for the hardest reasoning. Deterministic and indexed Hub actions run first for exact facts, symbols, diff and tests; semantic generation, reasoning, review, independent second opinions and compression use `local_ai_task`.
 <!-- END LOCAL AI HUB TOOL POLICY -->
 
 <!-- BEGIN TOKEN ECONOMY POLICY -->
@@ -224,3 +224,6 @@ Output concise confirmation with:
 4. Instruction files created/modified in this repo.
 5. Readiness confirmation.
 ```
+### MCP response economy
+
+Keep the generated MCP response contract enabled. Hub responses are aggregate-bounded by default; agents should prefer `response_profile="minimal"` or `"compact"`, pass a stable `reuse_key` for repeated logical queries, reuse cache-hit/pointer responses, and fetch exact detail only through `local_ai_artifact` slices. Do not weaken the budget to expose broad command output or repository text.

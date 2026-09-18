@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import json
 import re
 import sqlite3
@@ -11,6 +13,13 @@ from pathlib import Path
 from typing import Any
 
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
+
+
+def _compact_project_label(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip().rstrip("/\\")
+    return re.split(r"[\\/]", text)[-1] if text else ""
 
 
 class DebugTraceStore:
@@ -76,7 +85,7 @@ class DebugTraceStore:
 
     @staticmethod
     def _encode(value: Any) -> str:
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+        return json_dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
     @staticmethod
     def _decode(value: str, default: Any = None) -> Any:
@@ -210,7 +219,7 @@ class DebugTraceStore:
             if key in fields:
                 updates.append(f"{column}=?"); values.append(candidate[key])
         for key, value in fields.items():
-            if key in allowed and key not in self.JSON_FIELDS and key != "output":
+            if key in allowed and key not in self.JSON_FIELDS and key not in {"output", "thinking"}:
                 updates.append(f"{key}=?"); values.append(value)
         if not updates:
             return False
@@ -306,6 +315,7 @@ class DebugTraceStore:
         for key in ("request_json", "effective_payload_json", "response_json"):
             result[key.removesuffix("_json")] = self._decode(result.pop(key), {})
         result["output"] = result.pop("output_text", "")
+        result["thinking"] = ""
         result["request"] = result.get("request") or {}
         result["effective_payload"] = result.get("effective_payload") or {}
         result["response"] = result.get("response") or {}
@@ -341,10 +351,17 @@ class DebugTraceStore:
                 row = con.execute("SELECT * FROM traces WHERE trace_id=?", (trace_id,)).fetchone()
                 if not row:
                     return {"success": False, "error": "trace not found", "trace_id": trace_id, "terminal": True}
-                session = self._session(row)
                 events = [dict(event) for event in con.execute("SELECT seq,created_at,event_type,payload_json FROM trace_events WHERE trace_id=? AND seq>? ORDER BY seq ASC", (trace_id, max(0, int(since_seq))))]
                 for event in events:
                     event["payload"] = self._decode(event.pop("payload_json"), {})
+                thinking_rows = con.execute("SELECT payload_json FROM trace_events WHERE trace_id=? AND event_type=? ORDER BY seq ASC", (trace_id, "thinking")).fetchall()
+                thinking_parts = []
+                for thinking_row in thinking_rows:
+                    payload = self._decode(thinking_row[0], {})
+                    if isinstance(payload, dict):
+                        thinking_parts.append(str(payload.get("text") or ""))
+                session = self._session(row)
+                session["thinking"] = "".join(thinking_parts)[: self.max_session_text_bytes]
                 return {"success": True, "session": session, "events": events, "next_seq": events[-1]["seq"] if events else max(0, int(since_seq)), "terminal": session["state"] in self.TERMINAL_STATES}
         except sqlite3.Error:
             return {"success": False, "error": "trace store unavailable", "trace_id": trace_id, "retryable": True}
@@ -364,12 +381,15 @@ class DebugTraceStore:
                 total = int(con.execute(f"SELECT COUNT(*) FROM traces{clause}", values).fetchone()[0])
                 rows = con.execute(f"""SELECT trace_id,kind,tenant,agent,action,source,model,request_id,async_job_id,scheduler_job_id,state,created_at,updated_at,finished_at,error,
                     CASE WHEN json_valid(request_json) THEN substr(json_extract(request_json, '$.action'), 1, 48) END AS request_action,
-                    CASE WHEN json_valid(request_json) THEN substr(json_extract(request_json, '$.command'), 1, 512) END AS request_command
+                    CASE WHEN json_valid(request_json) THEN substr(json_extract(request_json, '$.command'), 1, 512) END AS request_command,
+                    CASE WHEN json_valid(request_json) THEN COALESCE(json_extract(request_json, '$.project'), json_extract(request_json, '$.workspace'), json_extract(request_json, '$.root'), json_extract(request_json, '$.repo_root')) END AS request_project,
+                    CASE WHEN json_valid(effective_payload_json) THEN COALESCE(json_extract(effective_payload_json, '$.project'), json_extract(effective_payload_json, '$.workspace'), json_extract(effective_payload_json, '$.root'), json_extract(effective_payload_json, '$.repo_root')) END AS payload_project
                     FROM traces{clause} ORDER BY updated_at DESC LIMIT ? OFFSET ?""", [*values, limit, offset]).fetchall()
                 items = []
                 for row in rows:
                     item = dict(row)
                     item["request_summary"] = self._request_summary(item["action"], item.pop("request_action", None), item.pop("request_command", None))
+                    item["project"] = _compact_project_label(item.pop("request_project", None) or item.pop("payload_project", None))
                     items.append(item)
                 return {"success": True, "items": items, "total": total, "limit": limit, "offset": offset}
         except sqlite3.Error:
@@ -435,6 +455,7 @@ class DebugTraceObserver:
         self.store = store
         self.trace_id = trace_id
         self._output = ""
+        self._thinking = ""
 
     def event(self, event_type: str, payload: Any) -> None:
         self.store.event(self.trace_id, event_type, payload)
@@ -446,13 +467,27 @@ class DebugTraceObserver:
         self.event("model_request", payload)
 
     def output_delta(self, text: str) -> None:
-        self._output += str(text)
+        text = str(text)
+        if not text:
+            return
+        self._output += text
         max_bytes = max(64, int(self.store.max_session_text_bytes))
         raw = self._output.encode("utf-8")
         if len(raw) > max_bytes:
             self._output = raw[:max_bytes].decode("utf-8", errors="ignore") + "\n[trace output truncated]"
         self.store.update(self.trace_id, output=self._output)
-        self.event("output_delta", {"text": str(text)})
+        self.event("output_delta", {"text": text})
+
+    def thinking_delta(self, text: str) -> None:
+        text = str(text)
+        if not text:
+            return
+        self._thinking += text
+        max_bytes = max(64, int(self.store.max_session_text_bytes))
+        raw = self._thinking.encode("utf-8")
+        if len(raw) > max_bytes:
+            self._thinking = raw[:max_bytes].decode("utf-8", errors="ignore") + "\n[trace thinking truncated]"
+        self.event("thinking", {"text": text})
 
     def tool_call(self, payload: Any) -> None:
         self.event("tool_call", payload)

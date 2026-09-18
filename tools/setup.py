@@ -503,8 +503,22 @@ def try_install_ollama() -> str | None:
     return find_ollama_executable()
 
 
+def ollama_setup_required(cfg: dict[str, Any]) -> bool:
+    """Return whether setup should install, start, or pull Ollama resources."""
+    server = cfg.get("server", {})
+    llama_cpp = cfg.get("llama_cpp", {})
+    if not isinstance(server, dict):
+        server = {}
+    if not isinstance(llama_cpp, dict):
+        llama_cpp = {}
+    # A user-managed Ollama or an exclusive llama.cpp route must not trigger
+    # package installation or model downloads as an incidental setup side effect.
+    return bool(server.get("auto_start_ollama", True)) and bool(llama_cpp.get("fallback_to_ollama", True))
+
+
 def ensure_ollama_for_setup(cfg: dict[str, Any], install_dir: Path, *, allow_install: bool) -> bool:
-    if not cfg.get("server", {}).get("auto_start_ollama", True):
+    if not ollama_setup_required(cfg):
+        log("Skipping Ollama setup: configuration uses llama.cpp exclusively or keeps Ollama user-managed.")
         return True
     executable = find_ollama_executable() or (try_install_ollama() if allow_install else None)
     if not executable:
@@ -523,7 +537,7 @@ def ensure_ollama_for_setup(cfg: dict[str, Any], install_dir: Path, *, allow_ins
 
 
 def pull_ollama_models(cfg: dict[str, Any]) -> None:
-    if not cfg.get("features", {}).get("pull_models_during_setup", True):
+    if not cfg.get("features", {}).get("pull_models_during_setup", True) or not ollama_setup_required(cfg):
         return
     ollama = find_ollama_executable()
     if not ollama:

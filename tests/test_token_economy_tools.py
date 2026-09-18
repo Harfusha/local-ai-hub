@@ -22,6 +22,7 @@ from local_ai_hub.token_economy import (
 from local_ai_hub.generator import (
     generate_token_economy_policy,
     TOKEN_ECONOMIZER_SKILL_MD,
+    write_all_generated,
 )
 from tools.clean import clean
 
@@ -124,11 +125,13 @@ def test_token_economy_policy_generation():
     assert all(trigger in instructions for instructions in (install_prompt, update_prompt, agents_file))
 
 
-def test_token_economizer_skill_md():
+def test_token_economizer_skill_md(tmp_path: Path):
     assert "name: token-economizer" in TOKEN_ECONOMIZER_SKILL_MD
     assert "Use when starting any coding or repository task" in TOKEN_ECONOMIZER_SKILL_MD
     assert "Load and follow this skill before any coding or repository task" in TOKEN_ECONOMIZER_SKILL_MD
-    assert (Path(__file__).resolve().parents[1] / "skills" / "token-economizer" / "SKILL.md").read_text(encoding="utf-8").strip() == TOKEN_ECONOMIZER_SKILL_MD.strip()
+    write_all_generated({"models": {"fast_code": "qwen2.5-coder:7b"}}, tmp_path)
+    generated = (tmp_path / "skills" / "token-economizer" / "SKILL.md").read_text(encoding="utf-8")
+    assert generated.strip() == TOKEN_ECONOMIZER_SKILL_MD.strip()
     assert "Zero Full-File Dumping" in TOKEN_ECONOMIZER_SKILL_MD
     assert "trim-run" in TOKEN_ECONOMIZER_SKILL_MD
     assert "tokcount" in TOKEN_ECONOMIZER_SKILL_MD

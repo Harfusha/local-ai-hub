@@ -15,6 +15,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
 from urllib.request import Request, urlopen
+from .json_utils import dumps as json_dumps
 
 
 def _loopback_url(value: Any) -> str:
@@ -146,7 +147,7 @@ class LlamaCppRouter:
             return True
         if state != "loading":
             try:
-                body = json.dumps({"model": alias}).encode("utf-8")
+                body = json_dumps({"model": alias}).encode("utf-8")
                 req = Request(f"{url}/models/load", data=body, headers={"Content-Type": "application/json"})
                 with urlopen(req, timeout=min(max(0.05, float(timeout or 60.0)), 300.0)) as response:
                     loaded = json.loads(response.read().decode("utf-8", errors="replace") or "{}")
@@ -223,7 +224,7 @@ class LlamaCppRouter:
         entry, url = selected
         alias = str(entry.get("served_model") or model)
         try:
-            body = json.dumps({"model": alias}).encode("utf-8")
+            body = json_dumps({"model": alias}).encode("utf-8")
             req = Request(f"{url}/models/unload", data=body, headers={"Content-Type": "application/json"})
             with urlopen(req, timeout=5.0) as response:
                 result = json.loads(response.read().decode("utf-8", errors="replace") or "{}")
@@ -306,6 +307,7 @@ class LlamaCppRouter:
         on_chunk: Any,
         timeout: float | None = None,
         should_stop: Any | None = None,
+        on_thinking: Any | None = None,
     ) -> dict[str, Any] | None:
         if endpoint not in {"/api/chat", "/api/generate"} or not isinstance(payload, dict):
             return None
@@ -322,14 +324,14 @@ class LlamaCppRouter:
         if requested_ctx and configured_ctx and requested_ctx > configured_ctx:
             return {"_lah_backend_unavailable": f"SYCL server context is {configured_ctx}, request needs {requested_ctx}"}
         total_timeout = max(0.05, float(timeout if timeout is not None else self.config.get("server", {}).get("request_timeout_seconds", 300)))
-        if not self.ensure_model(str(payload.get("model", "")), timeout=min(total_timeout, float(self.settings.get("model_load_timeout_seconds", 90))), should_stop=should_stop):
+        if not self.ensure_model(str(payload.get("model", "")), timeout=min(total_timeout, float(self.settings.get("model_load_timeout_seconds", 600))), should_stop=should_stop):
             return {"_lah_backend_unavailable": "local llama.cpp SYCL server is not ready"}
         try:
             from .ollama import RepetitionWatchdog
         except Exception:
             return {"error": "repetition watchdog unavailable"}
 
-        body = json.dumps(self._openai_payload(endpoint, payload, entry), ensure_ascii=False).encode("utf-8")
+        body = json_dumps(self._openai_payload(endpoint, payload, entry)).encode("utf-8")
         req = Request(
             urljoin(f"{url.rstrip('/')}/", "v1/chat/completions"), data=body,
             headers={"Content-Type": "application/json", "Accept": "text/event-stream"},

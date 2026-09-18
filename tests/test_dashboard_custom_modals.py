@@ -325,6 +325,102 @@ def test_dashboard_redacts_quoted_json_secret_keys() -> None:
     assert "<redacted>" in source
 
 
+def test_trace_sanitizer_keeps_reused_values_but_marks_true_cycles() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    script = (
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=true;"
+        + source
+        + "const shared={value:'visible'};"
+        + "const repeated={first:shared,second:shared};"
+        + "const cyclic={value:'visible'};cyclic.self=cyclic;"
+        + "console.log(JSON.stringify({repeated:traceSanitizeValue(repeated),cyclic:traceSanitizeValue(cyclic)}));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    sanitized = json.loads(result.stdout)
+    assert sanitized["repeated"]["first"]["value"] == "visible"
+    assert sanitized["repeated"]["second"]["value"] == "visible"
+    assert sanitized["cyclic"]["self"] == "<cycle omitted>"
+
+
+def test_trace_sanitizer_redacts_nested_sensitive_key_variants_in_primary_output() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    secrets = {
+        "api_key_id": "API_KEY_ID_SECRET",
+        "secret_key": "SECRET_KEY_SECRET",
+        "token_value": "TOKEN_VALUE_SECRET",
+        "x-api-key": "X_API_KEY_SECRET",
+        "authorization_header": "AUTHORIZATION_SECRET",
+        "password_hash": "PASSWORD_SECRET",
+        "clientSecret": "CLIENT_SECRET_SECRET",
+        "nested": {"Access-Token-Id": "ACCESS_TOKEN_SECRET"},
+    }
+    fixture = {
+        "presentation": {
+            "kind": "command",
+            "command": {
+                "command": "pytest",
+                "args": [secrets],
+                "stdout": "safe command output",
+            },
+        }
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"const fixture={json.dumps(fixture)};"
+        + "const sanitized=traceSanitizeValue(fixture);"
+        + "const rendered=renderTracePresentation(fixture);"
+        + "console.log(JSON.stringify({sanitized,rendered}));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    output = json.loads(result.stdout)
+    sanitized = json.dumps(output["sanitized"])
+    rendered = output["rendered"]
+    for secret in [
+        "API_KEY_ID_SECRET",
+        "SECRET_KEY_SECRET",
+        "TOKEN_VALUE_SECRET",
+        "X_API_KEY_SECRET",
+        "AUTHORIZATION_SECRET",
+        "PASSWORD_SECRET",
+        "CLIENT_SECRET_SECRET",
+        "ACCESS_TOKEN_SECRET",
+    ]:
+        assert secret not in sanitized
+        assert secret not in rendered
+    assert "<redacted>" in sanitized
+    assert "safe command output" in rendered
+
+
+def test_trace_inspector_renders_structured_model_content_without_object_coercion() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceReadableMarkup(") : DASHBOARD_HTML.index(
+            "function traceCodexEvents(model,presentation)"
+        )
+    ]
+    assert "function traceReadableMarkup(value,budget,limit=8000)" in source
+    assert "function traceHumanReadableMarkup(value)" in DASHBOARD_HTML
+    assert "safe&&typeof safe==='object'?renderAny(safe):`<pre class=\"trace-output\">${esc(traceHumanText(safe))}</pre>`" in DASHBOARD_HTML
+    assert "traceReadableMarkup(p.text??p.content??p.output??p.result??p,budget,8000)" in source
+
+
+def test_trace_inspector_uses_raw_model_input_for_primary_prompt() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderModelChatPresentation(model)") : DASHBOARD_HTML.index(
+            "function renderAgentLoopPresentation(model)"
+        )
+    ]
+    assert "input=model.input??presentation.modelInput" in source
+    assert "output=model.output??presentation.modelOutput" in source
+    assert "traceModelChatEventTypes" in source
+    assert "traceCodexTimeline({...model,events:timelineEvents,presentation:presentation}" in source
+
+
 def test_trace_inspector_has_universal_redacted_display_model() -> None:
     """Every retained trace needs a useful safe summary before optional detail panes."""
     assert "function traceDisplayModel(detail)" in DASHBOARD_HTML
@@ -396,7 +492,7 @@ def test_trace_inspector_normalizes_bounded_sanitized_presentation_data() -> Non
     assert "presentation=tracePresentationData(model)" in source
 
 
-def test_trace_inspector_renders_universal_summary_before_optional_panels() -> None:
+def test_trace_inspector_keeps_universal_summary_inside_optional_panels() -> None:
     source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
             "function setTraceView(view)"
@@ -404,7 +500,8 @@ def test_trace_inspector_renders_universal_summary_before_optional_panels() -> N
     ]
     assert "traceDisplayModel(d)" in source
     assert "universalSummary=traceSummary(model,unavailableCopy)" in source
-    assert "${header}${universalSummary}${presentationMarkup}${optionalMarkup}" in source
+    assert "${header}${presentationMarkup}${optionalMarkup}" in source
+    assert "${universalSummary}<nav" in source
     for marker in [
         "Input unavailable for this request type",
         "Output unavailable for this request type",
@@ -433,6 +530,31 @@ def test_trace_inspector_prioritizes_input_output_and_demotes_technical_detail()
     assert "traceFirstRecorded(events,['output'" in model_source
 
 
+def test_trace_inspector_stacks_primary_and_model_chat_panels_full_width() -> None:
+    assert ".trace-primary-grid{display:grid;grid-template-columns:1fr" in DASHBOARD_HTML
+    assert ".trace-chat-columns{display:grid;grid-template-columns:1fr" in DASHBOARD_HTML
+    assert ".trace-optional-details{width:100%" in DASHBOARD_HTML
+
+
+def test_trace_inspector_separates_type_specific_field_labels_and_values() -> None:
+    assert ".trace-presentation-field{display:grid" in DASHBOARD_HTML
+    assert "grid-template-columns:minmax(150px,220px) minmax(0,1fr)" in DASHBOARD_HTML
+    assert ".trace-command-top{border:" in DASHBOARD_HTML
+
+
+def test_trace_inspector_formats_generic_model_objects_without_object_coercion() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function promptText(value)") : DASHBOARD_HTML.index(
+            "function promptBlock(text"
+        )
+    ]
+    script = source + "console.log(promptText({answer:'structured'}));"
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    assert "structured" in result.stdout
+    assert "[object Object]" not in result.stdout
+
+
 def test_trace_inspector_dispatches_primary_body_before_optional_technical_details() -> None:
     source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
@@ -444,8 +566,67 @@ def test_trace_inspector_dispatches_primary_body_before_optional_technical_detai
     assert source.index("renderTracePresentation(model)") < source.index(
         "const optionalMarkup="
     )
-    assert "${header}${universalSummary}${presentationMarkup}${optionalMarkup}" in source
+    assert "${header}${presentationMarkup}${optionalMarkup}" in source
     assert "const primaryMarkup=" not in source
+
+
+def test_trace_detail_runtime_keeps_primary_first_and_technical_details_closed() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    detail_start = DASHBOARD_HTML.index("function traceDisplayModel(detail){")
+    source = _trace_presentation_runtime_source() + DASHBOARD_HTML[
+        detail_start : DASHBOARD_HTML.index("function setTraceView(view)")
+    ]
+    fixture = {
+        "terminal": True,
+        "session": {
+            "kind": "request",
+            "action": "/api/command",
+            "agent": "fixture-agent",
+            "model": "fixture-model",
+            "request": {"prompt": "run pytest"},
+            "output": "fixture output",
+        },
+        "events": [
+            {"seq": 1, "event_type": "output_stream", "payload": {"text": "fixture timeline output"}}
+        ],
+        "events_total": 1,
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "const n=v=>String(v??0);"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false,traceOptionalDetailsOpen=false,traceView='timeline',activeTraceData=null,traceOpenSteps=new Set();"
+        "const nodes={tracePageBody:null,tracePageTitle:{},tracePageLive:{}};"
+        "const body={innerHTML:'',className:'',closest:()=>({scrollTop:0,scrollLeft:0}),querySelector(selector){return selector==='#traceTechnicalDetails'&&this.innerHTML?{open:technicalDetailsOpen}:null},querySelectorAll:()=>[]};"
+        "let technicalDetailsOpen=false;nodes.tracePageBody=body;function $(id){return nodes[id]||null;}"
+        "const window={requestAnimationFrame:fn=>fn()};const document={querySelectorAll:()=>[]};"
+        + source
+        + f"const fixture={json.dumps(fixture)};"
+        + "renderTraceDetail(fixture);const first=body.innerHTML;"
+        + "technicalDetailsOpen=true;renderTraceDetail(fixture);const restored=body.innerHTML;"
+        + "traceView='raw';renderTraceDetail(fixture);const rawView=body.innerHTML;"
+        + "console.log(JSON.stringify({first,restored,rawView}));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    output = json.loads(result.stdout)
+    first = output["first"]
+    restored = output["restored"]
+    raw_view = output["rawView"]
+    details_pattern = re.compile(r'<details\b(?=[^>]*\bid=[\"\']traceTechnicalDetails[\"\'])([^>]*)>')
+    first_details = details_pattern.search(first)
+    restored_details = details_pattern.search(restored)
+    assert first_details and not re.search(r"\bopen(?:\s*=\s*(?:[\"'][^\"']*[\"']|[^\s>]+))?", first_details.group(1))
+    assert restored_details and re.search(r"\bopen(?:\s*=\s*(?:[\"'][^\"']*[\"']|[^\s>]+))?", restored_details.group(1))
+    assert first.index("trace-primary") < first.index('id="traceTechnicalDetails"')
+    for marker in [
+        "Universal request summary",
+        'class="trace-tabs"',
+        "Timeline",
+        "data-trace-reveal",
+        "Trace details are redacted by default.",
+    ]:
+        assert marker in first
+    assert "Raw JSON" in raw_view
 
 
 def test_trace_inspector_keeps_tabs_and_raw_fallback_inside_optional_details() -> None:
@@ -577,8 +758,8 @@ def test_trace_inspector_keeps_optional_details_open_and_summary_visible() -> No
     assert "traceOptionalDetailsOpen" in detail_source
     assert "existingOptionalDetails.open" in detail_source
     assert "traceOptionalDetailsOpen?' open':''" in detail_source
-    assert "${header}${universalSummary}${presentationMarkup}${optionalMarkup}" in detail_source
-    assert "${universalSummary}<nav" not in detail_source
+    assert "${header}${presentationMarkup}${optionalMarkup}" in detail_source
+    assert "${universalSummary}<nav" in detail_source
     assert "tracePanel('summary'" not in model_source
 
 
@@ -603,6 +784,7 @@ def test_trace_event_buffer_runtime_caps_events_and_preserves_server_total() -> 
 
 
 def test_trace_inspector_has_model_chat_renderer_contract_and_codex_timeline() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
     assert "function renderModelChatPresentation(model)" in DASHBOARD_HTML
     source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function tracePresentationValue(value") : DASHBOARD_HTML.index(
@@ -637,6 +819,28 @@ def test_trace_inspector_has_model_chat_renderer_contract_and_codex_timeline() -
     ]
     assert "trace-tool-timeline" in css_source
     assert "trace-tool-card" in css_source
+
+    runtime_source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {
+            "kind": "model_chat",
+            "modelInput": {"model": "fixture-model", "prompt": "human prompt"},
+            "modelOutput": "human response",
+            "thinking": "reasoning note",
+            "chatTurns": [],
+        }
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));const n=v=>String(v??0);"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        + runtime_source
+        + f"console.log(JSON.stringify(renderModelChatPresentation({json.dumps(fixture)})));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    rendered = json.loads(result.stdout)
+    for value in ["fixture-model", "human prompt", "human response", "reasoning note"]:
+        assert value in rendered
+    assert "[object Object]" not in rendered
 
 
 def test_trace_inspector_has_agent_loop_tool_cards_with_bounded_safe_fields() -> None:
@@ -725,8 +929,7 @@ def test_trace_inspector_has_request_specific_renderer_contracts() -> None:
             "status",
             "timing",
             "error",
-            "No request captured",
-            "No response captured",
+            "tracePresentationColumns",
         ],
     }
     for function, markers in contracts.items():
@@ -759,6 +962,160 @@ def test_trace_inspector_dispatches_request_specific_renderers() -> None:
     ]:
         assert f"kind==='{kind}'" in dispatcher
         assert f"{renderer}(model)" in dispatcher
+
+
+def test_trace_renderers_render_per_kind_fixtures_as_semantic_output() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixtures = {
+        "command": {
+            "presentation": {
+                "kind": "command",
+                "command": {
+                    "command": "pytest",
+                    "args": ["-q", "--json"],
+                    "stdout": "build complete",
+                    "stderr": "minor warning",
+                    "exit_code": 0,
+                    "retries": 2,
+                    "duration_ms": 125,
+                },
+            }
+        },
+        "review": {
+            "presentation": {
+                "kind": "review",
+                "review": {
+                    "request": "Review this patch",
+                    "context": "dashboard contract",
+                    "diff": "- old\n+ new",
+                    "findings": [{"severity": "critical", "message": "Null check"}],
+                    "recommendation": "merge after fix",
+                    "status": "changes requested",
+                },
+            }
+        },
+        "repo_intelligence": {
+            "presentation": {
+                "kind": "repo_intelligence",
+                "repoOperation": {
+                    "repository": "local-ai-hub",
+                    "operation": "search symbols",
+                    "query": "tracePresentation",
+                    "files": ["dashboard.py", "custom_modals.py"],
+                    "symbols": ["traceRenderBudget", "traceList"],
+                    "result": "3 matches",
+                },
+            }
+        },
+        "rag_search": {
+            "presentation": {
+                "kind": "rag_search",
+                "retrieval": {
+                    "query": "trace contract",
+                    "sources": [
+                        {
+                            "path": "dashboard.py",
+                            "start_line": 2200,
+                            "provider": "serena",
+                            "score": 0.91,
+                            "snippet": "semantic renderer",
+                        },
+                        {
+                            "path": "plan.md",
+                            "start_line": 17,
+                            "provider": "index",
+                            "score": 0.72,
+                            "snippet": "bounded output",
+                        },
+                    ],
+                    "answer": "Use the semantic contract",
+                    "truncated": True,
+                },
+            }
+        },
+        "async_job": {
+            "presentation": {
+                "kind": "async_job",
+                "asyncJob": {
+                    "status": "queued",
+                    "queue_wait_ms": 125,
+                    "retries": 2,
+                    "result": "job result",
+                    "error": "timeout recovered",
+                },
+            },
+            "lifecycle": {"state": "running"},
+        },
+        "request_response": {
+            "presentation": {"kind": "request_response"},
+            "session": {"request": {"method": "POST", "path": "/chat"}},
+            "response": {"message": "ok"},
+            "output": "response text",
+            "lifecycle": {"state": "complete"},
+            "timing": {"duration_ms": 42},
+            "errors": ["transport failed"],
+        },
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));const n=v=>String(v??0);"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        + source
+        + f"const fixtures={json.dumps(fixtures)};"
+        + "const rendered=Object.fromEntries(Object.entries(fixtures).map(([kind,model])=>[kind,renderTracePresentation(model)]));"
+        + "console.log(JSON.stringify(rendered));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    rendered = json.loads(result.stdout)
+    expected = {
+        "command": ["Command and arguments", "--json", "stdout", "build complete", "stderr", "exit code", "retries", "duration"],
+        "review": ["Review this patch", "dashboard contract", "diff", "findings", "critical", "Null check", "merge after fix", "changes requested"],
+        "repo_intelligence": ["local-ai-hub", "search symbols", "tracePresentation", "dashboard.py", "custom_modals.py", "traceRenderBudget", "3 matches"],
+        "rag_search": ["trace contract", "2 results", "dashboard.py", "line 2200", "serena", "0.91", "semantic renderer", "Use the semantic contract", "Truncation"],
+        "async_job": ["running", "queued", "queue wait", "125", "retries", "job result", "timeout recovered"],
+        "request_response": ["POST", "/chat", "ok", "response text", "complete", "timing", "42", "transport failed"],
+    }
+    for kind, labels in expected.items():
+        html = rendered[kind]
+        for label in labels:
+            assert label in html, f"{kind} renderer omitted {label!r}"
+        assert "[object Object]" not in html
+        assert not re.search(r"\{\s*[\"'][A-Za-z_][\w-]*[\"']\s*:", html)
+    assert "trace-code-card" in rendered["command"]
+    assert "trace-list-card" in rendered["command"]
+    assert "trace-code-card" in rendered["review"]
+    assert "trace-list-card" in rendered["review"]
+    assert "trace-list-card" in rendered["repo_intelligence"]
+    assert "trace-search-result-row" in rendered["rag_search"]
+    assert "trace-code-card" in rendered["async_job"]
+    assert "trace-code-card" in rendered["request_response"]
+
+
+def test_trace_async_and_request_response_outputs_keep_full_human_code_blocks() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));const n=v=>String(v??0);"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        + source
+        + "const asyncOutput='async-output-'+ 'x'.repeat(16000);"
+        + "const responseOutput='response-output-'+ 'y'.repeat(16000);"
+        + "const asyncHtml=renderAsyncJobPresentation({presentation:{kind:'async_job',asyncJob:{result:asyncOutput}},lifecycle:{}});"
+        + "const responseHtml=renderRequestResponsePresentation({presentation:{kind:'request_response'},output:responseOutput});"
+        + "console.log(JSON.stringify({asyncHtml,responseHtml,asyncOutput,responseOutput}));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    output = json.loads(result.stdout)
+    for html, payload, marker in (
+        (output["asyncHtml"], output["asyncOutput"], "async-output-"),
+        (output["responseHtml"], output["responseOutput"], "response-output-"),
+    ):
+        assert "trace-code-card" in html
+        assert marker in html
+        assert len(html) > 12000
+        assert payload.endswith("x" * 100 if marker == "async-output-" else "y" * 100)
+        assert "[object Object]" not in html
+        assert not re.search(r"\{\s*[\"'][A-Za-z_][\w-]*[\"']\s*:", html)
 
 
 def test_trace_request_renderers_expose_reviewer_gap_contracts() -> None:
@@ -853,10 +1210,72 @@ def test_trace_request_renderers_runtime_show_severity_command_and_ranked_rag() 
     assert "severity counts" in rendered["review"].lower()
     assert "critical" in rendered["review"].lower()
     assert "Command and arguments" in rendered["command"]
-    assert "stdout" in rendered["command"] and "stderr" in rendered["command"]
+    assert "stdout" in rendered["command"]
+    assert "none" not in rendered["command"]
     assert "rank" in rendered["rag"].lower() and "score" in rendered["rag"].lower()
-    assert "<details" in rendered["rag"]
+    assert rendered["rag"].count("trace-search-result-row") == 2
+    assert "<details" not in rendered["rag"]
     assert "answer" in rendered["rag"]
+
+
+def test_trace_presentation_starts_specialized_review_without_generic_input_output() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {
+            "kind": "review",
+            "review": {"request": "review request", "findings": []},
+        },
+        "input": "model prompt",
+        "output": "model answer",
+        "lifecycle": {"state": "done"},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));const n=v=>String(v??0);"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"const model={json.dumps(fixture)};"
+        + "console.log(renderTracePresentation(model));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    rendered = result.stdout
+    assert "<h2>Input / output</h2>" not in rendered
+    assert ">Review</h2>" in rendered
+
+
+def test_trace_presentation_does_not_prepend_generic_json_like_input_output_to_specialized_requests() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {
+            "kind": "command",
+            "command": {
+                "command": "pytest",
+                "args": ["-q"],
+                "input": {"action": "run", "cwd": "C:/workspace"},
+                "stdout": "2 passed",
+                "exit_code": 0,
+            },
+        },
+        "input": {"action": "run", "cwd": "C:/workspace", "command": "pytest"},
+        "output": {"success": True, "stdout": "2 passed", "exit_code": 0},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));const n=v=>String(v??0);"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"console.log(renderTracePresentation({json.dumps(fixture)}));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    rendered = result.stdout
+    assert "<h3>Command and arguments</h3>" in rendered
+    assert "<h2>Input / output</h2>" not in rendered
+    assert rendered.index("Command and arguments") < rendered.index("Command output")
+    assert "pytest" in rendered
+    assert "2 passed" in rendered
+    assert "Auto Fix" not in rendered
 
 
 def test_trace_timeline_runtime_tolerates_malformed_events_and_caps_cumulative_payload() -> None:
@@ -923,6 +1342,55 @@ def test_trace_presentation_runtime_coerces_non_array_events_to_empty() -> None:
     presentations = json.loads(result.stdout)
     assert [presentation["chatTurns"] for presentation in presentations] == [[], []]
     assert [presentation.get("command") for presentation in presentations] == [None, None]
+
+
+def test_trace_unknown_malformed_and_missing_content_use_safe_bounded_fallbacks() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    oversized = "bounded-output-" + ("x" * 16000)
+    fixtures = {
+        "unknown": {
+            "presentation": {"kind": "unknown"},
+            "input": {"message": "fallback input", "internal_id": "hidden-id"},
+            "output": {"answer": "fallback output"},
+        },
+        "malformed": {
+            "presentation": {"kind": "unknown"},
+            "input": {"payload": "malformed input", "nested": {"value": "kept"}},
+            "output": {"result": "malformed output"},
+            "events": [{"event_type": "event", "payload": "broken payload"}],
+        },
+        "missing": {
+            "presentation": {"kind": "model_chat", "modelInput": None, "modelOutput": None},
+            "events": [],
+        },
+        "bounded": {
+            "presentation": {"kind": "unknown"},
+            "input": {"api_key": "fallback-secret", "text": oversized},
+        },
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));const n=v=>String(v??0);"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        + source
+        + f"const fixtures={json.dumps(fixtures)};"
+        + "const rendered={unknown:renderTracePresentation(fixtures.unknown),malformed:renderTracePresentation(fixtures.malformed),missing:renderModelChatPresentation(fixtures.missing),bounded:renderTracePresentation(fixtures.bounded)};"
+        + "console.log(JSON.stringify(rendered));"
+    )
+    rendered = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    assert "Input / output" in rendered["unknown"]
+    assert "fallback input" in rendered["unknown"] and "fallback output" in rendered["unknown"]
+    assert "hidden-id" not in rendered["unknown"]
+    assert "malformed input" in rendered["malformed"] and "kept" in rendered["malformed"]
+    assert "malformed output" in rendered["malformed"]
+    assert "No prompt captured" in rendered["missing"]
+    assert "No response captured" not in rendered["missing"]
+    for html in rendered.values():
+        assert "[object Object]" not in html
+        assert not re.search(r"\{\s*[\"'][A-Za-z_$][\w$]*\s*:", html)
+    assert "fallback-secret" not in rendered["bounded"]
+    assert len(rendered["bounded"]) > 12000
+    assert oversized[-100:] in rendered["bounded"]
 
 
 def test_trace_review_severity_runtime_merges_counts_map_and_findings() -> None:
@@ -1039,11 +1507,106 @@ def test_trace_inspector_uses_accessible_conditional_tabs_and_safe_trace_values(
 
 
 def _trace_presentation_runtime_source() -> str:
-    return DASHBOARD_HTML[
-        DASHBOARD_HTML.index("const humanLabel=") : DASHBOARD_HTML.index(
-            "function traceDisplayModel(detail)"
+    start = re.search(r"(?m)^[^\r\n]*\r?\n(?=\s*function\s+renderAny\s*\()", DASHBOARD_HTML)
+    assert start, "Trace presentation runtime start missing"
+    end = re.search(r"\bfunction\s+traceDisplayModel\s*\([^)]*\)\s*\{", DASHBOARD_HTML[start.end() :])
+    assert end, "Trace presentation runtime end missing"
+    return DASHBOARD_HTML[start.start() : start.end() + end.start()]
+
+
+def test_trace_search_runtime_is_compact_and_keeps_one_result_per_row() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {"kind": "rag_search", "retrieval": {}},
+        "input": {"query": "renderTracePresentation", "root": "C:/workspace/hub", "top_k": 12, "enrich": False},
+        "output": {
+            "success": True,
+            "results": [
+                {"path": "docs/trace.md", "start_line": 2, "end_line": 12, "score": 11.5, "text": "Trace presentation guide", "file_sha256": "secret-sha", "evidence_id": "secret-evidence"},
+                {"path": "src/dashboard.js", "start_line": 8, "end_line": 10, "score": 8.2, "text": "Human trace UI"},
+            ],
+        },
+        "identity": {"action": "/api/search"},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        + source
+        + f"console.log(JSON.stringify(renderTracePresentation({json.dumps(fixture)})));"
+    )
+    html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    assert "renderTracePresentation" in html
+    assert "<h2>Input / output</h2>" not in html
+    assert html.count("trace-search-result-row") == 2
+    assert "docs/trace.md" in html and "Trace presentation guide" in html
+    assert "file_sha256" not in html and "evidence_id" not in html
+
+
+def test_trace_model_runtime_labels_prompt_and_response_as_primary_content() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {"kind": "model_chat", "modelInput": {"prompt": "Explain traces"}, "modelOutput": "They show inputs and outputs."},
+        "events": [], "session": {}, "actor": {}, "correlations": {}, "identity": {},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        + source
+        + f"console.log(JSON.stringify(renderModelChatPresentation({json.dumps(fixture)})));"
+    )
+    html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    assert "Prompt" in html and "Response" in html
+    assert "Explain traces" in html and "They show inputs and outputs." in html
+
+
+def test_trace_model_runtime_exposes_capture_state_and_detail_controls() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {"kind": "model_chat", "modelInput": {"prompt": "Explain traces"}},
+        "events": [],
+        "session": {"final_response_status": "empty"},
+        "actor": {}, "correlations": {}, "identity": {},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        + source
+        + f"const m={{...{json.dumps(fixture)},captureStates:{{output:'empty'}}}};"
+        + "console.log(JSON.stringify({html:renderModelChatPresentation(m),state:traceCaptureState('', 'empty')}));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    rendered = json.loads(result.stdout)
+    assert rendered["state"] == "empty"
+    assert "Final response" in rendered["html"]
+    assert "Empty" in rendered["html"]
+    assert "data-trace-expand-all" in rendered["html"]
+    assert "data-trace-collapse-all" in rendered["html"]
+    assert "data-trace-copy-final" in rendered["html"]
+
+
+def test_trace_detail_controls_are_present_and_technical_details_start_closed() -> None:
+    detail_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
+            "function setTraceView(view)"
         )
     ]
+    handler_source = DASHBOARD_HTML
+    assert "presentationMarkup" in detail_source
+    assert "traceTechnicalDetails" in detail_source
+    assert "setTraceDetailsOpen(true)" in handler_source
+    assert "setTraceDetailsOpen(false)" in handler_source
+
+
+def test_trace_history_surfaces_project_before_technical_metadata() -> None:
+    assert "function traceProjectLabel(" in DASHBOARD_HTML
+    assert "<th>Project</th>" in DASHBOARD_HTML
+    source = DASHBOARD_HTML[DASHBOARD_HTML.index("function renderTraceList(items)") : DASHBOARD_HTML.index("async function pollTraces")]
+    assert "traceProjectLabel" in source
+    request_source = DASHBOARD_HTML[DASHBOARD_HTML.index("function workRecentRequestRow(request)") : DASHBOARD_HTML.index("function renderAdoptionRows")]
+    assert "traceProjectLabel" in request_source
 
 
 def test_trace_agent_loop_runtime_renders_nested_tool_errors_and_successes() -> None:
@@ -1129,6 +1692,65 @@ def test_trace_model_chat_runtime_has_clear_empty_timeline_state() -> None:
     )
     html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
     assert "No model events captured" in html
+
+
+def test_trace_legacy_timeline_renders_structured_output_without_object_coercion() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));const n=v=>String(v??0);"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        + source
+        + "const event={event_type:'output_stream',payload:{text:{answer:'structured'}}};"
+        + "console.log(JSON.stringify({body:traceEventBody(event,[],0),compact:compactTimelineEvents([{event_type:'output_delta',payload:{text:{answer:'structured'}}}])}));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    output = json.loads(result.stdout)
+    assert "[object Object]" not in output["body"]
+    assert "Answer" in output["body"]
+    assert "[object Object]" not in json.dumps(output["compact"])
+
+
+def test_trace_legacy_output_stream_keeps_full_human_payload() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));const n=v=>String(v??0);"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        + source
+        + "const streamPayload='legacy-stream-'+ 'x'.repeat(16000);"
+        + "const deltaPayload='legacy-delta-'+ 'y'.repeat(16000);"
+        + "const streamBody=traceEventBody({event_type:'output_stream',payload:{text:streamPayload}},[],0);"
+        + "const deltaBody=traceEventBody({event_type:'output_delta',payload:{text:deltaPayload}},[],0);"
+        + "console.log(JSON.stringify({streamBody,deltaBody,streamPayload,deltaPayload}));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    output = json.loads(result.stdout)
+    for body, payload, marker in (
+        (output["streamBody"], output["streamPayload"], "legacy-stream-"),
+        (output["deltaBody"], output["deltaPayload"], "legacy-delta-"),
+    ):
+        assert marker in body
+        assert len(body) > 10000
+        assert payload.endswith("x" * 100 if marker == "legacy-stream-" else "y" * 100)
+
+
+def test_trace_text_fallback_and_event_labels_stay_human_readable() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));const n=v=>String(v??0);"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        + source
+        + "console.log(JSON.stringify({prompt:promptText({answer:'structured',nested:{count:1}}),summary:traceEventSummary('model_request',{model:{name:'fixture'}})}));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    output = json.loads(result.stdout)
+    assert "[object Object]" not in output["prompt"]
+    assert "Answer: structured" in output["prompt"]
+    assert "Nested" in output["prompt"]
+    assert "[object Object]" not in output["summary"]
+    assert output["summary"] == "Request to fixture"
 
 
 def test_trace_tool_result_card_carries_matching_call_context() -> None:
@@ -1221,6 +1843,284 @@ def test_trace_inspector_preserves_outer_technical_details_and_contains_timeline
     assert "word-break:break-word" in DASHBOARD_HTML
 
 
+def test_trace_primary_fields_hide_empty_internal_and_duplicate_values() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "command": {
+            "command": "pytest",
+            "args": ["-q"],
+            "input": {
+                "message": "meaningful input",
+                "status": "empty",
+                "empty_value": "",
+                "null_value": None,
+                "internal_id": "internal-id-123",
+                "request_id": "request-id-123",
+                "trace_id": "trace-id-123",
+                "metadata": {
+                    "source": "duplicate-metadata",
+                    "action": "duplicate-metadata",
+                },
+            },
+            "stdout": "useful stdout",
+            "stderr": "none",
+            "exit_code": 0,
+            "retries": "",
+            "duration_ms": None,
+        }
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"const m={{presentation:{json.dumps(fixture)},lifecycle:{{}},correlations:{{}},session:{{}},identity:{{}}}};"
+        + "console.log(JSON.stringify(renderCommandPresentation(m)));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    html = json.loads(result.stdout)
+    assert "pytest" in html
+    assert "meaningful input" in html
+    assert "useful stdout" in html
+    for hidden in [
+        "empty_value",
+        "null_value",
+        "internal-id-123",
+        "request-id-123",
+        "trace-id-123",
+        "duplicate-metadata",
+        "No stderr captured",
+        "No retries captured",
+        "No duration captured",
+    ]:
+        assert hidden not in html
+
+
+def test_trace_primary_presentations_use_semantic_value_renderers() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    renderer_names = [
+        "renderCommandPresentation",
+        "renderReviewPresentation",
+        "renderRepoIntelligencePresentation",
+        "renderRagSearchPresentation",
+        "renderAsyncJobPresentation",
+        "renderRequestResponsePresentation",
+    ]
+
+    fixtures = {
+        "command": {
+            "presentation": {"kind": "command", "command": {"command": "pytest", "args": ["-q"], "input": {"stdin": "input text", "options": {"timeout": 5}}, "stdout": "command output", "exit_code": 0, "retries": 1, "duration_ms": 12}},
+            "lifecycle": {}, "correlations": {}, "session": {}, "identity": {},
+        },
+        "review": {
+            "presentation": {"kind": "review", "review": {"request": {"target": "dashboard.py"}, "context": {"files": ["dashboard.py", "tests.py"]}, "diff": "+ semantic renderer", "findings": [{"severity": "high", "message": "use semantic card"}], "recommendation": "refactor", "status": "open"}},
+            "lifecycle": {}, "correlations": {}, "session": {}, "identity": {},
+        },
+        "repo": {
+            "presentation": {"kind": "repo_intelligence", "repoOperation": {"repository": "local-ai-hub", "root": "C:/workspace", "operation": "search", "query": "trace", "files": ["dashboard.py"], "symbols": {"count": 2}, "context": {"summary": "repository context"}, "result": {"matches": 1}}},
+            "lifecycle": {}, "correlations": {}, "session": {}, "identity": {},
+        },
+        "rag": {
+            "presentation": {"kind": "rag_search", "retrieval": {"query": "trace presentation", "sources": [{"score": 0.9, "provider": "index", "content": "semantic result"}], "answer": "use cards", "truncated": False}},
+            "lifecycle": {}, "correlations": {}, "session": {}, "identity": {},
+        },
+        "asyncJob": {
+            "presentation": {"kind": "async_job", "asyncJob": {"status": "running", "queue_wait_ms": 4, "retries": 1, "worker_input": {"job": "trace"}, "result": ["partial result"]}},
+            "lifecycle": {}, "correlations": {}, "session": {}, "identity": {},
+        },
+        "request": {
+            "presentation": {"kind": "request_response"}, "input": "request body", "output": ["response body"], "timing": {"duration_ms": 20}, "response": {"status": 200},
+            "lifecycle": {"status_code": 200}, "correlations": {}, "session": {"request": {"path": "/trace"}}, "identity": {},
+        },
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"const fixtures={json.dumps(fixtures)};"
+        + "console.log(JSON.stringify({command:renderCommandPresentation(fixtures.command),review:renderReviewPresentation(fixtures.review),repo:renderRepoIntelligencePresentation(fixtures.repo),rag:renderRagSearchPresentation(fixtures.rag),asyncJob:renderAsyncJobPresentation(fixtures.asyncJob),request:renderRequestResponsePresentation(fixtures.request)}));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    rendered = json.loads(result.stdout)
+    semantic_markers = ["trace-summary-card", "trace-code-card", "trace-list-card", "trace-timeline"]
+    output_keys = {
+        "renderCommandPresentation": "command",
+        "renderReviewPresentation": "review",
+        "renderRepoIntelligencePresentation": "repo",
+        "renderRagSearchPresentation": "rag",
+        "renderAsyncJobPresentation": "asyncJob",
+        "renderRequestResponsePresentation": "request",
+    }
+    expected_pairs = {
+        "command": ["Command and arguments", "pytest", "-q", "input text", "command output", "exit code", "0"],
+        "review": ["Review", "dashboard.py", "+ semantic renderer", "use semantic card", "refactor", "open"],
+        "repo": ["Repository intelligence", "local-ai-hub", "trace", "dashboard.py", "repository context", "1"],
+        "rag": ["Search", "Query", "trace presentation", "semantic result", "0.9", "use cards"],
+        "asyncJob": ["Async job", "running", "queue wait", "trace", "partial result", "1"],
+        "request": ["Request / response", "/trace", "request body", "response body", "200"],
+    }
+    for function_name in renderer_names:
+        output_key = output_keys[function_name]
+        output = rendered[output_key]
+        for pair in expected_pairs[output_key]:
+            assert pair in output, f"{output_key}: missing {pair}"
+        assert any(marker in output for marker in semantic_markers), function_name
+        assert "[object Object]" not in output
+        assert not re.search(r"\{\s*[\"'][A-Za-z_$][\w$]*[\"']\s*:", output)
+
+
+def test_trace_primary_columns_are_compact_collapsible_groups() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        + source
+        + "const html=tracePresentationColumns('Demo',[traceSummaryCard('request','body',traceRenderBudget())],[],traceRenderBudget());"
+        + "const missing=tracePresentationColumns('Empty',[],[],traceRenderBudget());"
+        + "console.log(JSON.stringify({html,missing}));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    rendered = json.loads(result.stdout)
+    html = rendered["html"]
+    assert html.count('class="trace-primary-group"') == 1
+    assert 'class="trace-primary-group" data-group="request" data-trace-primary-group="request" data-trace-collapsible open' in html
+    assert '<summary><span>Request details</span>' in html
+    assert 'open' in html
+    assert 'No request details captured' not in html
+    assert '<article' not in html
+    assert 'No result details captured' not in rendered["missing"]
+
+
+def test_trace_technical_details_are_closed_by_default() -> None:
+    source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
+            "function setTraceView(view)"
+        )
+    ]
+    details_tag = re.search(r"<details\b[^>]*>", source)
+    assert details_tag, "Technical details disclosure markup missing"
+    tag = details_tag.group(0)
+    assert re.search(r"\bid\s*=\s*['\"]traceTechnicalDetails['\"]", tag)
+    assert re.search(r"\bclass\s*=\s*['\"][^'\"]*\btrace-optional-details\b", tag)
+    default_tag = re.sub(r"\$\{[^}]*\}", "", tag)
+    assert not re.search(
+        r"(?:^|\s)open(?:\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>]+))?(?=\s|>)",
+        default_tag,
+    )
+    assert re.search(r"\btraceOptionalDetailsOpen\s*=\s*false\b", DASHBOARD_HTML)
+
+
+def test_trace_presentation_field_supports_explicit_technical_mode() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + "const html=tracePresentationField('arguments',{flag:'--json',nested:{count:2}},'No args captured',traceRenderBudget(),{mode:'technical'});"
+        + "const stderr=tracePresentationField('stderr','none','No stderr captured',traceRenderBudget(),{mode:'technical'});"
+        + "console.log(JSON.stringify({html,stderr}));"
+    )
+    rendered = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    html = rendered["html"]
+    assert "human-grid" in html
+    assert "Flag" in html and "--json" in html and "Count" in html and "2" in html
+    assert "none" in rendered["stderr"]
+
+
+def test_trace_structured_command_and_review_values_use_semantic_markup() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixtures = {
+        "command": {
+            "presentation": {"kind": "command", "command": {"command": "pytest", "args": [{"flag": "--format", "value": "json"}]}}
+        },
+        "review": {
+            "presentation": {
+                "kind": "review",
+                "review": {"findings": [{"severity": "high", "rule": "R1", "details": {"message": "avoid generic object coercion"}}]},
+            }
+        },
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"const fixtures={json.dumps(fixtures)};"
+        + "console.log(JSON.stringify({command:renderCommandPresentation(fixtures.command),review:renderReviewPresentation(fixtures.review)}));"
+    )
+    rendered = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    assert "--format" in rendered["command"] and "json" in rendered["command"]
+    assert "R1" in rendered["review"] and "avoid generic object coercion" in rendered["review"]
+    for html in rendered.values():
+        assert "[object Object]" not in html
+        assert not re.search(r"\{\s*[\"'][A-Za-z_$][\w$]*[\"']\s*:", html)
+
+
+def test_trace_code_block_omits_none_like_values() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + "const values=['none','null','empty','n/a','unknown'].map(value=>traceCodeBlock('output',value,traceRenderBudget()));"
+        + "console.log(JSON.stringify({values,meaningful:traceCodeBlock('output','real output',traceRenderBudget())}));"
+    )
+    rendered = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    assert rendered["values"] == ["", "", "", "", ""]
+    assert "real output" in rendered["meaningful"]
+
+
+def test_trace_primary_keeps_duplicate_word_in_meaningful_text() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixtures = {
+        "command": {"presentation": {"kind": "command", "command": {"stdout": "duplicate output remains"}}},
+        "review": {"presentation": {"kind": "review", "review": {"findings": "duplicate finding text remains"}}},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"const fixtures={json.dumps(fixtures)};"
+        + "console.log(JSON.stringify({command:renderCommandPresentation(fixtures.command),review:renderReviewPresentation(fixtures.review)}));"
+    )
+    rendered = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    assert "duplicate output remains" in rendered["command"]
+    assert "duplicate finding text remains" in rendered["review"]
+
+
+def test_trace_review_object_severity_uses_human_text() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {
+            "kind": "review",
+            "review": {"findings": [{"severity": {"level": "high"}, "message": "object severity"}]},
+        }
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');}"
+        "let traceRevealRedactedDetails=false;"
+        + source
+        + f"console.log(JSON.stringify(renderReviewPresentation({json.dumps(fixture)})));"
+    )
+    html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    assert "high" in html
+    assert "object severity" in html
+    assert "[object Object]" not in html
+
+
 def test_trace_model_chat_runtime_keeps_request_envelope_visible_and_bounded() -> None:
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     source = _trace_presentation_runtime_source()
@@ -1258,7 +2158,7 @@ def test_trace_model_chat_runtime_keeps_request_envelope_visible_and_bounded() -
     )
     result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
     html = json.loads(result.stdout)
-    for value in ["fixture-model", "stream", "Options", "request_id", "system", "developer", "user"]:
+    for value in ["fixture-model", "stream", "Options", "request id", "system", "developer", "user"]:
         assert value.lower() in html.lower()
     assert "system &lt;safe&gt;" in html
     assert "secret" not in html
@@ -1306,7 +2206,7 @@ def test_trace_model_chat_runtime_redacts_cookie_headers_and_private_key_fields(
     assert "redacted" in html.lower()
 
 
-def test_trace_model_chat_runtime_enforces_cumulative_payload_budget() -> None:
+def test_trace_model_chat_runtime_keeps_full_human_prompt() -> None:
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     source = _trace_presentation_runtime_source()
     redact = DASHBOARD_HTML[
@@ -1338,11 +2238,11 @@ def test_trace_model_chat_runtime_enforces_cumulative_payload_budget() -> None:
     result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     html = json.loads(result.stdout)
-    assert "payload budget" in html.lower()
+    assert "y" * 1000 in html
     assert "oversized_key_239" not in html
 
 
-def test_trace_model_chat_runtime_caps_final_html_across_repeated_large_messages() -> None:
+def test_trace_model_chat_runtime_keeps_repeated_human_messages() -> None:
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     source = _trace_presentation_runtime_source()
     redact = DASHBOARD_HTML[
@@ -1375,7 +2275,8 @@ def test_trace_model_chat_runtime_caps_final_html_across_repeated_large_messages
     )
     result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
     html = json.loads(result.stdout)
-    assert len(html) <= 24000
+    assert len(html) > 24000
+    assert large[-100:] in html
     assert "payload budget" in html.lower()
 
 
@@ -1532,3 +2433,29 @@ def test_trace_sanitizer_redacts_sensitive_object_values_by_key() -> None:
     assert sanitized["authorization"] == "<redacted>"
     assert sanitized["nested"]["token"] == "<redacted>"
     assert sanitized["nested"]["safe"] == "kept"
+
+
+def test_trace_sanitizer_keeps_accounting_metrics_and_model_thinking_expandable() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    redact = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function redactDiagnostic(") : DASHBOARD_HTML.index(
+            "// Lightweight pure-canvas"
+        )
+    ]
+    sanitizer = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceSensitiveField(") : DASHBOARD_HTML.index(
+            "function traceRecorded("
+        )
+    ]
+    fixture = {
+        "prompt_budget_tokens": 24000,
+        "estimated_tokens": 342,
+        "token_saving": {"compact_output_tokens_avoided_est": 12},
+    }
+    script = f"let traceRevealRedactedDetails=false;{redact}{sanitizer}console.log(JSON.stringify(traceSanitizeValue({json.dumps(fixture)})));"
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    sanitized = json.loads(result.stdout)
+    assert sanitized == fixture
+    assert "trace-thinking" in DASHBOARD_HTML
+    assert "Thinking / reasoning" in DASHBOARD_HTML
+    assert "model.thinking" in DASHBOARD_HTML

@@ -2,11 +2,11 @@
 
 ## Goal
 
-Make Trace Inspector readable by choosing a purpose-built presentation for each request family. The inspector must show the useful payload first, keep diagnostic metadata optional, preserve redaction, and remain compatible with the existing debug-trace API and stored SQLite data.
+Make Trace Inspector readable by choosing a purpose-built presentation for each request family. The inspector must show useful payloads first, keep diagnostic metadata optional, preserve redaction, and remain compatible with the existing debug-trace API and stored SQLite data.
 
 ## Scope
 
-Change the dashboard presentation layer and its tests. Do not change the debug-trace HTTP schema, persistence schema, retention policy, or model execution behavior. Presentation selection derives from existing session fields and ordered events.
+Change only the dashboard presentation layer and its tests. Do not change the debug-trace HTTP schema, persistence schema, retention policy, or model execution behavior. Presentation selection derives from existing session fields and ordered events.
 
 ## Presentation selection
 
@@ -23,54 +23,44 @@ Change the dashboard presentation layer and its tests. Do not change the debug-t
 | `async_job` | session kind `async_job` or scheduler/worker linkage | Lifecycle: queue, attempts, worker input, result/error |
 | `request_response` | fallback | Request and response cards with status/timing |
 
-If a trace matches both `agent_loop` and a more specific action such as review, the agent loop layout keeps the chat view and adds the specific review context card. Selection must never hide recorded input or output.
+If a trace matches both `agent_loop` and a more specific action such as review, the agent-loop layout keeps the chat view and adds the specific review context card. Selection never hides recorded input or output.
+
+## Human-first default
+
+The default detail is a human summary with technical details collapsed. The top answers what happened, whether it succeeded, and what the useful result was. Empty values (`empty`, `null`, empty lists/objects), internal identifiers, and duplicate metadata are hidden unless needed to explain the trace. Labels use human wording; technical names stay in the optional section.
+
+Raw JSON and the existing universal summary, event timeline, tabs, and redaction controls remain available in a closed `Technical details` disclosure. Long text is bounded in the summary and expandable/copyable where supported.
 
 ## Data model
 
-Extend the existing display model with bounded, sanitized presentation data:
+Extend the existing bounded, sanitized display model with:
 
-- `presentationKind` and a human label.
-- `requestEnvelope`: original HTTP/API request metadata.
-- `modelInput`: highest-priority `model_request` payload, then `effective_payload`.
-- `modelOutput`: retained output or ordered output events.
-- `chatTurns`: model input/output pairs grouped by model request and step.
-- `toolInteractions`: tool call/result pairs with status and duration.
-- `command`: command, arguments, stdout, stderr, exit status, retry metadata.
-- `review`: target, diff/context, findings, severity counts, final recommendation.
-- `repoOperation`: root/repository label, query, operation, result summary and files/symbols.
-- `retrieval`: query, sources, scores, answer and truncation state.
-- `lifecycle`: existing queue/run/retry/terminal data.
+- `presentationKind` and human label;
+- `requestEnvelope`, `modelInput`, `modelOutput`, `chatTurns`;
+- `toolInteractions` with status and duration;
+- `command` with command, output, exit state, and retries;
+- `review` with target, findings, severity counts, and recommendation;
+- `repoOperation` with repository label, query, result summary, and files/symbols;
+- `retrieval` with query, sources, scores, answer, and truncation state;
+- `lifecycle` with queue, run, retry, terminal, result, and error data.
 
-All values pass through existing bounds and `traceSanitizeValue`. Missing data renders an explicit unavailable state, never an empty-looking fake panel. Raw projection remains bounded and optional.
+All values pass through existing bounds and `traceSanitizeValue`. Missing data renders a concise unavailable state, not a fake empty panel. Raw projection remains bounded and optional.
 
-## Rendering
+## Rendering and data flow
 
-Add one dispatcher, `renderTracePresentation(model)`, with small renderers per presentation kind. The main trace page renders:
+Add one dispatcher, `renderTracePresentation(model)`, with small renderers per presentation kind. `renderTraceDetail` places a compact identity/status header first, the selected human presentation second, and the collapsed technical disclosure third. The existing trace model, API, polling, tab selection, scroll restoration, and incremental events stay unchanged.
 
-1. compact identity/status header;
-2. selected primary presentation;
-3. collapsed `Technical details` containing universal summary, timeline, events, raw JSON, and redaction controls.
-
-`model_chat` uses a two-column desktop layout requested by the user: model output on the left, the full model input on the right. On narrow screens it stacks output above input. Long prompt/output content remains scrollable and copyable; message roles and model-step boundaries stay visible.
-
-Specific renderers may add only data relevant to their family. They must not duplicate the entire universal summary. A generic fallback remains available for unknown future request types.
+`model_chat` uses a two-column desktop layout with model output left and full model input right; narrow screens stack output above input. Specific renderers show only data relevant to their family and never duplicate the entire universal summary. Unknown kinds use a generic human-readable renderer rather than `[object Object]`.
 
 ## Detection and error handling
 
-Detection uses normalized action, kind, event types, and recorded fields. It is deterministic and does not call a model. Unknown or malformed payloads fall back to `request_response`; renderer exceptions are isolated so one trace cannot break the dashboard. Existing polling, tab selection, scroll restoration, redaction and incremental events remain unchanged.
+Detection uses normalized action, kind, event types, and recorded fields. It is deterministic and never calls a model. Unknown or malformed payloads fall back to `request_response`; renderer failures are isolated so one trace cannot break the dashboard. Available technical data remains accessible when the primary payload is incomplete.
 
 ## Testing
 
-Add static contract tests for every presentation kind and dynamic JavaScript fixture tests for:
+Add static contract tests for every presentation kind and dynamic JavaScript fixture tests for model input/output precedence, chat grouping, tool pairing, command output/exit state, review, repository, RAG, async-job and generic fallback layouts. Cover missing fields, empty/internal/duplicate omission, truncation, redaction, escaping, responsive primary content, closed technical details, existing tabs, and raw JSON fallback.
 
-- model input/output precedence and chat turn grouping;
-- tool-call pairing;
-- command stdout/stderr and exit state;
-- review, repository, RAG, async-job and generic fallback layouts;
-- missing fields, truncation and redaction;
-- responsive primary content and optional technical details.
-
-Run focused dashboard/debug-trace tests, then the full repository suite. Manually inspect one model request, one tool loop, one command, one review/diff request, one repository operation, one RAG query and one async job.
+Run focused dashboard/debug-trace tests, then the full repository suite and release validation. Manually inspect representative model, tool-loop, command, review, repository, RAG, and async-job traces.
 
 ## Compatibility
 

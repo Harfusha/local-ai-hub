@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 from . import __version__
 import copy
 import json
@@ -197,7 +199,7 @@ class ToolAwareLocalAgent:
         return args if isinstance(args, dict) else {}
 
     def _trim(self, value: Any) -> str:
-        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+        text = json_dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
         if len(text) > self.max_tool_chars:
             return text[: self.max_tool_chars] + "\n[…tool result truncated…]"
         return text
@@ -451,13 +453,16 @@ class ToolAwareLocalAgent:
                     payload["tools"] = tools
                 request_payload, _profile = self.model_policy.apply_payload(
                     model, payload, role=role,
-                    input_tokens=max(1, len(json.dumps(messages, ensure_ascii=False, default=str)) // 4),
+                    input_tokens=max(1, len(json_dumps(messages, ensure_ascii=False, default=str)) // 4),
                     output_tokens=int(max_tokens), preserve_explicit_think=False,
                 )
                 trace_observer = observer()
                 if trace_observer is not None:
                     trace_observer.model_request(request_payload)
-                    response = self.services.runtime.request_stream("/api/chat", request_payload, trace_observer.output_delta)
+                    response = self.services.runtime.request_stream(
+                        "/api/chat", request_payload, trace_observer.output_delta,
+                        on_thinking=getattr(trace_observer, "thinking_delta", None),
+                    )
                 else:
                     response = self.services.runtime.request("/api/chat", request_payload)
                 if "error" in response or response.get("_lah_repetition_loop_detected"):
@@ -509,12 +514,15 @@ class ToolAwareLocalAgent:
             request_payload, _profile = self.model_policy.apply_payload(
                 model,
                 {"model": model, "messages": final_messages, "stream": False, "keep_alive": self.config.get("ollama", {}).get("keep_alive", "-1"), "options": {"num_predict": int(max_tokens), "temperature": temperature}},
-                role=role, input_tokens=max(1, len(json.dumps(final_messages, ensure_ascii=False, default=str)) // 4), output_tokens=int(max_tokens), preserve_explicit_think=False,
+                role=role, input_tokens=max(1, len(json_dumps(final_messages, ensure_ascii=False, default=str)) // 4), output_tokens=int(max_tokens), preserve_explicit_think=False,
             )
             trace_observer = observer()
             if trace_observer is not None:
                 trace_observer.model_request(request_payload)
-                response = self.services.runtime.request_stream("/api/chat", request_payload, trace_observer.output_delta)
+                response = self.services.runtime.request_stream(
+                    "/api/chat", request_payload, trace_observer.output_delta,
+                    on_thinking=getattr(trace_observer, "thinking_delta", None),
+                )
             else:
                 response = self.services.runtime.request("/api/chat", request_payload)
             if "error" in response:

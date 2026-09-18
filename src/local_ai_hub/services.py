@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import copy
 import json
 import re
@@ -589,7 +591,7 @@ class LocalAIServices:
     ) -> dict[str, Any]:
         saving = self.config.get("token_saving", {})
         resilience = self.config.get("resilience", {})
-        max_tokens = max(64, min(int(max_tokens), int(saving.get("max_local_output_tokens", 2400))))
+        max_tokens = max(64, min(int(max_tokens), int(saving.get("max_local_output_tokens", 8192))))
         role = source.rsplit(":", 1)[-1].lower()
         if source == "second-opinion":
             role = "second-opinion"
@@ -685,7 +687,12 @@ class LocalAIServices:
                     trace_observer = observer()
                     if trace_observer is not None:
                         trace_observer.model_request(payload)
-                        response = self.runtime.request_stream("/api/generate", payload, trace_observer.output_delta)
+                        response = self.runtime.request_stream(
+                            "/api/generate", payload, trace_observer.output_delta,
+                            # Keep mixed-version MCP workers alive while the
+                            # trace observer API rolls forward independently.
+                            on_thinking=getattr(trace_observer, "thinking_delta", None),
+                        )
                     else:
                         response = self.runtime.request("/api/generate", payload)
                     if response.get("_lah_repetition_loop_detected"):
@@ -707,6 +714,8 @@ class LocalAIServices:
                     return {
                         "success": True, "model": candidate_model, "requested_model": requested_model,
                         "text": clean_text, "thinking": thinking,
+                        "final_response_produced": bool(clean_text.strip()),
+                        "final_response_status": "produced" if clean_text.strip() else "empty",
                         "load_duration_ns": response.get("load_duration", 0), "eval_count": response.get("eval_count", 0),
                         "prompt_eval_count": response.get("prompt_eval_count", 0),
                         "prompt_eval_duration_ns": response.get("prompt_eval_duration", 0),
@@ -714,7 +723,7 @@ class LocalAIServices:
                         "_lah_retry_count": int(response.get("_lah_retry_count", 0) or 0),
                         "execution_profile": candidate_profile.cache_scope(),
                         "_lah_cache_origin": "ollama", "fallback_used": candidate_model != requested_model,
-                        "_cacheable": candidate_model == requested_model,
+                        "_cacheable": candidate_model == requested_model and bool(clean_text.strip()),
                     }
 
                 try:
@@ -1017,7 +1026,7 @@ class LocalAIServices:
             ),
         }[task_type]
         prompt = self._conversation_user_prompt(task, context)
-        max_tokens = int(args.get("max_tokens", 1400))
+        max_tokens = int(args.get("max_tokens", 4096))
         temperature = float(args.get("temperature", 0.15))
         source = f"delegate:{task_type}"
         priority = int(args.get("priority", 5))
@@ -1097,14 +1106,14 @@ class LocalAIServices:
         payload["task_type"] = "review"
         payload["task"] = str(args.get("instructions", "Review the supplied code or diff and report actionable defects only."))
         payload["context"] = str(args.get("code", args.get("context", "")))
-        payload.setdefault("max_tokens", 1700)
+        payload.setdefault("max_tokens", 4096)
         return self.delegate(payload, tenant)
 
     def reason(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         payload = dict(args)
         payload["task_type"] = "reasoning"
         payload["task"] = str(args.get("problem", args.get("task", "")))
-        payload.setdefault("max_tokens", 1700)
+        payload.setdefault("max_tokens", 4096)
         return self.delegate(payload, tenant)
 
     def distill_command_error(self, failure: dict[str, Any]) -> str:
@@ -1142,7 +1151,7 @@ class LocalAIServices:
         result = self._generate(
             model, prompt,
             "You are an independent skeptical reviewer. Terse technical output only: zero conversational filler, pleasantries, or preamble. Do not merely agree and do not restate the candidate.",
-            int(args.get("max_tokens", 1500)), float(args.get("temperature", 0.2)),
+            int(args.get("max_tokens", 4096)), float(args.get("temperature", 0.2)),
             tenant, "second-opinion", int(args.get("priority", 6)),
             semantic_query=f"{question}\n{focus}", semantic_context_fingerprint=stable_hash({"candidate": candidate, "context": context}),
         )
@@ -1232,7 +1241,7 @@ class LocalAIServices:
         spec = str(args.get("spec", args.get("prompt", args.get("task", ""))))
         context = str(args.get("context", ""))
         language = str(args.get("language", "python"))
-        max_tokens = int(args.get("max_tokens", 1500))
+        max_tokens = int(args.get("max_tokens", 4096))
 
         if not spec:
             return {"success": False, "error": "spec or prompt is required"}
@@ -2242,7 +2251,7 @@ class LocalAIServices:
             # index, then resolve dependents/tests through SQLite refs/edges. A full
             # repository scan is only a bounded fallback for sparse indexes.
             if self.code_index is not None and hasattr(self.code_index, "impact"):
-                diff = self.repo_tools.git_diff(root, base, staged, max_tokens=3500)
+                diff = self.repo_tools.git_diff(root, base, staged, max_tokens=24000)
                 if diff.get("terminal"):
                     return diff
                 if diff.get("success"):
@@ -2527,7 +2536,7 @@ class LocalAIServices:
             "context": packed.get("context", ""),
             "task_type": str(args.get("task_type", "auto")),
             "complexity": str(args.get("complexity", "auto")),
-            "max_tokens": int(args.get("max_tokens", 1500)),
+            "max_tokens": int(args.get("max_tokens", 4096)),
             "priority": int(args.get("priority", 5)),
             # Packed local context is a diagnostic, not proof of cloud-side input
             # avoided: the agent may have used RG or another narrower tool.
@@ -2571,7 +2580,7 @@ class LocalAIServices:
         instructions = str(args.get("instructions", "Review this git diff for actionable defects, regressions, security/concurrency issues and missing tests. Cite changed files/hunks."))
         det_hint = ""
         if det_diff:
-            det_hint = "\nDETERMINISTIC DIFF METADATA (facts only, verify semantics in the diff):\n" + json.dumps(det_diff, ensure_ascii=False, separators=(",", ":"))[:1800] + "\n"
+            det_hint = "\nDETERMINISTIC DIFF METADATA (facts only, verify semantics in the diff):\n" + json_dumps(det_diff, ensure_ascii=False, separators=(",", ":"))[:1800] + "\n"
             if det_diff.get("breaking_changes"):
                 det_hint += "\nPOTENTIAL BREAKING CHANGES DETECTED:\n"
                 for bc in det_diff["breaking_changes"][:10]:
@@ -3388,7 +3397,7 @@ class LocalAIServices:
         model = self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b")
         prompt = (
             f"Investigate this low-confidence command failure in {cwd}:\nCommand: {command}\n"
-            f"Failure summary: {json.dumps(summary, sort_keys=True)}\n"
+            f"Failure summary: {json_dumps(summary, sort_keys=True)}\n"
             f"Artifact reference: {artifact_id}\nFailure preview:\n{preview}\n"
             "Do not request or infer raw command logs; use only this bounded preview.\n"
             "Return only a short JSON diagnosis. Do not propose edits, patches, commands, architecture, or security work."
@@ -3478,7 +3487,7 @@ class LocalAIServices:
                 if isinstance(last_msg, dict) and isinstance(last_msg.get("content"), str):
                     semantic_query = last_msg.get("content", "").strip()
 
-            input_tokens = estimate_tokens(json.dumps(promptish, ensure_ascii=False, default=str) if not isinstance(promptish, str) else promptish)
+            input_tokens = estimate_tokens(json_dumps(promptish, ensure_ascii=False, default=str) if not isinstance(promptish, str) else promptish)
             opts = clean.get("options", {}) if isinstance(clean.get("options"), dict) else {}
             output_tokens = int(opts.get("num_predict", 0) or 0)
             clean, proxy_profile = self.model_policy.apply_payload(
@@ -3503,7 +3512,7 @@ class LocalAIServices:
                     msgs = list(clean["messages"])
                     system_msgs = [m for m in msgs if m.get("role") == "system"]
                     other_msgs = [m for m in msgs if m.get("role") != "system"]
-                    while other_msgs and estimate_tokens(json.dumps(system_msgs + other_msgs)) > budget:
+                    while other_msgs and estimate_tokens(json_dumps(system_msgs + other_msgs)) > budget:
                         if len(other_msgs) <= 1:
                             break
                         other_msgs.pop(0)
@@ -3612,6 +3621,43 @@ class LocalAIServices:
             except Exception as exc:
                 return {"success": False, "error": str(exc)}
         return {"success": True, "purged_entries": deleted_entries, "days_threshold": days}
+
+    def resolve_all_errors(self) -> dict[str, Any]:
+        """Acknowledge and resolve all operational failures, crashes, errors, and agent incidents."""
+        telemetry_res: dict[str, Any] = {}
+        if self.telemetry:
+            try:
+                telemetry_res = self.telemetry.resolve_errors()
+            except Exception as exc:
+                telemetry_res = {"error": str(exc)}
+
+        resolved_incidents = 0
+        if self.incident_store:
+            try:
+                resolved_incidents = self.incident_store.resolve_all(
+                    verified_fix="Resolved by operator",
+                    root_cause="Operator manual resolve",
+                )
+            except Exception as exc:
+                resolved_incidents = -1
+
+        try:
+            state_dir = Path(self.config["server"]["state_dir"])
+            sup_status_path = state_dir / "supervisor.status.json"
+            if sup_status_path.exists():
+                raw = json.loads(sup_status_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    raw["restarts"] = 0
+                    raw["last_error"] = ""
+                    sup_status_path.write_text(json_dumps(raw, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "telemetry": telemetry_res,
+            "resolved_incidents": resolved_incidents,
+        }
 
     def run_doctor(self) -> dict[str, Any]:
         """Run comprehensive system, GPU, model, and database diagnostics."""
@@ -3739,7 +3785,7 @@ class LocalAIServices:
         }
         try:
             from .process_utils import atomic_write_file
-            atomic_write_file(history_file, json.dumps(history, indent=2))
+            atomic_write_file(history_file, json_dumps(history, indent=2))
         except Exception:
             pass
 

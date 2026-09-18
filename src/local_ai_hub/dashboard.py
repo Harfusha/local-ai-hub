@@ -274,6 +274,7 @@ tbody tr.click:hover{background:#162338}
         <div class="token"><input type="password" id="apiToken" autocomplete="off" placeholder="API token (remote only)"><button class="btn" id="saveToken">Set token</button></div>
         <div class="tiny muted">Diagnostics</div>
         <button class="btn ok" id="optDbBtn">Optimize databases</button>
+        <button class="btn ok" id="resolveAllErrorsBtn">Resolve all errors</button>
         <button class="btn" id="doctorBtn">Run diagnostics</button>
         <button class="btn" id="pauseEvents">Pause live events</button>
         <div class="tiny muted">Runtime control</div>
@@ -354,7 +355,7 @@ tbody tr.click:hover{background:#162338}
 <div id="work" class="page">
   <section class="section"><h2>Live scheduler work <span class="tiny" id="queueSummary">Current queue only; not request history.</span></h2><div class="table-wrap"><table><thead><tr><th>State</th><th>Job</th><th>Agent/tenant</th><th>Source</th><th>Model</th><th>Priority</th><th>Wait</th><th>Processing</th><th>Reason</th></tr></thead><tbody id="jobs"></tbody></table></div></section>
   <section class="section"><h2>Active API requests <span class="tiny">monitoring endpoints excluded</span></h2><div class="table-wrap"><table><thead><tr><th>Request</th><th>Agent</th><th>Tenant</th><th>Action</th><th>Age</th></tr></thead><tbody id="activeReq"></tbody></table></div></section>
-  <section class="section"><h2>Request history — Recent API requests <span class="tiny">Persisted API telemetry; distinct from scheduler work and Agent OS task runs.</span></h2><div class="request-filter"><input id="requestHistorySearch" type="search" placeholder="Search request ID, route, agent, tenant, error…" autocomplete="off"><select id="requestHistoryAction" aria-label="Filter by endpoint"><option value="">All endpoints</option></select><select id="requestHistoryStatus" aria-label="Filter by status"><option value="">All results</option><option value="failed">Failed</option><option value="2xx">2xx</option><option value="4xx">4xx</option><option value="5xx">5xx</option></select><select id="requestHistoryPeriod" aria-label="Filter by time"><option value="">All loaded</option><option value="3600">Last hour</option><option value="86400">Last 24 hours</option><option value="604800">Last 7 days</option><option value="2592000">Last 30 days</option></select><button class="btn" id="requestHistoryReset">Reset</button><span class="tiny request-summary" id="requestHistorySummary">0 requests</span></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Request</th><th>Agent</th><th>Tenant</th><th>Action</th><th>Status</th><th>Trace availability</th><th>Duration</th></tr></thead><tbody id="recentReq"></tbody></table></div></section>
+  <section class="section"><h2>Request history — Recent API requests <span class="tiny">Persisted API telemetry; distinct from scheduler work and Agent OS task runs.</span></h2><div class="request-filter"><input id="requestHistorySearch" type="search" placeholder="Search request ID, route, project, agent, error…" autocomplete="off"><select id="requestHistoryAction" aria-label="Filter by endpoint"><option value="">All endpoints</option></select><select id="requestHistoryStatus" aria-label="Filter by status"><option value="">All results</option><option value="failed">Failed</option><option value="2xx">2xx</option><option value="4xx">4xx</option><option value="5xx">5xx</option></select><select id="requestHistoryPeriod" aria-label="Filter by time"><option value="">All loaded</option><option value="3600">Last hour</option><option value="86400">Last 24 hours</option><option value="604800">Last 7 days</option><option value="2592000">Last 30 days</option></select><button class="btn" id="requestHistoryReset">Reset</button><span class="tiny request-summary" id="requestHistorySummary">0 requests</span></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Request</th><th>Project</th><th>Agent</th><th>Tenant</th><th>Action</th><th>Status</th><th>Trace availability</th><th>Duration</th></tr></thead><tbody id="recentReq"></tbody></table></div></section>
 </div>
 
 <div id="agentos" class="page">
@@ -514,7 +515,7 @@ tbody tr.click:hover{background:#162338}
 </div>
 
 <div id="reliability" class="page">
-  <section class="section" id="reliabilitySummary"><h2>Operational severity <span class="tiny">Aggregates current failures, restart history, and request health.</span></h2><div id="reliabilityHeadline" class="kv"></div><div class="reliability-footer" style="padding:10px 14px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div class="tiny muted" id="reliabilityTrend">Failure trend unavailable until telemetry arrives.</div><button class="btn" id="reliabilityAction">Open affected requests</button></div></section>
+  <section class="section" id="reliabilitySummary"><h2>Operational severity <span class="tiny">Aggregates current failures, restart history, and request health.</span></h2><div id="reliabilityHeadline" class="kv"></div><div class="reliability-footer" style="padding:10px 14px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div class="tiny muted" id="reliabilityTrend">Failure trend unavailable until telemetry arrives.</div><div style="display:flex;gap:8px;align-items:center"><button class="btn ok" id="resolveErrorsBtn" style="display:none;padding:4px 10px">Resolve all errors</button><button class="btn" id="reliabilityAction">Open affected requests</button></div></div></section>
   <div class="split">
     <section class="section"><h2>Recent error fingerprints</h2><div class="table-wrap"><table><thead><tr><th>Component</th><th>Operation</th><th>Count</th><th>Recovered</th><th>Last seen</th></tr></thead><tbody id="errors"></tbody></table></div></section>
     <section class="section"><h2>Runtime / scheduler counters</h2><div id="runtimeCounters" class="kv"></div></section>
@@ -574,6 +575,7 @@ const latencySparkData=[], throughputSparkData=[], liveChartLatency=[], liveChar
 const traceStyles=document.createElement('style');
 traceStyles.textContent='.trace-inspector-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:12px;background:linear-gradient(135deg,#172535,#11171e);border:1px solid #33485f;border-radius:8px}.trace-kicker{color:var(--accent);font-size:10px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px}.trace-inspector-head strong{font-size:15px;display:block;overflow-wrap:anywhere}.trace-metrics{display:flex;gap:7px;flex-wrap:wrap;padding:8px 0 2px;color:var(--muted);font-size:10px}.trace-metrics span{border:1px solid #2b3948;border-radius:999px;padding:3px 7px}.trace-tabs{display:flex;gap:5px;overflow:auto;padding:10px 0 2px;border-bottom:1px solid var(--line)}.trace-tab{background:transparent;color:var(--muted);border:0;border-bottom:2px solid transparent;padding:7px 9px;cursor:pointer;white-space:nowrap;font-size:11px}.trace-tab:hover,.trace-tab.active{color:var(--fg);border-bottom-color:var(--accent)}.trace-view{min-height:80px}.tool-pair{display:grid;gap:6px}.tool-part{border-left:3px solid #6d86a8;background:#0d141c;padding:8px;border-radius:4px}.tool-result{border-left-color:var(--ok)}.tool-label{color:var(--accent);font-weight:700;font-size:11px;margin-bottom:6px}.tool-label .tiny{margin-left:7px;color:var(--fg);font-weight:400}.tool-pending{color:var(--warn);font-size:11px;padding:7px 0}.trace-raw-panel pre{margin:0}';
 document.head.append(traceStyles);
+ document.head.insertAdjacentHTML('beforeend','<style>.trace-inspector-context{display:flex;align-items:flex-end;gap:8px;flex-direction:column}.trace-project-label{border:1px solid #41659a;border-radius:999px;padding:4px 8px;color:#c7dcff;font-size:10px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.trace-search-presentation,.trace-model-presentation{border:1px solid #33485f;border-radius:8px;background:#0c121a;padding:12px}.trace-search-query{border:1px solid #2d4965;border-left:3px solid #5b8def;border-radius:6px;background:#111b26;padding:9px 10px;overflow-wrap:anywhere}.trace-search-query strong,.trace-search-answer strong{display:block;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}.trace-search-spec{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;color:var(--muted);font-size:10px}.trace-search-spec span{border:1px solid #2b3948;border-radius:999px;padding:3px 7px}.trace-search-results{margin-top:12px}.trace-search-results h3{margin:0 0 5px;font-size:11px}.trace-search-result-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:9px;align-items:start;border-top:1px solid #273544;padding:8px 0;min-width:0}.trace-search-rank{display:grid;place-items:center;width:20px;height:20px;border-radius:50%;background:#1c3042;color:#c7dcff;font-size:10px}.trace-search-result-main{min-width:0;overflow-wrap:anywhere}.trace-search-result-main strong{display:block;overflow-wrap:anywhere}.trace-search-result-main>.tiny{display:block;margin-top:2px}.trace-search-snippet{color:#c9d5e2;font-size:11px;line-height:1.35;margin-top:4px;overflow-wrap:anywhere}.trace-search-score{color:var(--muted);font-size:10px;padding-top:3px}.trace-search-answer{border-top:1px solid #273544;margin-top:8px;padding-top:9px;overflow-wrap:anywhere}.trace-model-presentation .trace-primary-card{min-height:0}.trace-model-presentation .trace-chat-message{border-top:0;padding:0}.trace-model-presentation .trace-chat-role{display:none}.trace-model-presentation .prompt-pre{max-height:260px}.trace-summary-card,.trace-code-card,.trace-list-card{border:1px solid #273544;border-radius:6px;background:#0d141c;padding:10px;margin-bottom:8px}.trace-summary-card h3,.trace-code-card h3,.trace-list-card h3{margin:0 0 6px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}.trace-summary-value{overflow-wrap:anywhere}.trace-chip{display:inline-block;padding:2px 6px;border-radius:4px;background:#172535;border:1px solid #2d4965;font-size:11px;margin:2px}.trace-obj-field{margin-bottom:4px;overflow-wrap:anywhere}.trace-obj-key{color:var(--muted);font-size:11px;font-weight:600}.trace-obj-val{font-size:11px}.trace-primary-groups{display:grid;gap:8px;margin-top:10px}.trace-primary-group{border:1px solid #273544;border-radius:6px;background:#0d141c}.trace-primary-group>summary{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px 10px;cursor:pointer;color:var(--fg);font-size:11px;font-weight:700;list-style:none}.trace-primary-group>summary::-webkit-details-marker{display:none}.trace-primary-group>summary::after{content:\"+\";color:var(--muted);font-size:15px;line-height:1}.trace-primary-group[open]>summary::after{content:\"−\"}.trace-primary-group-body{padding:0 10px 10px}.trace-primary-group .trace-primary-card{border:0;background:transparent;padding:0;margin:0}.trace-primary-group .trace-primary-card h3{display:none}.trace-primary-group .trace-primary-value{padding-top:2px}@media(max-width:700px){.trace-inspector-context{align-items:flex-end}.trace-project-label{max-width:150px}}</style>');
 
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])), escJs=v=>esc(JSON.stringify(v));
 const n=v=>Number(v||0).toLocaleString(), ms=v=>{v=Number(v||0);return v>=1000?(v/1000).toFixed(v>=10000?1:2)+' s':Math.round(v)+' ms'}, durSec=s=>{s=Number(s||0);if(s<60)return Math.round(s)+'s';if(s<3600)return Math.floor(s/60)+'m '+Math.round(s%60)+'s';if(s<86400)return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';return Math.floor(s/86400)+'d '+Math.floor((s%86400)/3600)+'h'}, age=msv=>durSec(Number(msv||0)/1000);
@@ -733,6 +735,7 @@ workPageStyles.textContent='.work-page{display:grid!important;grid-template-colu
 document.head.append(workPageStyles);
 document.head.insertAdjacentHTML('beforeend','<style>.trace-side-state.interrupted{background:var(--warn)}.trace-interrupted{color:var(--warn)}.work-page{display:none!important}.work-page.active{display:grid!important}</style>');
 document.head.insertAdjacentHTML('beforeend','<style>.work-page.active .work-panel-4{grid-column:1/-1!important;grid-row:3!important}.work-page.active .work-panel-4 .table-wrap{max-height:460px}.work-page.active .work-panel-3{grid-column:1/-1!important;grid-row:4!important}</style>');
+document.head.insertAdjacentHTML('beforeend','<style>.work-panel-3 th:nth-child(1){width:10%}.work-panel-3 th:nth-child(2){width:12%}.work-panel-3 th:nth-child(3){width:9%}.work-panel-3 th:nth-child(4){width:10%}.work-panel-3 th:nth-child(5){width:20%}.work-panel-3 th:nth-child(6){width:11%}.work-panel-3 th:nth-child(7){width:9%}.work-panel-3 th:nth-child(8){width:12%}.work-panel-3 th:nth-child(9){width:7%}.work-panel-3 td:nth-child(8),.work-panel-3 td:nth-child(9){white-space:nowrap;overflow-wrap:normal;word-break:normal}</style>');
 
 const workFilterStyles=document.createElement('style');
 workFilterStyles.textContent='.work-filter{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:12px}.work-filter input,.work-filter select{background:#0d141c;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:7px 9px;font:inherit;font-size:11px}.work-filter input{flex:1;min-width:220px}.work-filter select{min-width:125px}.work-filter .btn{padding:6px 9px;font-size:11px}.work-filter-summary{color:var(--muted);font-size:10px}';
@@ -740,8 +743,9 @@ document.head.append(workFilterStyles);
 document.head.insertAdjacentHTML('beforeend','<style>.trace-sidebar-controls{display:flex;gap:6px;padding:8px 8px 2px}.trace-sidebar-controls input,.trace-sidebar-controls select{min-width:0;width:100%;background:#0d141c;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:6px 7px;font:inherit;font-size:10px}.trace-sidebar-controls select{width:116px;flex:0 0 116px}</style>');
 document.head.insertAdjacentHTML('beforeend','<style>.trace-main,.trace-step-body,.trace-event,.human-section{min-width:0}.prompt-meta{display:flex;gap:5px;flex-wrap:wrap;padding:7px 8px;border-bottom:1px solid #202a35}.prompt-chip{border:1px solid #394758;border-radius:999px;padding:2px 7px;color:var(--muted);font-size:9px}.prompt-chip strong{color:var(--fg)}.prompt-messages{display:grid;gap:6px;padding:7px}.prompt-card{border:1px solid #2d3d4e;border-left:3px solid #5b8def;border-radius:6px;overflow:hidden}.prompt-card.role-system{border-left-color:#a78bfa}.prompt-card.role-user{border-left-color:#38bdf8}.prompt-card.role-assistant{border-left-color:#4ade80}.prompt-card-head{display:flex;align-items:center;gap:7px;padding:6px 8px;background:#151d26;color:var(--fg);font-size:10px;font-weight:700}.prompt-card-head .tiny{margin-left:auto}.prompt-pre{margin:0;padding:7px 8px;background:#0d1219;color:#d7e2ef;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.3;font-size:11px;max-height:150px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace}.prompt-context{margin:0 8px 8px;border:1px solid #334355;border-radius:5px;background:#111923}.prompt-context summary{cursor:pointer;padding:6px 8px;color:var(--muted);font-size:9px}.prompt-context .prompt-pre{max-height:180px;border-top:1px solid #273544}.prompt-fallback{padding:8px}</style>');
 document.head.insertAdjacentHTML('beforeend','<style>.trace-codex-timeline,.trace-codex-timeline *{min-width:0;max-width:100%;box-sizing:border-box}.trace-codex-timeline .trace-timeline-event,.trace-codex-timeline .trace-tool-card{overflow:hidden;overflow-wrap:anywhere;word-break:break-word}.trace-codex-timeline .trace-timeline-marker,.trace-codex-timeline h4,.trace-codex-timeline .trace-tool-field,.trace-codex-timeline .human-grid,.trace-codex-timeline .human-value{overflow-wrap:anywhere;word-break:break-word}.trace-codex-timeline pre{max-width:100%;white-space:pre-wrap;overflow:auto}</style>');
-document.head.insertAdjacentHTML('beforeend','<style>.trace-primary{margin:0 0 14px}.trace-primary-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:8px}.trace-primary-head h2{margin:0;font-size:14px}.trace-primary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.trace-primary-card{min-width:0;border:1px solid #33485f;border-radius:8px;overflow:hidden;background:#0d141c}.trace-primary-card.input{border-color:#41659a}.trace-primary-card.output{border-color:#397658}.trace-primary-card h3{margin:0;padding:9px 11px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;background:#151d26}.trace-primary-card.input h3{color:#a9c6ff}.trace-primary-card.output h3{color:#9be7b8}.trace-primary-value{min-width:0;padding:10px;overflow-wrap:anywhere}.trace-primary-value .human-grid{padding:0}.trace-primary-empty{color:var(--muted);font-size:11px}.trace-optional-details{border:1px solid #2d3d4e;border-radius:8px;background:#0c121a}.trace-optional-details>summary{cursor:pointer;padding:10px 12px;color:var(--fg);font-size:11px;font-weight:700}.trace-optional-details>summary::marker{color:var(--accent)}.trace-optional-details[open]>summary{border-bottom:1px solid #273544}.trace-optional-body{padding:0 12px 12px}.trace-optional-body .human-section:first-child{margin-top:12px}.trace-chat-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;align-items:start}.trace-chat-column{min-width:0}.trace-chat-input{border-color:#41659a}.trace-chat-output{border-color:#397658}.trace-chat-message{border-top:1px solid #273544;padding:9px 0}.trace-chat-message:first-child{border-top:0;padding-top:0}.trace-chat-role{color:var(--accent);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}.trace-chat-meta{display:flex;gap:7px;flex-wrap:wrap;margin:0 0 8px}.trace-chat-meta span{border:1px solid #2b3948;border-radius:999px;padding:3px 7px;color:var(--muted);font-size:10px}.trace-tool-timeline{display:grid;gap:8px;margin-top:10px}.trace-tool-card{border:1px solid #33485f;border-left:3px solid var(--accent);border-radius:6px;background:#0b131b;padding:9px}.trace-tool-card.error{border-left-color:var(--bad)}.trace-tool-card h4{margin:0 0 6px;font-size:11px}.trace-tool-card pre{max-height:220px;overflow:auto;margin:4px 0 0}.trace-tool-field{margin-top:7px}.trace-tool-field strong{color:var(--muted);font-size:10px;text-transform:uppercase}.trace-tool-field .human-pre{margin:4px 0 0}@media(max-width:700px){.trace-primary-grid,.trace-chat-columns{grid-template-columns:1fr}}</style>');
+document.head.insertAdjacentHTML('beforeend','<style>.trace-primary{margin:0 0 14px}.trace-primary-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:8px}.trace-primary-head h2{margin:0;font-size:14px}.trace-primary-grid{display:grid;grid-template-columns:1fr;gap:10px}.trace-primary-card{min-width:0;border:1px solid #33485f;border-radius:8px;overflow:hidden;background:#0d141c}.trace-primary-card.input{border-color:#41659a}.trace-primary-card.output{border-color:#397658}.trace-primary-card h3{margin:0;padding:9px 11px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;background:#151d26}.trace-primary-card.input h3{color:#a9c6ff}.trace-primary-card.output h3{color:#9be7b8}.trace-primary-value{min-width:0;padding:10px;overflow-wrap:anywhere}.trace-primary-value .human-grid{padding:0}.trace-primary-empty{color:var(--muted);font-size:11px}.trace-presentation-actions{display:flex;align-items:center;justify-content:flex-end;gap:5px;flex-wrap:wrap;margin:0 0 8px}.trace-presentation-actions .btn{padding:4px 7px;font-size:10px}.trace-capture-state{display:inline-flex;align-items:center;border:1px solid #394758;border-radius:999px;padding:3px 7px;font-size:10px;white-space:nowrap}.trace-capture-state.produced{border-color:#397658;color:#9be7b8}.trace-capture-state.empty{border-color:#8b6d31;color:#f4d58b}.trace-capture-state.not-captured{border-color:#536274;color:#aeb9c7}.trace-capture-state.redacted{border-color:#795a9b;color:#d9b8ff}.trace-optional-details{width:100%;box-sizing:border-box;border:1px solid #2d3d4e;border-radius:8px;background:#0c121a}.trace-optional-details>summary{cursor:pointer;padding:10px 12px;color:var(--fg);font-size:11px;font-weight:700}.trace-optional-details>summary::marker{color:var(--accent)}.trace-optional-details[open]>summary{border-bottom:1px solid #273544}.trace-optional-body{padding:0 12px 12px;min-width:0;overflow-wrap:anywhere}.trace-optional-body .human-section:first-child{margin-top:12px}.trace-chat-columns{display:grid;grid-template-columns:1fr;gap:10px;align-items:start}.trace-chat-column{min-width:0}.trace-chat-input{border-color:#41659a}.trace-chat-output{border-color:#397658}.trace-chat-message{border-top:1px solid #273544;padding:9px 0}.trace-chat-message:first-child{border-top:0;padding-top:0}.trace-chat-role{color:var(--accent);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}.trace-chat-meta{display:flex;gap:7px;flex-wrap:wrap;margin:0 0 8px}.trace-chat-meta span{border:1px solid #2b3948;border-radius:999px;padding:3px 7px;color:var(--muted);font-size:10px}.trace-tool-timeline{display:grid;gap:8px;margin-top:10px}.trace-tool-card{border:1px solid #33485f;border-left:3px solid var(--accent);border-radius:6px;background:#0b131b;padding:9px}.trace-tool-card.error{border-left-color:var(--bad)}.trace-tool-card h4{margin:0 0 6px;font-size:11px}.trace-tool-card pre{max-height:220px;overflow:auto;margin:4px 0 0}.trace-tool-field{margin-top:7px}.trace-tool-field strong{color:var(--muted);font-size:10px;text-transform:uppercase}.trace-tool-field .human-pre{margin:4px 0 0}@media(max-width:700px){.trace-primary-grid,.trace-chat-columns{grid-template-columns:1fr}}</style>');
 
+document.head.insertAdjacentHTML('beforeend','<style>.trace-presentation-field{display:grid;grid-template-columns:minmax(150px,220px) minmax(0,1fr);gap:6px 12px;align-items:start;padding:7px 0;min-width:0}.trace-presentation-field+ .trace-presentation-field{border-top:1px solid #273544}.trace-presentation-field>strong{color:var(--muted);font-size:10px;line-height:1.4;overflow-wrap:anywhere}.trace-presentation-field>div,.trace-presentation-field>span,.trace-presentation-field>pre,.trace-presentation-field>details{min-width:0;overflow-wrap:anywhere}.trace-command-top{border:1px solid #2d3d4e;border-radius:8px;background:#0c121a;padding:10px;margin:0 0 14px}.trace-command-top>h3{margin:0 0 4px;font-size:12px;color:var(--fg)}@media(max-width:700px){.trace-presentation-field{grid-template-columns:1fr;gap:3px}.trace-command-top{padding:8px}}</style>');
 const nativeFetch=window.fetch.bind(window);
 function getSavedToken(){
   try{return localStorage.getItem('apiToken')||sessionStorage.getItem('localAiHubToken')||'';}catch{return '';}
@@ -774,9 +778,9 @@ async function apiFetch(path,opts={}){
   }
   return r;
 }
-const rows=(id,items,fn,cols,emptyText='No active items recorded')=>{$(id).innerHTML=(items&&items.length)?items.map(fn).join(''):`<tr><td colspan="${cols}" class="muted" style="text-align:center;padding:16px 10px;font-style:italic">${emptyText}</td></tr>`};
+const rows=(id,items,fn,cols,emptyText='No active items recorded')=>{const el=$(id);if(!el)return;el.innerHTML=(items&&items.length)?items.map(fn).join(''):`<tr><td colspan="${cols}" class="muted" style="text-align:center;padding:16px 10px;font-style:italic">${emptyText}</td></tr>`};
 function copyText(text, btn){
-  try{navigator.clipboard.writeText(String(text))}catch{}
+  try{if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(String(text)).catch(()=>{});}}catch{}
   if(btn){
     const oldText=btn.textContent;
     btn.textContent='Copied!';
@@ -924,7 +928,7 @@ function renderDeadCodeModal(s){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -961,7 +965,7 @@ function renderAuditVulnModal(v){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -1022,7 +1026,7 @@ function renderSecretFindingModal(s){
       </div>
       `:''}
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -1054,7 +1058,7 @@ function renderArchEdgeModal(e){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -1104,27 +1108,27 @@ function renderCmdResult(res){
 }
 
 if($('cmdTermViewBtn'))$('cmdTermViewBtn').onclick=()=>{
-  $('cmdTermPane').style.display='block';
-  $('cmdOutput').style.display='none';
-  $('cmdTermViewBtn').classList.add('active');
-  $('cmdJsonViewBtn').classList.remove('active');
+  if($('cmdTermPane'))$('cmdTermPane').style.display='block';
+  if($('cmdOutput'))$('cmdOutput').style.display='none';
+  $('cmdTermViewBtn')?.classList.add('active');
+  $('cmdJsonViewBtn')?.classList.remove('active');
 };
 if($('cmdJsonViewBtn'))$('cmdJsonViewBtn').onclick=()=>{
-  $('cmdTermPane').style.display='none';
-  $('cmdOutput').style.display='block';
-  $('cmdJsonViewBtn').classList.add('active');
-  $('cmdTermViewBtn').classList.remove('active');
+  if($('cmdTermPane'))$('cmdTermPane').style.display='none';
+  if($('cmdOutput'))$('cmdOutput').style.display='block';
+  $('cmdJsonViewBtn')?.classList.add('active');
+  $('cmdTermViewBtn')?.classList.remove('active');
 };
 
 if($('cmdClassify'))$('cmdClassify').onclick=async()=>{
-  const command=$('cmdInput').value.trim();
+  const command=$('cmdInput')?.value?.trim()||'';
   if(!command)return;
   const res=await post('/api/command',{action:'classify',command});
   renderCmdResult(res);
 };
 
 if($('cmdRun'))$('cmdRun').onclick=async()=>{
-  const command=$('cmdInput').value.trim(),cwd=$('cmdRoot').value.trim();
+  const command=$('cmdInput')?.value?.trim()||'',cwd=$('cmdRoot')?.value?.trim()||'';
   if(!command||!cwd){
     renderCmdResult({error:'Repository root and command are required.'});
     return;
@@ -1135,12 +1139,13 @@ if($('cmdRun'))$('cmdRun').onclick=async()=>{
     return;
   }
   if(!confirm('Run this '+c.classification.class+' command?\n\n'+command))return;
-  $('cmdRun').disabled=true;
+  const btn=$('cmdRun');
+  if(btn)btn.disabled=true;
   try{
     const res=await post('/api/command',{action:'run',command,cwd,force:true});
     renderCmdResult(res);
   } finally {
-    $('cmdRun').disabled=false;
+    if(btn)btn.disabled=false;
     pollStatus();
   }
 };
@@ -1149,9 +1154,9 @@ async function openGitDiffModal(defaultRoot,defaultPath,defaultStaged){
   const root=defaultRoot||$('cmdRoot')?.value?.trim()||'.';
   const path=defaultPath||'';
   const staged=!!defaultStaged;
-  $('modalTitle').textContent='Visual Git Diff';
-  $('modalLive').innerHTML='';
-  $('modalBody').innerHTML=`
+  if($('modalTitle'))$('modalTitle').textContent='Visual Git Diff';
+  if($('modalLive'))$('modalLive').innerHTML='';
+  if($('modalBody'))$('modalBody').innerHTML=`
     <div style="padding:8px 12px;background:#131d2b;border-bottom:1px solid #2e405a;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <input id="diffModalRoot" value="${esc(root)}" placeholder="Repo root" style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:4px 8px;font-size:11px;min-width:180px">
       <input id="diffModalPath" value="${esc(path)}" placeholder="File path (optional)" style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:4px 8px;font-size:11px;min-width:180px">
@@ -1167,7 +1172,7 @@ async function openGitDiffModal(defaultRoot,defaultPath,defaultStaged){
       <div class="muted">Loading diff…</div>
     </div>
   `;
-  $('modalBg').classList.add('open');
+  if($('modalBg'))$('modalBg').classList.add('open');
 
   async function loadDiff(){
     const r=$('diffModalRoot')?.value?.trim()||'.';
@@ -1247,8 +1252,8 @@ async function openGitDiffModal(defaultRoot,defaultPath,defaultStaged){
 
 if($('cmdGitDiffBtn'))$('cmdGitDiffBtn').onclick=()=>openGitDiffModal($('cmdRoot')?.value?.trim());
 
-if($('intelRediscover'))$('intelRediscover').onclick=async()=>{$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'rediscover'});$('intelControlStatus').textContent=r.success?'rediscovery complete':'error: '+(r.error||'failed');pollStatus()};
-if($('intelReset'))$('intelReset').onclick=async()=>{if(!confirm('Reset all managed Serena/CodeGraph MCP sessions?'))return;$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'reset',backend:'all'});$('intelControlStatus').textContent=r.success?'sessions reset':'error: '+(r.error||'failed');pollStatus()};
+if($('intelRediscover'))$('intelRediscover').onclick=async()=>{if($('intelControlStatus'))$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'rediscover'});if($('intelControlStatus'))$('intelControlStatus').textContent=r.success?'rediscovery complete':'error: '+(r.error||'failed');pollStatus()};
+if($('intelReset'))$('intelReset').onclick=async()=>{if(!confirm('Reset all managed Serena/CodeGraph MCP sessions?'))return;if($('intelControlStatus'))$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'reset',backend:'all'});if($('intelControlStatus'))$('intelControlStatus').textContent=r.success?'sessions reset':'error: '+(r.error||'failed');pollStatus()};
 
 async function loadArchGraph(){
   try{
@@ -1262,11 +1267,12 @@ async function loadArchGraph(){
 function renderArchGraph(){
   if(!archData)return;
   const svg=$('archSvg');
+  if(!svg)return;
   const W=svg.clientWidth||800,H=svg.clientHeight||520;
   const nodes=(archData.nodes||[]).map((n,i)=>({...n,x:W/2+Math.cos(i/Math.max(1,archData.nodes.length)*2*Math.PI)*200,y:H/2+Math.sin(i/Math.max(1,archData.nodes.length)*2*Math.PI)*160,vx:0,vy:0}));
   const edges=archData.edges||[];
   archNodes=nodes;archEdges=edges;
-  $('archSummary').textContent=nodes.length+' projects · '+edges.length+' connections · '+n(archData.shared_packages||0)+' shared packages';
+  if($('archSummary'))$('archSummary').textContent=nodes.length+' projects · '+edges.length+' connections · '+n(archData.shared_packages||0)+' shared packages';
   rows('archEdgesTable',edges,e=>clickableRow(e,`<td>${esc(e.from?.split('/').pop()||e.from)}</td><td>${esc(e.to?.split('/').pop()||e.to)}</td><td><span class="chip">${esc(e.type)}</span></td><td>${esc(e.label)}</td>`,'arch_edge'),4);
   drawArch(svg,nodes,edges,W,H);
   runSimulation(svg,nodes,edges,W,H);
@@ -1428,90 +1434,90 @@ function setScanPending(label){
 }
 
 $('deadCodeBtn')?.addEventListener('click',async()=>{
-  $('deadCodeBtn').disabled=true;$('deadCodeBtn').textContent='Scanning…';setScanPending('Scanning dead code');
+  const btn=$('deadCodeBtn');if(btn){btn.disabled=true;btn.textContent='Scanning…';}setScanPending('Scanning dead code');
   try{
     const r=await apiFetch('/api/dead_code',{cache:'no-store'});
     const d=await r.json();
-    $('deadCodeSec').style.display='block';
-    $('deadCodeSummary').textContent=n(d.dead_symbols_count||0)+' potentially unused symbols';
+    if($('deadCodeSec'))$('deadCodeSec').style.display='block';
+    if($('deadCodeSummary'))$('deadCodeSummary').textContent=n(d.dead_symbols_count||0)+' potentially unused symbols';
     rows('deadCodeTable',d.dead_symbols||[],s=>clickableRow(s,`<td><b>${esc(s.name)}</b></td><td><span class="chip">${esc(s.kind)}</span></td><td>${esc(s.path)}</td><td>${n(s.line)}</td><td>${esc(s.container||'—')}</td><td class="muted">${esc(s.reason)}</td>`,'dead_code'),6);
     showScanReady('deadCodeSec','Dead Code ('+n(d.dead_symbols_count||0)+')');
   }catch(e){alert('Dead code scan failed: '+e.message)}
-  finally{$('deadCodeBtn').disabled=false;$('deadCodeBtn').textContent='Scan Dead Code'}
+  finally{if(btn){btn.disabled=false;btn.textContent='Scan Dead Code'}}
 });
 $('auditDepsBtn')?.addEventListener('click',async()=>{
-  $('auditDepsBtn').disabled=true;$('auditDepsBtn').textContent='Auditing…';setScanPending('Auditing dependencies');
+  const btn=$('auditDepsBtn');if(btn){btn.disabled=true;btn.textContent='Auditing…';}setScanPending('Auditing dependencies');
   try{
     const r=await apiFetch('/api/audit_dependencies',{cache:'no-store'});
     const d=await r.json();
-    $('auditSec').style.display='block';
-    $('auditSummary').textContent=`Score ${d.security_score||'A'} · ${n(d.total_dependencies||0)} packages · ${n(d.vulnerability_count||0)} advisories`;
+    if($('auditSec'))$('auditSec').style.display='block';
+    if($('auditSummary'))$('auditSummary').textContent=`Score ${d.security_score||'A'} · ${n(d.total_dependencies||0)} packages · ${n(d.vulnerability_count||0)} advisories`;
     rows('auditTable',d.vulnerabilities||[],v=>clickableRow(v,`<td><b>${esc(v.package)}</b></td><td><span class="chip ${v.severity==='HIGH'?'bad-t':'warn-t'}">${esc(v.severity)}</span></td><td>${esc(v.installed_version)}</td><td class="ok">${esc(v.fixed_version)}</td><td>${esc(v.advisory)}</td><td class="muted">${esc(v.manifest_path)}</td>`,'audit_vulnerability'),6);
     showScanReady('auditSec','Security Audit ('+n(d.vulnerability_count||0)+' advisories)');
   }catch(e){alert('Security audit failed: '+e.message)}
-  finally{$('auditDepsBtn').disabled=false;$('auditDepsBtn').textContent='Audit Security'}
+  finally{if(btn){btn.disabled=false;btn.textContent='Audit Security'}}
 });
 
 $('circDepsBtn')?.addEventListener('click',async()=>{
-  $('circDepsBtn').disabled=true;$('circDepsBtn').textContent='Checking…';setScanPending('Checking circular deps');
+  const btn=$('circDepsBtn');if(btn){btn.disabled=true;btn.textContent='Checking…';}setScanPending('Checking circular deps');
   try{
     const r=await post('/api/repo/circular_dependencies',{root:'.'});
-    $('circDepsSec').style.display='block';
+    if($('circDepsSec'))$('circDepsSec').style.display='block';
     const cycles=r.cycles||[];
-    $('circDepsSummary').textContent=n(cycles.length)+' circular cycle(s) detected';
+    if($('circDepsSummary'))$('circDepsSummary').textContent=n(cycles.length)+' circular cycle(s) detected';
     rows('circDepsTable',cycles,(c,i)=>clickableRow({cycle:c},`<td><b>#${i+1}</b></td><td><span class="chip">${esc(r.language||'python')}</span></td><td class="mono">${esc(Array.isArray(c)?c.join(' ➔ '):String(c))}</td><td>${n(Array.isArray(c)?c.length:1)}</td>`,'circ_dep'),4);
     if(archNodes&&archEdges&&$('archSvg')){
       drawArch($('archSvg'),archNodes,archEdges,$('archSvg').clientWidth||800,$('archSvg').clientHeight||520);
     }
     showScanReady('circDepsSec','Circular Deps ('+n(cycles.length)+')');
   }catch(e){alert('Circular dependency scan failed: '+e.message)}
-  finally{$('circDepsBtn').disabled=false;$('circDepsBtn').textContent='Circular Deps'}
+  finally{if(btn){btn.disabled=false;btn.textContent='Circular Deps'}}
 });
 
 $('complexityBtn')?.addEventListener('click',async()=>{
-  $('complexityBtn').disabled=true;$('complexityBtn').textContent='Analyzing…';setScanPending('Analyzing complexity');
+  const btn=$('complexityBtn');if(btn){btn.disabled=true;btn.textContent='Analyzing…';}setScanPending('Analyzing complexity');
   try{
     const r=await post('/api/repo/complexity',{root:'.'});
-    $('complexitySec').style.display='block';
+    if($('complexitySec'))$('complexitySec').style.display='block';
     const funcs=r.functions||[];
-    $('complexitySummary').textContent=`Total ${n(r.total_functions||funcs.length)} functions · High risk: ${n(r.high_risk_count||0)}`;
+    if($('complexitySummary'))$('complexitySummary').textContent=`Total ${n(r.total_functions||funcs.length)} functions · High risk: ${n(r.high_risk_count||0)}`;
     rows('complexityTable',funcs,f=>{
       const riskCls=f.risk==='high'?'bad-t':f.risk==='medium'?'warn-t':'ok';
       return clickableRow(f,`<td><b>${esc(f.name)}</b></td><td class="muted">${esc(f.file)}:${n(f.line)}</td><td>${n(f.cyclomatic_complexity)}</td><td>${n(f.cognitive_complexity)}</td><td><span class="chip ${riskCls}">${esc(f.risk||'low')}</span></td>`,'complexity');
     },5);
     showScanReady('complexitySec','Complexity ('+n(funcs.length)+' funcs)');
   }catch(e){alert('Complexity analysis failed: '+e.message)}
-  finally{$('complexityBtn').disabled=false;$('complexityBtn').textContent='Code Complexity'}
+  finally{if(btn){btn.disabled=false;btn.textContent='Code Complexity'}}
 });
 
 $('apiSpecBtn')?.addEventListener('click',async()=>{
-  $('apiSpecBtn').disabled=true;$('apiSpecBtn').textContent='Extracting…';setScanPending('Extracting API spec');
+  const btn=$('apiSpecBtn');if(btn){btn.disabled=true;btn.textContent='Extracting…';}setScanPending('Extracting API spec');
   try{
     const r=await post('/api/repo/api_spec',{root:'.'});
-    $('apiSpecSec').style.display='block';
+    if($('apiSpecSec'))$('apiSpecSec').style.display='block';
     const routes=r.routes||[];
-    $('apiSpecSummary').textContent=`${n(routes.length)} endpoints detected · Framework: ${esc(r.framework||'auto')}`;
+    if($('apiSpecSummary'))$('apiSpecSummary').textContent=`${n(routes.length)} endpoints detected · Framework: ${esc(r.framework||'auto')}`;
     rows('apiSpecTable',routes,rt=>clickableRow(rt,`<td><b>${esc(rt.path)}</b></td><td><span class="chip ok">${esc((rt.methods||['GET']).join(','))}</span></td><td class="mono">${esc(rt.handler||'—')}</td><td>${esc(rt.framework||'—')}</td><td class="tiny muted">${esc(rt.doc||'—')}</td>`,'api_route'),5);
     showScanReady('apiSpecSec','API Spec ('+n(routes.length)+' routes)');
   }catch(e){alert('API Spec extraction failed: '+e.message)}
-  finally{$('apiSpecBtn').disabled=false;$('apiSpecBtn').textContent='API Spec'}
+  finally{if(btn){btn.disabled=false;btn.textContent='API Spec'}}
 });
 
 $('migrationDriftBtn')?.addEventListener('click',async()=>{
-  $('migrationDriftBtn').disabled=true;$('migrationDriftBtn').textContent='Checking…';setScanPending('Checking migration drift');
+  const btn=$('migrationDriftBtn');if(btn){btn.disabled=true;btn.textContent='Checking…';}setScanPending('Checking migration drift');
   try{
     const r=await post('/api/repo/migration_drift',{root:'.'});
-    $('migrationDriftSec').style.display='block';
+    if($('migrationDriftSec'))$('migrationDriftSec').style.display='block';
     const drift=r.drift||{};
     const tables=Object.keys(drift);
-    $('migrationDriftSummary').textContent=r.in_sync?'Database and code models are fully in sync ✓':`${n(tables.length)} drift table(s) found`;
+    if($('migrationDriftSummary'))$('migrationDriftSummary').textContent=r.in_sync?'Database and code models are fully in sync ✓':`${n(tables.length)} drift table(s) found`;
     rows('migrationDriftTable',tables,t=>{
       const item=drift[t]||{};
       return clickableRow(item,`<td><b>${esc(t)}</b></td><td><span class="chip ${r.in_sync?'ok':'warn-t'}">${r.in_sync?'SYNC':'DRIFT'}</span></td><td class="bad-t">${esc((item.missing_in_db||[]).join(', ')||'—')}</td><td class="bad-t">${esc((item.missing_in_code||[]).join(', ')||'—')}</td><td class="warn-t">${esc(JSON.stringify(item.type_mismatches||{})||'—')}</td>`,'migration_drift');
     },5);
     showScanReady('migrationDriftSec','Migration Drift ('+n(tables.length)+' tables)');
   }catch(e){alert('Migration drift check failed: '+e.message)}
-  finally{$('migrationDriftBtn').disabled=false;$('migrationDriftBtn').textContent='Migration Drift'}
+  finally{if(btn){btn.disabled=false;btn.textContent='Migration Drift'}}
 });
 
 let secretScanCache=[];
@@ -1532,24 +1538,27 @@ function renderSecretScanTable(){
 $('secretScanHideTests')?.addEventListener('change',renderSecretScanTable);
 
 $('secretScanBtn')?.addEventListener('click',async()=>{
-  $('secretScanBtn').disabled=true;$('secretScanBtn').textContent='Scanning…';setScanPending('Scanning secrets');
+  const btn=$('secretScanBtn');if(btn){btn.disabled=true;btn.textContent='Scanning…';}setScanPending('Scanning secrets');
   try{
     const r=await post('/api/repo/secret_scan',{root:'.'});
-    $('secretScanSec').style.display='block';
+    if($('secretScanSec'))$('secretScanSec').style.display='block';
     secretScanCache=r.findings||[];
     const realLeaks=r.real_leaks_count!==undefined?r.real_leaks_count:secretScanCache.filter(s=>!s.is_test&&!s.is_placeholder).length;
     const testLeaks=r.test_findings_count!==undefined?r.test_findings_count:secretScanCache.filter(s=>s.is_test||s.is_placeholder).length;
-    if(realLeaks>0){
-      $('secretScanSummary').innerHTML=`<span class="bad-t">⚠️ ${n(realLeaks)} active credential leak(s) detected!</span> <span class="tiny muted">(${n(testLeaks)} test suite fixtures)</span>`;
-    }else if(testLeaks>0){
-      $('secretScanSummary').innerHTML=`<span class="ok">✓ Production code clean</span> <span class="tiny muted">(${n(testLeaks)} mock/test fixtures found)</span>`;
-    }else{
-      $('secretScanSummary').innerHTML=`<span class="ok">Clean — 0 leaked credentials found ✓</span>`;
+    const sum=$('secretScanSummary');
+    if(sum){
+      if(realLeaks>0){
+        sum.innerHTML=`<span class="bad-t">⚠️ ${n(realLeaks)} active credential leak(s) detected!</span> <span class="tiny muted">(${n(testLeaks)} test suite fixtures)</span>`;
+      }else if(testLeaks>0){
+        sum.innerHTML=`<span class="ok">✓ Production code clean</span> <span class="tiny muted">(${n(testLeaks)} mock/test fixtures found)</span>`;
+      }else{
+        sum.innerHTML=`<span class="ok">Clean — 0 leaked credentials found ✓</span>`;
+      }
     }
     renderSecretScanTable();
     showScanReady('secretScanSec',realLeaks>0?`Secrets (${realLeaks} leaks!)`:'Secrets (Clean ✓)');
   }catch(e){alert('Secret scan failed: '+e.message)}
-  finally{$('secretScanBtn').disabled=false;$('secretScanBtn').textContent='Scan Secrets'}
+  finally{if(btn){btn.disabled=false;btn.textContent='Scan Secrets'}}
 });
 
 // ── Bundles ────────────────────────────────────────────────────────────────────
@@ -1605,13 +1614,14 @@ function renderLiveStreamTable(){
     const stream=esc(ev.stream_id||'—');
     const kind=esc(ev.kind||'unknown');
     const actor=esc(ev.actor||'system');
-    let payloadStr=typeof ev.payload==='object'?JSON.stringify(ev.payload):String(ev.payload||'');
-    if(payloadStr.length>85) payloadStr=payloadStr.slice(0,82)+'...';
+    const payloadTitle=traceInlineText(ev.payload,1000);
+    let payloadStr=traceInlineText(ev.payload,85);
+    if(payloadStr.length>82) payloadStr=payloadStr.slice(0,82)+'...';
     let kindBadge='badge-waiting';
     if(kind.startsWith('task.')) kindBadge='badge-running';
     else if(kind.startsWith('verification.')) kindBadge='badge-complete';
     else if(kind.startsWith('incident.')) kindBadge='badge-error';
-    return clickableRow(ev, `<td><strong>${seq}</strong></td><td class="tiny">${dt}</td><td class="tiny mono">${stream}</td><td><span class="badge-status ${kindBadge}">${kind}</span></td><td class="tiny">${actor}</td><td class="tiny mono" title="${esc(typeof ev.payload==='object'?JSON.stringify(ev.payload,null,2):payloadStr)}">${esc(payloadStr)}</td>`, 'event');
+    return clickableRow(ev, `<td><strong>${seq}</strong></td><td class="tiny">${dt}</td><td class="tiny mono">${stream}</td><td><span class="badge-status ${kindBadge}">${kind}</span></td><td class="tiny">${actor}</td><td class="tiny" title="${esc(payloadTitle)}">${esc(payloadStr||'—')}</td>`, 'event');
   }, 6);
 }
 
@@ -1732,7 +1742,8 @@ async function runDbQuery(){
       tbody.innerHTML=rows.map(r=>{
         return '<tr>'+cols.map(c=>{
           const v=Array.isArray(r)?r[cols.indexOf(c)]:r[c];
-          return `<td class="tiny mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(v)}">${esc(v===null?'NULL':(typeof v==='object'?JSON.stringify(v):v))}</td>`;
+          const cellText=v===null?'NULL':traceInlineText(v,500);
+          return `<td class="tiny" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(cellText)}">${esc(cellText||'—')}</td>`;
         }).join('')+'</tr>';
       }).join('');
     }
@@ -1797,15 +1808,24 @@ function renderAny(value){
   if(typeof value==='object'){const entries=Object.entries(value);return entries.length?`<div class="human-grid">${entries.map(([k,v])=>`<div>${esc(humanLabel(k))}</div><div>${renderAny(v)}</div>`).join('')}</div>`:'<div class="empty-human">empty object</div>'}
   return `<span class="human-value">${esc(String(value))}</span>`;
 }
-function traceSensitiveField(key){return /(api[_-]?key|authorization|token|secret|password|passwd|credential|cookie|set[-_]?cookie|private[-_]?key|privatekey|passphrase|pem|ssh[-_]?key|certificate)/i.test(String(key||''));}
+function traceSensitiveField(key){const normalized=String(key||'').replace(/([a-z])([A-Z])/g,'$1_$2').toLowerCase();return /(?:^|[_-])(?:api[-_]?key|access[-_]?token|refresh[-_]?token|auth[-_]?token|id[-_]?token|bearer[-_]?token|authorization|secret|password|passwd|credential|cookie|set[-_]?cookie|private[-_]?key|privatekey|passphrase|pem|ssh[-_]?key|certificate)(?:$|[_-])/.test(normalized)||/(?:^|[_-])token(?:$|[_-](?:id|value|key|secret|hash|header|credential|authorization|password))/.test(normalized);}
 function traceSanitizeValue(value,seen=new WeakSet(),reveal=traceRevealRedactedDetails){
+  const cycleMarker='<cycle omitted>';
   if(value===null||value===undefined||typeof value==='number'||typeof value==='boolean')return value;
   if(typeof value==='string')return reveal?value:redactDiagnostic(value);
-  if(Array.isArray(value))return value.map(item=>traceSanitizeValue(item,seen,reveal));
-  if(typeof value==='object'){
-    if(seen.has(value))return '<cycle omitted>';
+  if(Array.isArray(value)){
+    if(seen.has(value))return cycleMarker;
     seen.add(value);
-    return Object.fromEntries(Object.entries(value).map(([key,item])=>[reveal?key:redactDiagnostic(key),!reveal&&traceSensitiveField(key)?'<redacted>':traceSanitizeValue(item,seen,reveal)]));
+    const result=value.map(item=>traceSanitizeValue(item,seen,reveal));
+    seen.delete(value);
+    return result;
+  }
+  if(typeof value==='object'){
+    if(seen.has(value))return cycleMarker;
+    seen.add(value);
+    const result=Object.fromEntries(Object.entries(value).map(([key,item])=>[reveal?key:redactDiagnostic(key),!reveal&&traceSensitiveField(key)?'<redacted>':traceSanitizeValue(item,seen,reveal)]));
+    seen.delete(value);
+    return result;
   }
   return reveal?String(value):redactDiagnostic(String(value));
 }
@@ -1815,6 +1835,18 @@ function traceRecorded(value){
   if(Array.isArray(value))return value.length>0;
   return typeof value!=='object'||Object.keys(value).length>0;
 }
+function traceCaptureState(value,explicit=''){
+  const hint=String(explicit??'').toLowerCase().replace(/[ -]+/g,'_');
+  if(hint.includes('redact')||value==='<redacted>')return 'redacted';
+  if(hint.includes('empty')||value==='')return 'empty';
+  if(hint.includes('not_captured')||hint.includes('missing')||hint.includes('unavailable'))return 'not_captured';
+  return traceRecorded(value)?'produced':'not_captured';
+}
+function traceCaptureStateLabel(state){return ({produced:'Produced',empty:'Empty',not_captured:'Not captured',redacted:'Redacted'})[String(state||'').toLowerCase()]||'Unknown';}
+function traceCaptureBadge(state,label='Capture state'){
+  const safeState=['produced','empty','not_captured','redacted'].includes(String(state||''))?String(state):'not_captured';
+  return `<span class="trace-capture-state ${safeState.replace('_','-')}" data-capture-state="${safeState}">${esc(label)} · ${esc(traceCaptureStateLabel(safeState))}</span>`;
+}
 function traceFirstRecorded(events,keys){
   for(const event of events||[]){
     const payload=event?.payload;
@@ -1823,14 +1855,29 @@ function traceFirstRecorded(events,keys){
   }
   return undefined;
 }
-function promptText(value){
+function traceInlineText(value,limit=180,depth=0){
+  if(value===null||value===undefined)return '';
+  if(typeof value==='string'){const text=value.trim();return text.length>limit?text.slice(0,Math.max(0,limit-1))+'…':text;}
+  if(typeof value==='number'||typeof value==='boolean')return String(value);
+  if(depth>5)return 'nested data';
+  if(Array.isArray(value))return value.slice(0,8).map(item=>traceInlineText(item,Math.max(32,Math.floor(limit/2)),depth+1)).filter(Boolean).join(', ')||(value.length?'…':'empty list');
+  if(typeof value==='object'){
+    for(const key of ['text','content','name','path','summary','description','value','id'])if(value[key]!==undefined){const text=traceInlineText(value[key],limit,depth+1);if(text)return text;}
+    const parts=Object.entries(value).slice(0,4).map(([key,item])=>{const text=traceInlineText(item,Math.max(32,Math.floor(limit/2)),depth+1);return text?`${humanLabel(key)}: ${text}`:''}).filter(Boolean);
+    return parts.join(' · ')||(Object.keys(value).length?'…':'empty object');
+  }
+  return String(value);
+}
+function promptText(value){return promptTextDepth(value,0);}
+function promptTextDepth(value,depth=0){
   if(typeof value==='string')return value;
-  if(Array.isArray(value))return value.map(promptText).filter(Boolean).join('\n');
+  if(depth>8)return 'nested data omitted';
+  if(Array.isArray(value))return value.map(item=>promptTextDepth(item,depth+1)).filter(Boolean).join('\n');
   if(value&&typeof value==='object'){
-    if(value.text!==undefined)return promptText(value.text);
-    if(value.content!==undefined)return promptText(value.content);
-    if(value.messages!==undefined)return promptText(value.messages);
-    return '';
+    if(value.text!==undefined)return promptTextDepth(value.text,depth+1);
+    if(value.content!==undefined)return promptTextDepth(value.content,depth+1);
+    if(value.messages!==undefined)return promptTextDepth(value.messages,depth+1);
+    return Object.entries(value).slice(0,40).map(([key,item])=>`${String(key).replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}: ${promptTextDepth(item,depth+1)}`).join('\n')||'empty object';
   }
   return value==null?'':String(value);
 }
@@ -1850,7 +1897,7 @@ function renderModelPrompt(prompt){
   const p=prompt&&typeof prompt==='object'?prompt:{},messages=Array.isArray(p.messages)?p.messages:[];
   if(!messages.length)return `<div class="prompt-fallback"><div class="prompt-card"><div class="prompt-card-head"><span>Model request</span></div>${promptBody(promptText(p.prompt??p.content??p.system??prompt))}</div></div>`;
   const cards=messages.map((message,index)=>{const role=String(message?.role||'message').toLowerCase(),label=role==='system'?'System instructions':role==='user'?'Task / user prompt':role==='assistant'?'Assistant context':humanLabel(role),text=promptText(message?.content??message?.text??message);return `<article class="prompt-card role-${esc(role)}"><div class="prompt-card-head"><span>${esc(label)}</span><span class="tiny">Message ${index+1} · ${n(text.length)} characters</span></div>${promptBody(text)}</article>`}).join('');
-  const options=p.options&&typeof p.options==='object'?p.options:null,meta=[p.model&&`Model: ${p.model}`,`Messages: ${messages.length}`,p.stream!==undefined&&`Stream: ${p.stream?'on':'off'}`,p.keep_alive&&`Keep alive: ${p.keep_alive}`].filter(Boolean).map(x=>`<span class="prompt-chip"><strong>${esc(String(x).split(':')[0])}</strong>${esc(String(x).includes(':')?':'+String(x).split(':').slice(1).join(':'):'')}</span>`).join('');
+  const options=p.options&&typeof p.options==='object'?p.options:null,meta=[p.model&&`Model: ${traceInlineText(p.model)}`,`Messages: ${messages.length}`,p.stream!==undefined&&`Stream: ${p.stream?'on':'off'}`,p.keep_alive&&`Keep alive: ${traceInlineText(p.keep_alive)}`].filter(Boolean).map(x=>`<span class="prompt-chip"><strong>${esc(String(x).split(':')[0])}</strong>${esc(String(x).includes(':')?':'+String(x).split(':').slice(1).join(':'):'')}</span>`).join('');
   return `<div class="prompt-panel"><div class="prompt-meta">${meta}</div><div class="prompt-messages">${cards}</div>${options?`<details class="prompt-context"><summary>Generation settings · ${Object.keys(options).length} values</summary>${renderAny(options)}</details>`:''}</div>`;
 }
 function humanSection(title,value){return `<section class="human-section"><h3>${esc(title)}</h3>${renderAny(value)}</section>`}
@@ -1860,31 +1907,32 @@ const traceInputFields=new Set(['input','input_text','input_data','user_input','
 const traceOutputFields=new Set(['output','output_text','output_data','generated_text','response_text','response_body','result','result_data','response','content','text','answer','completion','stdout','stderr','return_value','items']);
 const traceProcessFields=new Set(['state','status','stage','phase','progress','progress_percent','percent','step','step_index','current_step','total_steps','completed_steps','attempt','attempts','attempt_number','max_attempts','retry_count','retry_delay_ms','duration','duration_ms','duration_ns','elapsed','elapsed_ms','queue_time_ms','queue_wait_ms','started_at','finished_at','error','error_type','error_message','exception','failure','retry_after','delivery','background','chunks','truncated','status_code']);
 function traceEventTitle(type){
-  const titles={model_request:'Model input',output_stream:'Model output',output_delta:'Model output chunk',tool_call:'Tool call',tool_result:'Tool result',request_received:'Request received',handler_started:'Handler started',async_job_submitted:'Async job submitted',scheduled:'Scheduled',running:'Running',retry:'Retry',trace_truncated:'Trace truncated',completed:'Completed',complete:'Completed',done:'Completed',success:'Completed',succeeded:'Completed',failed:'Failed',error:'Error',cancelled:'Cancelled',canceled:'Cancelled',interrupted:'Interrupted',request_completed:'Request completed',request_failed:'Request failed'};
+ const titles={model_request:'Model input',thinking:'Thinking / reasoning',output_stream:'Model output',output_delta:'Model output chunk',tool_call:'Tool call',tool_result:'Tool result',request_received:'Request received',handler_started:'Handler started',async_job_submitted:'Async job submitted',scheduled:'Scheduled',running:'Running',retry:'Retry',trace_truncated:'Trace truncated',completed:'Completed',complete:'Completed',done:'Completed',success:'Completed',succeeded:'Completed',failed:'Failed',error:'Error',cancelled:'Cancelled',canceled:'Cancelled',interrupted:'Interrupted',request_completed:'Request completed',request_failed:'Request failed'};
   return Object.prototype.hasOwnProperty.call(titles,type)?titles[type]:humanLabel(type||'Event');
 }
 function traceEventSummary(type,p){
-  if(type==='model_request')return `Request to ${p.model||p.provider||'model'}`;
-  if(type==='tool_call')return `Calling ${p.name||p.tool||'tool'}`;
+  if(type==='model_request')return `Request to ${traceInlineText(p.model??p.provider??'model')}`;
+  if(type==='tool_call')return `Calling ${traceInlineText(p.name??p.tool??'tool')}`;
   if(type==='tool_result')return p.isError||p.is_error||p.success===false||p.error?'Tool returned an error':'Tool returned a result';
   if(type==='output_stream')return `${n(p.chunks||0)} output chunks${p.truncated?' · truncated':''}`;
   if(type==='output_delta')return 'Output content received';
-  if(type==='scheduled')return `Queued${p.model?` · ${p.model}`:''}`;
-  if(type==='running')return `Started${p.action?` · ${p.action}`:''}`;
-  if(type==='retry')return `Retry${p.attempts?` · attempt ${p.attempts}`:''}`;
-  if(type==='request_received')return `${p.method||'Request'}${p.path?` · ${p.path}`:''}`;
-  if(type==='handler_started')return `Processing${p.action?` · ${p.action}`:''}`;
+  if(type==='thinking')return 'Thinking content received';
+  if(type==='scheduled')return `Queued${p.model?` · ${traceInlineText(p.model)}`:''}`;
+  if(type==='running')return `Started${p.action?` · ${traceInlineText(p.action)}`:''}`;
+  if(type==='retry')return `Retry${p.attempts?` · attempt ${traceInlineText(p.attempts)}`:''}`;
+  if(type==='request_received')return `${traceInlineText(p.method||'Request')}${p.path?` · ${traceInlineText(p.path)}`:''}`;
+  if(type==='handler_started')return `Processing${p.action?` · ${traceInlineText(p.action)}`:''}`;
   if(type==='async_job_submitted')return 'Background job submitted';
   if(type==='trace_truncated')return 'Some trace data was omitted';
   if(/^(complete|completed|done|success|succeeded|finished)$/i.test(type))return 'Operation completed';
-  if(/^(failed|error|request_failed)$/i.test(type))return String(p.error||p.error_message||p.message||'Operation failed').slice(0,160);
+  if(/^(failed|error|request_failed)$/i.test(type))return traceInlineText(p.error??p.error_message??p.message??'Operation failed');
   for(const key of ['summary','message','action','name','tool','path','model','job_id','request_id']){
     const value=p[key];if((typeof value==='string'&&value.trim())||typeof value==='number')return String(value).slice(0,160);
   }
   return `${traceEventTitle(type)} event`;
 }
 function traceEventStatus(type,p,result){
-  const r=result||{},raw=String(p.state||p.status||r.state||r.status||'').trim(),eventState=`${type} ${raw}`;
+  const r=result||{},raw=traceInlineText(p.state??p.status??r.state??r.status??'').trim(),eventState=`${type} ${raw}`;
   if(/cancel|interrupt/i.test(eventState))return {label:raw||traceEventTitle(type),tone:'warn'};
   if(/^(complete|completed|done|success|succeeded|finished|request_completed)$/i.test(type))return {label:'Completed',tone:'ok'};
   const failed=Boolean(p.error||p.error_message||p.exception||p.failure||r.error||r.error_message||r.exception||p.is_error||p.isError||r.is_error||r.isError||p.success===false||r.success===false||/fail|error|exception/i.test(eventState));
@@ -1927,7 +1975,7 @@ function traceEventChips(metadata,process){
 }
 function traceEventSection(title,content,kind){return `<section class="trace-event-section" data-kind="${kind}"><span class="trace-event-label">${esc(title)}</span><div class="trace-event-value">${content}</div></section>`}
 function traceEventBody(event,events,index){
-  const type=String(event?.event_type||'event'),rawPayload=event?.payload,p=traceSanitizeValue(rawPayload&&typeof rawPayload==='object'&&!Array.isArray(rawPayload)?rawPayload:{value:rawPayload??'<malformed payload>'});let pairedResult=null,input='',output='',statusResult=null,groups;
+  const type=String(event?.event_type||'event'),budget=traceRenderBudget(8000),rawPayload=event?.payload,p=traceSanitizeValue(rawPayload&&typeof rawPayload==='object'&&!Array.isArray(rawPayload)?rawPayload:{value:rawPayload??'<malformed payload>'});let pairedResult=null,input='',output='',statusResult=null,groups;
   if(type==='tool_result'){
     const callId=p.call_id||'';
     if(callId&&events.slice(0,index).some(x=>x.event_type==='tool_call'&&((x.payload||{}).call_id||'')===callId))return '';
@@ -1942,9 +1990,9 @@ function traceEventBody(event,events,index){
   }else if(type==='tool_result'){
     groups=traceEventGroups(p);if(!Object.keys(groups.output).length)groups.output={result:p};
   }else if(type==='output_stream'){
-    output=`<pre class="trace-output">${esc(p.text||'')}${p.truncated?'…':''}</pre>`;groups=traceEventGroups(p,['text']);
+    output=traceOutputValueMarkup(p.values?.length?p.values:p.text??'',budget,8000);groups=traceEventGroups(p,['text','values']);
   }else if(type==='output_delta'){
-    output=`<pre class="trace-output">${esc(p.text||'')}</pre>`;groups=traceEventGroups(p,['text']);
+    output=traceOutputValueMarkup(p.text??'',budget,8000);groups=traceEventGroups(p,['text']);
   }else{
     groups=traceEventGroups(p);input=Object.keys(groups.input).length?renderAny(groups.input):'';output=Object.keys(groups.output).length?renderAny(groups.output):'';
   }
@@ -1961,8 +2009,10 @@ function compactTimelineEvents(events){
   (Array.isArray(events)?events:[]).map(traceNormalizeEvent).forEach(event=>{
     const type=String(event.event_type||'event'),payload=event.payload&&typeof event.payload==='object'&&!Array.isArray(event.payload)?event.payload:{};
     if(type==='output_delta'){
-      if(!stream){stream={event_type:'output_stream',created_at:event.created_at,seq:event.seq,payload:{text:'',chunks:0,truncated:false}};compact.push(stream)}
-      const text=String(payload.text||'');stream.payload.chunks+=1;stream.payload.text+=streamBytes<12000?text:'';streamBytes+=text.length;stream.seq=event.seq;
+      if(!stream){stream={event_type:'output_stream',created_at:event.created_at,seq:event.seq,payload:{text:'',values:[],chunks:0,truncated:false}};compact.push(stream)}
+      const chunk=payload.text??payload.content??payload.output??payload.result??'';
+      if(typeof chunk==='string'||typeof chunk==='number'||typeof chunk==='boolean'){const text=String(chunk);stream.payload.text+=streamBytes<12000?text:'';streamBytes+=text.length;}else{stream.payload.values.push(traceRawBoundValue(chunk,4096));streamBytes+=Math.min(4096,promptText(chunk).length);}
+      stream.payload.chunks+=1;stream.seq=event.seq;
       if(streamBytes>12000)stream.payload.truncated=true;
       return;
     }
@@ -2004,15 +2054,17 @@ function traceRawBoundValue(value,limit=4096,depth=0){
   if(typeof value==='object'){const entries=Object.entries(value).slice(0,50),childLimit=Math.max(128,Math.floor(limit/Math.max(entries.length,1))),result={};for(const [key,item] of entries){if(budget&&budget.remaining<=0){budget.truncated=true;break}if(budget)budget.remaining-=Math.min(budget.remaining,key.length+2);result[key]=traceRawBoundValue(item,childLimit,depth+1,budget);}if(Object.keys(value).length>entries.length||budget?.truncated)result['…']=marker;return result;}
   const text=String(value).slice(0,limit);if(budget)budget.remaining-=Math.min(budget.remaining,text.length);return text;
 }
-function traceDisplaySession(rawSession){return {trace_id:rawSession.trace_id,kind:rawSession.kind,state:rawSession.state,tenant:rawSession.tenant,agent:rawSession.agent,action:rawSession.action,source:rawSession.source,model:rawSession.model,request_id:rawSession.request_id,async_job_id:rawSession.async_job_id,scheduler_job_id:rawSession.scheduler_job_id,job_id:rawSession.job_id,owner:rawSession.owner,created_at:rawSession.created_at,updated_at:rawSession.updated_at,finished_at:rawSession.finished_at,duration_ms:rawSession.duration_ms,elapsed_ms:rawSession.elapsed_ms,status_code:rawSession.status_code,text_bytes:rawSession.text_bytes,retained_bytes:rawSession.retained_bytes,error:traceRawBoundValue(rawSession.error,1024),request:traceRawBoundValue(rawSession.request),effective_payload:traceRawBoundValue(rawSession.effective_payload),output:traceRawBoundValue(rawSession.output),response:traceRawBoundValue(rawSession.response)};}
+ function traceDisplaySession(rawSession){return {trace_id:rawSession.trace_id,kind:rawSession.kind,state:rawSession.state,tenant:rawSession.tenant,agent:rawSession.agent,action:rawSession.action,source:rawSession.source,model:rawSession.model,request_id:rawSession.request_id,async_job_id:rawSession.async_job_id,scheduler_job_id:rawSession.scheduler_job_id,job_id:rawSession.job_id,owner:rawSession.owner,created_at:rawSession.created_at,updated_at:rawSession.updated_at,finished_at:rawSession.finished_at,duration_ms:rawSession.duration_ms,elapsed_ms:rawSession.elapsed_ms,status_code:rawSession.status_code,text_bytes:rawSession.text_bytes,retained_bytes:rawSession.retained_bytes,final_response_status:rawSession.final_response_status,final_response_produced:rawSession.final_response_produced,error:traceRawBoundValue(rawSession.error,1024),request:traceSanitizeValue(rawSession.request),effective_payload:traceRawBoundValue(rawSession.effective_payload),thinking:traceSanitizeValue(rawSession.thinking),output:traceSanitizeValue(rawSession.output),response:traceSanitizeValue(rawSession.response)};}
 function traceRawProjection(detail,eventLimit=100){
   const rawSession=detail?.session||{},eventProjection=traceBoundedEvents(detail?.events,eventLimit),session=traceDisplaySession(rawSession);
-  return {session,effective_payload:traceRawBoundValue(rawSession.effective_payload),request:traceRawBoundValue(rawSession.request),output:traceRawBoundValue(rawSession.output),response:traceRawBoundValue(rawSession.response),events:eventProjection.events,events_total:eventProjection.eventsTotal,events_truncated:eventProjection.eventsTruncated};
+  return {session,effective_payload:traceRawBoundValue(rawSession.effective_payload),request:traceRawBoundValue(rawSession.request),thinking:traceRawBoundValue(rawSession.thinking),output:traceRawBoundValue(rawSession.output),response:traceRawBoundValue(rawSession.response),events:eventProjection.events,events_total:eventProjection.eventsTotal,events_truncated:eventProjection.eventsTruncated};
 }
  function traceRaw(payload,limit=24000){let raw='';try{raw=JSON.stringify(traceSanitizeValue(payload),null,2)}catch(e){raw=redactDiagnostic(String(e))}const truncated=raw.length>limit;if(truncated)raw=raw.slice(0,limit)+'\n… raw output truncated';return `<section class="human-section trace-raw-panel"><h3>Raw JSON (redacted${truncated?' · truncated':''})</h3><pre class="human-pre">${esc(raw)}</pre></section>`}
  function traceScrollNodes(root){return Array.from(root?.querySelectorAll?.('.human-pre,.trace-output,.prompt-pre')||[])}
  function captureTraceScrollPositions(root){return traceScrollNodes(root).map((node,index)=>({index,top:node.scrollTop,left:node.scrollLeft}))}
  function restoreTraceScrollPositions(root,positions){traceScrollNodes(root).forEach((node,index)=>{const saved=positions[index];if(saved){node.scrollTop=saved.top;node.scrollLeft=saved.left}})}
+ function captureTracePrimaryGroups(root){return Object.fromEntries(Array.from(root?.querySelectorAll?.('details[data-trace-primary-group]')||[]).map(node=>[String(node.dataset.tracePrimaryGroup||node.dataset.group||''),Boolean(node.open)]))}
+ function restoreTracePrimaryGroups(root,state){(root?.querySelectorAll?.('details[data-trace-primary-group]')||[]).forEach(node=>{const key=String(node.dataset.tracePrimaryGroup||node.dataset.group||'');if(state&&Object.prototype.hasOwnProperty.call(state,key))node.open=Boolean(state[key])})}
  function captureTraceThinkingDetails(root){return new Set(Array.from(root?.querySelectorAll?.('details.trace-thinking[data-thinking-key]')||[]).filter(node=>node.open).map(node=>String(node.dataset.thinkingKey)))}
  function restoreTraceThinkingDetails(root,openKeys){(root?.querySelectorAll?.('details.trace-thinking[data-thinking-key]')||[]).forEach(node=>{node.open=openKeys?.has(String(node.dataset.thinkingKey))||false})}
 function traceEventList(events,limit=100){const shown=(events||[]).slice(-limit),prefix=(events||[]).length>shown.length?`<div class="empty-human">Showing latest ${shown.length} of ${(events||[]).length} events.</div>`:'';return `<section class="human-section"><h3>All events</h3>${prefix}${renderAny(shown)}</section>`}
@@ -2037,7 +2089,7 @@ function traceChatTurns(events){
   list.forEach(event=>{
     const type=String(event?.event_type||''),payload=traceSanitizeValue(event?.payload||{});
     if(type==='model_request'){current={step:payload.step||turns.length+1,input:payload,output:'',tools:[]};turns.push(current);}
-    else if(current&&(type==='output_stream'||type==='output_delta'))current.output+=String(payload.text||'');
+    else if(current&&(type==='output_stream'||type==='output_delta')){const chunk=payload.text??payload.content??payload.output??payload.result??'';if(typeof chunk==='string'||typeof chunk==='number'||typeof chunk==='boolean')current.output+=String(chunk);else if(!current.output)current.output=chunk;else current.output=[current.output,chunk];}
     else if(current&&type==='tool_call')current.tools.push({call:payload,result:null});
     else if(current&&type==='tool_result'){
       const callId=payload.call_id||'',match=current.tools.slice().reverse().find(item=>!item.result&&(!callId||item.call.call_id===callId));
@@ -2048,11 +2100,18 @@ function traceChatTurns(events){
 }
 function tracePresentationData(model){
   const events=Array.isArray(model?.events)?model.events:[],turns=traceChatTurns(events);
-  return {kind:tracePresentationKind(model),chatTurns:turns,toolInteractions:(model.toolCalls||[]).slice(-100),requestEnvelope:model.session?.request||{},modelInput:model.input,modelOutput:model.output,command:traceMergeRecorded(events,['command','cmd','args','arguments','input','stdin','stdout','stderr','exit_code','exitCode','retries','retry_count','attempts','duration','duration_ms','elapsed_ms']),review:traceMergeRecorded(events,['request','context','diff','findings','recommendation','status','severity_counts','severityCounts']),repoOperation:traceMergeRecorded(events,['repository','repo','root','operation','action','query','files','symbols','context','result','output','response']),retrieval:traceMergeRecorded(events,['query','sources','results','hits','score','scores','provider','answer','truncated','truncation']),asyncJob:traceMergeRecorded(events,['status','queue_wait_ms','queue_wait','queue_time_ms','retries','retry_count','attempts','worker_input','input','result','output','error']),lifecycle:model.lifecycle};
+  const commandKeys=['command','cmd','args','arguments','input','stdin','stdout','stderr','exit_code','exitCode','success','retries','retry_count','attempts','duration','duration_ms','elapsed_ms','action','cwd','root','paths','criterion','error'],reviewKeys=['request','context','diff','findings','recommendation','status','severity_counts','severityCounts','text','thinking','final_response_status','final_response_produced','result','output','response','error'],repoKeys=['repository','repo','root','operation','action','query','files','symbols','context','result','output','response','text','thinking','final_response_status','final_response_produced','error'],asyncKeys=['status','queue_wait_ms','queue_wait','queue_time_ms','retries','retry_count','attempts','worker_input','input','result','output','error'];
+  const sources=[model.input,model.output,model.response,model.session?.request,model.session?.effective_payload];
+  return {kind:tracePresentationKind(model),chatTurns:turns,toolInteractions:(model.toolCalls||[]).slice(-100),requestEnvelope:model.session?.request||{},modelInput:model.input,modelOutput:model.output,thinking:model.thinking,command:traceMergeRecordedSources([traceMergeRecorded(events,commandKeys),...sources],commandKeys),review:traceMergeRecordedSources([traceMergeRecorded(events,reviewKeys),...sources],reviewKeys),repoOperation:traceMergeRecordedSources([traceMergeRecorded(events,repoKeys),...sources],repoKeys),retrieval:traceMergeRecordedSources([traceMergeRecorded(events,['query','sources','results','hits','score','scores','provider','answer','truncated','truncation','root','project','top_k','limit','enrich','mode','path']),...sources],['query','search_query','term','sources','results','hits','score','scores','provider','answer','truncated','truncation','root','project','top_k','limit','enrich','mode','path']),asyncJob:traceMergeRecordedSources([traceMergeRecorded(events,asyncKeys),...sources],asyncKeys),lifecycle:model.lifecycle};
 }
 function traceMergeRecorded(events,keys){
   const merged=Object.create(null),flattenKeys=new Set(['command','cmd','review','repo_operation','retrieval','rag','async_job']);let found=false;
   (Array.isArray(events)?events:[]).forEach(event=>{const payload=event?.payload;if(!payload||typeof payload!=='object')return;keys.forEach(key=>{const value=payload[key];if(value===undefined||value===null)return;found=true;if(value&&typeof value==='object'&&!Array.isArray(value)&&flattenKeys.has(key))Object.assign(merged,value);else merged[key]=value;});});
+  return found?merged:undefined;
+}
+function traceMergeRecordedSources(sources,keys){
+  const merged=Object.create(null);let found=false;
+  (Array.isArray(sources)?sources:[]).forEach(source=>{if(!source||typeof source!=='object'||Array.isArray(source))return;keys.forEach(key=>{const value=source[key];if(value===undefined||value===null)return;found=true;merged[key]=value;});});
   return found?merged:undefined;
 }
 function tracePresentationBound(value,budget,depth=0){
@@ -2073,7 +2132,7 @@ function tracePresentationBound(value,budget,depth=0){
 }
 function traceRenderBudget(limit=24000){return {limit,remaining:limit,truncated:false};}
 function traceBudgetMarkup(markup,budget){const text=String(markup??'');if(!budget||text.length<=budget.remaining){if(budget)budget.remaining-=text.length;return text;}budget.truncated=true;budget.remaining=0;return '<span class="trace-primary-empty">payload budget truncated</span>';}
-function traceFinalizeMarkup(markup,budget){const text=String(markup??'');if(!budget||text.length<=budget.limit)return text;return '<section class="trace-primary trace-budget-capped"><div class="trace-primary-empty">payload budget truncated</div></section>';}
+function traceFinalizeMarkup(markup,budget){return String(markup??'');}
 function tracePresentationValue(value,limit=12000,budget=null){const state=budget||traceRenderBudget(limit);if(!budget)state.remaining=Math.min(state.remaining,limit);return traceSanitizeValue(tracePresentationBound(value,state));}
 function traceModelInputMessages(input,turn){
   const p=input&&typeof input==='object'?input:{},messages=Array.isArray(p.messages)?p.messages:[],found=messages.map((message,index)=>({role:String(message?.role||'message'),step:turn?.step||index+1,content:message?.content??message?.text??message}));
@@ -2082,7 +2141,12 @@ function traceModelInputMessages(input,turn){
   if(Array.isArray(input))return input.slice(0,100).map((content,index)=>({role:'user',step:turn?.step||index+1,content}));
   return ['system','developer','user'].filter(role=>p[role]!==undefined).map(role=>({role,step:turn?.step||1,content:p[role]})).concat((p.prompt??p.content??p.input)!==undefined?[{role:'user',step:turn?.step||1,content:p.prompt??p.content??p.input}]:[]).slice(0,100);
 }
-function traceChatMessageMarkup(message,index,budget){const role=String(message?.role||'message').toLowerCase(),text=tracePresentationValue(message?.content??message?.text??message,5000,budget);return traceBudgetMarkup(`<article class="trace-chat-message"><div class="trace-chat-role">${esc(role)} · step ${esc(message?.step||index+1)}</div>${promptBody(promptText(text))}</article>`,budget);}
+function traceHumanPresentationValue(value){return traceSanitizeValue(value);}
+function traceHumanText(value){const safe=traceHumanPresentationValue(value);if(safe===undefined||safe===null)return '';if(typeof safe==='string'||typeof safe==='number'||typeof safe==='boolean')return String(safe);try{return JSON.stringify(safe,null,2)||''}catch(error){return redactDiagnostic(String(error));}}
+function traceHumanReadableMarkup(value){const safe=traceHumanPresentationValue(value);return safe&&typeof safe==='object'?renderAny(safe):`<pre class="trace-output">${esc(traceHumanText(safe))}</pre>`;}
+function traceReadableMarkup(value,budget,limit=8000){return traceHumanReadableMarkup(value);}
+function traceOutputValueMarkup(value,budget=null,limit=8000){return traceHumanReadableMarkup(value);}
+function traceChatMessageMarkup(message,index,budget){const role=String(message?.role||'message').toLowerCase(),content=message?.content??message?.text??message;return `<article class="trace-chat-message"><div class="trace-chat-role">${esc(role)} · step ${esc(message?.step||index+1)}</div>${traceHumanReadableMarkup(content)}</article>`;}
 function traceCodexEventMarkup(event,index,budget){
   const type=String(event?.event_type||'event').toLowerCase(),p=traceSanitizeValue(event?.payload||{}),step=p?.step||event?.step||index+1;
   const isThinking=['assistant_thinking','thinking','reasoning','assistant_reasoning'].includes(type),isToolCall=type==='tool_call',isToolResult=type==='tool_result',isOutput=['output_delta','output_stream','assistant_output','model_output','output'].includes(type),isRequest=['model_request','request_received','user_message'].includes(type),isBoundary=['turn_start','turn_end','step_start','step_end'].includes(type);
@@ -2090,10 +2154,10 @@ function traceCodexEventMarkup(event,index,budget){
   let body='',extra='';
   if(p?.malformed_payload)return `<div class="trace-timeline-event trace-malformed"><div class="trace-timeline-marker">Malformed event payload · step ${esc(step)}</div><div class="trace-primary-empty">Malformed event payload</div>${renderAny(tracePresentationValue(p.value,2048,budget))}</div>`;
   if(isThinking){const content=p.content??p.text??p.reasoning??p.thinking??p.output??p,thinkingKey=`${step}:${event?.seq??index}`;return `<div class="trace-timeline-event trace-thinking"><details class="trace-thinking" data-thinking-key="${esc(thinkingKey)}"><summary>${esc(label)} · step ${esc(step)} · collapsed</summary>${promptBody(tracePresentationValue(content,8000,budget))}</details></div>`;}
-  if(isRequest){const input=p.messages??p.prompt??p.content??p.input??p.request??p;body=traceModelInputMessages(input,{step}).map((message,messageIndex)=>traceChatMessageMarkup(message,messageIndex,budget)).join('');const metadataSource=input&&typeof input==='object'?input:p,metadataKeys=Object.keys(metadataSource).concat(metadataSource.request&&typeof metadataSource.request==='object'?Object.keys(metadataSource.request):[]).concat(p.request&&typeof p.request==='object'?Object.keys(p.request):[]).slice(0,40).join(', '),detailsBudget=traceRenderBudget(8000),boundedPayload=tracePresentationValue(p,8000,detailsBudget);extra=traceBudgetMarkup(`<div class="trace-chat-meta">Model output · request metadata: ${esc(metadataKeys||'none')}</div><details class="trace-optional-details"><summary>Full request payload · bounded</summary><div class="trace-optional-body">${renderAny(boundedPayload)}</div></details>`,budget);}
-  else if(isToolCall){const name=p.name||p.tool||'tool',args=p.arguments??p.args??p.input??{};body=`<div class="trace-tool-card"><h4>Tool call · ${esc(name)} · call id ${esc(p.call_id||p.callId||'—')}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(String(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(tracePresentationValue(args,5000,budget))}</div></div>`;}
-  else if(isToolResult){const call=event?.associated_call||{},name=p.name||p.tool||p.tool_name||call.name||call.tool||'tool',callId=p.call_id||p.callId||call.call_id||call.callId||'—',callStep=p.step||call.step||step,args=p.arguments??p.args??p.input??p.tool_arguments??call.arguments??call.args??call.input??{},failed=p.error||p.error_message||p.exception||p.is_error||p.isError||p.success===false||p.result?.error||p.result?.error_message||p.result?.exception, value=p.result??p.output??p.error??p;body=`<div class="trace-tool-card ${failed?'error':''}"><h4>Tool result · ${esc(String(name))} · call id ${esc(callId)} · step ${esc(callStep)}${failed?' · error':''}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(String(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(tracePresentationValue(args,5000,budget))}</div><div class="trace-tool-field"><strong>${failed?'error':'result'}</strong>${renderAny(tracePresentationValue(value,6000,budget))}</div></div>`;}
-  else if(isOutput){body=`<article class="trace-chat-message assistant"><div class="trace-chat-role">assistant · step ${esc(step)}</div>${promptBody(tracePresentationValue(p.text??p.content??p.output??p.result??p,8000,budget))}</article>`;}
+  if(isRequest){const input=p.messages??p.prompt??p.content??p.input??p.request??p;body=traceModelInputMessages(input,{step}).map((message,messageIndex)=>traceChatMessageMarkup(message,messageIndex,budget)).join('');}
+  else if(isToolCall){const name=p.name||p.tool||'tool',args=p.arguments??p.args??p.input??{};body=`<div class="trace-tool-card"><h4>Tool call · ${esc(traceInlineText(name))} · call id ${esc(traceInlineText(p.call_id??p.callId??'—'))}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(traceInlineText(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(tracePresentationValue(args,5000,budget))}</div></div>`;}
+  else if(isToolResult){const call=event?.associated_call||{},name=p.name||p.tool||p.tool_name||call.name||call.tool||'tool',callId=p.call_id||p.callId||call.call_id||call.callId||'—',callStep=p.step||call.step||step,args=p.arguments??p.args??p.input??p.tool_arguments??call.arguments??call.args??call.input??{},failed=p.error||p.error_message||p.exception||p.is_error||p.isError||p.success===false||p.result?.error||p.result?.error_message||p.result?.exception, value=p.result??p.output??p.error??p;body=`<div class="trace-tool-card ${failed?'error':''}"><h4>Tool result · ${esc(traceInlineText(name))} · call id ${esc(traceInlineText(callId))} · step ${esc(traceInlineText(callStep))}${failed?' · error':''}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(traceInlineText(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(tracePresentationValue(args,5000,budget))}</div><div class="trace-tool-field"><strong>${failed?'error':'result'}</strong>${renderAny(tracePresentationValue(value,6000,budget))}</div></div>`;}
+  else if(isOutput){body=`<article class="trace-chat-message assistant"><div class="trace-chat-role">assistant · step ${esc(step)}</div>${traceReadableMarkup(p.text??p.content??p.output??p.result??p,budget,8000)}</article>`;}
   else if(isBoundary){body=`<div class="trace-boundary-label">${esc(label)} · step ${esc(step)}</div>`;}
   else {body=renderAny(tracePresentationValue(p,5000,budget));}
   return `<div class="trace-timeline-event ${isOutput?'assistant-event':''}" data-event-type="${esc(type)}"><div class="trace-timeline-marker">${esc(label)} · step ${esc(step)}${event?.seq!==undefined?` · #${esc(event.seq)}`:''}</div>${body}${extra}</div>`;
@@ -2103,17 +2167,17 @@ function traceCodexEvents(model,presentation){
   rawEvents.forEach(event=>{if(String(event.event_type||'').toLowerCase()==='tool_call'){const payload=event.payload||{},id=payload.call_id||payload.callId;if(id)calls.set(String(id),payload);}});
   const events=rawEvents.map(event=>{if(String(event.event_type||'').toLowerCase()!=='tool_result')return event;const payload=event.payload||{},id=payload.call_id||payload.callId,associated=id?calls.get(String(id)):null;return associated?{...event,associated_call:associated}:event;});
   const turns=Array.isArray(presentation?.chatTurns)?presentation.chatTurns:[];
-  if(events.length){const partialTypes=['output_delta','output_stream'],terminalTypes=['assistant_output','model_output','output','output_final','final_output'],outputValue=event=>{const payload=event?.payload&&typeof event.payload==='object'?event.payload:event?.payload;return payload?.text??payload?.content??payload?.output??payload?.result??payload;},sameOutput=(left,right)=>{try{return JSON.stringify(traceSanitizeValue(left))===JSON.stringify(traceSanitizeValue(right));}catch{return String(left)===String(right);}},finalOutput=traceRecorded(presentation?.modelOutput)?presentation.modelOutput:traceRecorded(model?.session?.output)?model.session.output:null,retained=events.slice(-100),streamed=retained.filter(event=>partialTypes.includes(String(event?.event_type||'').toLowerCase())).map(outputValue).filter(value=>value!==undefined&&value!==null).map(String).join(''),hasEquivalentFinal=traceRecorded(finalOutput)&&(retained.some(event=>terminalTypes.includes(String(event?.event_type||'').toLowerCase())&&sameOutput(outputValue(event),finalOutput))||(streamed&&sameOutput(streamed,finalOutput)));if(traceRecorded(finalOutput)&&!hasEquivalentFinal){const visible=retained.slice(-99);visible.push({event_type:'assistant_output',payload:{content:traceRawBoundValue(finalOutput,8000)}});return visible;}return retained;}
+  if(events.length){const partialTypes=['output_delta','output_stream'],terminalTypes=['assistant_output','model_output','output','output_final','final_output'],outputValue=event=>{const payload=event?.payload&&typeof event.payload==='object'?event.payload:event?.payload;return payload?.text??payload?.content??payload?.output??payload?.result??payload;},sameOutput=(left,right)=>{try{return JSON.stringify(traceSanitizeValue(left))===JSON.stringify(traceSanitizeValue(right));}catch{return promptText(left)===promptText(right);}},finalOutput=traceRecorded(presentation?.modelOutput)?presentation.modelOutput:traceRecorded(model?.session?.output)?model.session.output:null,retained=events.slice(-100),streamed=retained.filter(event=>partialTypes.includes(String(event?.event_type||'').toLowerCase())).map(outputValue).filter(value=>value!==undefined&&value!==null).map(value=>typeof value==='string'?value:promptText(traceSanitizeValue(value))).join(''),hasEquivalentFinal=traceRecorded(finalOutput)&&(retained.some(event=>terminalTypes.includes(String(event?.event_type||'').toLowerCase())&&sameOutput(outputValue(event),finalOutput))||(streamed&&sameOutput(streamed,finalOutput)));if(traceRecorded(finalOutput)&&!hasEquivalentFinal){const visible=retained.slice(-99);visible.push({event_type:'assistant_output',payload:{content:traceRawBoundValue(finalOutput,8000)}});return visible;}return retained;}
   const fallback=[];turns.forEach(turn=>{if(turn.input)fallback.push({event_type:'model_request',payload:{step:turn.step,input:turn.input}});(turn.tools||[]).forEach(item=>{fallback.push({event_type:'tool_call',payload:{step:turn.step,...item.call}});if(item.result)fallback.push({event_type:'tool_result',payload:{step:turn.step,...item.result}})});if(traceRecorded(turn.output))fallback.push({event_type:'assistant_output',payload:{step:turn.step,content:turn.output}});});
   if(!fallback.length&&Array.isArray(model?.toolCalls))model.toolCalls.slice(-100).forEach(item=>{fallback.push({event_type:'tool_call',payload:item.call||item});if(item.result)fallback.push({event_type:'tool_result',payload:item.result});});
   if(!fallback.length&&traceRecorded(presentation?.modelInput))fallback.push({event_type:'model_request',payload:{input:presentation.modelInput}});
   if(!fallback.length&&traceRecorded(presentation?.modelOutput))fallback.push({event_type:'assistant_output',payload:{content:presentation.modelOutput}});
   return fallback;
 }
-function traceCodexTimeline(model,title='Model chat',renderBudget=null){
-  const budget=renderBudget||traceRenderBudget(),presentation=model.presentation||tracePresentationData(model),events=traceCodexEvents(model,presentation),modelName=model.session?.model||model.actor?.model||'model not recorded';
+function traceCodexTimeline(model,title='Model chat',renderBudget=null,full=false){
+  const budget=renderBudget||traceRenderBudget(),presentation=model.presentation||tracePresentationData(model),events=traceCodexEvents(model,presentation),modelName=traceInlineText(model.session?.model??model.actor?.model??'model not recorded');
   if(!events.length)return traceFinalizeMarkup(`<section class="trace-primary trace-chat-presentation"><div class="trace-primary-head"><h2>${esc(title)}</h2><span class="tiny">${esc(String(modelName))}</span></div><div class="trace-primary-empty">No model events captured</div></section>`,budget);
-  const cards=events.map((event,index)=>traceBudgetMarkup(traceCodexEventMarkup(event,index,budget),budget)).join(''),hasOutput=events.some(event=>['output_delta','output_stream','assistant_output','model_output','output'].includes(String(event?.event_type||'').toLowerCase()));
+  const cards=events.map((event,index)=>full?traceCodexEventMarkup(event,index,null):traceBudgetMarkup(traceCodexEventMarkup(event,index,budget),budget)).join(''),hasOutput=events.some(event=>['output_delta','output_stream','assistant_output','model_output','output'].includes(String(event?.event_type||'').toLowerCase()));
   const emptyOutput=hasOutput||traceRecorded(presentation?.modelOutput)?'':'<div class="trace-primary-empty">Model output · No model output captured</div>';
   return traceFinalizeMarkup(`<section class="trace-primary trace-chat-presentation trace-codex-timeline"><div class="trace-primary-head"><h2>${esc(title)}</h2><span class="tiny">${esc(String(modelName))} · ${events.length} events</span></div><div class="trace-tool-timeline trace-timeline-stream">${cards}${emptyOutput}</div></section>`,budget);
 }
@@ -2129,48 +2193,199 @@ function traceToolResultData(result,budget=null){
 }
 function traceToolCardMarkup(item,index,budget){
   const boundedCall=traceRawBoundValue(item.call||{},5000),call=tracePresentationValue(boundedCall,5000,budget),resultData=traceToolResultData(item.result||{},budget),result=resultData.value||{},error=Boolean(resultData.error),name=call?.name||call?.tool||'tool',argumentsValue=tracePresentationValue(call?.arguments??call?.args??call?.input??{},5000,budget);
-  return traceBudgetMarkup(`<article class="trace-tool-card ${error?'error':''}"><h4>Tool interaction · step ${esc(item.step||index+1)} · call id ${esc(call?.call_id||'—')}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(String(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(argumentsValue)}</div><div class="trace-tool-field"><strong>${error?'error':'result'}</strong>${renderAny(result)}</div></article>`,budget);
+  return traceBudgetMarkup(`<article class="trace-tool-card ${error?'error':''}"><h4>Tool interaction · step ${esc(item.step||index+1)} · call id ${esc(traceInlineText(call?.call_id??'—'))}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(traceInlineText(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(argumentsValue)}</div><div class="trace-tool-field"><strong>${error?'error':'result'}</strong>${renderAny(result)}</div></article>`,budget);
 }
-function renderModelChatPresentation(model){
+function traceModelChatEventTypes(events){const useful=new Set(['model_request','assistant_thinking','thinking','reasoning','assistant_reasoning','tool_call','tool_result','output_delta','output_stream','assistant_output','model_output','output','output_final','final_output','turn_start','turn_end','step_start','step_end']);return (Array.isArray(events)?events:[]).filter(event=>{const type=String(event?.event_type||'').toLowerCase(),payload=event?.payload;return useful.has(type)||(payload&&typeof payload==='object'&&payload.malformed_payload)||(event&&payload!==null&&typeof payload!=='object');});}
+function traceModelContextMarkup(input,budget){const source=input&&typeof input==='object'&&!Array.isArray(input)?input:{},details={};if(source.model!==undefined)details.model=source.model;if(source.stream!==undefined)details.stream=source.stream;if(source.options&&typeof source.options==='object')details.options=source.options;if(source.request&&typeof source.request==='object')details.request={request_id:source.request.request_id,path:source.request.path};if(source.headers&&typeof source.headers==='object')details.headers=source.headers;if(source.metadata!==undefined)details.metadata=source.metadata;if(!Object.keys(details).length)return '';return `<details class="trace-optional-details trace-model-context" data-trace-collapsible><summary>Model details · compact</summary><div class="trace-optional-body">${renderAny(tracePresentationValue(details,4000,budget))}</div></details>`;}
+ function renderModelChatPresentation(model){
   const timelineContract='Model input Model output model name tool result trace-codex-timeline';
-  return traceCodexTimeline({...model,presentation:traceSanitizeValue(model.presentation||{})},'Model chat');
-}
+  const budget=traceRenderBudget(),presentation=traceSanitizeValue(model.presentation||{}),input=model.input??presentation.modelInput,output=model.output??presentation.modelOutput,thinking=model.thinking??presentation.thinking,finalStatus=model.finalResponseStatus??presentation.finalResponseStatus??model.session?.final_response_status??'',outputState=traceCaptureState(output,finalStatus||model.captureStates?.output),thinkingState=traceCaptureState(thinking,model.captureStates?.thinking),messages=traceModelInputMessages(input,null),promptMarkup=messages.map((message,index)=>traceChatMessageMarkup(message,index,budget)).join(''),responseMarkup=outputState==='produced'?traceReadableMarkup(output,budget,8000):`<div class="trace-primary-empty">${traceCaptureBadge(outputState,'Final response')}<div>${esc(outputState==='empty'?'Model returned an empty final response':outputState==='redacted'?'Final response is redacted':'Final response was not captured')}</div></div>`,thinkingMarkup=thinkingState==='produced'?`<details class="trace-optional-details trace-thinking-panel" data-trace-collapsible><summary>Thinking / reasoning · expandable</summary><div class="trace-optional-body">${traceReadableMarkup(thinking,budget,12000)}</div></details>`:'',copyDisabled=outputState!=='produced'?' disabled aria-disabled="true"':'',actions=`<div class="trace-presentation-actions">${traceCaptureBadge(outputState,'Final response')}<button type="button" class="btn" data-trace-copy-final${copyDisabled}>Copy final response</button><button type="button" class="btn" data-trace-expand-all>Expand all</button><button type="button" class="btn" data-trace-collapse-all>Collapse all</button></div>`,timelineEvents=traceModelChatEventTypes(traceCodexEvents(model,presentation)),contextMarkup=traceModelContextMarkup(input,budget);
+  const primary=`<section class="trace-primary trace-model-presentation"><div class="trace-primary-head"><h2>Prompt / response</h2><span class="tiny">what the model received and returned</span></div>${actions}<div class="trace-chat-columns trace-primary-grid"><article class="trace-primary-card input"><h3>Prompt</h3><div class="trace-primary-value">${promptMarkup||'<div class="trace-primary-empty">No prompt captured</div>'}</div></article><article class="trace-primary-card output"><h3>Response</h3><div class="trace-primary-value">${responseMarkup}</div></article></div>${thinkingMarkup}${contextMarkup}</section>`;
+  const timeline=traceCodexTimeline({...model,events:timelineEvents,presentation:presentation},'Model chat',budget);
+  return traceFinalizeMarkup(primary,budget)+`<details class="trace-optional-details trace-model-timeline" data-trace-collapsible><summary>Execution timeline · ${timelineEvents.length} useful events</summary><div class="trace-optional-body">${timeline}</div></details>`;
+ }
 function renderAgentLoopPresentation(model){
   const timelineContract='trace-codex-timeline trace-tool-timeline tool call tool result traceRawBoundValue traceSanitizeValue';
   const safeModel={...model,presentation:traceSanitizeValue(model.presentation||{})};
-  return traceCodexTimeline(safeModel,'Agent loop');
+   return traceCodexTimeline(safeModel,'Agent loop',null,true);
 }
-function tracePresentationPayload(model,key){const presentation=model?.presentation&&typeof model.presentation==='object'?model.presentation:{};return presentation[key]??{};}
+function tracePresentationPayload(model,key){const presentation=model?.presentation&&typeof model.presentation==='object'?model.presentation:{},payload=presentation[key],fieldSets={command:['command','cmd','args','arguments','input','stdin','stdout','stderr','exit_code','exitCode','success','retries','retry_count','attempts','duration','duration_ms','elapsed_ms','action','cwd','root','paths','criterion','error'],review:['request','context','diff','findings','recommendation','status','severity_counts','severityCounts','error'],repoOperation:['repository','repo','root','operation','action','query','files','symbols','context','result','output','response','error'],asyncJob:['status','queue_wait_ms','queue_wait','queue_time_ms','retries','retry_count','attempts','worker_input','input','result','output','error'],retrieval:['query','search_query','term','sources','results','hits','score','scores','provider','answer','truncated','truncation','root','project','top_k','limit','enrich','mode','path']},keys=fieldSets[key];return keys?(traceMergeRecordedSources([payload,model?.input,model?.output,model?.response,model?.session?.request,model?.session?.effective_payload],keys)||{}):payload??{};}
 function tracePresentationPick(value,keys,fallback){const source=value&&typeof value==='object'?value:{};for(const key of keys){if(traceRecorded(source[key]))return source[key];}return fallback;}
-function tracePresentationField(label,value,empty,budget){const safe=tracePresentationValue(value,6000,budget);return `<div class="trace-presentation-field"><strong>${esc(label)}</strong>${traceRecorded(safe)?renderAny(safe):`<span class="trace-primary-empty">${esc(empty||`No ${label} captured`)}</span>`}</div>`;}
-function tracePresentationColumns(title,left,right,budget,headerExtra=''){const leftMarkup=left.join(''),rightMarkup=right.join('');return traceFinalizeMarkup(`<section class="trace-primary trace-request-presentation"><div class="trace-primary-head"><h2>${esc(title)}</h2>${headerExtra}</div><div class="trace-chat-columns trace-primary-grid"><article class="trace-primary-card input"><h3>Request details</h3><div class="trace-primary-value">${leftMarkup||'<div class="trace-primary-empty">No request details captured</div>'}</div></article><article class="trace-primary-card output"><h3>Result details</h3><div class="trace-primary-value">${rightMarkup||'<div class="trace-primary-empty">No result details captured</div>'}</div></article></div></section>`,budget);}
-function traceReviewSeverityMarkup(findings,severityMap,budget){const counts={critical:0,high:0,medium:0,low:0},map=severityMap&&typeof severityMap==='object'&&!Array.isArray(severityMap)?severityMap:{};Object.keys(counts).forEach(level=>{const value=Number(map[level]);if(Number.isFinite(value))counts[level]=value;});const items=Array.isArray(findings)?findings:[];items.forEach(item=>{const severity=String(item?.severity||item?.priority||'').toLowerCase();if(counts[severity]!==undefined&&!Number.isFinite(Number(map[severity])))counts[severity]+=1;});return `<div class="trace-severity-counts" aria-label="severity counts">${Object.entries(counts).map(([level,count])=>`<span class="trace-event-chip ${count?'trace-severity-active':''}">${esc(level)}: ${count}</span>`).join('')}</div>`;}
-function tracePresentationRankedField(label,value,empty,budget){const raw=Array.isArray(value)?value:[];if(!raw.length)return `<div class="trace-presentation-field"><strong>${esc(label)}</strong><span class="trace-primary-empty">${esc(empty)}</span></div>`;const ranked=raw.map((item,index)=>({item,index,score:Number(item?.score??item?.relevance??item?.similarity)})).sort((a,b)=>{const aFinite=Number.isFinite(a.score),bFinite=Number.isFinite(b.score);if(aFinite&&bFinite)return b.score-a.score||a.index-b.index;if(aFinite!==bFinite)return aFinite?-1:1;return a.index-b.index;});const markup=ranked.slice(0,20).map((entry,index)=>{const safe=tracePresentationValue(entry.item,1800,budget),score=Number.isFinite(entry.score)?entry.score:'—',rank=index+1,provider=entry.item?.provider||entry.item?.source||'—';return `<details class="trace-rag-source-details"><summary>rank ${esc(rank)} · score ${esc(score)} · provider ${esc(provider)}</summary>${renderAny(safe)}</details>`}).join('');return `<div class="trace-presentation-field trace-rag-ranked"><strong>${esc(label)}</strong><div class="trace-rag-ranked">${markup}</div></div>`;}
+function tracePresentationField(label,value,empty,budget,options={}){const key=String(label||'').toLowerCase().replace(/\s+/g,'_'),safe=options.mode==='technical'?tracePresentationValue(value,6000,budget):traceHumanPresentationValue(value);if(options.mode==='technical')return `<div class="trace-presentation-field"><strong>${esc(label)}</strong>${traceRecorded(safe)?renderAny(safe):`<span class="trace-primary-empty">${esc(empty||`No ${label} captured`)}</span>`}</div>`;if(!traceMeaningfulValue(safe,key))return '';if(/(^|_)(stdout|stderr|diff|prompt|output|response)$/.test(key))return traceCodeBlock(label,safe,budget,{key});if(Array.isArray(safe))return traceList(label,safe,budget);return traceSummaryCard(label,safe,budget,{key,full:true});}
+ function tracePresentationGroup(title,markup,kind){if(!markup)return '';const groupKey=String(kind||title);return `<details class="trace-primary-group" data-group="${esc(groupKey)}" data-trace-primary-group="${esc(groupKey)}" data-trace-collapsible open><summary><span>${esc(title)}</span><span class="tiny">Show details</span></summary><div class="trace-primary-group-body">${markup}</div></details>`;}
+ function tracePresentationColumns(title,left,right,budget,headerExtra='',leftTitle='Request details',rightTitle='Result details'){const leftMarkup=left.filter(Boolean).join(''),rightMarkup=right.filter(Boolean).join(''),groups=tracePresentationGroup(leftTitle,leftMarkup,'request')+tracePresentationGroup(rightTitle,rightMarkup,'result');return traceFinalizeMarkup(`<section class="trace-primary trace-request-presentation"><div class="trace-primary-head"><h2>${esc(title)}</h2>${headerExtra}</div>${groups?`<div class="trace-primary-groups">${groups}</div>`:''}</section>`,budget);}
+function renderTraceInputOutputPresentation(model){const budget=traceRenderBudget(),input=tracePresentationField('input',model.input,'No input captured',budget),output=tracePresentationField('output',model.output,'No output captured',budget);if(!traceRecorded(model.input)&&!traceRecorded(model.output))return '';return tracePresentationColumns('Input / output',[input],[output],budget,'','Input','Output');}
+function traceReviewSeverityMarkup(findings,severityMap,budget){const counts={critical:0,high:0,medium:0,low:0},map=severityMap&&typeof severityMap==='object'&&!Array.isArray(severityMap)?severityMap:{};Object.keys(counts).forEach(level=>{const value=Number(map[level]);if(Number.isFinite(value))counts[level]=value;});const items=Array.isArray(findings)?findings:[];items.forEach(item=>{const severity=traceInlineText(item?.severity??item?.priority??'',120).toLowerCase();if(counts[severity]!==undefined&&!Number.isFinite(Number(map[severity])))counts[severity]+=1;});return `<div class="trace-severity-counts" aria-label="severity counts">${Object.entries(counts).map(([level,count])=>`<span class="trace-event-chip ${count?'trace-severity-active':''}">${esc(level)}: ${count}</span>`).join('')}</div>`;}
+function tracePresentationRankedField(label,value,empty,budget){const raw=Array.isArray(value)?value:[];if(!raw.length)return `<div class="trace-presentation-field"><strong>${esc(label)}</strong><span class="trace-primary-empty">${esc(empty)}</span></div>`;const ranked=raw.map((item,index)=>({item,index,score:Number(item?.score??item?.relevance??item?.similarity)})).sort((a,b)=>{const aFinite=Number.isFinite(a.score),bFinite=Number.isFinite(b.score);if(aFinite&&bFinite)return b.score-a.score||a.index-b.index;if(aFinite!==bFinite)return aFinite?-1:1;return a.index-b.index;});const markup=ranked.slice(0,20).map((entry,index)=>{const safe=tracePresentationValue(entry.item,1800,budget),score=Number.isFinite(entry.score)?entry.score:'—',rank=index+1,provider=entry.item?.provider||entry.item?.source||'—';return `<details class="trace-rag-source-details"><summary>rank ${esc(rank)} · score ${esc(score)} · provider ${esc(traceInlineText(provider))}</summary>${renderAny(safe)}</details>`}).join('');return `<div class="trace-presentation-field trace-rag-ranked"><strong>${esc(label)}</strong><div class="trace-rag-ranked">${markup}</div></div>`;}
+function traceProjectLabel(value){
+  if(typeof value==='string'){const text=String(value).replace(/[\\/]+$/,'');if(!text)return '';const parts=text.split(/[\\/]/).filter(Boolean);return parts[parts.length-1]||text;}
+  const source=value&&typeof value==='object'?value:{};
+  for(const key of ['project','project_name','projectName','workspace_name','workspaceName','workspace','root','repo_root','repository','repo']){const candidate=source[key];if(typeof candidate==='string'&&candidate.trim())return traceProjectLabel(candidate);}
+  for(const key of ['request','effective_payload','payload','input']){if(source[key]&&typeof source[key]==='object'){const nested=traceProjectLabel(source[key]);if(nested)return nested;}}
+  return '';
+}
+function traceSearchText(value,limit=420){
+  if(value===undefined||value===null)return '';
+  if(typeof value==='string')return value.length>limit?value.slice(0,limit)+'…':value;
+  if(typeof value==='number'||typeof value==='boolean')return String(value);
+  const source=value&&typeof value==='object'?value:{};
+  return traceSearchText(source.text??source.content??source.snippet??source.summary??source.description??'',limit);
+}
+function traceSearchResultRow(item,index,budget){
+   const source=item&&typeof item==='object'?item:{},path=source.path??source.file??source.filename??source.name??'Result',start=source.start_line??source.startLine,end=source.end_line??source.endLine,location=start!==undefined?`line ${traceInlineText(start)}${end!==undefined&&traceInlineText(end)!==traceInlineText(start)?`–${traceInlineText(end)}`:''}`:'',provider=source.provider??source.source??'',score=Number(source.score??source.relevance??source.similarity),snippet=traceHumanText(source.text??source.content??source.snippet??source.summary??source.description??''),scoreMarkup=Number.isFinite(score)?`<span class="trace-search-score">${esc(score)}</span>`:'';
+  return `<div class="trace-search-result-row"><span class="trace-search-rank">${esc(index+1)}</span><div class="trace-search-result-main"><strong>${esc(traceInlineText(path))}</strong>${location?`<span class="tiny">${esc(location)}</span>`:''}${provider?`<span class="tiny">${esc(traceInlineText(provider))}</span>`:''}${snippet?`<div class="trace-search-snippet">${esc(snippet)}</div>`:''}</div>${scoreMarkup}</div>`;
+}
+function traceMeaningfulValue(value,key=''){
+  const name=String(key||'').toLowerCase();
+  if(value===undefined||value===null||value==='')return false;
+  if(!/(^|_)(stdout|stderr)$/i.test(name)&&typeof value==='string'&&/^(empty|none|null|n\/a|unknown)$/i.test(value.trim()))return false;
+  if(/(^|_)(id|ids|lease_id|session_id|clone_id|worktree_id|repository_id|task_id|metadata)$/.test(name)||name.includes('internal')||name.includes('duplicate'))return false;
+  if(Array.isArray(value))return value.some(item=>traceMeaningfulValue(item));
+  if(typeof value==='object')return Object.entries(value).some(([childKey,childValue])=>traceMeaningfulValue(childValue,childKey));
+  return true;
+}
+function tracePrimaryMeaningfulValue(value,key=''){if(typeof value==='string'&&/^(empty|none|null|n\/a|unknown)$/i.test(value.trim()))return false;return traceMeaningfulValue(value,key);}
+function traceHumanValue(value,budget,limit=4000){
+  const val=traceHumanPresentationValue(value);
+  if(val===undefined||val===null)return '';
+  if(typeof val==='string'||typeof val==='number'||typeof val==='boolean'){
+    return esc(String(val));
+  }
+  if(Array.isArray(val)){
+    const items=val.filter(item=>traceMeaningfulValue(item));
+    if(!items.length)return '';
+    if(items.every(it=>typeof it==='string'||typeof it==='number'||typeof it==='boolean')){
+      return items.map(it=>`<span class="trace-chip">${esc(String(it))}</span>`).join('');
+    }
+    return `<div class="trace-list-items">${items.map(it=>`<div>${traceHumanValue(it,budget,limit)}</div>`).join('')}</div>`;
+  }
+  if(typeof val==='object'){
+    const entries=Object.entries(val).filter(([k,v])=>traceMeaningfulValue(v,k));
+    if(!entries.length)return '';
+    return entries.map(([k,v])=>`<div class="trace-obj-field"><strong class="trace-obj-key">${esc(k)}:</strong> <span class="trace-obj-val">${traceHumanValue(v,budget,limit)}</span></div>`).join('');
+  }
+  return esc(String(val));
+}
+function traceSummaryCard(title,value,budget,options={}){
+  const val=options.mode==='technical'?tracePresentationValue(value,options.limit||4000,budget):traceHumanPresentationValue(value);
+  if(!traceMeaningfulValue(val,options.key||title))return '';
+  return `<section class="trace-summary-card ${esc(options.tone||'')}" data-field="${esc(options.key||title)}"><h3>${esc(title)}</h3><div class="trace-summary-value">${traceHumanValue(val,budget,options.limit||4000)}</div></section>`;
+}
+function traceCodeBlock(title,value,budget,options={}){
+  const val=traceHumanPresentationValue(value);
+  if(!tracePrimaryMeaningfulValue(val,options.key||title))return '';
+  return `<section class="trace-code-card"><h3>${esc(title)}</h3><pre class="trace-output">${esc(traceHumanText(val))}</pre></section>`;
+}
+function traceList(title,items,budget,renderItem){
+  const values=(Array.isArray(items)?items:[]).filter(item=>traceMeaningfulValue(item));
+  if(!values.length)return '';
+  const rendered=renderItem?values.map((item,index)=>renderItem(item,index,budget)).join(''):values.map(item=>`<div class="trace-list-item">${traceHumanValue(item,budget)}</div>`).join('');
+  return `<section class="trace-list-card"><h3>${esc(title)} <span class="tiny">${values.length}</span></h3><div>${rendered}</div></section>`;
+}
 function renderCommandPresentation(model){
-  const budget=traceRenderBudget(),command=traceSanitizeValue(tracePresentationPayload(model,'command')),top=`<section class="trace-command-top"><h3>Command and arguments</h3>${tracePresentationField('command',tracePresentationPick(command,['command','cmd'],command),'No command captured',budget)}${tracePresentationField('arguments',tracePresentationPick(command,['args','arguments'],''),'No arguments captured',budget)}</section>`,left=[tracePresentationField('input',tracePresentationPick(command,['input','stdin'],''),'No input captured',budget)],right=[tracePresentationField('stdout',command.stdout,'No stdout captured',budget),tracePresentationField('stderr',command.stderr,'No stderr captured',budget),tracePresentationField('exit code',tracePresentationPick(command,['exit_code','exitCode','code'],''),'No exit code captured',budget),tracePresentationField('retries',tracePresentationPick(command,['retries','retry_count','attempts'],''),'No retries captured',budget),tracePresentationField('duration',tracePresentationPick(command,['duration','duration_ms','elapsed_ms'],''),'No duration captured',budget)];
+  const budget=traceRenderBudget(),command=traceSanitizeValue(tracePresentationPayload(model,'command')||{});
+  const cmdVal=tracePresentationPick(command,['command','cmd'],command.command||'');
+  const argsVal=tracePresentationPick(command,['args','arguments'],'');
+  const inputVal=tracePresentationPick(command,['input','stdin'],'');
+  const exitCodeVal=tracePresentationPick(command,['exit_code','exitCode','code'],'');
+  const retriesVal=tracePresentationPick(command,['retries','retry_count','attempts'],'');
+  const durationVal=tracePresentationPick(command,['duration','duration_ms','elapsed_ms'],'');
+  const cmdSummary=traceMeaningfulValue(cmdVal)?`<div class="trace-command-line"><code>${esc(traceInlineText(cmdVal))}</code></div>`:'';
+  const argsMarkup=Array.isArray(argsVal)?traceList('arguments',argsVal,budget):traceMeaningfulValue(argsVal)?traceSummaryCard('args',argsVal,budget):'';
+  const top=`<section class="trace-summary-card trace-command-top"><h3>Command and arguments</h3>${cmdSummary||traceSummaryCard('command',cmdVal,budget)}${argsMarkup}</section>`;
+  const left=[traceMeaningfulValue(inputVal)?traceSummaryCard('input',inputVal,budget):''];
+  const right=[
+    traceCodeBlock('stdout',command.stdout,budget),
+    (traceRecorded(command.stderr)?traceCodeBlock('stderr',command.stderr,budget):''),
+    (traceMeaningfulValue(exitCodeVal)?traceSummaryCard('exit code',exitCodeVal,budget):''),
+    (traceMeaningfulValue(retriesVal)?traceSummaryCard('retries',retriesVal,budget):''),
+    (traceMeaningfulValue(durationVal)?traceSummaryCard('duration',durationVal,budget):'')
+  ];
   return traceFinalizeMarkup(`${top}${tracePresentationColumns('Command output',left,right,budget)}`,budget);
 }
 function renderReviewPresentation(model){
-  const budget=traceRenderBudget(),review=traceSanitizeValue(tracePresentationPayload(model,'review')),left=[tracePresentationField('request',review.request,'No request captured',budget),tracePresentationField('context',review.context,'No context captured',budget),tracePresentationField('diff',review.diff,'No diff captured',budget)],right=[tracePresentationField('findings',review.findings,'No findings captured',budget),tracePresentationField('recommendation',review.recommendation,'No recommendation captured',budget),tracePresentationField('status',review.status??model.lifecycle?.state,'No status captured',budget)];
+  const budget=traceRenderBudget(),review=traceSanitizeValue(tracePresentationPayload(model,'review'));
+  const findings=review.findings??review.text??model.output??'';
+  const status=review.status??(review.final_response_status==='empty'?'No final response produced':model.lifecycle?.state);
+  const left=[
+    traceMeaningfulValue(review.request)?traceSummaryCard('request',review.request,budget):'',
+    traceMeaningfulValue(review.context)?traceSummaryCard('context',review.context,budget):'',
+    traceMeaningfulValue(review.diff)?traceCodeBlock('diff',review.diff,budget):''
+  ];
+  const right=[
+    (Array.isArray(findings)?traceList('findings',findings,budget,(item,idx)=>{const severity=traceInlineText(item?.severity??item?.priority??'',120);return `<div class="trace-finding-item"><span class="trace-chip ${esc(severity)}">${esc(severity)}</span><div>${traceHumanValue(item,budget)}</div></div>`}):(traceMeaningfulValue(findings)?traceSummaryCard('findings',findings,budget,{full:true}):'')),
+    traceMeaningfulValue(review.recommendation)?traceSummaryCard('recommendation',review.recommendation,budget,{full:true}):'',
+    traceMeaningfulValue(status)?traceSummaryCard('status',status,budget):''
+  ];
   return tracePresentationColumns('Review',left,right,budget,traceReviewSeverityMarkup(review.findings,review.severity_counts??review.severityCounts,budget));
 }
 function renderRepoIntelligencePresentation(model){
-  const budget=traceRenderBudget(),repo=traceSanitizeValue(tracePresentationPayload(model,'repoOperation')),left=[tracePresentationField('repository',tracePresentationPick(repo,['repository','repo'],''),'No repository captured',budget),tracePresentationField('root',repo.root,'No root captured',budget),tracePresentationField('operation',tracePresentationPick(repo,['operation','action'],''),'No operation captured',budget),tracePresentationField('query',repo.query,'No query captured',budget),tracePresentationField('files',repo.files,'No files captured',budget),tracePresentationField('symbols',repo.symbols,'No symbols captured',budget),tracePresentationField('context',repo.context,'No context captured',budget)],right=[tracePresentationField('result',tracePresentationPick(repo,['result','output','response'],''),'No result captured',budget)];
+  const budget=traceRenderBudget(),repo=traceSanitizeValue(tracePresentationPayload(model,'repoOperation'));
+  const repository=tracePresentationPick(repo,['repository','repo'],'');
+  const operation=tracePresentationPick(repo,['operation','action'],model.identity?.action||'');
+  const result=tracePresentationPick(repo,['result','output','response','text'],'');
+  const left=[
+    traceMeaningfulValue(repository)?traceSummaryCard('repository',repository,budget):'',
+    traceMeaningfulValue(repo.root)?traceSummaryCard('root',repo.root,budget):'',
+    traceMeaningfulValue(operation)?traceSummaryCard('operation',operation,budget):'',
+    traceMeaningfulValue(repo.query)?traceSummaryCard('query',repo.query,budget):'',
+    traceMeaningfulValue(repo.files??repo.changed_files)?(Array.isArray(repo.files??repo.changed_files)?traceList('files',repo.files??repo.changed_files,budget):traceSummaryCard('files',repo.files??repo.changed_files,budget)):'',
+    traceMeaningfulValue(repo.symbols)?(Array.isArray(repo.symbols)?traceList('symbols',repo.symbols,budget):traceSummaryCard('symbols',repo.symbols,budget)):'',
+    traceMeaningfulValue(repo.context)?traceSummaryCard('context',repo.context,budget):''
+  ];
+  const right=[
+    traceMeaningfulValue(result)?traceSummaryCard('result',result,budget,{full:true}):''
+  ];
   return tracePresentationColumns('Repository intelligence',left,right,budget);
 }
 function renderRagSearchPresentation(model){
-  const budget=traceRenderBudget(),retrieval=traceSanitizeValue(tracePresentationPayload(model,'retrieval')),left=[tracePresentationField('query',retrieval.query,'No query captured',budget),tracePresentationRankedField('sources · score/rank/provider',retrieval.sources,'No sources captured',budget),tracePresentationRankedField('results · score/rank/provider',retrieval.results??retrieval.hits,'No results captured',budget)],right=[tracePresentationField('answer',retrieval.answer,'No answer captured',budget),tracePresentationField('truncation',retrieval.truncated??retrieval.truncation,'No truncation recorded',budget)];
-  return tracePresentationColumns('RAG search',left,right,budget);
+  const budget=traceRenderBudget(),retrieval=traceSanitizeValue(tracePresentationPayload(model,'retrieval')),query=tracePresentationPick(retrieval,['query','search_query','term'],''),rawResults=Array.isArray(retrieval.results)?retrieval.results:(Array.isArray(retrieval.hits)?retrieval.hits:[]),sources=Array.isArray(retrieval.sources)?retrieval.sources:[],results=rawResults.length?rawResults:sources,ranked=results.map((item,index)=>({item,index,score:Number(item?.score??item?.relevance??item?.similarity)})).sort((a,b)=>{const af=Number.isFinite(a.score),bf=Number.isFinite(b.score);if(af&&bf)return b.score-a.score||a.index-b.index;if(af!==bf)return af?-1:1;return a.index-b.index}),spec=[traceProjectLabel(model),retrieval.path,retrieval.top_k??retrieval.limit,typeof retrieval.enrich==='boolean'?`enrich ${retrieval.enrich?'on':'off'}`:retrieval.mode,retrieval.provider].filter(Boolean),rows=ranked.slice(0,50).map((entry,index)=>traceSearchResultRow(entry.item,index,budget)).join('');
+  const resultLabel=`${results.length}${results.length===1?' result':' results'}`;
+  return traceFinalizeMarkup(`<section class="trace-primary trace-search-presentation"><div class="trace-primary-head"><h2>Search</h2><span class="tiny">${esc(resultLabel)}</span></div><div class="trace-summary-card trace-search-query"><strong>Query</strong><div>${query?esc(traceHumanText(query)):'<span class="trace-primary-empty">No query captured</span>'}</div></div>${spec.length?`<div class="trace-search-spec">${spec.map(item=>`<span>${esc(traceInlineText(item))}</span>`).join('')}</div>`:''}<div class="trace-list-card trace-search-results"><h3>Results</h3>${rows||'<div class="trace-primary-empty">No results captured</div>'}</div>${traceRecorded(retrieval.answer)?`<div class="trace-summary-card trace-search-answer"><strong>Answer</strong><div>${esc(traceHumanText(retrieval.answer))}</div></div>`:''}${traceRecorded(retrieval.truncated??retrieval.truncation)?`<div class="trace-summary-card trace-search-answer"><strong>Truncation</strong><div>${esc(traceSearchText(retrieval.truncated??retrieval.truncation,300))}</div></div>`:''}</section>`,budget);
 }
 function renderAsyncJobPresentation(model){
-  const budget=traceRenderBudget(),safeModel=traceSanitizeValue(model||{}),lifecycle=safeModel.lifecycle||{},correlations=safeModel.correlations||{},payload=traceSanitizeValue(tracePresentationPayload(safeModel,'asyncJob')),left=[tracePresentationField('lifecycle',lifecycle,'No lifecycle captured',budget),tracePresentationField('status',tracePresentationPick(payload,['status'],lifecycle.state??''),'No status captured',budget),tracePresentationField('queue wait',tracePresentationPick(payload,['queue_wait_ms','queue_wait','queue_time_ms'],''),'No queue wait captured',budget),tracePresentationField('retries',tracePresentationPick(payload,['retries','retry_count','attempts'],''),'No retries captured',budget),tracePresentationField('worker input',tracePresentationPick(payload,['worker_input','input'],safeModel.input),'No worker input captured',budget)],right=[tracePresentationField('result',tracePresentationPick(payload,['result','output'],safeModel.output),'No result captured',budget),tracePresentationField('error',tracePresentationPick(payload,['error'],safeModel.errors),'No error captured',budget),tracePresentationField('job id',tracePresentationPick(correlations,['job_id','async_job_id','scheduler_job_id'],''),'No job id captured',budget),tracePresentationField('correlation',tracePresentationPick(correlations,['request_id','correlation_id'],''),'No correlation captured',budget)];
+  const budget=traceRenderBudget(),safeModel=traceSanitizeValue(model||{}),lifecycle=safeModel.lifecycle||{},correlations=safeModel.correlations||{},payload=traceSanitizeValue(tracePresentationPayload(safeModel,'asyncJob'));
+  const status=tracePresentationPick(payload,['status'],lifecycle.state??'');
+  const queueWait=tracePresentationPick(payload,['queue_wait_ms','queue_wait','queue_time_ms'],'');
+  const retries=tracePresentationPick(payload,['retries','retry_count','attempts'],'');
+  const workerInput=tracePresentationPick(payload,['worker_input','input'],safeModel.input);
+  const result=tracePresentationPick(payload,['result','output'],safeModel.output);
+  const error=tracePresentationPick(payload,['error'],safeModel.errors);
+  const jobId=tracePresentationPick(correlations,['job_id','async_job_id','scheduler_job_id'],'');
+  const correlation=tracePresentationPick(correlations,['request_id','correlation_id'],'');
+  const left=[
+    traceMeaningfulValue(lifecycle)?traceSummaryCard('lifecycle',lifecycle,budget):'',
+    traceMeaningfulValue(status)?traceSummaryCard('status',status,budget):'',
+    traceMeaningfulValue(queueWait)?traceSummaryCard('queue wait',queueWait,budget):'',
+    traceMeaningfulValue(retries)?traceSummaryCard('retries',retries,budget):'',
+    traceMeaningfulValue(workerInput)?traceSummaryCard('worker input',workerInput,budget):''
+  ];
+  const right=[
+    traceMeaningfulValue(result)?traceCodeBlock('result',result,budget):'',
+    traceMeaningfulValue(error)?traceSummaryCard('error',error,budget):'',
+    traceMeaningfulValue(jobId)?traceSummaryCard('job id',jobId,budget):'',
+    traceMeaningfulValue(correlation)?traceSummaryCard('correlation',correlation,budget):''
+  ];
   return tracePresentationColumns('Async job',left,right,budget);
 }
 function renderRequestResponsePresentation(model){
-  const budget=traceRenderBudget(),safeModel=traceSanitizeValue(model||{}),timing=safeModel.timing||{},left=[tracePresentationField('request',safeModel.session?.request??safeModel.identity?.action,'No request captured',budget),tracePresentationField('input',safeModel.input,'No input captured',budget),tracePresentationField('timing',timing,'No timing captured',budget)],right=[tracePresentationField('response',safeModel.response,'No response captured',budget),tracePresentationField('output',safeModel.output,'No output captured',budget),tracePresentationField('status',safeModel.lifecycle?.status_code??safeModel.lifecycle?.state,'No status captured',budget),tracePresentationField('error',safeModel.errors,'No error captured',budget)];
+  const budget=traceRenderBudget(),safeModel=traceSanitizeValue(model||{}),timing=safeModel.timing||{};
+  const reqVal=safeModel.session?.request??safeModel.identity?.action;
+  const statusVal=safeModel.lifecycle?.status_code??safeModel.lifecycle?.state;
+  const left=[
+     traceMeaningfulValue(reqVal)?traceSummaryCard('request',reqVal,budget):'',
+    traceMeaningfulValue(safeModel.input)?traceSummaryCard('input',safeModel.input,budget):'',
+    traceMeaningfulValue(timing)?traceSummaryCard('timing',timing,budget):''
+  ];
+  const right=[
+     traceMeaningfulValue(safeModel.response)?traceSummaryCard('response',safeModel.response,budget,{full:true}):'',
+    traceMeaningfulValue(safeModel.output)?traceCodeBlock('output',safeModel.output,budget):'',
+    traceMeaningfulValue(statusVal)?traceSummaryCard('status',statusVal,budget):'',
+    traceMeaningfulValue(safeModel.errors)?traceSummaryCard('error',safeModel.errors,budget):''
+  ];
   return tracePresentationColumns('Request / response',left,right,budget);
 }
-function renderTracePresentation(model){const kind=model.presentation?.kind||tracePresentationKind(model);if(kind==='agent_loop')return renderAgentLoopPresentation(model);if(kind==='model_chat')return renderModelChatPresentation(model);if(kind==='command')return renderCommandPresentation(model);if(kind==='review')return renderReviewPresentation(model);if(kind==='repo_intelligence')return renderRepoIntelligencePresentation(model);if(kind==='rag_search')return renderRagSearchPresentation(model);if(kind==='async_job')return renderAsyncJobPresentation(model);if(kind==='request_response')return renderRequestResponsePresentation(model);return '';}
+function renderTracePresentation(model){const kind=model.presentation?.kind||tracePresentationKind(model),specializedKinds=['agent_loop','model_chat','command','review','repo_intelligence','rag_search','async_job','request_response'],inputOutput=specializedKinds.includes(kind)?'':renderTraceInputOutputPresentation(model);let specialized='';if(kind==='agent_loop')specialized=renderAgentLoopPresentation(model);else if(kind==='model_chat')specialized=renderModelChatPresentation(model);else if(kind==='command')specialized=renderCommandPresentation(model);else if(kind==='review')specialized=renderReviewPresentation(model);else if(kind==='repo_intelligence')specialized=renderRepoIntelligencePresentation(model);else if(kind==='rag_search')specialized=renderRagSearchPresentation(model);else if(kind==='async_job')specialized=renderAsyncJobPresentation(model);else if(kind==='request_response')specialized=renderRequestResponsePresentation(model);return inputOutput+specialized;}
 function traceDisplayModel(detail){
   const rawSession=detail?.session||{},rawEvents=Array.isArray(detail?.events)?detail.events:[];
   const rawEventProjection=traceBoundedEvents(rawEvents),session=traceSanitizeValue(traceDisplaySession(rawSession)),events=traceSanitizeValue(rawEventProjection.events);
@@ -2181,7 +2396,9 @@ function traceDisplayModel(detail){
   const modelInput=traceFirstRecorded(events,['prompt','messages','content','input','arguments','args','query']);
   const requestInput=traceFirstRecorded(events,['request','request_body','request_payload','body','form_data','payload']);
   const input=traceRecorded(modelInput)?modelInput:traceRecorded(effectivePayload)?effectivePayload:traceRecorded(session.request)?session.request:requestInput;
-  const output=traceRecorded(session.output)?session.output:traceRecorded(session.response)?session.response:traceFirstRecorded(events,['output','output_text','generated_text','text','content','result','response','response_body','answer','completion']);
+  const responseData=session.response&&typeof session.response==='object'?session.response:{},responseText=responseData.text??responseData.response??responseData.message?.content??(typeof session.response==='string'?session.response:''),output=traceRecorded(session.output)?session.output:traceRecorded(responseText)?responseText:traceFirstRecorded(events,['output','output_text','generated_text','text','content','result','response','response_body','answer','completion']);
+  const thinking=traceRecorded(session.thinking)?session.thinking:traceRecorded(responseData.thinking)?responseData.thinking:events.filter(event=>['thinking','assistant_thinking','reasoning','assistant_reasoning'].includes(String(event?.event_type||'').toLowerCase())).map(event=>event?.payload?.text??event?.payload?.thinking??event?.payload?.content??'').join('');
+  const finalResponseStatus=String(session.final_response_status??responseData.final_response_status??'');
   const response=traceRecorded(session.response)?session.response:traceFirstRecorded(events,['response','response_body','result']);
   const eventErrors=events.filter(event=>traceRecorded(event?.payload?.error)||traceRecorded(event?.payload?.error_message)||event?.payload?.success===false).map(event=>event.payload);
   const errors=traceRecorded(session.error)?[session.error,...eventErrors]:eventErrors;
@@ -2194,14 +2411,16 @@ function traceDisplayModel(detail){
   const correlations={request_id:session.request_id||requestPayload.request_id,async_job_id:session.async_job_id||requestPayload.async_job_id,scheduler_job_id:session.scheduler_job_id||requestPayload.scheduler_job_id,job_id:session.job_id||requestPayload.job_id};
   const retainedBytes=Number(session.text_bytes||session.retained_bytes||0);
   const availability={
-    input:traceRecorded(input),output:traceRecorded(output),response:traceRecorded(response),errors:errors.length>0,
+    input:traceRecorded(input),output:traceRecorded(output),thinking:traceRecorded(thinking),response:traceRecorded(response),errors:errors.length>0,
     events:events.length>0,modelExecutions:modelExecutions.length>0,toolCalls:toolCalls.length>0,
   };
-  const eventsTotal=Math.max(Number(detail?.events_total||detail?.eventsTotal||0),rawEventProjection.eventsTotal),eventsTruncated=rawEventProjection.eventsTruncated,model={identity,lifecycle,timing,actor,correlations,retainedBytes,input,output,response,errors,events,eventsTotal,eventsTruncated,modelExecutions,toolCalls,effectivePayload,availability,session};
+  const captureStates={input:traceCaptureState(input),output:traceCaptureState(output,finalResponseStatus),thinking:traceCaptureState(thinking),response:traceCaptureState(response),errors:traceCaptureState(errors),events:traceCaptureState(events),modelExecutions:traceCaptureState(modelExecutions),toolCalls:traceCaptureState(toolCalls)};
+  const eventsTotal=Math.max(Number(detail?.events_total||detail?.eventsTotal||0),rawEventProjection.eventsTotal),eventsTruncated=rawEventProjection.eventsTruncated,project=traceProjectLabel({project:rawSession.project,workspace:rawSession.workspace,request:session.request,effective_payload:effectivePayload,root:session.root})||traceProjectLabel(input),model={identity,lifecycle,timing,actor,correlations,retainedBytes,input,output,thinking,response,finalResponseStatus,errors,events,eventsTotal,eventsTruncated,modelExecutions,toolCalls,effectivePayload,availability,captureStates,session,project};
   model.presentation=tracePresentationData(model);
   model.panels=[
     tracePanel('input','Input',()=>humanSection('Input',input),availability.input),
     tracePanel('output','Output',()=>humanSection('Output',output),availability.output),
+    tracePanel('thinking','Thinking',()=>humanSection('Thinking / reasoning',thinking),availability.thinking),
     tracePanel('response','Response',()=>humanSection('Response',response),availability.response),
     tracePanel('errors','Errors',()=>humanSection('Errors',errors),availability.errors),
     tracePanel('timeline','Timeline',()=>traceTimeline(events.slice(-100)),availability.events),
@@ -2214,32 +2433,39 @@ function traceDisplayModel(detail){
   return model;
 }
 function traceAvailability(model,unavailableCopy={}){
-  const labels=[['input','Input'],['output','Output'],['response','Response'],['errors','Error details'],['events','Events'],['modelExecutions','Model execution'],['toolCalls','Tool calls']];
-  return `<section class="human-section"><h3>Trace data availability</h3><div class="human-list">${labels.map(([key,label])=>`<div class="human-item">${model.availability[key]?`<span class="ok">${esc(label)} recorded</span>`:`<span class="muted">${esc(unavailableCopy[key]||traceUnavailable(label))}</span>`}</div>`).join('')}</div></section>`;
+  const labels=[['input','Input'],['output','Output'],['thinking','Thinking'],['response','Response'],['errors','Error details'],['events','Events'],['modelExecutions','Model execution'],['toolCalls','Tool calls']];
+  return `<section class="human-section"><h3>Trace data availability</h3><div class="human-list">${labels.map(([key,label])=>{const state=model.captureStates?.[key]??(model.availability[key]?'produced':'not_captured');return `<div class="human-item">${traceCaptureBadge(state,label)}${state==='not_captured'?`<span class="muted">${esc(unavailableCopy[key]||traceUnavailable(label))}</span>`:''}</div>`}).join('')}</div></section>`;
 }
 function traceSummary(model,unavailableCopy){
   const summary={identity:model.identity,lifecycle:model.lifecycle,timing:model.timing,actor:model.actor,correlations:model.correlations,retained_bytes:model.retainedBytes};
   return `<section class="human-section"><h3>Universal request summary</h3>${renderAny(summary)}</section>${traceAvailability(model,unavailableCopy)}`;
 }
+function traceHumanTitle(model){
+  const kind=String(model?.presentation?.kind||'').toLowerCase();
+  return ({rag_search:'Search',model_chat:'Model request',agent_loop:'Agent run',command:'Command run',review:'Review',repo_intelligence:'Repository lookup',async_job:'Background job',request_response:'Request'}[kind]||'Request');
+}
  function renderTraceDetail(d){
-   const body=$('tracePageBody'),existingOptionalDetails=body?.querySelector('#traceTechnicalDetails');if(existingOptionalDetails)traceOptionalDetailsOpen=existingOptionalDetails.open;const thinkingDetailsOpen=captureTraceThinkingDetails(body),scrollPositions=captureTraceScrollPositions(body),traceMain=body?.closest('.trace-main'),mainScrollTop=traceMain?.scrollTop||0,mainScrollLeft=traceMain?.scrollLeft||0;
+   const body=$('tracePageBody'),existingOptionalDetails=body?.querySelector('#traceTechnicalDetails');if(existingOptionalDetails)traceOptionalDetailsOpen=existingOptionalDetails.open;const primaryGroupsState=captureTracePrimaryGroups(body),thinkingDetailsOpen=captureTraceThinkingDetails(body),scrollPositions=captureTraceScrollPositions(body),traceMain=body?.closest('.trace-main'),mainScrollTop=traceMain?.scrollTop||0,mainScrollLeft=traceMain?.scrollLeft||0;
    activeTraceData=d;const unavailableCopy={input:'Input unavailable for this request type',output:'Output unavailable for this request type',response:'Response unavailable for this request type'},model=traceDisplayModel(d),s=traceSanitizeValue(model.session),events=model.events;
   if(!model.panels.some(panel=>panel.available&&panel.id===traceView))traceView=model.panels.find(panel=>panel.available)?.id||'timeline';
-  $('tracePageTitle').textContent=String(s.action||s.source||'Trace');$('tracePageLive').textContent=d?.terminal?'terminal · retained':'● live · auto-refresh';$('tracePageLive').className='tiny '+(d?.terminal?'ok':'trace-running');
+  const titleEl=$('tracePageTitle'),liveEl=$('tracePageLive');
+  if(titleEl)titleEl.textContent=traceHumanTitle(model);
+  if(liveEl){liveEl.textContent=d?.terminal?'finished':'● live · updating';liveEl.className='tiny '+(d?.terminal?'ok':'trace-running');}
   const state=model.lifecycle.state,displayState=traceStatus(s),stateClass=(displayState==='failed'||displayState==='error')?'bad':(displayState==='interrupted'?'warn':(d?.terminal?'ok':'warn'));
   const revealLabel=traceRevealRedactedDetails?'Hide unredacted details':'Reveal redacted details',revealState=traceRevealRedactedDetails?'Unredacted trace details shown locally.':'Trace details are redacted by default.';
-  const header=`<div class="trace-inspector-head"><div><div class="trace-kicker">Request trace · Universal inspector</div><strong>${esc(s.action||s.source||'Trace')}</strong><div class="tiny">${esc(s.agent||'unknown actor')} · ${esc(s.model||'model not recorded')}</div></div><span class="badge ${stateClass}">${esc(state)}</span></div><div class="trace-metrics"><span>${model.eventsTotal} events${model.eventsTruncated?' · latest retained view':''}</span><span>${esc(s.tenant||'no tenant')}</span><span>${model.retainedBytes} bytes retained</span><button type="button" class="btn" data-trace-reveal aria-pressed="${traceRevealRedactedDetails}" aria-describedby="trace-reveal-status">${esc(revealLabel)}</button><span id="trace-reveal-status" class="tiny" aria-live="polite">${esc(revealState)}</span></div>`;
+  const header=`<div class="trace-inspector-head"><div><div class="trace-kicker">Request trace</div><strong>${esc(traceHumanTitle(model))}</strong><div class="tiny">${esc(s.action||s.source||'Trace')} · ${esc(s.agent||'unknown actor')}${s.model?` · ${esc(s.model)}`:''}</div></div><div class="trace-inspector-context"><span class="trace-project-label">${esc(model.project||'Project not recorded')}</span><span class="badge ${stateClass}">${esc(state)}</span></div></div><div class="trace-metrics"><span>${esc(model.project||'Project not recorded')}</span><button type="button" class="btn" data-trace-reveal aria-pressed="${traceRevealRedactedDetails}" aria-describedby="trace-reveal-status">${esc(revealLabel)}</button><span id="trace-reveal-status" class="tiny" aria-live="polite">${esc(revealState)}</span></div>`;
   const panels=model.panels.filter(panel=>panel.available),universalSummary=traceSummary(model,unavailableCopy),panelMarkup=panels.map(panel=>{const selected=panel.id===traceView,content=selected?panel.render():'';return `<div id="trace-panel-${esc(panel.id)}" class="trace-view" role="tabpanel" aria-labelledby="trace-tab-${esc(panel.id)}"${selected?'':' hidden'}>${content}</div>`}).join('');
    const presentationMarkup=renderTracePresentation(model);
-   // Universal request summary stays available, but technical detail is optional.
-   const optionalMarkup=`<details class="trace-optional-details" id="traceTechnicalDetails"${traceOptionalDetailsOpen?' open':''}><summary>Technical details · ${panels.length} optional views</summary><div class="trace-optional-body"><nav class="trace-tabs" role="tablist" aria-label="Trace views">${panels.map(panel=>traceTab(panel.label,panel.id)).join('')}</nav>${panelMarkup}</div></details>`;
-   // Universal request summary stays visible before optional technical details.
-   $('tracePageBody').className='trace-page-body';$('tracePageBody').innerHTML=`<div class="human-shell">${header}${universalSummary}${presentationMarkup}${optionalMarkup}</div>`;
-   const restore=()=>{restoreTraceThinkingDetails($('tracePageBody'),thinkingDetailsOpen);restoreTraceScrollPositions($('tracePageBody'),scrollPositions);const nextMain=$('tracePageBody')?.closest('.trace-main');if(nextMain){nextMain.scrollTop=mainScrollTop;nextMain.scrollLeft=mainScrollLeft}};
+   const optionalMarkup=`<details class="trace-optional-details" id="traceTechnicalDetails"${traceOptionalDetailsOpen?' open':''}><summary>Technical details · ${panels.length} optional views</summary><div class="trace-optional-body">${universalSummary}<nav class="trace-tabs" role="tablist" aria-label="Trace views">${panels.map(panel=>traceTab(panel.label,panel.id)).join('')}</nav>${panelMarkup}</div></details>`;
+   const traceBodyEl=$('tracePageBody');
+   if(traceBodyEl){traceBodyEl.className='trace-page-body';traceBodyEl.innerHTML=`<div class="human-shell">${header}${presentationMarkup}${optionalMarkup}</div>`;}
+    const restore=()=>{restoreTracePrimaryGroups($('tracePageBody'),primaryGroupsState);restoreTraceThinkingDetails($('tracePageBody'),thinkingDetailsOpen);restoreTraceScrollPositions($('tracePageBody'),scrollPositions);const nextMain=$('tracePageBody')?.closest('.trace-main');if(nextMain){nextMain.scrollTop=mainScrollTop;nextMain.scrollLeft=mainScrollLeft}};
    if(window.requestAnimationFrame)window.requestAnimationFrame(restore);else restore();
 }
 function setTraceView(view){if(!activeTraceData)return;const model=traceDisplayModel(activeTraceData);if(!model.panels.some(panel=>panel.available&&panel.id===view))return;traceView=view;renderTraceDetail(activeTraceData)}
 function toggleTraceReveal(){if(!activeTraceData)return;traceRevealRedactedDetails=!traceRevealRedactedDetails;renderTraceDetail(activeTraceData)}
+function setTraceDetailsOpen(open){const body=$('tracePageBody');if(!body)return;body.querySelectorAll('details[data-trace-collapsible],#traceTechnicalDetails').forEach(detail=>{detail.open=Boolean(open)});}
+function copyTraceFinalResponse(btn){if(!activeTraceData)return;const model=traceDisplayModel(activeTraceData);if(!traceRecorded(model.output)){if(btn){btn.textContent='No final response';setTimeout(()=>{btn.textContent='Copy final response'},1500)}return;}copyText(promptText(model.output),btn);}
 function moveTraceTab(tab,key){
   const tabs=Array.from(document.querySelectorAll('#tracePageBody [role="tab"]'));
   const index=tabs.indexOf(tab);if(index<0)return;
@@ -2266,15 +2492,16 @@ async function openTrace(id){
       if(d.success){
         traceSeq=traceFiniteSequence(d.next_seq,traceSeq);traceEventTotal=Math.max(traceEventTotal,traceSeq,Number(d.events_total||d.eventsTotal||0));const next=traceAppendEvents(traceEvents,d.events,traceEventTotal);traceEvents=next.events;traceEventTotal=next.eventsTotal;renderTraceDetail({...d,events:traceEvents,events_total:traceEventTotal});
         if(d.terminal&&pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){clearInterval(traceTimer);traceTimer=null}
-      }else if(d.retryable){$('tracePageLive').textContent='● live · retrying…';$('tracePageLive').className='tiny trace-running';return
+      }else if(d.retryable){const lEl=$('tracePageLive');if(lEl){lEl.textContent='● live · retrying…';lEl.className='tiny trace-running';}return;
       }else{openModal(d,'Trace error');clearInterval(traceTimer);traceTimer=null}
-    }catch(e){if(pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId)$('tracePageLive').textContent='refresh failed: '+e.message
+    }catch(e){if(pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){const lEl=$('tracePageLive');if(lEl)lEl.textContent='refresh failed: '+e.message;}
     }finally{if(pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){pollInFlight=false;tracePollInFlight=false}}
   };
   await poll();if(pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId)traceTimer=setInterval(poll,1000);
 }
 function openModal(obj,title='',entityType=''){
-  $('modalLive').textContent='';
+  if($('modalLive'))$('modalLive').textContent='';
+  if(!$('modalBody'))return;
   const type=entityType||inferEntityType(obj);
   const defaultTitle=title||(
     type==='task'?'Task Inspector':
@@ -2301,7 +2528,7 @@ function openModal(obj,title='',entityType=''){
     type==='session'?'Process Session Details':
     type==='http_request'?'HTTP Request':'Details'
   );
-  $('modalTitle').textContent=defaultTitle;
+  if($('modalTitle'))$('modalTitle').textContent=defaultTitle;
   if(type==='task')renderTaskModal(obj);
   else if(type==='memory')renderMemoryModal(obj);
   else if(type==='incident')renderIncidentModal(obj);
@@ -2328,7 +2555,7 @@ function openModal(obj,title='',entityType=''){
   else if(type==='scheduler_job')renderSchedulerJobModal(obj);
   else if(type==='http_request')renderHttpRequestModal(obj);
   else renderHumanModal(obj);
-  $('modalBg').classList.add('open');
+  if($('modalBg'))$('modalBg').classList.add('open');
   if($('modalBody'))$('modalBody').scrollTop=0;
 }
 
@@ -2606,9 +2833,9 @@ async function transitionTaskAction(taskId){
 }
 
 function openCreateTaskModal(){
-  $('modalTitle').textContent='Create Durable Agent Task';
-  $('modalLive').textContent='';
-  $('modalBody').innerHTML=`
+  if($('modalTitle'))$('modalTitle').textContent='Create Durable Agent Task';
+  if($('modalLive'))$('modalLive').textContent='';
+  if($('modalBody'))$('modalBody').innerHTML=`
     <div class="modal-body-wrap">
       <form class="modal-form" onsubmit="submitCreateTask(event)">
         <div class="form-group">
@@ -2642,13 +2869,13 @@ function openCreateTaskModal(){
         </div>
         <div id="createTaskStatus" class="tiny"></div>
         <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px">
-          <button type="button" class="btn" onclick="$('modalClose').click()">Cancel</button>
+          <button type="button" class="btn" onclick="$('modalClose')?.click()">Cancel</button>
           <button type="submit" class="btn ok">Create Task</button>
         </div>
       </form>
     </div>
   `;
-  $('modalBg').classList.add('open');
+  if($('modalBg'))$('modalBg').classList.add('open');
   setTimeout(()=>$('newTaskGoal')?.focus(),50);
 }
 
@@ -2755,7 +2982,7 @@ async function deleteMemoryAction(key,scope){
     if(res.success){
       if(statusEl)statusEl.innerHTML='<span class="ok">✓ Memory deleted.</span>';
       await loadAgentOsView();
-      setTimeout(()=>$('modalClose').click(),700);
+      setTimeout(()=>$('modalClose')?.click(),700);
     }else{
       if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(res.error||'Failed to delete')}</span>`;
     }
@@ -2765,9 +2992,9 @@ async function deleteMemoryAction(key,scope){
 }
 
 function openRecordMemoryModal(){
-  $('modalTitle').textContent='Record Agent Memory';
-  $('modalLive').textContent='';
-  $('modalBody').innerHTML=`
+  if($('modalTitle'))$('modalTitle').textContent='Record Agent Memory';
+  if($('modalLive'))$('modalLive').textContent='';
+  if($('modalBody'))$('modalBody').innerHTML=`
     <div class="modal-body-wrap">
       <form class="modal-form" onsubmit="submitRecordMemory(event)">
         <div class="form-group">
@@ -2804,13 +3031,13 @@ function openRecordMemoryModal(){
         </div>
         <div id="recordMemStatus" class="tiny"></div>
         <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px">
-          <button type="button" class="btn" onclick="$('modalClose').click()">Cancel</button>
+          <button type="button" class="btn" onclick="$('modalClose')?.click()">Cancel</button>
           <button type="submit" class="btn ok">Record Memory</button>
         </div>
       </form>
     </div>
   `;
-  $('modalBg').classList.add('open');
+  if($('modalBg'))$('modalBg').classList.add('open');
   setTimeout(()=>$('newMemKey')?.focus(),50);
 }
 
@@ -2943,9 +3170,9 @@ async function resolveIncidentAction(id){
 }
 
 function openRecordIncidentModal(){
-  $('modalTitle').textContent='Record Failure Anti-Pattern';
-  $('modalLive').textContent='';
-  $('modalBody').innerHTML=`
+  if($('modalTitle'))$('modalTitle').textContent='Record Failure Anti-Pattern';
+  if($('modalLive'))$('modalLive').textContent='';
+  if($('modalBody'))$('modalBody').innerHTML=`
     <div class="modal-body-wrap">
       <form class="modal-form" onsubmit="submitRecordIncident(event)">
         <div class="form-group">
@@ -2968,13 +3195,13 @@ function openRecordIncidentModal(){
         </div>
         <div id="recordIncStatus" class="tiny"></div>
         <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px">
-          <button type="button" class="btn" onclick="$('modalClose').click()">Cancel</button>
+          <button type="button" class="btn" onclick="$('modalClose')?.click()">Cancel</button>
           <button type="submit" class="btn warn">Record Anti-Pattern</button>
         </div>
       </form>
     </div>
   `;
-  $('modalBg').classList.add('open');
+  if($('modalBg'))$('modalBg').classList.add('open');
   setTimeout(()=>$('newIncClass')?.focus(),50);
 }
 
@@ -3007,9 +3234,9 @@ async function submitRecordIncident(e){
 }
 
 function openCleanupModal(){
-  $('modalTitle').textContent='Cleanup Stale Agent OS State';
-  $('modalLive').textContent='';
-  $('modalBody').innerHTML=`
+  if($('modalTitle'))$('modalTitle').textContent='Cleanup Stale Agent OS State';
+  if($('modalLive'))$('modalLive').textContent='';
+  if($('modalBody'))$('modalBody').innerHTML=`
     <div class="modal-body-wrap">
       <div class="modal-card">
         <div class="modal-card-head"><span>Agent OS Maintenance</span></div>
@@ -3025,12 +3252,12 @@ function openCleanupModal(){
       </div>
       <div id="cleanupStatus" class="tiny"></div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn" onclick="$('modalClose').click()">Cancel</button>
+        <button class="btn" onclick="$('modalClose')?.click()">Cancel</button>
         <button class="btn warn" onclick="executeCleanupAction()">🧹 Execute Cleanup</button>
       </div>
     </div>
   `;
-  $('modalBg').classList.add('open');
+  if($('modalBg'))$('modalBg').classList.add('open');
 }
 
 async function executeCleanupAction(){
@@ -3044,11 +3271,11 @@ async function executeCleanupAction(){
           <span style="font-size:16px">✅</span>
           <div>
             <b>Agent OS State Cleanup Completed</b>
-            <div class="tiny" style="margin-top:3px">${esc(JSON.stringify(res))}</div>
+            <div class="tiny" style="margin-top:8px">${renderAny(res)}</div>
           </div>
         </div>
         <div class="modal-actions-bar" style="justify-content:flex-end">
-          <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+          <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
         </div>
       </div>
     `;
@@ -3113,7 +3340,7 @@ function renderLiveStreamModal(ev){
 
       <details class="raw-json"><summary>Raw Event Object</summary><pre>${esc(JSON.stringify(ev,null,2))}</pre></details>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3197,8 +3424,8 @@ function renderProjectModal(p){
         <div class="modal-card-head"><span>Workspace Controls</span></div>
         <div class="modal-card-body">
           <div class="modal-actions-bar">
-            <button class="btn" onclick="projectAction(${escJs(p.root)},'${state==='paused'?'resume':'pause'}');$('modalClose').click()">${state==='paused'?'▶ Resume Preprocessing':'⏸ Pause Preprocessing'}</button>
-            <button class="btn ok" onclick="projectAction(${escJs(p.root)},'refresh');$('modalClose').click()">↻ Force Re-scan</button>
+            <button class="btn" onclick="projectAction(${escJs(p.root)},'${state==='paused'?'resume':'pause'}');$('modalClose')?.click()">${state==='paused'?'▶ Resume Preprocessing':'⏸ Pause Preprocessing'}</button>
+            <button class="btn ok" onclick="projectAction(${escJs(p.root)},'refresh');$('modalClose')?.click()">↻ Force Re-scan</button>
             <button class="btn" onclick="exportBundle(${escJs(p.root)})">📦 Export Bundle</button>
             <button class="btn bad" style="margin-left:auto" onclick="deleteProjectDialog(${escJs(p.root)},${escJs(p.project)})">🗑 Unregister / Delete</button>
           </div>
@@ -3211,9 +3438,9 @@ function renderProjectModal(p){
 }
 
 function openRegisterProjectModal(){
-  $('modalTitle').textContent='Register Project for Preprocessing';
-  $('modalLive').textContent='';
-  $('modalBody').innerHTML=`
+  if($('modalTitle'))$('modalTitle').textContent='Register Project for Preprocessing';
+  if($('modalLive'))$('modalLive').textContent='';
+  if($('modalBody'))$('modalBody').innerHTML=`
     <div class="modal-body-wrap">
       <form class="modal-form" onsubmit="submitRegisterProject(event)">
         <div class="form-group">
@@ -3230,13 +3457,13 @@ function openRegisterProjectModal(){
         </div>
         <div id="regProjStatus" class="tiny"></div>
         <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px">
-          <button type="button" class="btn" onclick="$('modalClose').click()">Cancel</button>
+          <button type="button" class="btn" onclick="$('modalClose')?.click()">Cancel</button>
           <button type="submit" class="btn ok">+ Register Project</button>
         </div>
       </form>
     </div>
   `;
-  $('modalBg').classList.add('open');
+  if($('modalBg'))$('modalBg').classList.add('open');
   setTimeout(()=>$('regProjRoot')?.focus(),50);
 }
 
@@ -3251,7 +3478,7 @@ async function submitRegisterProject(e){
   try{
     const r=await post('/api/preprocess',{root,action:force?'refresh':'register'});
     if(r.success){
-      $('modalClose').click();
+      $('modalClose')?.click();
       await pollStatus();
     }else{
       if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(r.error||'Failed')}</span>`;
@@ -3262,9 +3489,9 @@ async function submitRegisterProject(e){
 }
 
 function openDeleteProjectModal(root,name){
-  $('modalTitle').textContent='Unregister Project';
-  $('modalLive').textContent='';
-  $('modalBody').innerHTML=`
+  if($('modalTitle'))$('modalTitle').textContent='Unregister Project';
+  if($('modalLive'))$('modalLive').textContent='';
+  if($('modalBody'))$('modalBody').innerHTML=`
     <div class="modal-body-wrap">
       <div style="font-size:13px">
         Unregister project <b>${esc(name)}</b>?
@@ -3292,12 +3519,12 @@ function openDeleteProjectModal(root,name){
       <div id="delProjStatus" class="tiny"></div>
 
       <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px">
-        <button class="btn" onclick="$('modalClose').click()">Cancel</button>
+        <button class="btn" onclick="$('modalClose')?.click()">Cancel</button>
         <button class="btn bad" id="confirmDeleteProjectBtn" onclick="confirmDeleteProject(${escJs(root)})">Confirm Unregister / Purge</button>
       </div>
     </div>
   `;
-  $('modalBg').classList.add('open');
+  if($('modalBg'))$('modalBg').classList.add('open');
   const confirmBtn=$('confirmDeleteProjectBtn');
   if(confirmBtn)confirmBtn.onclick=()=>confirmDeleteProject(root);
 }
@@ -3312,7 +3539,7 @@ async function confirmDeleteProject(root){
       if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(r.error||'Failed to unregister')}</span>`;
       return;
     }
-    $('modalClose').click();
+    $('modalClose')?.click();
     await pollStatus();
   }catch(e){
     if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(e.message||e)}</span>`;
@@ -3320,9 +3547,9 @@ async function confirmDeleteProject(root){
 }
 
 function openCleanMissingModal(){
-  $('modalTitle').textContent='Prune Missing Worktrees';
-  $('modalLive').textContent='';
-  $('modalBody').innerHTML=`
+  if($('modalTitle'))$('modalTitle').textContent='Prune Missing Worktrees';
+  if($('modalLive'))$('modalLive').textContent='';
+  if($('modalBody'))$('modalBody').innerHTML=`
     <div class="modal-body-wrap">
       <div class="modal-card">
         <div class="modal-card-head"><span>Clean Missing Worktree Directories</span></div>
@@ -3333,12 +3560,12 @@ function openCleanMissingModal(){
       </div>
       <div id="cleanMissingStatus" class="tiny"></div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn" onclick="$('modalClose').click()">Cancel</button>
+        <button class="btn" onclick="$('modalClose')?.click()">Cancel</button>
         <button class="btn warn" onclick="confirmCleanMissing()">🧹 Prune Missing Projects</button>
       </div>
     </div>
   `;
-  $('modalBg').classList.add('open');
+  if($('modalBg'))$('modalBg').classList.add('open');
 }
 
 async function confirmCleanMissing(){
@@ -3346,7 +3573,7 @@ async function confirmCleanMissing(){
   if(statusEl)statusEl.textContent='Scanning and cleaning…';
   try{
     const r=await post('/api/preprocess',{action:'cleanup_deleted'});
-    $('modalClose').click();
+    $('modalClose')?.click();
     await pollStatus();
   }catch(e){
     if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(e.message||e)}</span>`;
@@ -3393,7 +3620,7 @@ function renderDoctorModal(d){
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
         <button class="btn ok" onclick="openDoctorModal()">↻ Re-run Doctor</button>
-        <button class="btn" onclick="$('modalClose').click()">Close</button>
+        <button class="btn" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3401,12 +3628,12 @@ function renderDoctorModal(d){
 
 async function openDoctorModal(){
   openModal({},'Local AI Hub Doctor Health Diagnostics','doctor');
-  $('modalBody').innerHTML='<div class="modal-body-wrap"><div class="tiny muted">Running comprehensive health diagnostics across Hub, Ollama, GPU, databases and preprocessor…</div></div>';
+  if($('modalBody'))$('modalBody').innerHTML='<div class="modal-body-wrap"><div class="tiny muted">Running comprehensive health diagnostics across Hub, Ollama, GPU, databases and preprocessor…</div></div>';
   try{
     const r=await post('/api/doctor',{});
     renderDoctorModal(r);
   }catch(e){
-    $('modalBody').innerHTML=`<div class="modal-body-wrap"><div class="bad-t">Doctor failed: ${esc(e.message||e)}</div></div>`;
+    if($('modalBody'))$('modalBody').innerHTML=`<div class="modal-body-wrap"><div class="bad-t">Doctor failed: ${esc(e.message||e)}</div></div>`;
   }
 }
 
@@ -3449,7 +3676,7 @@ function renderActiveLeaseModal(l){
 async function releaseLeaseAction(leaseId){
   try{
     await post('/api/leases/release',{lease_id:leaseId});
-    $('modalClose').click();
+    $('modalClose')?.click();
     await loadActiveLeases();
   }catch(e){
     alert('Release error: '+e);
@@ -3481,7 +3708,7 @@ function renderActiveCommandModal(cmd){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn" onclick="$('modalClose').click()">Close</button>
+        <button class="btn" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3512,7 +3739,7 @@ function renderErrorFingerprintModal(err){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn" onclick="$('modalClose').click()">Close</button>
+        <button class="btn" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3520,7 +3747,7 @@ function renderErrorFingerprintModal(err){
 
 function openArchNodeModal(nd){
   const root=nd.root||nd.id||'';
-  const label=nd.label||root.split(/[\\/]/).pop()||'Project';
+  const label=nd.label||(String(root).split(/[\\/]/).pop()||'Project');
   const outEdges=(archEdges||[]).filter(e=>e.from===root);
   const inEdges=(archEdges||[]).filter(e=>e.to===root);
 
@@ -3539,20 +3766,20 @@ function openArchNodeModal(nd){
       <div class="modal-card">
         <div class="modal-card-head"><span>Dependencies (Outgoing Connections: ${outEdges.length})</span></div>
         <div class="modal-card-body">
-          ${outEdges.length?outEdges.map(e=>`<div style="padding:4px 0">➔ <b>${esc(e.to.split(/[\\/]/).pop())}</b> <span class="chip">${esc(e.type)}</span> <span class="tiny muted">${esc(e.label)}</span></div>`).join(''):'<div class="muted tiny">No outgoing dependencies.</div>'}
+          ${outEdges.length?outEdges.map(e=>`<div style="padding:4px 0">➔ <b>${esc(String(e.to||'').split(/[\\/]/).pop()||'—')}</b> <span class="chip">${esc(e.type||'')}</span> <span class="tiny muted">${esc(e.label||'')}</span></div>`).join(''):'<div class="muted tiny">No outgoing dependencies.</div>'}
         </div>
       </div>
 
       <div class="modal-card">
         <div class="modal-card-head"><span>Dependents (Incoming Connections: ${inEdges.length})</span></div>
         <div class="modal-card-body">
-          ${inEdges.length?inEdges.map(e=>`<div style="padding:4px 0">⬅ <b>${esc(e.from.split(/[\\/]/).pop())}</b> <span class="chip">${esc(e.type)}</span> <span class="tiny muted">${esc(e.label)}</span></div>`).join(''):'<div class="muted tiny">No incoming dependents.</div>'}
+          ${inEdges.length?inEdges.map(e=>`<div style="padding:4px 0">⬅ <b>${esc(String(e.from||'').split(/[\\/]/).pop()||'—')}</b> <span class="chip">${esc(e.type||'')}</span> <span class="tiny muted">${esc(e.label||'')}</span></div>`).join(''):'<div class="muted tiny">No incoming dependents.</div>'}
         </div>
       </div>
 
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="switchTab('projects');$('modalClose').click()">📁 Open in Projects</button>
-        <button class="btn" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="switchTab('projects');$('modalClose')?.click()">📁 Open in Projects</button>
+        <button class="btn" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3590,7 +3817,38 @@ function renderDbOptModal(r){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderResolveErrorsModal(r){
+  const tel=r?.telemetry||{};
+  $('modalBody').innerHTML=`
+    <div class="modal-hero">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div class="tiny muted mono">OPERATIONAL RECOVERY</div>
+          <h2 style="margin:2px 0 0;font-size:16px">Operational Errors &amp; Failures Resolved</h2>
+        </div>
+        <span class="badge-status badge-complete">HEALTHY</span>
+      </div>
+    </div>
+    <div class="modal-body-wrap">
+      <div class="modal-card">
+        <div class="modal-card-head"><span>Resolution Summary</span></div>
+        <div class="modal-card-body">
+          <div class="kv" style="padding:0">
+            <div>Resolved request failures</div><div>${n(tel.resolved_events||0)}</div>
+            <div>Cleared error records</div><div>${n(tel.cleared_errors||0)}</div>
+            <div>Cleaned process sessions</div><div>${n(tel.cleaned_sessions||0)}</div>
+            <div>Resolved agent incidents</div><div>${n(r?.resolved_incidents||0)}</div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions-bar" style="justify-content:flex-end">
+        <button class="btn ok" onclick="$('modalClose')?.click()">Done</button>
       </div>
     </div>
   `;
@@ -3619,7 +3877,7 @@ function renderCachePurgeModal(r){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3657,7 +3915,7 @@ function renderHttpTailModal(x){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3698,7 +3956,7 @@ function renderExecutionProfileModal(x){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3734,7 +3992,7 @@ function renderModelStatModal(x){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3767,7 +4025,7 @@ function renderCacheLayerModal(x){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3805,7 +4063,7 @@ function renderAgentStatModal(x){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3844,7 +4102,7 @@ function renderRouteStatModal(x){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3877,7 +4135,7 @@ function renderBlockedReasonModal(x){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3932,7 +4190,7 @@ function renderSchedulerJobModal(j){
       `:''}
       <details class="raw-json"><summary>Raw Job Details</summary><pre>${esc(JSON.stringify(j,null,2))}</pre></details>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3978,21 +4236,24 @@ function renderHttpRequestModal(r){
       </div>
       <details class="raw-json"><summary>Raw Request Details</summary><pre>${esc(JSON.stringify(r,null,2))}</pre></details>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
 }
 
-$('modalClose').onclick=()=>{$('modalBg').classList.remove('open');activeTraceId='';activeTraceData=null;if(traceTimer)clearInterval(traceTimer);traceTimer=null};
-$('modalBg').onclick=e=>{if(e.target===$('modalBg'))$('modalClose').click()};
+if($('modalClose'))$('modalClose').onclick=()=>{if($('modalBg'))$('modalBg').classList.remove('open');activeTraceId='';activeTraceData=null;if(traceTimer)clearInterval(traceTimer);traceTimer=null};
+if($('modalBg'))$('modalBg').onclick=e=>{if(e.target===$('modalBg'))$('modalClose')?.click()};
 
 document.addEventListener('click',e=>{
   const closeBtn=e.target.closest?.('button');
   if(closeBtn && (closeBtn.getAttribute('onclick')?.includes('modalClose') || closeBtn.dataset.modalClose!==undefined || (closeBtn.textContent?.trim()==='Cancel' && closeBtn.closest('#modalBody')))){
-    $('modalClose').click();
+    $('modalClose')?.click();
     return;
   }
+  const copyFinal=e.target.closest?.('[data-trace-copy-final]');if(copyFinal){copyTraceFinalResponse(copyFinal);return}
+  const expandAll=e.target.closest?.('[data-trace-expand-all]');if(expandAll){setTraceDetailsOpen(true);return}
+  const collapseAll=e.target.closest?.('[data-trace-collapse-all]');if(collapseAll){setTraceDetailsOpen(false);return}
   const reveal=e.target.closest?.('[data-trace-reveal]');if(reveal){toggleTraceReveal();return}
   const tab=e.target.closest?.('[data-trace-view]');if(tab){setTraceView(tab.dataset.traceView);return}
   const pageTrace=e.target.closest?.('[data-trace-page-id]');if(pageTrace){openTrace(pageTrace.dataset.tracePageId);return}
@@ -4094,12 +4355,13 @@ $('cfgSave').onclick=async()=>{
   $('cfgStatus').textContent=r.success?'saved · restart hub to apply':('error: '+(r.error||'failed'));
   if(r.success)loadConfigView();
 };
-$('cfgReset').onclick=async()=>{
-  $('modalTitle').textContent='Reset dashboard overrides';
-  $('modalLive').textContent='Confirmation required';
-  $('modalBody').innerHTML=`<div class="modal-body-wrap"><div class="modal-card"><div class="modal-card-head"><span>Scope and impact</span></div><div class="modal-card-body"><p><b>Scope:</b> Dashboard-managed configuration override sidecar only.</p><p style="margin-bottom:0"><b>Impact:</b> Removes override values. Base configuration and project data stay unchanged; restart applies result.</p></div></div><div class="modal-actions-bar" style="justify-content:flex-end"><button class="btn" onclick="$('modalClose').click()">Cancel</button><button class="btn warn" id="confirmConfigReset">Reset overrides</button></div></div>`;
-  $('modalBg').classList.add('open');
-  $('confirmConfigReset').onclick=async()=>{const r=await post('/api/config/update',{action:'reset'});$('cfgStatus').textContent=r.success?'overrides reset · restart hub to apply':('error: '+(r.error||'failed'));if(r.success)loadConfigView();$('modalClose').click();};
+if($('cfgReset'))$('cfgReset').onclick=async()=>{
+  if($('modalTitle'))$('modalTitle').textContent='Reset dashboard overrides';
+  if($('modalLive'))$('modalLive').textContent='Confirmation required';
+  if($('modalBody'))$('modalBody').innerHTML=`<div class="modal-body-wrap"><div class="modal-card"><div class="modal-card-head"><span>Scope and impact</span></div><div class="modal-card-body"><p><b>Scope:</b> Dashboard-managed configuration override sidecar only.</p><p style="margin-bottom:0"><b>Impact:</b> Removes override values. Base configuration and project data stay unchanged; restart applies result.</p></div></div><div class="modal-actions-bar" style="justify-content:flex-end"><button class="btn" onclick="$('modalClose')?.click()">Cancel</button><button class="btn warn" id="confirmConfigReset">Reset overrides</button></div></div>`;
+  if($('modalBg'))$('modalBg').classList.add('open');
+  const confirmBtn=$('confirmConfigReset');
+  if(confirmBtn)confirmBtn.onclick=async()=>{const r=await post('/api/config/update',{action:'reset'});if($('cfgStatus'))$('cfgStatus').textContent=r.success?'overrides reset · restart hub to apply':('error: '+(r.error||'failed'));if(r.success)loadConfigView();$('modalClose')?.click();};
 };
 
 let logLines=['Click Refresh to load logs.'];
@@ -4251,15 +4513,17 @@ function openControlConfirmation(action){
     purge_cache:{title:'Purge expired cache',scope:'Cache entries older than 7 days in configured state directory.',impact:'Expired cached responses removed. Project source and indexes remain intact.'},
   }[action];
   if(!details)return;
-  $('modalTitle').textContent=details.title;
-  $('modalLive').textContent='Confirmation required';
-  $('modalBody').innerHTML=`<div class="modal-body-wrap"><div class="modal-card"><div class="modal-card-head"><span>Scope and impact</span></div><div class="modal-card-body"><p><b>Scope:</b> ${esc(details.scope)}</p><p style="margin-bottom:0"><b>Impact:</b> ${esc(details.impact)}</p></div></div><div class="modal-actions-bar" style="justify-content:flex-end"><button class="btn" onclick="$('modalClose').click()">Cancel</button><button class="btn ${action==='stop_service'?'bad':action==='purge_cache'?'warn':''}" id="confirmControlAction">${esc(details.title)}</button></div></div>`;
-  $('modalBg').classList.add('open');
-  $('confirmControlAction').onclick=async()=>{try{if(action==='purge_cache')await post('/api/maintenance/purge_cache',{days:7});else await post('/api/control',{action});if(action==='stop_service'){$('conn').textContent='stopping';$('conn').className='pill warn-t';}$('modalClose').click();}catch(error){$('modalLive').textContent='Action failed: '+String(error?.message||error);}};
+  if($('modalTitle'))$('modalTitle').textContent=details.title;
+  if($('modalLive'))$('modalLive').textContent='Confirmation required';
+  if($('modalBody'))$('modalBody').innerHTML=`<div class="modal-body-wrap"><div class="modal-card"><div class="modal-card-head"><span>Scope and impact</span></div><div class="modal-card-body"><p><b>Scope:</b> ${esc(details.scope)}</p><p style="margin-bottom:0"><b>Impact:</b> ${esc(details.impact)}</p></div></div><div class="modal-actions-bar" style="justify-content:flex-end"><button class="btn" onclick="$('modalClose')?.click()">Cancel</button><button class="btn ${action==='stop_service'?'bad':action==='purge_cache'?'warn':''}" id="confirmControlAction">${esc(details.title)}</button></div></div>`;
+  if($('modalBg'))$('modalBg').classList.add('open');
+  const confirmBtn=$('confirmControlAction');
+  if(confirmBtn)confirmBtn.onclick=async()=>{try{if(action==='purge_cache')await post('/api/maintenance/purge_cache',{days:7});else await post('/api/control',{action});if(action==='stop_service'){if($('conn')){$('conn').textContent='stopping';$('conn').className='pill warn-t';}}$('modalClose')?.click();}catch(error){if($('modalLive'))$('modalLive').textContent='Action failed: '+String(error?.message||error);}};
 }
 $('restartHub').onclick=()=>openControlConfirmation('restart_hub');
 $('stopService').onclick=()=>openControlConfirmation('stop_service');
 $('optDbBtn').onclick=async()=>{try{const r=await post('/api/maintenance/optimize_db',{});openModal(r,'Database Optimization & WAL Checkpoint Results','db_opt')}catch(e){openModal({error:String(e)},'Error')}};
+if($('resolveAllErrorsBtn'))$('resolveAllErrorsBtn').onclick=async()=>{try{const r=await post('/api/maintenance/resolve_errors',{});openModal(r,'Operational Errors Resolved','resolve_errors');await pollStatus();}catch(e){openModal({error:String(e)},'Resolution Error')}};
 $('purgeCacheBtn').onclick=()=>openControlConfirmation('purge_cache');
 $('doctorBtn').onclick=openDoctorModal;
 
@@ -4270,7 +4534,7 @@ function ensureHttpTailTable(){
 function setupWorkLayout(){
   const work=$('work');if(!work||work.dataset.refined)return;work.dataset.refined='1';work.classList.add('work-page');
   const sections=[...work.children].filter(x=>x.classList.contains('section'));sections.forEach((x,i)=>x.classList.add('work-panel','work-panel-'+(i+1)));
-  const headers=[['State','Work item','Model / source','Timing','Reason'],['Request','Agent / tenant','Action','Age'],['Time','Request ID','Agent','Tenant','Action / context','Result','Trace availability','Duration'],['State','Kind','Action / context','Agent / tenant','Model','Created','Updated / duration','Links']];
+  const headers=[['State','Work item','Model / source','Timing','Reason'],['Request','Agent / tenant','Action','Age'],['Time','Request ID','Project','Agent','Tenant','Action / context','Result','Trace availability','Duration'],['State','Kind','Project','Action / context','Agent / tenant','Model','Created','Updated / duration','Links']];
   sections.forEach((section,index)=>{const row=section.querySelector('thead tr');if(row&&headers[index])row.innerHTML=headers[index].map(x=>`<th>${x}</th>`).join('')});
   work.insertAdjacentHTML('afterbegin','<section class="section work-summary"><div class="work-summary-head"><div><div class="work-kicker">Operations center</div><h2>Live work <span class="tiny">prioritized view</span></h2></div><span class="tiny">Click any row to inspect its trace</span></div><div class="work-kpis"><div><span>Queued</span><strong id="workQueued">—</strong></div><div><span>Running</span><strong id="workRunning">—</strong></div><div><span>Active API</span><strong id="workActive">—</strong></div><div><span>Retained traces</span><strong id="workRetained">—</strong></div></div><div class="work-filter"><input id="workSearch" type="search" placeholder="Search agent, tenant, action, model…" autocomplete="off"><select id="workState" aria-label="Work state"><option value="">All states</option><option value="running">Running</option><option value="queued">Queued</option><option value="failed">Failed</option><option value="completed">Completed</option></select><button class="btn" id="workReset">Reset</button><span class="work-filter-summary" id="workFilterSummary"></span></div></section>');
   $('workSearch').oninput=()=>last&&render(last);$('workState').onchange=()=>last&&render(last);$('workReset').onclick=()=>{$('workSearch').value='';$('workState').value='';if(last)render(last)};
@@ -4291,7 +4555,7 @@ function filterRecentRequests(items,allItems){
   if(actionSelect){actionSelect.innerHTML='<option value="">All endpoints ('+all.length+')</option>'+[...counts].sort((a,b)=>a[0].localeCompare(b[0])).map(([action,count])=>`<option value="${esc(action)}">${esc(action)} (${count})</option>`).join('');actionSelect.value=counts.has(selected)?selected:''}
   const query=String($('requestHistorySearch')?.value||'').trim().toLowerCase(),action=String(actionSelect?.value||''),status=String($('requestHistoryStatus')?.value||''),period=Number($('requestHistoryPeriod')?.value||0),after=period?Date.now()/1000-period:0;
   const visible=(items||[]).filter(item=>{
-    const code=Number(item.status_code||0),hay=[item.request_id,item.action,item.agent,item.tenant,item.error_type,code,traceContextLabel(requestTrace(item))].filter(Boolean).join(' ').toLowerCase();
+    const code=Number(item.status_code||0),hay=[item.request_id,item.action,item.project,item.agent,item.tenant,item.error_type,code,traceProjectLabel(item),traceContextLabel(requestTrace(item))].filter(Boolean).join(' ').toLowerCase();
     const matchesStatus=!status||(status==='failed'?(item.success===false||code>=400):Math.floor(code/100)===Number(status[0]));
     return (!query||hay.includes(query))&&(!action||String(item.action||'')===action)&&matchesStatus&&(!after||Number(item.created_at||0)>=after);
   });
@@ -4331,7 +4595,7 @@ function requestTraceAvailability(request){
   if(request.trace_available===false)return {label:'No trace recorded',className:'muted',trace:null};
   return {label:'No trace retained',className:'muted',trace:null};
 }
-function workRecentRequestRow(request){const trace=requestTrace(request),availability=requestTraceAvailability(request),failed=request.success===false||Number(request.status_code||0)>=400,context=trace?traceContextLabel(trace):(request.error_type||availability.label),requestId=String(request.request_id||'—'),inner=`<td>${request.created_at?new Date(request.created_at*1000).toLocaleString():'—'}</td><td><strong>${esc(requestId.slice(-12))}</strong><div class="tiny">${trace?'Trace linked · '+esc(String(trace.trace_id||'').slice(-8)):'Request-only record'}</div></td><td>${esc(request.agent||'—')}</td><td>${esc(request.tenant||'—')}</td><td><strong>${esc(request.action||'—')}</strong><div class="tiny">${esc(context)}</div></td><td><span class="${failed?'bad-t':'ok'}">${n(request.status_code)||'—'}</span>${request.error_type?`<div class="tiny">${esc(request.error_type)}</div>`:''}</td><td><span class="${availability.className}">${esc(availability.label)}</span></td><td>${ms(request.duration_ms)}</td>`;return requestRow(request,inner,8)}
+function workRecentRequestRow(request){const trace=requestTrace(request),availability=requestTraceAvailability(request),failed=request.success===false||Number(request.status_code||0)>=400,context=trace?traceContextLabel(trace):(request.error_type||availability.label),requestId=String(request.request_id||'—'),project=traceProjectLabel(request.project||request.workspace||request.root||trace?.project)||'—',inner=`<td>${request.created_at?new Date(request.created_at*1000).toLocaleString():'—'}</td><td><strong>${esc(requestId.slice(-12))}</strong><div class="tiny">${trace?'Trace linked · '+esc(String(trace.trace_id||'').slice(-8)):'Request-only record'}</div></td><td><strong>${esc(project)}</strong></td><td>${esc(request.agent||'—')}</td><td>${esc(request.tenant||'—')}</td><td><strong>${esc(request.action||'—')}</strong><div class="tiny">${esc(context)}</div></td><td><span class="${failed?'bad-t':'ok'}">${n(request.status_code)||'—'}</span>${request.error_type?`<div class="tiny">${esc(request.error_type)}</div>`:''}</td><td><span class="${availability.className}">${esc(availability.label)}</span></td><td>${ms(request.duration_ms)}</td>`;return requestRow(request,inner,9)}
 
 function renderAdoptionRows(items){
   const body=$('adoptionActions');if(!body)return;body.replaceChildren();
@@ -4342,11 +4606,11 @@ function renderAdoptionRows(items){
 function renderAdoption(report){
   if(!$('adoptionUsed'))return;
   const totals=report&&report.totals;
-  if(!totals){$('adoptionUsed').textContent='unavailable';$('adoptionBlocked').textContent='unavailable';$('adoptionDormant').textContent='unavailable';renderAdoptionRows([]);if($('adoptionDetail'))$('adoptionDetail').textContent='Aggregate adoption telemetry unavailable.';return;}
+  if(!totals){if($('adoptionUsed'))$('adoptionUsed').textContent='unavailable';if($('adoptionBlocked'))$('adoptionBlocked').textContent='unavailable';if($('adoptionDormant'))$('adoptionDormant').textContent='unavailable';renderAdoptionRows([]);if($('adoptionDetail'))$('adoptionDetail').textContent='Aggregate adoption telemetry unavailable.';return;}
   renderAdoptionRows(report.action_adoption);
-  $('adoptionUsed').textContent=`${totals.used||0} / ${totals.bypassed||0}`;
-  $('adoptionBlocked').textContent=`${totals.blocked||0} / ${totals.failed||0}`;
-  $('adoptionDormant').textContent=(report.dormant_actions||[]).length;
+  if($('adoptionUsed'))$('adoptionUsed').textContent=`${totals.used||0} / ${totals.bypassed||0}`;
+  if($('adoptionBlocked'))$('adoptionBlocked').textContent=`${totals.blocked||0} / ${totals.failed||0}`;
+  if($('adoptionDormant'))$('adoptionDormant').textContent=(report.dormant_actions||[]).length;
   const blocked=(report.blocked_reasons||[]).map(x=>`${x.reason}: ${x.count}`).join(', ')||'none';
   const failed=(report.terminal_failures||[]).map(x=>`${x.reason}: ${x.count}`).join(', ')||'none';
   const latency=(report.latency_buckets||[]).map(x=>`${x.bucket}: ${x.count}`).join(', ')||'none';
@@ -4492,19 +4756,19 @@ function render(s){
   $('prepSub').textContent=n(p.active_projects)+' active · '+n(p.processing_projects)+'/'+n(p.max_preprocessing_projects)+' preprocessing · card reuse '+ingReuse+'% · query hit '+qHitRate+'%';
 
   const allJobs=[...(q.inflight_jobs||[]),...(q.pending_jobs||[])];
-  $('currentSummary').textContent=n(q.foreground_queued)+' queued · '+n(q.foreground_inflight)+' running';
+  if($('currentSummary'))$('currentSummary').textContent=n(q.foreground_queued)+' queued · '+n(q.foreground_inflight)+' running';
   rows('overviewJobs',allJobs.slice(0,12),j=>schedulerRow(j,`<td>${esc(j.state)}</td><td>${esc(j.tenant)}</td><td>${esc(j.source)}</td><td>${esc(j.model)}</td><td>${ms(j.wait_ms)}</td><td>${ms(j.service_ms)}</td><td>${esc(j.wait_reason)}</td>`),7);
 
   const hs=o.hotspots||[];
-  $('hotspots').innerHTML=hs.length?hs.map((x,i)=>`<div>${esc(x.type||'signal')}</div><div><span class="chip">${esc(x.signal||'')}</span> ${esc(x.value??x.value_ms??x.count??'')}</div>`).join(''):'<div>Status</div><div class="ok">No persistent hotspot detected</div>';
+  if($('hotspots'))$('hotspots').innerHTML=hs.length?hs.map((x,i)=>`<div>${esc(x.type||'signal')}</div><div><span class="chip">${esc(x.signal||'')}</span> ${esc(x.value??x.value_ms??x.count??'')}</div>`).join(''):'<div>Status</div><div class="ok">No persistent hotspot detected</div>';
 
   const recentRequests=o.recent_http||[],visibleJobs=workVisible(allJobs),visibleActive=workVisible(o.active_requests||[]),visibleRecent=filterRecentRequests(workVisible(recentRequests),recentRequests);
-  $('queueSummary').textContent=n(q.foreground_queued)+' fg + '+n(q.background_queued)+' bg queued · '+n(q.foreground_inflight)+' fg + '+n(q.inflight_background)+' bg running';
-  $('workQueued').textContent=n((q.foreground_queued||0)+(q.background_queued||0));
-  $('workRunning').textContent=n((q.foreground_inflight||0)+(q.inflight_background||0));
-  $('workActive').textContent=n((o.active_requests||[]).length);
-  $('workRetained').textContent=n(lastTraces.length);
-  $('workFilterSummary').textContent=`showing ${visibleJobs.length+visibleActive.length+visibleRecent.length} live/history items`;
+  if($('queueSummary'))$('queueSummary').textContent=n(q.foreground_queued)+' fg + '+n(q.background_queued)+' bg queued · '+n(q.foreground_inflight)+' fg + '+n(q.inflight_background)+' bg running';
+  if($('workQueued'))$('workQueued').textContent=n((q.foreground_queued||0)+(q.background_queued||0));
+  if($('workRunning'))$('workRunning').textContent=n((q.foreground_inflight||0)+(q.inflight_background||0));
+  if($('workActive'))$('workActive').textContent=n((o.active_requests||[]).length);
+  if($('workRetained'))$('workRetained').textContent=n(lastTraces.length);
+  if($('workFilterSummary'))$('workFilterSummary').textContent=`showing ${visibleJobs.length+visibleActive.length+visibleRecent.length} live/history items`;
 
   rows('jobs',visibleJobs,j=>workSchedulerRow(j),5);
   rows('activeReq',visibleActive,x=>workActiveRequestRow(x),4);
@@ -4580,10 +4844,35 @@ function renderReliabilitySummary(snapshot){
   const activeCrash=Boolean(sessions[0]&&!['active','clean_stop'].includes(String(sessions[0].status||'')));
   const severity=failures||activeCrash?'attention':restarts?'warning':'healthy';
   const label=severity==='attention'?'Needs attention':severity==='warning'?'Monitor':'Healthy';
-  const headline=$('reliabilityHeadline'),trend=$('reliabilityTrend'),action=$('reliabilityAction');
+  const headline=$('reliabilityHeadline'),trend=$('reliabilityTrend'),action=$('reliabilityAction'),resolveBtn=$('resolveErrorsBtn');
   if(headline)headline.innerHTML=`<div>Current severity</div><div><span class="${severity==='healthy'?'ok':severity==='attention'?'bad-t':'warn-t'}"><b>${label}</b></span></div><div>Operational failures</div><div>${n(failures)}</div><div>Supervisor restarts</div><div>${n(restarts)}</div><div>Unclean sessions</div><div>${n(crashes)}</div>`;
   if(trend){const prior=sessions.slice(1),priorCrashes=prior.filter(x=>!['active','clean_stop'].includes(String(x.status||''))).length;trend.textContent=`Failure trend: ${failures?'active request failures need review':'no active request failures'}; ${crashes} unclean session${crashes===1?'':'s'} in retained history${priorCrashes?` (${priorCrashes} earlier)`:' '}.`;}
   if(action){action.textContent=failures?'Open failed request history':'Open restart history';action.onclick=()=>{if(failures){switchTab('work');}else{switchTab('reliability');$('sessionRows')?.closest('.section')?.scrollIntoView({behavior:'smooth'});}};}
+  if(resolveBtn){
+    if(failures>0||crashes>0||activeCrash){
+      resolveBtn.style.display='';
+      resolveBtn.onclick=async()=>{
+        resolveBtn.disabled=true;
+        resolveBtn.textContent='Resolving...';
+        try{
+          const r=await post('/api/maintenance/resolve_errors',{});
+          resolveBtn.textContent='Resolved!';
+          openModal(r,'Operational Errors Resolved','resolve_errors');
+          await pollStatus();
+        }catch(e){
+          resolveBtn.textContent='Error';
+          openModal({error:String(e)},'Resolution Error');
+        }finally{
+          setTimeout(()=>{
+            resolveBtn.disabled=false;
+            resolveBtn.textContent='Resolve all errors';
+          },1500);
+        }
+      };
+    }else{
+      resolveBtn.style.display='none';
+    }
+  }
 }
 
 function schedulerRow(job,html,cols){const linked=lastTraces.find(x=>String(x.scheduler_job_id||'')===String(job.job_id||''));const id=linked?.trace_id||job.trace_id;if(id)return `<tr class="click" data-trace-id="${esc(id)}">${html}</tr>`;return clickableRow(job,html,'scheduler_job');}
@@ -4592,15 +4881,15 @@ function requestRow(request,html,cols){const linked=lastTraces.find(x=>String(x.
 function renderTraceList(items){
   const base=workVisible(items||[]),kind=String($('traceKind')?.value||''),matching=base.filter(x=>!kind||x.kind===kind);
   const tableQuery=String($('traceTableSearch')?.value||'').trim().toLowerCase(),tableState=String($('traceTableState')?.value||''),tableSort=String($('traceTableSort')?.value||'newest');
-  const tableVisible=matching.filter(x=>{const state=traceStatus(x),hay=[x.trace_id,x.request_id,x.action,x.source,x.kind,x.agent,x.tenant,x.model,x.error_type,x.error,traceContextLabel(x)].filter(Boolean).join(' ').toLowerCase();return (!tableQuery||hay.includes(tableQuery))&&(!tableState||state===tableState)});
+  const tableVisible=matching.filter(x=>{const state=traceStatus(x),hay=[x.trace_id,x.request_id,x.action,x.source,x.kind,x.project,x.agent,x.tenant,x.model,x.error_type,x.error,traceProjectLabel(x),traceContextLabel(x)].filter(Boolean).join(' ').toLowerCase();return (!tableQuery||hay.includes(tableQuery))&&(!tableState||state===tableState)});
   tableVisible.sort((a,b)=>{const time=Number(a.updated_at||a.created_at||0)-Number(b.updated_at||b.created_at||0);if(tableSort==='oldest')return -time;if(tableSort==='action')return String(a.action||'').localeCompare(String(b.action||''))||-time;if(tableSort==='duration'){const ad=Number(a.updated_at||a.created_at||0)-Number(a.created_at||0),bd=Number(b.updated_at||b.created_at||0)-Number(b.created_at||0);return bd-ad||-time}if(tableSort==='state')return String(traceStatus(a)).localeCompare(String(traceStatus(b)))||-time;return -time});
   const historyQuery=String($('traceHistorySearch')?.value||'').trim().toLowerCase(),historyState=$('traceHistoryState')?.value||'useful';
   const sidebarVisible=matching.filter(x=>{const state=traceStatus(x),hay=[x.trace_id,x.request_id,x.action,x.source,x.kind,x.agent,x.tenant,x.model,x.error,traceContextLabel(x)].filter(Boolean).join(' ').toLowerCase();return (!historyQuery||hay.includes(historyQuery))&&(historyState==='useful'?(state!=='interrupted'&&state!=='failed'):(!historyState||state===historyState))});
   $('traceSummary').textContent=`${tableVisible.length} shown · ${n(items?.length||0)} retained · full prompt/output · bounded retention`;
   if($('workRetained'))$('workRetained').textContent=n(items?.length||0);
-  rows('traces',tableVisible,x=>{const state=traceStatus(x),cls='trace-'+state,links=[x.async_job_id&&('job '+String(x.async_job_id).slice(0,10)),x.scheduler_job_id&&('sched '+String(x.scheduler_job_id).slice(0,10))].filter(Boolean).join(' · '),activity=x.updated_at&&x.created_at?durSec(Math.max(0,Number(x.updated_at)-Number(x.created_at))):'—',context=traceContextLabel({...x,kind:'',model:''});return `<tr class="click" data-trace-id="${esc(x.trace_id)}"><td class="${cls}">${esc(humanLabel(state))}</td><td>${esc(humanLabel(x.kind||'trace'))}</td><td><strong>${esc(x.action||'—')}</strong><div class="tiny">${esc(context||'No request details')}</div></td><td>${esc(x.agent||'—')}<div class="tiny">${esc(x.tenant||'—')}</div></td><td>${esc(x.model||'—')}</td><td>${x.created_at?new Date(x.created_at*1000).toLocaleTimeString():'—'}</td><td>${x.updated_at?new Date(x.updated_at*1000).toLocaleTimeString():'—'}<div class="tiny">${esc(activity)} total</div></td><td class="tiny">${esc(links||'open trace')}</td></tr>`},8);
+  rows('traces',tableVisible,x=>{const state=traceStatus(x),cls='trace-'+state,links=[x.async_job_id&&('job '+String(x.async_job_id).slice(0,10)),x.scheduler_job_id&&('sched '+String(x.scheduler_job_id).slice(0,10))].filter(Boolean).join(' · '),activity=x.updated_at&&x.created_at?durSec(Math.max(0,Number(x.updated_at)-Number(x.created_at))):'—',context=traceContextLabel({...x,kind:'',model:''}),project=traceProjectLabel(x)||'—';return `<tr class="click" data-trace-id="${esc(x.trace_id)}"><td class="${cls}">${esc(humanLabel(state))}</td><td>${esc(humanLabel(x.kind||'trace'))}</td><td><strong>${esc(project)}</strong></td><td><strong>${esc(x.action||'—')}</strong><div class="tiny">${esc(context||'No request details')}</div></td><td>${esc(x.agent||'—')}<div class="tiny">${esc(x.tenant||'—')}</div></td><td>${esc(x.model||'—')}</td><td>${x.created_at?new Date(x.created_at*1000).toLocaleTimeString():'—'}</td><td>${x.updated_at?new Date(x.updated_at*1000).toLocaleTimeString():'—'}<div class="tiny">${esc(activity)} total</div></td><td class="tiny">${esc(links||'open trace')}</td></tr>`},9);
   $('traceSideSummary').textContent=`${sidebarVisible.length} trace${sidebarVisible.length===1?'':'s'} · click to inspect`;
-  $('traceSidebarList').innerHTML=sidebarVisible.length?sidebarVisible.map(x=>{const state=traceStatus(x),label=state==='interrupted'?'Interrupted':state,cls=state==='interrupted'?'interrupted':(state==='failed'||state==='error'?'failed':(x.terminal||state==='completed'||state==='succeeded'?'done':'')),kindLabel=x.kind==='api_request'?'API request':humanLabel(x.kind||'trace'),context=traceContextLabel({...x,kind:'',model:''});return `<button class="trace-side-item ${String(x.trace_id)===activeTraceId?'active':''}" data-trace-page-id="${esc(x.trace_id)}"><span class="trace-side-top"><span class="trace-side-state ${cls}"></span><span class="trace-side-action">${esc(x.action||x.kind||'Trace')}</span><span class="tiny spacer">${esc(label)}</span></span><span class="trace-side-meta">${esc(context||x.agent||'unknown agent')}</span><span class="trace-side-meta">${esc(x.agent||'unknown agent')} · ${esc(kindLabel)} · ${x.updated_at?new Date(x.updated_at*1000).toLocaleTimeString():'—'} · ${esc(x.tenant||'no tenant')}</span></button>`}).join(''):'<div class="empty-human">No retained traces</div>';
+  $('traceSidebarList').innerHTML=sidebarVisible.length?sidebarVisible.map(x=>{const state=traceStatus(x),label=state==='interrupted'?'Interrupted':state,cls=state==='interrupted'?'interrupted':(state==='failed'||state==='error'?'failed':(x.terminal||state==='completed'||state==='succeeded'?'done':'')),kindLabel=x.kind==='api_request'?'API request':humanLabel(x.kind||'trace'),context=traceContextLabel({...x,kind:'',model:''}),project=traceProjectLabel(x)||'Project not recorded';return `<button class="trace-side-item ${String(x.trace_id)===activeTraceId?'active':''}" data-trace-page-id="${esc(x.trace_id)}"><span class="trace-side-top"><span class="trace-side-state ${cls}"></span><span class="trace-side-action">${esc(x.action||x.kind||'Trace')}</span><span class="tiny spacer">${esc(label)}</span></span><span class="trace-side-meta">${esc(project)} · ${esc(context||x.agent||'unknown agent')}</span><span class="trace-side-meta">${esc(x.agent||'unknown agent')} · ${esc(kindLabel)} · ${x.updated_at?new Date(x.updated_at*1000).toLocaleTimeString():'—'} · ${esc(x.tenant||'no tenant')}</span></button>`}).join(''):'<div class="empty-human">No retained traces</div>';
 }
 async function pollTraces(){try{const kind=$('traceKind')?.value||'',suffix=kind?'&kind='+encodeURIComponent(kind):'',r=await apiFetch('/api/debug-traces?limit=200'+suffix,{cache:'no-store'}),d=await r.json();if(d.success){lastTraces=d.items||[];renderTraceList(lastTraces)}}catch(e){console.warn('trace refresh failed',e)}}
 $('traceRefresh')?.addEventListener('click',pollTraces);$('traceKind')?.addEventListener('change',()=>renderTraceList(lastTraces));
@@ -4656,7 +4945,7 @@ function renderEvents(events=liveEvents){
   const severity=String($('eventSeverity')?.value||''),source=String($('eventSource')?.value||'').trim().toLowerCase();
   const filtered=liveEvents.filter(event=>{const kind=eventSeverity(event),hay=[event.agent,event.kind,event.event_type,event.action,event.stage,event.model,event.tenant].filter(Boolean).join(' ').toLowerCase();return (!severity||kind===severity)&&(!source||hay.includes(source));}).slice(0,120);
   const summary=$('eventSummary');if(summary)summary.textContent=`${filtered.length} of ${liveEvents.length} retained events`;
-  const html=filtered.map(e=>{const id='d'+(++seq),severity=eventSeverity(e);dataStore.set(id,{data:e,type:'event'});if(dataStore.size>5000){dataStore.delete(dataStore.keys().next().value);}const label=severity==='failure'?'FAIL':severity==='warning'?'WARN':'OK';return `<div class="event click" data-detail="${id}" data-type="event"><span>${new Date((e.created_at||0)*1000).toLocaleTimeString()}</span><span>${esc(e.agent||e.kind||'')}</span><span>${esc(e.event_type||'')}</span><span>${esc(e.action||e.stage||'')}</span><span class="hide-sm">${esc(e.model||e.tenant||'')}</span><span>${e.duration_ms?ms(e.duration_ms):''}</span><span class="${severity==='failure'?'bad-t':severity==='warning'?'warn-t':'ok'}">${label}</span></div>`}).join('');
+  const html=filtered.map(e=>{const id='d'+(++seq),severity=eventSeverity(e),traceId=e.trace_id?String(e.trace_id):'',traceAttr=traceId?` data-trace-id="${esc(traceId)}"`:'';dataStore.set(id,{data:e,type:'event'});if(dataStore.size>5000){dataStore.delete(dataStore.keys().next().value);}const label=severity==='failure'?'FAIL':severity==='warning'?'WARN':'OK';return `<div class="event click"${traceAttr} data-detail="${id}" data-type="event"><span>${new Date((e.created_at||0)*1000).toLocaleTimeString()}</span><span>${esc(e.agent||e.kind||'')}</span><span>${esc(e.event_type||'')}</span><span>${esc(e.action||e.stage||'')}</span><span class="hide-sm">${esc(e.model||e.tenant||'')}</span><span>${e.duration_ms?ms(e.duration_ms):''}</span><span class="${severity==='failure'?'bad-t':severity==='warning'?'warn-t':'ok'}">${label}</span></div>`}).join('');
   box.innerHTML=html||'<div class="empty">No events match current severity/source filters.</div>';
 }
 $('eventSeverity')?.addEventListener('change',()=>renderEvents([]));
@@ -4694,19 +4983,19 @@ document.addEventListener('click',event=>{
   else projectAction(root,button.dataset.projectAction);
 });
 async function exportBundle(root){
-  const r=await apiFetch('/api/bundle/export',{method:'POST',headers:{'Content-Type':'application/zip'},body:JSON.stringify({root})});
+  const r=await apiFetch('/api/bundle/export',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/zip'},body:JSON.stringify({root})});
   if(!r.ok){alert('Export failed: '+(await r.text()));return;}
   const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='bundle.zip';a.click();URL.revokeObjectURL(url);
 }
 $('bundleImport')?.addEventListener('click',async()=>{
-  const file=$('bundleFile')?.files?.[0];if(!file){$('bundleImportStatus').textContent='Select a file first';return;}
-  $('bundleImportStatus').textContent='Uploading…';
+  const file=$('bundleFile')?.files?.[0];const statusEl=$('bundleImportStatus');if(!file){if(statusEl)statusEl.textContent='Select a file first';return;}
+  if(statusEl)statusEl.textContent='Uploading…';
   const target=$('bundleTargetRoot')?.value?.trim()||'';const suffix=target?'?target_root='+encodeURIComponent(target):'';
   try{
     const r=await apiFetch('/api/bundle/import'+suffix,{method:'POST',headers:{'Content-Type':'application/zip'},body:await file.arrayBuffer()});
     const d=await r.json();
-    $('bundleImportStatus').textContent=d.success?'Import successful: '+String(d.root||''):'Error: '+String(d.error||'failed');
-  }catch(e){$('bundleImportStatus').textContent='Upload error: '+e.message}
+    if(statusEl)statusEl.textContent=d.success?'Import successful: '+String(d.root||''):'Error: '+String(d.error||'failed');
+  }catch(e){if(statusEl)statusEl.textContent='Upload error: '+(e?.message||e)}
 });
 
 // ── Agent OS ──────────────────────────────────────────────────────────────────
@@ -5007,7 +5296,7 @@ async function viewTrajectory(taskId){
   const panel=$('trajDetailPanel');
   const title=$('trajDetailTitle');
   const list=$('trajStepsList');
-  if(!panel||!list)return;
+  if(!panel||!list||!title)return;
   panel.style.display='block';
   title.innerHTML=`Trajectory Inspection: <code>${esc(taskId)}</code> — <span class="muted">${esc(task?.contract?.goal||'')}</span>`;
   list.innerHTML='<div class="tiny muted">Loading event stream & trajectory steps…</div>';
@@ -5030,13 +5319,13 @@ async function viewTrajectory(taskId){
     list.innerHTML=evs.map(ev=>{
       const kind=esc(ev.event_type||ev.kind||'event');
       const time=ev.timestamp?new Date(ev.timestamp*1000).toLocaleTimeString():'';
-      const payload=typeof ev.payload==='object'?JSON.stringify(ev.payload,null,2):String(ev.payload||'');
+       const payload=traceOutputValueMarkup(ev.payload, null, 5000);
       return `<div class="trace-event" style="border-left:2px solid var(--accent);padding:8px;margin-bottom:8px;background:#0d1219;border-radius:4px">
         <div style="display:flex;justify-content:space-between;margin-bottom:4px">
           <span class="chip"><b>${kind}</b></span>
           <span class="tiny muted">#${ev.seq||0} · ${time}</span>
         </div>
-        <pre style="margin:0;font-size:11px;color:#d7e2ef;max-height:160px;overflow:auto">${esc(payload)}</pre>
+         <div style="margin:0;font-size:11px;color:#d7e2ef;max-height:220px;overflow:auto">${payload}</div>
       </div>`;
     }).join('');
   }catch(err){
@@ -5065,6 +5354,7 @@ window.addEventListener('keydown',e=>{
   if(e.key==='0')switchTab('config');
 });
 
-const initTab = location.hash.replace('#','') || localStorage.getItem('activeTab') || 'overview';
+let initTab = 'overview';
+try{initTab = location.hash.replace('#','') || localStorage.getItem('activeTab') || 'overview';}catch{initTab = location.hash.replace('#','') || 'overview';}
 switchTab(initTab);
 </script></body></html>"""

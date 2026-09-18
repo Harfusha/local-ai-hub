@@ -76,3 +76,22 @@ def test_second_opinion_uses_basic_qwen_by_default():
     )
 
     assert result["model"] == "qwen2.5-coder:3b"
+
+
+def test_semantic_language_marks_local_inference_as_required():
+    route = _router().classify("Explore the relevant behavior and explain alternatives")
+
+    assert route["task_type"] == "reasoning"
+    assert route["semantic_required"] is True
+
+
+def test_explicit_reasoning_cannot_be_short_circuited_by_exact_evidence():
+    route = _router().classify("Why does this behavior happen?", task_type="reasoning")
+
+    assert route["semantic_required"] is True
+
+
+def test_repository_context_does_not_fake_a_semantic_user_intent():
+    route = _router().classify("Find the exact symbol", context="comment: explain alternatives")
+
+    assert route["semantic_required"] is False

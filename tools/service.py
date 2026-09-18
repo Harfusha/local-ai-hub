@@ -52,6 +52,8 @@ def mark_managed() -> None:
 
 
 def spawn_detached() -> None:
+    if any(pid_alive(p) for p in all_supervisor_pids()):
+        return
     if os.name == "nt":
         powershell = shutil.which("powershell") or shutil.which("pwsh")
         script_path = ROOT / "tools" / "service_entry.py"
@@ -86,13 +88,48 @@ def supervisor_pid() -> int:
         return 0
 
 
+def all_supervisor_pids() -> list[int]:
+    pids: set[int] = set()
+    sup_pid = supervisor_pid()
+    if sup_pid > 0 and pid_alive(sup_pid):
+        pids.add(sup_pid)
+    if os.name == "nt":
+        try:
+            script = "Get-CimInstance Win32_Process -Filter \"Name='python.exe' OR Name='pythonw.exe'\" | Where-Object { $_.CommandLine -like '*service_entry.py*' -or $_.CommandLine -like '*local_ai_hub.supervisor*' } | Select-Object -ExpandProperty ProcessId"
+            cp = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, timeout=5.0, check=False, **hidden_run_kwargs()
+            )
+            for line in (cp.stdout or "").splitlines():
+                line = line.strip()
+                if line.isdigit() and int(line) != os.getpid():
+                    pids.add(int(line))
+        except Exception:
+            pass
+    elif shutil.which("pgrep"):
+        try:
+            cp = subprocess.run(["pgrep", "-f", "local_ai_hub.supervisor"], capture_output=True, text=True, timeout=3.0, check=False)
+            for line in (cp.stdout or "").splitlines():
+                if line.strip().isdigit() and int(line.strip()) != os.getpid():
+                    pids.add(int(line.strip()))
+        except Exception:
+            pass
+    return list(pids)
+
+
 def kill_supervisor() -> None:
-    pid = supervisor_pid()
-    if pid <= 0:
-        return
+    for pid in all_supervisor_pids():
+        try:
+            terminate_tree(pid, grace_seconds=5.0)
+        except Exception:
+            pass
     try:
-        terminate_tree(pid, grace_seconds=5.0)
-    except Exception:
+        (STATE / "supervisor.pid").unlink(missing_ok=True)
+    except OSError:
+        pass
+    try:
+        (STATE / "supervisor.lock").unlink(missing_ok=True)
+    except OSError:
         pass
 
 
@@ -106,7 +143,7 @@ def hub_pid() -> int:
 
 
 def managed_service_running() -> bool:
-    if pid_alive(supervisor_pid()):
+    if any(pid_alive(p) for p in all_supervisor_pids()):
         return True
     port = int(CFG.get("server", {}).get("port", 11435))
     return bool(find_listening_pid(port))
@@ -165,12 +202,18 @@ def native_stop() -> None:
 def native_start() -> None:
     mark_managed()
     mark_disabled(False)
+    if any(pid_alive(p) for p in all_supervisor_pids()):
+        return
     if os.name == "nt":
         cp = run(["schtasks", "/Change", "/TN", "LocalAIHubSupervisor", "/ENABLE"])
         if cp.returncode == 0:
             run_cp = run(["schtasks", "/Run", "/TN", "LocalAIHubSupervisor"])
             if run_cp.returncode == 0:
                 return
+        # Task Scheduler can start the supervisor even when its control command
+        # reports failure. Re-check before the fallback spawn to avoid duplicates.
+        if all_supervisor_pids():
+            return
         spawn_detached(); return
     if sys.platform == "darwin":
         dest = Path.home() / "Library/LaunchAgents/com.localai.hub.plist"

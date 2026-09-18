@@ -9,13 +9,15 @@ Local AI Hub exposes eight compact MCP tools instead of mirroring every internal
 
 ## Mandatory local-first gate
 
-The main agent remains the orchestrator, planner, integrator and final owner. Delegation is the default for useful bounded independent work after indexed evidence. Use bounded `local_ai_task` for local-model work when local inference is the right fit; use native Codex subagents only for explicit Codex-subagent requests or Codex-only capabilities. Codex controls scope, write access, workspace/worktree, timeout, cancellation and integration. Never duplicate the same scope across agents.
+The main agent remains the orchestrator, planner, integrator and final owner. Delegation is the default for useful bounded independent work after indexed evidence. Use `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` for semantic generation, exploration, reasoning, review, independent second opinions and semantic compression; use deterministic/indexed tools for exact facts, symbols, diff and tests. Native Codex subagents are reserved for explicit Codex-subagent requests or Codex-only capabilities. Codex controls scope, write access, workspace/worktree, timeout, cancellation and integration. Never duplicate the same scope across agents.
 
 For every non-trivial repository task, agents should start preprocessing the stable absolute project root once with `local_ai_repo(action="preprocess", root=...)` and continue immediately. Preprocessing is opportunistic: never poll or wait for it.
 
 Adoption gate: `local_ai_command` alone is not a repository workflow. After the one-time preprocess call, every non-trivial task must use the cheapest applicable non-command Hub action (`deterministic`, `code_index`, `search` or `context`) before running commands. For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence and before native edits; after edits, use `impact`, `review_diff`, `security_audit` or `local_ai_artifact` as applicable.
 
-Before native recursive search/tree/glob or opening many files for discovery, route cheapest-first: `deterministic` -> `code_index`/`search` -> Serena `semantic` / CodeGraph `graph` -> `context` / `solve`; RAG and local-model synthesis come last. Stop as soon as a layer supplies enough evidence. Do not launch overlapping deterministic/search/context/RAG/model calls in parallel for one question; broader layers already compose or reuse cheaper indexes, so only independent questions should be parallelized. Repeatable tests, lint, typecheck, builds and safe read-only commands go through `local_ai_command`, which state-keys, caches and single-flights duplicate work.
+Before native recursive search/tree/glob or opening many files for discovery, route repository evidence cheapest-first: `deterministic` -> `code_index`/`search` -> Serena `semantic` / CodeGraph `graph` -> `context` / `solve`; use RAG only for missing bounded retrieval and use `local_ai_task` for semantic generation/reasoning/review after needed evidence. Stop as soon as the required evidence is available. Do not launch overlapping deterministic/search/context/RAG/model calls in parallel for one question; broader layers already compose or reuse cheaper indexes, so only independent questions should be parallelized. Repeatable tests, lint, typecheck, builds and safe read-only commands go through `local_ai_command`, which state-keys, caches and single-flights duplicate work.
+
+When an agent uses `local_ai_repo(action="solve")` with explicit semantic wording such as explore, explain, why, compare or second opinion, the planner keeps one bounded local pass even if exact evidence is already strong. Pure fact lookups still terminate deterministically.
 
 When generation is needed, use `qwen2.5-coder:1.5b` for quick work, `qwen2.5-coder:3b` for complex tasks, and `qwen2.5-coder:7b` for the hardest reasoning; reserve `qwen2.5-coder:0.5b` for preprocessing. Deterministic/indexed evidence still runs first.
 
@@ -49,7 +51,7 @@ For concurrent agents, use `local_ai_coord` leases before overlapping edits and 
 
 ## Ollama advisory profiles
 
-Named profiles are available through existing `local_ai_task` and `local_ai_repo` tools: `qwen-explorer` for reconnaissance, `qwen-drafter` for proposed implementation guidance, and `qwen-critic` for independent review. With a repository `root`, each profile uses Hub read-only tooling directly, in order: preprocessing/deterministic facts, code index, Serena/CodeGraph, search/RAG, evidence IDs, then bounded file slices. Profiles never write files, run commands, create worktrees, or apply proposals. Default model is `qwen2.5-coder:7b`; output mirrors task language and preserves technical tokens. Skip named profiles when deterministic/indexed evidence is sufficient.
+Named profiles are available through existing `local_ai_task` and `local_ai_repo` tools: `qwen-explorer` for reconnaissance and bounded interpretation, `qwen-drafter` for proposed implementation guidance, and `qwen-critic` for independent review. With a repository `root`, each profile uses Hub read-only tooling directly, in order: preprocessing/deterministic facts, code index, Serena/CodeGraph, search/RAG, evidence IDs, then bounded file slices. Profiles never write files, run commands, create worktrees, or apply proposals. Default model is `qwen2.5-coder:7b`; output mirrors task language and preserves technical tokens. Use `qwen-explorer` when the task needs semantic interpretation or exploration; skip named profiles only for pure exact facts already covered by deterministic/indexed tools.
 
 ## Local model conversations
 
@@ -65,3 +67,10 @@ When `[agent_state].enabled` is active, the compact MCP surface projects durable
 - `local_ai_task`: `candidate_create`, `candidate_promote`.
 - `local_ai_status`: `detail="agent_state"` for health and counts.
 - Privacy boundary: telemetry and agent state never store raw prompts, model outputs, secrets, or absolute file paths.
+## Aggregate response budgets
+
+Every public Hub tool now applies an aggregate agent-facing response budget after semantic projection. Use `max_response_tokens` for a bounded override, `response_profile="minimal"|"compact"|"standard"|"debug"|"delta"` for intent, and a stable `reuse_key` for repeated logical queries. `delta` returns changed fields only; unchanged repeated results return a pointer envelope with IDs and summary instead of repeating payload data. Independent local-model work uses the existing `local_ai_task(action="batch")` path.
+
+Telemetry records operation category plus raw/projected/saved response estimates, budget truncation, cache outcome, and projection reason. The bounded context ledger is visible only through an explicit `local_ai_status(detail="cache")` request and stores metadata only: no prompts, source text, secrets, or full paths. Hub command execution already caps captured/inline stdout and stderr; intercepting native Codex host `exec` requires a separate host hook and is not silently emulated by MCP.
+
+The installed user hook at `.cursor/hooks.json` blocks broad native `cat`/`type`/`Get-Content`/`rg`/`grep`/`tree` reads without an explicit bound. It fails open on hook errors. Use `-m`, `-First`, `head`, `local_ai_repo`, or `local_ai_artifact` when exact detail is needed.

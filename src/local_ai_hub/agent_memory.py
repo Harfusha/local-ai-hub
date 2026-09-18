@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .json_utils import dumps as json_dumps
+
 import json
 import math
 import re
@@ -637,7 +639,7 @@ class MemoryStore:
             return False
         self._init_table()
         now = time.time()
-        emb_json = json.dumps([round(float(x), 5) for x in embedding])
+        emb_json = json_dumps([round(float(x), 5) for x in embedding])
         with self._lock:
             def _insert():
                 con = connect_sqlite(self.state_store.db_path)
@@ -747,23 +749,23 @@ class MemoryStore:
                         record.scope.value,
                         record.scope_id,
                         record.key,
-                        json.dumps(record.value),
+                        json_dumps(record.value),
                         record.status.value,
                         record.confidence,
                         record.source,
-                        json.dumps(list(record.evidence_ids)),
+                        json_dumps(list(record.evidence_ids)),
                         record.sensitivity,
                         record.contradicts_record_id,
                         record.supersedes_record_id,
                         record.quarantine_reason,
-                        json.dumps(record.provenance),
+                        json_dumps(record.provenance),
                         record.created_at,
                         record.updated_at,
                         record.expires_at,
                     ),
                 )
                 try:
-                    val_str = json.dumps(record.value) if isinstance(record.value, (dict, list)) else str(record.value)
+                    val_str = json_dumps(record.value) if isinstance(record.value, (dict, list)) else str(record.value)
                     con.execute("DELETE FROM agent_memory_fts WHERE record_id = ?", (record.record_id,))
                     con.execute(
                         "INSERT INTO agent_memory_fts(record_id, key, value) VALUES(?, ?, ?)",
@@ -960,7 +962,7 @@ class MemoryStore:
         self._init_table()
         rel_id = f"rel_{uuid.uuid4().hex[:12]}"
         now = time.time()
-        meta_json = json.dumps(metadata or {}, ensure_ascii=False)
+        meta_json = json_dumps(metadata or {}, ensure_ascii=False)
         def _insert():
             con = connect_sqlite(self.state_store.db_path)
             try:
