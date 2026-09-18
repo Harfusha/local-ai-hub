@@ -266,7 +266,7 @@ class WorkOrchestrator:
     failed final verification unless the caller explicitly asks to preserve failure.
     """
 
-    def __init__(self, config: dict[str, Any], state_dir: Path, services: Any, commands: Any, leases: Any, artifacts: Any):
+    def __init__(self, config: dict[str, Any], state_dir: Path, services: Any, commands: Any, leases: Any, artifacts: Any, telemetry: Any | None = None):
         cfg = config.get("work_orchestrator", {})
         self.enabled = bool(cfg.get("enabled", True))
         self.max_active = max(1, int(cfg.get("max_active_work_orders", 1)))
@@ -288,6 +288,7 @@ class WorkOrchestrator:
         self.default_response_profile = str(cfg.get("default_response_profile", "compact") or "compact")
         self.default_max_output_tokens = max(0, int(cfg.get("default_max_output_tokens", 350) or 0))
         self.services, self.commands, self.leases, self.artifacts = services, commands, leases, artifacts
+        self.telemetry = telemetry
         self.path = Path(state_dir) / "work_orders.sqlite3"
         self.journal_dir = Path(state_dir) / "work_journals"
         self._stop = threading.Event()
@@ -543,19 +544,38 @@ class WorkOrchestrator:
         return self._project({"success": str(row["state"]) not in {"failed", "cancelled"}, "status": str(row["state"]), "work_id": work_id, **result}, payload)
 
     def wait(self, tenant: str, work_id: str, timeout_seconds: float = 90) -> dict[str, Any]:
+        started = time.perf_counter()
         deadline = time.monotonic() + max(0.0, min(float(timeout_seconds), 90.0))
         while time.monotonic() < deadline:
             row = self._row(work_id, tenant)
             if not row:
-                return {"success": False, "error": "work order not found", "work_id": work_id}
+                result = {"success": False, "error": "work order not found", "work_id": work_id}
+                self._record_wait(tenant, result, started)
+                return result
             if str(row["state"]) in _TERMINAL:
-                return self._canonical(row)
+                result = self._canonical(row)
+                self._record_wait(tenant, result, started)
+                return result
             event = self._event(work_id)
             event.wait(min(0.5, max(0.0, deadline - time.monotonic())))
             event.clear()
         result = self.status(tenant, work_id)
         result["in_progress"] = result.get("status") not in _TERMINAL
+        self._record_wait(tenant, result, started)
         return result
+
+    def _record_wait(self, tenant: str, result: dict[str, Any], started: float) -> None:
+        if self.telemetry is None:
+            return
+        try:
+            elapsed_ms = max(0.0, (time.perf_counter() - started) * 1000.0)
+            self.telemetry.record(
+                event_type="coordination", action="work_wait", tenant=tenant,
+                success=bool(result.get("success")), duration_ms=elapsed_ms,
+                wait_count=1, wait_duration_ms=elapsed_ms,
+            )
+        except Exception:
+            pass
 
     def cancel(self, tenant: str, work_id: str) -> dict[str, Any]:
         row = self._row(work_id, tenant)

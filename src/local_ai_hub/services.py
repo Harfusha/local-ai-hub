@@ -5,7 +5,9 @@ from .json_utils import dumps as json_dumps
 import base64
 import copy
 import json
+import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -31,6 +33,7 @@ from .router import ModelRouter, review_diff_complexity
 from .sqlite_support import connect_sqlite
 from .adoption_metrics import AdoptionMetricsStore
 from .state_paths import configured_state_dir
+from .speculative_lint import normalize_changed_paths
 from .telemetry import TelemetryStore
 from .trace_context import observer
 from .treesitter_parser import parse_treesitter
@@ -1268,6 +1271,45 @@ class LocalAIServices:
             "verification": verification,
             "duration_ms": gen_result.get("duration_ms", 0),
         }
+
+    def speculative_lint(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+        """Run opt-in, read-only lint against only caller-supplied changed paths."""
+        root = str(args.get("root", args.get("cwd", ".")))
+        try:
+            paths = normalize_changed_paths(root, list(args.get("paths") or []))
+        except ValueError as exc:
+            return {"success": False, "error": str(exc), "terminal": True, "retryable": False}
+        custom = str(args.get("command", "")).strip()
+        if custom:
+            target_text = " ".join(subprocess.list2cmdline([path]) for path in paths) if os.name == "nt" else " ".join(shlex.quote(path) for path in paths)
+            command = custom.replace("{paths}", target_text)
+            if command == custom:
+                command = f"{custom} {target_text}"
+        elif shutil.which("ruff"):
+            target_text = " ".join(subprocess.list2cmdline([path]) for path in paths) if os.name == "nt" else " ".join(shlex.quote(path) for path in paths)
+            command = f"ruff check {target_text}"
+        elif shutil.which("eslint"):
+            target_text = " ".join(subprocess.list2cmdline([path]) for path in paths) if os.name == "nt" else " ".join(shlex.quote(path) for path in paths)
+            command = f"eslint {target_text}"
+        else:
+            return {"success": False, "error": "no read-only linter found (tried ruff, eslint)", "terminal": True, "retryable": False}
+        lowered = command.lower()
+        if any(marker in lowered for marker in ("--fix", " -w ", "autopep8", "cargo fix", "gofmt -w")):
+            return {"success": False, "error": "speculative lint rejects formatter or auto-fix commands", "terminal": True, "retryable": False}
+        classification = self.commands.classify(command) if self.commands is not None else {"allowed": False, "class": "unknown"}
+        if not classification.get("allowed", False) or classification.get("class") in {"mutating", "dangerous"}:
+            return {"success": False, "error": "speculative lint requires an allowed read-only command", "classification": classification, "terminal": True, "retryable": False}
+        result = self.commands.run(
+            command,
+            str(Path(root).expanduser().resolve(strict=False)),
+            tenant=tenant,
+            timeout=int(args.get("timeout", self.config.get("speculative_lint", {}).get("timeout_seconds", 120)) or 120),
+            force=True,
+            auto_fix=False,
+            bypass_cache=True,
+        )
+        result.update({"read_only": True, "auto_fix": False, "paths": paths, "command": command})
+        return result
 
     def task_scaffold(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         """Generate boilerplate code, DTOs, interfaces, or unit test scaffolds using local model."""

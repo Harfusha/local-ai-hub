@@ -43,6 +43,7 @@ from .deterministic import DeterministicEngine
 from .logging_setup import configure_logging, shutdown_logging
 from .external_tools import ExternalCodeIntelligence
 from .async_jobs import AsyncJobManager
+from .speculative_lint import SpeculativeLintQueue
 from .debug_traces import DebugTraceStore
 from .agent_events import AgentStateStore
 from .agent_tasks import TaskStore, TaskStatus
@@ -167,7 +168,9 @@ class LocalAIApp:
             debug_traces=self.debug_traces,
             task_store=self.agent_tasks,
             verification_store=self.agent_verification,
+            telemetry=self.telemetry,
         )
+        self.speculative_lint = SpeculativeLintQueue(self.async_jobs, self.config)
         self.async_jobs.recover()
         self.commands = CommandBroker(self.config, self.artifacts, self.repo_state)
         self.commands.set_incident_store(self.agent_incidents)
@@ -192,7 +195,7 @@ class LocalAIApp:
         self.services.set_tool_agent(self.tool_agent)
         self.pipeline = LocalAgentPipeline(self.config, self.services, self.token_router, self.tool_agent)
         self.services.set_pipeline(self.pipeline)
-        self.work_orchestrator = WorkOrchestrator(self.config, state_dir, self.services, self.commands, self.leases, self.artifacts)
+        self.work_orchestrator = WorkOrchestrator(self.config, state_dir, self.services, self.commands, self.leases, self.artifacts, telemetry=self.telemetry)
         self.projector = AgentProjector(self.config)
         self.vram_balancer = VRAMBalancer(self.config)
         self.services.set_vram_balancer(self.vram_balancer)
@@ -323,6 +326,8 @@ class LocalAIApp:
             return self.services.route_context({"text": payload.get("context", ""), "query": payload.get("task", "")}, tenant)
         if action == "batch":
             return self.services.batch_delegate({"tasks": payload.get("tasks", [])}, tenant)
+        if action == "speculative_lint":
+            return self.services.speculative_lint(payload, tenant)
         return {"success": False, "error": f"unsupported async task action: {action}", "terminal": True, "retryable": False}
 
     def capabilities(self) -> dict[str, Any]:
