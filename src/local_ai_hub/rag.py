@@ -23,6 +23,7 @@ from .process_utils import canonical_root
 
 
 import re
+from functools import lru_cache
 
 
 def _canonical_fragment_text(text: str) -> str:
@@ -36,6 +37,14 @@ def _fragment_hash(text: str) -> str:
     ).hexdigest()
 
 
+@lru_cache(maxsize=131_072)
+def _simhash_shingle_hash(shingle: str) -> int:
+    return int(
+        hashlib.md5(shingle.encode("utf-8"), usedforsecurity=False).hexdigest()[:16],
+        16,
+    )
+
+
 def _simhash(text: str) -> int:
     """Compute 64-bit SimHash of text based on character 4-grams."""
     clean = re.sub(r"\s+", " ", text.lower().strip())
@@ -46,14 +55,16 @@ def _simhash(text: str) -> int:
     if not shingles:
         return 0
 
-    v = [0] * 64
+    # Start at -N, then add two for each set bit. This is mathematically
+    # identical to adding +1/-1 for every bit, without 64 Python bit tests
+    # per shingle.
+    v = [-len(shingles)] * 64
     for s in shingles:
-        h = int(hashlib.md5(s.encode("utf-8"), usedforsecurity=False).hexdigest()[:16], 16)
-        for i in range(64):
-            if (h >> i) & 1:
-                v[i] += 1
-            else:
-                v[i] -= 1
+        h = _simhash_shingle_hash(s)
+        while h:
+            lsb = h & -h
+            v[lsb.bit_length() - 1] += 2
+            h ^= lsb
     fp = 0
     for i in range(64):
         if v[i] > 0:
@@ -225,7 +236,7 @@ class RAGStore:
     def _iter_files(self, root: Path) -> Iterable[Path]:
         cfg = self.config.get("rag", {})
         extensions = {x.lower() for x in cfg.get("extensions", [])}
-        ignored = set(cfg.get("ignore_dirs", []))
+        ignored = {str(name).lower() for name in cfg.get("ignore_dirs", [])}
         max_bytes = int(cfg.get("max_file_bytes", 2_000_000))
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames if d not in ignored]
