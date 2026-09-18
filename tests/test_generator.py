@@ -17,6 +17,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 from local_ai_hub.generator import (
+    generate_token_economy_policy,
     generate_skill_markdown,
     generate_skill_references,
     generate_global_policy,
@@ -216,6 +217,25 @@ class TestGlobalPolicyGeneration:
         assert "local_ai_task" not in policy
         assert "must call `local_ai_task` before cloud reasoning" not in policy
         assert "mandatory local execution" not in policy
+
+
+class TestTokenEconomyPolicyGeneration:
+    @pytest.mark.parametrize(
+        "cfg",
+        [
+            {"features": {"tasks": False}},
+            {"features": {"tasks": True}, "server": {"auto_start_ollama": False}},
+        ],
+    )
+    def test_policy_omits_local_task_when_local_tasks_unavailable(self, cfg):
+        policy = generate_token_economy_policy(cfg)
+
+        assert "local_ai_task" not in policy
+
+    def test_policy_keeps_local_task_wording_when_enabled(self):
+        policy = generate_token_economy_policy({})
+
+        assert "- Local model delegation: Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression; use `qwen2.5-coder:1.5b` only for quick/simple microtasks and configured higher tiers for ordinary, involved and hardest work. Deterministic/indexed tools remain for exact facts, symbols, diff and tests." in policy
 
 
 class TestMcpSchemasGeneration:

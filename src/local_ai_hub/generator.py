@@ -698,13 +698,20 @@ Load and follow this skill before any coding or repository task. Apply its disco
 def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
     """Generate the standard TOKEN ECONOMY POLICY block."""
     fast_model = "qwen2.5-coder:1.5b"
+    local_model_enabled = True
     if cfg:
         try:
             fs = FeatureSet.from_config(cfg)
+            local_model_enabled = fs.tasks and fs.has_any_model()
             if fs.fast_model:
                 fast_model = fs.fast_model
         except Exception:
             pass
+    local_model_line = (
+        f"- Local model delegation: Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression; use `{fast_model}` only for quick/simple microtasks and configured higher tiers for ordinary, involved and hardest work. Deterministic/indexed tools remain for exact facts, symbols, diff and tests.\n"
+        if local_model_enabled
+        else ""
+    )
     return (
         "<!-- BEGIN TOKEN ECONOMY POLICY -->\n"
         "- Before any repository task, load and follow the `token-economizer` skill when it is installed; this trigger applies even under deadline pressure.\n"
@@ -714,8 +721,8 @@ def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
         "- Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.\n"
         "- Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.\n"
         "- Surgical edits: Prefer targeted block replacements over rewriting entire files.\n"
-        f"- Local model delegation: Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression; use `{fast_model}` only for quick/simple microtasks and configured higher tiers for ordinary, involved and hardest work. Deterministic/indexed tools remain for exact facts, symbols, diff and tests.\n"
-        "<!-- END TOKEN ECONOMY POLICY -->"
+        + local_model_line
+        + "<!-- END TOKEN ECONOMY POLICY -->"
     )
 
 
