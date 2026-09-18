@@ -1005,9 +1005,34 @@ class MemoryStore:
             con.close()
         return summary
 
-    def get(self, record_id: str, *, include_expired: bool = False) -> MemoryRecord | None:
+    def get(
+        self,
+        record_id: str,
+        *,
+        include_expired: bool = False,
+        scope: AgentScope | str | None = None,
+        scope_id: str | None = None,
+        root: str | None = None,
+        repository_id: str | None = None,
+        tenant: str | None = None,
+        allow_legacy_unscoped: bool = False,
+    ) -> MemoryRecord | None:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return None
+        if any(value is not None for value in (scope, scope_id, root, repository_id, tenant)) or allow_legacy_unscoped:
+            records = self.find(
+                scope=scope,
+                record_id=record_id,
+                allow_legacy_unscoped=allow_legacy_unscoped,
+                scope_id=scope_id,
+                root=root,
+                repository_id=repository_id,
+                tenant=tenant,
+                include_expired=include_expired,
+                semantic=False,
+                limit=1,
+            )
+            return records[0] if records else None
         self._init_table()
         con = connect_sqlite(self.state_store.db_path)
         try:
@@ -1095,6 +1120,7 @@ class MemoryStore:
         services: Any = None,
         min_score: float = 0.1,
         record_id: str | None = None,
+        allow_legacy_unscoped: bool = False,
         scope_id: str | None = None,
         root: str | None = None,
         repository_id: str | None = None,
@@ -1138,7 +1164,10 @@ class MemoryStore:
         if record_id is not None:
             sql += " AND record_id = ?"
             params.append(str(record_id))
-        if root:
+        if allow_legacy_unscoped:
+            sql += " AND (scope NOT IN (?, ?) OR scope_id = '')"
+            params.extend([AgentScope.TASK.value, AgentScope.SESSION.value])
+        if root and scope_val == AgentScope.REPOSITORY.value:
             sql += f" AND (scope = ? OR {_CONTEXT_ROOT_SQL} = ?)"
             params.extend([AgentScope.GLOBAL.value, _normalise_scope_root(root)])
         if repository_id and scope_val == AgentScope.REPOSITORY.value:
@@ -1146,7 +1175,7 @@ class MemoryStore:
                 "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
                 "'$.repository_id')"
             )
-            sql += f" AND ({provenance_repository_id} IS NULL OR {provenance_repository_id} = ?)"
+            sql += f" AND {provenance_repository_id} = ?"
             params.append(str(repository_id))
         if tenant and scope_val == AgentScope.SESSION.value:
             provenance_tenant = (

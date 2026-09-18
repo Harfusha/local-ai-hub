@@ -156,6 +156,32 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
     )
     assert "ttl_seconds" not in default_memory_payload
 
+    c_res2_get = mcp_mod.local_ai_coord(
+        action="memory_get",
+        record_id="mem-task-1",
+        scope="task",
+        scope_id="task-1",
+        task_id="task-1",
+        root="repo-root",
+        repository_id="repository-1",
+        tenant="tenant-1",
+    )
+    assert c_res2_get["success"] is True
+    memory_get_payload = next(
+        call[2] for call in calls
+        if call[0] == "COORD" and call[1] == "memory_get"
+    )
+    assert {key: memory_get_payload[key] for key in (
+        "record_id", "scope", "scope_id", "task_id", "repository_id", "tenant"
+    )} == {
+        "record_id": "mem-task-1",
+        "scope": "task",
+        "scope_id": "task-1",
+        "task_id": "task-1",
+        "repository_id": "repository-1",
+        "tenant": "tenant-1",
+    }
+
     c_res3 = mcp_mod.local_ai_coord(action="incident_decision", fingerprint={"error_class": "e"})
     assert c_res3["success"] is True
 
@@ -258,6 +284,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
     import threading
     import urllib.parse
     import urllib.request
+    import urllib.error
 
     from local_ai_hub import http_server
 
@@ -277,8 +304,9 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         MemoryRecord.create(kind="finding", scope=AgentScope.TASK, scope_id="task-two", key="shared", value="task-two"),
         MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-one", key="shared", value="session-one"),
         MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-two", key="shared", value="session-two"),
-        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one", provenance={"root": str(repo_one)}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-two", provenance={"root": str(repo_two)}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one", provenance={"root": str(repo_one), "repository_id": "repository-one"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one-missing-id", provenance={"root": str(repo_one)}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-two", provenance={"root": str(repo_two), "repository_id": "repository-two"}),
     )
     for record in records:
         app.agent_memory.record(record, actor="user")
@@ -295,15 +323,41 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         ) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def post(payload):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/memory",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request) as response:
+            return json.loads(response.read().decode("utf-8"))
+
     try:
         task_result = get(scope="task", scope_id="task-one", key="shared")
         assert [item["value"] for item in task_result["records"]] == ["task-one"]
         session_result = get(scope="session", scope_id="session-one", key="shared")
         assert [item["value"] for item in session_result["records"]] == ["session-one"]
-        repo_result = get(scope="repository", root=str(repo_one), key="shared")
+        repo_result = get(scope="repository", root=str(repo_one), repository_id="repository-one", key="shared")
         assert [item["value"] for item in repo_result["records"]] == ["repo-one"]
+        direct = post({
+            "action": "get",
+            "record_id": records[0].record_id,
+            "scope": "task",
+            "scope_id": "task-one",
+        })
+        assert direct["record"]["value"] == "task-one"
+        with pytest.raises(urllib.error.HTTPError) as mismatch:
+            post({
+                "action": "get",
+                "record_id": records[0].record_id,
+                "scope": "task",
+                "scope_id": "task-two",
+            })
+        assert mismatch.value.code == 404
     finally:
         server.shutdown()
+        thread.join(timeout=5)
         server.server_close()
         http_server.APP = previous
         app.close()

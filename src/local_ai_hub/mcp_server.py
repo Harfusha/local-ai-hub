@@ -1590,6 +1590,8 @@ def local_ai_coord(
     reason: str = "",
     record: dict[str, Any] | None = None,
     record_id: str = "",
+    scope: str = "",
+    scope_id: str = "",
     target_scope: str = "",
     approver: str = "",
     fingerprint: dict[str, Any] | None = None,
@@ -1604,6 +1606,7 @@ def local_ai_coord(
     branch: str = "",
     repository_id: str = "",
     session_id: str = "",
+    tenant: str = "",
     repository_revision: str = "",
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. Actions: claim, release, leases, memo_put, memo_get, memo_search, memo_delete, task_create, task_get, task_checkpoint, task_rollback, task_transition, task_resume, task_list, task_complete, task_fail, task_heartbeat, memory_record, memory_get, memory_find, memory_promote, memory_reap, context_compile, verify_receipt, verify_completion, negative_knowledge_record, negative_knowledge_find, incident_decision, blackboard_update, blackboard_get, blackboard_list, blackboard_merge, blackboard_delete, swarm_dispatch, swarm_step, swarm_status, swarm_list, swarm_cancel. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool. Use when: Hub workers share edit paths, leases, or reusable findings. Skip when: work is isolated and no shared Hub state or memo is involved."""
@@ -1639,7 +1642,8 @@ def local_ai_coord(
         memory_kwargs = dict(
             action=action, record=record, record_id=record_id,
             target_scope=target_scope, approver=approver, key=key,
-            value=value, query=query, root=root,
+            value=value, query=query, root=root, scope=scope, scope_id=scope_id,
+            task_id=task_id, session_id=session_id, repository_id=repository_id, tenant=tenant,
         )
         if ttl_seconds is not None and ttl_seconds > 0:
             memory_kwargs["ttl_seconds"] = ttl_seconds
