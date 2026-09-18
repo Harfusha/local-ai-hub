@@ -200,6 +200,55 @@ def test_drift_warnings_keep_exact_evidence_ids(repository: Path):
     assert by_code["scope_drift"].evidence_ids == ("diff-evidence",)
 
 
+def test_drift_without_evidence_gets_stable_synthetic_trace(repository: Path, monkeypatch):
+    guard = _guard(repository)
+    monkeypatch.setattr(guard.repository_tools, "search", lambda *_args, **_kwargs: {"success": True, "results": []})
+    request = _request(repository, changed_paths=("backend/users.py",))
+    contract = guard.build_contract(request)
+    diff = {"changed_paths": ["frontend/users.ts"]}
+
+    first = guard.check_drift(request, contract, ("frontend/users.ts",), diff)
+    repeat = guard.check_drift(request, contract, ("frontend/users.ts",), diff)
+
+    first_scope = next(warning for warning in first if warning.code == "scope_drift")
+    repeat_scope = next(warning for warning in repeat if warning.code == "scope_drift")
+    assert first_scope.evidence_ids
+    assert first_scope.evidence_ids == repeat_scope.evidence_ids
+    assert first_scope.evidence_ids[0].startswith("synthetic-drift-")
+
+
+def test_forged_decision_evidence_id_is_replaced_by_synthetic_trace(repository: Path):
+    guard = _guard(repository)
+    request = _request(repository, query="UserService")
+    contract = guard.build_contract(request)
+    candidate = guard.find_reuse_candidates(request, contract)[0]
+
+    warnings = guard.check_drift(
+        request,
+        contract,
+        (),
+        {"reuse_decisions": [{"candidate_id": candidate.candidate_id, "decision": "reject", "evidence_ids": ["forged-id"]}]},
+    )
+
+    warning = next(item for item in warnings if item.code == "reuse_rejection_reason_required")
+    assert warning.evidence_ids
+    assert "forged-id" not in warning.evidence_ids
+    assert warning.evidence_ids[0].startswith("synthetic-decision-")
+
+
+def test_local_model_evidence_cannot_form_contract_mapping(repository: Path):
+    guard = _guard(repository)
+    evidence = [
+        {"evidence_id": "be-1", "path": "backend/users.py", "raw": "GET /users/{id} -> User {id: string}"},
+        {"evidence_id": "fe-local", "path": "frontend/users.ts", "provider": "qwen3.5:9b", "raw": "type User = { id: string }"},
+    ]
+
+    mappings, warnings = guard.build_contract_mappings(_request(repository), evidence)
+
+    assert mappings == ()
+    assert warnings == ()
+
+
 def test_guard_bounds_evidence_generator_without_exhausting_it(repository: Path):
     guard = _guard(repository)
 
