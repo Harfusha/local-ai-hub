@@ -122,3 +122,24 @@ def test_rag_index_skips_near_duplicate_chunks(tmp_path: Path):
     res = store.index(str(root), "tenant-test")
     assert res["success"] is True
     assert res["near_duplicates_skipped"] >= 1
+
+
+def test_iter_files_uses_scandir_and_prunes_ignored_directories(tmp_path: Path, monkeypatch):
+    from local_ai_hub import rag as rag_module
+
+    root = tmp_path / "repo"
+    (root / "src").mkdir(parents=True)
+    (root / ".git" / "objects").mkdir(parents=True)
+    (root / "build").mkdir()
+    (root / "src" / "main.py").write_text("x = 1\n", encoding="utf-8")
+    (root / ".git" / "objects" / "secret.py").write_text("x = 2\n", encoding="utf-8")
+    (root / "build" / "generated.py").write_text("x = 3\n", encoding="utf-8")
+
+    def fail_os_walk(*_args, **_kwargs):
+        raise AssertionError("RAG traversal must use os.scandir")
+
+    monkeypatch.setattr(rag_module.os, "walk", fail_os_walk)
+    store = RAGStore.__new__(RAGStore)
+    store.config = {"rag": {"extensions": [".py"], "ignore_dirs": [".git", "build"]}}
+
+    assert [p.relative_to(root).as_posix() for p in store._iter_files(root)] == ["src/main.py"]
