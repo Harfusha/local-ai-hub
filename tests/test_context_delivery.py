@@ -142,6 +142,29 @@ def test_decision_reason_redacts_secrets_and_prompt_content():
     assert "ignore this private instruction" not in reason
 
 
+def test_decision_reason_redacts_authorization_bearer_credential_as_one_token():
+    warning = GuardWarning("warning", "scope_drift", "scope changed", ("e1",), ("src/app.py",), "explain scope")
+    guard = _Guard((warning,))
+
+    class Memory:
+        def __init__(self):
+            self.records = []
+
+        def record(self, record, **kwargs):
+            self.records.append(record)
+            return record
+
+    memory = Memory()
+    guard.memory_store = memory
+    _guarded_services(guard).adaptive_context_pack(
+        _request(override_reason="Authorization: Bearer super-secret-token"), mode="fast",
+    )
+
+    reason = memory.records[0].value["reason"]
+    assert "super-secret-token" not in reason
+    assert "Bearer [REDACTED]" in reason
+
+
 def test_decision_idempotency_is_root_scoped():
     guard = _Guard()
 
@@ -274,6 +297,69 @@ def test_boundary_resume_failure_reports_waiting():
     assert result["task_status"] == "waiting"
     assert result["waiting"] is True
     assert result["requires_approval"] is True
+
+
+def test_boundary_guard_stops_when_task_state_is_missing():
+    from types import SimpleNamespace
+
+    warning = GuardWarning("boundary", "high_risk", "stop", ("e1",), ("src/app.py",), "obtain task state", True)
+    guard = _Guard((warning,))
+    guard.task_store = SimpleNamespace(get=lambda _task_id: None)
+
+    result = _guarded_services(guard).adaptive_context_pack(_request(), mode="fast")
+
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+    assert result["stop_code"] == "guard_task_state_unavailable"
+
+
+def test_boundary_guard_stops_when_task_id_is_missing():
+    warning = GuardWarning("boundary", "high_risk", "stop", ("e1",), ("src/app.py",), "provide task id", True)
+
+    result = _guarded_services(_Guard((warning,))).adaptive_context_pack(_request(task_id=""), mode="fast")
+
+    assert result["terminal"] is True
+    assert result["stop_code"] == "guard_task_id_required"
+
+
+def test_boundary_guard_stops_when_agent_os_is_disabled():
+    from types import SimpleNamespace
+
+    warning = GuardWarning("high-risk", "high_risk", "stop", ("e1",), ("src/app.py",), "enable agent state", True)
+    guard = _Guard((warning,))
+    guard.task_store = SimpleNamespace(state_store=SimpleNamespace(enabled=False))
+
+    result = _guarded_services(guard).adaptive_context_pack(_request(), mode="fast")
+
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+    assert result["stop_code"] == "agent_os_disabled"
+
+
+def test_completion_revision_resolution_stops_without_snapshot():
+    from local_ai_hub import http_server
+
+    revision, stop = http_server._completion_revision_or_stop("", object())
+
+    assert revision == ""
+    assert stop["terminal"] is True
+    assert stop["retryable"] is False
+    assert stop["stop_code"] == "completion_repository_revision_unavailable"
+
+
+def test_completion_revision_resolution_stops_on_degraded_snapshot():
+    from local_ai_hub import http_server
+    from types import SimpleNamespace
+
+    revision, stop = http_server._completion_revision_or_stop(
+        "C:/repo", SimpleNamespace(git_snapshot=lambda _root: SimpleNamespace(revision="", degraded=True)),
+    )
+
+    assert revision == ""
+    assert stop["terminal"] is True
+    assert stop["stop_code"] == "completion_repository_revision_unavailable"
 
 
 def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path):

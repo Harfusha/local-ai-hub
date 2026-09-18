@@ -169,6 +169,11 @@ def test_rejected_reuse_requires_reason(repository: Path):
         contract,
         (),
         {
+            "success": True,
+            "paths_complete": True,
+            "changed_paths": [],
+            "diff": "",
+            "revision": guard.repository_tools.git_snapshot(str(repository)).revision,
             "reuse_decisions": [{"candidate_id": candidates[0].candidate_id, "decision": "reject"}],
             "evidence": [{"evidence_id": "reuse-evidence", "path": "backend/users.py", "raw": "class UserService"}],
         },
@@ -191,6 +196,9 @@ def test_drift_warnings_keep_exact_evidence_ids(repository: Path):
         contract,
         ("frontend/users.ts",),
         {
+            "success": True,
+            "paths_complete": True,
+            "revision": guard.repository_tools.git_snapshot(str(repository)).revision,
             "changed_paths": ["frontend/users.ts"],
             "diff": "+class NewPublicThing",
             "evidence": evidence,
@@ -214,9 +222,13 @@ def test_drift_without_evidence_gets_stable_synthetic_trace(repository: Path, mo
     first_diff = common + "TAIL-A\n"
     second_diff = common + "TAIL-B\n"
     retained = first_diff[:12000]
+    revision = guard.repository_tools.git_snapshot(str(repository)).revision
     diff = {
+        "success": True,
+        "paths_complete": True,
         "changed_paths": ["frontend/users.ts"],
         "diff": retained,
+        "revision": revision,
         "diff_sha256": hashlib.sha256(first_diff.encode()).hexdigest(),
     }
 
@@ -227,8 +239,11 @@ def test_drift_without_evidence_gets_stable_synthetic_trace(repository: Path, mo
         contract,
         ("frontend/users.ts",),
         {
+            "success": True,
+            "paths_complete": True,
             "changed_paths": ["frontend/users.ts"],
             "diff": retained,
+            "revision": revision,
             "diff_sha256": hashlib.sha256(second_diff.encode()).hexdigest(),
         },
     )
@@ -252,7 +267,14 @@ def test_forged_decision_evidence_id_is_replaced_by_synthetic_trace(repository: 
         request,
         contract,
         (),
-        {"reuse_decisions": [{"candidate_id": candidate.candidate_id, "decision": "reject", "evidence_ids": ["forged-id"]}]},
+        {
+            "success": True,
+            "paths_complete": True,
+            "changed_paths": [],
+            "diff": "",
+            "revision": guard.repository_tools.git_snapshot(str(repository)).revision,
+            "reuse_decisions": [{"candidate_id": candidate.candidate_id, "decision": "reject", "evidence_ids": ["forged-id"]}],
+        },
     )
 
     warning = next(item for item in warnings if item.code == "reuse_rejection_reason_required")
@@ -504,6 +526,20 @@ def test_check_drift_refuses_incomplete_diff_even_with_supplied_paths(repository
         {"success": True, "error": "partial evidence"},
     ):
         assert guard.check_drift(request, contract, ("frontend/users.ts",), diff) == ()
+
+
+@pytest.mark.parametrize("diff", [
+    [],
+    {"success": True, "paths_complete": True, "changed_paths": ["frontend/users.ts"], "diff": ["+class NewPublicThing"], "revision": "rev-1"},
+    {"success": True, "paths_complete": True, "changed_paths": ["frontend/users.ts"], "diff": "+class NewPublicThing"},
+    {"success": True, "paths_complete": "yes", "changed_paths": ["frontend/users.ts"], "diff": "+class NewPublicThing", "revision": "rev-1"},
+])
+def test_malformed_or_incomplete_diff_mapping_is_unavailable(repository: Path, diff):
+    guard = _guard(repository)
+    request = _request(repository)
+    contract = guard.build_contract(request)
+
+    assert guard.check_drift(request, contract, ("frontend/users.ts",), diff) == ()
 
 
 def test_soft_warning_has_required_fields(repository: Path):

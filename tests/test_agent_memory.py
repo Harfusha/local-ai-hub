@@ -93,6 +93,11 @@ def test_legacy_unscoped_lookup_rejects_nonempty_task_and_session_context(store:
     assert store.get(scoped_task.record_id, task_id="task-1").value == "task value"
 
 
+def test_legacy_memory_find_requires_explicit_root_or_identity(store: MemoryStore):
+    with pytest.raises(ValueError, match="explicit root or identity"):
+        store.find(allow_legacy_unscoped=True)
+
+
 def test_memory_find_enforces_root_repository_and_tenant_identity(store: MemoryStore):
     repo_a = store.record(MemoryRecord.create(
         kind=MemoryKind.FINDING,

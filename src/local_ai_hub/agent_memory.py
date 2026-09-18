@@ -1270,6 +1270,14 @@ class MemoryStore:
             AgentScope.WORKTREE.value: "worktree_id",
             AgentScope.BRANCH.value: "branch",
         }
+        if allow_legacy_unscoped and not any(
+            str(value or "").strip()
+            for value in (
+                record_id, scope_id_val, task_id_val, session_id_val, clone_id_val,
+                worktree_id_val, branch_val, root, repository_id, tenant,
+            )
+        ):
+            raise ValueError("legacy memory lookup requires explicit root or identity")
         legacy_allowed = allow_legacy_unscoped and not any(
             str(value or "").strip()
             for value in (
