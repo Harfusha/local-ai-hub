@@ -9,6 +9,7 @@ Local AI Hub 3.0 uses one current runtime contract across packaging, HTTP, MCP, 
 ## What it does
 
 - deterministic repository facts, symbols, references, manifests, routes, tests and risk signals;
+- default adaptive repository context packs before non-trivial planning, edit, review or test, with reuse-first candidates, evidence IDs, guarded override reasons and bounded deterministic/local-model composition;
 - managed **Serena** semantic-symbol indexing/querying;
 - managed **CodeGraphContext** call/dependency/impact graph indexing/querying;
 - checkpointed background preprocessing that warms built-in indexes, Serena, CodeGraph, RAG and compact project cards;
@@ -45,6 +46,7 @@ Local AI Hub is engineered to maximize **Quality**, **Speed**, and **Token Econo
 | Capability / Feature | Core Mechanism | Quality Impact | Speed & Latency Impact | Cloud Context & Cost Savings |
 |---|---|---|---|---|
 | **Deterministic Code Intelligence** (`local_ai_repo`) | AST parsing, FQN symbol indexing, route & ORM extraction across PHP, JS/TS, Python, C#, HTML, CSS | **100% exact facts**: Eliminates LLM hallucinations for imports, symbol definitions, routes, and DB relationships. | **Sub-millisecond**: Zero network latency; index hits in <5ms vs waiting 5–15s for cloud agent file reads. | **85–95% input token reduction**: Injects targeted symbol cards/fact summaries instead of full 500+ line files. |
+| **Adaptive Context Guard** (`local_ai_repo(action="context")`) | Phase/focus/preload-aware bounded pack with reuse candidates, evidence IDs, revision/delta metadata and guarded approvals | Deterministic/indexed evidence stays authoritative; local models rank/compress structured evidence only | Compact default packs before planning, edit, review and test; raw model/debug fields stay opt-in | Avoids duplicate discovery and unsupported repository claims while preserving legacy fast/full callers |
 | **Token Economy Suite** (`tokcount`, `trim-run`, `repo-map`, `rg`, `fd`, `ast-grep`, `jq`) | Dedicated CLI tools & wrappers installed into PATH; ANSI stripping, head/tail log truncation, AST outline search | **Eliminates prompt pollution**: Prevents "Lost in the Middle" attention degradation caused by noisy logs and raw file dumps. | **Dramatically faster TTFT**: Cloud models generate answers in seconds when context stays bounded (<15k tokens). | **70–98% output token savings**: Caps bloated build/test logs and API JSON responses to only actionable lines. |
 | **Unified 8-Tool MCP Surface** (Managed Serena & CodeGraph) | Serena (LSP) and CodeGraph (call/dependency graph) run under `local_ai_repo` without separate schemas | **Deep graph reasoning**: Agent queries blast-radius impact and cross-file callers before modifying code. | **Pre-indexed & warm**: External tool processes run persistently; no cold-start timeouts during agent turns. | **Saves ~1,500 schema tokens/turn**: Avoids exposing multiple heavy tool schemas on every single agent interaction. |
 | **Agent Operating System** (`local_ai_coord`) | Durable execution state, scoped KV memory, negative knowledge incidents, verification receipts, path leases | **Prevents repeated mistakes**: Negative knowledge prevents retrying broken patterns; receipts enforce true test verification. | **Instant resumption**: Restores task state and active memory without re-discovering repository facts. | **Bounded context compilation**: Assembles exact token-budgeted memory slices, preventing runaway session context bloat. |
@@ -78,10 +80,10 @@ The bootstrapper finds or installs a suitable Python 3.11+ runtime where the pla
 
 - the Local AI Hub virtual environment, core dependencies, and Token Economy Suite (`tokcount`, `trim-run`, `repo-map`);
 - external CLI tools (`ripgrep` / `rg`, `fd`, `ast-grep`, `repomix`, `jq`);
-- The configured local inference backend and all four Qwen tiers (`qwen2.5-coder:0.5b`, `qwen2.5-coder:1.5b`, `qwen2.5-coder:3b`, `qwen2.5-coder:7b`), plus embedding models (`bge-m3`);
+- The configured local inference backend and all four Qwen tiers (`qwen2.5-coder:0.5b`, `qwen2.5-coder:1.5b`, `qwen2.5-coder:3b`, `qwen2.5-coder:7b`), plus the default embedding model (`BAAI/bge-small-en-v1.5`);
 - Serena and CodeGraphContext in isolated tool environments;
 - local SentenceTransformers/reranker dependencies and model cache;
-- optional OpenVINO dependencies/models when the selected Intel integrated profile requests NPU/iGPU retrieval acceleration;
+- optional OpenVINO dependencies/models when OpenVINO is configured, NPU hardware is detected, or an Intel GPU is detected with the `integrated` profile, subject to the OpenVINO and feature install flags;
 - MCP server registration into Codex, Claude Desktop, Gemini, Cursor, Windsurf, and VS Code/Copilot;
 - companion agent skills (`local-ai-orchestrator`, `token-economizer`, `caveman`, `tool-orchestration`, `ollama-quality-routing`) and policies (`LOCAL AI HUB TOOL POLICY`, `TOKEN ECONOMY POLICY`);
 - a per-user headless service/supervisor.

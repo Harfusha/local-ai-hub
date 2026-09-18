@@ -290,13 +290,7 @@ def _desc_repo() -> str:
             " Native fallback requires terminal=true and retryable=false."
         )
     if LEAN_SCHEMAS:
-        local_semantic = ""
-        if local_enabled:
-            local_semantic = (
-                " use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression."
-                + _semantic_handoff_contract(local_enabled, FEATURES.status)
-            )
-        return "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Use deterministic/indexed actions for exact facts, symbols, diff and tests;" + local_semantic + " `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
+        return "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. `context` is the default adaptive context pack before non-trivial planning, edit, review or test; it accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields stay omitted unless requested through extra_fields. Omit guarded fields to preserve legacy fast/full behavior. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
     semantic_hint = ""
     if FEATURES.has_semantic():
         semantic_hint = f" -> {FEATURES.semantic_hint()} for relationships"
@@ -309,6 +303,7 @@ def _desc_repo() -> str:
         " CALL THIS BEFORE broad repository reads/searches for any non-trivial repo task. MANDATORY GATE."
         f" Use deterministic, code_index/search,{' ' + FEATURES.semantic_hint() + ',' if FEATURES.has_semantic() else ''}"
         " context and solve for bounded evidence and implementation support."
+        " `context` is the default adaptive context pack before non-trivial planning, edit, review or test; reuse existing evidence and reuse candidates first, require evidence IDs, treat deterministic/indexed evidence as authoritative, and limit local models to ranking/compression of structured evidence. Guarded overrides require `override_reason` and approval when requested. Raw model/debug fields stay omitted unless requested through `extra_fields`; omitting guarded fields preserves legacy fast/full behavior."
         " For implementation, diagnosis, refactoring or complex review, call `solve` after evidence and before native edits."
         f"{' When generating, use `' + FEATURES.fast_model + '` for quick tasks, `' + FEATURES.smart_model + '` for complex work, and `' + FEATURES.reasoning_model + '` for hardest reasoning.' if local_enabled else ''}"
         " `review_diff` and `security_audit` are targeted local checks."
@@ -494,6 +489,71 @@ _CURRENT_EXTRA_FIELDS: contextvars.ContextVar[list[str] | None] = contextvars.Co
 _CURRENT_RESPONSE_OPTIONS: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar("_CURRENT_RESPONSE_OPTIONS", default={})
 _REUSE_DIGESTS: OrderedDict[str, str] = OrderedDict()
 _REUSE_VALUES: OrderedDict[str, Any] = OrderedDict()
+_GUARDED_CONTEXT_TOP_LEVEL = frozenset({
+    "success", "status", "status_code", "terminal", "retryable", "error", "warning", "message",
+    "context", "context_source", "continuation", "evidence", "evidence_ids", "warnings", "warning_ids",
+    "adaptive_context_pack", "context_pack", "context_id", "repo_revision", "revision", "memory_revision",
+    "changed_paths", "stale", "since_hash", "delta_from", "guarded", "delivery_mode", "degraded",
+    "fallback_used", "requires_override", "requires_approval", "decision_recorded", "decision_persisted",
+    "task_status", "waiting", "contract", "reuse", "reuse_candidates", "mappings", "model_warnings",
+    "relevance", "model_degraded", "model_degraded_reason", "response_budget", "reuse_key", "reused",
+    "unchanged", "preload_profile", "preload_evidence_ids",
+})
+_GUARDED_CONTEXT_PACK = frozenset({
+    "contract", "reuse_candidates", "mappings", "warnings", "evidence", "repo_revision", "changed_paths",
+    "stale", "context_id", "phase", "focus", "preload_profile", "memory_revision", "model_warnings",
+    "delta_from", "since_hash",
+})
+_GUARDED_RAW_FIELDS = frozenset({
+    "raw", "prompt", "model_debug", "raw_model_output", "raw_output", "model_output", "model_response",
+    "debug", "debug_trace", "trace", "full_trace", "completion", "response_raw",
+})
+
+
+def _guarded_field_is_safe(name: str, extra_fields: set[str]) -> bool:
+    normalized = re.sub(r"[-\s]+", "_", name.strip().lower())
+    if normalized in extra_fields:
+        return True
+    if normalized in _GUARDED_RAW_FIELDS:
+        return False
+    return not any(marker in normalized for marker in ("raw_", "_raw", "prompt", "debug", "trace"))
+
+
+def _guarded_context_input(value: Any, *, extra_fields: list[str] | None = None, depth: int = 0, parent: str = "") -> Any:
+    extra = {re.sub(r"[-\s]+", "_", str(item).strip().lower()) for item in (extra_fields or ()) if str(item).strip()}
+    if isinstance(value, list):
+        return [_guarded_context_input(item, extra_fields=list(extra), depth=depth + 1, parent=parent) for item in value[:64]]
+    if not isinstance(value, dict):
+        return value
+    safe: dict[str, Any] = {}
+    for raw_key, item in list(value.items())[:64]:
+        key = str(raw_key)
+        normalized = re.sub(r"[-\s]+", "_", key.strip().lower())
+        if not _guarded_field_is_safe(key, extra):
+            continue
+        if depth == 0 and normalized not in _GUARDED_CONTEXT_TOP_LEVEL and normalized not in extra:
+            continue
+        if depth == 1 and parent in {"adaptive_context_pack", "context_pack"} and normalized not in _GUARDED_CONTEXT_PACK and normalized not in extra:
+            continue
+        safe[key] = _guarded_context_input(item, extra_fields=list(extra), depth=depth + 1, parent=normalized)
+    return safe
+
+
+def _subminimum_budget_rejection(options: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        requested = int(options.get("max_response_tokens") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if requested <= 0 or requested >= 128:
+        return None
+    return {
+        "success": False,
+        "status_code": 400,
+        "terminal": True,
+        "retryable": False,
+        "error": "max_response_tokens must be at least 128",
+        "response_budget": {"requested_tokens": requested, "minimum_tokens": 128, "rejected": True},
+    }
 
 
 def _response_budget(task_kind: str, options: dict[str, Any]) -> tuple[int, str, str, bool]:
@@ -555,11 +615,14 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
     # instrumented MCP boundary and never enters agent context.
     if extra_fields is None:
         extra_fields = _CURRENT_EXTRA_FIELDS.get()
+    options = _CURRENT_RESPONSE_OPTIONS.get()
+    rejection = _subminimum_budget_rejection(options)
+    if rejection is not None:
+        return rejection
     raw_value = value
     value = attach_accounting(value)
     projected = PROJECTOR.project(value, AGENT_NAME, task_kind, extra_fields=extra_fields)
     compacted = compact_result(projected, max_text_chars=MAX_TEXT, max_evidence=MAX_EVIDENCE, extra_fields=extra_fields)
-    options = _CURRENT_RESPONSE_OPTIONS.get()
     requested, profile, reuse_key, enabled = _response_budget(task_kind, options)
     if enabled:
         repeated, previous = _reuse_state(reuse_key, compacted)
@@ -1169,6 +1232,144 @@ def local_ai_task(
     return _invalid_action("local_ai_task", action, tuple(TaskAction.__args__), "Use Local AI Hub only for bounded local-model work; use Codex-owned orchestration for peer subagents.")
 
 
+def _context_input_error(message: str) -> dict[str, Any]:
+    return {"success": False, "status_code": 400, "terminal": True, "retryable": False, "error": message[:400]}
+
+
+def _validate_context_pack_inputs(
+    *,
+    task_id: Any,
+    phase: Any,
+    focus: Any,
+    preload_profile: Any,
+    changed_paths: Any,
+    base: Any,
+    staged: Any,
+    guarded: Any,
+    since_hash: Any,
+    approval: Any,
+    override_reason: Any,
+    max_tokens: Any,
+    token_budget: Any,
+) -> dict[str, Any] | None:
+    if not isinstance(guarded, bool):
+        return _context_input_error("guarded must be boolean")
+    for name, value in (
+        ("task_id", task_id), ("phase", phase), ("preload_profile", preload_profile),
+        ("base", base), ("since_hash", since_hash), ("override_reason", override_reason),
+    ):
+        if not isinstance(value, str):
+            return _context_input_error(f"{name} must be string")
+    for name, value, limit in (("focus", focus, 16), ("changed_paths", changed_paths, 64)):
+        if value is not None:
+            if not isinstance(value, list):
+                return _context_input_error(f"{name} must be a list")
+            if len(value) > limit:
+                return _context_input_error(f"{name} exceeds maximum of {limit} items")
+            if any(not isinstance(item, str) for item in value):
+                return _context_input_error(f"{name} items must be strings")
+    if not isinstance(staged, bool):
+        return _context_input_error("staged must be boolean")
+    if not isinstance(approval, (bool, str)):
+        return _context_input_error("approval must be boolean or string")
+    for name, value in (("max_tokens", max_tokens), ("token_budget", token_budget)):
+        if not isinstance(value, int) or isinstance(value, bool):
+            return _context_input_error(f"{name} must be integer")
+        if value < 0:
+            return _context_input_error(f"{name} must be non-negative")
+    if token_budget and max_tokens and token_budget != max_tokens:
+        return _context_input_error("token_budget and max_tokens must match when both are provided")
+    guarded_requested = guarded or bool(task_id.strip()) or bool(phase.strip())
+    guarded_only_values = (
+        focus is not None or bool(preload_profile) or changed_paths is not None or base != "HEAD"
+        or staged or bool(since_hash) or approval != "" or bool(override_reason) or bool(token_budget)
+    )
+    if guarded_only_values and not guarded_requested:
+        return _context_input_error("guarded context fields require guarded=true, task_id, or phase")
+    return None
+
+
+def _bound_context_json(value: Any, depth: int = 0) -> Any:
+    if depth > 5:
+        return "[…depth…]"
+    if isinstance(value, str):
+        return value[:6000]
+    if isinstance(value, list):
+        return [_bound_context_json(item, depth + 1) for item in value[:64]]
+    if isinstance(value, dict):
+        return {str(key)[:160]: _bound_context_json(item, depth + 1) for key, item in list(value.items())[:64]}
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return str(value)[:600]
+
+
+def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = None) -> Any:
+    if not isinstance(value, dict):
+        return {"success": False, "status_code": 502, "terminal": True, "retryable": True, "error": "context pack response must be a JSON object"}
+    options = _CURRENT_RESPONSE_OPTIONS.get()
+    rejection = _subminimum_budget_rejection(options)
+    if rejection is not None:
+        return rejection
+    safe_value = _guarded_context_input(value, extra_fields=extra_fields) if (
+        bool(value.get("guarded")) or "adaptive_context_pack" in value or "context_pack" in value
+    ) else value
+    projected = _compact(safe_value, "context", extra_fields=extra_fields)
+    if not isinstance(projected, dict):
+        return projected
+
+    # Guard output is deterministic. Reattach its decision-grade fields after the
+    # generic response budget so model/postprocess fields cannot replace them.
+    pack = safe_value.get("adaptive_context_pack") or safe_value.get("context_pack")
+    pack = pack if isinstance(pack, dict) else {}
+    authoritative: dict[str, Any] = {}
+    for key in (
+        "context_id", "warnings", "repo_revision", "changed_paths", "stale",
+        "delta_from", "since_hash",
+    ):
+        if key in pack:
+            authoritative[key] = pack[key]
+        elif key in safe_value:
+            authoritative[key] = safe_value[key]
+    evidence = pack.get("evidence")
+    if isinstance(evidence, list):
+        ids = [item.get("evidence_id") for item in evidence if isinstance(item, dict) and item.get("evidence_id")]
+        authoritative["evidence_ids"] = ids[:24]
+    if "evidence_ids" not in authoritative:
+        if "evidence_ids" in pack:
+            authoritative["evidence_ids"] = pack["evidence_ids"]
+        elif "evidence_ids" in safe_value:
+            authoritative["evidence_ids"] = safe_value["evidence_ids"]
+    for key in (
+        "revision", "guarded", "delivery_mode", "since_hash", "delta_from", "degraded", "stale",
+        "fallback_used", "requires_override", "requires_approval", "decision_recorded",
+        "decision_persisted", "task_status", "waiting",
+    ):
+        if key in safe_value and key not in authoritative:
+            authoritative[key] = safe_value[key]
+    for key, item in authoritative.items():
+        projected[key] = _bound_context_json(item)
+
+    # Authoritative fields were attached after _compact's response budget. Run
+    # the final projection through the same bounds so they cannot bypass it.
+    final = compact_result(
+        projected,
+        max_text_chars=MAX_TEXT,
+        max_evidence=MAX_EVIDENCE,
+        extra_fields=extra_fields,
+    )
+    options = _CURRENT_RESPONSE_OPTIONS.get()
+    requested, profile, reuse_key, enabled = _response_budget("context", options)
+    if enabled:
+        final = budget_response(
+            final,
+            max_tokens=requested,
+            profile=profile,
+            reuse_key=reuse_key,
+            protected_keys=tuple(authoritative),
+        )
+    return _normalize_deterministic(final)
+
+
 def _local_ai_repo_impl(
     action: RepoAction,
     root: str = ".",
@@ -1194,6 +1395,22 @@ def _local_ai_repo_impl(
     max_response_tokens: int = 0,
     response_profile: str = "",
     reuse_key: str = "",
+    include_diagnostics: bool = False,
+    clone_id: str = "",
+    worktree_id: str = "",
+    branch: str = "",
+    repository_id: str = "",
+    session_id: str = "",
+    repository_revision: str = "",
+    changed_paths: list[str] | None = None,
+    phase: str = "",
+    focus: list[str] | None = None,
+    preload_profile: str = "",
+    guarded: bool = False,
+    since_hash: str = "",
+    approval: str | bool = "",
+    override_reason: str = "",
+    token_budget: int = 0,
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
@@ -1274,11 +1491,39 @@ def _local_ai_repo_impl(
     if action == "deterministic":
         return _compact(CLIENT.post("/api/repo/deterministic", {"root": root, "query": query or task, "limit": 30}, timeout=_timeout("quick")), "context")
     if action == "context":
-        return _compact(CLIENT.post("/api/context/pack", {
+        validation = _validate_context_pack_inputs(
+            task_id=task_id, phase=phase, focus=focus, preload_profile=preload_profile,
+            changed_paths=changed_paths, base=base, staged=staged, guarded=guarded,
+            since_hash=since_hash, approval=approval, override_reason=override_reason,
+            max_tokens=max_tokens, token_budget=token_budget,
+        )
+        if validation is not None:
+            return validation
+        guarded_requested = bool(guarded) or bool(str(task_id).strip()) or bool(str(phase).strip())
+        configured_tokens = CFG.get("token_saving", {}).get("default_repo_context_tokens", 3200)
+        effective_tokens = token_budget or max_tokens or configured_tokens
+        payload: dict[str, Any] = {
             "root": root, "query": query or task, "workspace": workspace or None,
-            "max_tokens": max_tokens or CFG.get("token_saving", {}).get("default_repo_context_tokens", 3200),
+            "max_tokens": effective_tokens,
             "mode": "full" if mode == "full" else "fast",
-        }, timeout=_timeout("context")), "context")
+        }
+        if guarded_requested:
+            payload.update({
+                "guarded": bool(guarded),
+                "task_id": task_id,
+                "phase": phase,
+                "focus": list(focus or []),
+                "preload_profile": preload_profile,
+                "changed_paths": list(changed_paths or []),
+                "base": base,
+                "staged": bool(staged),
+                "since_hash": since_hash,
+                "approval": approval,
+                "override_reason": override_reason,
+                "token_budget": effective_tokens,
+            })
+        raw = CLIENT.post("/api/context/pack", payload, timeout=_timeout("context"))
+        return _context_pack_projection(raw, extra_fields=extra_fields)
     if action == "route":
         if not path:
             return {"success": False, "error": "path is required for repo route"}
@@ -1368,6 +1613,14 @@ def _local_ai_repo_impl(
         return _compact(CLIENT.post("/api/agent-state/context", {
             "action": "compile", "task_id": task_id or query or task,
             "token_budget": max_tokens or 4000, "root": root,
+            "include_diagnostics": bool(include_diagnostics),
+            "clone_id": clone_id,
+            "worktree_id": worktree_id,
+            "branch": branch,
+            "repository_id": repository_id,
+            "session_id": session_id,
+            "repository_revision": repository_revision,
+            "changed_paths": changed_paths or [],
         }, timeout=_timeout("context")), "context")
     if action == "verify_receipt":
         return _compact(CLIENT.post("/api/agent-state/verification", {
@@ -1527,12 +1780,31 @@ def local_ai_repo(
     max_response_tokens: int = 0,
     response_profile: str = "",
     reuse_key: str = "",
+    include_diagnostics: bool = False,
+    clone_id: str = "",
+    worktree_id: str = "",
+    branch: str = "",
+    repository_id: str = "",
+    session_id: str = "",
+    repository_revision: str = "",
+    changed_paths: list[str] | None = None,
+    phase: str = "",
+    focus: list[str] | None = None,
+    preload_profile: str = "",
+    guarded: bool = False,
+    since_hash: str = "",
+    approval: str | bool = "",
+    override_reason: str = "",
+    token_budget: int = 0,
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
     return _local_ai_repo_impl(
         action, root, query, diff, task, workspace, path, base, staged, dry_run,
         max_tokens, evidence, mode, relation, language, profile, receipt, task_id,
         include_code, edits, extra_fields, max_response_tokens, response_profile, reuse_key,
+        include_diagnostics, clone_id, worktree_id, branch, repository_id, session_id, repository_revision,
+        changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
+        token_budget,
     )
 
 
@@ -1701,6 +1973,8 @@ def local_ai_coord(
     reason: str = "",
     record: dict[str, Any] | None = None,
     record_id: str = "",
+    scope: str = "",
+    scope_id: str = "",
     target_scope: str = "",
     approver: str = "",
     fingerprint: dict[str, Any] | None = None,
@@ -1709,11 +1983,20 @@ def local_ai_coord(
     max_response_tokens: int = 0,
     response_profile: str = "",
     reuse_key: str = "",
+    include_diagnostics: bool = False,
+    clone_id: str = "",
+    worktree_id: str = "",
+    branch: str = "",
+    repository_id: str = "",
+    session_id: str = "",
+    tenant: str = "",
+    repository_revision: str = "",
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. Actions: claim, release, leases, memo_put, memo_get, memo_search, memo_delete, task_create, task_get, task_checkpoint, task_rollback, task_transition, task_resume, task_list, task_complete, task_fail, task_heartbeat, memory_record, memory_get, memory_find, memory_promote, memory_reap, context_compile, verify_receipt, verify_completion, negative_knowledge_record, negative_knowledge_find, incident_decision, blackboard_update, blackboard_get, blackboard_list, blackboard_merge, blackboard_delete, swarm_dispatch, swarm_step, swarm_status, swarm_list, swarm_cancel. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool. Use when: Hub workers share edit paths, leases, or reusable findings. Skip when: work is isolated and no shared Hub state or memo is involved."""
     if not FEATURES.coord:
         return {"success": False, "unsupported": True, "error": "local_ai_coord is disabled in configuration"}
     action = _resolve_action("coord", action)
+    requested_root = str(root or "").strip()
     root = _client_root(root)
     if action == "task_sync":
         sync_act = status.lower() if status in ("export", "import") else "export"
@@ -1740,11 +2023,16 @@ def local_ai_coord(
             root=root, ttl_seconds=ttl_seconds,
         ), "status")
     if action.startswith("memory_"):
-        return _compact(CLIENT.coord(
+        memory_kwargs = dict(
             action=action, record=record, record_id=record_id,
             target_scope=target_scope, approver=approver, key=key,
-            value=value, query=query, root=root, ttl_seconds=ttl_seconds,
-        ), "status")
+            value=value, query=query, root=(root if requested_root else ""), scope=scope, scope_id=scope_id,
+            task_id=task_id, session_id=session_id, clone_id=clone_id,
+            worktree_id=worktree_id, branch=branch, repository_id=repository_id, tenant=tenant,
+        )
+        if ttl_seconds is not None and ttl_seconds > 0:
+            memory_kwargs["ttl_seconds"] = ttl_seconds
+        return _compact(CLIENT.coord(**memory_kwargs), "status")
     if action.startswith("relation_"):
         return _compact(CLIENT.coord(
             action=action, source_entity=key or task_id or query or task,
@@ -1764,6 +2052,13 @@ def local_ai_coord(
             "changed_paths": paths or [],
             "since_hash": since_hash,
             "compact": True,
+            "include_diagnostics": bool(include_diagnostics),
+            "clone_id": clone_id,
+            "worktree_id": worktree_id,
+            "branch": branch,
+            "repository_id": repository_id,
+            "session_id": session_id,
+            "repository_revision": repository_revision,
         }, timeout=_timeout("context")), "context")
     if action == "verify_receipt":
         return _compact(CLIENT.post("/api/agent-state/verification", {

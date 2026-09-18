@@ -1,10 +1,38 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import subprocess
 from pathlib import Path
 
 from local_ai_hub.config import load_config
 from local_ai_hub.repo_tools import RepositoryTools
+
+
+def test_git_diff_retains_bounded_text_but_hashes_full_stream(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / "large.txt"
+    baseline = "\n".join(f"base-{index}" for index in range(1200)) + "\n"
+    target.write_text(baseline, encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "large.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base"], check=True)
+
+    first = "\n".join(f"changed-{index}" for index in range(1200)) + "\nTAIL-A\n"
+    target.write_text(first, encoding="utf-8")
+    tools = RepositoryTools(_cfg(tmp_path))
+    result_a = tools.git_diff(str(repo), max_tokens=32)
+
+    second = "\n".join(f"changed-{index}" for index in range(1200)) + "\nTAIL-B\n"
+    target.write_text(second, encoding="utf-8")
+    result_b = tools.git_diff(str(repo), max_tokens=32)
+
+    assert result_a["success"] and result_b["success"]
+    assert result_a["truncated"] and result_b["truncated"]
+    assert len(result_a["diff"]) < len(first) * 2
+    assert len(result_a["diff_sha256"]) == 64
+    assert result_a["diff_sha256"] != result_b["diff_sha256"]
 
 
 def _cfg(tmp_path: Path):
@@ -79,6 +107,158 @@ def test_git_diff_on_non_git_root_is_a_terminal_client_result(tmp_path: Path):
     assert result["terminal"] is True
     assert result["retryable"] is False
     assert result["error"] == "git diff requires a Git repository"
+
+
+def test_repository_tools_returns_revision_and_changed_paths_for_guard(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tracked = repo / "main.py"
+    tracked.write_text("VALUE = 1\n", encoding="utf-8")
+    (repo / "clean_one.py").write_text("VALUE = 10\n", encoding="utf-8")
+    (repo / "clean_two.py").write_text("VALUE = 20\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-qm", "initial"],
+        check=True,
+    )
+    tracked.write_text("VALUE = 2\n", encoding="utf-8")
+
+    result = RepositoryTools(_cfg(tmp_path)).git_diff(str(repo))
+    snapshot = RepositoryTools(_cfg(tmp_path)).git_snapshot(str(repo))
+
+    assert result["revision"]
+    assert result["changed_paths"] == ["main.py"]
+    assert snapshot.changed_paths == ("main.py",)
+
+
+def test_git_diff_base_range_lists_paths_beyond_content_cap(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    early = repo / "a_early.py"
+    late = repo / "z_late.py"
+    early.write_text("early = 1\n", encoding="utf-8")
+    late.write_text("late = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-qm", "base"], check=True)
+    base = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+
+    early.write_text("early = 2\n", encoding="utf-8")
+    late.write_text("\n".join(f"late = {index}" for index in range(3000)) + "\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-qm", "changes"], check=True)
+
+    result = RepositoryTools(_cfg(tmp_path)).git_diff(str(repo), base=base, max_tokens=16)
+
+    assert result["success"] is True
+    assert result["truncated"] is True
+    assert result["changed_paths"] == ["a_early.py", "z_late.py"]
+
+
+def test_git_diff_rejects_path_capture_failure(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / "main.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-qm", "base"], check=True)
+    target.write_text("value = 2\n", encoding="utf-8")
+
+    real_popen = subprocess.Popen
+
+    class FailedPathProcess:
+        stdout = io.BytesIO()
+        stderr = io.BytesIO(b"name-only capture failed")
+
+        def wait(self, timeout=None):
+            return 1
+
+    def fake_popen(command, *args, **kwargs):
+        if "--name-only" in command:
+            return FailedPathProcess()
+        return real_popen(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    result = RepositoryTools(_cfg(tmp_path)).git_diff(str(repo))
+
+    assert result["success"] is False
+    assert result["paths_complete"] is False
+    assert result["retryable"] is True
+    assert "path capture" in result["error"]
+
+
+def test_git_diff_rejects_path_capture_cap(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / "main.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-qm", "base"], check=True)
+    target.write_text("value = 2\n", encoding="utf-8")
+
+    real_popen = subprocess.Popen
+
+    class CappedPathProcess:
+        stdout = io.BytesIO(("".join(f"path-{index}\0" for index in range(4097))).encode())
+        stderr = io.BytesIO()
+
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_popen(command, *args, **kwargs):
+        if "--name-only" in command:
+            return CappedPathProcess()
+        return real_popen(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    result = RepositoryTools(_cfg(tmp_path)).git_diff(str(repo))
+
+    assert result["success"] is False
+    assert result["paths_complete"] is False
+    assert result["retryable"] is True
+    assert "cap" in result["error"]
+
+
+def test_git_diff_rejects_stream_read_failure(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / "main.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-qm", "base"], check=True)
+    target.write_text("value = 2\n", encoding="utf-8")
+
+    real_popen = subprocess.Popen
+
+    class ExplodingStream:
+        def read(self, _size):
+            raise OSError("stream exploded")
+
+        def close(self):
+            return None
+
+    class StreamFailureProcess:
+        stdout = ExplodingStream()
+        stderr = io.BytesIO()
+
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_popen(command, *args, **kwargs):
+        if "--unified=3" in command:
+            return StreamFailureProcess()
+        return real_popen(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    result = RepositoryTools(_cfg(tmp_path)).git_diff(str(repo))
+
+    assert result["success"] is False
+    assert result["retryable"] is True
+    assert "stream read" in result["error"]
 
 
 def test_search_returns_bounded_retryable_result_after_accelerator_timeouts(tmp_path: Path, monkeypatch):

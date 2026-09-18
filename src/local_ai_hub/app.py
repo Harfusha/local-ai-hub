@@ -48,11 +48,12 @@ from .debug_traces import DebugTraceStore
 from .agent_events import AgentStateStore
 from .agent_tasks import TaskStore, TaskStatus
 from .agent_identity import AgentScope
-from .agent_memory import MemoryStore, MemoryKind, MemoryRecord, MemoryStatus
+from .agent_memory import MemoryStore, MemoryKind, MemoryRecord, MemoryStatus, _normalise_scope_root
 from .agent_incidents import IncidentStore
 from .agent_verification import VerificationStore
 from .agent_policy import PolicyEngine
 from .agent_context import ContextCompiler
+from .agent_consistency import AgentConsistencyGuard
 from .agent_routing import RoutingEngine
 from .agent_learning import LearningStore
 from .agent_blackboard import BlackboardStore
@@ -183,6 +184,13 @@ class LocalAIApp:
         self.services.set_incident_store(self.agent_incidents)
         self.services.set_agent_state(self.agent_state)
         self.services.set_blackboard(self.agent_blackboard)
+        self.consistency_guard = AgentConsistencyGuard(
+            self.repo_tools,
+            task_store=self.agent_tasks,
+            memory_store=self.agent_memory,
+            verification_store=self.agent_verification,
+        )
+        self.services.set_consistency_guard(self.consistency_guard)
         self.swarm = SwarmCoordinator(state_dir / "agent_state.sqlite3", leases=self.leases, blackboard=self.agent_blackboard, verifications=self.agent_verification)
         self.services.set_swarm(self.swarm)
         self.rag = RAGStore(self.config, self.services, self.reranker)
@@ -698,18 +706,39 @@ class LocalAIApp:
                     "records": exported_agent_records,
                 }
                 raw_json = json_dumps(bundle_data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                if len(raw_json) > max_json:
+                    raise ValueError(f"bundle.json exceeds configured limit ({max_json} bytes)")
                 buf = io.BytesIO()
                 with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
                     info = zipfile.ZipInfo("bundle.json")
                     info.compress_type = zipfile.ZIP_DEFLATED
                     info.external_attr = 0o600 << 16
                     zf.writestr(info, raw_json)
-                return buf.getvalue()
+                result = buf.getvalue()
+                if len(result) > max_bundle:
+                    raise ValueError(f"bundle exceeds configured compressed limit ({max_bundle} bytes)")
+                return result
 
         root_obj = Path(root).expanduser().resolve()
         if not root_obj.is_dir():
             raise ValueError(f"root directory does not exist: {root_obj}")
         root_path = str(root_obj).replace("\\", "/")
+        for item in exported_agent_records:
+            if item.get("type") != "memory":
+                continue
+            record_data = item.get("data") or {}
+            if str(record_data.get("scope", "")).strip().lower() not in {"repo", "repository"}:
+                continue
+            provenance = record_data.get("provenance")
+            source_root = provenance.get("root") if isinstance(provenance, dict) else None
+            if not source_root:
+                raise BundleValidationError(
+                    f"repository memory record {record_data.get('record_id', '')} requires provenance root"
+                )
+            if source_root and _normalise_scope_root(str(source_root)) != _normalise_scope_root(root_path):
+                raise BundleValidationError(
+                    f"repository root mismatch for agent memory record {record_data.get('record_id', '')}"
+                )
         workspace = self.rag.workspace_id(root_path)
         tables: dict[str, list[dict[str, Any]]] = {}
 
@@ -760,6 +789,20 @@ class LocalAIApp:
         }
         if exported_agent_records:
             bundle_data["agent_state_records"] = exported_agent_records
+            agent_records_canonical = json_dumps(
+                exported_agent_records,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            bundle_data["agent_state_records_sha256"] = hashlib.sha256(agent_records_canonical).hexdigest()
+            all_state_canonical = json_dumps(
+                {"agent_state_records": exported_agent_records, "tables": encoded_tables},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            bundle_data["tables_sha256"] = hashlib.sha256(all_state_canonical).hexdigest()
         raw_json = json_dumps(bundle_data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         if len(raw_json) > max_json:
             raise ValueError(f"bundle.json exceeds configured limit ({max_json} bytes)")
@@ -808,6 +851,66 @@ class LocalAIApp:
             return {"success": False, "error": f"bundle version must match Local AI Hub {__version__}"}
 
         bundle_format = str(data.get("format", ""))
+
+        def restore_agent_memory_records(
+            records: Any,
+            target_root_path: str | None = None,
+            source_root_path: str | None = None,
+        ) -> tuple[int, str | None]:
+            if not isinstance(records, list):
+                return 0, "bundle records are missing"
+            restored = 0
+            for item in records:
+                if not isinstance(item, dict):
+                    return 0, "invalid agent-state bundle record"
+                rtype = item.get("type")
+                rdata = item.get("data", {})
+                if not isinstance(rdata, dict):
+                    return 0, "invalid agent-state bundle payload"
+                if rtype == "memory" and getattr(self, "agent_memory", None):
+                    record_data = dict(rdata)
+                    scope_value = str(record_data.get("scope", "")).strip().lower()
+                    provenance = record_data.get("provenance")
+                    if target_root_path and scope_value in {"repo", "repository"}:
+                        source_root = provenance.get("root") if isinstance(provenance, dict) else None
+                        if not source_root:
+                            return 0, "repository memory provenance root is required for project import"
+                        if not source_root_path:
+                            return 0, "project bundle root is required for repository memory import"
+                        if _normalise_scope_root(str(source_root)) != _normalise_scope_root(source_root_path):
+                            return 0, "repository memory provenance does not match bundle root"
+                        rebased_provenance = dict(provenance)
+                        rebased_provenance["source_root"] = str(source_root)
+                        rebased_provenance["root"] = target_root_path
+                        record_data["provenance"] = rebased_provenance
+                    from_dict = getattr(MemoryRecord, "from_dict", None)
+                    if callable(from_dict) and all(
+                        field in record_data for field in ("record_id", "status", "provenance")
+                    ):
+                        try:
+                            rec = from_dict(record_data)
+                        except (KeyError, TypeError, ValueError):
+                            rec = MemoryRecord.create(
+                                kind=MemoryKind(record_data.get("kind", "fact")),
+                                scope=AgentScope.parse(record_data.get("scope", "task")),
+                                key=str(record_data.get("key", "")),
+                                value=record_data.get("value"),
+                                scope_id=str(record_data.get("scope_id", "")),
+                                status=MemoryStatus(record_data.get("status", "candidate")),
+                            )
+                    else:
+                        rec = MemoryRecord.create(
+                            kind=MemoryKind(record_data.get("kind", "fact")),
+                            scope=AgentScope.parse(record_data.get("scope", "task")),
+                            key=str(record_data.get("key", "")),
+                            value=record_data.get("value"),
+                            scope_id=str(record_data.get("scope_id", "")),
+                            status=MemoryStatus(record_data.get("status", "candidate")),
+                        )
+                    self.agent_memory.record(rec, actor="bundle_import")
+                    restored += 1
+            return restored, None
+
         if bundle_format == "local-ai-hub-agent-state-bundle":
             records = data.get("records", [])
             if not isinstance(records, list):
@@ -816,25 +919,9 @@ class LocalAIApp:
             expected = str(data.get("records_sha256", ""))
             if not expected or not hmac.compare_digest(hashlib.sha256(canonical).hexdigest(), expected):
                 return {"success": False, "error": "bundle integrity check failed"}
-            restored = 0
-            for item in records:
-                if not isinstance(item, dict):
-                    return {"success": False, "error": "invalid agent-state bundle record"}
-                rtype = item.get("type")
-                rdata = item.get("data", {})
-                if not isinstance(rdata, dict):
-                    return {"success": False, "error": "invalid agent-state bundle payload"}
-                if rtype == "memory" and getattr(self, "agent_memory", None):
-                    rec = MemoryRecord.create(
-                        kind=MemoryKind(rdata.get("kind", "fact")),
-                        scope=AgentScope.parse(rdata.get("scope", "task")),
-                        key=str(rdata.get("key", "")),
-                        value=rdata.get("value"),
-                        scope_id=str(rdata.get("scope_id", "")),
-                        status=MemoryStatus(rdata.get("status", "candidate")),
-                    )
-                    self.agent_memory.record(rec, actor="bundle_import")
-                    restored += 1
+            restored, error = restore_agent_memory_records(records)
+            if error:
+                return {"success": False, "error": error}
             return {"success": True, "version": __version__, "restored_records": restored}
 
         if bundle_format != "local-ai-hub-project-bundle":
@@ -843,9 +930,38 @@ class LocalAIApp:
         encoded_tables: Any = data.get("tables")
         if not isinstance(encoded_tables, dict):
             return {"success": False, "error": "bundle tables are missing"}
+        has_agent_records = "agent_state_records" in data
+        has_agent_records_hash = "agent_state_records_sha256" in data
+        if has_agent_records != has_agent_records_hash:
+            return {"success": False, "error": "bundle integrity check failed"}
         canonical = json_dumps(encoded_tables, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         expected = str(data.get("tables_sha256", ""))
-        if not expected or not hmac.compare_digest(hashlib.sha256(canonical).hexdigest(), expected):
+        table_hash_valid = bool(expected) and hmac.compare_digest(hashlib.sha256(canonical).hexdigest(), expected)
+        if has_agent_records:
+            agent_records = data.get("agent_state_records")
+            if not isinstance(agent_records, list):
+                return {"success": False, "error": "invalid agent-state bundle records"}
+            agent_records_canonical = json_dumps(
+                agent_records,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            agent_records_expected = str(data.get("agent_state_records_sha256", ""))
+            if not agent_records_expected or not hmac.compare_digest(
+                hashlib.sha256(agent_records_canonical).hexdigest(), agent_records_expected
+            ):
+                return {"success": False, "error": "bundle integrity check failed"}
+            all_state_canonical = json_dumps(
+                {"agent_state_records": agent_records, "tables": encoded_tables},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            table_hash_valid = table_hash_valid or hmac.compare_digest(
+                hashlib.sha256(all_state_canonical).hexdigest(), expected
+            )
+        if not table_hash_valid:
             return {"success": False, "error": "bundle integrity check failed"}
         try:
             tables = self._bundle_decode(encoded_tables)
@@ -971,6 +1087,14 @@ class LocalAIApp:
                                 (scope_key, workspace, str(c.get("path", "")), int(c.get("chunk_no", 0) or 0), str(c.get("content_hash", "")), str(c.get("text", "")), c.get("embedding", "")))
                 con.commit()
 
+        restored_agent_records = 0
+        if "agent_state_records" in data:
+            restored_agent_records, error = restore_agent_memory_records(
+                data.get("agent_state_records"), root_path, str(data.get("root", ""))
+            )
+            if error:
+                return {"success": False, "error": error}
+
         return {
             "success": True,
             "version": __version__,
@@ -979,6 +1103,7 @@ class LocalAIApp:
             "files_imported": len(rows("file_refs")),
             "cards_imported": len(rows("content_cards")),
             "rag_chunks_imported": len(rows("rag_chunks")),
+            "agent_state_records_imported": restored_agent_records,
         }
 
     def __enter__(self) -> "LocalAIApp":

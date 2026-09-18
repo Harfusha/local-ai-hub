@@ -56,6 +56,23 @@ class GitSnapshot:
         object.__setattr__(self, "blobs", MappingProxyType(dict(self.blobs)))
         object.__setattr__(self, "renames", MappingProxyType(dict(self.renames)))
 
+    @property
+    def revision(self) -> str:
+        """Stable repository revision for bounded guard provenance."""
+        return self.head_oid or self.status_identity or ""
+
+    @property
+    def repository_revision(self) -> str:
+        return self.revision
+
+    @property
+    def changed_paths(self) -> tuple[str, ...]:
+        paths = {path for path, state in self.status.items() if state != "clean"}
+        paths.update(self.deleted)
+        paths.update(self.renames)
+        paths.update(self.renames.values())
+        return tuple(sorted(path for path in paths if path))
+
 
 class RepositoryTools:
     def __init__(self, config: dict[str, Any]):
@@ -1124,43 +1141,169 @@ class RepositoryTools:
             cmd.append("--cached")
         elif base:
             cmd.append(base)
-        try:
-            completed = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=30, check=False,
-                encoding="utf-8", errors="replace",
-                **hidden_run_kwargs(),
-            )
-        except Exception as exc:
-            return {"success": False, "error": str(exc)}
-        if completed.returncode != 0:
-            return {"success": False, "error": completed.stderr.strip() or "git diff failed"}
-        text = completed.stdout
-        original_tokens = estimate_tokens(text)
-        budget_chars = chars_for_tokens(max_tokens)
-        truncated = len(text) > budget_chars
+        budget_chars = max(1, chars_for_tokens(max_tokens))
+        def bounded_process(command: list[str], retain_limit: int, on_stdout_chunk: Any = None, digest_output: bool = False) -> dict[str, Any]:
+            retained = bytearray()
+            stderr_retained = bytearray()
+            digest = hashlib.sha256() if digest_output else None
+            total = 0
+            stream_errors: list[str] = []
+
+            def drain(stream: Any, output: bytearray, digest_value: Any = None, stream_name: str = "stdout") -> None:
+                nonlocal total
+                try:
+                    while True:
+                        chunk = stream.read(65536)
+                        if not chunk:
+                            return
+                        if digest_value is not None:
+                            digest_value.update(chunk)
+                            total += len(chunk)
+                        if on_stdout_chunk is not None and output is retained:
+                            try:
+                                on_stdout_chunk(chunk)
+                            except Exception:
+                                pass
+                        remaining = max(0, retain_limit - len(output))
+                        if remaining:
+                            output.extend(chunk[:remaining])
+                except Exception as exc:
+                    if len(stream_errors) < 2:
+                        detail = str(exc).replace("\r", " ").replace("\n", " ")[:200]
+                        stream_errors.append(f"{stream_name}: {type(exc).__name__}: {detail}")
+                    return
+
+            process = None
+            try:
+                process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **hidden_run_kwargs())
+                stdout_thread = threading.Thread(target=drain, args=(process.stdout, retained, digest, "stdout"), daemon=True)
+                stderr_thread = threading.Thread(target=drain, args=(process.stderr, stderr_retained, None, "stderr"), daemon=True)
+                stdout_thread.start()
+                stderr_thread.start()
+                try:
+                    returncode = process.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+                    stdout_thread.join(timeout=5)
+                    stderr_thread.join(timeout=5)
+                    return {"returncode": None, "error": "git diff timed out", "retryable": True}
+                stdout_thread.join(timeout=5)
+                stderr_thread.join(timeout=5)
+                if stdout_thread.is_alive() or stderr_thread.is_alive():
+                    stream_errors.append("reader thread did not drain before timeout")
+                if stream_errors:
+                    return {
+                        "returncode": None,
+                        "error": "git diff stream read failed: " + "; ".join(stream_errors[:2]),
+                        "retryable": True,
+                    }
+                return {
+                    "returncode": returncode,
+                    "stdout": bytes(retained),
+                    "stderr": bytes(stderr_retained),
+                    "total": total,
+                    "sha256": digest.hexdigest() if digest is not None else "",
+                }
+            except Exception as exc:
+                return {"returncode": None, "error": str(exc), "retryable": True}
+            finally:
+                if process is not None:
+                    for stream in (process.stdout, process.stderr):
+                        try:
+                            stream.close()
+                        except Exception:
+                            pass
+
+        content_result = bounded_process(cmd, budget_chars, digest_output=True)
+        if content_result.get("returncode") is None:
+            return {"success": False, "error": content_result.get("error", "git diff failed"), "retryable": content_result.get("retryable", False)}
+        stderr_text = bytes(content_result.get("stderr", b"")).decode("utf-8", errors="replace").strip()
+        if content_result["returncode"] != 0:
+            return {"success": False, "error": stderr_text or "git diff failed"}
+        stdout_retained = bytes(content_result.get("stdout", b""))
+        stdout_total = int(content_result.get("total", len(stdout_retained)))
+        text = stdout_retained.decode("utf-8", errors="replace")
+        truncated = stdout_total > len(stdout_retained) or len(text) > budget_chars
+        if len(text) > budget_chars:
+            text = text[:budget_chars]
+            truncated = True
         if truncated:
-            # Prefer complete file sections over arbitrary tail/head truncation.
-            sections = text.split("\ndiff --git ")
-            kept: list[str] = []
-            used = 0
-            for i, section in enumerate(sections):
-                rendered = section if i == 0 else "diff --git " + section
-                if used + len(rendered) > budget_chars:
-                    break
-                kept.append(rendered)
-                used += len(rendered)
-            text = "\n".join(kept) + "\n\n[... additional diff sections omitted to fit local review budget ...]\n"
+            text += "\n\n[... additional diff sections omitted to fit local review budget ...]\n"
         changed: list[str] = []
-        for line in completed.stdout.splitlines():
+        retained_stdout = stdout_retained.decode("utf-8", errors="replace")
+        for line in retained_stdout.splitlines():
             if not line.startswith("diff --git a/"):
                 continue
             match = re.match(r"diff --git a/(.+?) b/(.+)$", line)
             if match:
                 changed.append(match.group(2))
+        path_names: list[str] = []
+        path_pending = bytearray()
+        path_capture_error = ""
+
+        def collect_path_chunk(chunk: bytes) -> None:
+            nonlocal path_capture_error
+            if path_capture_error:
+                return
+            if len(path_names) >= 4096:
+                path_capture_error = "path count cap reached"
+                return
+            data = bytes(path_pending) + chunk
+            pieces = data.split(b"\0")
+            tail = pieces.pop()
+            if len(tail) > 4096:
+                path_capture_error = "path byte cap reached"
+                return
+            path_pending.clear()
+            path_pending.extend(tail)
+            for piece in pieces:
+                if not piece:
+                    continue
+                if len(piece) > 4096:
+                    path_capture_error = "path byte cap reached"
+                    return
+                if len(path_names) >= 4096:
+                    path_capture_error = "path count cap reached"
+                    return
+                path_names.append(piece.decode("utf-8", errors="replace"))
+
+        path_cmd = ["git", "-C", str(repo), "diff", "--no-ext-diff", "--name-only", "-z"]
+        if staged:
+            path_cmd.append("--cached")
+        elif base:
+            path_cmd.append(base)
+        path_result = bounded_process(path_cmd, 0, on_stdout_chunk=collect_path_chunk)
+        if path_capture_error:
+            return {
+                "success": False,
+                "error": f"git diff path capture failed: {path_capture_error}",
+                "terminal": False,
+                "retryable": True,
+                "paths_complete": False,
+            }
+        if path_result.get("returncode") is None or path_result.get("returncode") != 0:
+            path_error = bytes(path_result.get("stderr", b"")).decode("utf-8", errors="replace").strip()
+            return {
+                "success": False,
+                "error": f"git diff path capture failed: {path_error or path_result.get('error', 'non-zero exit')}",
+                "terminal": False,
+                "retryable": bool(path_result.get("retryable", True)),
+                "paths_complete": False,
+            }
+        if path_pending and len(path_names) < 4096:
+            path_names.append(bytes(path_pending)[:4096].decode("utf-8", errors="replace"))
+        snapshot = self.git_snapshot(str(repo))
+        changed_files = list(dict.fromkeys(path_names + changed))
+        changed_paths = list(dict.fromkeys(changed_files + list(snapshot.changed_paths)))
         return {
-            "success": True, "root": str(repo), "diff": text, "changed_files": changed,
-            "estimated_tokens": estimate_tokens(text), "original_estimated_tokens": original_tokens,
-            "truncated": truncated, "diff_sha256": hashlib.sha256(completed.stdout.encode("utf-8")).hexdigest(),
+            "success": True, "root": str(repo), "diff": text, "changed_files": changed_files,
+            "changed_paths": changed_paths, "revision": snapshot.revision,
+            "repository_revision": snapshot.repository_revision,
+            "estimated_tokens": estimate_tokens(text),
+            "original_estimated_tokens": max(estimate_tokens(text), (stdout_total + 3) // 4),
+            "truncated": truncated, "diff_sha256": content_result["sha256"],
+            "paths_complete": True,
         }
 
 

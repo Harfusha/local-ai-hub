@@ -49,10 +49,24 @@ def _actions_note(actions: list[str]) -> str:
     return f" Supported actions: {', '.join(actions)}." if actions else " No actions are enabled."
 
 
+def context_pack_guidance() -> str:
+    """Compact contract for the guarded repository-context operation."""
+    return (
+        ' `local_ai_repo(action="context")` is the default adaptive context pack before non-trivial '
+        "planning, edit, review or test. Reuse existing evidence and reuse candidates first; require "
+        "evidence IDs for every factual claim. Deterministic/indexed evidence is authoritative; local "
+        "models may rank, select, or compress structured evidence only and must not invent repository "
+        "facts. Guarded scope or drift overrides require an explicit `override_reason` and approval when "
+        "requested. Omit raw model/debug fields unless explicitly requested through `extra_fields`; "
+        "responses remain compact; aggregate response budget defaults to approximately 3200 tokens. "
+        "Omitting guarded fields preserves legacy `mode=fast|full` behavior."
+    )
+
+
 def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
     """Single short contract shared by skills, policies, and routing references."""
     features = FeatureSet.from_config(cfg or {})
-    budget = 1200
+    budget = 3200
     try:
         section = (cfg or {}).get("mcp", {}).get("response_budget", {})
         budget = int(section.get("default_tokens", budget)) if isinstance(section, dict) else budget
@@ -61,7 +75,7 @@ def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
     batch_line = '- Use the existing `local_ai_task(action="batch")` for independent local tasks; keep each item bounded and consume compact per-item results.' if features.tasks else ''
     return f"""## Context economy contract
 
-- Every Hub response is aggregate-bounded (default ≈{budget} tokens); use `max_response_tokens` only when a different bounded size is needed.
+- Every Hub response is aggregate-bounded (default ≈{budget} tokens); explicit `max_response_tokens` below 128 are rejected, never silently raised.
 - Prefer `response_profile=\"minimal\"`/`\"compact\"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls return a pointer, not missing data.
 {batch_line}
@@ -69,6 +83,7 @@ def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
 - Broad native shell reads are guarded by the optional host hook; use bounded limits or the Hub command/repository tools for discovery.
 - Fetch exact source, logs, or evidence only with `local_ai_artifact` slices. Never ask a broad tool for the same payload twice.
 - Commands return status, summary, changed paths, and failures; full stdout/stderr stays artifact-backed.
+-{context_pack_guidance()}
 - Do not bypass the budget with native broad reads unless Hub has one bounded terminal failure."""
 
 
@@ -761,7 +776,7 @@ def _apply_response_budget_schema(schemas: dict[str, dict[str, Any]], cfg: dict[
     """Add one compact response contract to every enabled public tool."""
     fields = {
         "max_response_tokens": {"type": "integer", "minimum": 0, "default": 0},
-        "response_profile": {"type": "string", "enum": ["minimal", "compact", "standard", "debug", "delta"], "default": ""},
+        "response_profile": {"type": "string", "enum": ["minimal", "compact", "standard", "debug", "delta"], "default": "compact"},
         "reuse_key": {"type": "string", "default": ""},
     }
     for schema in schemas.values():
@@ -806,7 +821,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         )
         schemas["local_ai_repo"] = {
             "name": "local_ai_repo",
-            "description": "Primary bounded repository worker; use deterministic/indexed evidence first, then semantic/graph as enabled; use review_diff/security_audit before model inference." + repo_semantic_contract + _actions_note(repo_actions),
+            "description": "Primary bounded repository worker; use deterministic/indexed evidence first, then semantic/graph as enabled; use review_diff/security_audit before model inference." + context_pack_guidance() + repo_semantic_contract + _actions_note(repo_actions),
             "parameters": {
                 "type": "object",
                 "required": ["action"],
@@ -817,6 +832,14 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "path": {"type": "string", "default": ""},
                     "task": {"type": "string", "default": ""},
                     "task_id": {"type": "string", "default": ""},
+                    "phase": {"type": "string", "default": ""},
+                    "focus": {"type": "array", "items": {"type": "string"}},
+                    "preload_profile": {"type": "string", "default": ""},
+                    "guarded": {"type": "boolean", "default": False},
+                    "changed_paths": {"type": "array", "items": {"type": "string"}},
+                    "since_hash": {"type": "string", "default": ""},
+                    "approval": {"type": ["boolean", "string"], "default": ""},
+                    "override_reason": {"type": "string", "default": ""},
                     "base": {"type": "string", "default": "HEAD"},
                     "staged": {"type": "boolean", "default": False},
                     "mode": {"type": "string", "default": "adaptive"},
@@ -824,11 +847,15 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "relation": {"type": "string", "default": ""},
                     "profile": {"type": "string", "default": ""},
                     "max_tokens": {"type": "integer", "default": 0},
+                    "token_budget": {"type": "integer", "default": 0},
                     "diff": {"type": "string", "default": ""},
                     "workspace": {"type": "string", "default": ""},
                     "evidence": {"type": "array", "items": {"type": "object"}},
                     "receipt": {"type": "object"},
                     "extra_fields": {"type": "array", "items": {"type": "string"}},
+                    "max_response_tokens": {"type": "integer", "default": 0},
+                    "response_profile": {"type": "string", "enum": ["minimal", "compact", "standard", "debug", "delta"], "default": "compact"},
+                    "reuse_key": {"type": "string", "default": ""},
                 },
             },
         }

@@ -19,6 +19,10 @@ Before native recursive search/tree/glob or opening many files for discovery, ro
 
 When an agent uses `local_ai_repo(action="solve")` with explicit semantic wording such as explore, explain, why, compare or second opinion, the planner keeps one bounded local pass even if exact evidence is already strong. Pure fact lookups still terminate deterministically.
 
+## Adaptive repository context
+
+Use `local_ai_repo(action="context")` as the default adaptive context pack before non-trivial planning, edit, review or test. Pass the existing task/budget/workspace and guarded fields (`phase`, `focus`, `preload_profile`, `guarded`, `changed_paths`, `since_hash`, `approval`, `override_reason`); omit them to preserve legacy `mode="fast"|"full"` behavior. Reuse existing evidence and reuse candidates first, require evidence IDs for factual claims, and treat deterministic/indexed evidence as authoritative. Local models may rank, select or compress structured evidence only; they may not invent repository facts. Scope or drift overrides require an explicit `override_reason` and approval when requested. Responses stay compact and omit raw model/debug fields unless requested through `extra_fields`.
+
 When generation is needed, use `qwen2.5-coder:1.5b` for quick work, `qwen2.5-coder:3b` for complex tasks, and `qwen2.5-coder:7b` for the hardest reasoning; reserve `qwen2.5-coder:0.5b` for preprocessing. Deterministic/indexed evidence still runs first.
 
 Exact source should be fetched through `E…` evidence or artifact slices only when inspection/editing requires it. Fresh hub discovery and command results should not be repeated natively. `force=true` and `preprocess_refresh` are exceptional controls, not retry mechanisms.
@@ -69,7 +73,7 @@ When `[agent_state].enabled` is active, the compact MCP surface projects durable
 - Privacy boundary: telemetry and agent state never store raw prompts, model outputs, secrets, or absolute file paths.
 ## Aggregate response budgets
 
-Every public Hub tool now applies an aggregate agent-facing response budget after semantic projection. Use `max_response_tokens` for a bounded override, `response_profile="minimal"|"compact"|"standard"|"debug"|"delta"` for intent, and a stable `reuse_key` for repeated logical queries. `delta` returns changed fields only; unchanged repeated results return a pointer envelope with IDs and summary instead of repeating payload data. Independent local-model work uses the existing `local_ai_task(action="batch")` path.
+Every public Hub tool now applies an aggregate agent-facing response budget after semantic projection. Default is approximately 3200 tokens. Use `max_response_tokens` for a bounded override; explicit values below 128 are rejected, never silently increased. Use `response_profile="minimal"|"compact"|"standard"|"debug"|"delta"` for intent, and a stable `reuse_key` for repeated logical queries. `delta` returns changed fields only; unchanged repeated results return a pointer envelope with IDs and summary instead of repeating payload data. Independent local-model work uses the existing `local_ai_task(action="batch")` path.
 
 Telemetry records operation category plus raw/projected/saved response estimates, budget truncation, cache outcome, and projection reason. The bounded context ledger is visible only through an explicit `local_ai_status(detail="cache")` request and stores metadata only: no prompts, source text, secrets, or full paths. Hub command execution already caps captured/inline stdout and stderr; intercepting native Codex host `exec` requires a separate host hook and is not silently emulated by MCP.
 
