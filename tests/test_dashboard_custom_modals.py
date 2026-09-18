@@ -554,7 +554,7 @@ def test_trace_inspector_exposes_core_panels_when_human_presentation_is_empty() 
         )
     ]
     assert "function tracePrimaryFallback(" in DASHBOARD_HTML
-    assert "primaryMarkup=tracePrimaryFallback(presentationMarkup,panels)" in detail_source
+    assert "primaryMarkup=tracePrimaryFallback(presentationMarkup,panels,model)" in detail_source
     assert "${header}${primaryMarkup}${optionalMarkup}" in detail_source
 
 
@@ -589,13 +589,13 @@ def test_trace_inspector_dispatches_primary_body_before_optional_technical_detai
             "function setTraceView(view)"
         )
     ]
-    assert "const presentationMarkup=renderTracePresentation(model),primaryMarkup=tracePrimaryFallback(presentationMarkup,panels);" in source
+    assert "const presentationMarkup=renderTracePresentation(model),primaryMarkup=tracePrimaryFallback(presentationMarkup,panels,model);" in source
     assert "const optionalMarkup=`<details class=\"trace-optional-details\"" in source
     assert source.index("renderTracePresentation(model)") < source.index(
         "const optionalMarkup="
     )
     assert "${header}${primaryMarkup}${optionalMarkup}" in source
-    assert "tracePrimaryFallback(presentationMarkup,panels)" in source
+    assert "tracePrimaryFallback(presentationMarkup,panels,model)" in source
 
 
 def test_trace_detail_runtime_keeps_primary_first_and_technical_details_closed() -> None:
@@ -1321,6 +1321,103 @@ def test_trace_async_and_request_response_outputs_keep_full_human_code_blocks() 
         assert payload.endswith("x" * 100 if marker == "async-output-" else "y" * 100)
         assert "[object Object]" not in html
         assert not re.search(r"\{\s*[\"'][A-Za-z_][\w-]*[\"']\s*:", html)
+
+
+def test_trace_async_job_primary_state_and_worker_details_are_separated() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {
+            "kind": "async_job",
+            "asyncJob": {
+                "job_type": "embedding",
+                "status": "running",
+                "progress": "4/10",
+                "queue_wait_ms": 12,
+                "retries": 2,
+                "worker_input": {"prompt": "hidden worker payload"},
+                "result": "partial result",
+            },
+        },
+        "lifecycle": {"state": "running", "terminal": False},
+        "correlations": {"async_job_id": "JOB_ID_SHOULD_BE_SECONDARY"},
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        + source
+        + "const fixture=" + json.dumps(fixture) + ";const html=renderAsyncJobPresentation(fixture);const primary=html.split('<details class=\"trace-secondary-details',1)[0];console.log(JSON.stringify({html,primary}));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    rendered = json.loads(result.stdout)
+    primary = rendered["primary"]
+    for value in ["embedding", "running", "4/10", "queue wait", "12", "retries", "2", "partial result", "live / incomplete"]:
+        assert value in primary
+    assert "hidden worker payload" not in primary
+    assert "JOB_ID_SHOULD_BE_SECONDARY" not in primary
+    assert "Worker payload" in rendered["html"]
+    assert "Correlations" in rendered["html"]
+
+
+def test_trace_request_response_primary_fields_and_technical_metadata() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {"kind": "request_response"},
+        "identity": {"action": "chat.completions"},
+        "session": {
+            "request": {
+                "method": "POST",
+                "path": "/v1/chat",
+                "headers": {"authorization": "HEADER_MARKER"},
+            },
+            "state": "complete",
+        },
+        "input": {"prompt": "hello"},
+        "response": {"message": "world"},
+        "errors": ["none"],
+        "timing": {"duration_ms": 42, "created_at": "internal timestamp"},
+        "actor": {"agent": "fixture-agent", "tenant": "fixture-tenant"},
+        "correlations": {"request_id": "REQUEST_ID_MARKER"},
+        "retainedBytes": 128,
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        + source
+        + "const fixture=" + json.dumps(fixture) + ";const html=renderRequestResponsePresentation(fixture);const primary=html.split('<details class=\"trace-secondary-details',1)[0];console.log(JSON.stringify({html,primary}));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    rendered = json.loads(result.stdout)
+    primary = rendered["primary"]
+    for value in ["POST", "/v1/chat", "chat.completions", "42", "hello", "world"]:
+        assert value in primary
+    for value in ["HEADER_MARKER", "REQUEST_ID_MARKER", "fixture-agent", "fixture-tenant", "128"]:
+        assert value not in primary
+    for label in ["Headers", "Actor / tenant", "Correlations", "Retained bytes", "Lifecycle timing"]:
+        assert label in rendered["html"]
+
+
+def test_trace_generic_fallback_keeps_captured_values_outside_technical_details() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    fixture = {
+        "presentation": {"kind": "unknown_malformed_kind"},
+        "input": "captured input",
+        "output": "captured output",
+        "errors": ["captured error"],
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        + source
+        + "const fixture=" + json.dumps(fixture) + ";const html=renderTracePresentation(fixture);const primary=html.split('<details class=\"trace-secondary-details',1)[0];console.log(JSON.stringify({html,primary}));"
+    )
+    result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
+    rendered = json.loads(result.stdout)
+    for value in ["captured input", "captured output", "captured error"]:
+        assert value in rendered["primary"]
+    assert "trace-primary" in rendered["primary"]
 
 
 def test_trace_request_renderers_expose_reviewer_gap_contracts() -> None:
