@@ -130,6 +130,42 @@ def test_stale_memory_remains_visible_as_diagnostic(tmp_path: Path):
     assert stale.record_id in diagnostics[0].content
 
 
+def test_memory_diagnostics_are_repository_scoped(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    memory_store = MemoryStore(state_store)
+    repository_a = str(tmp_path / "repository-a")
+    repository_b = str(tmp_path / "repository-b")
+    stale_a = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope="repository",
+            key="stale-a",
+            value="old evidence A",
+            status=MemoryStatus.STALE,
+            provenance={"root": repository_a, "repository_revision": "rev-1"},
+        )
+    )
+    stale_b = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope="repository",
+            key="stale-b",
+            value="old evidence B",
+            status=MemoryStatus.STALE,
+            provenance={"root": repository_b, "repository_revision": "rev-1"},
+        )
+    )
+
+    context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
+        ContextRequest(task_id="task-a", root=repository_a, token_budget=120, include_diagnostics=True)
+    )
+
+    diagnostics = next(element for element in context.elements if element.source_kind == "memory_diagnostics")
+    assert stale_a.record_id in diagnostics.content
+    assert stale_b.record_id not in diagnostics.content
+    assert "stale_count=1" in diagnostics.content
+
+
 def test_memory_diagnostics_aggregate_beyond_context_candidate_limit(tmp_path: Path):
     state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
     memory_store = MemoryStore(state_store)

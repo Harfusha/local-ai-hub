@@ -51,6 +51,30 @@ class MemoryStatus(str, Enum):
     STALE = "stale"
 
 
+def _normalise_scope_root(value: str) -> str:
+    return os.path.normcase(os.path.abspath(os.path.normpath(str(value).replace("\\", "/")))).replace("\\", "/")
+
+
+def _memory_matches_request_scope(
+    *,
+    scope: Any,
+    scope_id: str,
+    provenance: Mapping[str, Any] | None,
+    root: str,
+    task_id: str,
+    tenant: str,
+) -> bool:
+    scope_value = scope.value if hasattr(scope, "value") else str(scope)
+    if scope_value == AgentScope.REPOSITORY.value:
+        record_root = str((provenance or {}).get("root") or "")
+        return bool(root and record_root and _normalise_scope_root(record_root) == _normalise_scope_root(root))
+    if scope_value == AgentScope.TASK.value:
+        return bool(task_id) and (not scope_id or scope_id == task_id)
+    if scope_value == AgentScope.SESSION.value:
+        return bool(tenant) and (not scope_id or scope_id == tenant)
+    return True
+
+
 @dataclass(frozen=True)
 class MemoryRecord:
     record_id: str
@@ -702,8 +726,15 @@ class MemoryStore:
             self.state_store._publish(event)
         return stale_count
 
-    def diagnostic_summary(self, *, id_limit: int = 8) -> dict[str, dict[str, Any]]:
-        """Return aggregate excluded-memory counts with bounded newest record IDs."""
+    def diagnostic_summary(
+        self,
+        *,
+        id_limit: int = 8,
+        root: str | None = None,
+        task_id: str | None = None,
+        tenant: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Return request-scoped excluded-memory counts with bounded newest IDs."""
         statuses = (
             MemoryStatus.STALE.value,
             MemoryStatus.QUARANTINED.value,
@@ -715,24 +746,39 @@ class MemoryStore:
             return summary
         self._init_table()
         capped_limit = max(0, min(32, int(id_limit)))
+        request_scope_provided = root is not None or task_id is not None or tenant is not None
         con = connect_sqlite(self.state_store.db_path)
         try:
-            for status in statuses:
-                count_row = con.execute(
-                    "SELECT COUNT(1) FROM agent_memory_records WHERE status = ? AND (expires_at IS NULL OR expires_at > ?)",
-                    (status, time.time()),
-                ).fetchone()
-                summary[status]["count"] = int(count_row[0]) if count_row else 0
-                if capped_limit:
-                    rows = con.execute(
-                        """
-                        SELECT record_id FROM agent_memory_records
-                        WHERE status = ? AND (expires_at IS NULL OR expires_at > ?)
-                        ORDER BY updated_at DESC LIMIT ?
-                        """,
-                        (status, time.time(), capped_limit),
-                    ).fetchall()
-                    summary[status]["ids"] = [str(row[0]) for row in rows]
+            placeholders = ", ".join("?" for _ in statuses)
+            rows = con.execute(
+                f"""
+                SELECT record_id, status, scope, scope_id, provenance
+                FROM agent_memory_records
+                WHERE status IN ({placeholders}) AND (expires_at IS NULL OR expires_at > ?)
+                ORDER BY updated_at DESC
+                """,
+                (*statuses, time.time()),
+            ).fetchall()
+            for row in rows:
+                provenance: Mapping[str, Any]
+                try:
+                    parsed_provenance = json.loads(row[4] or "{}")
+                except (TypeError, ValueError):
+                    parsed_provenance = {}
+                provenance = parsed_provenance if isinstance(parsed_provenance, Mapping) else {}
+                if request_scope_provided and not _memory_matches_request_scope(
+                    scope=row[2],
+                    scope_id=str(row[3] or ""),
+                    provenance=provenance,
+                    root=root or "",
+                    task_id=task_id or "",
+                    tenant=tenant or "",
+                ):
+                    continue
+                status = str(row[1])
+                summary[status]["count"] += 1
+                if len(summary[status]["ids"]) < capped_limit:
+                    summary[status]["ids"].append(str(row[0]))
         finally:
             con.close()
         return summary
