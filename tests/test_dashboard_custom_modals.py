@@ -1434,7 +1434,11 @@ def test_trace_task5_handles_incomplete_empty_malformed_and_bounded_states() -> 
         + "const empty=renderRequestResponsePresentation({presentation:{kind:'request_response'},session:{request:{}},lifecycle:{state:'queued'}});"
         + "const malformed=renderRequestResponsePresentation({presentation:{kind:'request_response'},session:{request:'broken'},input:{payload:'malformed'},output:{result:'kept'}});"
         + "const bounded=renderAsyncJobPresentation({presentation:{kind:'async_job',asyncJob:{status:'running',result:huge}},lifecycle:{state:'running',terminal:false}});"
-        + "console.log(JSON.stringify({incomplete,empty,malformed,bounded}));"
+        + "const live=renderAsyncJobPresentation({presentation:{kind:'async_job',asyncJob:{status:'live',result:'live result'}},lifecycle:{}});"
+        + "const streaming=renderAsyncJobPresentation({presentation:{kind:'async_job',asyncJob:{status:'streaming',result:'stream result'}},lifecycle:{}});"
+        + "const malformedAsync=renderAsyncJobPresentation({presentation:{kind:'async_job',asyncJob:'broken'},lifecycle:{}});"
+        + "const multiHuge=renderRequestResponsePresentation({presentation:{kind:'request_response'},identity:{action:'huge.action'},session:{request:{method:'POST',path:'/huge'}},input:'input-'+huge,response:'response-'+huge,output:'output-'+huge,errors:'error-'+huge,lifecycle:{status_code:500}});"
+        + "console.log(JSON.stringify({incomplete,empty,malformed,bounded,live,streaming,malformedAsync,multiHuge}));"
     )
     result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
     rendered = json.loads(result.stdout)
@@ -1446,6 +1450,15 @@ def test_trace_task5_handles_incomplete_empty_malformed_and_bounded_states() -> 
     assert "[object Object]" not in rendered["malformed"]
     assert len(rendered["bounded"]) < 24000
     assert "payload-" in rendered["bounded"]
+    assert "live / incomplete" in rendered["live"] and "finished" not in rendered["live"]
+    assert "live / incomplete" in rendered["streaming"] and "finished" not in rendered["streaming"]
+    malformed_async_primary = rendered["malformedAsync"].split('<details class="trace-secondary-details', 1)[0]
+    assert "malformed async job" in malformed_async_primary
+    assert "background job" not in malformed_async_primary
+    multi_primary = rendered["multiHuge"].split('<details class="trace-secondary-details', 1)[0]
+    assert len(multi_primary) < 24000
+    for marker in ["request", "response", "status", "error", "input-", "response-", "error-"]:
+        assert marker in multi_primary, marker
 
 
 def test_trace_request_renderers_expose_reviewer_gap_contracts() -> None:
