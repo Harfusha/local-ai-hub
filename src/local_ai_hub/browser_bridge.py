@@ -49,6 +49,8 @@ _DEFAULTS = {
     "max_context_chars": 1_000_000,
     "max_elements": 256,
 }
+_MAX_STAGED_CAPTURES = 128
+_STAGE_REQUEST_ID_MAX = 128
 
 
 class CaptureProtocolError(ValueError):
@@ -61,7 +63,8 @@ class CaptureProtocolError(ValueError):
 
 
 _capabilities: dict[str, dict[str, Any]] = {}
-_capability_lock = threading.Lock()
+_staged_captures: dict[str, dict[str, Any]] = {}
+_capability_lock = threading.RLock()
 
 
 def _bridge_config(config: Any) -> Mapping[str, Any]:
@@ -114,6 +117,24 @@ def _result_error(error_code: str, message: str, *, status: int = 400, **details
     }
 
 
+def _safe_request_id(value: Any) -> str:
+    request_id = str(value or "").strip()
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-")
+    if not request_id or len(request_id) > _STAGE_REQUEST_ID_MAX or any(char not in allowed for char in request_id):
+        return ""
+    return request_id
+
+
+def _cleanup_staged_locked(now: float) -> None:
+    for request_id, stage in list(_staged_captures.items()):
+        if float(stage.get("expires_at", 0)) > now:
+            continue
+        _staged_captures.pop(request_id, None)
+        record = _capabilities.get(str(stage.get("capability", "")))
+        if record and record.get("staged_request_id") == request_id:
+            record.pop("staged_request_id", None)
+
+
 def issue_capture_capability(
     config: Any,
     *,
@@ -145,6 +166,7 @@ def issue_capture_capability(
         "used": False,
     }
     with _capability_lock:
+        _cleanup_staged_locked(now)
         for stale_token, stale in list(_capabilities.items()):
             if stale.get("used") or float(stale.get("expires_at", 0)) <= now:
                 _capabilities.pop(stale_token, None)
@@ -155,6 +177,49 @@ def issue_capture_capability(
     return token
 
 
+def _validate_capture_request_locked(
+    capability: str,
+    request: Mapping[str, Any],
+    *,
+    tenant: str | None = None,
+    consume: bool = True,
+    request_id: str = "",
+) -> dict[str, Any]:
+    """Validate a capability while the capability lock is held."""
+    token = str(capability or "").strip()
+    record = _capabilities.get(token)
+    if not record:
+        return _result_error("invalid_capability", "capture capability is invalid or expired", status=403)
+    if record["used"]:
+        return _result_error("capability_replayed", "capture capability has already been consumed", status=403)
+    if time.monotonic() >= float(record["expires_at"]):
+        record["used"] = True
+        return _result_error("capability_expired", "capture capability has expired", status=403)
+    reserved_request_id = str(record.get("staged_request_id", ""))
+    if reserved_request_id and reserved_request_id != request_id:
+        return _result_error("capability_replayed", "capture capability already has an active staged request", status=403)
+    if str(request.get("origin", "")) != record["origin"]:
+        return _result_error("origin_mismatch", "capture origin does not match capability", status=403)
+    requested_tenant = str(tenant if tenant is not None else request.get("tenant", "generic"))
+    if requested_tenant != record["tenant"]:
+        return _result_error("capability_tenant_mismatch", "capture tenant does not match capability", status=403)
+    requested_tab = request.get("tab_id")
+    if requested_tab is None or str(requested_tab).strip() == "":
+        return _result_error("missing_tab_id", "capture requires the explicitly requested tab_id")
+    if str(requested_tab) != record["tab_id"]:
+        return _result_error("tab_mismatch", "capture tab does not match the explicitly requested tab", status=409)
+    if record.get("window_id") is not None and str(request.get("window_id", "")).strip() == "":
+        return _result_error("missing_window_id", "capture requires the explicitly requested window_id")
+    if record.get("window_id") is not None and str(request.get("window_id")) != record["window_id"]:
+        return _result_error("window_mismatch", "capture window does not match the explicitly requested window", status=409)
+    if consume:
+        record["used"] = True
+        record.pop("staged_request_id", None)
+    elif request_id:
+        record["staged_request_id"] = request_id
+    return {"success": True, "tenant": record["tenant"], "tab_id": record["tab_id"], "window_id": record.get("window_id")}
+
+
 def validate_capture_request(
     capability: str,
     request: Mapping[str, Any],
@@ -162,32 +227,86 @@ def validate_capture_request(
     tenant: str | None = None,
 ) -> dict[str, Any]:
     """Consume a capability only after origin, tenant, and tab all match."""
-    token = str(capability or "").strip()
     with _capability_lock:
-        record = _capabilities.get(token)
-        if not record:
-            return _result_error("invalid_capability", "capture capability is invalid or expired", status=403)
-        if record["used"]:
-            return _result_error("capability_replayed", "capture capability has already been consumed", status=403)
-        if time.monotonic() >= float(record["expires_at"]):
-            record["used"] = True
-            return _result_error("capability_expired", "capture capability has expired", status=403)
-        if str(request.get("origin", "")) != record["origin"]:
-            return _result_error("origin_mismatch", "capture origin does not match capability", status=403)
-        requested_tenant = str(tenant if tenant is not None else request.get("tenant", "generic"))
-        if requested_tenant != record["tenant"]:
-            return _result_error("capability_tenant_mismatch", "capture tenant does not match capability", status=403)
-        requested_tab = request.get("tab_id")
-        if requested_tab is None or str(requested_tab).strip() == "":
-            return _result_error("missing_tab_id", "capture requires the explicitly requested tab_id")
-        if str(requested_tab) != record["tab_id"]:
-            return _result_error("tab_mismatch", "capture tab does not match the explicitly requested tab", status=409)
-        if record.get("window_id") is not None and str(request.get("window_id", "")).strip() == "":
-            return _result_error("missing_window_id", "capture requires the explicitly requested window_id")
-        if record.get("window_id") is not None and str(request.get("window_id")) != record["window_id"]:
-            return _result_error("window_mismatch", "capture window does not match the explicitly requested window", status=409)
-        record["used"] = True
-    return {"success": True, "tenant": record["tenant"], "tab_id": record["tab_id"], "window_id": record.get("window_id")}
+        _cleanup_staged_locked(time.monotonic())
+        return _validate_capture_request_locked(capability, request, tenant=tenant)
+
+
+def stage_capture(capability: str, payload: Mapping[str, Any], *, tenant: str, config: Any) -> dict[str, Any]:
+    """Validate and hold a bounded capture until an explicit commit request."""
+    request_id = _safe_request_id(payload.get("request_id")) if isinstance(payload, Mapping) else ""
+    if not request_id:
+        return _result_error("invalid_request_id", "staged capture requires a bounded request_id")
+    request = {
+        "origin": payload.get("origin", ""),
+        "tenant": tenant,
+        "tab_id": payload.get("tab_id"),
+        "window_id": payload.get("window_id"),
+    }
+    with _capability_lock:
+        now = time.monotonic()
+        _cleanup_staged_locked(now)
+        checked_request = _validate_capture_request_locked(capability, request, tenant=tenant, consume=False, request_id=request_id)
+        if not checked_request.get("success"):
+            return checked_request
+        existing = _staged_captures.get(request_id)
+        if existing:
+            if existing.get("capability") != str(capability):
+                return _result_error("request_id_conflict", "staged capture request_id is already in use", status=409)
+            return {"success": True, "staged": True, "request_id": request_id}
+        checked_payload = validate_capture_payload(payload, config=config)
+        if not checked_payload.get("success"):
+            _capabilities[str(capability)].pop("staged_request_id", None)
+            return checked_payload
+        if len(_staged_captures) >= _MAX_STAGED_CAPTURES:
+            _capabilities[str(capability)].pop("staged_request_id", None)
+            return _result_error("staging_capacity", "capture staging capacity is temporarily exhausted", status=429)
+        ttl = max(1.0, float(_setting(config, "capability_ttl_seconds")))
+        _staged_captures[request_id] = {
+            "capability": str(capability),
+            "tenant": str(tenant),
+            "payload": checked_payload["payload"],
+            "created_at": now,
+            "expires_at": min(float(_capabilities[str(capability)]["expires_at"]), now + ttl),
+        }
+    return {"success": True, "staged": True, "request_id": request_id}
+
+
+def commit_staged_capture(
+    capability: str,
+    request: Mapping[str, Any],
+    *,
+    artifacts: Any,
+    tenant: str,
+    config: Any,
+) -> dict[str, Any]:
+    """Consume the live capability, then commit exactly one staged capture."""
+    request_id = _safe_request_id(request.get("request_id"))
+    if not request_id:
+        return _result_error("invalid_request_id", "capture commit requires a bounded request_id")
+    with _capability_lock:
+        _cleanup_staged_locked(time.monotonic())
+        checked = _validate_capture_request_locked(capability, request, tenant=tenant, consume=True, request_id=request_id)
+        if not checked.get("success"):
+            return checked
+        stage = _staged_captures.pop(request_id, None)
+    if not stage or stage.get("capability") != str(capability) or stage.get("tenant") != str(tenant):
+        return _result_error("capture_stage_missing", "capture stage is missing, expired, or tenant-scoped elsewhere", status=409)
+    return capture_to_artifacts(stage["payload"], artifacts=artifacts, tenant=tenant, config=config)
+
+
+def abandon_staged_capture(capability: str, request: Mapping[str, Any], *, tenant: str) -> dict[str, Any]:
+    """Burn the capability and discard a staged capture without writing artifacts."""
+    request_id = _safe_request_id(request.get("request_id"))
+    if not request_id:
+        return _result_error("invalid_request_id", "capture abandon requires a bounded request_id")
+    with _capability_lock:
+        _cleanup_staged_locked(time.monotonic())
+        checked = _validate_capture_request_locked(capability, request, tenant=tenant, consume=True, request_id=request_id)
+        if not checked.get("success"):
+            return checked
+        _staged_captures.pop(request_id, None)
+    return {"success": True, "abandoned": True, "request_id": request_id}
 
 
 def _json_size(value: Any) -> int:

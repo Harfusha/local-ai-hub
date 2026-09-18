@@ -32,7 +32,16 @@ from .agent_verification import VerificationReceipt
 from .agent_context import ContextRequest
 from .agent_learning import ImprovementCandidate, SLOObservation
 from .json_utils import dumps as json_dumps
-from .browser_bridge import capture_failure, capture_to_artifacts, issue_capture_capability, origin_allowed, validate_capture_request
+from .browser_bridge import (
+    abandon_staged_capture,
+    capture_failure,
+    capture_to_artifacts,
+    commit_staged_capture,
+    issue_capture_capability,
+    origin_allowed,
+    stage_capture,
+    validate_capture_request,
+)
 
 
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
@@ -1776,6 +1785,24 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(status, {"success": False, "error": str(exc), "error_code": code, "terminal": True, "retryable": False}); return
                 ttl = int(APP.config.get("browser_bridge", {}).get("capability_ttl_seconds", 60))
                 self._send(200, {"success": True, "capability": capability, "one_use": True, "expires_in_seconds": ttl, "tab_id": payload.get("tab_id"), "window_id": payload.get("window_id")}); return
+            if path in {"/api/browser/capture/stage", "/api/browser/capture/commit", "/api/browser/capture/abandon"}:
+                request = {
+                    "origin": self.headers.get("Origin", payload.get("origin", "")),
+                    "tenant": tenant,
+                    "tab_id": payload.get("tab_id"),
+                    "window_id": payload.get("window_id"),
+                    "request_id": payload.get("request_id"),
+                }
+                capability = str(payload.get("capability", ""))
+                if path == "/api/browser/capture/stage":
+                    staged_payload = dict(payload)
+                    staged_payload["origin"] = request["origin"]
+                    result = stage_capture(capability, staged_payload, tenant=tenant, config=APP.config)
+                elif path == "/api/browser/capture/commit":
+                    result = commit_staged_capture(capability, request, artifacts=APP.artifacts, tenant=tenant, config=APP.config)
+                else:
+                    result = abandon_staged_capture(capability, request, tenant=tenant)
+                self._send(int(result.get("status", 200 if result.get("success") else 400)), result); return
             if path == "/api/browser/capture":
                 request = {
                     "origin": self.headers.get("Origin", payload.get("origin", "")),

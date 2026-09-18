@@ -7,11 +7,15 @@ from pathlib import Path
 
 import pytest
 
+import local_ai_hub.browser_bridge as browser_bridge_module
 from local_ai_hub.browser_bridge import (
     CaptureProtocolError,
+    abandon_staged_capture,
     capture_to_artifacts,
+    commit_staged_capture,
     issue_capture_capability,
     origin_allowed,
+    stage_capture,
     validate_capture_payload,
     validate_capture_request,
 )
@@ -36,6 +40,7 @@ def config() -> dict:
 
 def capture_payload(*, tab_id: int = 7, window_id: int = 3) -> dict:
     return {
+        "origin": "chrome-extension://fixture",
         "tab_id": tab_id,
         "window_id": window_id,
         "url": "https://fixture.test/checkout?secret=not-persisted",
@@ -168,6 +173,93 @@ def test_capture_aborts_same_tab_navigation_before_artifact_commit() -> None:
     assert result["success"] is False
     assert result["error_code"] == "target_changed"
     assert result["status"] == 409
+
+
+def test_staged_capture_requires_explicit_commit_and_abandon_is_terminal() -> None:
+    sink = ArtifactSink()
+    capability = issue_capture_capability(
+        config(), origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7, window_id=3
+    )
+    payload = capture_payload()
+    payload["request_id"] = "capture-request-1"
+
+    staged = stage_capture(capability, payload, tenant="tenant-a", config=config())
+    assert staged == {"success": True, "staged": True, "request_id": "capture-request-1"}
+    assert sink.calls == []
+
+    duplicate = stage_capture(capability, payload, tenant="tenant-a", config=config())
+    assert duplicate == staged
+    committed = commit_staged_capture(
+        capability,
+        {"origin": "chrome-extension://fixture", "tab_id": 7, "window_id": 3, "request_id": "capture-request-1"},
+        artifacts=sink,
+        tenant="tenant-a",
+        config=config(),
+    )
+    assert committed["success"] is True
+    assert any(call[0] == "frontend-review-bundle" for call in sink.calls)
+    late_commit = commit_staged_capture(
+        capability,
+        {"origin": "chrome-extension://fixture", "tab_id": 7, "window_id": 3, "request_id": "capture-request-1"},
+        artifacts=sink,
+        tenant="tenant-a",
+        config=config(),
+    )
+    assert late_commit["success"] is False
+    assert len([call for call in sink.calls if call[0] == "frontend-review-bundle"]) == 1
+
+    abandoned_sink = ArtifactSink()
+    abandoned_capability = issue_capture_capability(
+        config(), origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7, window_id=3
+    )
+    abandoned_payload = capture_payload()
+    abandoned_payload["request_id"] = "capture-request-abandoned"
+    assert stage_capture(abandoned_capability, abandoned_payload, tenant="tenant-a", config=config())["success"] is True
+    abandoned = abandon_staged_capture(
+        abandoned_capability,
+        {"origin": "chrome-extension://fixture", "tab_id": 7, "window_id": 3, "request_id": "capture-request-abandoned"},
+        tenant="tenant-a",
+    )
+    assert abandoned["success"] is True
+    assert abandoned_sink.calls == []
+    late_commit = commit_staged_capture(
+        abandoned_capability,
+        {"origin": "chrome-extension://fixture", "tab_id": 7, "window_id": 3, "request_id": "capture-request-abandoned"},
+        artifacts=abandoned_sink,
+        tenant="tenant-a",
+        config=config(),
+    )
+    assert late_commit["success"] is False
+    assert abandoned_sink.calls == []
+
+
+def test_expired_staged_capture_is_cleaned_without_artifact_commit(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = {"now": 100.0}
+    monkeypatch.setattr(browser_bridge_module.time, "monotonic", lambda: clock["now"])
+    short_config = config()
+    short_config["browser_bridge"]["capability_ttl_seconds"] = 1
+    sink = ArtifactSink()
+    capability = issue_capture_capability(
+        short_config, origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7, window_id=3
+    )
+    payload = capture_payload()
+    payload["request_id"] = "capture-request-expired"
+    assert stage_capture(capability, payload, tenant="tenant-a", config=short_config)["success"] is True
+
+    clock["now"] = 102.0
+    replacement = issue_capture_capability(
+        short_config, origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7, window_id=3
+    )
+    assert replacement
+    late_commit = commit_staged_capture(
+        capability,
+        {"origin": "chrome-extension://fixture", "tab_id": 7, "window_id": 3, "request_id": "capture-request-expired"},
+        artifacts=sink,
+        tenant="tenant-a",
+        config=short_config,
+    )
+    assert late_commit["success"] is False
+    assert sink.calls == []
 
 
 def test_packaged_browser_bridge_defaults_match_source_defaults() -> None:

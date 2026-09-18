@@ -91,8 +91,30 @@ const SHA256_K = [
   0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
-function utf8Bytes(value) {
+function normalizeUtf16(value) {
   const text = String(value);
+  let normalized = "";
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = text.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        normalized += text[index] + text[index + 1];
+        index += 1;
+      } else {
+        normalized += "\ufffd";
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      normalized += "\ufffd";
+    } else {
+      normalized += text[index];
+    }
+  }
+  return normalized;
+}
+
+function utf8Bytes(value) {
+  const text = normalizeUtf16(value);
   if (typeof globalThis.TextEncoder === "function") return Array.from(new globalThis.TextEncoder().encode(text));
   const bytes = [];
   for (let index = 0; index < text.length; index += 1) {

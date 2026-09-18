@@ -99,6 +99,7 @@ const captureContext = {
 vm.runInNewContext(captureSource, captureContext);
 async function runFixture() {
 assert.equal(captureContext.sha256Fallback("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+assert.equal(captureContext.sha256Fallback("\ud800"), "83d544ccc223c057d2bf80d3f2a32982c32c3c0db8e2674820da5064783fb097");
 const page = await captureContext.captureCurrentTab();
 assert.equal(page.success, true);
 assert.equal(page.dom.redaction, "none");
@@ -110,15 +111,20 @@ assert.match(page.target_origin, /^https:\/\/fixture\.test$/);
 assert.match(page.captured_at, /T/);
 assert.match(page.document_state_token, /^state:sha256:[0-9a-f]{64}$/);
 
-const webCryptoContext = {...captureContext, crypto: webcrypto};
-vm.runInNewContext(captureSource, webCryptoContext);
-const webCryptoPage = await webCryptoContext.captureCurrentTab();
+  const webCryptoContext = {...captureContext, crypto: webcrypto};
+  webCryptoContext.TextEncoder = TextEncoder;
+  vm.runInNewContext(captureSource, webCryptoContext);
+  assert.equal(await webCryptoContext.digestState("\ud800"), "83d544ccc223c057d2bf80d3f2a32982c32c3c0db8e2674820da5064783fb097");
+  const webCryptoPage = await webCryptoContext.captureCurrentTab();
 assert.equal(webCryptoPage.document_state_token, page.document_state_token);
 
-async function runBackground({timeout = null, hubTimeout = null, finalPostTimeout = null, queryTimeout = false, getTimeout = false, switchTab = false, switchAfterScreenshot = false, screenshotTimeout = false, closed = false, permission = false, navigateAfterScreenshot = false, mutateDocumentAfterScreenshot = false, missingUrl = false, emptyUrl = false, token = ""} = {}) {
+async function runBackground({timeout = null, hubTimeout = null, stageTimeout = false, finalPostTimeout = null, queryTimeout = false, getTimeout = false, switchTab = false, switchAfterScreenshot = false, screenshotTimeout = false, closed = false, permission = false, navigateAfterScreenshot = false, mutateDocumentAfterScreenshot = false, missingUrl = false, emptyUrl = false, token = ""} = {}) {
   let activeId = closed ? null : 7;
   const posts = [];
   const committedPosts = [];
+  const serverStaged = new Set();
+  let delayedStageResponses = 0;
+  let artifactCommits = 0;
   let aborted = false;
   const currentTab = {id: 7, windowId: 3};
   if (!missingUrl) currentTab.url = emptyUrl ? "" : page.url;
@@ -154,18 +160,40 @@ async function runBackground({timeout = null, hubTimeout = null, finalPostTimeou
     },
     fetch: async (_url, options) => {
       const body = JSON.parse(options.body);
-      if (hubTimeout || (finalPostTimeout && body.screenshot)) {
+      const path = new URL(_url).pathname;
+      if (hubTimeout || (finalPostTimeout && path.endsWith("/commit")) || (stageTimeout && path.endsWith("/stage"))) {
+        if (path.endsWith("/stage")) serverStaged.add(body.request_id);
         return new Promise((_, reject) => {
+          if (stageTimeout && path.endsWith("/stage")) {
+            setTimeout(() => {
+              delayedStageResponses += 1;
+              if (options.signal.aborted) serverStaged.delete(body.request_id);
+            }, 15);
+          }
           options.signal.addEventListener("abort", () => {
             aborted = true;
+            if (path.endsWith("/stage")) serverStaged.delete(body.request_id);
             reject(Object.assign(new Error("aborted"), {name: "AbortError"}));
           });
         });
       }
       if (token) assert.equal(options.headers["X-LocalAI-Token"], token);
       posts.push(body);
-      const value = body.capture_error ? {success: false, error_code: body.capture_error} : body.capability ? {success: true, bundle_artifact_id: "bundle"} : {success: true, capability: "cap"};
-      committedPosts.push(body);
+      let value;
+      if (path.endsWith("/stage")) {
+        serverStaged.add(body.request_id);
+        value = {success: true, staged: true, request_id: body.request_id};
+      } else if (path.endsWith("/commit")) {
+        committedPosts.push(body);
+        artifactCommits += 1;
+        serverStaged.delete(body.request_id);
+        value = {success: true, bundle_artifact_id: "bundle"};
+      } else if (path.endsWith("/abandon")) {
+        serverStaged.delete(body.request_id);
+        value = {success: true, abandoned: true, request_id: body.request_id};
+      } else {
+        value = body.capture_error ? {success: false, error_code: body.capture_error} : {success: true, capability: "cap"};
+      }
       return {ok: true, status: 200, json: async () => value};
     },
     URL,
@@ -180,15 +208,17 @@ async function runBackground({timeout = null, hubTimeout = null, finalPostTimeou
     bgContext.chrome.tabs.sendMessage = () => new Promise(() => {});
   }
   const result = await bgContext.captureCurrentTab(tab);
-  return {result, posts, committedPosts, aborted};
+  if (stageTimeout) await new Promise((resolve) => setTimeout(resolve, 25));
+  return {result, posts, committedPosts, serverStaged, delayedStageResponses, artifactCommits, aborted};
 }
 
   const success = await runBackground();
   assert.equal(success.result.success, true);
   assert.equal(success.posts.at(-1).tab_id, 7);
   assert.equal(success.posts.at(-1).window_id, 3);
-  assert.match(success.posts.at(-1).dom.html, /data-authenticated="true"/);
-  assert.equal(success.posts.at(-1).capture_identity.initial.document_token, "document:1000:0:navigate");
+  const stagedSuccess = success.posts.find((post) => post.screenshot);
+  assert.match(stagedSuccess.dom.html, /data-authenticated="true"/);
+  assert.equal(stagedSuccess.capture_identity.initial.document_token, "document:1000:0:navigate");
 
   const timeout = await runBackground({timeout: 5});
   assert.equal(timeout.result.error_code, "timeout");
@@ -205,6 +235,12 @@ async function runBackground({timeout = null, hubTimeout = null, finalPostTimeou
   assert.equal(finalPostTimeoutResult.result.error_code, "timeout");
   assert.equal(finalPostTimeoutResult.aborted, true);
   assert.equal(finalPostTimeoutResult.committedPosts.some((post) => post.screenshot), false);
+  const delayedStage = await runBackground({stageTimeout: true});
+  assert.equal(delayedStage.result.error_code, "timeout");
+  assert.equal(delayedStage.aborted, true);
+  assert.equal(delayedStage.delayedStageResponses, 1);
+  assert.equal(delayedStage.serverStaged.size, 0);
+  assert.equal(delayedStage.artifactCommits, 0);
   const queryTimeoutResult = await runBackground({timeout: 5, queryTimeout: true});
   assert.equal(queryTimeoutResult.result.error_code, "timeout");
   assert.equal(queryTimeoutResult.posts.length, 0);

@@ -79,6 +79,25 @@ async function sendFailure(capability, tab, errorCode) {
   }
 }
 
+function captureRequestId() {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") return globalThis.crypto.randomUUID().slice(0, 128);
+  return `capture-${Date.now()}-${Math.random().toString(36).slice(2, 18)}`;
+}
+
+async function abandonCapture(capability, tab, origin, requestId) {
+  try {
+    return await post("/api/browser/capture/abandon", {
+      capability,
+      origin,
+      tab_id: tab.id,
+      window_id: tab.windowId,
+      request_id: requestId,
+    });
+  } catch (_) {
+    return {success: false, error_code: "unsupported", fallback: false};
+  }
+}
+
 async function currentTabState(tab) {
   try {
     const activeTabs = await timed(Promise.resolve().then(() => chrome.tabs.query({active: true, windowId: tab.windowId})), CAPTURE_TIMEOUT_MS);
@@ -181,17 +200,33 @@ async function captureCurrentTab(tab) {
   if (!sameIdentity(initialIdentity, finalIdentity) || !tabUrlMatches(afterScreenshot.tab, finalIdentity)) {
     return sendFailure(capability, tab, "target_changed");
   }
-  try {
-    return await post("/api/browser/capture", {
+  const requestId = captureRequestId();
+  const stagedPayload = {
       capability,
       origin,
       tab_id: tab.id,
       window_id: tab.windowId,
+      request_id: requestId,
       screenshot,
       ...page,
       capture_identity: {initial: initialIdentity, final: finalIdentity},
+  };
+  try {
+    const staged = await post("/api/browser/capture/stage", stagedPayload);
+    if (!staged.success) return staged;
+    const committed = await post("/api/browser/capture/commit", {
+      capability,
+      origin,
+      tab_id: tab.id,
+      window_id: tab.windowId,
+      request_id: requestId,
     });
+    if (!committed.success) {
+      await abandonCapture(capability, tab, origin, requestId);
+    }
+    return committed;
   } catch (error) {
+    await abandonCapture(capability, tab, origin, requestId);
     return {success: false, error_code: isTimeout(error) ? "timeout" : "unsupported", fallback: false};
   }
 }
