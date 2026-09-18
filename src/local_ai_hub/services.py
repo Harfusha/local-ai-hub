@@ -36,6 +36,7 @@ from .trace_context import observer
 from .treesitter_parser import parse_treesitter
 from .vision_contracts import (
     VISION_MAX_BUNDLE_CHARS,
+    VISION_MAX_IMAGE_BYTES,
     VISION_MAX_IMAGE_CHARS,
     VISION_MAX_INLINE_RESPONSE_CHARS,
     VISION_MAX_PROMPT_CHARS,
@@ -1324,7 +1325,24 @@ class LocalAIServices:
 
         def append_image(value: str) -> dict[str, Any] | None:
             if len(value) > VISION_MAX_IMAGE_CHARS:
-                return input_error("Vision image input exceeds the bounded size limit.")
+                return input_error(
+                    "Vision image transport exceeds the bounded character limit.",
+                    "vision_image_transport_too_large",
+                )
+            encoded = value
+            if value.startswith("data:image/"):
+                if "," not in value:
+                    return input_error("Vision image data URL is invalid.", "vision_image_integrity")
+                encoded = value.split(",", 1)[1]
+            try:
+                decoded = base64.b64decode(encoded, validate=True)
+            except (ValueError, TypeError):
+                return input_error("Vision image input is not valid base64.", "vision_image_integrity")
+            if len(decoded) > VISION_MAX_IMAGE_BYTES:
+                return input_error(
+                    "Vision image exceeds the bounded decoded-byte limit.",
+                    "vision_image_too_large",
+                )
             images.append(value)
             return None
 
@@ -1337,7 +1355,10 @@ class LocalAIServices:
                 return False
 
         if image_path:
-            if is_inline_image(image_path) and "image_path" not in args:
+            if (
+                "image_path" not in args
+                and (image_path.startswith("data:image/") or len(image_path) > VISION_MAX_IMAGE_CHARS or is_inline_image(image_path))
+            ):
                 error = append_image(image_path)
                 if error:
                     return error
@@ -1362,7 +1383,7 @@ class LocalAIServices:
 
         def resolve_artifact(artifact_id: str, max_chars: int) -> tuple[str, dict[str, Any] | None]:
             try:
-                artifact = self.artifacts.get(artifact_id, max_chars=max_chars)
+                artifact = self.artifacts.get(artifact_id, max_chars=max_chars, tenant=tenant)
             except Exception:
                 return "", {
                     "success": False,
@@ -1401,7 +1422,7 @@ class LocalAIServices:
 
         def resolve_binary_artifact(artifact_id: str, max_bytes: int) -> tuple[str, dict[str, Any] | None]:
             try:
-                artifact = self.artifacts.get_binary(artifact_id)
+                artifact = self.artifacts.get_binary(artifact_id, tenant=tenant)
             except Exception:
                 return "", {
                     "success": False,
@@ -1420,12 +1441,22 @@ class LocalAIServices:
                 size_bytes = int(artifact.get("size_bytes", -1))
             except (TypeError, ValueError, OverflowError):
                 size_bytes = -1
-            if not mime_type.startswith("image/") or not isinstance(encoded, str) or size_bytes < 0 or size_bytes > max_bytes:
+            if not mime_type.startswith("image/") or not isinstance(encoded, str) or size_bytes < 0:
                 return "", input_error("Vision image artifact exceeds the bounded integrity contract.", "vision_artifact_integrity")
+            if len(encoded) > VISION_MAX_IMAGE_CHARS:
+                return "", input_error(
+                    "Vision image transport exceeds the bounded character limit.",
+                    "vision_image_transport_too_large",
+                )
             try:
                 decoded = base64.b64decode(encoded, validate=True)
             except (ValueError, TypeError):
                 return "", input_error("Vision image artifact is not valid base64.", "vision_artifact_integrity")
+            if len(decoded) > max_bytes:
+                return "", input_error(
+                    "Vision image exceeds the bounded decoded-byte limit.",
+                    "vision_image_too_large",
+                )
             if len(decoded) != size_bytes:
                 return "", input_error("Vision image artifact is truncated or incomplete.", "vision_artifact_truncated")
             return encoded, None
@@ -1442,7 +1473,7 @@ class LocalAIServices:
             screenshot = resolved.get("screenshot")
             screenshot_ref = screenshot.get("artifact_id", "") if isinstance(screenshot, dict) else ""
             if screenshot_ref and not images:
-                image_data, error = resolve_binary_artifact(str(screenshot_ref), VISION_MAX_IMAGE_CHARS)
+                image_data, error = resolve_binary_artifact(str(screenshot_ref), VISION_MAX_IMAGE_BYTES)
                 if error:
                     return "", error
                 error = append_image(image_data)
@@ -1466,7 +1497,7 @@ class LocalAIServices:
             return json_dumps(resolved, ensure_ascii=False), None
 
         if image_artifact_id and not images:
-            artifact_data, error = resolve_binary_artifact(image_artifact_id, VISION_MAX_IMAGE_CHARS)
+            artifact_data, error = resolve_binary_artifact(image_artifact_id, VISION_MAX_IMAGE_BYTES)
             if error:
                 return error
             error = append_image(artifact_data)

@@ -55,6 +55,65 @@ def test_binary_image_round_trips_with_complete_identity_metadata(tmp_path: Path
     }
 
 
+def test_artifacts_are_tenant_scoped_and_same_content_cannot_overwrite(tmp_path: Path) -> None:
+    store = ArtifactStore(tmp_path)
+
+    first_id = store.put("same response", "tenant-a", "vision-output")
+    second_id = store.put("same response", "tenant-b", "vision-output")
+    first_image_id = store.put_bytes(PNG, "tenant-a", "vision-image", "image/png")
+    second_image_id = store.put_bytes(PNG, "tenant-b", "vision-image", "image/png")
+
+    assert first_id != second_id
+    assert first_image_id != second_image_id
+    assert store.get(first_id, tenant="tenant-a")["success"] is True
+    assert store.get(first_id, tenant="tenant-b") == {
+        "success": False,
+        "error": "artifact not found or expired",
+        "artifact_id": first_id,
+    }
+    assert store.get_binary(first_image_id, tenant="tenant-a")["success"] is True
+    assert store.get_binary(first_image_id, tenant="tenant-b") == {
+        "success": False,
+        "error": "artifact not found or expired",
+    }
+
+
+def test_artifact_schema_uses_additive_release_compatible_tables(tmp_path: Path) -> None:
+    source = Path(__file__).resolve().parents[1] / "src" / "local_ai_hub" / "artifacts.py"
+    assert "ALTER TABLE" not in source.read_text(encoding="utf-8").upper()
+
+    db_path = tmp_path / "artifacts.sqlite3"
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute(
+            "CREATE TABLE artifacts (artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL, tenant TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO artifacts VALUES (?, ?, ?, ?, ?)",
+            ("art_legacy", 9_999_999_999, "tenant", "text", "legacy"),
+        )
+        connection.commit()
+
+    store = ArtifactStore(tmp_path)
+    with closing(sqlite3.connect(db_path)) as connection:
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "artifacts_v2" in tables
+    assert store.get("art_legacy", tenant="tenant")["text"] == "legacy"
+
+
+def test_binary_integrity_rejects_non_numeric_stored_size(tmp_path: Path) -> None:
+    store = ArtifactStore(tmp_path)
+    artifact_id = store.put_bytes(PNG, "tenant", "vision-image", "image/png")
+
+    with closing(sqlite3.connect(store.path)) as connection:
+        connection.execute("UPDATE artifacts SET size_bytes=? WHERE artifact_id=?", ("not-a-number", artifact_id))
+        connection.commit()
+
+    assert store.get_binary(artifact_id, tenant="tenant") == {
+        "success": False,
+        "error": "artifact integrity check failed",
+    }
+
+
 def test_binary_transport_rejects_non_images_and_oversized_images(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path, max_binary_bytes=len(PNG))
 
@@ -209,13 +268,23 @@ def test_http_binary_artifact_get_returns_complete_payload(tmp_path: Path) -> No
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/artifact/get",
             data=json.dumps({"artifact_id": artifact_id, "binary": True}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "X-LocalAI-Tenant": "tenant"},
             method="POST",
         )
         with urllib.request.urlopen(request) as response:
             payload = json.loads(response.read().decode("utf-8"))
         assert payload["success"] is True
         assert base64.b64decode(payload["data_base64"]) == PNG
+
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/artifact/get",
+            data=json.dumps({"artifact_id": artifact_id, "binary": True}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-LocalAI-Tenant": "other-tenant"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request) as response:
+            cross_tenant_payload = json.loads(response.read().decode("utf-8"))
+        assert cross_tenant_payload == {"success": False, "error": "artifact not found or expired"}
     finally:
         server.shutdown()
         server.server_close()
