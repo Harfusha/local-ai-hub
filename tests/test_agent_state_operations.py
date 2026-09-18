@@ -243,6 +243,72 @@ def test_project_bundle_rejects_foreign_repository_memory(tmp_path: Path):
             app.export_bundle(str(source_repo), agent_state_record_ids=[record.record_id])
 
 
+def test_project_bundle_rejects_repository_memory_without_root(tmp_path: Path):
+    source_repo = tmp_path / "source-repo"
+    source_repo.mkdir()
+    with app_with_agent_state(tmp_path / "source-app") as app:
+        record = app.agent_memory.record(
+            MemoryRecord.create(
+                kind=MemoryKind.FINDING,
+                scope=AgentScope.REPOSITORY,
+                key="rootless-repo-memory",
+                value="must not export",
+                scope_id="rootless",
+                status=MemoryStatus.CONFIRMED,
+            ),
+            actor="user",
+        )
+        with pytest.raises(BundleValidationError, match="provenance root"):
+            app.export_bundle(str(source_repo), agent_state_record_ids=[record.record_id])
+
+
+def test_project_bundle_import_rejects_repository_memory_without_root(tmp_path: Path):
+    import hashlib
+
+    source_repo = tmp_path / "source-repo"
+    target_repo = tmp_path / "target-repo"
+    source_repo.mkdir()
+    target_repo.mkdir()
+    with app_with_agent_state(tmp_path / "source-app") as app1:
+        record = app1.agent_memory.record(
+            MemoryRecord.create(
+                kind=MemoryKind.FINDING,
+                scope=AgentScope.REPOSITORY,
+                key="import-rootless",
+                value="must not import",
+                scope_id="repo-import-rootless",
+                status=MemoryStatus.CONFIRMED,
+                provenance={"root": str(source_repo)},
+            ),
+            actor="user",
+        )
+        raw = app1.export_bundle(str(source_repo), agent_state_record_ids=[record.record_id])
+
+    with zipfile.ZipFile(io.BytesIO(raw), "r") as zf:
+        payload = json.loads(zf.read("bundle.json"))
+    payload["agent_state_records"][0]["data"]["provenance"] = {}
+    records_canonical = json.dumps(
+        payload["agent_state_records"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    payload["agent_state_records_sha256"] = hashlib.sha256(records_canonical).hexdigest()
+    all_state_canonical = json.dumps(
+        {"agent_state_records": payload["agent_state_records"], "tables": payload["tables"]},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    payload["tables_sha256"] = hashlib.sha256(all_state_canonical).hexdigest()
+    modified = io.BytesIO()
+    with zipfile.ZipFile(modified, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("bundle.json", json.dumps(payload, separators=(",", ":")))
+
+    with app_with_agent_state(tmp_path / "target-app") as app2:
+        result = app2.import_bundle(modified.getvalue(), str(target_repo))
+        assert result["success"] is False
+        assert "provenance root" in result["error"]
+        assert app2.agent_memory.get(record.record_id) is None
+
+
 def test_project_bundle_rejects_tampered_agent_state_records(tmp_path: Path):
     source_repo = tmp_path / "source-repo"
     target_repo = tmp_path / "target-repo"

@@ -1168,7 +1168,29 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 rec_id = (query.get("record_id") or [""])[0]
                 if rec_id:
-                    rec = APP.agent_memory.get(rec_id)
+                    scope_raw = (query.get("scope") or [None])[0]
+                    scope_val = AgentScope.parse(scope_raw, default=None) if scope_raw else AgentScope.GLOBAL
+                    scope_id_val = (query.get("scope_id") or [None])[0]
+                    root_val = (query.get("root") or [None])[0]
+                    repository_id_val = (query.get("repository_id") or [None])[0]
+                    tenant_val = (query.get("tenant") or [None])[0]
+                    if scope_val in {AgentScope.TASK, AgentScope.SESSION} and not str(scope_id_val or "").strip():
+                        rec = None
+                    elif scope_val is AgentScope.REPOSITORY and not any(
+                        str(value or "").strip() for value in (scope_id_val, root_val, repository_id_val)
+                    ):
+                        rec = None
+                    else:
+                        matches = APP.agent_memory.find(
+                            record_id=rec_id,
+                            scope=scope_val,
+                            scope_id=str(scope_id_val) if scope_id_val is not None else None,
+                            root=str(root_val) if root_val else None,
+                            repository_id=str(repository_id_val) if repository_id_val else None,
+                            tenant=str(tenant_val) if tenant_val else None,
+                            limit=1,
+                        )
+                        rec = matches[0] if matches else None
                     if not rec:
                         self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
                     self._send(200, {"success": True, "record": rec.to_dict()}); return
@@ -1184,7 +1206,30 @@ class Handler(BaseHTTPRequestHandler):
                     except ValueError:
                         pass
                 limit_val = int((query.get("limit") or [100])[0])
-                records = APP.agent_memory.find(scope=scope_val, key=key_val, query=query_val, status=status_val, limit=limit_val)
+                scope_id_val = (query.get("scope_id") or [None])[0]
+                root_val = (query.get("root") or [None])[0]
+                repository_id_val = (query.get("repository_id") or [None])[0]
+                tenant_val = (query.get("tenant") or [None])[0]
+                if scope_val is None:
+                    scope_val = AgentScope.GLOBAL
+                if scope_val in {AgentScope.TASK, AgentScope.SESSION} and not str(scope_id_val or "").strip():
+                    records = []
+                elif scope_val is AgentScope.REPOSITORY and not any(
+                    str(value or "").strip() for value in (scope_id_val, root_val, repository_id_val)
+                ):
+                    records = []
+                else:
+                    records = APP.agent_memory.find(
+                        scope=scope_val,
+                        scope_id=str(scope_id_val) if scope_id_val is not None else None,
+                        root=str(root_val) if root_val else None,
+                        repository_id=str(repository_id_val) if repository_id_val else None,
+                        tenant=str(tenant_val) if tenant_val else None,
+                        key=key_val,
+                        query=query_val,
+                        status=status_val,
+                        limit=limit_val,
+                    )
                 self._send(200, {"success": True, "records": [r.to_dict() for r in records]}); return
             if path == "/api/agent-state/events":
                 if not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
@@ -1949,7 +1994,30 @@ class Handler(BaseHTTPRequestHandler):
                     query_val = str(payload["query"]) if payload.get("query") else None
                     status_val = MemoryStatus(str(payload["status"])) if payload.get("status") else None
                     limit_val = int(payload.get("limit", 100))
-                    records = APP.agent_memory.find(scope=scope_val, key=key_val, query=query_val, status=status_val, limit=limit_val)
+                    scope_id_val = payload.get("scope_id")
+                    root_val = payload.get("root")
+                    repository_id_val = payload.get("repository_id")
+                    tenant_val = payload.get("tenant")
+                    if scope_val is None:
+                        scope_val = AgentScope.GLOBAL
+                    if scope_val in {AgentScope.TASK, AgentScope.SESSION} and not str(scope_id_val or "").strip():
+                        records = []
+                    elif scope_val is AgentScope.REPOSITORY and not any(
+                        str(value or "").strip() for value in (scope_id_val, root_val, repository_id_val)
+                    ):
+                        records = []
+                    else:
+                        records = APP.agent_memory.find(
+                            scope=scope_val,
+                            scope_id=str(scope_id_val) if scope_id_val is not None else None,
+                            root=str(root_val) if root_val else None,
+                            repository_id=str(repository_id_val) if repository_id_val else None,
+                            tenant=str(tenant_val) if tenant_val else None,
+                            key=key_val,
+                            query=query_val,
+                            status=status_val,
+                            limit=limit_val,
+                        )
                     self._send(200, {"success": True, "records": [r.to_dict() for r in records]}); return
                 if action == "promote":
                     target_scope_str = str(payload.get("target_scope", "")).strip().lower()

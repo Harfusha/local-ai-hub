@@ -712,6 +712,10 @@ class LocalAIApp:
                 continue
             provenance = record_data.get("provenance")
             source_root = provenance.get("root") if isinstance(provenance, dict) else None
+            if not source_root:
+                raise BundleValidationError(
+                    f"repository memory record {record_data.get('record_id', '')} requires provenance root"
+                )
             if source_root and _normalise_scope_root(str(source_root)) != _normalise_scope_root(root_path):
                 raise BundleValidationError(
                     f"repository root mismatch for agent memory record {record_data.get('record_id', '')}"
@@ -848,15 +852,18 @@ class LocalAIApp:
                     record_data = dict(rdata)
                     scope_value = str(record_data.get("scope", "")).strip().lower()
                     provenance = record_data.get("provenance")
-                    if target_root_path and scope_value in {"repo", "repository"} and isinstance(provenance, dict):
-                        source_root = provenance.get("root")
-                        if source_root:
-                            if source_root_path and _normalise_scope_root(str(source_root)) != _normalise_scope_root(source_root_path):
-                                return 0, "repository memory provenance does not match bundle root"
-                            rebased_provenance = dict(provenance)
-                            rebased_provenance["source_root"] = str(source_root)
-                            rebased_provenance["root"] = target_root_path
-                            record_data["provenance"] = rebased_provenance
+                    if target_root_path and scope_value in {"repo", "repository"}:
+                        source_root = provenance.get("root") if isinstance(provenance, dict) else None
+                        if not source_root:
+                            return 0, "repository memory provenance root is required for project import"
+                        if not source_root_path:
+                            return 0, "project bundle root is required for repository memory import"
+                        if _normalise_scope_root(str(source_root)) != _normalise_scope_root(source_root_path):
+                            return 0, "repository memory provenance does not match bundle root"
+                        rebased_provenance = dict(provenance)
+                        rebased_provenance["source_root"] = str(source_root)
+                        rebased_provenance["root"] = target_root_path
+                        record_data["provenance"] = rebased_provenance
                     from_dict = getattr(MemoryRecord, "from_dict", None)
                     if callable(from_dict) and all(
                         field in record_data for field in ("record_id", "status", "provenance")
