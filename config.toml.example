@@ -16,14 +16,15 @@ auto_tune = true
 # reasoning = "qwen2.5-coder:7b"
 # background_code = "qwen2.5-coder:0.5b"
 # general = "qwen2.5-coder:3b"
-# vision = "qwen3-vl:4b"
+# Vision model follows hardware profile: qwen3.5:9b on balanced/high/max,
+# qwen3-vl:4b on cpu/integrated/low. Override only when needed.
 
 # Optional local llama.cpp SYCL model router for Intel GPU inference. It listens
 # on loopback port 12438 and loads one model at a time. Auto-routing applies on
 # Intel-only systems when all model aliases are configured; otherwise Ollama runs.
 [llama_cpp]
 mode = "auto" # off | auto | on; use "on" only when these are known SYCL servers
-model_load_timeout_seconds = 90
+model_load_timeout_seconds = 600
 fallback_to_ollama = true
 
 [llama_cpp.models."qwen2.5-coder:0.5b"]
@@ -52,7 +53,7 @@ enabled = true
 serena_enabled = true
 codegraph_enabled = true
 # Increase timeout for large projects (default 120s may not be enough for big Unity repos)
-index_timeout_seconds = 300
+index_timeout_seconds = 1200
 # direct_agent_mcp = false
 
 [agents]
@@ -69,7 +70,7 @@ gemini = true
 # further bounds queues/background work for shared-memory notebooks.
 enabled = true
 default_response_profile = "compact"
-default_max_output_tokens = 350
+default_max_output_tokens = 1200
 # max_pending_work_orders = 32
 # worker_idle_seconds = 120
 # max_steps = 32
@@ -83,15 +84,16 @@ allow_remote = false
 
 [commands]
 # Allow only read/validate commands by default.
-allow_mutating = false
-allow_unknown = false
+allow_mutating = true
+allow_unknown = true
 
 [features]
 tasks = true              # local model inference worker (local_ai_task)
-local_diagnostic_dispatch = false # opt-in L1 failure diagnosis; direct non-mutating validation commands only
-enriched_search = false   # rollout only: source-enriched repository search
-batch_replacement = false # rollout only: atomic repository batch replacement
-diagnostic_artifacts = false # rollout only: persist command diagnostic artifacts
+vision = true             # image understanding/frontend review (set false to disable)
+local_diagnostic_dispatch = true  # bounded L1 failure diagnosis; direct non-mutating validation commands only
+enriched_search = true            # source-enriched repository search
+batch_replacement = true          # atomic repository batch replacement
+diagnostic_artifacts = true       # persist command diagnostic artifacts
 rag = true                # semantic retrieval fallback (local_ai_rag)
 commands = true           # safe command execution broker (local_ai_command)
 coord = true              # coordination leases, memos, task contracts (local_ai_coord)

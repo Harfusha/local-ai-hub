@@ -21,6 +21,18 @@ def isolated_profile_catalog(monkeypatch):
     monkeypatch.setattr(local_ai_mcp, 'PROFILE_CATALOG', local_ai_mcp.OllamaSubagentCatalog({}))
 
 
+def test_vision_feature_toggle_removes_vision_action_and_hint() -> None:
+    features = FeatureSet({
+        "features": {"vision": False},
+        "server": {"auto_start_ollama": True},
+        "models": {"fast_code": "fast"},
+    })
+
+    assert features.vision is False
+    assert "vision" not in features.supported_task_actions()
+    assert not any("vision" in line.lower() for line in features.specialized_trigger_lines())
+
+
 def test_public_action_parameters_are_explicit_literals() -> None:
     expected = {
         "local_ai_task": {"delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait", "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe", "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold"},
@@ -34,7 +46,7 @@ def test_public_action_parameters_are_explicit_literals() -> None:
         assert set(get_args(annotation)) == values, name
     repo_action = get_type_hints(local_ai_mcp.local_ai_repo)["action"]
     assert get_origin(repo_action) is Literal
-    assert "batch_replace" not in get_args(repo_action)
+    assert "batch_replace" in get_args(repo_action)
 
 
 def test_live_mcp_catalog_uses_feature_specific_batch_schema(tmp_path: Path, monkeypatch) -> None:

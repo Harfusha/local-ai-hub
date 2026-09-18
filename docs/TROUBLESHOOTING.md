@@ -22,7 +22,7 @@ Run `python -m pytest -q tests/test_frontend_review_e2e.py`. It is deliberately 
 
 ## Local model unavailable
 
-The offline contract still runs without Ollama. For a live review, start Ollama and ensure the configured `qwen3-vl:4b` model is available. A missing model should be reported as a bounded capability/dependency failure, not silently replaced with a cloud call.
+The offline contract still runs without Ollama. For a live review, restart the Hub service (`python tools/service.py restart`) and let the supervisor start Ollama; do not run `ollama serve` manually. Verify the active vision model with `python tools/doctor.py`. A missing model should be reported as a bounded capability/dependency failure, not silently replaced with a cloud call.
 
 ## Current-tab capture errors
 

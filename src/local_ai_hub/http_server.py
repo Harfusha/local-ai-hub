@@ -449,6 +449,10 @@ class Handler(BaseHTTPRequestHandler):
             method = getattr(self, mname)
             method()
             self.wfile.flush()
+            # The hub does not pool request handlers. Closing every response
+            # releases the handler socket immediately and prevents stale
+            # keep-alive sockets from surviving shutdown or app replacement.
+            self.close_connection = True
         except (socket.timeout, TimeoutError):
             self.close_connection = True
             return
@@ -498,6 +502,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Connection", "close")
             self._common_headers(html=True, nonce=nonce)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -1202,6 +1207,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Connection", "close")
             self._common_headers()
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()

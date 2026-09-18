@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import gc
 import time
 import pytest
 
@@ -357,16 +358,19 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
 
     def get(**params):
         query = urllib.parse.urlencode(params)
-        with urllib.request.urlopen(
-            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/memory?{query}"
-        ) as response:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/memory?{query}",
+            headers={"Connection": "close"},
+            method="GET",
+        )
+        with urllib.request.urlopen(request) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def post(payload):
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/memory",
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Connection": "close"},
             method="POST",
         )
         with urllib.request.urlopen(request) as response:
@@ -516,6 +520,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+        gc.collect()
         http_server.APP = previous
         app.close()
 
@@ -549,7 +554,7 @@ def test_http_context_transport_preserves_diagnostics_flag(tmp_path: Path):
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/context",
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Connection": "close"},
             method="POST",
         )
         with urllib.request.urlopen(request) as response:
@@ -558,7 +563,9 @@ def test_http_context_transport_preserves_diagnostics_flag(tmp_path: Path):
         assert any(element["source_kind"] == "memory_diagnostics" for element in result["context"]["elements"])
     finally:
         server.shutdown()
+        thread.join(timeout=5)
         server.server_close()
+        gc.collect()
         http_server.APP = previous
         app.close()
 
@@ -611,7 +618,7 @@ def test_http_context_transport_forwards_scope_context(tmp_path: Path, monkeypat
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/context",
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Connection": "close"},
             method="POST",
         )
         with urllib.request.urlopen(request) as response:
@@ -627,7 +634,9 @@ def test_http_context_transport_forwards_scope_context(tmp_path: Path, monkeypat
         }
     finally:
         server.shutdown()
+        thread.join(timeout=5)
         server.server_close()
+        gc.collect()
         http_server.APP = previous
         app.close()
 
@@ -656,7 +665,7 @@ def test_http_memory_transport_preserves_expiry_and_ttl(tmp_path: Path):
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/memory",
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Connection": "close"},
             method="POST",
         )
         with urllib.request.urlopen(request) as response:
@@ -710,7 +719,9 @@ def test_http_memory_transport_preserves_expiry_and_ttl(tmp_path: Path):
         assert no_ttl["record"]["expires_at"] is None
     finally:
         server.shutdown()
+        thread.join(timeout=5)
         server.server_close()
+        gc.collect()
         http_server.APP = previous
         app.close()
 

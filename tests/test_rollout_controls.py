@@ -14,15 +14,15 @@ from local_ai_hub.services import LocalAIServices
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_defaults_keep_cost_bearing_adoption_features_disabled() -> None:
+def test_defaults_enable_adoption_features() -> None:
     source_defaults = ROOT / "src" / "local_ai_hub" / "defaults.toml"
     defaults = tomllib.loads(source_defaults.read_text(encoding="utf-8"))
 
-    assert source_defaults.read_bytes() == (ROOT / "defaults.toml").read_bytes()
-    assert defaults["features"]["enriched_search"] is False
-    assert defaults["features"]["batch_replacement"] is False
-    assert defaults["features"]["diagnostic_artifacts"] is False
-    assert defaults["features"]["local_diagnostic_dispatch"] is False
+    assert source_defaults.read_text(encoding="utf-8").replace("\r\n", "\n") == (ROOT / "defaults.toml").read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert defaults["features"]["enriched_search"] is True
+    assert defaults["features"]["batch_replacement"] is True
+    assert defaults["features"]["diagnostic_artifacts"] is True
+    assert defaults["features"]["local_diagnostic_dispatch"] is True
 
 
 def test_feature_opt_ins_fail_closed_for_malformed_values() -> None:

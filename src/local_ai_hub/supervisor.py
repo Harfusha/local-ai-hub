@@ -284,10 +284,7 @@ class Supervisor:
                     break
                 now = time.time()
                 manage_ollama = bool(self.cfg.get("manage_ollama", True))
-                ollama_online = self.runtime.is_online() if manage_ollama else None
-                if manage_ollama and not ollama_online:
-                    self.runtime.ensure_running()
-                    ollama_online = self.runtime.is_online()
+                ollama_online = self.runtime.ensure_running() if manage_ollama else None
                 if self.hub_online():
                     unhealthy_since = 0.0
                     backoff = initial_backoff

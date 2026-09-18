@@ -1541,6 +1541,16 @@ class LocalAIServices:
 
     def vision(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         """Multimodal image understanding via local vision model."""
+        features = self.config.get("features", {})
+        if isinstance(features, dict) and not bool(features.get("vision", True)):
+            return {
+                "success": False,
+                "unsupported": True,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "vision_disabled",
+                "error": "Vision capability is disabled. Enable features.vision explicitly.",
+            }
         image_path = str(args.get("image", args.get("image_path", "")))
         prompt = str(args.get("prompt", args.get("task", "Describe this image in detail.")))
         models = self.config.get("models", {})

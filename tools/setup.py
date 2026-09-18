@@ -530,7 +530,7 @@ def ensure_ollama_for_setup(cfg: dict[str, Any], install_dir: Path, *, allow_ins
     try:
         from local_ai_hub.ollama import OllamaRuntime
         runtime = OllamaRuntime(cfg)
-        return runtime.is_online() or runtime.ensure_running()
+        return runtime.ensure_running()
     except Exception as exc:
         log(f"WARNING: Ollama startup check failed: {exc}")
         return False
@@ -546,6 +546,10 @@ def pull_ollama_models(cfg: dict[str, Any]) -> None:
     model_cfg = cfg.get("models", {})
     for key in ["background_code", "fast_code", "heavy_code", "reasoning", "general"]:
         model = str(model_cfg.get(key, "") or "")
+        if model and model not in models:
+            models.append(model)
+    if bool(cfg.get("features", {}).get("vision", True)):
+        model = str(model_cfg.get("vision", "") or "")
         if model and model not in models:
             models.append(model)
     if bool(cfg.get("ollama_subagents", {}).get("enabled", True)):

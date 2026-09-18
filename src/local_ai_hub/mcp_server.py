@@ -813,15 +813,21 @@ def _instrumented_tool():
                     FEATURES.status,
                 )
                 if hint is not None:
-                    routing = clean.get("routing")
+                    candidate = dict(clean)
+                    routing = candidate.get("routing")
+                    routing_added = False
                     if routing is None:
-                        clean["routing"] = {"semantic_handoff": hint}
-                        handoff_added = True
+                        candidate["routing"] = {"semantic_handoff": hint}
+                        routing_added = True
                     elif isinstance(routing, dict) and "semantic_handoff" not in routing:
-                        routing["semantic_handoff"] = hint
-                        handoff_added = True
+                        candidate["routing"] = {**routing, "semantic_handoff": hint}
+                        routing_added = True
                     elif not isinstance(routing, dict):
-                        clean["routing"] = {"value": routing, "semantic_handoff": hint}
+                        candidate["routing"] = {"value": routing, "semantic_handoff": hint}
+                        routing_added = True
+                    requested_tokens = int(arguments.get("max_response_tokens") or 0)
+                    if routing_added and (requested_tokens <= 0 or json_tokens(candidate) <= requested_tokens):
+                        clean = candidate
                         handoff_added = True
             _record_adoption(fn.__name__, arguments, clean, (time.monotonic() - started) * 1000, recommended=handoff_added)
             try:

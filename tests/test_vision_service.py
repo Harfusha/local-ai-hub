@@ -76,6 +76,18 @@ def test_vision_cloud_fallback_enabled_without_provider_fails_closed(tmp_path: P
     runtime.request.assert_not_called()
 
 
+def test_vision_feature_can_be_disabled(tmp_path: Path) -> None:
+    services, runtime, image = _services(tmp_path)
+    services.config["features"] = {"vision": False}
+
+    result = services.vision({"image": str(image)}, "tenant")
+
+    assert result["success"] is False
+    assert result["unsupported"] is True
+    assert result["error_code"] == "vision_disabled"
+    runtime.request.assert_not_called()
+
+
 def test_vision_image_path_checks_size_before_reading_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     services, runtime, image = _services(tmp_path)
     image.write_bytes(b"x" * (VISION_MAX_IMAGE_BYTES + 1))
@@ -205,6 +217,13 @@ def test_packaged_and_source_defaults_configure_qwen_vision_model() -> None:
         with (root / relative).open("rb") as handle:
             config = tomllib.load(handle)
         assert config["models"]["vision"] == "qwen3-vl:4b"
+
+
+def test_packaged_defaults_enable_vision_capability() -> None:
+    root = Path(__file__).resolve().parents[1]
+    for path in (root / "defaults.toml", root / "src" / "local_ai_hub" / "defaults.toml"):
+        config = tomllib.loads(path.read_text(encoding="utf-8"))
+        assert config["features"]["vision"] is True
         assert config["model_execution"]["vision"]["parallel"] == 1
 
 
@@ -625,6 +644,18 @@ def test_capabilities_expose_configured_vision_model() -> None:
     capabilities = app.capabilities()
 
     assert capabilities["models"]["vision"] == "custom-vl:latest"
+
+
+def test_capabilities_hide_disabled_vision() -> None:
+    app = LocalAIApp.__new__(LocalAIApp)
+    app.config = {"features": {"vision": False}, "models": {"vision": "custom-vl:latest"}}
+    app.external_tools = MagicMock()
+    app.external_tools.status.return_value = {}
+
+    capabilities = app.capabilities()
+
+    assert capabilities["features"]["vision"] is False
+    assert capabilities["models"]["vision"] == ""
 
 
 def test_vision_model_has_separate_single_slot_policy(tmp_path: Path) -> None:

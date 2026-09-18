@@ -33,7 +33,9 @@ Execute the following phases deterministically:
 
 ### PHASE 2: RUN BOOTSTRAP INSTALLATION
 
-Run the platform installer from the repository root. This automatically configures Python 3.11+, virtual environment, Token Economy tools, backend-appropriate local model support, Serena/CodeGraphContext environments, global MCP configs, and background supervisor. Ollama is installed and its models are pulled only when `server.auto_start_ollama = true` and `llama_cpp.fallback_to_ollama = true`; an exclusive `llama_cpp.mode = "on"` configuration with `fallback_to_ollama = false` skips Ollama entirely. The default install deploys the `token-economizer` skill and registers its CLI directory on the user's persistent PATH; verify both after setup, then open a new terminal. Do not pass `--skip-token-economy` or `--skip-companion-skills` for the standard install.
+Run the platform installer from the repository root. This automatically configures Python 3.11+, virtual environment, Token Economy tools, backend-appropriate local model support, Serena/CodeGraphContext environments, global MCP configs, and background supervisor. Ollama is installed and its configured coding models plus `models.vision` are pulled only when `features.vision = true`, `server.auto_start_ollama = true`, and `llama_cpp.fallback_to_ollama = true`; set `features.vision = false` to remove vision capability and its model pull. An exclusive `llama_cpp.mode = "on"` configuration with `fallback_to_ollama = false` skips Ollama entirely. The default install deploys the `token-economizer` skill and registers its CLI directory on the user's persistent PATH; verify both after setup, then open a new terminal. Do not pass `--skip-token-economy` or `--skip-companion-skills` for the standard install.
+
+When `headless.manage_ollama = true` (default), Ollama is Hub-managed. Never start it with `ollama serve` or add a separate startup task; the supervisor takes over a local endpoint and applies the configured Ollama profile.
 
 - **Windows (PowerShell)**:
   ```powershell
@@ -79,7 +81,7 @@ Run the platform installer from the repository root. This automatically configur
    - On Intel-only systems, follow `docs/LLAMA_CPP_SYCL.md` and verify that the official SYCL `llama-server.exe --list-devices` lists the Intel GPU before enabling `llama_cpp.mode = "on"`. The installed Hub selects the SYCL backend in `auto` mode when its Intel hardware profile and routes are present. Do not set `OLLAMA_VULKAN` for Intel inference.
    - NVIDIA/AMD discrete GPUs continue through the configured Ollama CUDA/ROCm path. AMD iGPU is not an Intel SYCL target and retains its configured Ollama route. Do not enable llama.cpp SYCL on non-Intel hardware.
    - If an NPU (Intel AI Boost / AMD XDNA) or Intel iGPU is present:
-     Ensure OpenVINO dependencies are installed in the venv to offload embeddings and reranking from CPU:
+     Ensure OpenVINO dependencies are installed in the venv only when active hardware/configuration selects OpenVINO for embeddings or reranking. Do not install OpenVINO on NVIDIA-only systems merely because the feature permission is true:
      ```powershell
      & "$HOME\.local-ai-hub\.venv\Scripts\pip.exe" install -r "$HOME\.local-ai-hub\requirements-openvino.txt"
      & "$HOME\.local-ai-hub\.venv\Scripts\python.exe" "$HOME\.local-ai-hub\tools\prefetch_openvino.py"
@@ -156,7 +158,7 @@ Selection guide: `local_ai_repo` for bounded repository facts and checks (includ
 
 For non-trivial multi-step work, create a `local_ai_coord` task contract first, claim overlapping paths, checkpoint phase changes, attach validation receipts, and complete only after receipt verification passes.
 
-Rollout controls: `features.enriched_search`, `features.batch_replacement`, `features.diagnostic_artifacts`, and `features.local_diagnostic_dispatch` start `false`. Enable only one literal TOML `true` flag for a 10–20% pilot after a 14-day read-only baseline. Compare `/api/adoption` token, latency, first-pass validation, terminal failure, and native fallback metrics. Promote only sustained quality-neutral gains. Roll back immediately: set that flag to `false`, restart Hub, run `python tools/hubctl.py generate`. Disabled flags return structured unavailable before work starts; malformed values stay disabled. `local_diagnostic_dispatch=true` alone may retain only its bounded failure preview for the one local diagnosis; never raw output and no `diagnostic_artifacts=true` dependency.
+Rollout controls: `features.enriched_search`, `features.batch_replacement`, `features.diagnostic_artifacts`, and `features.local_diagnostic_dispatch` are enabled in the installed default profile. They remain independently switchable for rollback or a controlled pilot. Compare `/api/adoption` token, latency, first-pass validation, terminal failure, and native fallback metrics. Roll back immediately by setting the affected flag to `false`, restarting Hub, and running `python tools/hubctl.py generate`. Disabled flags return structured unavailable before work starts; malformed values stay disabled. `local_diagnostic_dispatch=true` may retain only its bounded failure preview for one local diagnosis; never raw output and no `diagnostic_artifacts=true` dependency.
 
 Batch edits require `features.batch_replacement=true`. Then use `local_ai_repo(action="batch_replace", edits=[...], dry_run=true)` for preview. `staged` is not batch dry-run and is never forwarded. Each edit needs exact target text that matches once. The engine preflights all edits, rolls back write failures, and never auto-commits. Set `dry_run=false` only after review.
 
