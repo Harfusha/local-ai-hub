@@ -92,6 +92,62 @@ def test_conflicting_high_confidence_records_are_quarantined(store: MemoryStore)
     assert "conflict" in (saved_r2.quarantine_reason or "").lower()
 
 
+@pytest.mark.parametrize("scope", [AgentScope.TASK, AgentScope.SESSION])
+def test_conflicts_are_isolated_by_scope_id(store: MemoryStore, scope: AgentScope):
+    first = store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FACT,
+            scope=scope,
+            scope_id="scope-one",
+            key="isolated-key",
+            value="one",
+            confidence=0.95,
+            status=MemoryStatus.CONFIRMED,
+        ),
+        actor="user",
+        idempotency_key=f"{scope.value}-one",
+    )
+    second = store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FACT,
+            scope=scope,
+            scope_id="scope-two",
+            key="isolated-key",
+            value="two",
+            confidence=0.95,
+            status=MemoryStatus.CONFIRMED,
+        ),
+        actor="user",
+        idempotency_key=f"{scope.value}-two",
+    )
+
+    assert first.status is MemoryStatus.CONFIRMED
+    assert second.status is MemoryStatus.CONFIRMED
+
+
+def test_repository_conflicts_are_isolated_by_root(store: MemoryStore, tmp_path: Path):
+    root_one = tmp_path / "repo-one"
+    root_two = tmp_path / "repo-two"
+    root_one.mkdir()
+    root_two.mkdir()
+    for root, value, key in ((root_one, "one", "repo-one"), (root_two, "two", "repo-two")):
+        record = store.record(
+            MemoryRecord.create(
+                kind=MemoryKind.FACT,
+                scope=AgentScope.REPOSITORY,
+                scope_id=key,
+                key="root-isolated-key",
+                value=value,
+                confidence=0.95,
+                status=MemoryStatus.CONFIRMED,
+                provenance={"root": str(root)},
+            ),
+            actor="user",
+            idempotency_key=key,
+        )
+        assert record.status is MemoryStatus.CONFIRMED
+
+
 def test_consistency_memory_kinds_round_trip():
     kinds = (
         MemoryKind.FINDING,

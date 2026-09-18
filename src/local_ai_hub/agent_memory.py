@@ -74,9 +74,9 @@ def _memory_matches_request_scope(
             return not root
         return bool(root and _normalise_scope_root(record_root) == _normalise_scope_root(root))
     if scope_value == AgentScope.TASK.value:
-        return bool(task_id) and (not scope_id or scope_id == task_id)
+        return bool(task_id) and scope_id == task_id
     if scope_value == AgentScope.SESSION.value:
-        return bool(tenant) and (not scope_id or scope_id == tenant)
+        return bool(tenant) and scope_id == tenant
     if scope_value == AgentScope.CLONE.value:
         return bool(clone_id) and scope_id == clone_id
     if scope_value == AgentScope.WORKTREE.value:
@@ -84,6 +84,21 @@ def _memory_matches_request_scope(
     if scope_value == AgentScope.BRANCH.value:
         return bool(branch) and scope_id == branch
     return scope_value == AgentScope.GLOBAL.value
+
+
+def _memory_conflict_context_matches(left: MemoryRecord, right: MemoryRecord) -> bool:
+    """Keep contradiction detection inside the same identity context."""
+    left_scope = left.scope.value if hasattr(left.scope, "value") else str(left.scope)
+    right_scope = right.scope.value if hasattr(right.scope, "value") else str(right.scope)
+    if left_scope != right_scope or left.scope_id != right.scope_id:
+        return False
+    if left_scope != AgentScope.REPOSITORY.value:
+        return True
+    left_root = str((left.provenance or {}).get("root") or "")
+    right_root = str((right.provenance or {}).get("root") or "")
+    if not left_root or not right_root:
+        return not left_root and not right_root
+    return _normalise_scope_root(left_root) == _normalise_scope_root(right_root)
 
 
 _CONTEXT_ROOT_SQL = (
@@ -112,10 +127,10 @@ def _context_scope_sql(
         clauses.append(f"(scope = ? AND {_CONTEXT_ROOT_SQL} = '')")
         params.append(AgentScope.REPOSITORY.value)
     if task_id:
-        clauses.append("(scope = ? AND (scope_id = '' OR scope_id = ?))")
+        clauses.append("(scope = ? AND scope_id = ?)")
         params.extend([AgentScope.TASK.value, task_id])
     if tenant:
-        clauses.append("(scope = ? AND (scope_id = '' OR scope_id = ?))")
+        clauses.append("(scope = ? AND scope_id = ?)")
         params.extend([AgentScope.SESSION.value, tenant])
     if clone_id:
         clauses.append("(scope = ? AND scope_id = ?)")
@@ -488,6 +503,8 @@ class MemoryStore:
         if target_record.status in (MemoryStatus.ACTIVE, MemoryStatus.CONFIRMED):
             existing_records = self.find(scope=target_record.scope, key=target_record.key)
             for ex in existing_records:
+                if not _memory_conflict_context_matches(ex, target_record):
+                    continue
                 if ex.status in (MemoryStatus.ACTIVE, MemoryStatus.CONFIRMED):
                     if ex.confidence >= 0.8 and target_record.confidence >= 0.8 and ex.value != target_record.value:
                         target_record = target_record.with_status(
