@@ -133,6 +133,20 @@ def test_repo_evidence_recommendation_preserves_used_adoption(monkeypatch, tmp_p
     assert totals["recommended"] == 1
 
 
+def test_prepopulated_handoff_is_not_counted_as_new_recommendation(monkeypatch, tmp_path: Path) -> None:
+    store = AdoptionMetricsStore(tmp_path)
+    monkeypatch.setattr(local_ai_mcp, "ADOPTION_METRICS", store)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+    existing_hint = {"required": False, "tool": "external", "actions": [], "bypass_tool": "", "bypass_action": ""}
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True, "routing": {"semantic_handoff": existing_hint}})
+
+    result = local_ai_mcp.local_ai_repo(action="search", query="routing")
+
+    assert result["routing"]["semantic_handoff"]
+    assert store.report(days=1)["totals"]["recommended"] == 0
+
+
 def test_artifact_and_command_success_do_not_expose_semantic_handoff(monkeypatch) -> None:
     monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True})
 

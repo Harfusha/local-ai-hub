@@ -38,7 +38,7 @@ def test_report_exposes_routing_adoption_aggregate_counts(tmp_path):
     store = AdoptionMetricsStore(tmp_path)
     now = datetime(2026, 9, 17, tzinfo=timezone.utc)
     store.record("local_ai_repo", "search", "repository", "recommended", now=now)
-    store.record("local_ai_repo", "search", "repository", "used", now=now)
+    store.record("local_ai_task", "delegate", "hub", "used", now=now)
     store.record("local_ai_repo", "search", "repository", "bypassed", fallback_reason="explicit_client_signal", now=now)
     store.record("local_ai_repo", "search", "repository", "fallback_used", fallback_reason="unavailable", now=now)
 
@@ -50,6 +50,18 @@ def test_report_exposes_routing_adoption_aggregate_counts(tmp_path):
         "bypassed": 1,
         "fallback_used": 1,
     }
+
+
+def test_routing_local_used_counts_only_local_task_usage(tmp_path):
+    store = AdoptionMetricsStore(tmp_path)
+    now = datetime(2026, 9, 17, tzinfo=timezone.utc)
+    store.record("local_ai_repo", "search", "repository", "used", now=now)
+    store.record("local_ai_task", "delegate", "hub", "used", now=now)
+
+    report = store.report(days=1, now=now)
+
+    assert report["totals"]["used"] == 2
+    assert report["routing_adoption"]["local_used"] == 1
 
 
 def test_rejects_sensitive_or_path_bearing_input(tmp_path):
