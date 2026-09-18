@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import subprocess
 from pathlib import Path
 
@@ -153,6 +154,39 @@ def test_git_diff_base_range_lists_paths_beyond_content_cap(tmp_path: Path):
     assert result["success"] is True
     assert result["truncated"] is True
     assert result["changed_paths"] == ["a_early.py", "z_late.py"]
+
+
+def test_git_diff_rejects_path_capture_failure(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / "main.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-qm", "base"], check=True)
+    target.write_text("value = 2\n", encoding="utf-8")
+
+    real_popen = subprocess.Popen
+
+    class FailedPathProcess:
+        stdout = io.BytesIO()
+        stderr = io.BytesIO(b"name-only capture failed")
+
+        def wait(self, timeout=None):
+            return 1
+
+    def fake_popen(command, *args, **kwargs):
+        if "--name-only" in command:
+            return FailedPathProcess()
+        return real_popen(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    result = RepositoryTools(_cfg(tmp_path)).git_diff(str(repo))
+
+    assert result["success"] is False
+    assert result["paths_complete"] is False
+    assert result["retryable"] is True
+    assert "path capture" in result["error"]
 
 
 def test_search_returns_bounded_retryable_result_after_accelerator_timeouts(tmp_path: Path, monkeypatch):

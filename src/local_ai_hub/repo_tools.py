@@ -1246,6 +1246,15 @@ class RepositoryTools:
         elif base:
             path_cmd.append(base)
         path_result = bounded_process(path_cmd, 0, on_stdout_chunk=collect_path_chunk)
+        if path_result.get("returncode") is None or path_result.get("returncode") != 0:
+            path_error = bytes(path_result.get("stderr", b"")).decode("utf-8", errors="replace").strip()
+            return {
+                "success": False,
+                "error": f"git diff path capture failed: {path_error or path_result.get('error', 'non-zero exit')}",
+                "terminal": False,
+                "retryable": bool(path_result.get("retryable", True)),
+                "paths_complete": False,
+            }
         if path_pending and len(path_names) < 4096:
             path_names.append(bytes(path_pending)[:4096].decode("utf-8", errors="replace"))
         snapshot = self.git_snapshot(str(repo))
@@ -1258,6 +1267,7 @@ class RepositoryTools:
             "estimated_tokens": estimate_tokens(text),
             "original_estimated_tokens": max(estimate_tokens(text), (stdout_total + 3) // 4),
             "truncated": truncated, "diff_sha256": content_result["sha256"],
+            "paths_complete": True,
         }
 
 
