@@ -404,6 +404,8 @@ class VerificationStore:
             self._initialized = True
 
     def record(self, receipt: VerificationReceipt) -> VerificationReceipt:
+        if not self.state_store.enabled:
+            return receipt
         self._init_tables()
         event = AgentEvent.create(
             stream_id=f"verification:{receipt.task_id}",
@@ -469,6 +471,8 @@ class VerificationStore:
         return receipt
 
     def record_change(self, change: ChangeIntent) -> ChangeIntent:
+        if not self.state_store.enabled:
+            return change
         self._init_tables()
         event = AgentEvent.create(
             stream_id=f"change:{change.task_id}",
@@ -514,6 +518,8 @@ class VerificationStore:
         return change
 
     def record_outcome(self, outcome: OutcomeRecord) -> OutcomeRecord:
+        if not self.state_store.enabled:
+            return outcome
         self._init_tables()
         event = AgentEvent.create(
             stream_id=f"outcome:{outcome.change_id or outcome.task_id or 'global'}",
@@ -565,6 +571,7 @@ class VerificationStore:
         include_consistency: bool = False,
         consistency_guard: Any | None = None,
         repository_revision: str = "",
+        current_revision: str = "",
         warnings: Any = (),
         mappings: Any = (),
         records: Any = (),
@@ -583,6 +590,7 @@ class VerificationStore:
             )
         self._init_tables()
         current_time = float(time.time() if now is None else now)
+        expected_revision = str(current_revision or repository_revision or "").strip()
 
         required_criteria: list[str] = []
         if self.task_store is not None:
@@ -636,6 +644,8 @@ class VerificationStore:
                 unsatisfied.append(crit)
             elif not rcpt.is_fresh(current_time):
                 stale.append(crit)
+            elif expected_revision and rcpt.repository_revision != expected_revision:
+                stale.append(crit)
             else:
                 satisfied.append(crit)
 
@@ -657,7 +667,8 @@ class VerificationStore:
                         warnings=warnings,
                         mappings=mappings,
                         records=records,
-                        repository_revision=repository_revision,
+                        repository_revision=expected_revision,
+                        current_revision=expected_revision,
                     ) or {})
                 except Exception:
                     audit = {}

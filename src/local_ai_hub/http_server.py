@@ -2423,7 +2423,17 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "completion":
                     task_id = str(payload.get("task_id", "")).strip()
-                    res = APP.agent_verification.completion(task_id)
+                    current_revision = ""
+                    root = str(payload.get("root", "")).strip()
+                    repo_tools = getattr(APP, "repo_tools", None)
+                    if root and repo_tools is not None and callable(getattr(repo_tools, "git_snapshot", None)):
+                        try:
+                            snapshot = repo_tools.git_snapshot(root)
+                            if not getattr(snapshot, "degraded", False) and not getattr(snapshot, "error", None):
+                                current_revision = str(getattr(snapshot, "revision", "") or "").strip()
+                        except Exception:
+                            current_revision = ""
+                    res = APP.agent_verification.completion(task_id, current_revision=current_revision)
                     self._send(200, {"success": True, "completion": res.to_dict()}); return
                 self._send(400, {"success": False, "error": f"unknown verification action '{action}'", "terminal": True, "retryable": False}); return
             if path == "/api/agent-state/context":

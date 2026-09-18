@@ -22,6 +22,38 @@ from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick
 
 _PATH_RE = re.compile(r"(?:(?:[A-Za-z]:\\\\|/)(?:[^\s:'\"<>|]+[/\\\\])+[^\s:'\"<>|]*)")
 _LONG_TOKEN_RE = re.compile(r"\b(?:[A-Fa-f0-9]{24,}|[A-Za-z0-9_\-]{48,})\b")
+_SAVINGS_SOURCE_ALLOWLIST = frozenset({
+    "cache_hit", "cache_or_local_reuse", "context_compaction", "delegated_context",
+    "deterministic_outline", "local_compute", "measured_context", "reused",
+    "response_compaction", "workspace_cache",
+})
+
+
+def _clean_savings_source(value: Any) -> str:
+    label = re.sub(r"[^a-z0-9_.-]+", "_", str(value or "").strip().casefold())[:80]
+    return label if label in _SAVINGS_SOURCE_ALLOWLIST else ""
+
+
+def _clean_savings_breakdown(value: Any) -> str:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return ""
+    if not isinstance(value, dict):
+        return ""
+    cleaned: dict[str, int] = {}
+    for source, tokens in list(value.items())[:16]:
+        label = _clean_savings_source(source)
+        if not label:
+            continue
+        try:
+            bounded = max(0, int(tokens or 0))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if bounded:
+            cleaned[label] = bounded
+    return json_dumps(cleaned, separators=(",", ":"), sort_keys=True) if cleaned else ""
 
 
 def _percentile(values: list[float], pct: float) -> float:
@@ -402,10 +434,10 @@ class TelemetryStore:
             "cloud_token_overhead": max(0, int(event.get("cloud_token_overhead", 0) or 0)),
             "net_after_schema_token_delta": int(event.get("net_after_schema_token_delta", 0) or 0),
             "schema_adjusted_overhead": max(0, int(event.get("schema_adjusted_overhead", 0) or 0)),
-            "savings_source": str(event.get("savings_source", ""))[:80],
-            "input_savings_source": str(event.get("input_savings_source", ""))[:80],
-            "output_savings_source": str(event.get("output_savings_source", ""))[:80],
-            "savings_breakdown_json": str(event.get("savings_breakdown_json", ""))[:2000],
+            "savings_source": _clean_savings_source(event.get("savings_source", "")),
+            "input_savings_source": _clean_savings_source(event.get("input_savings_source", "")),
+            "output_savings_source": _clean_savings_source(event.get("output_savings_source", "")),
+            "savings_breakdown_json": _clean_savings_breakdown(event.get("savings_breakdown_json", ""))[:2000],
             "preprocessed_hit": 1 if event.get("preprocessed_hit") else 0,
         }
 
@@ -598,18 +630,12 @@ class TelemetryStore:
         if not isinstance(event, dict):
             return
         breakdown = event.get("savings_breakdown") if isinstance(event.get("savings_breakdown"), dict) else {}
-        clean_breakdown: dict[str, int] = {}
-        for source, tokens in list(breakdown.items())[:16]:
-            try:
-                bounded = max(0, int(tokens or 0))
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if bounded:
-                clean_breakdown[str(source)[:64]] = bounded
+        clean_breakdown_json = _clean_savings_breakdown(breakdown)
+        clean_breakdown = json.loads(clean_breakdown_json) if clean_breakdown_json else {}
         primary = max(clean_breakdown.items(), key=lambda kv: kv[1], default=("", 0))[0]
         gross = max(0, int(event.get("gross_cloud_tokens_avoided_est", 0) or 0))
-        input_source = str(event.get("input_savings_source", ""))[:80]
-        output_source = str(event.get("output_savings_source", ""))[:80]
+        input_source = _clean_savings_source(event.get("input_savings_source", ""))
+        output_source = _clean_savings_source(event.get("output_savings_source", ""))
         gross_input = max(0, int(event.get("gross_input_tokens_avoided_est", 0) or 0))
         gross_output = max(0, int(event.get("gross_output_tokens_avoided_est", 0) or 0))
         self.record(
