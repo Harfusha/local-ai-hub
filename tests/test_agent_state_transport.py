@@ -6,7 +6,8 @@ import pytest
 
 from local_ai_hub.app import LocalAIApp
 from local_ai_hub.client import HubClient
-from local_ai_hub.agent_identity import ScopeContext
+from local_ai_hub.agent_identity import AgentScope, ScopeContext
+from local_ai_hub.agent_memory import MemoryRecord, MemoryStatus
 from local_ai_hub.agent_tasks import GoalContract, TaskStatus
 
 
@@ -250,6 +251,62 @@ def test_http_agent_state_routes(running_app_client):
     assert app.agent_context.state_store.enabled is True
     # 4. Learning endpoint
     assert app.agent_learning.state_store.enabled is True
+
+
+def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
+    import json
+    import threading
+    import urllib.parse
+    import urllib.request
+
+    from local_ai_hub import http_server
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        "\n[agent_state]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    repo_one = tmp_path / "repo-one"
+    repo_two = tmp_path / "repo-two"
+    repo_one.mkdir()
+    repo_two.mkdir()
+    app = LocalAIApp(str(cfg_path))
+    records = (
+        MemoryRecord.create(kind="finding", scope=AgentScope.TASK, scope_id="task-one", key="shared", value="task-one"),
+        MemoryRecord.create(kind="finding", scope=AgentScope.TASK, scope_id="task-two", key="shared", value="task-two"),
+        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-one", key="shared", value="session-one"),
+        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-two", key="shared", value="session-two"),
+        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one", provenance={"root": str(repo_one)}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-two", provenance={"root": str(repo_two)}),
+    )
+    for record in records:
+        app.agent_memory.record(record, actor="user")
+    previous = http_server.APP
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def get(**params):
+        query = urllib.parse.urlencode(params)
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/memory?{query}"
+        ) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    try:
+        task_result = get(scope="task", scope_id="task-one", key="shared")
+        assert [item["value"] for item in task_result["records"]] == ["task-one"]
+        session_result = get(scope="session", scope_id="session-one", key="shared")
+        assert [item["value"] for item in session_result["records"]] == ["session-one"]
+        repo_result = get(scope="repository", root=str(repo_one), key="shared")
+        assert [item["value"] for item in repo_result["records"]] == ["repo-one"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        http_server.APP = previous
+        app.close()
 
 
 def test_http_context_transport_preserves_diagnostics_flag(tmp_path: Path):

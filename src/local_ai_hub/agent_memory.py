@@ -501,7 +501,16 @@ class MemoryStore:
 
         # Check for conflicts among high-confidence records
         if target_record.status in (MemoryStatus.ACTIVE, MemoryStatus.CONFIRMED):
-            existing_records = self.find(scope=target_record.scope, key=target_record.key)
+            target_provenance = target_record.provenance or {}
+            target_scope_value = target_record.scope.value if hasattr(target_record.scope, "value") else str(target_record.scope)
+            existing_records = self.find(
+                scope=target_record.scope,
+                key=target_record.key,
+                scope_id=target_record.scope_id,
+                root=target_provenance.get("root") if target_scope_value == AgentScope.REPOSITORY.value else None,
+                repository_id=target_provenance.get("repository_id") if target_scope_value == AgentScope.REPOSITORY.value else None,
+                tenant=target_provenance.get("tenant") if target_scope_value == AgentScope.SESSION.value else None,
+            )
             for ex in existing_records:
                 if not _memory_conflict_context_matches(ex, target_record):
                     continue
@@ -1085,6 +1094,11 @@ class MemoryStore:
         semantic: bool = True,
         services: Any = None,
         min_score: float = 0.1,
+        record_id: str | None = None,
+        scope_id: str | None = None,
+        root: str | None = None,
+        repository_id: str | None = None,
+        tenant: str | None = None,
     ) -> list[MemoryRecord]:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return []
@@ -1096,6 +1110,7 @@ class MemoryStore:
             "FROM agent_memory_records WHERE 1=1"
         )
         params: list[Any] = []
+        scope_val: str | None = None
         if not include_expired:
             sql += " AND (expires_at IS NULL OR expires_at > ?)"
             params.append(time.time())
@@ -1105,12 +1120,41 @@ class MemoryStore:
                 scope_val = "repository"
             sql += " AND scope = ?"
             params.append(scope_val)
+            if scope_val in {AgentScope.TASK.value, AgentScope.SESSION.value}:
+                if not str(scope_id or "").strip():
+                    sql += " AND 0"
+                else:
+                    sql += " AND scope_id = ?"
+                    params.append(str(scope_id))
+            elif scope_val != AgentScope.GLOBAL.value and scope_id is not None:
+                sql += " AND scope_id = ?"
+                params.append(str(scope_id))
         if key is not None:
             sql += " AND key = ?"
             params.append(key)
         if status is not None:
             sql += " AND status = ?"
             params.append(status.value if hasattr(status, "value") else str(status))
+        if record_id is not None:
+            sql += " AND record_id = ?"
+            params.append(str(record_id))
+        if root:
+            sql += f" AND (scope = ? OR {_CONTEXT_ROOT_SQL} = ?)"
+            params.extend([AgentScope.GLOBAL.value, _normalise_scope_root(root)])
+        if repository_id and scope_val == AgentScope.REPOSITORY.value:
+            provenance_repository_id = (
+                "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
+                "'$.repository_id')"
+            )
+            sql += f" AND ({provenance_repository_id} IS NULL OR {provenance_repository_id} = ?)"
+            params.append(str(repository_id))
+        if tenant and scope_val == AgentScope.SESSION.value:
+            provenance_tenant = (
+                "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
+                "'$.tenant')"
+            )
+            sql += f" AND ({provenance_tenant} IS NULL OR {provenance_tenant} = ?)"
+            params.append(str(tenant))
 
         base_sql = sql
         base_params = list(params)
@@ -1125,6 +1169,11 @@ class MemoryStore:
 
         con = connect_sqlite(self.state_store.db_path)
         try:
+            con.create_function(
+                "canonical_scope_root",
+                1,
+                lambda value: _normalise_scope_root(str(value)) if value else "",
+            )
             cur = con.execute(sql, tuple(params))
             exact_records = [self._row_to_record(row) for row in cur.fetchall()]
 
