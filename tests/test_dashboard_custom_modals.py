@@ -404,7 +404,8 @@ def test_trace_inspector_renders_structured_model_content_without_object_coercio
         )
     ]
     assert "function traceReadableMarkup(value,budget,limit=8000)" in source
-    assert "safe&&typeof safe==='object'?renderAny(safe):promptBody(promptText(safe))" in source
+    assert "function traceHumanReadableMarkup(value)" in DASHBOARD_HTML
+    assert "safe&&typeof safe==='object'?renderAny(safe):`<pre class=\"trace-output\">${esc(traceHumanText(safe))}</pre>`" in DASHBOARD_HTML
     assert "traceReadableMarkup(p.text??p.content??p.output??p.result??p,budget,8000)" in source
 
 
@@ -1090,7 +1091,7 @@ def test_trace_renderers_render_per_kind_fixtures_as_semantic_output() -> None:
     assert "trace-code-card" in rendered["request_response"]
 
 
-def test_trace_async_and_request_response_outputs_use_bounded_code_blocks() -> None:
+def test_trace_async_and_request_response_outputs_keep_full_human_code_blocks() -> None:
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     source = _trace_presentation_runtime_source()
     script = (
@@ -1111,8 +1112,8 @@ def test_trace_async_and_request_response_outputs_use_bounded_code_blocks() -> N
     ):
         assert "trace-code-card" in html
         assert marker in html
-        assert len(html) < 12000
-        assert payload not in html
+        assert len(html) > 12000
+        assert payload.endswith("x" * 100 if marker == "async-output-" else "y" * 100)
         assert "[object Object]" not in html
         assert not re.search(r"\{\s*[\"'][A-Za-z_][\w-]*[\"']\s*:", html)
 
@@ -1388,9 +1389,8 @@ def test_trace_unknown_malformed_and_missing_content_use_safe_bounded_fallbacks(
         assert "[object Object]" not in html
         assert not re.search(r"\{\s*[\"'][A-Za-z_$][\w$]*\s*:", html)
     assert "fallback-secret" not in rendered["bounded"]
-    assert "budget truncated" in rendered["bounded"]
-    assert oversized not in rendered["bounded"]
-    assert len(rendered["bounded"]) < 12000
+    assert len(rendered["bounded"]) > 12000
+    assert oversized[-100:] in rendered["bounded"]
 
 
 def test_trace_review_severity_runtime_merges_counts_map_and_findings() -> None:
@@ -1711,7 +1711,7 @@ def test_trace_legacy_timeline_renders_structured_output_without_object_coercion
     assert "[object Object]" not in json.dumps(output["compact"])
 
 
-def test_trace_legacy_output_stream_uses_shared_budget_for_oversized_payload() -> None:
+def test_trace_legacy_output_stream_keeps_full_human_payload() -> None:
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     source = _trace_presentation_runtime_source()
     script = (
@@ -1731,8 +1731,8 @@ def test_trace_legacy_output_stream_uses_shared_budget_for_oversized_payload() -
         (output["deltaBody"], output["deltaPayload"], "legacy-delta-"),
     ):
         assert marker in body
-        assert len(body) < 10000
-        assert payload not in body
+        assert len(body) > 10000
+        assert payload.endswith("x" * 100 if marker == "legacy-stream-" else "y" * 100)
 
 
 def test_trace_text_fallback_and_event_labels_stay_human_readable() -> None:
@@ -1987,9 +1987,9 @@ def test_trace_primary_columns_are_compact_collapsible_groups() -> None:
     rendered = json.loads(result.stdout)
     html = rendered["html"]
     assert html.count('class="trace-primary-group"') == 1
-    assert 'class="trace-primary-group" data-group="request" data-trace-collapsible' in html
+    assert 'class="trace-primary-group" data-group="request" data-trace-primary-group="request" data-trace-collapsible open' in html
     assert '<summary><span>Request details</span>' in html
-    assert 'open' not in html
+    assert 'open' in html
     assert 'No request details captured' not in html
     assert '<article' not in html
     assert 'No result details captured' not in rendered["missing"]
@@ -2206,7 +2206,7 @@ def test_trace_model_chat_runtime_redacts_cookie_headers_and_private_key_fields(
     assert "redacted" in html.lower()
 
 
-def test_trace_model_chat_runtime_enforces_cumulative_payload_budget() -> None:
+def test_trace_model_chat_runtime_keeps_full_human_prompt() -> None:
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     source = _trace_presentation_runtime_source()
     redact = DASHBOARD_HTML[
@@ -2238,11 +2238,11 @@ def test_trace_model_chat_runtime_enforces_cumulative_payload_budget() -> None:
     result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     html = json.loads(result.stdout)
-    assert "payload budget" in html.lower()
+    assert "y" * 1000 in html
     assert "oversized_key_239" not in html
 
 
-def test_trace_model_chat_runtime_caps_final_html_across_repeated_large_messages() -> None:
+def test_trace_model_chat_runtime_keeps_repeated_human_messages() -> None:
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     source = _trace_presentation_runtime_source()
     redact = DASHBOARD_HTML[
@@ -2275,7 +2275,8 @@ def test_trace_model_chat_runtime_caps_final_html_across_repeated_large_messages
     )
     result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
     html = json.loads(result.stdout)
-    assert len(html) <= 24000
+    assert len(html) > 24000
+    assert large[-100:] in html
     assert "payload budget" in html.lower()
 
 

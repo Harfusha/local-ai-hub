@@ -59,7 +59,7 @@ def _gpu_info() -> list[dict[str, str]]:
             capture_output=True, text=True, timeout=5, check=False, **hidden_run_kwargs(),
         )
         out = []
-        for line in cp.stdout.splitlines():
+        for line in (cp.stdout or "").splitlines():
             parts = [x.strip() for x in line.split(",")]
             if len(parts) >= 3:
                 out.append({"name": parts[0][:120], "driver": parts[1][:80], "memory_mib": parts[2][:32]})
@@ -130,7 +130,8 @@ def main() -> int:
         "tuning": _safe_tuning(cfg),
         "telemetry": telemetry.get("report", telemetry),
     }
-    output = Path(args.output) if args.output else _default_output_path(cfg["server"]["state_dir"])
+    state_dir = cfg.get("server", {}).get("state_dir") if isinstance(cfg.get("server"), dict) else None
+    output = Path(args.output) if args.output else _default_output_path(state_dir or "~/.local-ai")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     print(str(output.resolve()))

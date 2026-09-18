@@ -345,13 +345,14 @@ def main() -> int:
         ollama_ok = st.get("ollama_online", False)
         active_model = (st.get("scheduler") or {}).get("active_model") or "None"
         installed_models = st.get("installed_models", [])
-        gpus = st.get("hardware", {}).get("gpus", [])
-        gpu_name = gpus[0].get("name", "N/A") if gpus else "N/A"
-        vram_mb = gpus[0].get("vram_mb", 0) if gpus else 0
+        hardware = st.get("hardware") or {}
+        gpus = hardware.get("gpus") or []
+        gpu_name = gpus[0].get("name", "N/A") if (gpus and isinstance(gpus[0], dict)) else "N/A"
+        vram_mb = gpus[0].get("vram_mb", 0) if (gpus and isinstance(gpus[0], dict)) else 0
 
-        gen_cache = st.get("generation_cache", {})
-        cache_hits = gen_cache.get("hits", 0)
-        cache_misses = gen_cache.get("misses", 0)
+        gen_cache = st.get("generation_cache") or {}
+        cache_hits = gen_cache.get("hits", 0) or 0
+        cache_misses = gen_cache.get("misses", 0) or 0
 
         agent_st = st.get("agent_state") or {}
         tasks_cnt = len(agent_st.get("tasks", [])) if isinstance(agent_st.get("tasks"), list) else 0
