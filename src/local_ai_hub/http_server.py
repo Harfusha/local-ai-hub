@@ -101,6 +101,9 @@ def _resolve_memory_scope(
         elif scope_id_value:
             return None, None, True
 
+    if scope is AgentScope.SESSION and tenant_value and not scope_id_value and not values["session"]:
+        return None, None, True
+
     expected = {
         AgentScope.TASK: values["task"],
         AgentScope.SESSION: values["session"],
@@ -109,11 +112,17 @@ def _resolve_memory_scope(
         AgentScope.BRANCH: values["branch"],
     }.get(scope, "")
     if identity_scopes:
-        if len(identity_scopes) != 1 or expected == "":
+        if scope is None:
             return None, None, True
-        if scope_id_value and scope_id_value != expected:
+        if expected == "":
+            if scope is AgentScope.GLOBAL:
+                return None, None, True
+        elif scope_id_value and scope_id_value != expected:
             return None, None, True
-        scope_id_value = expected
+        elif expected:
+            scope_id_value = expected
+        if scope is None:
+            return None, None, True
 
     return scope, (scope_id_value or None), False
 
@@ -1254,12 +1263,11 @@ class Handler(BaseHTTPRequestHandler):
                         worktree_id=worktree_id_val,
                         branch=branch_val,
                     )
-                    if scope_val is None and not ambiguous_scope:
-                        scope_val = AgentScope.GLOBAL
                     if ambiguous_scope:
-                        rec = None
-                    else:
-                        matches = APP.agent_memory.find(
+                        self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
+                    if scope_val is None:
+                        scope_val = AgentScope.GLOBAL
+                    matches = APP.agent_memory.find(
                             record_id=rec_id,
                             scope=scope_val,
                             scope_id=str(scope_id_val) if scope_id_val is not None else None,
@@ -1272,8 +1280,8 @@ class Handler(BaseHTTPRequestHandler):
                             worktree_id=str(worktree_id_val) if worktree_id_val else None,
                             branch=str(branch_val) if branch_val else None,
                             limit=1,
-                        )
-                        rec = matches[0] if matches else None
+                    )
+                    rec = matches[0] if matches else None
                     if not rec:
                         self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
                     self._send(200, {"success": True, "record": rec.to_dict()}); return
@@ -1328,9 +1336,8 @@ class Handler(BaseHTTPRequestHandler):
                         branch=branch_val,
                     )
                     if ambiguous_scope:
-                        records = []
-                    else:
-                        records = APP.agent_memory.find(
+                        self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
+                    records = APP.agent_memory.find(
                             scope=scope_val,
                             scope_id=str(scope_id_val) if scope_id_val is not None else None,
                             root=str(root_val) if root_val else None,
@@ -1345,7 +1352,7 @@ class Handler(BaseHTTPRequestHandler):
                             query=query_val,
                             status=status_val,
                             limit=limit_val,
-                        )
+                    )
                 self._send(200, {"success": True, "records": [r.to_dict() for r in records]}); return
             if path == "/api/agent-state/events":
                 if not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
@@ -2123,7 +2130,9 @@ class Handler(BaseHTTPRequestHandler):
                         worktree_id=worktree_id_val,
                         branch=branch_val,
                     )
-                    if scope_val is None and not ambiguous_scope:
+                    if ambiguous_scope:
+                        self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
+                    if scope_val is None:
                         scope_val = AgentScope.GLOBAL
                     rec = APP.agent_memory.get(
                         str(payload.get("record_id", "")),
@@ -2186,9 +2195,8 @@ class Handler(BaseHTTPRequestHandler):
                             branch=branch_val,
                         )
                         if ambiguous_scope:
-                            records = []
-                        else:
-                            records = APP.agent_memory.find(
+                            self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
+                        records = APP.agent_memory.find(
                                 scope=scope_val,
                                 scope_id=str(scope_id_val) if scope_id_val is not None else None,
                                 root=str(root_val) if root_val else None,
@@ -2203,7 +2211,7 @@ class Handler(BaseHTTPRequestHandler):
                                 query=query_val,
                                 status=status_val,
                                 limit=limit_val,
-                            )
+                        )
                     self._send(200, {"success": True, "records": [r.to_dict() for r in records]}); return
                 if action == "promote":
                     target_scope_str = str(payload.get("target_scope", "")).strip().lower()

@@ -306,6 +306,20 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
     repo_one.mkdir()
     repo_two.mkdir()
     app = LocalAIApp(str(cfg_path))
+    rich_record = MemoryRecord.create(
+        kind="finding",
+        scope=AgentScope.TASK,
+        scope_id="task-rich",
+        key="rich",
+        value="rich-task",
+        provenance={
+            "root": str(repo_one),
+            "repository_id": "repository-rich",
+            "clone_id": "clone-rich",
+            "worktree_id": "worktree-rich",
+            "branch": "branch-rich",
+        },
+    )
     records = (
         MemoryRecord.create(kind="finding", scope=AgentScope.TASK, scope_id="task-one", key="shared", value="task-one"),
         MemoryRecord.create(kind="finding", scope=AgentScope.TASK, scope_id="task-two", key="shared", value="task-two"),
@@ -315,6 +329,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, key="shared", value="legacy-session"),
         MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="tenant-1", key="tenant-shared", value="tenant-one", provenance={"tenant": "tenant-1"}),
         MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="tenant-2", key="tenant-shared", value="tenant-two", provenance={"tenant": "tenant-2"}),
+        rich_record,
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one", provenance={"root": str(repo_one), "repository_id": "repository-one"}),
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one-missing-id", provenance={"root": str(repo_one)}),
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-two", provenance={"root": str(repo_two), "repository_id": "repository-two"}),
@@ -361,6 +376,35 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         assert [item["value"] for item in repository_id_without_scope["records"]] == ["repo-one"]
         tenant_without_scope = get(tenant="tenant-1", key="tenant-shared")
         assert [item["value"] for item in tenant_without_scope["records"]] == ["tenant-one"]
+        rich_direct = post({
+            "action": "get",
+            "record_id": rich_record.record_id,
+            "scope": "task",
+            "scope_id": "task-rich",
+            "task_id": "task-rich",
+            "root": str(repo_one),
+            "repository_id": "repository-rich",
+            "clone_id": "clone-rich",
+            "worktree_id": "worktree-rich",
+            "branch": "branch-rich",
+        })
+        assert rich_direct["record"]["value"] == "rich-task"
+        with pytest.raises(urllib.error.HTTPError) as ambiguous:
+            post({
+                "action": "get",
+                "record_id": rich_record.record_id,
+                "task_id": "task-rich",
+                "session_id": "session-one",
+            })
+        assert ambiguous.value.code == 400
+        with pytest.raises(urllib.error.HTTPError) as tenant_ambiguous:
+            post({
+                "action": "find",
+                "scope": "session",
+                "tenant": "tenant-1",
+                "key": "tenant-shared",
+            })
+        assert tenant_ambiguous.value.code == 400
         repo_result = get(scope="repository", root=str(repo_one), repository_id="repository-one", key="shared")
         assert [item["value"] for item in repo_result["records"]] == ["repo-one"]
         direct = post({
@@ -391,6 +435,31 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
                 "task_id": "task-two",
             })
         assert task_mismatch_without_scope.value.code == 404
+
+        from local_ai_hub import mcp_server
+        previous_mcp_client = mcp_server.CLIENT
+        mcp_client = HubClient(config_path=str(cfg_path), auto_start=False)
+        mcp_client._http_host = "127.0.0.1"
+        mcp_client._http_port = server.server_address[1]
+        mcp_server.CLIENT = mcp_client
+        try:
+            mcp_result = mcp_server.local_ai_coord(
+                action="memory_get",
+                record_id=rich_record.record_id,
+                scope="task",
+                scope_id="task-rich",
+                task_id="task-rich",
+                root=str(repo_one),
+                repository_id="repository-rich",
+                clone_id="clone-rich",
+                worktree_id="worktree-rich",
+                branch="branch-rich",
+            )
+            assert mcp_result["success"] is True
+            assert mcp_result["record"]["value"] == "rich-task"
+        finally:
+            mcp_server.CLIENT = previous_mcp_client
+            mcp_client.close()
     finally:
         server.shutdown()
         thread.join(timeout=5)
