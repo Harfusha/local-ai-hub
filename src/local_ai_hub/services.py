@@ -295,6 +295,11 @@ def generation_cache_key(
     think: Any,
     execution: Any,
     format: Any = None,
+    repository_revision: str = "",
+    phase: str = "",
+    memory_revision: str = "",
+    focus: Any = None,
+    preload_profile: str = "",
 ) -> str:
     return stable_hash({
         "model": model,
@@ -304,6 +309,11 @@ def generation_cache_key(
         "think": think,
         "execution": execution,
         "format": format,
+        "repository_revision": repository_revision,
+        "phase": phase,
+        "memory_revision": memory_revision,
+        "focus": focus,
+        "preload_profile": preload_profile,
         "app_version": __version__,
     })
 
@@ -2449,6 +2459,146 @@ class LocalAIServices:
             lambda: self.repo_tools.git_diff(root, base, staged, max_tokens),
         )
 
+    @staticmethod
+    def _adaptive_label(value: Any, limit: int = 160) -> str:
+        text = str(value or "")[:limit]
+        if re.search(r"(?i)(api[_ -]?key|access[_ -]?token|password|secret|authorization|bearer)\s*[:=]", text):
+            return "<redacted>"
+        return re.sub(r"[^A-Za-z0-9_./:@+ -]", " ", text).strip()[:limit]
+
+    def _adaptive_memory_revision(self, request: ConsistencyRequest) -> str:
+        explicit = str(getattr(request, "memory_revision", "") or "")[:200]
+        if explicit:
+            return explicit
+        store = getattr(self.consistency_guard, "memory_store", None)
+        for name in ("memory_revision", "revision"):
+            value = getattr(store, name, "") if store is not None else ""
+            if callable(value):
+                try:
+                    value = value(request.root)
+                except TypeError:
+                    try:
+                        value = value()
+                    except Exception:
+                        value = ""
+                except Exception:
+                    value = ""
+            if value:
+                return str(value)[:200]
+        return ""
+
+    def _adaptive_relevance(self, request: ConsistencyRequest, evidence: tuple[dict[str, Any], ...], revision: str, memory_revision: str) -> dict[str, Any]:
+        guard = self.consistency_guard
+        if guard is None or not evidence:
+            return {"success": False, "degraded": True, "degraded_reason": "no_authoritative_evidence", "warnings": []}
+        try:
+            projector = getattr(guard, "structured_evidence", None)
+            if callable(projector):
+                structured = list(projector(evidence, limit=24))
+            else:
+                structured = []
+                for item in evidence[:24]:
+                    if isinstance(item, dict):
+                        structured.append({
+                            "evidence_id": str(item.get("evidence_id") or item.get("id") or "")[:200],
+                            "authority": "deterministic",
+                            "path": self._adaptive_label(item.get("path"), 240),
+                            "start_line": max(0, int(item.get("start_line", 0) or 0)),
+                            "end_line": max(0, int(item.get("end_line", 0) or 0)),
+                        })
+            structured = [item for item in structured if isinstance(item, dict) and item.get("evidence_id")][:24]
+            if not structured:
+                return {"success": False, "degraded": True, "degraded_reason": "no_authoritative_evidence", "warnings": []}
+            focus = [self._adaptive_label(item, 80) for item in tuple(getattr(request, "focus", ()) or ())[:16]]
+            model_focus = ["focus-" + hashlib.sha256(item.encode("utf-8", "replace")).hexdigest()[:12] for item in focus if item]
+            phase = self._adaptive_label(request.phase, 80)
+            if phase.casefold() not in {"plan", "edit", "implementation", "review", "test", "handoff"}:
+                phase = "other"
+            preload_profile = self._adaptive_label(request.preload_profile, 120)
+            if preload_profile.casefold() not in {"", "default", "plan", "edit", "review", "test", "handoff"}:
+                preload_profile = "profile-" + hashlib.sha256(preload_profile.encode("utf-8", "replace")).hexdigest()[:12]
+            payload = {
+                "operation": "context_relevance",
+                "phase": phase,
+                "focus": model_focus,
+                "preload_profile": preload_profile,
+                "repository_revision": str(revision)[:200],
+                "memory_revision": str(memory_revision)[:200],
+                "evidence": structured,
+                "limits": {"max_selected_evidence": 12, "max_claims": 16, "max_gaps": 16, "max_wording_chars": 1200},
+            }
+            params = {
+                "repository_revision": str(revision)[:200],
+                "phase": self._adaptive_label(request.phase, 80),
+                "memory_revision": str(memory_revision)[:200],
+                "focus": tuple(focus),
+                "preload_profile": self._adaptive_label(request.preload_profile, 120),
+                "evidence_ids": tuple(str(item["evidence_id"])[:200] for item in structured),
+            }
+
+            def compute() -> dict[str, Any]:
+                try:
+                    models = getattr(self, "config", {}).get("models", {})
+                    model = getattr(self, "config", {}).get("context_relevance_model") or models.get("general") or models.get("fast_code") or "context-relevance"
+                    generated = self._generate(
+                        str(model),
+                        json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
+                        "Return JSON only. Use only supplied deterministic evidence IDs. Never invent repository facts, repeat source text, reveal secrets, or use the user prompt as evidence.",
+                        min(512, max(64, int(request.token_budget) // 4)),
+                        0.0,
+                        request.tenant or "context",
+                        "context-relevance",
+                        4,
+                        semantic_query="context relevance",
+                        semantic_context_fingerprint=stable_hash(params),
+                        internal=True,
+                        format={"type": "object"},
+                    )
+                except Exception:
+                    return {"success": False, "degraded": True, "degraded_reason": "model_error", "warnings": []}
+                if not isinstance(generated, dict) or not generated.get("success"):
+                    return {"success": False, "degraded": True, "degraded_reason": "model_unavailable", "warnings": []}
+                raw = generated.get("text") or generated.get("response") or ""
+                try:
+                    if isinstance(raw, dict):
+                        parsed = raw
+                    else:
+                        text = str(raw).strip()
+                        if text.startswith("```"):
+                            text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I | re.S)
+                        parsed = json.loads(text)
+                    if not isinstance(parsed, dict):
+                        raise ValueError("structured response required")
+                except Exception:
+                    return {"success": False, "degraded": True, "degraded_reason": "invalid_model_output", "warnings": []}
+                claims = parsed.get("claims") if isinstance(parsed.get("claims"), list) else []
+                postprocess = getattr(guard, "postprocess_model_claims", None)
+                if callable(postprocess):
+                    checked = postprocess(evidence, claims, request)
+                else:
+                    checked = {"claims": [], "unknowns": [], "warnings": []}
+                authoritative = set(checked.get("authoritative_evidence_ids", ()))
+                selected = [str(item)[:200] for item in (parsed.get("selected_evidence_ids") or ()) if str(item) in authoritative][:12]
+                gaps = [self._adaptive_label(item, 240) for item in (parsed.get("gaps") or ())][:16]
+                wording = self._adaptive_label(parsed.get("wording"), 1200)
+                warning_dicts = []
+                for warning in checked.get("warnings", ())[:24]:
+                    converter = getattr(warning, "to_dict", None)
+                    warning_dicts.append(converter() if callable(converter) else dict(warning) if isinstance(warning, dict) else {"code": "unsupported_model_claim", "message": self._adaptive_label(warning, 240)})
+                return {
+                    "success": True,
+                    "selected_evidence_ids": selected,
+                    "claims": list(checked.get("claims", ()))[:16],
+                    "unknowns": [self._adaptive_label(item, 240) for item in checked.get("unknowns", ())][:16],
+                    "gaps": [item for item in gaps if item],
+                    "wording": wording,
+                    "warnings": warning_dicts[:24],
+                }
+
+            return self._repo_cached("adaptive-relevance", request.root, params, compute)
+        except Exception:
+            return {"success": False, "degraded": True, "degraded_reason": "relevance_error", "warnings": []}
+
     def adaptive_context_pack(self, request: ConsistencyRequest, *, mode: str = "fast", since_hash: str = "") -> dict[str, Any]:
         """Build deterministic context plus bounded, soft consistency findings."""
         if not isinstance(request, ConsistencyRequest):
@@ -2485,6 +2635,9 @@ class LocalAIServices:
             pass
         drift_warnings = guard.check_drift(request, contract, changed_paths, diff)
         warnings = tuple(dict.fromkeys((*mapping_warnings, *drift_warnings)))[:24]
+        memory_revision = self._adaptive_memory_revision(request)
+        relevance = self._adaptive_relevance(request, evidence, revision, memory_revision)
+        model_warnings = tuple(relevance.get("warnings", ()))[:24] if isinstance(relevance, dict) else ()
         pack = AdaptiveContextPack(
             contract=contract,
             reuse_candidates=candidates,
@@ -2495,6 +2648,11 @@ class LocalAIServices:
             changed_paths=changed_paths,
             stale=False,
             context_id=hashlib.sha256(f"{request.root}:{revision}:{request.task_id}:{request.phase}:{request.query}".encode("utf-8", "replace")).hexdigest()[:24],
+            phase=request.phase,
+            focus=request.focus,
+            preload_profile=request.preload_profile,
+            memory_revision=memory_revision,
+            model_warnings=model_warnings,
         )
         pack_data = pack.to_dict()
         boundary = any(item.requires_approval or item.severity.lower() in {"boundary", "high", "high-risk"} for item in warnings)
@@ -2514,10 +2672,23 @@ class LocalAIServices:
             "reuse": pack_data["reuse_candidates"],
             "reuse_candidates": pack_data["reuse_candidates"],
             "mappings": pack_data["mappings"],
-            "warnings": pack_data["warnings"],
+            "warnings": [*pack_data["warnings"], *list(model_warnings)][:24],
             "evidence_ids": list(dict.fromkeys(item.get("evidence_id", "") for item in evidence if item.get("evidence_id")))[:24],
-            "warning_ids": list(dict.fromkeys(evidence_id for item in warnings for evidence_id in item.evidence_ids))[:24],
+            "warning_ids": list(dict.fromkeys(
+                evidence_id
+                for item in (*warnings, *model_warnings)
+                for evidence_id in (item.evidence_ids if hasattr(item, "evidence_ids") else item.get("evidence_ids", ()) if isinstance(item, dict) else ())
+            ))[:24],
+            "model_warnings": list(model_warnings),
+            "relevance": {
+                key: relevance.get(key)
+                for key in ("selected_evidence_ids", "claims", "unknowns", "gaps", "wording")
+                if isinstance(relevance, dict) and key in relevance
+            },
+            "model_degraded": bool(not isinstance(relevance, dict) or not relevance.get("success")),
+            "model_degraded_reason": str(relevance.get("degraded_reason", ""))[:120] if isinstance(relevance, dict) else "relevance_error",
             "repo_revision": revision,
+            "memory_revision": memory_revision,
             "changed_paths": list(changed_paths),
             "since_hash": str(since_hash)[:200],
             "delta_from": str(since_hash)[:200] if since_hash else "",

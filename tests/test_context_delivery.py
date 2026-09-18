@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from local_ai_hub.services import LocalAIServices
+from local_ai_hub.services import LocalAIServices, generation_cache_key
 from local_ai_hub.agent_consistency import ConsistencyRequest, GuardWarning
 from local_ai_hub.json_utils import dumps as json_dumps
 from pathlib import Path
@@ -410,5 +410,123 @@ def test_realtime_status_includes_preprocessor_projects_on_light():
     res_light = app.realtime_status(light=True)
     assert len(res_light["preprocessing"]["projects"]) == 1
     assert res_light["preprocessing"]["projects"][0]["project"] == "myproject"
+
+
+class _EvidenceDeterministic(_Deterministic):
+    def __init__(self, events):
+        self.events = events
+
+    def context_pack(self, root, query, *, max_chars, max_raw_evidence):
+        self.events.append("deterministic")
+        return {
+            "success": True,
+            "root": root,
+            "query": query,
+            "context": "deterministic context",
+            "evidence": [{"evidence_id": "det-1", "path": "src/app.py", "raw": "secret-value"}],
+            "estimated_tokens": 3,
+        }
+
+
+class _RelevanceGuard(_Guard):
+    def structured_evidence(self, evidence, *, limit=24):
+        return ({"evidence_id": "det-1", "authority": "deterministic", "path": "src/app.py", "start_line": 1, "end_line": 2},)
+
+    def postprocess_model_claims(self, evidence, claims, request):
+        return {"claims": tuple(claims[:1]), "unknowns": (), "warnings": (), "authoritative_evidence_ids": ("det-1",)}
+
+
+def test_adaptive_context_is_deterministic_first():
+    events = []
+    guard = _RelevanceGuard()
+    services = _guarded_services(guard)
+    services.deterministic = _EvidenceDeterministic(events)
+    services._generate = lambda *args, **kwargs: events.append("model") or {"success": True, "text": '{"selected_evidence_ids":["det-1"],"claims":[]}' }
+
+    result = services.adaptive_context_pack(_request(memory_revision="memory-1"), mode="fast")
+
+    assert events == ["deterministic", "model"]
+    assert result["context_source"] == "deterministic-fast"
+    assert result["repo_revision"] == "revision-1"
+
+
+def test_model_relevance_pass_receives_structured_evidence_only():
+    captured = {}
+    guard = _RelevanceGuard()
+    services = _guarded_services(guard)
+
+    def generate(*args, **kwargs):
+        captured["prompt"] = args[1]
+        captured["system"] = args[2]
+        captured["format"] = kwargs["format"]
+        return {"success": True, "text": '{"selected_evidence_ids":["det-1"],"claims":[]}' }
+
+    services.deterministic = _EvidenceDeterministic([])
+    services._generate = generate
+
+    services.adaptive_context_pack(_request(query="find route private prompt secret-value"), mode="fast")
+
+    assert "secret-value" not in captured["prompt"]
+    assert "find route private prompt" not in captured["prompt"]
+    assert '"evidence_id":"det-1"' in captured["prompt"]
+    assert '"raw"' not in captured["prompt"]
+    assert captured["format"] == {"type": "object"}
+
+
+def test_model_failure_returns_deterministic_degraded_pack():
+    guard = _RelevanceGuard()
+    services = _guarded_services(guard)
+    services.deterministic = _EvidenceDeterministic([])
+    services._generate = lambda *args, **kwargs: {"success": False, "error": "timeout"}
+
+    result = services.adaptive_context_pack(_request(), mode="fast")
+
+    assert result["context"] == "deterministic context"
+    assert result["model_degraded"] is True
+    assert result["model_degraded_reason"] == "model_unavailable"
+    assert result["context_source"] == "deterministic-fast"
+
+
+def test_adaptive_context_cache_key_includes_revision_phase_and_memory_revision():
+    calls = []
+    guard = _RelevanceGuard()
+    services = _guarded_services(guard)
+    services.deterministic = _EvidenceDeterministic([])
+    services._generate = lambda *args, **kwargs: {"success": True, "text": '{"claims":[]}' }
+    original = services._repo_cached
+
+    def capture(operation, root, params, compute):
+        calls.append((operation, params))
+        return original(operation, root, params, compute)
+
+    services._repo_cached = capture
+    services.adaptive_context_pack(
+        _request(phase="review", focus=("contracts",), preload_profile="review", memory_revision="memory-7"),
+        mode="fast",
+    )
+
+    params = next(item[1] for item in calls if item[0] == "adaptive-relevance")
+    assert params["repository_revision"] == "revision-1"
+    assert params["phase"] == "review"
+    assert params["memory_revision"] == "memory-7"
+    assert params["focus"] == ("contracts",)
+    assert params["preload_profile"] == "review"
+
+
+def test_generation_cache_key_changes_for_adaptive_context_inputs():
+    common = {
+        "model": "m", "prompt": "p", "system": "s", "options": {},
+        "think": None, "execution": {}, "format": {"type": "object"},
+    }
+    first = generation_cache_key(
+        **common, repository_revision="r1", phase="edit", memory_revision="m1",
+        focus=("contracts",), preload_profile="default",
+    )
+    second = generation_cache_key(
+        **common, repository_revision="r2", phase="review", memory_revision="m2",
+        focus=("errors",), preload_profile="review",
+    )
+
+    assert first != second
 
 

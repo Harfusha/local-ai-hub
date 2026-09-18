@@ -168,6 +168,7 @@ class ConsistencyRequest:
     base: str = "HEAD"
     staged: bool = False
     tenant: str = ""
+    memory_revision: str = ""
     override_reason: str = ""
     approval: str | bool = ""
 
@@ -184,6 +185,7 @@ class ConsistencyRequest:
         object.__setattr__(self, "base", _text(self.base, 160) or "HEAD")
         object.__setattr__(self, "staged", _safe_bool(self.staged))
         object.__setattr__(self, "tenant", _text(self.tenant, 160))
+        object.__setattr__(self, "memory_revision", _text(self.memory_revision, 200))
         object.__setattr__(self, "override_reason", _text(self.override_reason, 500))
         if not isinstance(self.approval, bool):
             object.__setattr__(self, "approval", _text(self.approval, 240))
@@ -194,7 +196,8 @@ class ConsistencyRequest:
             "phase": self.phase, "focus": list(self.focus), "workspace": self.workspace,
             "preload_profile": self.preload_profile, "token_budget": self.token_budget,
             "changed_paths": list(self.changed_paths), "base": self.base, "staged": self.staged,
-            "tenant": self.tenant, "override_reason": self.override_reason, "approval": self.approval,
+            "tenant": self.tenant, "memory_revision": self.memory_revision,
+            "override_reason": self.override_reason, "approval": self.approval,
         }
 
 
@@ -308,6 +311,11 @@ class AdaptiveContextPack:
     changed_paths: tuple[str, ...] = ()
     stale: bool = False
     context_id: str = ""
+    phase: str = ""
+    focus: tuple[str, ...] = ()
+    preload_profile: str = ""
+    memory_revision: str = ""
+    model_warnings: tuple[GuardWarning, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "reuse_candidates", _bounded_sequence(self.reuse_candidates))
@@ -318,6 +326,11 @@ class AdaptiveContextPack:
         object.__setattr__(self, "changed_paths", _tuple(self.changed_paths, 64))
         object.__setattr__(self, "stale", _safe_bool(self.stale))
         object.__setattr__(self, "context_id", _text(self.context_id, 200))
+        object.__setattr__(self, "phase", _text(self.phase, 80))
+        object.__setattr__(self, "focus", _tuple(self.focus, 16))
+        object.__setattr__(self, "preload_profile", _text(self.preload_profile, 120))
+        object.__setattr__(self, "memory_revision", _text(self.memory_revision, 200))
+        object.__setattr__(self, "model_warnings", _bounded_sequence(self.model_warnings))
 
     def to_dict(self) -> dict[str, Any]:
         try:
@@ -339,6 +352,10 @@ class AdaptiveContextPack:
             "evidence": [_json_value(item) for item in self.evidence[:_MAX_ITEMS]],
             "repo_revision": _text(self.repo_revision, 200), "changed_paths": list(_tuple(self.changed_paths)),
             "stale": bool(self.stale), "context_id": _text(self.context_id, 200),
+            "phase": _text(self.phase, 80), "focus": list(_tuple(self.focus, 16)),
+            "preload_profile": _text(self.preload_profile, 120),
+            "memory_revision": _text(self.memory_revision, 200),
+            "model_warnings": [nested(item) for item in self.model_warnings[:_MAX_ITEMS]],
         })
 
 
@@ -397,6 +414,81 @@ class AgentConsistencyGuard:
     @staticmethod
     def _raw(item: Mapping[str, Any]) -> str:
         return _text(item.get("raw") or item.get("text") or item.get("content"), 5000)
+
+    def structured_evidence(self, evidence: Iterable[Mapping[str, Any]] | Mapping[str, Any], *, limit: int = 24) -> tuple[dict[str, Any], ...]:
+        """Project deterministic evidence to metadata safe for local-model input."""
+        if isinstance(evidence, Mapping):
+            evidence = evidence.get("evidence") or evidence.get("results") or ()
+        projected: list[dict[str, Any]] = []
+        for item in _bounded_sequence(evidence, min(max(1, int(limit)), _MAX_ITEMS)):
+            if not isinstance(item, Mapping) or _is_local_model_evidence(item):
+                continue
+            evidence_id = self._evidence_id(item)
+            row: dict[str, Any] = {
+                "evidence_id": evidence_id,
+                "authority": "deterministic",
+                "path": _text(item.get("path"), 240),
+                "start_line": max(0, _safe_int(item.get("start_line"))),
+                "end_line": max(0, _safe_int(item.get("end_line"))),
+            }
+            for key in ("kind", "source_kind", "repository_revision", "revision"):
+                value = _text(item.get(key), 200)
+                if value:
+                    row[key] = value
+            if item.get("semantic") is True:
+                row["semantic"] = True
+            projected.append(row)
+        return tuple(projected[: min(max(1, int(limit)), _MAX_ITEMS)])
+
+    def postprocess_model_claims(
+        self,
+        evidence: Iterable[Mapping[str, Any]] | Mapping[str, Any],
+        claims: Iterable[Any],
+        request: ConsistencyRequest | None = None,
+    ) -> dict[str, Any]:
+        """Keep only claims backed by current deterministic evidence IDs."""
+        if isinstance(evidence, Mapping):
+            evidence = evidence.get("evidence") or evidence.get("results") or ()
+        bounded_evidence = _bounded_sequence(evidence, _MAX_ITEMS)
+        authoritative = self._current_claim_evidence(bounded_evidence, request)
+        accepted: list[dict[str, Any]] = []
+        unknowns: list[str] = []
+        warnings: list[GuardWarning] = []
+        for claim in _bounded_sequence(claims, _MAX_ITEMS):
+            if not isinstance(claim, Mapping):
+                text, ids = _text(claim, 400), ()
+            else:
+                text, ids = _text(claim.get("claim") or claim.get("text"), 400), _tuple(claim.get("evidence_ids"))
+            valid = bool(text and ids and all(evidence_id in authoritative for evidence_id in ids))
+            if valid:
+                accepted.append({"claim": text, "evidence_ids": list(ids)})
+                continue
+            unknowns.append(text or "<empty model claim>")
+            check = self.check_claims(bounded_evidence, [{"claim": text, "evidence_ids": list(ids)}], request=request)
+            if check:
+                warning = check[0]
+                warnings.append(GuardWarning(
+                    warning.severity,
+                    "unsupported_model_claim",
+                    warning.message,
+                    warning.evidence_ids,
+                    warning.affected_paths,
+                    warning.recommended_action,
+                    False,
+                    "unsupported_claim",
+                ))
+            else:
+                synthetic = self._synthetic_claim_evidence_id(text, ids, tuple(self._evidence_id(item) for item in bounded_evidence if isinstance(item, Mapping)))
+                warnings.append(GuardWarning(
+                    "warning", "unsupported_model_claim", "model claim has no current deterministic evidence",
+                    (synthetic,), (), "verify the claim with deterministic repository evidence", False, "unsupported_claim",
+                ))
+        return {
+            "claims": tuple(accepted[:_MAX_ITEMS]),
+            "unknowns": tuple(unknowns[:_MAX_ITEMS]),
+            "warnings": tuple(warnings[:_MAX_ITEMS]),
+            "authoritative_evidence_ids": tuple(authoritative.keys())[:_MAX_ITEMS],
+        }
 
     def _current_claim_evidence(self, evidence: tuple[Any, ...], request: ConsistencyRequest | None) -> dict[str, Mapping[str, Any]]:
         """Return only deterministic evidence verified against this checkout."""
