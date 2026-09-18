@@ -4,7 +4,6 @@ from .json_utils import dumps as json_dumps
 
 import hashlib
 import json
-import os
 import threading
 import time
 import uuid
@@ -12,8 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Collection
 
 from .agent_events import AgentStateStore
-from .agent_identity import AgentScope
-from .agent_memory import MemoryStatus
+from .agent_memory import MemoryStatus, _memory_matches_request_scope
 from .sqlite_support import connect_sqlite, retry_busy
 
 
@@ -122,10 +120,6 @@ class KnowledgeLink:
 
 def _estimate_tokens(text: str) -> int:
     return max(1, len(text.strip()) // 4)
-
-
-def _normalise_root(value: str) -> str:
-    return os.path.normcase(os.path.abspath(os.path.normpath(str(value).replace("\\", "/")))).replace("\\", "/")
 
 
 class ContextCompiler:
@@ -376,19 +370,15 @@ class ContextCompiler:
             records: list[Any] = []
             for status in (MemoryStatus.ACTIVE, MemoryStatus.CONFIRMED):
                 records.extend(self.memory_store.find(status=status, limit=100000, semantic=False))
-            request_root = _normalise_root(request.root) if request.root else ""
-
             def in_request_scope(record: Any) -> bool:
-                scope = record.scope.value if hasattr(record.scope, "value") else str(record.scope)
-                if scope == AgentScope.REPOSITORY.value:
-                    provenance = record.provenance if isinstance(record.provenance, dict) else {}
-                    record_root = str(provenance.get("root") or "")
-                    return bool(request_root and record_root and _normalise_root(record_root) == request_root)
-                if scope == AgentScope.TASK.value:
-                    return bool(request.task_id) and (not record.scope_id or record.scope_id == request.task_id)
-                if scope == AgentScope.SESSION.value:
-                    return bool(request.tenant) and (not record.scope_id or record.scope_id == request.tenant)
-                return True
+                return _memory_matches_request_scope(
+                    scope=record.scope,
+                    scope_id=record.scope_id,
+                    provenance=record.provenance,
+                    root=request.root,
+                    task_id=request.task_id,
+                    tenant=request.tenant,
+                )
 
             records = [record for record in records if in_request_scope(record)]
             records.sort(key=lambda record: record.updated_at, reverse=True)
@@ -406,7 +396,12 @@ class ContextCompiler:
             summary_fn = getattr(self.memory_store, "diagnostic_summary", None)
             if request.include_diagnostics and callable(summary_fn):
                 try:
-                    diagnostic_summary = summary_fn(id_limit=8)
+                    diagnostic_summary = summary_fn(
+                        id_limit=8,
+                        root=request.root,
+                        task_id=request.task_id,
+                        tenant=request.tenant,
+                    )
                 except Exception:
                     diagnostic_summary = None
             if diagnostic_summary is not None:
