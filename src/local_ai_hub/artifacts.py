@@ -78,6 +78,14 @@ class ArtifactStore:
             def _setup() -> None:
                 with closing(self._connect()) as con:
                     initialize_wal(con)
+                    con.execute(
+                        "CREATE TABLE IF NOT EXISTS artifact_schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+                    )
+                    marker = con.execute(
+                        "SELECT value FROM artifact_schema_meta WHERE key=?",
+                        ("tenant_storage",),
+                    ).fetchone()
+                    tenant_storage_scrubbed = bool(marker and marker[0] == "sha256-v1")
                     full_schema = {
                         "artifact_id", "created_at", "tenant", "tenant_identity", "kind", "text",
                         "mime_type", "encoding", "blob", "size_bytes", "checksum", "identity_json",
@@ -126,7 +134,7 @@ class ArtifactStore:
                         ))
                         for rowid, artifact_id, created_at, tenant, kind, text in legacy_rows:
                             raw_tenant = str(tenant)
-                            identity = raw_tenant if re.fullmatch(r"[0-9a-f]{64}", raw_tenant) else self._tenant_identity(raw_tenant)
+                            identity = raw_tenant if tenant_storage_scrubbed else self._tenant_identity(raw_tenant)
                             con.execute("UPDATE artifacts SET tenant=? WHERE rowid=?", (identity, rowid))
                             con.execute(
                                 """INSERT OR IGNORE INTO artifacts_v2(
@@ -135,6 +143,10 @@ class ArtifactStore:
                                 (artifact_id, created_at, identity, identity, kind, text),
                             )
                         self._table = _ARTIFACT_V2_TABLE
+                    con.execute(
+                        "INSERT OR REPLACE INTO artifact_schema_meta(key, value) VALUES(?, ?)",
+                        ("tenant_storage", "sha256-v1"),
+                    )
                     con.execute(f"CREATE INDEX IF NOT EXISTS idx_{self._table}_created ON {self._table}(created_at)")
                     con.commit()
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)

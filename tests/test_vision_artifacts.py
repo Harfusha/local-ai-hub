@@ -100,6 +100,36 @@ def test_artifact_schema_uses_additive_release_compatible_tables(tmp_path: Path)
     assert store.get("art_legacy", tenant="tenant")["text"] == "legacy"
 
 
+def test_legacy_migration_hashes_raw_64_hex_tenant_tokens(tmp_path: Path) -> None:
+    raw_token = "a" * 64
+    db_path = tmp_path / "artifacts.sqlite3"
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute(
+            "CREATE TABLE artifacts (artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL, tenant TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO artifacts VALUES (?, ?, ?, ?, ?)",
+            ("art_hex_legacy", 9_999_999_999, raw_token, "text", "legacy"),
+        )
+        connection.commit()
+
+    store = ArtifactStore(tmp_path)
+    expected_digest = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    with closing(sqlite3.connect(db_path)) as connection:
+        old_tenant = connection.execute("SELECT tenant FROM artifacts").fetchone()[0]
+        migrated_tenant = connection.execute("SELECT tenant FROM artifacts_v2").fetchone()[0]
+        database_values = "\n".join(connection.iterdump())
+
+    assert old_tenant == expected_digest
+    assert migrated_tenant == expected_digest
+    assert raw_token not in database_values
+    assert store.get("art_hex_legacy", tenant=raw_token)["success"] is True
+
+    ArtifactStore(tmp_path)
+    with closing(sqlite3.connect(db_path)) as connection:
+        assert connection.execute("SELECT tenant FROM artifacts").fetchone()[0] == expected_digest
+
+
 def test_binary_integrity_rejects_non_numeric_stored_size(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path)
     artifact_id = store.put_bytes(PNG, "tenant", "vision-image", "image/png")
