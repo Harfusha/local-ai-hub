@@ -165,6 +165,9 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
         root="repo-root",
         repository_id="repository-1",
         tenant="tenant-1",
+        clone_id="clone-1",
+        worktree_id="worktree-1",
+        branch="branch-1",
     )
     assert c_res2_get["success"] is True
     memory_get_payload = next(
@@ -172,7 +175,8 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
         if call[0] == "COORD" and call[1] == "memory_get"
     )
     assert {key: memory_get_payload[key] for key in (
-        "record_id", "scope", "scope_id", "task_id", "repository_id", "tenant"
+        "record_id", "scope", "scope_id", "task_id", "repository_id", "tenant",
+        "clone_id", "worktree_id", "branch",
     )} == {
         "record_id": "mem-task-1",
         "scope": "task",
@@ -180,6 +184,9 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
         "task_id": "task-1",
         "repository_id": "repository-1",
         "tenant": "tenant-1",
+        "clone_id": "clone-1",
+        "worktree_id": "worktree-1",
+        "branch": "branch-1",
     }
 
     c_res3 = mcp_mod.local_ai_coord(action="incident_decision", fingerprint={"error_class": "e"})
@@ -306,6 +313,8 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-one", key="shared", value="session-one"),
         MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-two", key="shared", value="session-two"),
         MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, key="shared", value="legacy-session"),
+        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="tenant-1", key="tenant-shared", value="tenant-one", provenance={"tenant": "tenant-1"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="tenant-2", key="tenant-shared", value="tenant-two", provenance={"tenant": "tenant-2"}),
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one", provenance={"root": str(repo_one), "repository_id": "repository-one"}),
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one-missing-id", provenance={"root": str(repo_one)}),
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-two", provenance={"root": str(repo_two), "repository_id": "repository-two"}),
@@ -344,6 +353,14 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         assert [item["value"] for item in task_without_scope["records"]] == ["task-one"]
         session_without_scope = get(session_id="session-one", key="shared")
         assert [item["value"] for item in session_without_scope["records"]] == ["session-one"]
+        repo_without_scope = get(root=str(repo_one), key="shared")
+        assert {item["value"] for item in repo_without_scope["records"]} == {"repo-one", "repo-one-missing-id"}
+        other_repo_without_scope = get(root=str(repo_two), key="shared")
+        assert [item["value"] for item in other_repo_without_scope["records"]] == ["repo-two"]
+        repository_id_without_scope = get(repository_id="repository-one", key="shared")
+        assert [item["value"] for item in repository_id_without_scope["records"]] == ["repo-one"]
+        tenant_without_scope = get(tenant="tenant-1", key="tenant-shared")
+        assert [item["value"] for item in tenant_without_scope["records"]] == ["tenant-one"]
         repo_result = get(scope="repository", root=str(repo_one), repository_id="repository-one", key="shared")
         assert [item["value"] for item in repo_result["records"]] == ["repo-one"]
         direct = post({

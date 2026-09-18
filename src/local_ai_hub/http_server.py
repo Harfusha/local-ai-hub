@@ -55,6 +55,69 @@ def _json_bytes(data: Any) -> bytes:
     return json_dumps(data).encode("utf-8")
 
 
+def _resolve_memory_scope(
+    scope: AgentScope | None,
+    *,
+    scope_id: Any = None,
+    root: Any = None,
+    repository_id: Any = None,
+    tenant: Any = None,
+    task_id: Any = None,
+    session_id: Any = None,
+    clone_id: Any = None,
+    worktree_id: Any = None,
+    branch: Any = None,
+) -> tuple[AgentScope | None, str | None, bool]:
+    """Resolve one unambiguous memory scope; reject mixed identity contexts."""
+    clean = lambda value: str(value or "").strip()
+    values = {
+        "task": clean(task_id),
+        "session": clean(session_id),
+        "clone": clean(clone_id),
+        "worktree": clean(worktree_id),
+        "branch": clean(branch),
+    }
+    identity_scopes = [(name, value) for name, value in values.items() if value]
+    scope_id_value = clean(scope_id)
+    root_value = clean(root)
+    repository_value = clean(repository_id)
+    tenant_value = clean(tenant)
+
+    if scope is None:
+        if len(identity_scopes) > 1:
+            return None, None, True
+        if identity_scopes:
+            scope = AgentScope.parse(identity_scopes[0][0], default=None)
+            if scope is None:
+                return None, None, True
+            if not scope_id_value:
+                scope_id_value = identity_scopes[0][1]
+        elif root_value or repository_value:
+            scope = AgentScope.REPOSITORY
+        elif tenant_value:
+            scope = AgentScope.SESSION
+            if not scope_id_value:
+                scope_id_value = tenant_value
+        elif scope_id_value:
+            return None, None, True
+
+    expected = {
+        AgentScope.TASK: values["task"],
+        AgentScope.SESSION: values["session"],
+        AgentScope.CLONE: values["clone"],
+        AgentScope.WORKTREE: values["worktree"],
+        AgentScope.BRANCH: values["branch"],
+    }.get(scope, "")
+    if identity_scopes:
+        if len(identity_scopes) != 1 or expected == "":
+            return None, None, True
+        if scope_id_value and scope_id_value != expected:
+            return None, None, True
+        scope_id_value = expected
+
+    return scope, (scope_id_value or None), False
+
+
 def _telemetry_http_outcome(status: int, data: Any, path: str = "") -> tuple[bool, str, bool]:
     """Return reliability success, safe outcome category, and error-record flag."""
     payload = data if isinstance(data, dict) else {}
@@ -1176,19 +1239,24 @@ class Handler(BaseHTTPRequestHandler):
                     tenant_val = (query.get("tenant") or [None])[0]
                     task_id_val = (query.get("task_id") or [None])[0]
                     session_id_val = (query.get("session_id") or [None])[0]
-                    if not any(
-                        str(value or "").strip()
-                        for value in (scope_val, scope_id_val, task_id_val, session_id_val, root_val, repository_id_val, tenant_val)
-                    ):
+                    clone_id_val = (query.get("clone_id") or [None])[0]
+                    worktree_id_val = (query.get("worktree_id") or [None])[0]
+                    branch_val = (query.get("branch") or [None])[0]
+                    scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
+                        scope_val,
+                        scope_id=scope_id_val,
+                        root=root_val,
+                        repository_id=repository_id_val,
+                        tenant=tenant_val,
+                        task_id=task_id_val,
+                        session_id=session_id_val,
+                        clone_id=clone_id_val,
+                        worktree_id=worktree_id_val,
+                        branch=branch_val,
+                    )
+                    if scope_val is None and not ambiguous_scope:
                         scope_val = AgentScope.GLOBAL
-                    if scope_val in {AgentScope.TASK, AgentScope.SESSION} and not str(scope_id_val or "").strip() and not (
-                        (scope_val is AgentScope.TASK and str(task_id_val or "").strip())
-                        or (scope_val is AgentScope.SESSION and str(session_id_val or "").strip())
-                    ):
-                        rec = None
-                    elif scope_val is AgentScope.REPOSITORY and not any(
-                        str(value or "").strip() for value in (scope_id_val, root_val, repository_id_val)
-                    ):
+                    if ambiguous_scope:
                         rec = None
                     else:
                         matches = APP.agent_memory.find(
@@ -1200,6 +1268,9 @@ class Handler(BaseHTTPRequestHandler):
                             tenant=str(tenant_val) if tenant_val else None,
                             task_id=str(task_id_val) if task_id_val else None,
                             session_id=str(session_id_val) if session_id_val else None,
+                            clone_id=str(clone_id_val) if clone_id_val else None,
+                            worktree_id=str(worktree_id_val) if worktree_id_val else None,
+                            branch=str(branch_val) if branch_val else None,
                             limit=1,
                         )
                         rec = matches[0] if matches else None
@@ -1224,9 +1295,15 @@ class Handler(BaseHTTPRequestHandler):
                 tenant_val = (query.get("tenant") or [None])[0]
                 task_id_val = (query.get("task_id") or [None])[0]
                 session_id_val = (query.get("session_id") or [None])[0]
+                clone_id_val = (query.get("clone_id") or [None])[0]
+                worktree_id_val = (query.get("worktree_id") or [None])[0]
+                branch_val = (query.get("branch") or [None])[0]
                 legacy_unscoped = scope_val is None and not any(
                     str(value or "").strip()
-                    for value in (scope_id_val, task_id_val, session_id_val, root_val, repository_id_val, tenant_val)
+                    for value in (
+                        scope_id_val, task_id_val, session_id_val, clone_id_val, worktree_id_val,
+                        branch_val, root_val, repository_id_val, tenant_val,
+                    )
                 )
                 if legacy_unscoped:
                     records = APP.agent_memory.find(
@@ -1237,17 +1314,20 @@ class Handler(BaseHTTPRequestHandler):
                         status=status_val,
                         limit=limit_val,
                     )
-                elif scope_val is None and not any(str(value or "").strip() for value in (task_id_val, session_id_val)):
-                    scope_val = AgentScope.GLOBAL
                 if not legacy_unscoped:
-                    if scope_val in {AgentScope.TASK, AgentScope.SESSION} and not str(scope_id_val or "").strip() and not (
-                        (scope_val is AgentScope.TASK and str(task_id_val or "").strip())
-                        or (scope_val is AgentScope.SESSION and str(session_id_val or "").strip())
-                    ):
-                        records = []
-                    elif scope_val is AgentScope.REPOSITORY and not any(
-                        str(value or "").strip() for value in (scope_id_val, root_val, repository_id_val)
-                    ):
+                    scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
+                        scope_val,
+                        scope_id=scope_id_val,
+                        root=root_val,
+                        repository_id=repository_id_val,
+                        tenant=tenant_val,
+                        task_id=task_id_val,
+                        session_id=session_id_val,
+                        clone_id=clone_id_val,
+                        worktree_id=worktree_id_val,
+                        branch=branch_val,
+                    )
+                    if ambiguous_scope:
                         records = []
                     else:
                         records = APP.agent_memory.find(
@@ -1258,6 +1338,9 @@ class Handler(BaseHTTPRequestHandler):
                             tenant=str(tenant_val) if tenant_val else None,
                             task_id=str(task_id_val) if task_id_val else None,
                             session_id=str(session_id_val) if session_id_val else None,
+                            clone_id=str(clone_id_val) if clone_id_val else None,
+                            worktree_id=str(worktree_id_val) if worktree_id_val else None,
+                            branch=str(branch_val) if branch_val else None,
                             key=key_val,
                             query=query_val,
                             status=status_val,
@@ -2025,10 +2108,22 @@ class Handler(BaseHTTPRequestHandler):
                     tenant_val = payload.get("tenant")
                     task_id_val = payload.get("task_id")
                     session_id_val = payload.get("session_id")
-                    if not any(
-                        str(value or "").strip()
-                        for value in (scope_val, scope_id_val, task_id_val, session_id_val, root_val, repository_id_val, tenant_val)
-                    ):
+                    clone_id_val = payload.get("clone_id")
+                    worktree_id_val = payload.get("worktree_id")
+                    branch_val = payload.get("branch")
+                    scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
+                        scope_val,
+                        scope_id=scope_id_val,
+                        root=root_val,
+                        repository_id=repository_id_val,
+                        tenant=tenant_val,
+                        task_id=task_id_val,
+                        session_id=session_id_val,
+                        clone_id=clone_id_val,
+                        worktree_id=worktree_id_val,
+                        branch=branch_val,
+                    )
+                    if scope_val is None and not ambiguous_scope:
                         scope_val = AgentScope.GLOBAL
                     rec = APP.agent_memory.get(
                         str(payload.get("record_id", "")),
@@ -2039,6 +2134,9 @@ class Handler(BaseHTTPRequestHandler):
                         tenant=str(tenant_val) if tenant_val else None,
                         task_id=str(task_id_val) if task_id_val else None,
                         session_id=str(session_id_val) if session_id_val else None,
+                        clone_id=str(clone_id_val) if clone_id_val else None,
+                        worktree_id=str(worktree_id_val) if worktree_id_val else None,
+                        branch=str(branch_val) if branch_val else None,
                     )
                     if not rec:
                         self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
@@ -2055,9 +2153,15 @@ class Handler(BaseHTTPRequestHandler):
                     tenant_val = payload.get("tenant")
                     task_id_val = payload.get("task_id")
                     session_id_val = payload.get("session_id")
+                    clone_id_val = payload.get("clone_id")
+                    worktree_id_val = payload.get("worktree_id")
+                    branch_val = payload.get("branch")
                     legacy_unscoped = scope_val is None and not any(
                         str(value or "").strip()
-                        for value in (scope_id_val, task_id_val, session_id_val, root_val, repository_id_val, tenant_val)
+                        for value in (
+                            scope_id_val, task_id_val, session_id_val, clone_id_val, worktree_id_val,
+                            branch_val, root_val, repository_id_val, tenant_val,
+                        )
                     )
                     if legacy_unscoped:
                         records = APP.agent_memory.find(
@@ -2068,17 +2172,20 @@ class Handler(BaseHTTPRequestHandler):
                             status=status_val,
                             limit=limit_val,
                         )
-                    elif scope_val is None and not any(str(value or "").strip() for value in (task_id_val, session_id_val)):
-                        scope_val = AgentScope.GLOBAL
                     if not legacy_unscoped:
-                        if scope_val in {AgentScope.TASK, AgentScope.SESSION} and not str(scope_id_val or "").strip() and not (
-                            (scope_val is AgentScope.TASK and str(task_id_val or "").strip())
-                            or (scope_val is AgentScope.SESSION and str(session_id_val or "").strip())
-                        ):
-                            records = []
-                        elif scope_val is AgentScope.REPOSITORY and not any(
-                            str(value or "").strip() for value in (scope_id_val, root_val, repository_id_val)
-                        ):
+                        scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
+                            scope_val,
+                            scope_id=scope_id_val,
+                            root=root_val,
+                            repository_id=repository_id_val,
+                            tenant=tenant_val,
+                            task_id=task_id_val,
+                            session_id=session_id_val,
+                            clone_id=clone_id_val,
+                            worktree_id=worktree_id_val,
+                            branch=branch_val,
+                        )
+                        if ambiguous_scope:
                             records = []
                         else:
                             records = APP.agent_memory.find(
@@ -2089,6 +2196,9 @@ class Handler(BaseHTTPRequestHandler):
                                 tenant=str(tenant_val) if tenant_val else None,
                                 task_id=str(task_id_val) if task_id_val else None,
                                 session_id=str(session_id_val) if session_id_val else None,
+                                clone_id=str(clone_id_val) if clone_id_val else None,
+                                worktree_id=str(worktree_id_val) if worktree_id_val else None,
+                                branch=str(branch_val) if branch_val else None,
                                 key=key_val,
                                 query=query_val,
                                 status=status_val,
