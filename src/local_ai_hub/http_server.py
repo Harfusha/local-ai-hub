@@ -2667,7 +2667,10 @@ class Handler(BaseHTTPRequestHandler):
                     result["delivery_mode"] = mode
                 self._send(200, result); return
             if path == "/api/artifact/get":
-                self._send(200, APP.artifacts.get(str(payload.get("artifact_id", "")), int(payload.get("offset", 0)), int(payload.get("max_chars", 6000)), str(payload.get("section", "")))); return
+                artifact_id = str(payload.get("artifact_id", ""))
+                if bool(payload.get("binary", False)):
+                    self._send(200, APP.artifacts.get_binary(artifact_id)); return
+                self._send(200, APP.artifacts.get(artifact_id, int(payload.get("offset", 0)), int(payload.get("max_chars", 6000)), str(payload.get("section", "")))); return
             if path == "/api/evidence/verify":
                 evidence = payload.get("evidence", [])
                 self._send(200, APP.repo_tools.verify_evidence(str(payload.get("root", ".")), evidence if isinstance(evidence, list) else [])); return

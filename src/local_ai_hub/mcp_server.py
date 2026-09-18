@@ -369,9 +369,9 @@ def _desc_work() -> str:
 
 def _desc_artifact() -> str:
     if LEAN_SCHEMAS:
-        return "Fetch an exact source or log slice with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: get, slice, list."
+        return "Fetch an exact source or log slice or bounded binary artifact metadata; binary retrieval never inlines payloads; optional max_response_tokens, response_profile, reuse_key. Actions: get, slice, list."
     return (
-        "Fetch one exact source or log slice. Evidence IDs start with E."
+        "Fetch one exact source or log slice or bounded binary artifact metadata. Binary payloads are never inlined in MCP responses. Evidence IDs start with E."
         " Use when: exact source or evidence text is required after indexed discovery."
         " Skip when: no source slice is needed or the existing compact result is sufficient."
     )
@@ -1775,15 +1775,23 @@ def local_ai_work(
 
 @mcp.tool()
 @_instrumented_tool()
-def local_ai_artifact(artifact_id: str, offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "") -> dict[str, Any]:
+def local_ai_artifact(artifact_id: str, offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", binary: bool = False) -> dict[str, Any]:
     """Fetch one needed artifact section or exact evidence slice. Evidence IDs start with E. Use when: exact source or evidence text is required after indexed discovery. Skip when: no source slice is needed or the existing compact result is sufficient."""
     if not FEATURES.artifacts:
         return {"success": False, "unsupported": True, "error": "local_ai_artifact is disabled in configuration"}
     if artifact_id.startswith("E"):
         return _compact(CLIENT.post("/api/evidence/get", {"evidence_id": artifact_id, "verify": True}), "artifact")
-    return _compact(CLIENT.post("/api/artifact/get", {
-        "artifact_id": artifact_id, "offset": offset, "max_chars": max(512, min(max_chars, 12000)), "section": section,
-    }), "artifact")
+    result = CLIENT.post("/api/artifact/get", {
+        "artifact_id": artifact_id,
+        "offset": offset,
+        "max_chars": max(512, min(max_chars, 12000)),
+        "section": section,
+        "binary": bool(binary),
+    })
+    if binary and isinstance(result, dict) and result.get("success"):
+        result = {key: value for key, value in result.items() if key != "data_base64"}
+        result["binary_payload"] = "available through /api/artifact/get with binary=true"
+    return _compact(result, "artifact")
 
 
 # Unregister tools that are disabled in current configuration so MCP clients do not receive them
