@@ -98,10 +98,13 @@ class LocalAIApp:
         self.scheduler.set_foreground_preempt_hook(self.background_gpu.preempt_foreground)
         self.embeddings = EmbeddingModel(self.config)
         self.reranker = Reranker(self.config)
+        bundles = self.config.get("bundles") or {}
         self.artifacts = ArtifactStore(
             state_dir,
             ttl_hours=int(saving.get("artifact_ttl_hours", 72)),
             max_inline_chars=int(saving.get("max_inline_chars", 6000)),
+            max_binary_bytes=int(bundles.get("max_bundle_bytes", 4_000_000)),
+            max_json_bytes=int(bundles.get("max_json_bytes", 4_000_000)),
         )
         obs = self.config.get("observability", {})
         self.telemetry = TelemetryStore(
@@ -343,6 +346,9 @@ class LocalAIApp:
                 "agent_os": fs.agent_os,
                 "dashboard": fs.dashboard,
                 "work_orchestrator": fs.work_orchestrator,
+            },
+            "models": {
+                "vision": fs.vision_model,
             },
             "token_saving": [
                 "compact MCP surface with agent-specific final projection and field-selectable work handoffs",

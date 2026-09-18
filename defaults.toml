@@ -20,6 +20,19 @@ max_request_body_bytes = 16777216 # 16 MiB for JSON/API requests; bundle upload 
 allow_remote = false
 api_token = "" # required (>=16 chars) when allow_remote=true and bind is non-loopback
 
+[browser_bridge]
+# Capture is explicit: only the extension action click can request the current tab.
+enabled = true
+# Empty by default: operators must configure the exact extension origin (or
+# protect the route with the hub API token). Never use a wildcard origin.
+allowed_origins = []
+capability_ttl_seconds = 60
+max_payload_bytes = 12582912
+max_screenshot_bytes = 8388608
+max_dom_chars = 2000000
+max_context_chars = 1000000
+max_elements = 256
+
 [hardware]
 # auto detects OS/architecture, RAM and NVIDIA/AMD/Intel/Apple graphics.
 # Shared-memory iGPU systems use the conservative integrated profile instead of
@@ -36,12 +49,19 @@ fast_code = "qwen2.5-coder:1.5b"
 heavy_code = "qwen2.5-coder:3b"
 reasoning = "qwen2.5-coder:7b"
 general = "qwen2.5-coder:3b"
+vision = "qwen3-vl:4b"
 embedding = "BAAI/bge-small-en-v1.5"
 embedding_backend = "sentence-transformers"
 embedding_device = "cpu"
 reranker = "BAAI/bge-reranker-v2-m3"
 reranker_backend = "torch"
 reranker_device = "cpu"
+
+[vision]
+# Local Qwen3-VL is authoritative. Cloud fallback is opt-in and fails closed
+# until an explicit provider integration is configured by the operator.
+cloud_fallback_enabled = false
+cloud_provider = ""
 
 [llama_cpp]
 # On Intel-only systems, use the loopback SYCL model router when ready.
@@ -124,6 +144,17 @@ background_context_tokens = 16384
 parallel = 1
 max_prompt_tokens = 24000
 context_reserve_tokens = 2048
+thinking = false
+
+[model_execution.vision]
+# Screenshot review uses a separate conservative single-slot role.
+context_tokens = 8192
+large_context_tokens = 8192
+max_context_tokens = 8192
+background_context_tokens = 8192
+parallel = 1
+max_prompt_tokens = 6000
+context_reserve_tokens = 1024
 thinking = false
 
 [routing]

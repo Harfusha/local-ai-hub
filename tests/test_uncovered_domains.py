@@ -13,11 +13,17 @@ def test_vision_service(tmp_path: Path) -> None:
 
     runtime = MagicMock()
     runtime.request = MagicMock(return_value={
-        "response": "A screenshot showing a dashboard with token metrics.",
+        "response": '{"summary":"dashboard review","findings":[]}',
     })
+    generation_response = runtime.request.return_value
+    def request(endpoint, payload=None, timeout=None):
+        if endpoint == "/api/show":
+            return {"capabilities": ["completion", "vision"]}
+        return generation_response
+    runtime.request.side_effect = request
 
     services = LocalAIServices(
-        config={"server": {"state_dir": str(tmp_path)}, "models": {"vision": "llava"}},
+        config={"server": {"state_dir": str(tmp_path)}, "models": {"vision": "qwen3-vl:4b"}},
         runtime=runtime,
         scheduler=MagicMock(),
         embeddings=MagicMock(),
@@ -36,11 +42,12 @@ def test_vision_service(tmp_path: Path) -> None:
     )
 
     assert res["success"] is True
-    assert "A screenshot showing" in res["response"]
+    assert res["review"]["summary"] == "dashboard review"
+    assert res["response"] == '{"summary":"dashboard review","findings":[]}'
     assert runtime.request.called
     req_payload = runtime.request.call_args[0][1]
     assert len(req_payload["images"]) == 1
-    assert req_payload["prompt"] == "What is in this image?"
+    assert req_payload["prompt"].startswith("What is in this image?")
 
 
 def test_docset_rag(tmp_path: Path) -> None:

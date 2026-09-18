@@ -1,0 +1,78 @@
+:root {
+  color: #172033;
+  background: #ffffff;
+  font-family: system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+.topbar {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  padding: 1rem;
+}
+
+.brand {
+  color: #172033;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.icon-button {
+  background: transparent;
+  border: 1px solid #172033;
+  border-radius: 0.5rem;
+  color: #172033;
+  font-size: 1.25rem;
+  min-height: 2.75rem;
+  min-width: 2.75rem;
+}
+
+.hero,
+.details {
+  margin: 0 auto;
+  max-width: 42rem;
+  padding: 2rem 1rem;
+}
+
+.eyebrow {
+  color: #3657c8;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.muted {
+  color: #a0a0a0;
+}
+
+.auth-state {
+  background: #eef2ff;
+  border-radius: 0.5rem;
+  margin-top: 1rem;
+  padding: 0.75rem;
+}
+
+.mobile-cta {
+  background: #3657c8;
+  border-radius: 0.5rem;
+  color: #ffffff;
+  display: inline-block;
+  margin-top: 120vh;
+  padding: 0.75rem 1rem;
+  text-decoration: none;
+}
+
+.details {
+  border-top: 1px solid #d7dce8;
+  padding-bottom: 6rem;
+}
