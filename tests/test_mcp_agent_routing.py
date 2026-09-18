@@ -130,6 +130,18 @@ def test_disabled_local_task_description_does_not_claim_mandatory_local_executio
     assert "mandatory local execution" not in description
 
 
+@pytest.mark.parametrize("tasks,has_model", [(False, True), (True, False)])
+def test_lean_repo_description_omits_local_routing_without_models(monkeypatch, tasks, has_model) -> None:
+    monkeypatch.setattr(local_ai_mcp, "LEAN_SCHEMAS", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", tasks)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: has_model)
+
+    description = local_ai_mcp._desc_repo()
+
+    assert "local_ai_task" not in description
+    assert "semantic handoff" not in description.lower()
+
+
 def test_successful_repo_evidence_exposes_typed_semantic_handoff(monkeypatch) -> None:
     monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)

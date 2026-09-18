@@ -269,7 +269,13 @@ def _desc_task() -> str:
 
 def _desc_repo() -> str:
     if LEAN_SCHEMAS:
-        return "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong." + _semantic_handoff_contract(FEATURES.tasks and FEATURES.has_any_model()) + " Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
+        local_semantic = ""
+        if FEATURES.tasks and FEATURES.has_any_model():
+            local_semantic = (
+                " use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression."
+                + _semantic_handoff_contract(True)
+            )
+        return "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Use deterministic/indexed actions for exact facts, symbols, diff and tests;" + local_semantic + " `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
     semantic_hint = ""
     if FEATURES.has_semantic():
         semantic_hint = f" -> {FEATURES.semantic_hint()} for relationships"
