@@ -1916,6 +1916,10 @@ class Handler(BaseHTTPRequestHandler):
                                 status_val = MemoryStatus(str(raw_status).lower())
                             except ValueError:
                                 status_val = None
+                        record_expiry = rec_data.get("expires_at", payload.get("expires_at"))
+                        record_ttl = rec_data.get("ttl_seconds", payload.get("ttl_seconds"))
+                        if record_expiry is None and record_ttl is not None and float(record_ttl) > 0:
+                            record_expiry = time.time() + float(record_ttl)
                         record = MemoryRecord.create(
                             kind=kind_val,
                             scope=scope_val,
@@ -1928,15 +1932,7 @@ class Handler(BaseHTTPRequestHandler):
                             evidence_ids=tuple(rec_data.get("evidence_ids") or ()),
                             sensitivity=str(rec_data.get("sensitivity", "normal")),
                             provenance=rec_data.get("provenance"),
-                            expires_at=(
-                                float(rec_data.get("expires_at", payload.get("expires_at")))
-                                if rec_data.get("expires_at", payload.get("expires_at")) is not None
-                                else (
-                                    time.time() + max(0.0, float(rec_data.get("ttl_seconds", payload.get("ttl_seconds"))))
-                                    if rec_data.get("ttl_seconds", payload.get("ttl_seconds")) is not None
-                                    else None
-                                )
-                            ),
+                            expires_at=(float(record_expiry) if record_expiry is not None else None),
                         )
                         saved = APP.agent_memory.record(record, actor=actor, idempotency_key=idempotency_key)
                         self._send(200, {"success": True, "record": saved.to_dict()}); return

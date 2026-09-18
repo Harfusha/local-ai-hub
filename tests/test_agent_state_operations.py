@@ -220,6 +220,29 @@ def test_project_bundle_roundtrips_agent_state_memory_metadata(tmp_path: Path):
         assert saved.record_id in {element.element_id for element in context.elements}
 
 
+def test_project_bundle_rejects_foreign_repository_memory(tmp_path: Path):
+    source_repo = tmp_path / "source-repo"
+    foreign_repo = tmp_path / "foreign-repo"
+    source_repo.mkdir()
+    foreign_repo.mkdir()
+    provenance = {"root": str(foreign_repo), "path_refs": ["src/foreign.py"]}
+    with app_with_agent_state(tmp_path / "source-app") as app:
+        record = app.agent_memory.record(
+            MemoryRecord.create(
+                kind=MemoryKind.FINDING,
+                scope=AgentScope.REPOSITORY,
+                key="foreign-repo-memory",
+                value="must not export",
+                scope_id="foreign",
+                status=MemoryStatus.CONFIRMED,
+                provenance=provenance,
+            ),
+            actor="user",
+        )
+        with pytest.raises(BundleValidationError, match="repository root"):
+            app.export_bundle(str(source_repo), agent_state_record_ids=[record.record_id])
+
+
 def test_project_bundle_rejects_tampered_agent_state_records(tmp_path: Path):
     source_repo = tmp_path / "source-repo"
     target_repo = tmp_path / "target-repo"

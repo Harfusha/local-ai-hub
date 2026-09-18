@@ -47,7 +47,7 @@ from .debug_traces import DebugTraceStore
 from .agent_events import AgentStateStore
 from .agent_tasks import TaskStore, TaskStatus
 from .agent_identity import AgentScope
-from .agent_memory import MemoryStore, MemoryKind, MemoryRecord, MemoryStatus
+from .agent_memory import MemoryStore, MemoryKind, MemoryRecord, MemoryStatus, _normalise_scope_root
 from .agent_incidents import IncidentStore
 from .agent_verification import VerificationStore
 from .agent_policy import PolicyEngine
@@ -704,6 +704,18 @@ class LocalAIApp:
         if not root_obj.is_dir():
             raise ValueError(f"root directory does not exist: {root_obj}")
         root_path = str(root_obj).replace("\\", "/")
+        for item in exported_agent_records:
+            if item.get("type") != "memory":
+                continue
+            record_data = item.get("data") or {}
+            if str(record_data.get("scope", "")).strip().lower() not in {"repo", "repository"}:
+                continue
+            provenance = record_data.get("provenance")
+            source_root = provenance.get("root") if isinstance(provenance, dict) else None
+            if source_root and _normalise_scope_root(str(source_root)) != _normalise_scope_root(root_path):
+                raise BundleValidationError(
+                    f"repository root mismatch for agent memory record {record_data.get('record_id', '')}"
+                )
         workspace = self.rag.workspace_id(root_path)
         tables: dict[str, list[dict[str, Any]]] = {}
 
@@ -820,6 +832,7 @@ class LocalAIApp:
         def restore_agent_memory_records(
             records: Any,
             target_root_path: str | None = None,
+            source_root_path: str | None = None,
         ) -> tuple[int, str | None]:
             if not isinstance(records, list):
                 return 0, "bundle records are missing"
@@ -838,6 +851,8 @@ class LocalAIApp:
                     if target_root_path and scope_value in {"repo", "repository"} and isinstance(provenance, dict):
                         source_root = provenance.get("root")
                         if source_root:
+                            if source_root_path and _normalise_scope_root(str(source_root)) != _normalise_scope_root(source_root_path):
+                                return 0, "repository memory provenance does not match bundle root"
                             rebased_provenance = dict(provenance)
                             rebased_provenance["source_root"] = str(source_root)
                             rebased_provenance["root"] = target_root_path
@@ -1048,7 +1063,9 @@ class LocalAIApp:
 
         restored_agent_records = 0
         if "agent_state_records" in data:
-            restored_agent_records, error = restore_agent_memory_records(data.get("agent_state_records"), root_path)
+            restored_agent_records, error = restore_agent_memory_records(
+                data.get("agent_state_records"), root_path, str(data.get("root", ""))
+            )
             if error:
                 return {"success": False, "error": error}
 
