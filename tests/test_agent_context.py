@@ -291,6 +291,21 @@ def test_context_filters_before_candidate_limit_with_many_excluded_records(tmp_p
     assert current.record_id in {element.element_id for element in context.elements}
 
 
+def test_context_drops_unsafe_memory_store_fallback(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+
+    class LegacyMemoryStore:
+        def find(self, *args, **kwargs):
+            raise AssertionError("unsafe pre-filter memory fallback must not run")
+
+    context = ContextCompiler(
+        state_store=state_store,
+        memory_store=LegacyMemoryStore(),
+    ).compile(ContextRequest(task_id="task-1", root=str(tmp_path), token_budget=120))
+
+    assert not any(element.source_kind == "memory_record" for element in context.elements)
+
+
 def test_memory_diagnostics_aggregate_beyond_context_candidate_limit(tmp_path: Path):
     state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
     memory_store = MemoryStore(state_store)
