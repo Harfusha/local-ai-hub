@@ -159,6 +159,21 @@ def test_enabled_descriptions_preserve_local_routing_contract(monkeypatch, lean)
     assert "before cloud reasoning" in normalized
 
 
+@pytest.mark.parametrize("lean", [True, False])
+def test_status_disabled_descriptions_omit_unavailable_bypass_tool(monkeypatch, lean) -> None:
+    monkeypatch.setattr(local_ai_mcp, "LEAN_SCHEMAS", lean)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "status", False)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+
+    descriptions = local_ai_mcp._desc_task() + local_ai_mcp._desc_repo()
+    normalized = descriptions.lower()
+
+    assert "semantic handoff is mandatory" in normalized
+    assert "before cloud reasoning" in normalized
+    assert "local_ai_status" not in descriptions
+
+
 def test_successful_repo_evidence_exposes_typed_semantic_handoff(monkeypatch) -> None:
     monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
@@ -167,6 +182,43 @@ def test_successful_repo_evidence_exposes_typed_semantic_handoff(monkeypatch) ->
     result = local_ai_mcp.local_ai_repo(action="search", query="routing")
 
     assert result["routing"]["semantic_handoff"] == semantic_handoff_hint("local_ai_repo", "search", True)
+
+
+def test_status_disabled_repo_evidence_omits_status_bypass_metadata(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "status", False)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True})
+
+    result = local_ai_mcp.local_ai_repo(action="search", query="routing")
+
+    assert "local_ai_status" not in repr(result)
+    assert result["routing"]["semantic_handoff"] == semantic_handoff_hint(
+        "local_ai_repo", "search", True, status_enabled=False
+    )
+
+
+@pytest.mark.parametrize("existing_routing", ["legacy", ["legacy", "value"]])
+def test_non_dict_routing_is_preserved_with_semantic_handoff(
+    monkeypatch, tmp_path: Path, existing_routing
+) -> None:
+    store = AdoptionMetricsStore(tmp_path)
+    monkeypatch.setattr(local_ai_mcp, "ADOPTION_METRICS", store)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(
+        local_ai_mcp.CLIENT,
+        "post",
+        lambda *_args, **_kwargs: {"success": True, "routing": existing_routing},
+    )
+
+    result = local_ai_mcp.local_ai_repo(action="search", query="routing")
+
+    assert result["routing"]["value"] == existing_routing
+    assert result["routing"]["semantic_handoff"] == semantic_handoff_hint(
+        "local_ai_repo", "search", True
+    )
+    assert store.report(days=1)["totals"]["recommended"] == 1
 
 
 def test_repo_evidence_recommendation_preserves_used_adoption(monkeypatch, tmp_path: Path) -> None:

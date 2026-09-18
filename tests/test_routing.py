@@ -58,6 +58,19 @@ def test_disabled_local_tasks_return_none():
     ) is None
 
 
+def test_status_disabled_handoff_omits_status_bypass_metadata():
+    hint = semantic_handoff_hint(
+        "local_ai_repo", "search", local_tasks_enabled=True, status_enabled=False
+    )
+
+    assert hint == {
+        "required": True,
+        "tool": "local_ai_task",
+        "actions": EXPECTED_PAYLOAD["actions"],
+    }
+    assert "local_ai_status" not in repr(hint)
+
+
 def test_non_semantic_tools_return_none():
     assert semantic_handoff_hint(
         "local_ai_artifact", "get", local_tasks_enabled=True

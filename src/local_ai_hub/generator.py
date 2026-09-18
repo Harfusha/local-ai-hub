@@ -24,6 +24,26 @@ def _reasoning_tier_label(cfg: dict[str, Any], fs: FeatureSet) -> str:
     return "the configured hardest-reasoning tier"
 
 
+def _semantic_handoff_contract(fs: FeatureSet) -> str:
+    bypass = (
+        ' If local inference is unavailable or intentionally excluded by a permitted boundary, report the bypass through `local_ai_status(adoption_signal="bypassed", target_tool="local_ai_task", target_action="reason")`.'
+        if fs.status
+        else " If local inference is unavailable or intentionally excluded by a permitted boundary, report the permitted bypass explicitly without using unavailable status tooling."
+    )
+    return (
+        "Semantic handoff is mandatory: after deterministic/indexed evidence, planning, interpretation, synthesis, generation, review, compression, and second-opinion work must call `local_ai_task` before cloud reasoning. The cloud agent integrates the bounded local result and does not redo semantic work."
+        + bypass
+        + " Preserve exceptions for architecture, security, mutations, open-ended coding, exact evidence, and verification."
+    )
+
+
+def _trigger_map_lines(fs: FeatureSet) -> list[str]:
+    lines = fs.trigger_map_lines()
+    if not fs.status:
+        lines = [line for line in lines if "local_ai_status" not in line]
+    return lines
+
+
 def _actions_note(actions: list[str]) -> str:
     """Keep generated tool descriptions aligned with each active action enum."""
     return f" Supported actions: {', '.join(actions)}." if actions else " No actions are enabled."
@@ -57,13 +77,14 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     fs = FeatureSet.from_config(cfg)
     reasoning_tier = _reasoning_tier_label(cfg, fs)
 
-    trigger_lines = "\n".join(fs.trigger_map_lines()) if fs.trigger_map_lines() else "- (all Hub tools currently disabled in configuration)"
+    trigger_map = _trigger_map_lines(fs)
+    trigger_lines = "\n".join(trigger_map) if trigger_map else "- (all Hub tools currently disabled in configuration)"
     recipe_lines = "\n".join(fs.recipe_lines())
 
     # Delegation section
     if fs.tasks and fs.has_any_model():
         delegation_task = (
-            f"- Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression."
+            f"- {_semantic_handoff_contract(fs)} Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression."
             f" Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks,"
             f" `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning."
             " Deterministic/indexed tools remain for exact facts, symbols, diff and tests; they do not replace these semantic tasks."
@@ -176,7 +197,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         routing_lines.append(f'{r_idx}. `local_ai_rag` — semantic fallback only when indexed evidence is insufficient.')
         r_idx += 1
     if fs.tasks and fs.has_any_model():
-        routing_lines.append(f'{r_idx}. `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` — semantic generation, exploration, reasoning, review, independent second opinions and compression. Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks, `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning. Deterministic/indexed tools remain for exact facts, symbols, diff and tests.')
+        routing_lines.append(f'{r_idx}. `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` — {_semantic_handoff_contract(fs)} Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks, `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning. Deterministic/indexed tools remain for exact facts, symbols, diff and tests.')
         r_idx += 1
     if fs.commands:
         routing_lines.append(f'{r_idx}. `local_ai_command(action="run")` — tests, lint, typecheck, builds and repeatable read-only commands before native execution.')
@@ -330,6 +351,7 @@ def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
     """Generate dynamic reference documents for skills/local-ai-orchestrator/references/."""
     fs = FeatureSet.from_config(cfg)
     reasoning_tier = _reasoning_tier_label(cfg, fs)
+    semantic_handoff = _semantic_handoff_contract(fs)
     work_owner_note = (
         "A submitted `local_ai_work` order may own its bounded internal planning, edits, validation and integration until handoff."
         if fs.work_orchestrator
@@ -388,7 +410,7 @@ The active tool surface reflects your configuration:
         step_i += 1
         wf_steps.append(f"{step_i}. Retrieve deterministic facts, then code-index/search evidence.")
         step_i += 1
-        wf_steps.append(f"{step_i}. Use `context` for compact evidence; call `solve` after evidence for repository implementation support. Explicit semantic wording keeps one bounded local pass; use `local_ai_task` directly for semantic generation, exploration, reasoning, review, independent second opinions or semantic compression.")
+        wf_steps.append(f"{step_i}. Retrieve deterministic/indexed evidence, then {semantic_handoff} Use `context` for compact evidence and call `solve` after evidence for repository implementation support.")
         step_i += 1
         lease_note = "claim `local_ai_coord` leases for overlapping paths; " if fs.coord else ""
         wf_steps.append(f"{step_i}. Edit in the main agent; {lease_note}use `impact` before risky dependent changes.")
@@ -401,10 +423,10 @@ The active tool surface reflects your configuration:
     wf_lines = "\n".join(wf_steps)
     task_notes = ""
     if fs.tasks and fs.has_any_model():
-        task_notes = """
+        task_notes = f"""
 ## Local semantic work
 
-Use `local_ai_task(action="delegate")` for bounded creation or implementation guidance, `local_ai_task(action="explore")` for semantic exploration, `local_ai_task(action="reason")` for reasoning, `local_ai_task(action="review")` for a semantic review, `local_ai_task(action="second_opinion")` for independent critique, and `local_ai_task(action="compress")` for semantic condensation. Use `local_ai_repo`, `local_ai_artifact` and `local_ai_command` for exact facts, symbols, diff and tests; those deterministic paths do not replace the semantic worker.
+{semantic_handoff} Use `local_ai_task(action="delegate")` for bounded creation or implementation guidance, `local_ai_task(action="explore")` for semantic exploration, `local_ai_task(action="reason")` for reasoning, `local_ai_task(action="review")` for a semantic review, `local_ai_task(action="second_opinion")` for independent critique, and `local_ai_task(action="compress")` for semantic condensation. Use `local_ai_repo`, `local_ai_artifact` and `local_ai_command` for exact facts, symbols, diff and tests; those deterministic paths do not replace the semantic worker.
 
 ## Local second opinion
 
@@ -472,13 +494,14 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     fs = FeatureSet.from_config(cfg)
     reasoning_tier = _reasoning_tier_label(cfg, fs)
 
-    trigger_lines = "\n".join(fs.trigger_map_lines()) if fs.trigger_map_lines() else "- (all Hub tools currently disabled)"
+    trigger_map = _trigger_map_lines(fs)
+    trigger_lines = "\n".join(trigger_map) if trigger_map else "- (all Hub tools currently disabled)"
     recipe_lines = "\n".join(fs.recipe_lines())
 
     task_delegation = ""
     if fs.tasks and fs.has_any_model():
         task_delegation = (
-            "\n- Semantic handoff is mandatory: after deterministic/indexed evidence, planning, interpretation, synthesis, generation, review, compression, and second-opinion work must call `local_ai_task` before cloud reasoning. The cloud agent integrates the bounded local result and does not redo semantic work. If local inference is unavailable or intentionally excluded by a permitted boundary, report the bypass through `local_ai_status(adoption_signal=\"bypassed\", target_tool=\"local_ai_task\", target_action=\"reason\")`. Preserve exceptions for architecture, security, mutations, open-ended coding, exact evidence, and verification."
+            f"\n- {_semantic_handoff_contract(fs)}"
             f" Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression."
             f" Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks,"
             f" `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning."

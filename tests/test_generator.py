@@ -128,6 +128,31 @@ class TestSkillReferences:
         assert "local_ai_command" not in refs["tools.md"]
         assert "preprocessing.md" not in refs
 
+    def test_references_require_semantic_handoff_before_cloud_reasoning(self):
+        refs = generate_skill_references({})
+        skill = generate_skill_markdown({})
+
+        for generated in (skill, refs["workflows.md"]):
+            normalized = generated.lower()
+            assert "semantic handoff is mandatory" in normalized
+            assert "after deterministic/indexed evidence" in normalized
+            assert "before cloud reasoning" in normalized
+            assert "cloud agent integrates" in normalized
+            assert "local_ai_status" in generated
+
+    def test_references_gate_status_bypass_wording(self):
+        cfg = {"features": {"status": False}}
+        refs = generate_skill_references(cfg)
+        skill = generate_skill_markdown(cfg)
+        policy = generate_global_policy(cfg)
+
+        for generated in (skill, refs["workflows.md"], policy):
+            normalized = generated.lower()
+            assert "semantic handoff is mandatory" in normalized
+            assert "before cloud reasoning" in normalized
+            assert "local_ai_status" not in generated
+            assert "permitted bypass" in normalized
+
 
 class TestGlobalPolicyGeneration:
     def test_policy_markers_and_content(self):
