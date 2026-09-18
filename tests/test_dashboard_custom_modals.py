@@ -1049,7 +1049,7 @@ def test_trace_renderers_render_per_kind_fixtures_as_semantic_output() -> None:
         },
         "request_response": {
             "presentation": {"kind": "request_response"},
-            "session": {"request": {"method": "POST", "path": "/v1/chat"}},
+            "session": {"request": {"method": "POST", "path": "/chat"}},
             "response": {"message": "ok"},
             "output": "response text",
             "lifecycle": {"state": "complete"},
@@ -1073,7 +1073,7 @@ def test_trace_renderers_render_per_kind_fixtures_as_semantic_output() -> None:
         "repo_intelligence": ["local-ai-hub", "search symbols", "tracePresentation", "dashboard.py", "custom_modals.py", "traceRenderBudget", "3 matches"],
         "rag_search": ["trace contract", "2 results", "dashboard.py", "line 2200", "serena", "0.91", "semantic renderer", "Use the semantic contract", "Truncation"],
         "async_job": ["running", "queued", "queue wait", "125", "retries", "job result", "timeout recovered"],
-        "request_response": ["POST", "/v1/chat", "ok", "response text", "complete", "timing", "42", "transport failed"],
+        "request_response": ["POST", "/chat", "ok", "response text", "complete", "timing", "42", "transport failed"],
     }
     for kind, labels in expected.items():
         html = rendered[kind]
