@@ -780,7 +780,7 @@ async function apiFetch(path,opts={}){
 }
 const rows=(id,items,fn,cols,emptyText='No active items recorded')=>{const el=$(id);if(!el)return;el.innerHTML=(items&&items.length)?items.map(fn).join(''):`<tr><td colspan="${cols}" class="muted" style="text-align:center;padding:16px 10px;font-style:italic">${emptyText}</td></tr>`};
 function copyText(text, btn){
-  try{navigator.clipboard.writeText(String(text))}catch{}
+  try{if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(String(text)).catch(()=>{});}}catch{}
   if(btn){
     const oldText=btn.textContent;
     btn.textContent='Copied!';
@@ -928,7 +928,7 @@ function renderDeadCodeModal(s){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -965,7 +965,7 @@ function renderAuditVulnModal(v){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -1026,7 +1026,7 @@ function renderSecretFindingModal(s){
       </div>
       `:''}
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -1058,7 +1058,7 @@ function renderArchEdgeModal(e){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -2054,7 +2054,7 @@ function traceRawBoundValue(value,limit=4096,depth=0){
   if(typeof value==='object'){const entries=Object.entries(value).slice(0,50),childLimit=Math.max(128,Math.floor(limit/Math.max(entries.length,1))),result={};for(const [key,item] of entries){if(budget&&budget.remaining<=0){budget.truncated=true;break}if(budget)budget.remaining-=Math.min(budget.remaining,key.length+2);result[key]=traceRawBoundValue(item,childLimit,depth+1,budget);}if(Object.keys(value).length>entries.length||budget?.truncated)result['…']=marker;return result;}
   const text=String(value).slice(0,limit);if(budget)budget.remaining-=Math.min(budget.remaining,text.length);return text;
 }
-function traceDisplaySession(rawSession){return {trace_id:rawSession.trace_id,kind:rawSession.kind,state:rawSession.state,tenant:rawSession.tenant,agent:rawSession.agent,action:rawSession.action,source:rawSession.source,model:rawSession.model,request_id:rawSession.request_id,async_job_id:rawSession.async_job_id,scheduler_job_id:rawSession.scheduler_job_id,job_id:rawSession.job_id,owner:rawSession.owner,created_at:rawSession.created_at,updated_at:rawSession.updated_at,finished_at:rawSession.finished_at,duration_ms:rawSession.duration_ms,elapsed_ms:rawSession.elapsed_ms,status_code:rawSession.status_code,text_bytes:rawSession.text_bytes,retained_bytes:rawSession.retained_bytes,final_response_status:rawSession.final_response_status,final_response_produced:rawSession.final_response_produced,error:traceRawBoundValue(rawSession.error,1024),request:traceRawBoundValue(rawSession.request),effective_payload:traceRawBoundValue(rawSession.effective_payload),thinking:traceRawBoundValue(rawSession.thinking),output:traceRawBoundValue(rawSession.output),response:traceRawBoundValue(rawSession.response)};}
+ function traceDisplaySession(rawSession){return {trace_id:rawSession.trace_id,kind:rawSession.kind,state:rawSession.state,tenant:rawSession.tenant,agent:rawSession.agent,action:rawSession.action,source:rawSession.source,model:rawSession.model,request_id:rawSession.request_id,async_job_id:rawSession.async_job_id,scheduler_job_id:rawSession.scheduler_job_id,job_id:rawSession.job_id,owner:rawSession.owner,created_at:rawSession.created_at,updated_at:rawSession.updated_at,finished_at:rawSession.finished_at,duration_ms:rawSession.duration_ms,elapsed_ms:rawSession.elapsed_ms,status_code:rawSession.status_code,text_bytes:rawSession.text_bytes,retained_bytes:rawSession.retained_bytes,final_response_status:rawSession.final_response_status,final_response_produced:rawSession.final_response_produced,error:traceRawBoundValue(rawSession.error,1024),request:traceSanitizeValue(rawSession.request),effective_payload:traceRawBoundValue(rawSession.effective_payload),thinking:traceSanitizeValue(rawSession.thinking),output:traceSanitizeValue(rawSession.output),response:traceSanitizeValue(rawSession.response)};}
 function traceRawProjection(detail,eventLimit=100){
   const rawSession=detail?.session||{},eventProjection=traceBoundedEvents(detail?.events,eventLimit),session=traceDisplaySession(rawSession);
   return {session,effective_payload:traceRawBoundValue(rawSession.effective_payload),request:traceRawBoundValue(rawSession.request),thinking:traceRawBoundValue(rawSession.thinking),output:traceRawBoundValue(rawSession.output),response:traceRawBoundValue(rawSession.response),events:eventProjection.events,events_total:eventProjection.eventsTotal,events_truncated:eventProjection.eventsTruncated};
@@ -2063,6 +2063,8 @@ function traceRawProjection(detail,eventLimit=100){
  function traceScrollNodes(root){return Array.from(root?.querySelectorAll?.('.human-pre,.trace-output,.prompt-pre')||[])}
  function captureTraceScrollPositions(root){return traceScrollNodes(root).map((node,index)=>({index,top:node.scrollTop,left:node.scrollLeft}))}
  function restoreTraceScrollPositions(root,positions){traceScrollNodes(root).forEach((node,index)=>{const saved=positions[index];if(saved){node.scrollTop=saved.top;node.scrollLeft=saved.left}})}
+ function captureTracePrimaryGroups(root){return Object.fromEntries(Array.from(root?.querySelectorAll?.('details[data-trace-primary-group]')||[]).map(node=>[String(node.dataset.tracePrimaryGroup||node.dataset.group||''),Boolean(node.open)]))}
+ function restoreTracePrimaryGroups(root,state){(root?.querySelectorAll?.('details[data-trace-primary-group]')||[]).forEach(node=>{const key=String(node.dataset.tracePrimaryGroup||node.dataset.group||'');if(state&&Object.prototype.hasOwnProperty.call(state,key))node.open=Boolean(state[key])})}
  function captureTraceThinkingDetails(root){return new Set(Array.from(root?.querySelectorAll?.('details.trace-thinking[data-thinking-key]')||[]).filter(node=>node.open).map(node=>String(node.dataset.thinkingKey)))}
  function restoreTraceThinkingDetails(root,openKeys){(root?.querySelectorAll?.('details.trace-thinking[data-thinking-key]')||[]).forEach(node=>{node.open=openKeys?.has(String(node.dataset.thinkingKey))||false})}
 function traceEventList(events,limit=100){const shown=(events||[]).slice(-limit),prefix=(events||[]).length>shown.length?`<div class="empty-human">Showing latest ${shown.length} of ${(events||[]).length} events.</div>`:'';return `<section class="human-section"><h3>All events</h3>${prefix}${renderAny(shown)}</section>`}
@@ -2130,7 +2132,7 @@ function tracePresentationBound(value,budget,depth=0){
 }
 function traceRenderBudget(limit=24000){return {limit,remaining:limit,truncated:false};}
 function traceBudgetMarkup(markup,budget){const text=String(markup??'');if(!budget||text.length<=budget.remaining){if(budget)budget.remaining-=text.length;return text;}budget.truncated=true;budget.remaining=0;return '<span class="trace-primary-empty">payload budget truncated</span>';}
-function traceFinalizeMarkup(markup,budget){const text=String(markup??'');if(!budget||text.length<=budget.limit)return text;return '<section class="trace-primary trace-budget-capped"><div class="trace-primary-empty">payload budget truncated</div></section>';}
+function traceFinalizeMarkup(markup,budget){return String(markup??'');}
 function tracePresentationValue(value,limit=12000,budget=null){const state=budget||traceRenderBudget(limit);if(!budget)state.remaining=Math.min(state.remaining,limit);return traceSanitizeValue(tracePresentationBound(value,state));}
 function traceModelInputMessages(input,turn){
   const p=input&&typeof input==='object'?input:{},messages=Array.isArray(p.messages)?p.messages:[],found=messages.map((message,index)=>({role:String(message?.role||'message'),step:turn?.step||index+1,content:message?.content??message?.text??message}));
@@ -2139,9 +2141,12 @@ function traceModelInputMessages(input,turn){
   if(Array.isArray(input))return input.slice(0,100).map((content,index)=>({role:'user',step:turn?.step||index+1,content}));
   return ['system','developer','user'].filter(role=>p[role]!==undefined).map(role=>({role,step:turn?.step||1,content:p[role]})).concat((p.prompt??p.content??p.input)!==undefined?[{role:'user',step:turn?.step||1,content:p.prompt??p.content??p.input}]:[]).slice(0,100);
 }
-function traceReadableMarkup(value,budget,limit=8000){const safe=tracePresentationValue(value,limit,budget);return safe&&typeof safe==='object'?renderAny(safe):promptBody(promptText(safe));}
-function traceOutputValueMarkup(value,budget=null,limit=8000){const safe=tracePresentationValue(value,limit,budget);return safe&&typeof safe==='object'?renderAny(safe):`<pre class="trace-output">${esc(promptText(safe))}</pre>`;}
-function traceChatMessageMarkup(message,index,budget){const role=String(message?.role||'message').toLowerCase(),content=message?.content??message?.text??message;return traceBudgetMarkup(`<article class="trace-chat-message"><div class="trace-chat-role">${esc(role)} · step ${esc(message?.step||index+1)}</div>${traceReadableMarkup(content,budget,5000)}</article>`,budget);}
+function traceHumanPresentationValue(value){return traceSanitizeValue(value);}
+function traceHumanText(value){const safe=traceHumanPresentationValue(value);if(safe===undefined||safe===null)return '';if(typeof safe==='string'||typeof safe==='number'||typeof safe==='boolean')return String(safe);try{return JSON.stringify(safe,null,2)||''}catch(error){return redactDiagnostic(String(error));}}
+function traceHumanReadableMarkup(value){const safe=traceHumanPresentationValue(value);return safe&&typeof safe==='object'?renderAny(safe):`<pre class="trace-output">${esc(traceHumanText(safe))}</pre>`;}
+function traceReadableMarkup(value,budget,limit=8000){return traceHumanReadableMarkup(value);}
+function traceOutputValueMarkup(value,budget=null,limit=8000){return traceHumanReadableMarkup(value);}
+function traceChatMessageMarkup(message,index,budget){const role=String(message?.role||'message').toLowerCase(),content=message?.content??message?.text??message;return `<article class="trace-chat-message"><div class="trace-chat-role">${esc(role)} · step ${esc(message?.step||index+1)}</div>${traceHumanReadableMarkup(content)}</article>`;}
 function traceCodexEventMarkup(event,index,budget){
   const type=String(event?.event_type||'event').toLowerCase(),p=traceSanitizeValue(event?.payload||{}),step=p?.step||event?.step||index+1;
   const isThinking=['assistant_thinking','thinking','reasoning','assistant_reasoning'].includes(type),isToolCall=type==='tool_call',isToolResult=type==='tool_result',isOutput=['output_delta','output_stream','assistant_output','model_output','output'].includes(type),isRequest=['model_request','request_received','user_message'].includes(type),isBoundary=['turn_start','turn_end','step_start','step_end'].includes(type);
@@ -2169,10 +2174,10 @@ function traceCodexEvents(model,presentation){
   if(!fallback.length&&traceRecorded(presentation?.modelOutput))fallback.push({event_type:'assistant_output',payload:{content:presentation.modelOutput}});
   return fallback;
 }
-function traceCodexTimeline(model,title='Model chat',renderBudget=null){
+function traceCodexTimeline(model,title='Model chat',renderBudget=null,full=false){
   const budget=renderBudget||traceRenderBudget(),presentation=model.presentation||tracePresentationData(model),events=traceCodexEvents(model,presentation),modelName=traceInlineText(model.session?.model??model.actor?.model??'model not recorded');
   if(!events.length)return traceFinalizeMarkup(`<section class="trace-primary trace-chat-presentation"><div class="trace-primary-head"><h2>${esc(title)}</h2><span class="tiny">${esc(String(modelName))}</span></div><div class="trace-primary-empty">No model events captured</div></section>`,budget);
-  const cards=events.map((event,index)=>traceBudgetMarkup(traceCodexEventMarkup(event,index,budget),budget)).join(''),hasOutput=events.some(event=>['output_delta','output_stream','assistant_output','model_output','output'].includes(String(event?.event_type||'').toLowerCase()));
+  const cards=events.map((event,index)=>full?traceCodexEventMarkup(event,index,null):traceBudgetMarkup(traceCodexEventMarkup(event,index,budget),budget)).join(''),hasOutput=events.some(event=>['output_delta','output_stream','assistant_output','model_output','output'].includes(String(event?.event_type||'').toLowerCase()));
   const emptyOutput=hasOutput||traceRecorded(presentation?.modelOutput)?'':'<div class="trace-primary-empty">Model output · No model output captured</div>';
   return traceFinalizeMarkup(`<section class="trace-primary trace-chat-presentation trace-codex-timeline"><div class="trace-primary-head"><h2>${esc(title)}</h2><span class="tiny">${esc(String(modelName))} · ${events.length} events</span></div><div class="trace-tool-timeline trace-timeline-stream">${cards}${emptyOutput}</div></section>`,budget);
 }
@@ -2202,12 +2207,12 @@ function traceModelContextMarkup(input,budget){const source=input&&typeof input=
 function renderAgentLoopPresentation(model){
   const timelineContract='trace-codex-timeline trace-tool-timeline tool call tool result traceRawBoundValue traceSanitizeValue';
   const safeModel={...model,presentation:traceSanitizeValue(model.presentation||{})};
-  return traceCodexTimeline(safeModel,'Agent loop');
+   return traceCodexTimeline(safeModel,'Agent loop',null,true);
 }
 function tracePresentationPayload(model,key){const presentation=model?.presentation&&typeof model.presentation==='object'?model.presentation:{},payload=presentation[key],fieldSets={command:['command','cmd','args','arguments','input','stdin','stdout','stderr','exit_code','exitCode','success','retries','retry_count','attempts','duration','duration_ms','elapsed_ms','action','cwd','root','paths','criterion','error'],review:['request','context','diff','findings','recommendation','status','severity_counts','severityCounts','error'],repoOperation:['repository','repo','root','operation','action','query','files','symbols','context','result','output','response','error'],asyncJob:['status','queue_wait_ms','queue_wait','queue_time_ms','retries','retry_count','attempts','worker_input','input','result','output','error'],retrieval:['query','search_query','term','sources','results','hits','score','scores','provider','answer','truncated','truncation','root','project','top_k','limit','enrich','mode','path']},keys=fieldSets[key];return keys?(traceMergeRecordedSources([payload,model?.input,model?.output,model?.response,model?.session?.request,model?.session?.effective_payload],keys)||{}):payload??{};}
 function tracePresentationPick(value,keys,fallback){const source=value&&typeof value==='object'?value:{};for(const key of keys){if(traceRecorded(source[key]))return source[key];}return fallback;}
-function tracePresentationField(label,value,empty,budget,options={}){const key=String(label||'').toLowerCase().replace(/\s+/g,'_'),safe=tracePresentationValue(value,6000,budget);if(options.mode==='technical')return `<div class="trace-presentation-field"><strong>${esc(label)}</strong>${traceRecorded(safe)?renderAny(safe):`<span class="trace-primary-empty">${esc(empty||`No ${label} captured`)}</span>`}</div>`;if(!traceMeaningfulValue(safe,key))return '';if(/(^|_)(stdout|stderr|diff|prompt|output|response)$/.test(key))return traceCodeBlock(label,safe,budget,{key});if(Array.isArray(safe))return traceList(label,safe,budget);return traceSummaryCard(label,safe,budget,{key});}
- function tracePresentationGroup(title,markup,kind){if(!markup)return '';return `<details class="trace-primary-group" data-group="${esc(kind||title)}" data-trace-collapsible><summary><span>${esc(title)}</span><span class="tiny">Show details</span></summary><div class="trace-primary-group-body">${markup}</div></details>`;}
+function tracePresentationField(label,value,empty,budget,options={}){const key=String(label||'').toLowerCase().replace(/\s+/g,'_'),safe=options.mode==='technical'?tracePresentationValue(value,6000,budget):traceHumanPresentationValue(value);if(options.mode==='technical')return `<div class="trace-presentation-field"><strong>${esc(label)}</strong>${traceRecorded(safe)?renderAny(safe):`<span class="trace-primary-empty">${esc(empty||`No ${label} captured`)}</span>`}</div>`;if(!traceMeaningfulValue(safe,key))return '';if(/(^|_)(stdout|stderr|diff|prompt|output|response)$/.test(key))return traceCodeBlock(label,safe,budget,{key});if(Array.isArray(safe))return traceList(label,safe,budget);return traceSummaryCard(label,safe,budget,{key,full:true});}
+ function tracePresentationGroup(title,markup,kind){if(!markup)return '';const groupKey=String(kind||title);return `<details class="trace-primary-group" data-group="${esc(groupKey)}" data-trace-primary-group="${esc(groupKey)}" data-trace-collapsible open><summary><span>${esc(title)}</span><span class="tiny">Show details</span></summary><div class="trace-primary-group-body">${markup}</div></details>`;}
  function tracePresentationColumns(title,left,right,budget,headerExtra='',leftTitle='Request details',rightTitle='Result details'){const leftMarkup=left.filter(Boolean).join(''),rightMarkup=right.filter(Boolean).join(''),groups=tracePresentationGroup(leftTitle,leftMarkup,'request')+tracePresentationGroup(rightTitle,rightMarkup,'result');return traceFinalizeMarkup(`<section class="trace-primary trace-request-presentation"><div class="trace-primary-head"><h2>${esc(title)}</h2>${headerExtra}</div>${groups?`<div class="trace-primary-groups">${groups}</div>`:''}</section>`,budget);}
 function renderTraceInputOutputPresentation(model){const budget=traceRenderBudget(),input=tracePresentationField('input',model.input,'No input captured',budget),output=tracePresentationField('output',model.output,'No output captured',budget);if(!traceRecorded(model.input)&&!traceRecorded(model.output))return '';return tracePresentationColumns('Input / output',[input],[output],budget,'','Input','Output');}
 function traceReviewSeverityMarkup(findings,severityMap,budget){const counts={critical:0,high:0,medium:0,low:0},map=severityMap&&typeof severityMap==='object'&&!Array.isArray(severityMap)?severityMap:{};Object.keys(counts).forEach(level=>{const value=Number(map[level]);if(Number.isFinite(value))counts[level]=value;});const items=Array.isArray(findings)?findings:[];items.forEach(item=>{const severity=traceInlineText(item?.severity??item?.priority??'',120).toLowerCase();if(counts[severity]!==undefined&&!Number.isFinite(Number(map[severity])))counts[severity]+=1;});return `<div class="trace-severity-counts" aria-label="severity counts">${Object.entries(counts).map(([level,count])=>`<span class="trace-event-chip ${count?'trace-severity-active':''}">${esc(level)}: ${count}</span>`).join('')}</div>`;}
@@ -2227,7 +2232,7 @@ function traceSearchText(value,limit=420){
   return traceSearchText(source.text??source.content??source.snippet??source.summary??source.description??'',limit);
 }
 function traceSearchResultRow(item,index,budget){
-  const source=item&&typeof item==='object'?item:{},path=source.path??source.file??source.filename??source.name??'Result',start=source.start_line??source.startLine,end=source.end_line??source.endLine,location=start!==undefined?`line ${traceInlineText(start)}${end!==undefined&&traceInlineText(end)!==traceInlineText(start)?`–${traceInlineText(end)}`:''}`:'',provider=source.provider??source.source??'',score=Number(source.score??source.relevance??source.similarity),snippet=traceSearchText(source.text??source.content??source.snippet??source.summary??source.description),scoreMarkup=Number.isFinite(score)?`<span class="trace-search-score">${esc(score)}</span>`:'';
+   const source=item&&typeof item==='object'?item:{},path=source.path??source.file??source.filename??source.name??'Result',start=source.start_line??source.startLine,end=source.end_line??source.endLine,location=start!==undefined?`line ${traceInlineText(start)}${end!==undefined&&traceInlineText(end)!==traceInlineText(start)?`–${traceInlineText(end)}`:''}`:'',provider=source.provider??source.source??'',score=Number(source.score??source.relevance??source.similarity),snippet=traceHumanText(source.text??source.content??source.snippet??source.summary??source.description??''),scoreMarkup=Number.isFinite(score)?`<span class="trace-search-score">${esc(score)}</span>`:'';
   return `<div class="trace-search-result-row"><span class="trace-search-rank">${esc(index+1)}</span><div class="trace-search-result-main"><strong>${esc(traceInlineText(path))}</strong>${location?`<span class="tiny">${esc(location)}</span>`:''}${provider?`<span class="tiny">${esc(traceInlineText(provider))}</span>`:''}${snippet?`<div class="trace-search-snippet">${esc(snippet)}</div>`:''}</div>${scoreMarkup}</div>`;
 }
 function traceMeaningfulValue(value,key=''){
@@ -2241,11 +2246,10 @@ function traceMeaningfulValue(value,key=''){
 }
 function tracePrimaryMeaningfulValue(value,key=''){if(typeof value==='string'&&/^(empty|none|null|n\/a|unknown)$/i.test(value.trim()))return false;return traceMeaningfulValue(value,key);}
 function traceHumanValue(value,budget,limit=4000){
-  const val=tracePresentationValue(value,limit,budget);
+  const val=traceHumanPresentationValue(value);
   if(val===undefined||val===null)return '';
   if(typeof val==='string'||typeof val==='number'||typeof val==='boolean'){
-    const str=String(val);
-    return esc(str.length>limit?str.slice(0,limit)+'…':str);
+    return esc(String(val));
   }
   if(Array.isArray(val)){
     const items=val.filter(item=>traceMeaningfulValue(item));
@@ -2263,16 +2267,14 @@ function traceHumanValue(value,budget,limit=4000){
   return esc(String(val));
 }
 function traceSummaryCard(title,value,budget,options={}){
-  const val=tracePresentationValue(value,options.limit||4000,budget);
+  const val=options.mode==='technical'?tracePresentationValue(value,options.limit||4000,budget):traceHumanPresentationValue(value);
   if(!traceMeaningfulValue(val,options.key||title))return '';
   return `<section class="trace-summary-card ${esc(options.tone||'')}" data-field="${esc(options.key||title)}"><h3>${esc(title)}</h3><div class="trace-summary-value">${traceHumanValue(val,budget,options.limit||4000)}</div></section>`;
 }
 function traceCodeBlock(title,value,budget,options={}){
-  const limit=options.limit||8000,state=budget||traceRenderBudget(limit);
-  if(budget)state.remaining=Math.min(state.remaining,limit);
-  const val=tracePresentationValue(value,limit,state);
+  const val=traceHumanPresentationValue(value);
   if(!tracePrimaryMeaningfulValue(val,options.key||title))return '';
-  return `<section class="trace-code-card"><h3>${esc(title)}</h3><pre class="trace-output">${esc(traceInlineText(val,limit))}</pre></section>`;
+  return `<section class="trace-code-card"><h3>${esc(title)}</h3><pre class="trace-output">${esc(traceHumanText(val))}</pre></section>`;
 }
 function traceList(title,items,budget,renderItem){
   const values=(Array.isArray(items)?items:[]).filter(item=>traceMeaningfulValue(item));
@@ -2311,8 +2313,8 @@ function renderReviewPresentation(model){
     traceMeaningfulValue(review.diff)?traceCodeBlock('diff',review.diff,budget):''
   ];
   const right=[
-    (Array.isArray(findings)?traceList('findings',findings,budget,(item,idx)=>{const severity=traceInlineText(item?.severity??item?.priority??'',120);return `<div class="trace-finding-item"><span class="trace-chip ${esc(severity)}">${esc(severity)}</span><div>${traceHumanValue(item,budget)}</div></div>`}):(traceMeaningfulValue(findings)?traceSummaryCard('findings',findings,budget):'')),
-    traceMeaningfulValue(review.recommendation)?traceSummaryCard('recommendation',review.recommendation,budget):'',
+    (Array.isArray(findings)?traceList('findings',findings,budget,(item,idx)=>{const severity=traceInlineText(item?.severity??item?.priority??'',120);return `<div class="trace-finding-item"><span class="trace-chip ${esc(severity)}">${esc(severity)}</span><div>${traceHumanValue(item,budget)}</div></div>`}):(traceMeaningfulValue(findings)?traceSummaryCard('findings',findings,budget,{full:true}):'')),
+    traceMeaningfulValue(review.recommendation)?traceSummaryCard('recommendation',review.recommendation,budget,{full:true}):'',
     traceMeaningfulValue(status)?traceSummaryCard('status',status,budget):''
   ];
   return tracePresentationColumns('Review',left,right,budget,traceReviewSeverityMarkup(review.findings,review.severity_counts??review.severityCounts,budget));
@@ -2332,14 +2334,14 @@ function renderRepoIntelligencePresentation(model){
     traceMeaningfulValue(repo.context)?traceSummaryCard('context',repo.context,budget):''
   ];
   const right=[
-    traceMeaningfulValue(result)?traceSummaryCard('result',result,budget):''
+    traceMeaningfulValue(result)?traceSummaryCard('result',result,budget,{full:true}):''
   ];
   return tracePresentationColumns('Repository intelligence',left,right,budget);
 }
 function renderRagSearchPresentation(model){
   const budget=traceRenderBudget(),retrieval=traceSanitizeValue(tracePresentationPayload(model,'retrieval')),query=tracePresentationPick(retrieval,['query','search_query','term'],''),rawResults=Array.isArray(retrieval.results)?retrieval.results:(Array.isArray(retrieval.hits)?retrieval.hits:[]),sources=Array.isArray(retrieval.sources)?retrieval.sources:[],results=rawResults.length?rawResults:sources,ranked=results.map((item,index)=>({item,index,score:Number(item?.score??item?.relevance??item?.similarity)})).sort((a,b)=>{const af=Number.isFinite(a.score),bf=Number.isFinite(b.score);if(af&&bf)return b.score-a.score||a.index-b.index;if(af!==bf)return af?-1:1;return a.index-b.index}),spec=[traceProjectLabel(model),retrieval.path,retrieval.top_k??retrieval.limit,typeof retrieval.enrich==='boolean'?`enrich ${retrieval.enrich?'on':'off'}`:retrieval.mode,retrieval.provider].filter(Boolean),rows=ranked.slice(0,50).map((entry,index)=>traceSearchResultRow(entry.item,index,budget)).join('');
   const resultLabel=`${results.length}${results.length===1?' result':' results'}`;
-  return traceFinalizeMarkup(`<section class="trace-primary trace-search-presentation"><div class="trace-primary-head"><h2>Search</h2><span class="tiny">${esc(resultLabel)}</span></div><div class="trace-summary-card trace-search-query"><strong>Query</strong><div>${query?esc(traceSearchText(query,1200)):'<span class="trace-primary-empty">No query captured</span>'}</div></div>${spec.length?`<div class="trace-search-spec">${spec.map(item=>`<span>${esc(traceInlineText(item))}</span>`).join('')}</div>`:''}<div class="trace-list-card trace-search-results"><h3>Results</h3>${rows||'<div class="trace-primary-empty">No results captured</div>'}</div>${traceRecorded(retrieval.answer)?`<div class="trace-summary-card trace-search-answer"><strong>Answer</strong><div>${esc(traceSearchText(retrieval.answer,2400))}</div></div>`:''}${traceRecorded(retrieval.truncated??retrieval.truncation)?`<div class="trace-summary-card trace-search-answer"><strong>Truncation</strong><div>${esc(traceSearchText(retrieval.truncated??retrieval.truncation,300))}</div></div>`:''}</section>`,budget);
+  return traceFinalizeMarkup(`<section class="trace-primary trace-search-presentation"><div class="trace-primary-head"><h2>Search</h2><span class="tiny">${esc(resultLabel)}</span></div><div class="trace-summary-card trace-search-query"><strong>Query</strong><div>${query?esc(traceHumanText(query)):'<span class="trace-primary-empty">No query captured</span>'}</div></div>${spec.length?`<div class="trace-search-spec">${spec.map(item=>`<span>${esc(traceInlineText(item))}</span>`).join('')}</div>`:''}<div class="trace-list-card trace-search-results"><h3>Results</h3>${rows||'<div class="trace-primary-empty">No results captured</div>'}</div>${traceRecorded(retrieval.answer)?`<div class="trace-summary-card trace-search-answer"><strong>Answer</strong><div>${esc(traceHumanText(retrieval.answer))}</div></div>`:''}${traceRecorded(retrieval.truncated??retrieval.truncation)?`<div class="trace-summary-card trace-search-answer"><strong>Truncation</strong><div>${esc(traceSearchText(retrieval.truncated??retrieval.truncation,300))}</div></div>`:''}</section>`,budget);
 }
 function renderAsyncJobPresentation(model){
   const budget=traceRenderBudget(),safeModel=traceSanitizeValue(model||{}),lifecycle=safeModel.lifecycle||{},correlations=safeModel.correlations||{},payload=traceSanitizeValue(tracePresentationPayload(safeModel,'asyncJob'));
@@ -2376,7 +2378,7 @@ function renderRequestResponsePresentation(model){
     traceMeaningfulValue(timing)?traceSummaryCard('timing',timing,budget):''
   ];
   const right=[
-     traceMeaningfulValue(safeModel.response)?traceSummaryCard('response',safeModel.response,budget):'',
+     traceMeaningfulValue(safeModel.response)?traceSummaryCard('response',safeModel.response,budget,{full:true}):'',
     traceMeaningfulValue(safeModel.output)?traceCodeBlock('output',safeModel.output,budget):'',
     traceMeaningfulValue(statusVal)?traceSummaryCard('status',statusVal,budget):'',
     traceMeaningfulValue(safeModel.errors)?traceSummaryCard('error',safeModel.errors,budget):''
@@ -2443,7 +2445,7 @@ function traceHumanTitle(model){
   return ({rag_search:'Search',model_chat:'Model request',agent_loop:'Agent run',command:'Command run',review:'Review',repo_intelligence:'Repository lookup',async_job:'Background job',request_response:'Request'}[kind]||'Request');
 }
  function renderTraceDetail(d){
-   const body=$('tracePageBody'),existingOptionalDetails=body?.querySelector('#traceTechnicalDetails');if(existingOptionalDetails)traceOptionalDetailsOpen=existingOptionalDetails.open;const thinkingDetailsOpen=captureTraceThinkingDetails(body),scrollPositions=captureTraceScrollPositions(body),traceMain=body?.closest('.trace-main'),mainScrollTop=traceMain?.scrollTop||0,mainScrollLeft=traceMain?.scrollLeft||0;
+   const body=$('tracePageBody'),existingOptionalDetails=body?.querySelector('#traceTechnicalDetails');if(existingOptionalDetails)traceOptionalDetailsOpen=existingOptionalDetails.open;const primaryGroupsState=captureTracePrimaryGroups(body),thinkingDetailsOpen=captureTraceThinkingDetails(body),scrollPositions=captureTraceScrollPositions(body),traceMain=body?.closest('.trace-main'),mainScrollTop=traceMain?.scrollTop||0,mainScrollLeft=traceMain?.scrollLeft||0;
    activeTraceData=d;const unavailableCopy={input:'Input unavailable for this request type',output:'Output unavailable for this request type',response:'Response unavailable for this request type'},model=traceDisplayModel(d),s=traceSanitizeValue(model.session),events=model.events;
   if(!model.panels.some(panel=>panel.available&&panel.id===traceView))traceView=model.panels.find(panel=>panel.available)?.id||'timeline';
   const titleEl=$('tracePageTitle'),liveEl=$('tracePageLive');
@@ -2457,7 +2459,7 @@ function traceHumanTitle(model){
    const optionalMarkup=`<details class="trace-optional-details" id="traceTechnicalDetails"${traceOptionalDetailsOpen?' open':''}><summary>Technical details · ${panels.length} optional views</summary><div class="trace-optional-body">${universalSummary}<nav class="trace-tabs" role="tablist" aria-label="Trace views">${panels.map(panel=>traceTab(panel.label,panel.id)).join('')}</nav>${panelMarkup}</div></details>`;
    const traceBodyEl=$('tracePageBody');
    if(traceBodyEl){traceBodyEl.className='trace-page-body';traceBodyEl.innerHTML=`<div class="human-shell">${header}${presentationMarkup}${optionalMarkup}</div>`;}
-   const restore=()=>{restoreTraceThinkingDetails($('tracePageBody'),thinkingDetailsOpen);restoreTraceScrollPositions($('tracePageBody'),scrollPositions);const nextMain=$('tracePageBody')?.closest('.trace-main');if(nextMain){nextMain.scrollTop=mainScrollTop;nextMain.scrollLeft=mainScrollLeft}};
+    const restore=()=>{restoreTracePrimaryGroups($('tracePageBody'),primaryGroupsState);restoreTraceThinkingDetails($('tracePageBody'),thinkingDetailsOpen);restoreTraceScrollPositions($('tracePageBody'),scrollPositions);const nextMain=$('tracePageBody')?.closest('.trace-main');if(nextMain){nextMain.scrollTop=mainScrollTop;nextMain.scrollLeft=mainScrollLeft}};
    if(window.requestAnimationFrame)window.requestAnimationFrame(restore);else restore();
 }
 function setTraceView(view){if(!activeTraceData)return;const model=traceDisplayModel(activeTraceData);if(!model.panels.some(panel=>panel.available&&panel.id===view))return;traceView=view;renderTraceDetail(activeTraceData)}
@@ -2499,6 +2501,7 @@ async function openTrace(id){
 }
 function openModal(obj,title='',entityType=''){
   if($('modalLive'))$('modalLive').textContent='';
+  if(!$('modalBody'))return;
   const type=entityType||inferEntityType(obj);
   const defaultTitle=title||(
     type==='task'?'Task Inspector':
@@ -2979,7 +2982,7 @@ async function deleteMemoryAction(key,scope){
     if(res.success){
       if(statusEl)statusEl.innerHTML='<span class="ok">✓ Memory deleted.</span>';
       await loadAgentOsView();
-      setTimeout(()=>$('modalClose').click(),700);
+      setTimeout(()=>$('modalClose')?.click(),700);
     }else{
       if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(res.error||'Failed to delete')}</span>`;
     }
@@ -3272,7 +3275,7 @@ async function executeCleanupAction(){
           </div>
         </div>
         <div class="modal-actions-bar" style="justify-content:flex-end">
-          <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+          <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
         </div>
       </div>
     `;
@@ -3337,7 +3340,7 @@ function renderLiveStreamModal(ev){
 
       <details class="raw-json"><summary>Raw Event Object</summary><pre>${esc(JSON.stringify(ev,null,2))}</pre></details>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3421,8 +3424,8 @@ function renderProjectModal(p){
         <div class="modal-card-head"><span>Workspace Controls</span></div>
         <div class="modal-card-body">
           <div class="modal-actions-bar">
-            <button class="btn" onclick="projectAction(${escJs(p.root)},'${state==='paused'?'resume':'pause'}');$('modalClose').click()">${state==='paused'?'▶ Resume Preprocessing':'⏸ Pause Preprocessing'}</button>
-            <button class="btn ok" onclick="projectAction(${escJs(p.root)},'refresh');$('modalClose').click()">↻ Force Re-scan</button>
+            <button class="btn" onclick="projectAction(${escJs(p.root)},'${state==='paused'?'resume':'pause'}');$('modalClose')?.click()">${state==='paused'?'▶ Resume Preprocessing':'⏸ Pause Preprocessing'}</button>
+            <button class="btn ok" onclick="projectAction(${escJs(p.root)},'refresh');$('modalClose')?.click()">↻ Force Re-scan</button>
             <button class="btn" onclick="exportBundle(${escJs(p.root)})">📦 Export Bundle</button>
             <button class="btn bad" style="margin-left:auto" onclick="deleteProjectDialog(${escJs(p.root)},${escJs(p.project)})">🗑 Unregister / Delete</button>
           </div>
@@ -3617,7 +3620,7 @@ function renderDoctorModal(d){
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
         <button class="btn ok" onclick="openDoctorModal()">↻ Re-run Doctor</button>
-        <button class="btn" onclick="$('modalClose').click()">Close</button>
+        <button class="btn" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3673,7 +3676,7 @@ function renderActiveLeaseModal(l){
 async function releaseLeaseAction(leaseId){
   try{
     await post('/api/leases/release',{lease_id:leaseId});
-    $('modalClose').click();
+    $('modalClose')?.click();
     await loadActiveLeases();
   }catch(e){
     alert('Release error: '+e);
@@ -3705,7 +3708,7 @@ function renderActiveCommandModal(cmd){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn" onclick="$('modalClose').click()">Close</button>
+        <button class="btn" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3736,7 +3739,7 @@ function renderErrorFingerprintModal(err){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn" onclick="$('modalClose').click()">Close</button>
+        <button class="btn" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3775,8 +3778,8 @@ function openArchNodeModal(nd){
       </div>
 
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="switchTab('projects');$('modalClose').click()">📁 Open in Projects</button>
-        <button class="btn" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="switchTab('projects');$('modalClose')?.click()">📁 Open in Projects</button>
+        <button class="btn" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3814,7 +3817,7 @@ function renderDbOptModal(r){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3845,7 +3848,7 @@ function renderResolveErrorsModal(r){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Done</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Done</button>
       </div>
     </div>
   `;
@@ -3874,7 +3877,7 @@ function renderCachePurgeModal(r){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3912,7 +3915,7 @@ function renderHttpTailModal(x){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3953,7 +3956,7 @@ function renderExecutionProfileModal(x){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -3989,7 +3992,7 @@ function renderModelStatModal(x){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -4022,7 +4025,7 @@ function renderCacheLayerModal(x){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -4060,7 +4063,7 @@ function renderAgentStatModal(x){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -4099,7 +4102,7 @@ function renderRouteStatModal(x){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -4132,7 +4135,7 @@ function renderBlockedReasonModal(x){
         </div>
       </div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -4187,7 +4190,7 @@ function renderSchedulerJobModal(j){
       `:''}
       <details class="raw-json"><summary>Raw Job Details</summary><pre>${esc(JSON.stringify(j,null,2))}</pre></details>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -4233,7 +4236,7 @@ function renderHttpRequestModal(r){
       </div>
       <details class="raw-json"><summary>Raw Request Details</summary><pre>${esc(JSON.stringify(r,null,2))}</pre></details>
       <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose').click()">Close</button>
+        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
       </div>
     </div>
   `;
@@ -4980,19 +4983,19 @@ document.addEventListener('click',event=>{
   else projectAction(root,button.dataset.projectAction);
 });
 async function exportBundle(root){
-  const r=await apiFetch('/api/bundle/export',{method:'POST',headers:{'Content-Type':'application/zip'},body:JSON.stringify({root})});
+  const r=await apiFetch('/api/bundle/export',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/zip'},body:JSON.stringify({root})});
   if(!r.ok){alert('Export failed: '+(await r.text()));return;}
   const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='bundle.zip';a.click();URL.revokeObjectURL(url);
 }
 $('bundleImport')?.addEventListener('click',async()=>{
-  const file=$('bundleFile')?.files?.[0];if(!file){$('bundleImportStatus').textContent='Select a file first';return;}
-  $('bundleImportStatus').textContent='Uploading…';
+  const file=$('bundleFile')?.files?.[0];const statusEl=$('bundleImportStatus');if(!file){if(statusEl)statusEl.textContent='Select a file first';return;}
+  if(statusEl)statusEl.textContent='Uploading…';
   const target=$('bundleTargetRoot')?.value?.trim()||'';const suffix=target?'?target_root='+encodeURIComponent(target):'';
   try{
     const r=await apiFetch('/api/bundle/import'+suffix,{method:'POST',headers:{'Content-Type':'application/zip'},body:await file.arrayBuffer()});
     const d=await r.json();
-    $('bundleImportStatus').textContent=d.success?'Import successful: '+String(d.root||''):'Error: '+String(d.error||'failed');
-  }catch(e){$('bundleImportStatus').textContent='Upload error: '+e.message}
+    if(statusEl)statusEl.textContent=d.success?'Import successful: '+String(d.root||''):'Error: '+String(d.error||'failed');
+  }catch(e){if(statusEl)statusEl.textContent='Upload error: '+(e?.message||e)}
 });
 
 // ── Agent OS ──────────────────────────────────────────────────────────────────
@@ -5293,7 +5296,7 @@ async function viewTrajectory(taskId){
   const panel=$('trajDetailPanel');
   const title=$('trajDetailTitle');
   const list=$('trajStepsList');
-  if(!panel||!list)return;
+  if(!panel||!list||!title)return;
   panel.style.display='block';
   title.innerHTML=`Trajectory Inspection: <code>${esc(taskId)}</code> — <span class="muted">${esc(task?.contract?.goal||'')}</span>`;
   list.innerHTML='<div class="tiny muted">Loading event stream & trajectory steps…</div>';
@@ -5351,6 +5354,7 @@ window.addEventListener('keydown',e=>{
   if(e.key==='0')switchTab('config');
 });
 
-const initTab = location.hash.replace('#','') || localStorage.getItem('activeTab') || 'overview';
+let initTab = 'overview';
+try{initTab = location.hash.replace('#','') || localStorage.getItem('activeTab') || 'overview';}catch{initTab = location.hash.replace('#','') || 'overview';}
 switchTab(initTab);
 </script></body></html>"""
