@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -205,7 +206,15 @@ def test_drift_without_evidence_gets_stable_synthetic_trace(repository: Path, mo
     monkeypatch.setattr(guard.repository_tools, "search", lambda *_args, **_kwargs: {"success": True, "results": []})
     request = _request(repository, changed_paths=("backend/users.py",))
     contract = guard.build_contract(request)
-    diff = {"changed_paths": ["frontend/users.ts"], "diff": "+class FirstChange"}
+    common = "diff-prefix\n" * 2000
+    first_diff = common + "TAIL-A\n"
+    second_diff = common + "TAIL-B\n"
+    retained = first_diff[:12000]
+    diff = {
+        "changed_paths": ["frontend/users.ts"],
+        "diff": retained,
+        "diff_sha256": hashlib.sha256(first_diff.encode()).hexdigest(),
+    }
 
     first = guard.check_drift(request, contract, ("frontend/users.ts",), diff)
     repeat = guard.check_drift(request, contract, ("frontend/users.ts",), diff)
@@ -213,7 +222,11 @@ def test_drift_without_evidence_gets_stable_synthetic_trace(repository: Path, mo
         request,
         contract,
         ("frontend/users.ts",),
-        {"changed_paths": ["frontend/users.ts"], "diff": "+class DifferentChange"},
+        {
+            "changed_paths": ["frontend/users.ts"],
+            "diff": retained,
+            "diff_sha256": hashlib.sha256(second_diff.encode()).hexdigest(),
+        },
     )
 
     first_scope = next(warning for warning in first if warning.code == "scope_drift")
@@ -388,7 +401,13 @@ def test_claim_decisions_use_existing_memory_and_verification_stores(repository:
     verification = _VerificationStoreFake()
     guard = AgentConsistencyGuard(RepositoryTools(_cfg(repository.parent)), memory_store=memory, verification_store=verification)
     request = _request(repository)
-    evidence = [{"evidence_id": "src-1", "path": "backend/users.py", "file_sha256": "ignored", "raw": "class UserService"}]
+    evidence = [{
+        "evidence_id": "src-1",
+        "path": "backend/users.py",
+        "file_sha256": hashlib.sha256((repository / "backend" / "users.py").read_bytes()).hexdigest(),
+        "repository_revision": guard.repository_tools.git_snapshot(str(repository)).revision,
+        "raw": "class UserService",
+    }]
 
     result = guard.check_claims(evidence, [{"claim": "UserService exists", "evidence_ids": ["src-1"]}], request=request)
 
@@ -403,6 +422,28 @@ def test_claim_decisions_use_existing_memory_and_verification_stores(repository:
     unknown = guard.check_claims(evidence, [{"claim": "UnknownService exists"}], request=request)
     assert unknown[0].evidence_ids
     assert memory.records[-1][0].evidence_ids == unknown[0].evidence_ids
+
+
+def test_claim_rejects_stale_foreign_and_missing_evidence_ids(repository: Path):
+    guard = _guard(repository)
+    request = _request(repository)
+    revision = guard.repository_tools.git_snapshot(str(repository)).revision
+    current_hash = hashlib.sha256((repository / "backend" / "users.py").read_bytes()).hexdigest()
+    evidence = [
+        {"evidence_id": "stale-1", "path": "backend/users.py", "file_sha256": "0" * 64, "repository_revision": revision},
+        {"evidence_id": "foreign-1", "path": "../outside.py", "file_sha256": current_hash, "repository_revision": revision},
+        {"evidence_id": "current-1", "path": "backend/users.py", "file_sha256": current_hash, "repository_revision": revision},
+    ]
+
+    for evidence_id in ("stale-1", "foreign-1", "missing-1"):
+        claims = [{"claim": f"claim {evidence_id}", "evidence_ids": [evidence_id]}]
+        first = guard.check_claims(evidence, claims, request=request)
+        repeat = guard.check_claims(evidence, claims, request=request)
+        assert first and first[0].code == "unknown_claim"
+        assert first[0].evidence_ids
+        assert first[0].evidence_ids == repeat[0].evidence_ids
+
+    assert guard.check_claims(evidence, [{"claim": "current", "evidence_ids": ["current-1"]}], request=request) == ()
 
 
 def test_soft_warning_has_required_fields(repository: Path):
