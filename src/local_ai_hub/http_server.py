@@ -2139,6 +2139,11 @@ class Handler(BaseHTTPRequestHandler):
                         root=str(payload.get("root", "")),
                         tenant=tenant,
                         include_diagnostics=bool(payload.get("include_diagnostics", False)),
+                        clone_id=str(payload.get("clone_id", "")),
+                        worktree_id=str(payload.get("worktree_id", "")),
+                        branch=str(payload.get("branch", "")),
+                        repository_id=str(payload.get("repository_id", "")),
+                        session_id=str(payload.get("session_id", "")),
                     )
                     compiled = APP.agent_context.compile(req)
                     etag = compiled.etag()

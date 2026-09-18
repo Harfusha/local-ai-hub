@@ -134,16 +134,45 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
     c_res3 = mcp_mod.local_ai_coord(action="incident_decision", fingerprint={"error_class": "e"})
     assert c_res3["success"] is True
 
-    c_res4 = mcp_mod.local_ai_coord(action="context_compile", task_id="t1", include_diagnostics=True)
+    c_res4 = mcp_mod.local_ai_coord(
+        action="context_compile",
+        task_id="t1",
+        root="repo-root",
+        clone_id="clone-1",
+        worktree_id="worktree-1",
+        branch="branch-1",
+        repository_id="repository-1",
+        session_id="session-1",
+        include_diagnostics=True,
+    )
     assert c_res4["success"] is True
     coord_context_payload = next(
         call[2] for call in calls
         if call[0] == "POST" and call[1] == "/api/agent-state/context" and call[2].get("task_id") == "t1"
     )
     assert coord_context_payload["include_diagnostics"] is True
+    assert {key: coord_context_payload[key] for key in (
+        "clone_id", "worktree_id", "branch", "repository_id", "session_id"
+    )} == {
+        "clone_id": "clone-1",
+        "worktree_id": "worktree-1",
+        "branch": "branch-1",
+        "repository_id": "repository-1",
+        "session_id": "session-1",
+    }
 
     # local_ai_repo actions
-    r_res1 = mcp_mod.local_ai_repo(action="context_compile", task_id="t2", include_diagnostics=True)
+    r_res1 = mcp_mod.local_ai_repo(
+        action="context_compile",
+        task_id="t2",
+        root="repo-root",
+        clone_id="clone-2",
+        worktree_id="worktree-2",
+        branch="branch-2",
+        repository_id="repository-2",
+        session_id="session-2",
+        include_diagnostics=True,
+    )
     assert r_res1["success"] is True
     assert any(c[0] == "POST" and c[1] == "/api/agent-state/context" for c in calls)
     repo_context_payload = next(
@@ -151,6 +180,15 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
         if call[0] == "POST" and call[1] == "/api/agent-state/context" and call[2].get("task_id") == "t2"
     )
     assert repo_context_payload["include_diagnostics"] is True
+    assert {key: repo_context_payload[key] for key in (
+        "clone_id", "worktree_id", "branch", "repository_id", "session_id"
+    )} == {
+        "clone_id": "clone-2",
+        "worktree_id": "worktree-2",
+        "branch": "branch-2",
+        "repository_id": "repository-2",
+        "session_id": "session-2",
+    }
 
     r_res2 = mcp_mod.local_ai_repo(action="verify_receipt", receipt={"task_id": "t1", "criterion": "c1"})
     assert r_res2["success"] is True
@@ -220,6 +258,72 @@ def test_http_context_transport_preserves_diagnostics_flag(tmp_path: Path):
             result = json.loads(response.read().decode("utf-8"))
         assert result["success"] is True
         assert any(element["source_kind"] == "memory_diagnostics" for element in result["context"]["elements"])
+    finally:
+        server.shutdown()
+        server.server_close()
+        http_server.APP = previous
+        app.close()
+
+
+def test_http_context_transport_forwards_scope_context(tmp_path: Path, monkeypatch):
+    import json
+    import threading
+    import urllib.request
+
+    from local_ai_hub import http_server
+    from local_ai_hub.agent_context import CompiledContext
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        f'[server]\nbind = "127.0.0.1"\nport = 11499\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        "\n[agent_state]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(cfg_path))
+    previous = http_server.APP
+    http_server.APP = app
+    seen = {}
+
+    def capture(request):
+        seen.update({
+            "clone_id": request.clone_id,
+            "worktree_id": request.worktree_id,
+            "branch": request.branch,
+            "repository_id": request.repository_id,
+            "session_id": request.session_id,
+        })
+        return CompiledContext(elements=[], estimated_tokens=0, token_budget=request.token_budget)
+
+    monkeypatch.setattr(app.agent_context, "compile", capture)
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps({
+            "action": "compile",
+            "task_id": "transport-task",
+            "clone_id": "clone-http",
+            "worktree_id": "worktree-http",
+            "branch": "branch-http",
+            "repository_id": "repository-http",
+            "session_id": "session-http",
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/context",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        assert result["success"] is True
+        assert seen == {
+            "clone_id": "clone-http",
+            "worktree_id": "worktree-http",
+            "branch": "branch-http",
+            "repository_id": "repository-http",
+            "session_id": "session-http",
+        }
     finally:
         server.shutdown()
         server.server_close()

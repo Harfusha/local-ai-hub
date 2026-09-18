@@ -284,6 +284,34 @@ def test_mark_stale_for_revision_matches_relative_and_absolute_roots(store: Memo
     assert store.get(record.record_id).status is MemoryStatus.STALE
 
 
+def test_mark_stale_for_revision_deduplicates_and_caps_changed_paths(store: MemoryStore, tmp_path: Path):
+    record = store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope=AgentScope.REPOSITORY,
+            key="bounded-paths",
+            value="evidence",
+            status=MemoryStatus.CONFIRMED,
+            provenance={
+                "root": str(tmp_path),
+                "repository_revision": "rev-1",
+                "path_refs": ["src/match.py"],
+            },
+        )
+    )
+    changed_paths = [None, "None", "src/match.py", "src/match.py"] + [
+        f"src/other-{index}.py" for index in range(64)
+    ]
+
+    assert store.mark_stale_for_revision(str(tmp_path), "rev-2", changed_paths) == 1
+    stale = store.get(record.record_id)
+    assert stale is not None
+    bounded_paths = stale.provenance["staled_changed_paths"]
+    assert len(bounded_paths) == 32
+    assert len(set(bounded_paths)) == len(bounded_paths)
+    assert "None" not in bounded_paths
+
+
 def test_mark_stale_batch_rolls_back_and_repeats_idempotently(store: MemoryStore, tmp_path: Path, monkeypatch):
     records = [
         store.record(

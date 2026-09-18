@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from local_ai_hub.app import LocalAIApp, BundleValidationError
+from local_ai_hub.agent_context import ContextRequest
 from local_ai_hub.agent_tasks import GoalContract, TaskStatus
 from local_ai_hub.agent_identity import AgentScope, ScopeContext
 from local_ai_hub.agent_memory import MemoryRecord, MemoryKind, MemoryStatus
@@ -201,7 +202,10 @@ def test_project_bundle_roundtrips_agent_state_memory_metadata(tmp_path: Path):
         assert result["success"] is True
         restored = app2.agent_memory.get(saved.record_id)
         assert restored is not None
-        assert restored.provenance == provenance
+        expected_provenance = dict(provenance)
+        expected_provenance["root"] = target_repo.as_posix()
+        expected_provenance["source_root"] = str(source_repo)
+        assert restored.provenance == expected_provenance
         assert restored.confidence == 0.71
         assert restored.evidence_ids == ("project-evidence",)
         assert restored.source == "project-reviewer"
@@ -210,6 +214,44 @@ def test_project_bundle_roundtrips_agent_state_memory_metadata(tmp_path: Path):
         assert restored.status is MemoryStatus.CONFIRMED
         assert restored.contradicts_record_id == "project-old"
         assert restored.supersedes_record_id == "project-older"
+        context = app2.agent_context.compile(
+            ContextRequest(task_id="task-project", root=str(target_repo), token_budget=400)
+        )
+        assert saved.record_id in {element.element_id for element in context.elements}
+
+
+def test_project_bundle_rejects_tampered_agent_state_records(tmp_path: Path):
+    source_repo = tmp_path / "source-repo"
+    target_repo = tmp_path / "target-repo"
+    source_repo.mkdir()
+    target_repo.mkdir()
+    with app_with_agent_state(tmp_path / "source-app") as app1:
+        record = app1.agent_memory.record(
+            MemoryRecord.create(
+                kind=MemoryKind.FINDING,
+                scope=AgentScope.REPOSITORY,
+                key="tamper-check",
+                value="original",
+                scope_id="repo-tamper",
+                status=MemoryStatus.CONFIRMED,
+                provenance={"root": str(source_repo), "path_refs": ["src/tamper.py"]},
+            ),
+            actor="user",
+        )
+        raw = app1.export_bundle(str(source_repo), agent_state_record_ids=[record.record_id])
+
+    with zipfile.ZipFile(io.BytesIO(raw), "r") as zf:
+        payload = json.loads(zf.read("bundle.json"))
+    payload["agent_state_records"][0]["data"]["value"] = "tampered"
+    modified = io.BytesIO()
+    with zipfile.ZipFile(modified, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("bundle.json", json.dumps(payload, separators=(",", ":")))
+
+    with app_with_agent_state(tmp_path / "target-app") as app2:
+        result = app2.import_bundle(modified.getvalue(), str(target_repo))
+        assert result["success"] is False
+        assert result["error"] == "bundle integrity check failed"
+        assert app2.agent_memory.get(record.record_id) is None
 
 
 

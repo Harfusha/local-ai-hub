@@ -1070,6 +1070,11 @@ def _local_ai_repo_impl(
     response_profile: str = "",
     reuse_key: str = "",
     include_diagnostics: bool = False,
+    clone_id: str = "",
+    worktree_id: str = "",
+    branch: str = "",
+    repository_id: str = "",
+    session_id: str = "",
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
@@ -1245,6 +1250,11 @@ def _local_ai_repo_impl(
             "action": "compile", "task_id": task_id or query or task,
             "token_budget": max_tokens or 4000, "root": root,
             "include_diagnostics": bool(include_diagnostics),
+            "clone_id": clone_id,
+            "worktree_id": worktree_id,
+            "branch": branch,
+            "repository_id": repository_id,
+            "session_id": session_id,
         }, timeout=_timeout("context")), "context")
     if action == "verify_receipt":
         return _compact(CLIENT.post("/api/agent-state/verification", {
@@ -1405,13 +1415,18 @@ def local_ai_repo(
     response_profile: str = "",
     reuse_key: str = "",
     include_diagnostics: bool = False,
+    clone_id: str = "",
+    worktree_id: str = "",
+    branch: str = "",
+    repository_id: str = "",
+    session_id: str = "",
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
     return _local_ai_repo_impl(
         action, root, query, diff, task, workspace, path, base, staged, dry_run,
         max_tokens, evidence, mode, relation, language, profile, receipt, task_id,
         include_code, edits, extra_fields, max_response_tokens, response_profile, reuse_key,
-        include_diagnostics,
+        include_diagnostics, clone_id, worktree_id, branch, repository_id, session_id,
     )
 
 
@@ -1577,6 +1592,11 @@ def local_ai_coord(
     response_profile: str = "",
     reuse_key: str = "",
     include_diagnostics: bool = False,
+    clone_id: str = "",
+    worktree_id: str = "",
+    branch: str = "",
+    repository_id: str = "",
+    session_id: str = "",
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. Actions: claim, release, leases, memo_put, memo_get, memo_search, memo_delete, task_create, task_get, task_checkpoint, task_rollback, task_transition, task_resume, task_list, task_complete, task_fail, task_heartbeat, memory_record, memory_get, memory_find, memory_promote, memory_reap, context_compile, verify_receipt, verify_completion, negative_knowledge_record, negative_knowledge_find, incident_decision, blackboard_update, blackboard_get, blackboard_list, blackboard_merge, blackboard_delete, swarm_dispatch, swarm_step, swarm_status, swarm_list, swarm_cancel. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool. Use when: Hub workers share edit paths, leases, or reusable findings. Skip when: work is isolated and no shared Hub state or memo is involved."""
     if not FEATURES.coord:
@@ -1633,6 +1653,11 @@ def local_ai_coord(
             "since_hash": since_hash,
             "compact": True,
             "include_diagnostics": bool(include_diagnostics),
+            "clone_id": clone_id,
+            "worktree_id": worktree_id,
+            "branch": branch,
+            "repository_id": repository_id,
+            "session_id": session_id,
         }, timeout=_timeout("context")), "context")
     if action == "verify_receipt":
         return _compact(CLIENT.post("/api/agent-state/verification", {
