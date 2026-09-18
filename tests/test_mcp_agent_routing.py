@@ -109,6 +109,27 @@ def test_dynamic_descriptions_make_first_choice_routing_explicit() -> None:
     assert "Mutations never cache or single-flight" in descriptions["command"]
 
 
+def test_mcp_descriptions_require_semantic_handoff_before_cloud_reasoning() -> None:
+    descriptions = local_ai_mcp._desc_task() + local_ai_mcp._desc_repo()
+    normalized = descriptions.lower()
+
+    assert "semantic handoff is mandatory" in normalized
+    assert "before cloud reasoning" in normalized
+    assert "report the bypass" in normalized
+    assert "local_ai_task" in descriptions
+    assert "semantic handoff" in normalized
+
+
+def test_disabled_local_task_description_does_not_claim_mandatory_local_execution(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", False)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: False)
+
+    description = local_ai_mcp._desc_task()
+
+    assert "must call `local_ai_task` before cloud reasoning" not in description
+    assert "mandatory local execution" not in description
+
+
 def test_successful_repo_evidence_exposes_typed_semantic_handoff(monkeypatch) -> None:
     monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)

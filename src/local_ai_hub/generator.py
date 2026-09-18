@@ -478,7 +478,8 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     task_delegation = ""
     if fs.tasks and fs.has_any_model():
         task_delegation = (
-            f"\n- Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression."
+            "\n- Semantic handoff is mandatory: after deterministic/indexed evidence, planning, interpretation, synthesis, generation, review, compression, and second-opinion work must call `local_ai_task` before cloud reasoning. The cloud agent integrates the bounded local result and does not redo semantic work. If local inference is unavailable or intentionally excluded by a permitted boundary, report the bypass through `local_ai_status(adoption_signal=\"bypassed\", target_tool=\"local_ai_task\", target_action=\"reason\")`. Preserve exceptions for architecture, security, mutations, open-ended coding, exact evidence, and verification."
+            f" Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression."
             f" Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks,"
             f" `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning."
             " Deterministic/indexed tools remain for exact facts, symbols, diff and tests; they do not replace these semantic tasks."
@@ -490,6 +491,12 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
             f"\nLocal model policy: `{fs.background_model}` is preprocessing-only, `{fs.fast_model}` handles quick/simple tasks,"
             f" `{fs.general_model}` handles ordinary tasks, `{fs.smart_model}` handles more involved work, and {reasoning_tier} handles the hardest or highest-risk reasoning."
             " Use deterministic and indexed Hub actions first for exact facts, symbols, diff and tests. For semantic generation, reasoning, review, independent second opinions and semantic compression, call `local_ai_task`."
+        )
+    elif not fs.tasks or not fs.has_any_model():
+        model_default = (
+            "\nLocal model inference is disabled in this configuration; do not claim that cloud reasoning must use a local model."
+            " If a permitted boundary excludes local inference, report the bypass through"
+            " `local_ai_status(adoption_signal=\"bypassed\", target_tool=\"local_ai_task\", target_action=\"reason\")`."
         )
 
     repo_task_first = ""
