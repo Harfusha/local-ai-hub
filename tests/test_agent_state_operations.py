@@ -161,6 +161,57 @@ def test_selective_bundle_roundtrips_memory_metadata(tmp_path: Path):
         assert restored.supersedes_record_id == "record-older"
 
 
+def test_project_bundle_roundtrips_agent_state_memory_metadata(tmp_path: Path):
+    source_repo = tmp_path / "source-repo"
+    target_repo = tmp_path / "target-repo"
+    source_repo.mkdir()
+    target_repo.mkdir()
+    expiry = time.time() + 3600
+    provenance = {
+        "root": str(source_repo),
+        "repository_revision": "rev-project",
+        "path_refs": ["src/project.py"],
+        "symbol_refs": ["Project.run"],
+        "related_task": "task-project",
+    }
+    with app_with_agent_state(tmp_path / "source-app") as app1:
+        record = replace(
+            MemoryRecord.create(
+                kind=MemoryKind.CONTRACT_MAPPING,
+                scope=AgentScope.REPOSITORY,
+                key="project-metadata",
+                value={"contract": "preserve"},
+                scope_id="repo-project",
+                confidence=0.71,
+                status=MemoryStatus.CONFIRMED,
+                source="project-reviewer",
+                evidence_ids=("project-evidence",),
+                sensitivity="sensitive",
+                provenance=provenance,
+                expires_at=expiry,
+            ),
+            contradicts_record_id="project-old",
+            supersedes_record_id="project-older",
+        )
+        saved = app1.agent_memory.record(record, actor="user")
+        bundle_bytes = app1.export_bundle(str(source_repo), agent_state_record_ids=[saved.record_id])
+
+    with app_with_agent_state(tmp_path / "target-app") as app2:
+        result = app2.import_bundle(bundle_bytes, str(target_repo))
+        assert result["success"] is True
+        restored = app2.agent_memory.get(saved.record_id)
+        assert restored is not None
+        assert restored.provenance == provenance
+        assert restored.confidence == 0.71
+        assert restored.evidence_ids == ("project-evidence",)
+        assert restored.source == "project-reviewer"
+        assert restored.sensitivity == "sensitive"
+        assert restored.expires_at == expiry
+        assert restored.status is MemoryStatus.CONFIRMED
+        assert restored.contradicts_record_id == "project-old"
+        assert restored.supersedes_record_id == "project-older"
+
+
 
 def test_bundle_requires_exact_current_application_version(tmp_path: Path):
     with app_with_agent_state(tmp_path / "source") as app:
