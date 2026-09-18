@@ -484,7 +484,11 @@ def test_realtime_status_includes_preprocessor_projects_on_light():
     app = LocalAIApp.__new__(LocalAIApp)
     app._live_status_lock = threading.Lock()
     app._live_status_cache = {}
-    app._headless_status = lambda: {}
+    app._headless_status = lambda: {"supervisor": True, "ollama_online": False}
+    app.runtime = type("Runtime", (), {
+        "is_online": lambda self: True,
+        "managed_profile_status": lambda self: {},
+    })()
     app.scheduler = type("Sched", (), {"status": lambda self: {}})()
     app.preprocessor = type("Prep", (), {
         "stats": lambda self: {},
@@ -513,6 +517,8 @@ def test_realtime_status_includes_preprocessor_projects_on_light():
     res_light = app.realtime_status(light=True)
     assert len(res_light["preprocessing"]["projects"]) == 1
     assert res_light["preprocessing"]["projects"][0]["project"] == "myproject"
+    assert res_light["ollama_online"] is True
+    assert res_light["headless"]["ollama_online"] is True
 
 
 class _EvidenceDeterministic(_Deterministic):
