@@ -46,6 +46,8 @@ class Supervisor:
         self.status_path = self.state_dir / "supervisor.status.json"
         self.disabled_path = self.state_dir / "service.disabled"
         self.log_path = self.state_dir / "supervisor.log"
+        self.child_log_path = self.state_dir / "hub-process.log"
+        self.child_log_handle: Any | None = None
         self.runtime = OllamaRuntime(self.config)
         self.child: subprocess.Popen[Any] | None = None
         self.stopping = False
@@ -183,27 +185,43 @@ class Supervisor:
             pyw_candidate = Path(sys.executable).parent / "pythonw.exe"
             if pyw_candidate.exists():
                 py_exe = str(pyw_candidate)
+        child_log_path = getattr(self, "child_log_path", self.state_dir / "hub-process.log")
+        self.child_log_path = child_log_path
+        if child_log_path.exists() and child_log_path.stat().st_size > 1_000_000:
+            child_log_path.replace(child_log_path.with_name("hub-process.log.1"))
         logs_dir = self.state_dir / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
-        stderr_target: Any = subprocess.DEVNULL
         try:
-            stderr_target = open(logs_dir / "hub_stderr.log", "a", encoding="utf-8", errors="replace")
-        except Exception:
-            stderr_target = subprocess.DEVNULL
+            self.child_log_handle = child_log_path.open("a", encoding="utf-8", buffering=1)
+        except OSError:
+            self.child_log_handle = None
+        try:
+            self.child_stderr_handle = (logs_dir / "hub_stderr.log").open("a", encoding="utf-8", buffering=1)
+        except OSError:
+            self.child_stderr_handle = None
+        output = self.child_log_handle if self.child_log_handle is not None else subprocess.DEVNULL
+        error_output = self.child_stderr_handle if self.child_stderr_handle is not None else subprocess.DEVNULL
         kwargs: dict[str, Any] = {
-            "env": env, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": stderr_target,
+            "env": env, "stdin": subprocess.DEVNULL, "stdout": output, "stderr": error_output,
             **hidden_run_kwargs(detached=True),
         }
         if os.name != "nt":
             kwargs["start_new_session"] = True
         try:
             return subprocess.Popen([py_exe, "-X", "utf8", "-m", "local_ai_hub.http_server"], **kwargs)
-        finally:
-            if hasattr(stderr_target, "close"):
+        except Exception:
+            self._close_child_logs()
+            raise
+
+    def _close_child_logs(self) -> None:
+        for attr in ("child_log_handle", "child_stderr_handle"):
+            handle = getattr(self, attr, None)
+            if handle is not None:
                 try:
-                    stderr_target.close()
-                except Exception:
+                    handle.close()
+                except OSError:
                     pass
+                setattr(self, attr, None)
 
     def terminate_child(self) -> None:
         target_pids: set[int] = set()
@@ -245,6 +263,8 @@ class Supervisor:
                 except Exception:
                     pass
             self.child = None
+
+        self._close_child_logs()
 
         try:
             pid_file.unlink(missing_ok=True)
@@ -334,6 +354,10 @@ class Supervisor:
                         break
                     time.sleep(0.25)
                 if not self.hub_online():
+                    if self.child is not None:
+                        exit_code = self.child.poll()
+                        if exit_code is not None:
+                            self.log(f"hub process exited code={exit_code}")
                     self.log("hub failed startup health check; recycling after backoff")
                     self.terminate_child()
                     unhealthy_since = 0.0
