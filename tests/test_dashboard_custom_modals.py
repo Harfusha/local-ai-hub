@@ -1720,6 +1720,12 @@ def _trace_presentation_runtime_source() -> str:
     return DASHBOARD_HTML[start.start() : start.end() + end.start()]
 
 
+def _trace_redaction_runtime_source() -> str:
+    start = DASHBOARD_HTML.index("function redactDiagnostic(")
+    end = DASHBOARD_HTML.index("// Lightweight pure-canvas chart renderer", start)
+    return DASHBOARD_HTML[start:end]
+
+
 def test_trace_search_runtime_is_compact_and_keeps_one_result_per_row() -> None:
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     source = _trace_presentation_runtime_source()
@@ -2589,6 +2595,91 @@ def test_trace_review_object_severity_uses_human_text() -> None:
     assert "high" in html
     assert "object severity" in html
     assert "[object Object]" not in html
+
+
+def test_trace_command_and_review_primary_fields_are_bounded_and_status_is_deduplicated() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    huge = "HUGE-" + ("x" * 11800) + "-TAIL_MARKER"
+    fixture = {
+        "command": {
+            "presentation": {
+                "kind": "command",
+                "command": {
+                    "command": "pytest",
+                    "args": ["-q"],
+                    "input": huge,
+                    "success": False,
+                    "error": huge,
+                    "stdout": "short output",
+                    "cwd": huge,
+                    "criterion": huge,
+                },
+            },
+            "lifecycle": {"state": "failed"},
+        },
+        "review": {
+            "presentation": {
+                "kind": "review",
+                "review": {
+                    "target": huge,
+                    "scope": huge,
+                    "status": "changes requested",
+                    "findings": [{"severity": "high", "message": huge, "details": {"note": "DETAILS_ONLY"}}],
+                    "recommendation": huge,
+                },
+            },
+            "lifecycle": {"state": "complete"},
+        },
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "let traceRevealRedactedDetails=false;"
+        + _trace_redaction_runtime_source()
+        + source
+        + f"const f={json.dumps(fixture)};const command=traceBaseRenderCommandPresentation(f.command);const review=traceBaseRenderReviewPresentation(f.review);console.log(JSON.stringify({{command,review}}));"
+    )
+    rendered = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    command_primary = rendered["command"].split('<details class="trace-secondary-details', 1)[0]
+    review_primary = rendered["review"].split('<details class="trace-secondary-details', 1)[0]
+    assert len(command_primary) < 9000 and len(review_primary) < 9000
+    assert huge[-200:] not in command_primary
+    assert huge[-200:] not in review_primary
+    assert "DETAILS_ONLY" not in review_primary
+    assert "DETAILS_ONLY" in rendered["review"]
+    assert "changes requested" in review_primary
+    assert review_primary.lower().count("changes requested") == 1
+    assert "Full input" in rendered["command"] and huge[-200:] in rendered["command"]
+    assert "Full failure" in rendered["command"] and huge[-200:] in rendered["command"]
+
+
+def test_trace_command_and_review_direct_malformed_redacted_and_truncated_payloads_are_safe() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    source = _trace_presentation_runtime_source()
+    redacted = "Bearer COMMAND_SECRET_MARKER"
+    truncated = "TRUNCATED-" + ("z" * 30000) + "-TRUNCATED_TAIL"
+    fixtures = {
+        "command": {
+            "presentation": {"kind": "command", "command": {"command": "pytest", "args": {"malformed": [None, {}]}, "input": {"authorization": redacted, "nested": {"value": truncated}}, "stdout": truncated}},
+        },
+        "review": {
+            "presentation": {"kind": "review", "review": {"request": {"target": truncated}, "findings": {"severity": {"level": "high"}, "message": truncated, "details": {"token": redacted}}}},
+        },
+    }
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
+        "let traceRevealRedactedDetails=false;"
+        + _trace_redaction_runtime_source()
+        + source
+        + f"const f={json.dumps(fixtures)};console.log(JSON.stringify({{command:renderCommandPresentation(f.command),review:renderReviewPresentation(f.review)}}));"
+    )
+    rendered = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
+    for html in rendered.values():
+        assert "[object Object]" not in html
+        assert redacted not in html
+        assert "redacted" in html.lower()
+        assert "truncated" in html.lower()
+        assert len(html) < 60000
 
 
 def test_trace_command_primary_and_closed_details_show_execution_contract() -> None:
