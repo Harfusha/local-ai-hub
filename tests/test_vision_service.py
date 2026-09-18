@@ -15,6 +15,11 @@ def _services(tmp_path: Path, *, models: dict[str, str] | None = None):
     image.write_bytes(b"fake-image")
     runtime = MagicMock()
     runtime.request.return_value = {"response": json.dumps({"summary": "ok", "findings": []})}
+    def request(endpoint, payload=None, timeout=None):
+        if endpoint == "/api/show":
+            return {"capabilities": ["completion", "vision"]}
+        return runtime.request.return_value
+    runtime.request.side_effect = request
     config = {
         "server": {"state_dir": str(tmp_path)},
         "models": models or {},
@@ -225,6 +230,25 @@ def test_vision_missing_image_artifact_is_explicit_and_safe(tmp_path: Path) -> N
     runtime.request.assert_not_called()
 
 
+def test_vision_rejects_truncated_image_artifact(tmp_path: Path) -> None:
+    services, runtime, _image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    services.artifacts.get.return_value = {
+        "success": True,
+        "text": "partial-base64",
+        "total_chars": 60_000,
+        "next_offset": 50_000,
+    }
+
+    result = services.vision({"image_artifact_id": "img-1"}, "t")
+
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+    assert "truncated" in result["error"].lower()
+    assert result["error_code"] == "vision_artifact_truncated"
+    runtime.request.assert_not_called()
+
+
 def test_vision_artifact_backend_failure_is_retryable_and_safe(tmp_path: Path) -> None:
     services, runtime, _image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
     services.artifacts.get.side_effect = RuntimeError("C:\\private\\artifact-db-secret")
@@ -335,6 +359,27 @@ def test_vision_rejects_oversized_runtime_output_without_echo(tmp_path: Path) ->
     assert "bounded" in result["error"].lower()
     assert "response" not in result
     assert len(services.artifacts.put.call_args.args[0]) <= 64_000
+
+
+def test_text_only_vision_override_is_explicitly_unsupported(tmp_path: Path) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+
+    def text_only_request(endpoint, payload=None, timeout=None):
+        if endpoint == "/api/show":
+            return {"capabilities": ["completion"]}
+        return {"response": json.dumps({"summary": "unexpected", "findings": []})}
+
+    runtime.request.side_effect = text_only_request
+    result = services.vision({"image": str(image), "model": "text-only:latest"}, "t")
+
+    assert result["success"] is False
+    assert result["unsupported"] is True
+    assert result["degraded"] is True
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+    assert "vision" in result["error"].lower()
+    assert len(runtime.request.call_args_list) == 1
+    assert runtime.request.call_args.args[0] == "/api/show"
 
 
 def test_capabilities_expose_configured_vision_model() -> None:

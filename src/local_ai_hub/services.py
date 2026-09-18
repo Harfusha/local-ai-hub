@@ -1311,8 +1311,14 @@ class LocalAIServices:
                 "error": "Vision model is not configured; set models.vision to qwen3-vl:4b or another Ollama vision model.",
             }
 
-        def input_error(message: str) -> dict[str, Any]:
-            return {"success": False, "terminal": True, "retryable": False, "error": message}
+        def input_error(message: str, code: str = "vision_input_error") -> dict[str, Any]:
+            return {
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error": message,
+                "error_code": code,
+            }
 
         images: list[str] = []
 
@@ -1381,8 +1387,16 @@ class LocalAIServices:
                 total_chars = int(artifact.get("total_chars", len(text)))
             except (TypeError, ValueError, OverflowError):
                 return "", input_error("Vision artifact metadata is invalid.")
+            if artifact.get("next_offset") is not None or total_chars > len(text):
+                return "", input_error(
+                    "Vision artifact is truncated; provide the complete artifact.",
+                    "vision_artifact_truncated",
+                )
             if total_chars > max_chars:
-                return "", input_error("Vision artifact exceeds the bounded size limit.")
+                return "", input_error(
+                    "Vision artifact exceeds the bounded size limit.",
+                    "vision_artifact_too_large",
+                )
             return text[:max_chars], None
 
         if image_artifact_id and not images:
@@ -1456,6 +1470,79 @@ class LocalAIServices:
             timeout = 300.0
         timeout = max(0.05, min(timeout, 300.0))
         try:
+            capability_response = self.runtime.request(
+                "/api/show",
+                {"model": model},
+                timeout=min(timeout, 1.0),
+            )
+            if not isinstance(capability_response, dict):
+                return {
+                    "success": False,
+                    "model": model,
+                    "terminal": True,
+                    "retryable": False,
+                    "error": "Vision model capability preflight returned an invalid response.",
+                }
+            if capability_response.get("error"):
+                capability_error = str(capability_response.get("error", "")).lower()
+                missing_model = (
+                    "model not found" in capability_error
+                    or "no such model" in capability_error
+                    or ("not found" in capability_error and "model" in capability_error)
+                )
+                transient = any(
+                    marker in capability_error
+                    for marker in (
+                        "timeout", "timed out", "connection", "network", "handoff",
+                        "temporarily", "unavailable", "try again", "http 429", "http 502", "http 503",
+                    )
+                )
+                if missing_model:
+                    return {
+                        "success": False,
+                        "model": model,
+                        "unsupported": True,
+                        "degraded": True,
+                        "terminal": True,
+                        "retryable": False,
+                        "error": f"Vision model '{model}' is unavailable. Install it with 'ollama pull {model}' or configure models.vision.",
+                        "error_code": "vision_model_missing",
+                    }
+                return {
+                    "success": False,
+                    "model": model,
+                    "terminal": not transient,
+                    "retryable": transient,
+                    "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision model capability preflight failed; inspect Ollama health and configuration.",
+                    "error_code": "vision_preflight_failed",
+                }
+            capability_values: list[str] = []
+            for value in capability_response.get("capabilities", []):
+                capability_values.append(str(value).lower())
+            details = capability_response.get("details")
+            if isinstance(details, dict):
+                for key in ("family", "families"):
+                    values = details.get(key, [])
+                    if isinstance(values, list):
+                        capability_values.extend(str(value).lower() for value in values)
+                    elif values:
+                        capability_values.append(str(values).lower())
+            supports_vision = any(
+                marker in value
+                for value in capability_values
+                for marker in ("vision", "image", "multimodal", "clip", "vl")
+            )
+            if not supports_vision:
+                return {
+                    "success": False,
+                    "model": model,
+                    "unsupported": True,
+                    "degraded": True,
+                    "terminal": True,
+                    "retryable": False,
+                    "error": f"Vision model '{model}' does not advertise image or multimodal capability; choose an Ollama vision model.",
+                    "error_code": "vision_model_unsupported",
+                }
             res = self.runtime.request("/api/generate", payload, timeout=timeout)
             if not isinstance(res, dict):
                 return {

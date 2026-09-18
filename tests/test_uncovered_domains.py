@@ -15,6 +15,12 @@ def test_vision_service(tmp_path: Path) -> None:
     runtime.request = MagicMock(return_value={
         "response": '{"summary":"dashboard review","findings":[]}',
     })
+    generation_response = runtime.request.return_value
+    def request(endpoint, payload=None, timeout=None):
+        if endpoint == "/api/show":
+            return {"capabilities": ["completion", "vision"]}
+        return generation_response
+    runtime.request.side_effect = request
 
     services = LocalAIServices(
         config={"server": {"state_dir": str(tmp_path)}, "models": {"vision": "qwen3-vl:4b"}},
