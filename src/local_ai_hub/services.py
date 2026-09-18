@@ -1309,6 +1309,27 @@ class LocalAIServices:
         models = self.config.get("models", {})
         configured_model = models.get("vision", "qwen3-vl:4b") if isinstance(models, dict) else "qwen3-vl:4b"
         model = str(args.get("model") or configured_model or "").strip()
+        if bool(args.get("cloud_fallback", False)):
+            vision_policy = self.config.get("vision", {})
+            if not isinstance(vision_policy, dict) or not bool(vision_policy.get("cloud_fallback_enabled", False)):
+                return {
+                    "success": False,
+                    "terminal": True,
+                    "retryable": False,
+                    "error_code": "vision_cloud_fallback_disabled",
+                    "error": "Cloud vision fallback is disabled. Enable vision.cloud_fallback_enabled explicitly.",
+                    "cloud_fallback": False,
+                }
+            provider = str(vision_policy.get("cloud_provider", "")).strip()
+            if not provider:
+                return {
+                    "success": False,
+                    "terminal": True,
+                    "retryable": False,
+                    "error_code": "vision_cloud_fallback_unavailable",
+                    "error": "Cloud vision fallback is enabled but no provider is configured.",
+                    "cloud_fallback": False,
+                }
         if not model:
             return {
                 "success": False,
