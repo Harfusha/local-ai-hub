@@ -80,7 +80,7 @@ function sameIdentity(left, right) {
 
 function tabUrlMatches(tab, identity) {
   const tabUrl = String(tab && tab.url || "");
-  return !tabUrl || !identity || tabUrl === identity.url;
+  return Boolean(tabUrl && identity && tabUrl === identity.url);
 }
 
 async function captureCurrentTab(tab) {
