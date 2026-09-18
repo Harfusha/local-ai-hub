@@ -5,6 +5,20 @@ const vm = require("node:vm");
 const captureSource = fs.readFileSync(process.argv[2], "utf8");
 const backgroundSource = fs.readFileSync(process.argv[3], "utf8");
 const fixture = fs.readFileSync(process.argv[4], "utf8");
+const {webcrypto} = require("node:crypto");
+
+class FakeAbortController {
+  constructor() {
+    this.signal = {aborted: false, listeners: []};
+    this.signal.addEventListener = (_name, listener) => this.signal.listeners.push(listener);
+  }
+
+  abort() {
+    if (this.signal.aborted) return;
+    this.signal.aborted = true;
+    this.signal.listeners.forEach((listener) => listener());
+  }
+}
 
 class FakeElement {
   constructor(tagName, attributes = {}, textContent = "") {
@@ -83,7 +97,9 @@ const captureContext = {
   URL,
 };
 vm.runInNewContext(captureSource, captureContext);
-const page = captureContext.captureCurrentTab();
+async function runFixture() {
+assert.equal(captureContext.sha256Fallback("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+const page = await captureContext.captureCurrentTab();
 assert.equal(page.success, true);
 assert.equal(page.dom.redaction, "none");
 assert.equal(page.dom.password_values_sanitized, true);
@@ -92,16 +108,25 @@ assert.doesNotMatch(page.dom.html, /do-not-export/);
 assert.equal(html.querySelectorAll('input[type="password"]')[0].value, "do-not-export");
 assert.match(page.target_origin, /^https:\/\/fixture\.test$/);
 assert.match(page.captured_at, /T/);
+assert.match(page.document_state_token, /^state:sha256:[0-9a-f]{64}$/);
 
-async function runBackground({timeout = null, hubTimeout = null, queryTimeout = false, getTimeout = false, switchTab = false, switchAfterScreenshot = false, screenshotTimeout = false, closed = false, permission = false, navigateAfterScreenshot = false, mutateDocumentAfterScreenshot = false, missingUrl = false, emptyUrl = false, token = ""} = {}) {
+const webCryptoContext = {...captureContext, crypto: webcrypto};
+vm.runInNewContext(captureSource, webCryptoContext);
+const webCryptoPage = await webCryptoContext.captureCurrentTab();
+assert.equal(webCryptoPage.document_state_token, page.document_state_token);
+
+async function runBackground({timeout = null, hubTimeout = null, finalPostTimeout = null, queryTimeout = false, getTimeout = false, switchTab = false, switchAfterScreenshot = false, screenshotTimeout = false, closed = false, permission = false, navigateAfterScreenshot = false, mutateDocumentAfterScreenshot = false, missingUrl = false, emptyUrl = false, token = ""} = {}) {
   let activeId = closed ? null : 7;
   const posts = [];
+  const committedPosts = [];
+  let aborted = false;
   const currentTab = {id: 7, windowId: 3};
   if (!missingUrl) currentTab.url = emptyUrl ? "" : page.url;
   const bgContext = {
     __LOCAL_AI_CAPTURE_TIMEOUT_MS__: timeout || 8000,
     __LOCAL_AI_HUB_REQUEST_TIMEOUT_MS__: hubTimeout || 5000,
     __LOCAL_AI_HUB_API_TOKEN__: token,
+    AbortController: FakeAbortController,
     chrome: {
       runtime: {getURL: () => "chrome-extension://fixture/"},
       action: {onClicked: {addListener: () => {}}},
@@ -115,7 +140,7 @@ async function runBackground({timeout = null, hubTimeout = null, queryTimeout = 
           if (message.type === "LOCAL_AI_VERIFY_CURRENT_TAB" && mutateDocumentAfterScreenshot) {
             captureContext.history.replaceState({step: 2}, "", captureContext.location.href);
             main.append(new FakeElement("p", {}, "DOM changed after screenshot"));
-            return {...page, ...captureContext.verifyCurrentTab()};
+            return {...page, ...(await captureContext.verifyCurrentTab())};
           }
           if (switchTab) activeId = 8;
           return page;
@@ -128,11 +153,19 @@ async function runBackground({timeout = null, hubTimeout = null, queryTimeout = 
       },
     },
     fetch: async (_url, options) => {
-      if (hubTimeout) return new Promise(() => {});
       const body = JSON.parse(options.body);
-      posts.push(body);
+      if (hubTimeout || (finalPostTimeout && body.screenshot)) {
+        return new Promise((_, reject) => {
+          options.signal.addEventListener("abort", () => {
+            aborted = true;
+            reject(Object.assign(new Error("aborted"), {name: "AbortError"}));
+          });
+        });
+      }
       if (token) assert.equal(options.headers["X-LocalAI-Token"], token);
+      posts.push(body);
       const value = body.capture_error ? {success: false, error_code: body.capture_error} : body.capability ? {success: true, bundle_artifact_id: "bundle"} : {success: true, capability: "cap"};
+      committedPosts.push(body);
       return {ok: true, status: 200, json: async () => value};
     },
     URL,
@@ -147,10 +180,9 @@ async function runBackground({timeout = null, hubTimeout = null, queryTimeout = 
     bgContext.chrome.tabs.sendMessage = () => new Promise(() => {});
   }
   const result = await bgContext.captureCurrentTab(tab);
-  return {result, posts};
+  return {result, posts, committedPosts, aborted};
 }
 
-(async () => {
   const success = await runBackground();
   assert.equal(success.result.success, true);
   assert.equal(success.posts.at(-1).tab_id, 7);
@@ -168,6 +200,11 @@ async function runBackground({timeout = null, hubTimeout = null, queryTimeout = 
   const hubTimeoutResult = await runBackground({hubTimeout: 5});
   assert.equal(hubTimeoutResult.result.error_code, "timeout");
   assert.equal(hubTimeoutResult.posts.length, 0);
+  assert.equal(hubTimeoutResult.aborted, true);
+  const finalPostTimeoutResult = await runBackground({finalPostTimeout: 5});
+  assert.equal(finalPostTimeoutResult.result.error_code, "timeout");
+  assert.equal(finalPostTimeoutResult.aborted, true);
+  assert.equal(finalPostTimeoutResult.committedPosts.some((post) => post.screenshot), false);
   const queryTimeoutResult = await runBackground({timeout: 5, queryTimeout: true});
   assert.equal(queryTimeoutResult.result.error_code, "timeout");
   assert.equal(queryTimeoutResult.posts.length, 0);
@@ -203,5 +240,7 @@ async function runBackground({timeout = null, hubTimeout = null, queryTimeout = 
   assert.equal((await runBackground({permission: true})).result.error_code, "permission_denied");
   const tokenRun = await runBackground({token: "0123456789abcdef"});
   assert.equal(tokenRun.result.success, true);
-  process.stdout.write(JSON.stringify({success: true, fixture: "login-preserving", cases: ["success", "timeout", "screenshot-timeout", "hub-timeout", "query-timeout", "get-timeout", "tab-switch", "same-tab-navigation", "same-url-state-race", "missing-tab-url", "empty-tab-url", "password", "timestamp", "origin", "token"]}));
-})().catch((error) => { console.error(error); process.exitCode = 1; });
+  process.stdout.write(JSON.stringify({success: true, fixture: "login-preserving", cases: ["success", "timeout", "screenshot-timeout", "hub-timeout", "final-post-timeout", "query-timeout", "get-timeout", "tab-switch", "same-tab-navigation", "same-url-state-race", "missing-tab-url", "empty-tab-url", "password", "timestamp", "origin", "token"]}));
+}
+
+runFixture().catch((error) => { console.error(error); process.exitCode = 1; });

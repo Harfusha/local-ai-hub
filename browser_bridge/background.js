@@ -14,11 +14,12 @@ function extensionOrigin() {
   return new URL(chrome.runtime.getURL("/")).origin;
 }
 
-function timed(promise, timeoutMs) {
+function timed(promise, timeoutMs, onTimeout = undefined) {
   let timer;
   return Promise.race([
     promise,
     new Promise((_, reject) => { timer = setTimeout(() => {
+      if (onTimeout) onTimeout();
       const error = new Error("timeout");
       error.code = "timeout";
       reject(error);
@@ -31,20 +32,37 @@ function isTimeout(error) {
 }
 
 async function post(path, payload) {
+  if (typeof globalThis.AbortController !== "function") {
+    const error = new Error("AbortController unavailable");
+    error.code = "unsupported";
+    throw error;
+  }
+  const controller = new globalThis.AbortController();
   const apiToken = String(globalThis.__LOCAL_AI_HUB_API_TOKEN__ || "").trim();
   const headers = {"Content-Type": "application/json"};
   if (apiToken) headers["X-LocalAI-Token"] = apiToken;
-  const response = await timed(fetch(`${HUB_URL}${path}`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-    credentials: "omit",
-  }), HUB_REQUEST_TIMEOUT_MS);
-  const value = await timed(response.json(), HUB_REQUEST_TIMEOUT_MS);
-  if (!response.ok && !value.error_code) {
-    value.error_code = response.status === 403 ? "permission_denied" : "unsupported";
+  let response;
+  try {
+    response = await timed(fetch(`${HUB_URL}${path}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+      credentials: "omit",
+      signal: controller.signal,
+    }), HUB_REQUEST_TIMEOUT_MS, () => controller.abort());
+    const value = await timed(response.json(), HUB_REQUEST_TIMEOUT_MS, () => controller.abort());
+    if (!response.ok && !value.error_code) {
+      value.error_code = response.status === 403 ? "permission_denied" : "unsupported";
+    }
+    return value;
+  } catch (error) {
+    if (isTimeout(error) || error && error.name === "AbortError") {
+      const timeout = new Error("timeout");
+      timeout.code = "timeout";
+      throw timeout;
+    }
+    throw error;
   }
-  return value;
 }
 
 async function sendFailure(capability, tab, errorCode) {
