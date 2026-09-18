@@ -503,10 +503,101 @@ class MemoryStore:
             idempotency_key=idempotency_key or f"rec_{target_record.record_id}",
             actor=actor,
         )
-        self.state_store.append(event)
-        self._save_record(target_record)
-        self._auto_link_record(target_record, actor=actor)
-        return target_record
+        saved_record, duplicate, _ = self._record_event_and_save(target_record, event)
+        if not duplicate:
+            self._auto_link_record(saved_record, actor=actor)
+        return saved_record
+
+    def _record_event_and_save(
+        self,
+        record: MemoryRecord,
+        event: AgentEvent,
+    ) -> tuple[MemoryRecord, bool, AgentEvent | None]:
+        if not self.state_store.enabled:
+            self._save_record(record)
+            return record, False, None
+        self._init_table()
+        payload_bytes = json_dumps(event.payload, separators=(",", ":")).encode("utf-8")
+        if len(payload_bytes) > self.state_store.max_payload_bytes:
+            raise ValueError(
+                f"payload exceeds maximum allowed {self.state_store.max_payload_bytes} bytes (got {len(payload_bytes)})"
+            )
+
+        def _do_record() -> tuple[MemoryRecord, bool, AgentEvent | None]:
+            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+            try:
+                con.execute("BEGIN IMMEDIATE")
+                existing = con.execute(
+                    """
+                    SELECT stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at
+                    FROM agent_events WHERE stream_id = ? AND idempotency_key = ?
+                    """,
+                    (event.stream_id, event.idempotency_key),
+                ).fetchone()
+                if existing:
+                    existing_event = AgentEvent.from_row(existing)
+                    existing_record_id = str(existing_event.payload.get("record_id", ""))
+                    existing_row = con.execute(
+                        """
+                        SELECT record_id, kind, scope, scope_id, key, value, status, confidence, source,
+                               evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id,
+                               quarantine_reason, provenance, created_at, updated_at, expires_at
+                        FROM agent_memory_records WHERE record_id = ?
+                        """,
+                        (existing_record_id,),
+                    ).fetchone()
+                    if existing_row:
+                        existing_record = self._row_to_record(existing_row)
+                    else:
+                        existing_record = MemoryRecord.from_dict(existing_event.payload)
+                        self._save_record_row(con, existing_record)
+                    con.execute("COMMIT")
+                    return existing_record, True, None
+
+                seq_row = con.execute(
+                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_events WHERE stream_id = ?",
+                    (event.stream_id,),
+                ).fetchone()
+                new_seq = int(seq_row[0]) if seq_row else 1
+                con.execute(
+                    """
+                    INSERT INTO agent_events (
+                        stream_id, seq, event_id, kind, payload, idempotency_key,
+                        correlation_id, actor, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event.stream_id,
+                        new_seq,
+                        event.event_id,
+                        event.kind,
+                        payload_bytes.decode("utf-8"),
+                        event.idempotency_key,
+                        event.correlation_id,
+                        event.actor,
+                        event.created_at,
+                    ),
+                )
+                self._save_record_row(con, record)
+                con.execute("COMMIT")
+                return record, False, event.with_seq(new_seq)
+            except Exception:
+                try:
+                    con.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+            finally:
+                con.close()
+
+        saved_record, duplicate, persisted_event = retry_busy(
+            _do_record,
+            retries=5,
+            base_delay_seconds=0.02,
+        )
+        if persisted_event is not None:
+            self.state_store._publish(persisted_event)
+        return saved_record, duplicate, persisted_event
 
     def _auto_link_record(self, record: MemoryRecord, actor: str = "agent") -> None:
         """Automatically create entity relations for recorded memory items."""
@@ -1186,61 +1277,7 @@ class MemoryStore:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
                 con.execute("BEGIN IMMEDIATE")
-                con.execute(
-                    """
-                    INSERT INTO agent_memory_records (
-                        record_id, kind, scope, scope_id, key, value, status, confidence, source,
-                        evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id,
-                        quarantine_reason, provenance, created_at, updated_at, expires_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(record_id) DO UPDATE SET
-                        kind = excluded.kind,
-                        scope = excluded.scope,
-                        scope_id = excluded.scope_id,
-                        key = excluded.key,
-                        value = excluded.value,
-                        status = excluded.status,
-                        confidence = excluded.confidence,
-                        source = excluded.source,
-                        evidence_ids = excluded.evidence_ids,
-                        sensitivity = excluded.sensitivity,
-                        contradicts_record_id = excluded.contradicts_record_id,
-                        supersedes_record_id = excluded.supersedes_record_id,
-                        quarantine_reason = excluded.quarantine_reason,
-                        provenance = excluded.provenance,
-                        updated_at = excluded.updated_at,
-                        expires_at = excluded.expires_at
-                    """,
-                    (
-                        record.record_id,
-                        record.kind.value,
-                        record.scope.value,
-                        record.scope_id,
-                        record.key,
-                        json_dumps(record.value),
-                        record.status.value,
-                        record.confidence,
-                        record.source,
-                        json_dumps(list(record.evidence_ids)),
-                        record.sensitivity,
-                        record.contradicts_record_id,
-                        record.supersedes_record_id,
-                        record.quarantine_reason,
-                        json_dumps(record.provenance),
-                        record.created_at,
-                        record.updated_at,
-                        record.expires_at,
-                    ),
-                )
-                try:
-                    val_str = json_dumps(record.value) if isinstance(record.value, (dict, list)) else str(record.value)
-                    con.execute("DELETE FROM agent_memory_fts WHERE record_id = ?", (record.record_id,))
-                    con.execute(
-                        "INSERT INTO agent_memory_fts(record_id, key, value) VALUES(?, ?, ?)",
-                        (record.record_id, str(record.key), val_str),
-                    )
-                except Exception:
-                    pass
+                self._save_record_row(con, record)
                 con.execute("COMMIT")
             except Exception:
                 try:
@@ -1252,6 +1289,63 @@ class MemoryStore:
                 con.close()
 
         retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
+
+    def _save_record_row(self, con: Any, record: MemoryRecord) -> None:
+        con.execute(
+            """
+            INSERT INTO agent_memory_records (
+                record_id, kind, scope, scope_id, key, value, status, confidence, source,
+                evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id,
+                quarantine_reason, provenance, created_at, updated_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(record_id) DO UPDATE SET
+                kind = excluded.kind,
+                scope = excluded.scope,
+                scope_id = excluded.scope_id,
+                key = excluded.key,
+                value = excluded.value,
+                status = excluded.status,
+                confidence = excluded.confidence,
+                source = excluded.source,
+                evidence_ids = excluded.evidence_ids,
+                sensitivity = excluded.sensitivity,
+                contradicts_record_id = excluded.contradicts_record_id,
+                supersedes_record_id = excluded.supersedes_record_id,
+                quarantine_reason = excluded.quarantine_reason,
+                provenance = excluded.provenance,
+                updated_at = excluded.updated_at,
+                expires_at = excluded.expires_at
+            """,
+            (
+                record.record_id,
+                record.kind.value,
+                record.scope.value,
+                record.scope_id,
+                record.key,
+                json_dumps(record.value),
+                record.status.value,
+                record.confidence,
+                record.source,
+                json_dumps(list(record.evidence_ids)),
+                record.sensitivity,
+                record.contradicts_record_id,
+                record.supersedes_record_id,
+                record.quarantine_reason,
+                json_dumps(record.provenance),
+                record.created_at,
+                record.updated_at,
+                record.expires_at,
+            ),
+        )
+        try:
+            val_str = json_dumps(record.value) if isinstance(record.value, (dict, list)) else str(record.value)
+            con.execute("DELETE FROM agent_memory_fts WHERE record_id = ?", (record.record_id,))
+            con.execute(
+                "INSERT INTO agent_memory_fts(record_id, key, value) VALUES(?, ?, ?)",
+                (record.record_id, str(record.key), val_str),
+            )
+        except Exception:
+            pass
 
     def _row_to_record(self, row: tuple[Any, ...]) -> MemoryRecord:
         (

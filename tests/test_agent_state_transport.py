@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 import pytest
 
 from local_ai_hub.app import LocalAIApp
@@ -128,8 +129,18 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
     c_res1 = mcp_mod.local_ai_coord(action="task_create", task_id="t1", contract={"goal": "g"})
     assert c_res1["success"] is True
 
-    c_res2 = mcp_mod.local_ai_coord(action="memory_record", record={"key": "k", "value": "v"})
+    c_res2 = mcp_mod.local_ai_coord(
+        action="memory_record",
+        record={"key": "k", "value": "v", "expires_at": 12345.0},
+        ttl_seconds=77,
+    )
     assert c_res2["success"] is True
+    memory_payload = next(
+        call[2] for call in calls
+        if call[0] == "COORD" and call[1] == "memory_record"
+    )
+    assert memory_payload["record"]["expires_at"] == 12345.0
+    assert memory_payload["ttl_seconds"] == 77
 
     c_res3 = mcp_mod.local_ai_coord(action="incident_decision", fingerprint={"error_class": "e"})
     assert c_res3["success"] is True
@@ -143,6 +154,7 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
         branch="branch-1",
         repository_id="repository-1",
         session_id="session-1",
+        repository_revision="revision-1",
         include_diagnostics=True,
     )
     assert c_res4["success"] is True
@@ -152,13 +164,14 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
     )
     assert coord_context_payload["include_diagnostics"] is True
     assert {key: coord_context_payload[key] for key in (
-        "clone_id", "worktree_id", "branch", "repository_id", "session_id"
+        "clone_id", "worktree_id", "branch", "repository_id", "session_id", "repository_revision"
     )} == {
         "clone_id": "clone-1",
         "worktree_id": "worktree-1",
         "branch": "branch-1",
         "repository_id": "repository-1",
         "session_id": "session-1",
+        "repository_revision": "revision-1",
     }
 
     # local_ai_repo actions
@@ -171,6 +184,7 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
         branch="branch-2",
         repository_id="repository-2",
         session_id="session-2",
+        repository_revision="revision-2",
         include_diagnostics=True,
     )
     assert r_res1["success"] is True
@@ -181,13 +195,14 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
     )
     assert repo_context_payload["include_diagnostics"] is True
     assert {key: repo_context_payload[key] for key in (
-        "clone_id", "worktree_id", "branch", "repository_id", "session_id"
+        "clone_id", "worktree_id", "branch", "repository_id", "session_id", "repository_revision"
     )} == {
         "clone_id": "clone-2",
         "worktree_id": "worktree-2",
         "branch": "branch-2",
         "repository_id": "repository-2",
         "session_id": "session-2",
+        "repository_revision": "revision-2",
     }
 
     r_res2 = mcp_mod.local_ai_repo(action="verify_receipt", receipt={"task_id": "t1", "criterion": "c1"})
@@ -291,6 +306,7 @@ def test_http_context_transport_forwards_scope_context(tmp_path: Path, monkeypat
             "branch": request.branch,
             "repository_id": request.repository_id,
             "session_id": request.session_id,
+            "repository_revision": request.repository_revision,
         })
         return CompiledContext(elements=[], estimated_tokens=0, token_budget=request.token_budget)
 
@@ -307,6 +323,7 @@ def test_http_context_transport_forwards_scope_context(tmp_path: Path, monkeypat
             "branch": "branch-http",
             "repository_id": "repository-http",
             "session_id": "session-http",
+            "repository_revision": "revision-http",
         }).encode("utf-8")
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/context",
@@ -323,7 +340,77 @@ def test_http_context_transport_forwards_scope_context(tmp_path: Path, monkeypat
             "branch": "branch-http",
             "repository_id": "repository-http",
             "session_id": "session-http",
+            "repository_revision": "revision-http",
         }
+    finally:
+        server.shutdown()
+        server.server_close()
+        http_server.APP = previous
+        app.close()
+
+
+def test_http_memory_transport_preserves_expiry_and_ttl(tmp_path: Path):
+    import json
+    import threading
+    import urllib.request
+
+    from local_ai_hub import http_server
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        f'[server]\nbind = "127.0.0.1"\nport = 11500\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        "\n[agent_state]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(cfg_path))
+    previous = http_server.APP
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def post(payload):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/memory",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    try:
+        expires_at = time.time() + 600
+        explicit = post({
+            "action": "record",
+            "idempotency_key": "expiry-explicit",
+            "record": {
+                "kind": "finding",
+                "scope": "task",
+                "scope_id": "task-expiry",
+                "key": "explicit-expiry",
+                "value": "v",
+                "expires_at": expires_at,
+            },
+        })
+        assert explicit["success"] is True
+        assert explicit["record"]["expires_at"] == expires_at
+
+        before = time.time()
+        ttl_result = post({
+            "action": "record",
+            "idempotency_key": "expiry-ttl",
+            "ttl_seconds": 120,
+            "record": {
+                "kind": "finding",
+                "scope": "task",
+                "scope_id": "task-expiry",
+                "key": "ttl-expiry",
+                "value": "v",
+            },
+        })
+        assert ttl_result["success"] is True
+        assert before + 100 <= ttl_result["record"]["expires_at"] <= time.time() + 120
     finally:
         server.shutdown()
         server.server_close()

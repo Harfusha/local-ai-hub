@@ -1898,6 +1898,8 @@ class Handler(BaseHTTPRequestHandler):
                             "evidence_ids": payload.get("evidence_ids") or [],
                             "sensitivity": payload.get("sensitivity", "normal"),
                             "provenance": payload.get("provenance"),
+                            "expires_at": payload.get("expires_at"),
+                            "ttl_seconds": payload.get("ttl_seconds"),
                         }
                     try:
                         raw_kind = str(rec_data.get("kind", MemoryKind.FACT.value)).lower()
@@ -1926,6 +1928,15 @@ class Handler(BaseHTTPRequestHandler):
                             evidence_ids=tuple(rec_data.get("evidence_ids") or ()),
                             sensitivity=str(rec_data.get("sensitivity", "normal")),
                             provenance=rec_data.get("provenance"),
+                            expires_at=(
+                                float(rec_data.get("expires_at", payload.get("expires_at")))
+                                if rec_data.get("expires_at", payload.get("expires_at")) is not None
+                                else (
+                                    time.time() + max(0.0, float(rec_data.get("ttl_seconds", payload.get("ttl_seconds"))))
+                                    if rec_data.get("ttl_seconds", payload.get("ttl_seconds")) is not None
+                                    else None
+                                )
+                            ),
                         )
                         saved = APP.agent_memory.record(record, actor=actor, idempotency_key=idempotency_key)
                         self._send(200, {"success": True, "record": saved.to_dict()}); return
@@ -2144,6 +2155,7 @@ class Handler(BaseHTTPRequestHandler):
                         branch=str(payload.get("branch", "")),
                         repository_id=str(payload.get("repository_id", "")),
                         session_id=str(payload.get("session_id", "")),
+                        repository_revision=str(payload.get("repository_revision", "")),
                     )
                     compiled = APP.agent_context.compile(req)
                     etag = compiled.etag()

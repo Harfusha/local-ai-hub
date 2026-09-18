@@ -101,12 +101,66 @@ def test_consistency_memory_kinds_round_trip():
         MemoryKind.UNKNOWN,
         MemoryKind.VALIDATION,
     )
-
     for kind in kinds:
         record = MemoryRecord.create(kind=kind, scope=AgentScope.TASK, key=kind.value, value={"kind": kind.value})
         restored = MemoryRecord.from_dict(record.to_dict())
         assert restored.kind is kind
 
+
+def test_record_idempotency_reuses_existing_record(store: MemoryStore):
+    first = store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope=AgentScope.TASK,
+            key="same-request",
+            value="first",
+            scope_id="task-1",
+        ),
+        actor="agent",
+        idempotency_key="memory-request-1",
+    )
+    second = store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope=AgentScope.TASK,
+            key="same-request",
+            value="second",
+            scope_id="task-1",
+        ),
+        actor="agent",
+        idempotency_key="memory-request-1",
+    )
+
+    assert second.record_id == first.record_id
+    assert store.count() == 1
+    assert [event.kind for event in store.state_store.events(
+        stream_id=f"memory:{AgentScope.TASK.value}:same-request"
+    )].count("memory.recorded") == 1
+
+
+def test_record_idempotency_is_atomic_under_concurrency(store: MemoryStore):
+    def record_attempt(index: int) -> str:
+        saved = store.record(
+            MemoryRecord.create(
+                kind=MemoryKind.FINDING,
+                scope=AgentScope.TASK,
+                key="concurrent",
+                value=index,
+                scope_id="task-concurrent",
+            ),
+            actor="agent",
+            idempotency_key="memory-concurrent-1",
+        )
+        return saved.record_id
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        record_ids = list(executor.map(record_attempt, range(4)))
+
+    assert len(set(record_ids)) == 1
+    assert store.count() == 1
+    assert [event.kind for event in store.state_store.events(
+        stream_id=f"memory:{AgentScope.TASK.value}:concurrent"
+    )].count("memory.recorded") == 1
 
 def test_repository_revision_is_preserved_in_provenance(store: MemoryStore, tmp_path: Path):
     record = MemoryRecord.create(
