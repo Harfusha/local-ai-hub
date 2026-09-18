@@ -230,14 +230,17 @@ def test_be_fe_contract_reports_response_and_error_mismatches(repository: Path):
 
 def test_unknown_claim_has_no_authoritative_evidence(repository: Path):
     guard = _guard(repository)
+    evidence = [{"evidence_id": "src-1", "path": "backend/users.py", "raw": "class UserService"}]
+    claims = [{"claim": "PaymentGateway exists", "evidence_ids": ["model-claim"]}]
 
-    result = guard.check_claims(
-        [{"evidence_id": "src-1", "path": "backend/users.py", "raw": "class UserService"}],
-        [{"claim": "PaymentGateway exists", "evidence_ids": ["model-claim"]}],
-    )
+    result = guard.check_claims(evidence, claims)
+    repeat = guard.check_claims(evidence, claims)
 
     assert result[0].code == "unknown_claim"
-    assert result[0].evidence_ids == ()
+    assert result[0].evidence_ids
+    assert result[0].evidence_ids == repeat[0].evidence_ids
+    assert result[0].evidence_ids[0].startswith("synthetic-claim-")
+    assert "synthetic claim-evidence reference" in result[0].message
     assert result[0].requires_approval is False
 
 
@@ -268,7 +271,7 @@ def test_local_model_evidence_is_never_authoritative(repository: Path, field: st
 
     result = guard.check_claims(evidence, [{"claim": "UserService exists", "evidence_ids": ["model-1"]}])
 
-    assert result and result[0].code == "unknown_claim"
+    assert result and result[0].code == "unknown_claim" and result[0].evidence_ids
 
 
 class _Hostile:
@@ -339,6 +342,10 @@ def test_claim_decisions_use_existing_memory_and_verification_stores(repository:
     assert len(verification.receipts) == 1
     assert verification.receipts[0].evidence_id == "src-1"
     assert verification.receipts[0].repository_revision
+
+    unknown = guard.check_claims(evidence, [{"claim": "UnknownService exists"}], request=request)
+    assert unknown[0].evidence_ids
+    assert memory.records[-1][0].evidence_ids == unknown[0].evidence_ids
 
 
 def test_soft_warning_has_required_fields(repository: Path):

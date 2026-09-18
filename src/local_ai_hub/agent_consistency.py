@@ -380,6 +380,11 @@ class AgentConsistencyGuard:
         return "ev-" + hashlib.sha256(f"{path}\n{raw}".encode("utf-8")).hexdigest()[:16]
 
     @staticmethod
+    def _synthetic_claim_evidence_id(claim: str, requested_ids: tuple[str, ...], inspected_ids: tuple[str, ...]) -> str:
+        payload = "\0".join((_text(claim, 400), *sorted(requested_ids), *sorted(inspected_ids)))
+        return "synthetic-claim-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
     def _raw(item: Mapping[str, Any]) -> str:
         return _text(item.get("raw") or item.get("text") or item.get("content"), 5000)
 
@@ -475,8 +480,16 @@ class AgentConsistencyGuard:
     def check_claims(self, evidence: Iterable[Mapping[str, Any]] | Mapping[str, Any], claims: Iterable[Any], request: ConsistencyRequest | None = None) -> tuple[GuardWarning, ...]:
         if isinstance(evidence, Mapping):
             evidence = evidence.get("evidence") or evidence.get("results") or ()
+        bounded_evidence = _bounded_sequence(evidence, _MAX_ITEMS)
+        inspected_ids = tuple(
+            dict.fromkeys(
+                self._evidence_id(item)
+                for item in bounded_evidence
+                if isinstance(item, Mapping)
+            )
+        )[:_MAX_ITEMS]
         authoritative: dict[str, Mapping[str, Any]] = {}
-        for item in _bounded_sequence(evidence, _MAX_ITEMS):
+        for item in bounded_evidence:
             if not isinstance(item, Mapping) or _is_local_model_evidence(item):
                 continue
             authoritative[self._evidence_id(item)] = item
@@ -488,8 +501,10 @@ class AgentConsistencyGuard:
             else:
                 text, ids = _text(claim, 400), ()
             if not ids or any(evidence_id not in authoritative for evidence_id in ids):
-                warnings.append(GuardWarning("warning", "unknown_claim", f"unsupported claim: {text}", (), (), "verify the claim with deterministic repository evidence"))
-                self._persist_claim_decision(request, text, (), "unknown")
+                synthetic_id = self._synthetic_claim_evidence_id(text, ids, inspected_ids)
+                warning_ids = (synthetic_id,)
+                warnings.append(GuardWarning("warning", "unknown_claim", f"unsupported claim: {text}; synthetic claim-evidence reference: {synthetic_id}", warning_ids, (), "verify the claim with deterministic repository evidence"))
+                self._persist_claim_decision(request, text, warning_ids, "unknown")
             else:
                 self._persist_claim_decision(request, text, ids, "verified")
         return tuple(warnings)
