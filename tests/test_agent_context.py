@@ -64,6 +64,108 @@ def test_compiler_prefers_fresh_task_evidence_within_budget(compiler: ContextCom
     assert result.elements[0].source_kind == "verification_receipt"
 
 
+def test_context_request_accepts_phase_focus_and_preload_profile():
+    request = ContextRequest(
+        task_id="task-1",
+        phase="edit",
+        focus=("exact symbols", "reuse candidates"),
+        preload_profile="python",
+        repo_revision="rev-1",
+        since_hash="etag-1",
+        include_diagnostics=True,
+        tenant="tenant-1",
+    )
+
+    assert request.phase == "edit"
+    assert request.focus == ("exact symbols", "reuse candidates")
+    assert request.preload_profile == "python"
+    assert request.repo_revision == "rev-1"
+    assert request.since_hash == "etag-1"
+    assert request.include_diagnostics is True
+    assert request.tenant == "tenant-1"
+
+
+def test_preloads_are_bounded_and_deduplicated(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "state.sqlite3")
+    first = tmp_path / "README.md"
+    duplicate = tmp_path / "docs.md"
+    first.write_text("same preload", encoding="utf-8")
+    duplicate.write_text("same preload", encoding="utf-8")
+    compiler = ContextCompiler(
+        state_store,
+        config={
+            "context": {
+                "preloads": {
+                    "files": ["README.md", "docs.md", "missing.md"],
+                    "max_files": 3,
+                    "max_bytes": 100,
+                }
+            }
+        },
+    )
+
+    result = compiler.compile(ContextRequest(task_id="task-1", root=str(tmp_path), preload_profile="default"))
+    preloads = [element for element in result.elements if element.source_kind == "preload"]
+
+    assert len(preloads) == 1
+    assert preloads[0].content == "same preload"
+    assert preloads[0].provenance["evidence_ids"]
+    assert any(warning["code"] == "preload_missing_file" for warning in result.warnings)
+
+
+def test_phase_pack_prioritizes_reuse_for_edit(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "state.sqlite3")
+    memory_store = MemoryStore(state_store)
+    memory_store.record(MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope="task",
+        scope_id="task-1",
+        key="broad fact",
+        value="broad context",
+    ))
+    memory_store.record(MemoryRecord.create(
+        kind=MemoryKind.REUSABLE_CANDIDATE,
+        scope="task",
+        scope_id="task-1",
+        key="reuse candidate",
+        value="use this exact implementation",
+        symbol_refs=("module.fn",),
+    ))
+    compiler = ContextCompiler(state_store, memory_store=memory_store)
+
+    result = compiler.compile(ContextRequest(task_id="task-1", phase="edit", token_budget=80))
+
+    assert result.phase == "edit"
+    assert result.elements[0].content.startswith("[REUSABLE_CANDIDATE]")
+
+
+def test_delta_pack_returns_unchanged_etag(tmp_path: Path):
+    compiler = ContextCompiler(AgentStateStore(tmp_path / "state.sqlite3"))
+    request = ContextRequest(task_id="task-1", phase="review")
+    original = compiler.compile(request)
+
+    unchanged = compiler.compile(ContextRequest(task_id="task-1", phase="review", since_hash=original.etag()))
+
+    assert unchanged.unchanged is True
+    assert unchanged.delta_from == original.etag()
+    assert unchanged.elements == []
+
+
+def test_disabled_agent_state_returns_stateless_repo_context_warning(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "state.sqlite3", enabled=False)
+    compiler = ContextCompiler(state_store)
+
+    result = compiler.compile(ContextRequest(
+        task_id="task-1",
+        root=str(tmp_path),
+        changed_paths=("src/app.py",),
+        phase="review",
+    ))
+
+    assert any(warning["code"] == "agent_state_disabled" for warning in result.warnings)
+    assert any(element.source_kind == "repository_context" for element in result.elements)
+
+
 def test_change_invalidates_only_linked_records(compiler: ContextCompiler):
     invalidated_count = compiler.invalidate({"src/changed.py"}, "rev-2")
     assert invalidated_count == 1
