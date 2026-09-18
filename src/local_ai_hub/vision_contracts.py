@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 
@@ -18,6 +18,17 @@ CATEGORIES = {
     "visual-regression",
     "runtime",
 }
+
+# Transport and contract bounds keep multimodal requests and returned findings
+# predictable even when a local model emits pathological content.
+VISION_MAX_PROMPT_CHARS = 16_000
+VISION_MAX_SCHEMA_CHARS = 8_000
+VISION_MAX_IMAGE_CHARS = 4_000_000
+VISION_MAX_BUNDLE_CHARS = 12_000
+VISION_MAX_RUNTIME_OUTPUT_CHARS = 64_000
+VISION_MAX_INLINE_RESPONSE_CHARS = 12_000
+VISION_MAX_FIELD_CHARS = 2_000
+VISION_MAX_LIST_ITEMS = 32
 
 
 @dataclass(frozen=True)
@@ -99,7 +110,7 @@ def _json_text(raw: str) -> str:
 def _terminal_error(message: str) -> VisionParseResult:
     return VisionParseResult(
         terminal=True,
-        error={"code": "malformed_vision_output", "message": message},
+        error={"code": "malformed_vision_output", "message": str(message)[:VISION_MAX_FIELD_CHARS]},
     )
 
 
@@ -182,6 +193,32 @@ def parse_vision_result(raw: str) -> VisionParseResult:
         findings=tuple(findings),
         unknowns=optional_lists["unknowns"],
         recommended_checks=optional_lists["recommended_checks"],
+    )
+
+
+def bound_vision_result(result: VisionParseResult) -> VisionParseResult:
+    """Bound model-controlled strings before exposing a parsed review."""
+    bound = lambda value: str(value)[:VISION_MAX_FIELD_CHARS]
+    findings = tuple(
+        replace(
+            finding,
+            finding_id=bound(finding.finding_id),
+            problem=bound(finding.problem),
+            element_ids=tuple(bound(value) for value in finding.element_ids[:VISION_MAX_LIST_ITEMS]),
+            evidence=tuple(bound(value) for value in finding.evidence[:VISION_MAX_LIST_ITEMS]),
+            likely_cause=bound(finding.likely_cause),
+            fix_hint=bound(finding.fix_hint),
+        )
+        for finding in result.findings[:VISION_MAX_LIST_ITEMS]
+    )
+    return replace(
+        result,
+        summary=bound(result.summary),
+        findings=findings,
+        unknowns=tuple(bound(value) for value in result.unknowns[:VISION_MAX_LIST_ITEMS]),
+        recommended_checks=tuple(
+            bound(value) for value in result.recommended_checks[:VISION_MAX_LIST_ITEMS]
+        ),
     )
 
 

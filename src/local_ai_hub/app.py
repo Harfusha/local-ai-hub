@@ -344,6 +344,9 @@ class LocalAIApp:
                 "dashboard": fs.dashboard,
                 "work_orchestrator": fs.work_orchestrator,
             },
+            "models": {
+                "vision": fs.vision_model,
+            },
             "token_saving": [
                 "compact MCP surface with agent-specific final projection and field-selectable work handoffs",
                 "durable whole-task work orders with DAG planning, transactional edits, validation and final handoff",

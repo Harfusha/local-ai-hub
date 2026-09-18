@@ -5,6 +5,7 @@ import tomllib
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from local_ai_hub.app import LocalAIApp
 from local_ai_hub.model_policy import ModelExecutionPolicy
 from local_ai_hub.services import LocalAIServices
 
@@ -187,6 +188,164 @@ def test_vision_file_read_error_is_sanitized(tmp_path: Path, monkeypatch) -> Non
     assert "private" not in result["error"]
     assert "secret-image" not in result["error"]
     runtime.request.assert_not_called()
+
+
+def test_vision_stat_error_never_forwards_path_to_ollama(tmp_path: Path, monkeypatch) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+
+    def fail_stat(_path):
+        raise OSError("C:\\private\\stat-secret.png")
+
+    monkeypatch.setattr(Path, "is_file", fail_stat)
+    result = services.vision({"image": str(image)}, "t")
+
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+    assert "stat-secret" not in result["error"]
+    assert "private" not in result["error"]
+    runtime.request.assert_not_called()
+
+
+def test_vision_missing_image_artifact_is_explicit_and_safe(tmp_path: Path) -> None:
+    services, runtime, _image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    services.artifacts.get.return_value = {
+        "success": False,
+        "error": "artifact not found or expired",
+        "artifact_id": "img-secret-id",
+    }
+
+    result = services.vision({"image_artifact_id": "img-secret-id"}, "t")
+
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+    assert "not found" in result["error"].lower()
+    assert "img-secret-id" not in result["error"]
+    runtime.request.assert_not_called()
+
+
+def test_vision_artifact_backend_failure_is_retryable_and_safe(tmp_path: Path) -> None:
+    services, runtime, _image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    services.artifacts.get.side_effect = RuntimeError("C:\\private\\artifact-db-secret")
+
+    result = services.vision({"image_artifact_id": "img-1"}, "t")
+
+    assert result["success"] is False
+    assert result["terminal"] is False
+    assert result["retryable"] is True
+    assert "artifact-db-secret" not in result["error"]
+    assert "private" not in result["error"]
+    runtime.request.assert_not_called()
+
+
+def test_vision_bundle_artifact_is_resolved_with_bounded_context(tmp_path: Path) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    services.artifacts.get.return_value = {
+        "success": True,
+        "text": "bundle context",
+    }
+
+    result = services.vision(
+        {"image": str(image), "bundle_artifact_id": "bundle-1"},
+        "t",
+    )
+
+    assert result["success"] is True
+    services.artifacts.get.assert_called_once()
+    assert services.artifacts.get.call_args.kwargs["max_chars"] <= 12000
+    assert "bundle context" in runtime.request.call_args.args[1]["prompt"]
+
+
+def test_vision_rejects_unbounded_prompt_schema_and_image(tmp_path: Path) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+
+    prompt_result = services.vision(
+        {"image": str(image), "prompt": "P" * 100_000},
+        "t",
+    )
+
+    assert prompt_result["success"] is True
+    assert len(runtime.request.call_args.args[1]["prompt"]) <= 16_000
+
+    schema_result = services.vision(
+        {
+            "json_schema": {"description": "S" * 20_000},
+            "image": str(image),
+        },
+        "t",
+    )
+    image_result = services.vision({"image": "A" * 5_000_000}, "t")
+
+    assert schema_result["success"] is False
+    assert schema_result["terminal"] is True
+    assert schema_result["retryable"] is False
+    assert "bounded" in schema_result["error"].lower()
+    assert image_result["success"] is False
+    assert image_result["terminal"] is True
+    assert image_result["retryable"] is False
+    assert "bounded" in image_result["error"].lower()
+
+
+def test_vision_bounds_runtime_and_parsed_text(tmp_path: Path) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    runtime.request.return_value = {
+        "response": json.dumps(
+            {
+                "summary": "S" * 12_000,
+                "findings": [
+                    {
+                        "id": "f-1",
+                        "severity": "high",
+                        "category": "layout",
+                        "problem": "P" * 12_000,
+                        "confidence": 0.9,
+                        "evidence": ["E" * 12_000],
+                        "likely_cause": "C" * 12_000,
+                        "fix_hint": "F" * 12_000,
+                    }
+                ],
+            }
+        )
+    }
+
+    result = services.vision({"image": str(image)}, "t")
+
+    assert result["success"] is True
+    assert len(result["response"]) <= 12_000
+    finding = result["review"]["findings"][0]
+    assert len(result["review"]["summary"]) <= 2_000
+    assert len(finding["problem"]) <= 2_000
+    assert len(finding["evidence"][0]) <= 2_000
+    assert len(finding["likely_cause"]) <= 2_000
+    assert len(finding["fix_hint"]) <= 2_000
+    stored = services.artifacts.put.call_args.args[0]
+    assert len(stored) <= 64_000
+
+
+def test_vision_rejects_oversized_runtime_output_without_echo(tmp_path: Path) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    runtime.request.return_value = {"response": "R" * 100_000}
+
+    result = services.vision({"image": str(image)}, "t")
+
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+    assert "bounded" in result["error"].lower()
+    assert "response" not in result
+    assert len(services.artifacts.put.call_args.args[0]) <= 64_000
+
+
+def test_capabilities_expose_configured_vision_model() -> None:
+    app = LocalAIApp.__new__(LocalAIApp)
+    app.config = {"models": {"vision": "custom-vl:latest"}}
+    app.external_tools = MagicMock()
+    app.external_tools.status.return_value = {}
+
+    capabilities = app.capabilities()
+
+    assert capabilities["models"]["vision"] == "custom-vl:latest"
 
 
 def test_vision_model_has_separate_single_slot_policy(tmp_path: Path) -> None:

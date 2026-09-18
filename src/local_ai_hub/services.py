@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
 
+import base64
 import copy
 import json
 import re
@@ -33,7 +34,16 @@ from .state_paths import configured_state_dir
 from .telemetry import TelemetryStore
 from .trace_context import observer
 from .treesitter_parser import parse_treesitter
-from .vision_contracts import parse_vision_result
+from .vision_contracts import (
+    VISION_MAX_BUNDLE_CHARS,
+    VISION_MAX_IMAGE_CHARS,
+    VISION_MAX_INLINE_RESPONSE_CHARS,
+    VISION_MAX_PROMPT_CHARS,
+    VISION_MAX_RUNTIME_OUTPUT_CHARS,
+    VISION_MAX_SCHEMA_CHARS,
+    bound_vision_result,
+    parse_vision_result,
+)
 
 
 def normalize_generation_cache_prompt(prompt: str) -> str:
@@ -1301,41 +1311,96 @@ class LocalAIServices:
                 "error": "Vision model is not configured; set models.vision to qwen3-vl:4b or another Ollama vision model.",
             }
 
-        images = []
-        if image_path:
+        def input_error(message: str) -> dict[str, Any]:
+            return {"success": False, "terminal": True, "retryable": False, "error": message}
+
+        images: list[str] = []
+
+        def append_image(value: str) -> dict[str, Any] | None:
+            if len(value) > VISION_MAX_IMAGE_CHARS:
+                return input_error("Vision image input exceeds the bounded size limit.")
+            images.append(value)
+            return None
+
+        def is_inline_image(value: str) -> bool:
+            if value.startswith("data:image/"):
+                return True
             try:
-                p = Path(image_path)
-                is_file = p.is_file()
-            except (OSError, ValueError):
-                is_file = False
-            if is_file:
-                import base64
+                return bool(value) and bool(base64.b64decode(value, validate=True))
+            except (ValueError, TypeError):
+                return False
+
+        if image_path:
+            if is_inline_image(image_path) and "image_path" not in args:
+                error = append_image(image_path)
+                if error:
+                    return error
+            else:
+                try:
+                    p = Path(image_path)
+                    is_file = p.is_file()
+                except (OSError, ValueError):
+                    return input_error("Vision image path could not be inspected; provide a readable image or base64 data.")
+                if not is_file:
+                    return input_error("Vision image path was not found; provide a readable image or base64 data.")
                 try:
                     b64 = base64.b64encode(p.read_bytes()).decode("utf-8")
-                    images.append(b64)
+                    error = append_image(b64)
+                    if error:
+                        return error
                 except (OSError, ValueError):
-                    return {
-                        "success": False,
-                        "terminal": True,
-                        "retryable": False,
-                        "error": "Failed to read image file; verify the path and permissions.",
-                    }
-            else:
-                images.append(image_path)
+                    return input_error("Failed to read image file; verify the path and permissions.")
 
         image_artifact_id = str(args.get("image_artifact_id") or "").strip()
         bundle_artifact_id = str(args.get("bundle_artifact_id") or "").strip()
-        if image_artifact_id and not images:
+
+        def resolve_artifact(artifact_id: str, max_chars: int) -> tuple[str, dict[str, Any] | None]:
             try:
-                artifact = self.artifacts.get(image_artifact_id)
-                artifact_data = artifact.get("text") if isinstance(artifact, dict) else ""
-                if artifact_data:
-                    images.append(str(artifact_data))
+                artifact = self.artifacts.get(artifact_id, max_chars=max_chars)
             except Exception:
-                pass
+                return "", {
+                    "success": False,
+                    "terminal": False,
+                    "retryable": True,
+                    "error": "Vision artifact store is unavailable; retry the request.",
+                }
+            if not isinstance(artifact, dict) or not artifact.get("success"):
+                detail = str(artifact.get("error", "")).lower() if isinstance(artifact, dict) else ""
+                if any(marker in detail for marker in ("not found", "expired", "missing")):
+                    return "", input_error("Vision artifact was not found or has expired.")
+                return "", {
+                    "success": False,
+                    "terminal": False,
+                    "retryable": True,
+                    "error": "Vision artifact store returned an error; retry the request.",
+                }
+            text = artifact.get("text")
+            if not isinstance(text, str) or not text:
+                return "", input_error("Vision artifact does not contain usable content.")
+            try:
+                total_chars = int(artifact.get("total_chars", len(text)))
+            except (TypeError, ValueError, OverflowError):
+                return "", input_error("Vision artifact metadata is invalid.")
+            if total_chars > max_chars:
+                return "", input_error("Vision artifact exceeds the bounded size limit.")
+            return text[:max_chars], None
+
+        if image_artifact_id and not images:
+            artifact_data, error = resolve_artifact(image_artifact_id, VISION_MAX_IMAGE_CHARS)
+            if error:
+                return error
+            error = append_image(artifact_data)
+            if error:
+                return error
 
         if not images:
-            return {"success": False, "error": "image path or base64 data required"}
+            return input_error("Vision image path, base64 data, or image artifact is required.")
+
+        bundle_context = ""
+        if bundle_artifact_id:
+            bundle_context, error = resolve_artifact(bundle_artifact_id, VISION_MAX_BUNDLE_CHARS)
+            if error:
+                return error
 
         try:
             requested_max_tokens = int(args.get("max_tokens", 1200))
@@ -1343,15 +1408,14 @@ class LocalAIServices:
             requested_max_tokens = 1200
         max_tokens = max(64, min(requested_max_tokens, self._VISION_MAX_OUTPUT_TOKENS))
         schema = args.get("json_schema")
-        payload = {
-            "model": model,
-            "prompt": prompt,
-            "images": images,
-            "stream": False,
-            "format": schema if isinstance(schema, dict) else "json",
-            "options": {"num_predict": max_tokens},
-        }
-        payload["prompt"] += (
+        if isinstance(schema, dict):
+            try:
+                schema_text = json_dumps(schema, ensure_ascii=False, separators=(",", ":"))
+            except (TypeError, ValueError, OverflowError):
+                return input_error("Vision JSON schema is invalid.")
+            if len(schema_text) > VISION_MAX_SCHEMA_CHARS:
+                return input_error("Vision JSON schema exceeds the bounded size limit.")
+        prompt_suffix = (
             "\n\nReturn only a JSON object matching this contract: "
             "{\"summary\": string, \"findings\": [{\"id\": string, "
             "\"severity\": \"blocker|high|medium|low|info\", "
@@ -1362,6 +1426,19 @@ class LocalAIServices:
             "\"needs_runtime_check\": boolean}], "
             "\"unknowns\": [string], \"recommended_checks\": [string]} ."
         )
+        prompt_context = prompt
+        if bundle_context:
+            prompt_context += "\n\nFrontend evidence bundle:\n" + bundle_context
+        prompt_budget = max(0, VISION_MAX_PROMPT_CHARS - len(prompt_suffix))
+        prompt_context = prompt_context[:prompt_budget] + prompt_suffix
+        payload = {
+            "model": model,
+            "prompt": prompt_context,
+            "images": images,
+            "stream": False,
+            "format": schema if isinstance(schema, dict) else "json",
+            "options": {"num_predict": max_tokens},
+        }
         payload, _profile = self.model_policy.apply_payload(
             model,
             payload,
@@ -1419,7 +1496,29 @@ class LocalAIServices:
                     "retryable": transient,
                     "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision runtime returned an error; inspect Ollama health and configuration.",
                 }
-            raw_output = str(res.get("response", ""))
+            raw_output = res.get("response", "")
+            if not isinstance(raw_output, str):
+                return {
+                    "success": False,
+                    "model": model,
+                    "terminal": True,
+                    "retryable": False,
+                    "error": "Vision runtime returned an invalid response.",
+                }
+            if len(raw_output) > VISION_MAX_RUNTIME_OUTPUT_CHARS:
+                raw_artifact_id = ""
+                try:
+                    raw_artifact_id = str(self.artifacts.put(raw_output[:VISION_MAX_RUNTIME_OUTPUT_CHARS], tenant, "vision-output"))
+                except Exception:
+                    pass
+                return {
+                    "success": False,
+                    "model": model,
+                    "terminal": True,
+                    "retryable": False,
+                    "error": "Vision runtime output exceeds the bounded response limit.",
+                    "raw_output_artifact_id": raw_artifact_id,
+                }
             raw_artifact_id = ""
             try:
                 raw_artifact_id = str(self.artifacts.put(raw_output, tenant, "vision-output"))
@@ -1435,12 +1534,13 @@ class LocalAIServices:
                     "error": parsed.error,
                     "raw_output_artifact_id": raw_artifact_id,
                 }
+            parsed = bound_vision_result(parsed)
             return {
                 "success": True,
                 "model": model,
-                "response": raw_output,
+                "response": raw_output[:VISION_MAX_INLINE_RESPONSE_CHARS],
                 "review": asdict(parsed),
-                "prompt": prompt,
+                "prompt": prompt_context,
                 "image_artifact_id": image_artifact_id,
                 "bundle_artifact_id": bundle_artifact_id,
                 "raw_output_artifact_id": raw_artifact_id,
