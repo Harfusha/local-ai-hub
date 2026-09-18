@@ -96,16 +96,18 @@ assert.equal(html.querySelectorAll('input[type="password"]')[0].value, "do-not-e
 assert.match(page.target_origin, /^https:\/\/fixture\.test$/);
 assert.match(page.captured_at, /T/);
 
-async function runBackground({timeout = null, switchTab = false, switchAfterScreenshot = false, screenshotTimeout = false, closed = false, permission = false, navigateAfterScreenshot = false} = {}) {
+async function runBackground({timeout = null, switchTab = false, switchAfterScreenshot = false, screenshotTimeout = false, closed = false, permission = false, navigateAfterScreenshot = false, missingUrl = false, emptyUrl = false} = {}) {
   let activeId = closed ? null : 7;
   const posts = [];
+  const currentTab = {id: 7, windowId: 3};
+  if (!missingUrl) currentTab.url = emptyUrl ? "" : page.url;
   const bgContext = {
     __LOCAL_AI_CAPTURE_TIMEOUT_MS__: timeout || 8000,
     chrome: {
       runtime: {getURL: () => "chrome-extension://fixture/"},
       action: {onClicked: {addListener: () => {}}},
       tabs: {
-        get: async () => ({id: 7, windowId: 3, url: page.url}),
+        get: async () => ({...currentTab}),
         query: async () => { if (permission) throw new Error("permission denied"); return activeId === null ? [] : [{id: activeId, windowId: 3}]; },
         sendMessage: async (tabId, message) => {
           if (message.type === "LOCAL_AI_VERIFY_CURRENT_TAB" && navigateAfterScreenshot) {
@@ -170,7 +172,13 @@ async function runBackground({timeout = null, switchTab = false, switchAfterScre
   assert.equal(navigated.result.error_code, "target_changed");
   assert.equal(navigated.posts.at(-1).capture_error, "target_changed");
   assert.equal(navigated.posts.some((post) => post.screenshot), false);
+  for (const options of [{missingUrl: true}, {emptyUrl: true}]) {
+    const missingOrEmpty = await runBackground(options);
+    assert.equal(missingOrEmpty.result.error_code, "target_changed");
+    assert.equal(missingOrEmpty.posts.at(-1).capture_error, "target_changed");
+    assert.equal(missingOrEmpty.posts.some((post) => post.screenshot), false);
+  }
   assert.equal((await runBackground({closed: true})).result.error_code, "closed_tab");
   assert.equal((await runBackground({permission: true})).result.error_code, "permission_denied");
-  process.stdout.write(JSON.stringify({success: true, fixture: "login-preserving", cases: ["success", "timeout", "tab-switch", "same-tab-navigation", "password", "timestamp", "origin"]}));
+  process.stdout.write(JSON.stringify({success: true, fixture: "login-preserving", cases: ["success", "timeout", "tab-switch", "same-tab-navigation", "missing-tab-url", "empty-tab-url", "password", "timestamp", "origin"]}));
 })().catch((error) => { console.error(error); process.exitCode = 1; });
