@@ -84,6 +84,58 @@ def test_ensure_running_preserves_external_ollama_when_management_disabled(tmp_p
     assert runtime.ensure_running() is True
 
 
+def test_ensure_running_cleans_process_when_startup_never_becomes_healthy(tmp_path: Path, monkeypatch):
+    import local_ai_hub.ollama as ollama_module
+    from local_ai_hub.ollama import OllamaRuntime
+
+    runtime = OllamaRuntime(
+        {
+            "server": {
+                "state_dir": str(tmp_path),
+                "ollama_url": "http://127.0.0.1:11434",
+                "request_timeout_seconds": 0.01,
+            },
+            "headless": {"autostart_ollama": True, "manage_ollama": True},
+            "llama_cpp": {"fallback_to_ollama": True},
+            "ollama": {"startup_timeout_seconds": 1.0},
+        }
+    )
+    monkeypatch.setattr(runtime.llama_cpp, "is_online", lambda: False)
+    monkeypatch.setattr(runtime, "is_online", lambda: False)
+    monkeypatch.setattr(ollama_module, "find_listening_pid", lambda _port: None, raising=False)
+
+    terminated: list[int] = []
+    monkeypatch.setattr(
+        ollama_module,
+        "terminate_tree",
+        lambda pid, grace_seconds=5.0: terminated.append(pid) or True,
+    )
+
+    class Proc:
+        pid = 9003
+
+        def __init__(self) -> None:
+            self.waited = False
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            self.waited = True
+            return 1
+
+        def kill(self):
+            return None
+
+    proc = Proc()
+    monkeypatch.setattr(ollama_module.subprocess, "Popen", lambda *_args, **_kwargs: proc)
+
+    assert runtime.ensure_running() is False
+    assert terminated == [9003]
+    assert proc.waited is True
+    assert not runtime.managed_pid_path.exists()
+
+
 def test_generated_agent_instructions_define_ollama_ownership():
     from local_ai_hub.generator import generate_skill_markdown
 

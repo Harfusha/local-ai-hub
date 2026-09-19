@@ -594,6 +594,34 @@ class OllamaRuntime:
             time.sleep(0.1)
         return not self.is_online()
 
+    def _cleanup_failed_start(self, proc: subprocess.Popen[Any]) -> None:
+        """Reap a child whose endpoint never became healthy."""
+        try:
+            running = proc.poll() is None
+        except Exception:
+            running = True
+        if running:
+            try:
+                terminate_tree(proc.pid, grace_seconds=2.0)
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=3.0)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=1.0)
+            except Exception:
+                pass
+        try:
+            if self.managed_pid_path.read_text(encoding="utf-8").strip() == str(proc.pid):
+                self.managed_pid_path.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass
+
     def ensure_running(self) -> bool:
         if self.llama_cpp.is_online():
             return True
@@ -644,6 +672,7 @@ class OllamaRuntime:
             popen_kwargs: dict[str, Any] = hidden_run_kwargs(new_group=True)
             if os.name != "nt":
                 popen_kwargs["start_new_session"] = True
+            proc: subprocess.Popen[Any] | None = None
             try:
                 proc = subprocess.Popen(
                     args, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -655,6 +684,8 @@ class OllamaRuntime:
                 set_process_priority(proc.pid, priority)
                 self.managed_pid_path.write_text(str(proc.pid), encoding="utf-8")
             except Exception:
+                if proc is not None:
+                    self._cleanup_failed_start(proc)
                 return False
 
             startup_timeout = max(1.0, float(self.config.get("ollama", {}).get("startup_timeout_seconds", 12.0)))
@@ -665,7 +696,10 @@ class OllamaRuntime:
                 if proc.poll() is not None:
                     break
                 time.sleep(min(0.4, max(0.05, deadline - time.monotonic())))
-            return self.is_online()
+            if self.is_online():
+                return True
+            self._cleanup_failed_start(proc)
+            return False
 
     def managed_profile_status(self) -> dict[str, Any]:
         pid = 0
