@@ -464,9 +464,9 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "models": {
             "background_code": "qwen2.5-coder:0.5b",
             "fast_code": "qwen2.5-coder:1.5b",
-            "heavy_code": "qwen2.5-coder:3b",
+            "heavy_code": "qwen2.5-coder:7b",
             "reasoning": "qwen2.5-coder:7b",
-            "general": "qwen3.5:9b",
+            "general": "qwen2.5-coder:7b",
             "vision": "qwen3.5:9b",
         },
         "scheduler": {"max_parallel": 2, "max_inflight_per_tenant": 2},

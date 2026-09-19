@@ -174,8 +174,15 @@ class LlamaCppRoutingTests(unittest.TestCase):
         expected = {
             "background_code": "qwen2.5-coder:0.5b",
             "fast_code": "qwen2.5-coder:1.5b",
-            "heavy_code": "qwen2.5-coder:3b",
             "reasoning": "qwen2.5-coder:7b",
+        }
+        expected_heavy = {
+            "cpu": "qwen2.5-coder:3b",
+            "integrated": "qwen2.5-coder:3b",
+            "low": "qwen2.5-coder:3b",
+            "balanced": "qwen2.5-coder:7b",
+            "high": "qwen2.5-coder:3b",
+            "max": "qwen2.5-coder:3b",
         }
         expected_vision = {
             "cpu": "qwen3-vl:4b",
@@ -189,7 +196,7 @@ class LlamaCppRoutingTests(unittest.TestCase):
             "cpu": "qwen2.5-coder:1.5b",
             "integrated": "qwen2.5-coder:1.5b",
             "low": "qwen2.5-coder:1.5b",
-            "balanced": "qwen3.5:9b",
+            "balanced": "qwen2.5-coder:7b",
             "high": "qwen3.5:9b",
             "max": "qwen3.5:9b",
         }
@@ -197,6 +204,7 @@ class LlamaCppRoutingTests(unittest.TestCase):
             with self.subTest(profile=name):
                 profile = profile_overrides(name, {"gpus": [], "ram": {"total_gb": 32}})
                 self.assertEqual({k: profile["models"][k] for k in expected}, expected)
+                self.assertEqual(profile["models"]["heavy_code"], expected_heavy[name])
                 self.assertEqual(profile["models"]["general"], expected_general[name])
                 self.assertEqual(profile["models"]["vision"], expected_vision[name])
 
