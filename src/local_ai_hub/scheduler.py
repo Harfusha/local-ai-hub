@@ -41,6 +41,25 @@ class ModelUnavailableError(RuntimeError):
     pass
 
 
+class SchedulerTimeoutError(TimeoutError):
+    """Caller deadline expired while a scheduler job was still pending/running.
+
+    The job is intentionally not force-cancelled once dispatched: the runtime
+    request may own a socket or a model runner that cannot be safely interrupted
+    from this thread.  Structured metadata lets the service return a safe,
+    retryable response without pretending the work was cancelled.
+    """
+
+    def __init__(self, job: Job, state: str, wait_timeout: float):
+        self.job_id = job.id
+        self.state = state
+        self.wait_timeout = max(0.0, float(wait_timeout))
+        self.retryable = True
+        self.terminal = False
+        self.error_code = "scheduler_caller_timeout"
+        super().__init__(f"job {job.id} did not finish before caller timeout ({state})")
+
+
 class AffinityScheduler:
     """Shared multi-tenant, model-affinity scheduler with idle-only background work.
 
@@ -211,13 +230,15 @@ class AffinityScheduler:
             with self._cond:
                 job.caller_timed_out = True
                 self._stats["caller_timeouts"] += 1
+                state = "running" if job.started_at else "dispatching"
                 if job in self._pending:
                     self._pending.remove(job)
                     self._stats["cancelled_pending"] += 1
                     job.error = "caller timed out before dispatch"
                     job.done.set()
+                    state = "pending"
                     self._cond.notify_all()
-            raise TimeoutError(f"job {job.id} did not finish before caller timeout")
+            raise SchedulerTimeoutError(job, state, effective_wait_timeout)
         queue_wait_ms = max(0.0, ((job.started_at or job.finished_at or time.monotonic()) - job.created_at) * 1000)
         service_ms = max(0.0, (job.finished_at - job.started_at) * 1000) if job.finished_at and job.started_at else 0.0
         if job.error:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+import threading
 
 from local_ai_hub.model_policy import ModelExecutionPolicy
 from local_ai_hub.services import LocalAIServices
@@ -14,6 +15,15 @@ class _OfflineRuntime:
 class _NoSubmitScheduler:
     def submit(self, *_args, **_kwargs):
         raise AssertionError("offline runtime must not enqueue model work")
+
+
+class _TimeoutScheduler:
+    def submit(self, *_args, **_kwargs):
+        error = TimeoutError("job 17 did not finish before caller timeout (running)")
+        error.error_code = "scheduler_caller_timeout"
+        error.job_id = 17
+        error.state = "running"
+        raise error
 
 
 class _PassthroughCache:
@@ -65,6 +75,8 @@ def _offline_services() -> LocalAIServices:
     services.tuner = None
     services.vram_balancer = None
     services.fallback_count = 0
+    services._semantic_lock_guard = threading.Lock()
+    services._semantic_scope_locks = {}
     return services
 
 
@@ -86,3 +98,27 @@ def test_generate_fails_fast_without_backend_and_skips_scheduler() -> None:
     assert result["success"] is False
     assert result["retryable"] is True
     assert result["error_code"] == "local_backend_unavailable"
+
+
+def test_generate_exposes_retryable_scheduler_timeout_metadata() -> None:
+    services = _offline_services()
+    services.runtime = type("OnlineRuntime", (), {"is_online": lambda self: True})()
+    services.scheduler = _TimeoutScheduler()
+
+    result = LocalAIServices._generate(
+        services,
+        "fast",
+        "A bounded test request",
+        "",
+        64,
+        0.0,
+        "tenant",
+        "delegate:general",
+        5,
+    )
+
+    assert result["success"] is False
+    assert result["retryable"] is True
+    assert result["terminal"] is False
+    assert result["error_code"] == "model_request_timeout"
+    assert "scheduler_job_id" not in result  # final failure stays compact and safe
