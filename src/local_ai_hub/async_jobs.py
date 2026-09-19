@@ -424,14 +424,21 @@ class AsyncJobManager:
         if self._shutdown.is_set():
             return 0
         with self._lock, closing(self._connect()) as con:
-            rows = con.execute("SELECT job_id,state,attempts,cancel_requested FROM async_jobs WHERE state IN ('queued','running')").fetchall(); ids: list[str] = []
-            for job_id, state, attempts, cancelled in rows:
+            rows = con.execute("SELECT job_id,state,attempts,cancel_requested,trace_id FROM async_jobs WHERE state IN ('queued','running')").fetchall(); ids: list[tuple[str, str]] = []
+            for job_id, state, attempts, cancelled, trace_id in rows:
                 if cancelled: con.execute("UPDATE async_jobs SET state='cancelled',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id))
                 elif int(attempts or 0) >= self.max_attempts and state == "running": con.execute("UPDATE async_jobs SET state='failed',lease_until=0,error='async job interrupted too many times',updated_at=? WHERE job_id=?", (time.time(), job_id))
                 else:
-                    con.execute("UPDATE async_jobs SET state='queued',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id)); ids.append(str(job_id))
+                    con.execute("UPDATE async_jobs SET state='queued',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id)); ids.append((str(job_id), str(trace_id or "")))
             con.commit()
-        for job_id in ids: self._event(job_id); self._dispatch(job_id)
+        for job_id, trace_id in ids:
+            if self.debug_traces is not None and trace_id:
+                try:
+                    self.debug_traces.update(trace_id, state="queued")
+                    self.debug_traces.event(trace_id, "recovered", {"job_id": job_id})
+                except Exception:
+                    pass
+            self._event(job_id); self._dispatch(job_id)
         self._stats["recovered"] += len(ids); return len(ids)
 
     def tick(self) -> None:

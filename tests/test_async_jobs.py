@@ -202,6 +202,31 @@ def test_async_job_trace_links_prompt_scheduler_and_terminal_state(tmp_path):
     manager.close()
 
 
+def test_recovered_async_job_reopens_terminal_trace(tmp_path):
+    config = {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}, "debug_traces": {"enabled": True}}
+    store = DebugTraceStore(config)
+    manager = AsyncJobManager(
+        config,
+        _Scheduler(),
+        _Artifacts(),
+        lambda action, payload, tenant: {"success": True, "action": action, "tenant": tenant},
+        debug_traces=store,
+    )
+    try:
+        submitted = manager.submit("tenant-a", "reason", {"task": "recover me"})
+        assert store.recover_incomplete(reason="hub restarted")["recovered_sessions"] == 1
+        assert store.detail(submitted["trace_id"])["terminal"] is True
+
+        assert manager.recover() == 1
+        detail = store.detail(submitted["trace_id"])
+        assert detail["session"]["state"] == "queued"
+        assert detail["session"]["finished_at"] == 0
+        assert detail["session"]["error"] == ""
+        assert detail["terminal"] is False
+    finally:
+        manager.close()
+
+
 def test_async_jobs_tick_evicts_terminal_events(tmp_path):
     mgr = AsyncJobManager(
         {"server": {"state_dir": str(tmp_path / "state")}},

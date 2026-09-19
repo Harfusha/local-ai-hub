@@ -184,6 +184,8 @@ class DebugTraceStore:
         allowed = {"state", "source", "model", "request", "effective_payload", "output", "response", "error", "queue_wait_ms", "inference_ms", "total_ms"}
         updates: list[str] = []
         values: list[Any] = []
+        reopening = str(fields.get("state", "")) in {"queued", "running"}
+        now = time.time()
         try:
             with closing(self._connect()) as read_con:
                 read_con.row_factory = sqlite3.Row
@@ -219,13 +221,19 @@ class DebugTraceStore:
             if key in fields:
                 updates.append(f"{column}=?"); values.append(candidate[key])
         for key, value in fields.items():
-            if key in allowed and key not in self.JSON_FIELDS and key not in {"output", "thinking"}:
+            if key in allowed and key not in self.JSON_FIELDS and key not in {"output", "thinking"} and not (reopening and key == "error"):
                 updates.append(f"{key}=?"); values.append(value)
+        if reopening:
+            # A recovered async job may reopen a trace that restart recovery
+            # temporarily marked terminal. Clear stale terminal metadata so the
+            # inspector does not show a live trace with a finished timestamp.
+            updates.extend(["error=?", "finished_at=?", "expires_at=?"])
+            values.extend(["", 0.0, now + self.terminal_ttl_seconds])
         if not updates:
             return False
         total_text_bytes = sum(len(candidate[key].encode("utf-8")) for key in text_fields)
         updates.extend(["updated_at=?", "text_bytes=?"])
-        values.extend([time.time(), total_text_bytes])
+        values.extend([now, total_text_bytes])
         values.append(trace_id)
         try:
             with closing(self._connect()) as con:
