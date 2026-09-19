@@ -897,6 +897,8 @@ class LocalAIServices:
 
             candidates = [requested_model] + self._fallback_models(requested_model)
             errors: list[str] = []
+            retryable_error = False
+            timeout_error = False
             for index, candidate in enumerate(candidates):
                 breaker_key = f"model:{candidate}"
                 if not self.breakers.allow(breaker_key):
@@ -968,8 +970,26 @@ class LocalAIServices:
                         candidate, tenant, source if index == 0 else f"{source}:fallback", run, priority=priority,
                         wait_timeout=float(resilience.get("scheduler_wait_timeout_seconds", self.config.get("server", {}).get("request_timeout_seconds", 300) + 30)),
                     )
+                except TimeoutError as exc:
+                    timeout_error = True
+                    retryable_error = True
+                    result = {
+                        "success": False,
+                        "error": str(exc),
+                        "model": candidate,
+                        "terminal": False,
+                        "retryable": True,
+                        "error_code": str(getattr(exc, "error_code", "model_request_timeout")),
+                    }
+                    job_id = getattr(exc, "job_id", None)
+                    if job_id is not None:
+                        result["scheduler_job_id"] = int(job_id)
+                    state = getattr(exc, "state", "")
+                    if state:
+                        result["scheduler_state"] = str(state)
                 except Exception as exc:
                     result = {"success": False, "error": str(exc), "model": candidate}
+                retryable_error = retryable_error or bool(result.get("retryable", False))
                 if result.get("success"):
                     self.breakers.success(breaker_key)
                     if candidate != requested_model:
@@ -991,7 +1011,16 @@ class LocalAIServices:
                     reused["stale_fallback"] = True
                     reused["runtime_errors"] = errors[-3:]
                     return reused
-            return {"success": False, "error": "; ".join(errors) or "all local model attempts failed", "model": requested_model}
+            failure = {
+                "success": False,
+                "error": "; ".join(errors) or "all local model attempts failed",
+                "model": requested_model,
+            }
+            if retryable_error:
+                failure.update({"terminal": False, "retryable": True})
+            if timeout_error:
+                failure["error_code"] = "model_request_timeout"
+            return failure
 
         def compute() -> dict[str, Any]:
             nonlocal semantic_score
