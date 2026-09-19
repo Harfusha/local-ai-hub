@@ -119,14 +119,6 @@ class Supervisor:
 
     def hub_online(self) -> bool:
         server = self.config["server"]
-        if self.child is not None and self.child.poll() is None:
-            try:
-                owner = find_listening_pid(int(server.get("port", 11435)))
-                if owner and int(owner) != int(self.child.pid):
-                    # A stale process must not make a failed replacement look healthy.
-                    return False
-            except Exception:
-                pass
         bind = str(server.get("bind", "127.0.0.1"))
         host = str(server.get("client_host", "")).strip() or ("127.0.0.1" if bind in {"0.0.0.0", "::", "[::]"} else bind)
         headers: dict[str, str] = {}
@@ -147,29 +139,29 @@ class Supervisor:
     def write_status(self, state: str, error: str = "", ollama_online: bool | None = None) -> None:
         hub_pid = 0
         p = self.state_dir / "hub.pid"
-        if self.child is not None and self.child.poll() is None:
+        port_owner = find_listening_pid(int(self.config.get("server", {}).get("port", 11435)))
+        if port_owner and int(port_owner) != os.getpid():
+            # Windows launchers can wrap pythonw. Report process owning public port.
+            hub_pid = int(port_owner)
+            try:
+                p.write_text(str(hub_pid), encoding="utf-8")
+            except OSError:
+                pass
+        elif self.child is not None and self.child.poll() is None:
             hub_pid = int(self.child.pid)
             try:
                 p.write_text(str(hub_pid), encoding="utf-8")
             except OSError:
                 pass
         else:
-            port_owner = find_listening_pid(int(self.config.get("server", {}).get("port", 11435)))
-            if port_owner:
-                hub_pid = int(port_owner)
-                try:
-                    p.write_text(str(hub_pid), encoding="utf-8")
-                except OSError:
-                    pass
-            else:
-                try:
-                    candidate = int(p.read_text(encoding="utf-8").strip() or 0)
-                    if pid_alive(candidate):
-                        hub_pid = candidate
-                    else:
-                        p.unlink(missing_ok=True)
-                except Exception:
-                    pass
+            try:
+                candidate = int(p.read_text(encoding="utf-8").strip() or 0)
+                if pid_alive(candidate):
+                    hub_pid = candidate
+                else:
+                    p.unlink(missing_ok=True)
+            except Exception:
+                pass
         atomic_json(self.status_path, {
             "state": state,
             "pid": os.getpid(),
@@ -290,6 +282,14 @@ class Supervisor:
                     self.log("disabled marker observed; stopping")
                     self.stopping = True
                     break
+                if self.child is None:
+                    try:
+                        owner = find_listening_pid(int(self.config.get("server", {}).get("port", 11435)))
+                    except Exception:
+                        owner = None
+                    if owner and int(owner) != os.getpid():
+                        self.log(f"reaping stale hub listener pid {int(owner)} before managed start")
+                        self.terminate_child()
                 now = time.time()
                 manage_ollama = bool(self.cfg.get("manage_ollama", True))
                 ollama_online = self.runtime.ensure_running() if manage_ollama else None
@@ -333,15 +333,6 @@ class Supervisor:
                 # unhealthy grace; that creates a self-sustaining restart storm.
                 deadline = time.time() + startup_grace
                 while not self.stopping and time.time() < deadline:
-                    if self.child is not None and self.child.poll() is None:
-                        try:
-                            owner = find_listening_pid(int(self.config.get("server", {}).get("port", 11435)))
-                        except Exception:
-                            owner = None
-                        if owner and int(owner) != int(self.child.pid):
-                            self.log(f"hub port owned by stale pid {int(owner)}; recycling replacement")
-                            self.terminate_child()
-                            break
                     if self.hub_online():
                         break
                     if self.child is not None and self.child.poll() is not None:
