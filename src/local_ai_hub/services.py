@@ -2064,7 +2064,7 @@ class LocalAIServices:
                         "degraded": True,
                         "terminal": True,
                         "retryable": False,
-                        "error": f"Vision model '{model}' is unavailable. Install it with 'ollama pull {model}' or configure models.vision.",
+                        "error": f"Vision model '{model}' is unavailable. Configure an existing vision-capable local backend and models.vision; no runtime is installed automatically.",
                         "error_code": "vision_model_missing",
                     }
                 return {
@@ -2072,7 +2072,7 @@ class LocalAIServices:
                     "model": model,
                     "terminal": not transient,
                     "retryable": transient,
-                    "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision model capability preflight failed; inspect Ollama health and configuration.",
+                    "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision model capability preflight failed; inspect the configured local backend and vision model.",
                     "error_code": "vision_preflight_failed",
                 }
             capability_values: list[str] = []
@@ -2099,7 +2099,7 @@ class LocalAIServices:
                     "degraded": True,
                     "terminal": True,
                     "retryable": False,
-                    "error": f"Vision model '{model}' does not advertise image or multimodal capability; choose an Ollama vision model.",
+                    "error": f"Vision model '{model}' does not advertise image or multimodal capability; choose a configured vision-capable local model.",
                     "error_code": "vision_model_unsupported",
                 }
             res = self.runtime.request("/api/generate", payload, timeout=timeout)
@@ -2126,7 +2126,7 @@ class LocalAIServices:
                         "degraded": True,
                         "terminal": True,
                         "retryable": False,
-                        "error": f"Vision model '{model}' is unavailable. Install it with 'ollama pull {model}' or configure models.vision.",
+                        "error": f"Vision model '{model}' is unavailable. Configure an existing vision-capable local backend and models.vision; no runtime is installed automatically.",
                     }
                 transient = any(
                     marker in error_text
@@ -2140,7 +2140,7 @@ class LocalAIServices:
                     "model": model,
                     "terminal": not transient,
                     "retryable": transient,
-                    "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision runtime returned an error; inspect Ollama health and configuration.",
+                    "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision runtime returned an error; inspect the configured local backend and vision model.",
                 }
             raw_output = res.get("response", "")
             if not isinstance(raw_output, str):
@@ -2240,7 +2240,7 @@ class LocalAIServices:
                 "model": model,
                 "terminal": not transient,
                 "retryable": transient,
-                "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision runtime failed; inspect Ollama health and configuration.",
+                "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision runtime failed; inspect the configured local backend and vision model.",
             }
 
     def transcribe(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:

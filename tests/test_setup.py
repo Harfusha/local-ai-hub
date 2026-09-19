@@ -174,6 +174,7 @@ def test_config_mergers_preserve_user_content(tmp_path: Path):
 
 def test_ollama_setup_skips_exclusive_llama_cpp_configuration(monkeypatch, tmp_path: Path, capsys):
     cfg = {
+        "ollama": {"enabled": False},
         "server": {"auto_start_ollama": True},
         "llama_cpp": {"mode": "on", "fallback_to_ollama": False},
     }
@@ -198,7 +199,7 @@ def test_ollama_setup_requires_auto_start_and_fallback(cfg):
 
 def test_ollama_setup_remains_enabled_for_fallback_configuration():
     assert setup.ollama_setup_required(
-        {"server": {"auto_start_ollama": True}, "llama_cpp": {"mode": "auto", "fallback_to_ollama": True}}
+        {"ollama": {"enabled": True}, "server": {"auto_start_ollama": True}, "llama_cpp": {"mode": "auto", "fallback_to_ollama": True}}
     ) is True
 
 
@@ -209,6 +210,7 @@ def test_pull_ollama_models_includes_vision_when_enabled(monkeypatch):
 
     setup.pull_ollama_models(
         {
+            "ollama": {"enabled": True},
             "features": {"pull_models_during_setup": True, "vision": True},
             "server": {"auto_start_ollama": True},
             "llama_cpp": {"fallback_to_ollama": True},
@@ -227,6 +229,7 @@ def test_pull_ollama_models_skips_vision_when_disabled(monkeypatch):
 
     setup.pull_ollama_models(
         {
+            "ollama": {"enabled": True},
             "features": {"pull_models_during_setup": True, "vision": False},
             "server": {"auto_start_ollama": True},
             "llama_cpp": {"fallback_to_ollama": True},

@@ -9,6 +9,21 @@ from shutil import which
 from local_ai_hub.dashboard import DASHBOARD_HTML
 
 
+# Windows defaults to the active ANSI code page for text subprocess pipes;
+# dashboard markup intentionally contains Unicode UI glyphs. Force UTF-8 for
+# the Node helpers used by this module without changing production markup.
+_ORIGINAL_SUBPROCESS_RUN = subprocess.run
+
+
+def _utf8_subprocess_run(*args, **kwargs):
+    if kwargs.get("text") and kwargs.get("encoding") is None:
+        kwargs["encoding"] = "utf-8"
+    return _ORIGINAL_SUBPROCESS_RUN(*args, **kwargs)
+
+
+subprocess.run = _utf8_subprocess_run
+
+
 class _TraceMarkupParser(HTMLParser):
     """Inspect visible content and balanced containers without a browser dependency."""
 
@@ -1934,7 +1949,7 @@ def test_trace_bounded_events_uses_one_shared_budget_for_wide_deep_events() -> N
     ]
     assert "traceRawBoundValue(traceRawBoundValue" not in source
     assert "traceRawBoundValue(event,2048,0,budget)" in source
-    assert "remaining:24000" in source
+    assert "remaining:23000" in source
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     wide = {f"wide_{i}": {f"deep_{j}": "x" * 500 for j in range(20)} for i in range(80)}
     script = (

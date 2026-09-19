@@ -139,7 +139,7 @@ def test_ensure_running_cleans_process_when_startup_never_becomes_healthy(tmp_pa
 def test_generated_agent_instructions_define_ollama_ownership():
     from local_ai_hub.generator import generate_skill_markdown
 
-    generated = generate_skill_markdown({"headless": {"manage_ollama": True}})
+    generated = generate_skill_markdown({"ollama": {"enabled": True}, "headless": {"manage_ollama": True}})
 
     assert "Never run `ollama serve`" in generated
     assert "headless.manage_ollama = false" in generated

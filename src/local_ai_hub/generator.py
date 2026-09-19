@@ -145,8 +145,15 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         )
     tiering_section = "\n".join(tiering_bullets)
 
-    manage_ollama = bool(cfg.get("headless", {}).get("manage_ollama", True))
-    if manage_ollama:
+    ollama_enabled = bool(cfg.get("ollama", {}).get("enabled", False)) if isinstance(cfg.get("ollama", {}), dict) else False
+    manage_ollama = bool(cfg.get("headless", {}).get("manage_ollama", False))
+    if not ollama_enabled:
+        ollama_ownership_section = (
+            "## Ollama process ownership\n\n"
+            "Ollama is disabled by policy (`ollama.enabled = false`). Setup and the supervisor must not install, start, pull, or probe Ollama. "
+            "Use only an already-running llama.cpp endpoint when the hardware-gated `llama_cpp.mode = auto` route is healthy; there is no automatic fallback."
+        )
+    elif manage_ollama:
         ollama_ownership_section = (
             "## Ollama process ownership\n\n"
             "When `headless.manage_ollama = true`, Ollama is owned by the Local AI Hub supervisor. "
@@ -157,8 +164,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     else:
         ollama_ownership_section = (
             "## Ollama process ownership\n\n"
-            "`headless.manage_ollama = false` leaves Ollama user-managed. Keep its startup and environment outside the Hub, "
-            "and do not expect the Hub to verify or apply the foreground Ollama profile."
+            "`headless.manage_ollama = false` leaves an explicitly enabled Ollama user-managed. Keep its startup and environment outside the Hub."
         )
 
     # Read-only audit contract
@@ -247,7 +253,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         profiles_list = "\n".join(f"- `{p}` — configured advisory profile" for p in fs.subagent_profiles)
         example_profile = fs.subagent_profiles[0] if fs.subagent_profiles else "explorer"
         subagents_section = f"""
-## Ollama advisory subagents
+## Local advisory subagents
 
 Use named profiles for bounded local second opinions:
 
@@ -712,10 +718,10 @@ Load and follow this skill before any coding or repository task. Apply its disco
 - Prefer single-block replacements (`replace_file_content` / targeted patches) over rewriting entire files.
 - Do not recite or parrot existing file contents before or after changes.
 
-### 4. Offload to Local Model (Ollama / Local AI Hub)
-- For microtasks (summarization, lint fixing, boilerplate, second opinion), delegate to local inference:
+### 4. Offload to Optional Local Model (Local AI Hub)
+- For microtasks (summarization, lint fixing, boilerplate, second opinion), delegate only when an approved local backend is already available:
 - Use `qwen2.5-coder:1.5b` for quick local work, `qwen2.5-coder:3b` for complex tasks, and `qwen2.5-coder:7b` for the hardest reasoning; reserve `qwen2.5-coder:0.5b` for preprocessing.
-  - Zero cloud tokens consumed.
+  - Do not install Ollama or llama.cpp just to satisfy a delegation; use deterministic/indexed Hub tools when no local backend is healthy.
 
 ### 5. Concise Output (Caveman Protocol)
 - Omit conversational filler, decorative preambles, and post-execution summaries of obvious changes.

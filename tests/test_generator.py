@@ -38,7 +38,7 @@ class TestSkillGeneration:
         assert "local_ai_artifact" in skill
         assert "local_ai_work" in skill
         assert "Agent Operating System & Durable Execution" in skill
-        assert "Ollama advisory subagents" in skill
+        assert "Local advisory subagents" in skill
 
     def test_skill_without_rag(self):
         cfg = {"features": {"rag": False}}
@@ -57,7 +57,7 @@ class TestSkillGeneration:
         cfg = {"features": {"tasks": False}}
         skill = generate_skill_markdown(cfg)
         assert "local_ai_task" not in skill
-        assert "Ollama advisory subagents" not in skill
+        assert "Local advisory subagents" not in skill
         assert "Local model inference is disabled" in skill
 
     def test_skill_with_custom_models(self):
@@ -83,11 +83,10 @@ class TestSkillGeneration:
         assert features.general_model == "qwen2.5-coder:3b"
         assert features.smart_model == "qwen2.5-coder:3b"
         assert features.reasoning_model == "qwen2.5-coder:7b"
-        for generated in (skill, policy):
-            assert "qwen2.5-coder:1.5b` only for quick/simple requests" in generated
-            assert "qwen2.5-coder:3b` for ordinary tasks" in generated
-            assert "qwen2.5-coder:7b` for the hardest reasoning" in generated
-            assert "for ordinary local reasoning" not in generated
+        assert "Local model inference is disabled" in skill
+        assert "qwen2.5-coder:" not in policy
+        assert "for ordinary local reasoning" not in skill
+        assert "for ordinary local reasoning" not in policy
 
     def test_general_model_falls_back_to_smart_tier(self):
         features = FeatureSet({"models": {"fast_code": "fast", "heavy_code": "smart"}})

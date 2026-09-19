@@ -7,7 +7,7 @@ Use this prompt with any AI coding agent (Claude Code, Codex, Cursor, Windsurf, 
 ```markdown
 # TASK: Install, Verify, and Integrate Local AI Hub in Environment & Repository
 
-You are an autonomous AI engineering agent. Your task is to install and configure **Local AI Hub** on this system (if not already installed or running), verify all components (service, Ollama, token economy suite, code intelligence), ensure MCP integration, and inject the canonical tool and token economy policies into this repository's agent instructions.
+You are an autonomous AI engineering agent. Your task is to install and configure **Local AI Hub** on this system (if not already installed or running), verify all components (service, configured local backends, token economy suite, code intelligence), ensure MCP integration, and inject the canonical tool and token economy policies into this repository's agent instructions. Ollama is disabled unless explicitly opted in.
 
 Hub adoption telemetry is aggregate-only: retain normalized tool/action/intent/outcome plus time, latency, and output-size buckets. Never send prompts, source, secrets, absolute paths, or raw request records. Mark a bypass only when the client explicitly signals one; do not infer it from missing Hub calls.
 
@@ -33,9 +33,9 @@ Execute the following phases deterministically:
 
 ### PHASE 2: RUN BOOTSTRAP INSTALLATION
 
-Run the platform installer from the repository root. This automatically configures Python 3.11+, virtual environment, Token Economy tools, backend-appropriate local model support, Serena/CodeGraphContext environments, global MCP configs, and background supervisor. Ollama is installed and its configured coding models plus `models.vision` are pulled only when `features.vision = true`, `server.auto_start_ollama = true`, and `llama_cpp.fallback_to_ollama = true`; set `features.vision = false` to remove vision capability and its model pull. An exclusive `llama_cpp.mode = "on"` configuration with `fallback_to_ollama = false` skips Ollama entirely. The default install deploys the `token-economizer` skill and registers its CLI directory on the user's persistent PATH; verify both after setup, then open a new terminal. Do not pass `--skip-token-economy` or `--skip-companion-skills` for the standard install.
+Run the platform installer from the repository root. This automatically configures Python 3.11+, virtual environment, Token Economy tools, backend-appropriate local model support, Serena/CodeGraphContext environments, global MCP configs, and background supervisor. Ollama is installed or pulled only when `[ollama].enabled = true`, `server.auto_start_ollama = true`, and `llama_cpp.fallback_to_ollama = true`; the default is disabled. llama.cpp is not installed automatically: `llama_cpp.mode = "auto"` uses only an existing healthy endpoint when hardware/profile detection requires it. If it is unavailable, do not install Ollama as a fallback. Set `features.vision = false` to remove vision capability and its model pull. The default install deploys the `token-economizer` skill and registers its CLI directory on the user's persistent PATH; verify both after setup, then open a new terminal. Do not pass `--skip-token-economy` or `--skip-companion-skills` for the standard install.
 
-When `headless.manage_ollama = true` (default), Ollama is Hub-managed. Never start it with `ollama serve` or add a separate startup task; the supervisor takes over a local endpoint and applies the configured Ollama profile.
+When `[ollama].enabled = false` (default), Ollama is not installed, started, pulled, or probed. Never start it with `ollama serve`. Use only a pre-existing llama.cpp endpoint when the hardware-gated profile requires it; do not install llama.cpp blindly.
 
 - **Windows (PowerShell)**:
   ```powershell
@@ -46,7 +46,7 @@ When `headless.manage_ollama = true` (default), Ollama is Hub-managed. Never sta
   bash "$HOME/.local-ai-hub/install.sh" --profile auto
   ```
 
-*Note*: If Ollama or specific heavy models cannot be downloaded immediately due to bandwidth or permissions, the installer still sets up deterministic tools and built-in indexers.
+*Note*: If an explicitly configured local backend or heavy model is unavailable, the installer still sets up deterministic tools and built-in indexers and reports the unavailable optional backend.
 
 ---
 
@@ -225,7 +225,7 @@ Trigger one-time asynchronous preprocessing on the current repository root:
 Output concise confirmation with:
 1. Local AI Hub version and service status (`online` / `offline`).
 2. Tools verified (`rg`, `fd`, `ast-grep`, `repomix`, `tokcount`, `trim-run`).
-3. Ollama & models status.
+3. Configured local backend and model status (Ollama must be reported as disabled unless explicitly opted in).
 4. Instruction files created/modified in this repo.
 5. Readiness confirmation.
 ```

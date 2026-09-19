@@ -4,16 +4,16 @@
 
 - Windows 10/11, current macOS, or a modern Linux distribution.
 - Python 3.11–3.14.
-- Git is recommended. Ollama is optional if local generation is disabled.
+- Git is recommended. Ollama is disabled by default and is never required for Hub installation.
 
 ## Bootstrap & One-Command Setup
 
 Tell your AI assistant:
 > **"Install Local AI Hub"** *(or "Nainstaluj local ai hub", or run `install.ps1` on Windows / `./install.sh` on macOS/Linux)*
 
-The bootstrap delegates to `tools/setup.py`, creates the user installation/state directories, installs core dependencies, provisions the **Token Economy Suite** (`tokcount`, `trim-run`, `repo-map`, `tiktoken`, `grep-ast`, `files-to-prompt`), registers its CLI directory in the user's persistent `PATH`, probes and installs external CLI helpers (`ripgrep` / `rg`, `fd`, `ast-grep`, `repomix`, `jq`), installs Ollama and pulls its configured coding models plus `models.vision` only when `features.vision = true`, `server.auto_start_ollama = true`, and `llama_cpp.fallback_to_ollama = true`, installs Serena and CodeGraphContext in isolated environments, configures selected coding agents (Codex, Claude, Gemini, Cursor, Windsurf, and VS Code/Copilot), deploys agent skills (`local-ai-orchestrator`, `token-economizer`, `caveman`, `tool-orchestration`, `ollama-quality-routing`), and installs the user service/supervisor. With an exclusive `llama_cpp.mode = "on"` route and `fallback_to_ollama = false`, Ollama setup and model pulls are skipped. Set `[features].vision = false` to remove vision from generated MCP schemas, instructions, capabilities, runtime routing, and setup model pulls. Open a new terminal after setup for the PATH change to take effect.
+The bootstrap delegates to `tools/setup.py`, creates the user installation/state directories, installs core dependencies, provisions the **Token Economy Suite** (`tokcount`, `trim-run`, `repo-map`, `tiktoken`, `grep-ast`, `files-to-prompt`), registers its CLI directory in the user's persistent `PATH`, probes and installs external CLI helpers (`ripgrep` / `rg`, `fd`, `ast-grep`, `repomix`, `jq`), installs Serena and CodeGraphContext in isolated environments, configures selected coding agents (Codex, Claude, Gemini, Cursor, Windsurf, and VS Code/Copilot), deploys agent skills, and installs the user service/supervisor. Ollama is installed or pulled only when all explicit opt-ins are true: `[ollama].enabled = true`, `server.auto_start_ollama = true`, and `llama_cpp.fallback_to_ollama = true`. The default is disabled. llama.cpp is optional too: setup never downloads or installs it; `llama_cpp.mode = "auto"` only probes an already-running, hardware-appropriate endpoint. If that endpoint is absent, the Hub does not install Ollama as a fallback. Set `[features].vision = false` to remove vision from generated MCP schemas, instructions, capabilities, runtime routing, and setup model pulls. Open a new terminal after setup for the PATH change to take effect.
 
-When `headless.manage_ollama = true` (the default), Ollama ownership belongs to the Local AI Hub supervisor. Do not run `ollama serve` manually and do not create a separate Ollama autostart entry; setup/service takeover a local Ollama process on the configured endpoint and restart it with the Hub profile.
+When `[ollama].enabled = false` (the default), neither setup nor the supervisor installs, starts, pulls, or probes Ollama. Do not run `ollama serve` manually. Enable Ollama only as an explicit policy change; otherwise use deterministic Hub operations and an already-running llama.cpp endpoint only when the hardware-gated profile actually needs it.
 
 Useful flags: `--profile cpu|integrated|low|balanced|high|max`, `--skip-token-economy`, `--skip-companion-skills`, `--skip-model-pull`, `--skip-tools`, `--skip-agent-config`, and `--skip-service`. Rerunning setup preserves an existing installed configuration unless `--config` is explicitly supplied.
 

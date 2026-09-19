@@ -19,7 +19,7 @@ if str(SRC) not in sys.path:
 
 from local_ai_hub.config import load_config
 from local_ai_hub.http_server import validate_network_security
-from local_ai_hub.process_utils import hidden_run_kwargs
+from local_ai_hub.process_utils import hidden_run_kwargs, terminate_tree
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub import __version__
 
@@ -127,8 +127,9 @@ def main() -> int:
             res = agent_store.append(AgentEvent.create("test-stream", "test.ping", {"ok": True}, "selftest-key"))
             checks.append({"name": "agent-state-store", "ok": res.seq == 1})
         finally:
-            if proc.poll() is None:
-                proc.terminate()
+            # The Hub may create helper children that inherit hub.log. Kill the
+            # complete process tree before TemporaryDirectory removes its state.
+            terminate_tree(proc.pid, grace_seconds=5.0)
             try:
                 # Drain both pipes and wait for process teardown before the
                 # temporary state directory (including hub.log) is removed.

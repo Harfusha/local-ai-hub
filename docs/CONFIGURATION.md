@@ -12,7 +12,7 @@ The `integrated` profile is intentionally conservative. It is designed for iGPUs
 
 For Intel integrated graphics, `[openvino]` controls optional retrieval acceleration. With `embedding_device = "auto"` / `reranker_device = "auto"`, Local AI Hub probes actual OpenVINO devices and uses `device_priority = ["NPU", "GPU", "CPU"]`. The SentenceTransformers wrapper remains on CPU while the underlying Optimum/OpenVINO model is compiled for the selected accelerator, so the path does not require a torch-native NPU device. `cpu_fallback = true` keeps RAG functional if the NPU/GPU driver or a particular model shape is unsupported.
 
-`[ollama].allow_integrated_gpu` and `enable_vulkan` are enabled only by the integrated hardware profile. They affect the Hub-managed Ollama process. With `headless.manage_ollama = true`, do not start a separate `ollama serve`; the supervisor takes over a local process on the configured endpoint. Set `headless.manage_ollama = false` only when intentionally using a separately managed Ollama instance.
+`[ollama].enabled = false` is the default and prevents setup/service installation, startup, pulls, and health probes. `[ollama].allow_integrated_gpu` and `enable_vulkan` matter only after Ollama is explicitly enabled. With `headless.manage_ollama = true`, the supervisor owns an explicitly enabled Ollama process; otherwise the Hub does not run it. `llama_cpp.mode = "auto"` only probes an existing hardware-appropriate endpoint and never installs a runtime.
 
 ## Code intelligence
 
@@ -67,9 +67,9 @@ Deterministic/indexed evidence is authoritative. Local-model passes may rank evi
 
 `[client].health_timeout_seconds`, `startup_wait_seconds`, `startup_poll_seconds`, and `start_lock_stale_seconds` bound MCP/CLI auto-start. Startup locks whose owning PID is gone are discarded immediately instead of consuming the full wait budget.
 
-## Tiered Ollama runtime
+## Optional tiered local runtime
 
-`[smart_ollama]` is opt-in. When `headless.manage_ollama = false`, the existing user-managed server at `127.0.0.1:11434` continues to serve fast and background model tiers. When enabled, Hub starts only its smart sidecar at `127.0.0.1:11437` for the configured smart model. Port `11435` belongs to Hub HTTP and `11436` remains reserved for the background runtime. The sidecar uses one request slot, 32k context, Flash Attention, and `q8_0` KV cache by default. Before switching tiers, Hub unloads only models named in its own configuration; an unknown model on the user-managed endpoint is never terminated and causes a retryable handoff failure instead.
+`[smart_ollama]` is disabled by default and remains unavailable while `[ollama].enabled = false`. The Hub does not start a user-managed server or sidecar implicitly. Use an existing llama.cpp endpoint only when `llama_cpp.mode = "auto"` detects the required hardware route and the endpoint is healthy.
 
 ## Agent integration
 
