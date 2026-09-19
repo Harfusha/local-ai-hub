@@ -186,8 +186,13 @@ def test_async_job_trace_links_prompt_scheduler_and_terminal_state(tmp_path):
 
     submitted = manager.submit("tenant-a", "reason", {"task": "trace me", "context": "full context"})
     assert scheduler.enqueued.wait(1)
-    manager._execute(submitted["job_id"])
 
+    deadline = time.monotonic() + 1.0
+    detail = store.detail(submitted["trace_id"])
+    while detail["session"].get("scheduler_job_id") != "7" and time.monotonic() < deadline:
+        time.sleep(0.01)
+        detail = store.detail(submitted["trace_id"])
+    manager._execute(submitted["job_id"])
     detail = store.detail(submitted["trace_id"])
     assert detail["session"]["request"]["task"] == "trace me"
     assert detail["session"]["async_job_id"] == submitted["job_id"]

@@ -4640,7 +4640,7 @@ def test_{sym}_regression_edge_cases():
         }
 
     def code_invariants(self, root: str, path: str | None = None) -> dict[str, Any]:
-        """Static AST checker for critical coding invariants (unclosed resources, unawaited coroutines, missing timeouts)."""
+        """Check source invariants; explicit ``path`` can still target test fixtures."""
         resolved_root = Path(self._root(root))
         target_paths: list[Path] = []
         if path:
@@ -4651,7 +4651,10 @@ def test_{sym}_regression_edge_cases():
                 return {"success": False, "error": f"path not found: {path}"}
         else:
             for dirpath, dirnames, filenames in os.walk(resolved_root):
-                dirnames[:] = [d for d in dirnames if d not in {".git", ".venv", "node_modules", "__pycache__", ".pytest_cache"}]
+                # Repository-wide audits should cover shipped runtime code, not
+                # test setup commands or managed dependency environments. An
+                # explicit path remains available for fixture-level checks.
+                dirnames[:] = [d for d in dirnames if d not in {".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", "tests", "tool-envs"}]
                 for f in filenames:
                     if f.endswith(".py"):
                         target_paths.append(Path(dirpath) / f)
@@ -4681,7 +4684,7 @@ def test_{sym}_regression_edge_cases():
                     func_name = node.func.attr
                     if isinstance(node.func.value, ast.Name):
                         full_name = f"{node.func.value.id}.{func_name}"
-                        if full_name in ("subprocess.run", "subprocess.Popen", "requests.get", "requests.post", "requests.put", "requests.delete", "urllib.request.urlopen"):
+                        if full_name in ("subprocess.run", "requests.get", "requests.post", "requests.put", "requests.delete", "urllib.request.urlopen"):
                             has_timeout = any(kw.arg == "timeout" for kw in node.keywords)
                             if not has_timeout:
                                 violations.append({
@@ -4693,7 +4696,10 @@ def test_{sym}_regression_edge_cases():
                                     "severity": "high",
                                 })
 
-                if func_name == "open" and id(node) not in self.with_items:
+                # ``os.open`` is a descriptor-level API, not a file object that
+                # needs a context manager.  ``subprocess.Popen`` likewise has
+                # no timeout argument; callers must bound communicate/wait.
+                if isinstance(node.func, ast.Name) and func_name == "open" and id(node) not in self.with_items:
                     violations.append({
                         "path": self.rel_path,
                         "line": node.lineno,

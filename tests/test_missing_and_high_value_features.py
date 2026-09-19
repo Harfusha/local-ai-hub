@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+from unittest import mock
 from pathlib import Path
 
 import pytest
@@ -52,6 +53,30 @@ def test_command_broker_lint_fix_and_daemon_lifecycle(tmp_path: Path):
     time.sleep(0.2)
     after_status = broker.daemon_status(d_id)
     assert after_status["running"] is False
+
+
+def test_daemon_status_closes_log_after_natural_exit():
+    broker = CommandBroker({"commands": {"enabled": True}})
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    log_fh = mock.MagicMock()
+    broker._daemons["dead"] = {
+        "daemon_id": "dead",
+        "process": process,
+        "pid": process.pid,
+        "name": "dead",
+        "command": "pass",
+        "cwd": ".",
+        "log_path": "unused.log",
+        "log_fh": log_fh,
+        "started_at": time.time(),
+    }
+    process.wait(timeout=2)
+
+    result = broker.daemon_status("dead")
+
+    assert result["success"] is True
+    assert result["running"] is False
+    log_fh.close.assert_called_once_with()
 
 
 def test_command_broker_http_probe(tmp_path: Path):
@@ -152,6 +177,28 @@ def test_deterministic_code_invariants(tmp_path: Path):
     rules = {v["rule"] for v in inv["violations"]}
     assert "missing_with_open" in rules
     assert "missing_timeout" in rules
+
+
+def test_deterministic_code_invariants_ignore_os_open_and_popen(tmp_path: Path):
+    analyzer = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}, "rag": {}, "search": {}})
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "bounded.py").write_text(
+        "import os\n"
+        "import subprocess\n"
+        "def run():\n"
+        "    fd = os.open('file.txt', os.O_CREAT | os.O_WRONLY)\n"
+        "    os.close(fd)\n"
+        "    process = subprocess.Popen(['echo', 'ok'])\n"
+        "    process.wait(timeout=2)\n",
+        encoding="utf-8",
+    )
+
+    result = analyzer.code_invariants(str(proj), path="bounded.py")
+
+    assert result["success"] is True
+    assert not any(item["rule"] == "missing_with_open" for item in result["violations"])
+    assert not any(item["rule"] == "missing_timeout" for item in result["violations"])
 
 
 def test_deterministic_generate_dataset_and_profile_digest(tmp_path: Path):

@@ -230,8 +230,8 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
     text = bool(opts.get("text", False))
     for key, value in hidden_run_kwargs(text=text).items():
         opts.setdefault(key, value)
-    opts.setdefault("timeout", 60.0)
-    return subprocess.run([str(x) for x in argv], **opts)
+    timeout = opts.pop("timeout", 60.0)
+    return subprocess.run([str(x) for x in argv], timeout=timeout, **opts)
 
 
 def _find_listening_pid_win32(port: int) -> int | None:

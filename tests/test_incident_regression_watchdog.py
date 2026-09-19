@@ -40,6 +40,10 @@ def test_incident_record_persists_affected_paths(tmp_path: Path):
     assert regs[0]["incident_id"] == inc.incident_id
     assert regs[0]["verified_fix"] == "Check list bounds before indexing"
 
+    # A changed repository revision must not surface an already-fixed incident
+    # as a live regression warning.
+    assert store.find_regressions(["src/services/payment.py"], state_revision="rev-2") == []
+
     # Unrelated files do not trigger regression warning
     assert len(store.find_regressions(["src/auth/login.py"])) == 0
 

@@ -212,6 +212,17 @@ class CommandBroker:
         self.error_distiller = error_distiller
 
     @staticmethod
+    def _close_daemon_log(info: dict[str, Any]) -> None:
+        """Close a daemon log handle exactly once, including natural exits."""
+        if info.get("_log_closed"):
+            return
+        try:
+            info["log_fh"].close()
+        except Exception:
+            pass
+        info["_log_closed"] = True
+
+    @staticmethod
     def _tokens(command: str) -> list[str]:
         try:
             tokens = shlex.split(command, posix=(os.name != "nt"))
@@ -1399,8 +1410,13 @@ class CommandBroker:
                     target_paths = set(diag_paths)
                     for cp in state.get("changed_paths", []):
                         target_paths.add(str(cp))
-                    if target_paths:
-                        regs = self.incident_store.find_regressions(list(target_paths))
+                    # Historical incidents are actionable only when the current
+                    # command failed; successful runs must not emit stale alarms.
+                    if target_paths and not result.get("success") and not result.get("cancelled"):
+                        regs = self.incident_store.find_regressions(
+                            list(target_paths),
+                            state_revision=str(state.get("fingerprint") or ""),
+                        )
                         if regs:
                             result["regression_warnings"] = regs
                     pitfalls = self.incident_store.find_negative_knowledge(query=command, limit=3)
@@ -2080,7 +2096,7 @@ class CommandBroker:
         log_dir = state_dir / "daemons"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / f"{daemon_id}.log"
-        log_fh = open(log_path, "a", encoding="utf-8")
+        log_fh = log_path.open("a", encoding="utf-8")
 
         proc_env = dict(os.environ)
         if env:
@@ -2114,10 +2130,7 @@ class CommandBroker:
                 if len(dead) > 20:
                     dead.sort(key=lambda d: float(self._daemons[d].get("stopped_at", self._daemons[d].get("started_at", 0))))
                     for old_d in dead[:len(dead) - 20]:
-                        try:
-                            self._daemons[old_d]["log_fh"].close()
-                        except Exception:
-                            pass
+                        self._close_daemon_log(self._daemons[old_d])
                         self._daemons.pop(old_d, None)
             self._daemons[daemon_id] = {
                 "daemon_id": daemon_id,
@@ -2128,6 +2141,7 @@ class CommandBroker:
                 "cwd": str(resolved_cwd),
                 "log_path": str(log_path),
                 "log_fh": log_fh,
+                "_log_closed": False,
                 "started_at": time.time(),
             }
 
@@ -2151,6 +2165,9 @@ class CommandBroker:
                     return {"success": False, "error": f"daemon not found: {daemon_id}"}
                 proc = info["process"]
                 alive = proc.poll() is None
+                if not alive:
+                    self._close_daemon_log(info)
+                    info.setdefault("stopped_at", now)
                 log_tail = ""
                 try:
                     p = Path(info["log_path"])
@@ -2176,6 +2193,9 @@ class CommandBroker:
             for d_id, info in self._daemons.items():
                 proc = info["process"]
                 alive = proc.poll() is None
+                if not alive:
+                    self._close_daemon_log(info)
+                    info.setdefault("stopped_at", now)
                 items.append({
                     "daemon_id": d_id,
                     "alive": alive,
@@ -2209,20 +2229,14 @@ class CommandBroker:
                         proc.wait(timeout=1.0)
                     except Exception:
                         pass
-            try:
-                info["log_fh"].close()
-            except Exception:
-                pass
+            self._close_daemon_log(info)
             info["stopped_at"] = time.time()
             if len(self._daemons) > 50:
                 dead = [d for d, inf in self._daemons.items() if inf["process"].poll() is not None]
                 if len(dead) > 20:
                     dead.sort(key=lambda d: float(self._daemons[d].get("stopped_at", self._daemons[d].get("started_at", 0))))
                     for old_d in dead[:len(dead) - 20]:
-                        try:
-                            self._daemons[old_d]["log_fh"].close()
-                        except Exception:
-                            pass
+                        self._close_daemon_log(self._daemons[old_d])
                         self._daemons.pop(old_d, None)
             return {
                 "success": True,

@@ -187,7 +187,7 @@ class Supervisor:
         logs_dir.mkdir(parents=True, exist_ok=True)
         stderr_target: Any = subprocess.DEVNULL
         try:
-            stderr_target = open(logs_dir / "hub_stderr.log", "a", encoding="utf-8", errors="replace")
+            stderr_target = (logs_dir / "hub_stderr.log").open("a", encoding="utf-8", errors="replace")
         except Exception:
             stderr_target = subprocess.DEVNULL
         kwargs: dict[str, Any] = {

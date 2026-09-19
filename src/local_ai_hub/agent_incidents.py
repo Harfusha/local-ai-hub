@@ -797,7 +797,7 @@ class IncidentStore:
             affected_paths=aff_paths,
         )
 
-    def find_regressions(self, paths: Collection[str]) -> list[dict[str, Any]]:
+    def find_regressions(self, paths: Collection[str], *, state_revision: str | None = None) -> list[dict[str, Any]]:
         if not self.state_store.enabled or not self.state_store.db_path.exists() or not paths:
             return []
         self._init_table()
@@ -829,6 +829,8 @@ class IncidentStore:
             regressions: list[dict[str, Any]] = []
             for row in cur.fetchall():
                 inc_id, op, err_cls, msg, rev, rc, fix, conf, attempts, aff_raw, updated_at = row
+                if state_revision is not None and str(rev or "") != str(state_revision):
+                    continue
                 aff_paths = json.loads(aff_raw) if aff_raw else []
                 matched = False
                 for p in aff_paths:
