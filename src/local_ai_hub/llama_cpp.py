@@ -67,6 +67,10 @@ class LlamaCppRouter:
         )
         return intel and not dedicated_other
 
+    def hardware_enabled(self) -> bool:
+        """Expose whether this adapter can serve routes on the current host."""
+        return self._hardware_allows()
+
     def _entry(self, model: str) -> tuple[dict[str, Any], str] | None:
         if not self._hardware_allows():
             return None

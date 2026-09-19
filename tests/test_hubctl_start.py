@@ -26,3 +26,44 @@ def test_managed_start_waits_for_cold_start_without_direct_spawn(monkeypatch):
 
     assert module["start"]() is True
     assert calls["ensure"] == 0
+
+
+def test_graceful_stop_requests_service_shutdown(monkeypatch):
+    module = runpy.run_path(str(Path(__file__).parents[1] / "tools" / "service.py"))
+    calls = []
+    online = {"value": True}
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def _online(self):
+            current = online["value"]
+            online["value"] = False
+            return current
+
+        def request(self, path, payload, **kwargs):
+            calls.append((path, payload, kwargs))
+            return {"success": True}
+
+    globals_ = module["request_graceful_hub_stop"].__globals__
+    monkeypatch.setitem(globals_, "HubClient", Client)
+    monkeypatch.setitem(globals_["time"].__dict__, "monotonic", lambda: 0.0)
+    monkeypatch.setitem(globals_["time"].__dict__, "sleep", lambda _seconds: None)
+
+    assert module["request_graceful_hub_stop"]() is True
+    assert calls == [("/api/control", {"action": "stop_service"}, {"timeout": 2.0, "replay_safe": False})]
+
+
+def test_graceful_stop_falls_back_when_hub_offline(monkeypatch):
+    module = runpy.run_path(str(Path(__file__).parents[1] / "tools" / "service.py"))
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def _online(self):
+            return False
+
+    monkeypatch.setitem(module["request_graceful_hub_stop"].__globals__, "HubClient", Client)
+    assert module["request_graceful_hub_stop"]() is False

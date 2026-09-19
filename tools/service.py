@@ -142,6 +142,30 @@ def hub_pid() -> int:
         return 0
 
 
+def request_graceful_hub_stop() -> bool:
+    """Ask a live hub to close its telemetry and runtime state before killing it."""
+    control = HubClient(tenant="service-control", config_path=_ACTIVE_CONFIG_ARG, auto_start=False)
+    if not control._online():
+        return False
+    try:
+        result = control.request(
+            "/api/control",
+            {"action": "stop_service"},
+            timeout=2.0,
+            replay_safe=False,
+        )
+        if not result.get("success"):
+            return False
+    except Exception:
+        return False
+    deadline = time.monotonic() + 6.0
+    while time.monotonic() < deadline:
+        if not control._online():
+            return True
+        time.sleep(0.15)
+    return not control._online()
+
+
 def managed_service_running() -> bool:
     if any(pid_alive(p) for p in all_supervisor_pids()):
         return True
@@ -167,6 +191,7 @@ def stop_managed_ollama() -> None:
 
 def native_stop() -> None:
     mark_disabled(True)
+    graceful = request_graceful_hub_stop()
     if os.name == "nt":
         run(["schtasks", "/Change", "/TN", "LocalAIHubSupervisor", "/DISABLE"])
     elif sys.platform == "darwin":
@@ -180,7 +205,8 @@ def native_stop() -> None:
     # Kill both layers explicitly. This also cleans up installations recovered from
     # an old/orphaned supervisor state instead of leaving a headless process behind.
     kill_supervisor()
-    kill_hub()
+    if not graceful:
+        kill_hub()
     stop_managed_ollama()
 
 

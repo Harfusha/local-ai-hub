@@ -437,6 +437,8 @@ environment_keys = ["CI", "NODE_ENV", "APP_ENV", "PYTHONPATH"]
 enabled = true
 startup_model = "fast_code"
 delay_seconds = 1.5
+# Allow managed backends to finish startup before abandoning prewarm.
+backend_wait_seconds = 30.0
 
 [search]
 special_filenames = ["Dockerfile", "Containerfile", "docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml", "Makefile", "GNUmakefile", "justfile", "Gemfile", "Pipfile", ".env", ".env.example", ".env.sample", ".gitlab-ci.yml", ".gitlab-ci.yaml", "azure-pipelines.yml", "azure-pipelines.yaml"]
