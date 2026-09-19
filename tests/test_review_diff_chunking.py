@@ -292,6 +292,27 @@ class ReviewDiffChunkingTests(unittest.TestCase):
         self.assertIn("cannot be split safely", result["error"])
         services.delegate.assert_not_called()
 
+    def test_async_review_allows_bounded_large_diff(self):
+        files = []
+        for file_index in range(25):
+            lines = "".join(f"+value_{line_index} = {line_index}\n" for line_index in range(160))
+            files.append(
+                f"diff --git a/file_{file_index}.py b/file_{file_index}.py\n"
+                f"--- a/file_{file_index}.py\n+++ b/file_{file_index}.py\n"
+                f"@@ -1,0 +1,160 @@\n{lines}"
+            )
+        diff_text = "".join(files)
+        services = self._services(diff_text, estimate_tokens(diff_text), changed_files=[f"file_{i}.py" for i in range(25)])
+        services.config["review"] = {"max_async_chunks": 32}
+        services.delegate = lambda payload, tenant: {
+            "success": True, "text": "SUMMARY: No actionable findings.", "model": "7b"
+        }
+
+        result = LocalAIServices.review_diff(services, {"root": ".", "_async_job": True}, "test")
+
+        assert result["success"] is True
+        assert result["diff"]["review_chunks"] > 8
+
     def test_review_text_error_tolerance(self):
         # Valid forms including markdown headers, bold, bullets, code fences, openers
         self.assertIsNone(_review_text_error("SUMMARY: No findings."))

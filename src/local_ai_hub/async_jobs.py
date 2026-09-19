@@ -20,7 +20,7 @@ from .trace_context import reset_observer, set_observer
 class AsyncJobManager:
     """Durable, tenant-scoped async work scheduled below foreground requests."""
 
-    ACTIONS = {"delegate", "reason", "review", "second_opinion", "compress", "route", "batch", "speculative_lint"}
+    ACTIONS = {"delegate", "reason", "review", "review_diff", "second_opinion", "compress", "route", "batch", "speculative_lint"}
 
     def __init__(
         self,
@@ -49,6 +49,7 @@ class AsyncJobManager:
         self._lock = threading.RLock()
         self._events: dict[str, threading.Event] = {}
         self._delayed_dispatch: dict[str, threading.Timer] = {}
+        self._dispatchers: set[threading.Thread] = set()
         self._shutdown = threading.Event()
         self._watchers: set[threading.Thread] = set()
         self._stats = {"submitted": 0, "coalesced": 0, "completed": 0, "failed": 0, "cancelled": 0, "recovered": 0, "expired": 0}
@@ -93,12 +94,31 @@ class AsyncJobManager:
 
     @staticmethod
     def _safe_payload(payload: dict[str, Any]) -> dict[str, Any]:
-        allowed = {"task", "context", "candidate", "complexity", "max_tokens", "tasks", "task_id", "root", "paths", "command"}
+        allowed = {
+            "task", "context", "candidate", "complexity", "max_tokens", "tasks", "task_id", "root", "paths", "command",
+            "instructions", "base", "staged", "mode", "diff_tokens", "consensus", "_async_job",
+        }
         return {key: payload[key] for key in allowed if key in payload}
 
     def _event(self, job_id: str) -> threading.Event:
         with self._lock:
             return self._events.setdefault(job_id, threading.Event())
+
+    def _dispatch_background(self, job_id: str) -> None:
+        """Start scheduler admission off the request thread."""
+        def run() -> None:
+            try:
+                self._dispatch(job_id)
+            finally:
+                with self._lock:
+                    self._dispatchers.discard(threading.current_thread())
+
+        worker = threading.Thread(target=run, name=f"async-dispatch-{job_id[:8]}", daemon=True)
+        with self._lock:
+            if self._shutdown.is_set():
+                return
+            self._dispatchers.add(worker)
+        worker.start()
 
     def submit(self, tenant: str, action: str, payload: dict[str, Any], *, dispatch_delay_seconds: float = 0.0) -> dict[str, Any]:
         if self._shutdown.is_set():
@@ -146,7 +166,7 @@ class AsyncJobManager:
                 self._delayed_dispatch[job_id] = timer
             timer.start()
         else:
-            self._dispatch(job_id)
+            self._dispatch_background(job_id)
         return {"success": True, "job_id": job_id, "trace_id": trace_id, "task_id": task_id, "state": "queued", "coalesced": False}
 
     def _row(self, tenant: str, job_id: str) -> sqlite3.Row | None:
@@ -158,6 +178,10 @@ class AsyncJobManager:
 
     def _dispatch(self, job_id: str) -> None:
         if self._shutdown.is_set():
+            return
+        if self.scheduler is None:
+            # Keep the durable row for recovery when no runtime scheduler is
+            # configured; never mutate it through a failing dispatch attempt.
             return
         with self._lock:
             self._delayed_dispatch.pop(job_id, None)
@@ -457,6 +481,7 @@ class AsyncJobManager:
         with self._lock:
             waiters = list(self._events.values())
             watchers = list(self._watchers)
+            dispatchers = list(self._dispatchers)
             delayed = list(self._delayed_dispatch.values())
             self._delayed_dispatch.clear()
         for timer in delayed:
@@ -465,14 +490,15 @@ class AsyncJobManager:
             event.set()
         deadline = time.monotonic() + 1.5
         current = threading.current_thread()
-        for watcher in watchers:
-            if watcher is current or not watcher.is_alive():
+        for worker in dispatchers + watchers:
+            if worker is current or not worker.is_alive():
                 continue
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            watcher.join(timeout=remaining)
+            worker.join(timeout=remaining)
         with self._lock:
+            self._dispatchers = {thread for thread in self._dispatchers if thread.is_alive()}
             self._watchers = {thread for thread in self._watchers if thread.is_alive()}
 
     def stats(self) -> dict[str, Any]:
