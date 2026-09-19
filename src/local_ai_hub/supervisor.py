@@ -119,6 +119,14 @@ class Supervisor:
 
     def hub_online(self) -> bool:
         server = self.config["server"]
+        if self.child is not None and self.child.poll() is None:
+            try:
+                owner = find_listening_pid(int(server.get("port", 11435)))
+                if owner and int(owner) != int(self.child.pid):
+                    # A stale process must not make a failed replacement look healthy.
+                    return False
+            except Exception:
+                pass
         bind = str(server.get("bind", "127.0.0.1"))
         host = str(server.get("client_host", "")).strip() or ("127.0.0.1" if bind in {"0.0.0.0", "::", "[::]"} else bind)
         headers: dict[str, str] = {}
@@ -325,6 +333,15 @@ class Supervisor:
                 # unhealthy grace; that creates a self-sustaining restart storm.
                 deadline = time.time() + startup_grace
                 while not self.stopping and time.time() < deadline:
+                    if self.child is not None and self.child.poll() is None:
+                        try:
+                            owner = find_listening_pid(int(self.config.get("server", {}).get("port", 11435)))
+                        except Exception:
+                            owner = None
+                        if owner and int(owner) != int(self.child.pid):
+                            self.log(f"hub port owned by stale pid {int(owner)}; recycling replacement")
+                            self.terminate_child()
+                            break
                     if self.hub_online():
                         break
                     if self.child is not None and self.child.poll() is not None:

@@ -182,6 +182,21 @@ def test_supervisor_status_replaces_stale_hub_pid_with_owned_child(tmp_path):
     assert json.loads(supervisor.status_path.read_text(encoding="utf-8"))["hub_pid"] == os.getpid()
 
 
+def test_supervisor_rejects_health_from_stale_port_owner(monkeypatch):
+    class _Child:
+        pid = 12345
+
+        def poll(self):
+            return None
+
+    supervisor = Supervisor.__new__(Supervisor)
+    supervisor.child = _Child()
+    supervisor.config = {"server": {"bind": "127.0.0.1", "port": 11435}}
+    monkeypatch.setattr(supervisor_module, "find_listening_pid", lambda _port: 67890)
+
+    assert supervisor.hub_online() is False
+
+
 def test_supervisor_terminate_child_reaps_orphaned_pid_and_unlinks_file(tmp_path, monkeypatch):
     terminated: list[int] = []
     monkeypatch.setattr(supervisor_module, "terminate_tree", lambda pid, grace_seconds=5.0: terminated.append(pid))
