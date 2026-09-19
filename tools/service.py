@@ -191,7 +191,7 @@ def stop_managed_ollama() -> None:
 
 def native_stop() -> None:
     mark_disabled(True)
-    graceful = request_graceful_hub_stop()
+    request_graceful_hub_stop()
     if os.name == "nt":
         run(["schtasks", "/Change", "/TN", "LocalAIHubSupervisor", "/DISABLE"])
     elif sys.platform == "darwin":
@@ -202,11 +202,10 @@ def native_stop() -> None:
         dest = Path.home() / ".config/systemd/user/local-ai-hub.service"
         if systemctl and dest.exists():
             run([systemctl, "--user", "stop", "local-ai-hub.service"])
-    # Kill both layers explicitly. This also cleans up installations recovered from
-    # an old/orphaned supervisor state instead of leaving a headless process behind.
+    # Reap both layers even after graceful shutdown. This cleans up stale listeners
+    # and installations recovered from an old/orphaned supervisor state.
     kill_supervisor()
-    if not graceful:
-        kill_hub()
+    kill_hub()
     stop_managed_ollama()
 
 
