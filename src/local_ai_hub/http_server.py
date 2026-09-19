@@ -1104,6 +1104,7 @@ class Handler(BaseHTTPRequestHandler):
             return None
         action_by_path = {
             "/api/delegate": "delegate", "/api/reason": "reason", "/api/review": "review",
+            "/api/review/diff": "review_diff",
             "/api/second-opinion": "second_opinion", "/api/compress": "compress",
             "/api/route": "route", "/api/delegate/batch": "batch",
         }
@@ -1116,10 +1117,18 @@ class Handler(BaseHTTPRequestHandler):
             return None
         try:
             estimate = APP.telemetry.http_latency_estimate(path)
-            decision = decide_delivery(
-                str(payload.get("delivery", "sync")), latency_budget_ms=payload.get("latency_budget_ms", 0),
-                observed_p95_ms=estimate.get("p95_duration_ms", 0), samples=estimate.get("samples", 0),
-            )
+            delivery = str(payload.get("delivery", "sync"))
+            budget_ms = float(payload.get("latency_budget_ms", 0) or 0)
+            samples = int(estimate.get("samples", 0) or 0)
+            if job_action == "review_diff" and delivery.strip().lower() == "auto" and budget_ms > 0 and samples < 5:
+                # A cold-start review has no trustworthy p95 yet. Do not let a
+                # large diff run synchronously while telemetry learns the cost.
+                decision = {"mode": "async", "reason": "cold_start_review_diff"}
+            else:
+                decision = decide_delivery(
+                    delivery, latency_budget_ms=payload.get("latency_budget_ms", 0),
+                    observed_p95_ms=estimate.get("p95_duration_ms", 0), samples=estimate.get("samples", 0),
+                )
         except (TypeError, ValueError) as exc:
             return 400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}
         if decision["mode"] != "async":
@@ -1139,6 +1148,8 @@ class Handler(BaseHTTPRequestHandler):
         elif job_action == "route":
             job_payload["task"] = str(job_payload.get("query", job_payload.get("task", "")))
             job_payload["context"] = str(job_payload.get("text", job_payload.get("context", "")))
+        elif job_action == "review_diff":
+            job_payload["_async_job"] = True
         result = APP.async_jobs.submit(tenant, job_action, job_payload)
         result["delivery"] = decision
         trace_store = getattr(APP, "debug_traces", None)

@@ -877,6 +877,24 @@ class LocalAIServices:
                     reused["_lah_semantic_similarity"] = semantic_score
                     return reused
 
+            availability = getattr(self.runtime, "is_online", None)
+            if callable(availability):
+                try:
+                    backend_online = bool(availability())
+                except Exception:
+                    backend_online = True
+                if not backend_online:
+                    return {
+                        "success": False,
+                        "unsupported": True,
+                        "degraded": True,
+                        "terminal": False,
+                        "retryable": True,
+                        "error_code": "local_backend_unavailable",
+                        "error": "No local model backend is currently available; retry after the backend is online.",
+                        "model": requested_model,
+                    }
+
             candidates = [requested_model] + self._fallback_models(requested_model)
             errors: list[str] = []
             for index, candidate in enumerate(candidates):
@@ -4024,12 +4042,18 @@ class LocalAIServices:
                 "largest_review_chunk_tokens": largest_review_chunk_tokens,
                 "review_chunk_token_budget": review_chunk_token_budget,
             }
-        if len(review_chunks) > _MAX_REVIEW_DIFF_CHUNKS:
+        max_review_chunks = _MAX_REVIEW_DIFF_CHUNKS
+        if bool(args.get("_async_job")):
+            max_review_chunks = max(
+                _MAX_REVIEW_DIFF_CHUNKS,
+                int(self.config.get("review", {}).get("max_async_chunks", 32)),
+            )
+        if len(review_chunks) > max_review_chunks:
             return {
                 "success": False,
                 "error": (
                     f"Review requires {len(review_chunks)} segments; the safe limit is "
-                    f"{_MAX_REVIEW_DIFF_CHUNKS}. Narrow the diff or lower diff_tokens."
+                    f"{max_review_chunks}. Narrow the diff or lower diff_tokens."
                 ),
                 "changed_files": diff.get("changed_files", []),
                 "diff_truncated": bool(diff.get("truncated", False)),

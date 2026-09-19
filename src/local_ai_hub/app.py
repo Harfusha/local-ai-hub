@@ -63,6 +63,17 @@ from .benchmark import HardwareBenchmarkRunner
 from .work_orchestrator import WorkOrchestrator
 
 
+def _runtime_is_available(runtime: Any) -> bool:
+    """Return false only when an adapter explicitly reports no backend."""
+    check = getattr(runtime, "is_online", None)
+    if not callable(check):
+        return True
+    try:
+        return bool(check())
+    except Exception:
+        return True
+
+
 # Table whitelists for bundle import/restore — created once at module level.
 _PREPROCESS_TABLES = frozenset({"file_refs", "module_cards", "project_cards", "external_index_state"})
 _DET_TABLES = frozenset({"files", "facts", "dependencies", "scripts", "project_state", "query_cache"})
@@ -222,6 +233,10 @@ class LocalAIApp:
                     return
                 model_ref = str(prewarm.get("startup_model", "fast_code"))
                 model = self.config.get("models", {}).get(model_ref, model_ref)
+                if model and not _runtime_is_available(self.runtime):
+                    self.logger.warning("prewarm skipped: local model backend unavailable")
+                    self.telemetry.record_system("prewarm_skipped_backend_unavailable", model=str(model))
+                    return
                 # Prewarm is opportunistic but persistent: if startup is busy, retry
                 # during later idle windows instead of silently giving up forever.
                 # Cap attempts to avoid indefinite CPU spin when model doesn't exist.
@@ -326,6 +341,10 @@ class LocalAIApp:
             return self.services.reason({"problem": payload.get("task", ""), "context": payload.get("context", ""), "max_tokens": payload.get("max_tokens", 1200)}, tenant)
         if action == "review":
             return self.services.review({"code": payload.get("context", ""), "instructions": payload.get("task", "Report actionable defects only."), "complexity": payload.get("complexity", "auto"), "max_tokens": payload.get("max_tokens", 1300)}, tenant)
+        if action == "review_diff":
+            review_payload = dict(payload)
+            review_payload["_async_job"] = True
+            return self.services.review_diff(review_payload, tenant)
         if action == "second_opinion":
             return self.services.second_opinion({"question": payload.get("task", ""), "candidate": payload.get("candidate", ""), "context": payload.get("context", ""), "max_tokens": payload.get("max_tokens", 1100)}, tenant)
         if action == "compress":

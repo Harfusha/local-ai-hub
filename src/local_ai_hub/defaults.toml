@@ -333,6 +333,10 @@ compact_responses = true
 max_inline_chars = 1800
 artifact_ttl_hours = 72
 
+[review]
+# Synchronous reviews stay bounded; large reviews use durable async delivery.
+max_async_chunks = 32
+
 [cpu_retrieval]
 foreground_priority = 3
 # Runs outside the GPU scheduler. These limits bound CPU/RAM contention while the

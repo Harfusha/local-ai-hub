@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from contextlib import closing
 
 from local_ai_hub.async_jobs import AsyncJobManager
@@ -20,9 +21,11 @@ class _Scheduler:
 
     def __init__(self) -> None:
         self.calls = []
+        self.enqueued = threading.Event()
 
     def enqueue(self, model, tenant, source, execute, priority=1, *, background=True):
         self.calls.append({"model": model, "tenant": tenant, "source": source, "execute": execute, "priority": priority, "background": background})
+        self.enqueued.set()
         return _Job()
 
 
@@ -71,12 +74,52 @@ def test_submit_coalesces_active_job_and_uses_background_enqueue(tmp_path):
 
     first = manager.submit("tenant-a", "reason", {"task": "same"})
     second = manager.submit("tenant-a", "reason", {"task": "same"})
+    assert scheduler.enqueued.wait(1)
 
     assert first["job_id"] == second["job_id"]
     assert second["coalesced"] is True
     assert len(scheduler.calls) == 1
     assert scheduler.calls[0]["background"] is True
     assert scheduler.calls[0]["priority"] == 1
+    manager.close()
+
+
+def test_submit_returns_before_slow_scheduler_enqueue(tmp_path):
+    release = threading.Event()
+    started = threading.Event()
+
+    class _SlowScheduler(_Scheduler):
+        def enqueue(self, *args, **kwargs):
+            started.set()
+            release.wait(1.5)
+            return super().enqueue(*args, **kwargs)
+
+    scheduler = _SlowScheduler()
+    manager = AsyncJobManager(
+        {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}},
+        scheduler,
+        _Artifacts(),
+        lambda action, payload, tenant: {"success": True, "action": action},
+    )
+    try:
+        started_at = time.monotonic()
+        submitted = manager.submit("tenant-a", "reason", {"task": "slow dispatch"})
+        elapsed = time.monotonic() - started_at
+
+        assert submitted["success"] is True
+        assert elapsed < 0.75
+        assert started.wait(0.5)
+    finally:
+        release.set()
+        manager.close()
+
+
+def test_review_diff_is_supported_as_async_job(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+
+    submitted = manager.submit("tenant-a", "review_diff", {"task": "review", "context": "diff"})
+
+    assert submitted["success"] is True
     manager.close()
 
 
@@ -142,6 +185,7 @@ def test_async_job_trace_links_prompt_scheduler_and_terminal_state(tmp_path):
     manager = AsyncJobManager(config, scheduler, _Artifacts(), lambda action, payload, tenant: {"success": True, "action": action, "task": payload.get("task"), "tenant": tenant}, debug_traces=store)
 
     submitted = manager.submit("tenant-a", "reason", {"task": "trace me", "context": "full context"})
+    assert scheduler.enqueued.wait(1)
     manager._execute(submitted["job_id"])
 
     detail = store.detail(submitted["trace_id"])
@@ -179,7 +223,7 @@ def test_close_releases_watchers_and_rejects_new_jobs(tmp_path):
     manager, _scheduler = _manager(tmp_path)
     submitted = manager.submit("tenant-a", "reason", {"task": "long-running"})
     assert submitted["success"] is True
-    assert any(thread.is_alive() for thread in manager._watchers)
+    assert manager._dispatchers or manager._watchers
 
     manager.close()
 

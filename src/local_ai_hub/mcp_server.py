@@ -238,6 +238,7 @@ def _desc_task() -> str:
         return (
             "Local inference is disabled on this installation for this tool."
             " Returns unsupported=true for local-model actions."
+            " Semantic generation, exploration, reasoning, review, independent second opinions, and semantic compression are unavailable until a local model backend is enabled."
             " Use deterministic/indexed evidence only."
         )
     if LEAN_SCHEMAS:
@@ -286,6 +287,7 @@ def _desc_repo() -> str:
         return (
             "Primary repository worker for repository navigation, symbols, and impact."
             " Local inference is disabled on this installation."
+            " Semantic generation, reasoning, review, independent second opinions, and compression are unavailable until a local model backend is enabled."
             " Use deterministic/indexed evidence only for exact facts, symbols, diff, tests, and verification."
             " Native fallback requires terminal=true and retryable=false."
         )
@@ -1063,9 +1065,18 @@ def local_ai_task(
     model. Use when: one bounded semantic task should run on a configured
     local model. Skip when: local-model tasks are disabled or Codex-owned
     subagent orchestration is the right owner; Local AI Hub does not route or manage native Codex agents."""
+    action = _resolve_action("task", action)
+    if action in {"candidate_create", "candidate_promote"}:
+        if action == "candidate_create":
+            cand = candidate_data or ({"name": task, "baseline_version": "baseline", "candidate_version": "candidate"} if not candidate else {"name": candidate, "baseline_version": "baseline", "candidate_version": "candidate"})
+            return _compact(CLIENT.post("/api/agent-state/learning", {
+                "action": "create_candidate", "candidate": cand,
+            }, timeout=_timeout("quick")), "status")
+        return _compact(CLIENT.post("/api/agent-state/learning", {
+            "action": "promote", "candidate_id": candidate or evaluation_task_id or task, "approver": approver or "user",
+        }, timeout=_timeout("quick")), "status")
     if not FEATURES.tasks or not FEATURES.has_any_model():
         return {"success": False, "unsupported": True, "error": "Local model execution is disabled (features.tasks=false or no Ollama runtime configured)"}
-    action = _resolve_action("task", action)
     if action == "continue":
         if profile:
             return {"success": False, "unsupported": True, "error": "Conversations do not support profiles"}
@@ -1162,15 +1173,6 @@ def local_ai_task(
         }), "status")
     if action == "evaluation_report":
         return _compact(CLIENT.post("/api/evaluation", {"action": "report", "days": evaluation_days}), "status")
-    if action == "candidate_create":
-        cand = candidate_data or ({"name": task, "baseline_version": "baseline", "candidate_version": "candidate"} if not candidate else {"name": candidate, "baseline_version": "baseline", "candidate_version": "candidate"})
-        return _compact(CLIENT.post("/api/agent-state/learning", {
-            "action": "create_candidate", "candidate": cand,
-        }, timeout=_timeout("quick")), "status")
-    if action == "candidate_promote":
-        return _compact(CLIENT.post("/api/agent-state/learning", {
-            "action": "promote", "candidate_id": candidate or evaluation_task_id or task, "approver": approver or "user",
-        }, timeout=_timeout("quick")), "status")
     if action == "speculative_draft":
         return _compact(CLIENT.post("/api/task/speculative_draft", {
             "task": task or prompt, "file": candidate or workspace, "context": context, "root": root,
@@ -1549,6 +1551,11 @@ def _local_ai_repo_impl(
             "root": root, "base": base, "staged": staged,
             "instructions": task or "Report actionable defects, regressions, security/concurrency issues and missing tests only.",
             "complexity": "auto", "max_tokens": max_tokens or 4096, "mode": mode,
+            # A cold-start review has no latency history, so auto would run a
+            # large diff synchronously and block the MCP client before async
+            # delivery can learn the endpoint's p95. Durable delivery is the
+            # safe default; callers can use the async job surface directly.
+            "delivery": "async", "latency_budget_ms": 30000,
         }, timeout=_timeout("model")), "review_diff")
     if action == "impact":
         return _compact(CLIENT.post("/api/repo/impact", {"root": root, "base": base, "staged": staged}, timeout=_timeout("context")), "impact")

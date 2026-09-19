@@ -17,8 +17,10 @@ from local_ai_hub.adoption_metrics import AdoptionMetricsStore  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def isolated_profile_catalog(monkeypatch):
-    # Routing tests must not inherit a developer's disabled installed profiles.
+    # Routing tests must not inherit a developer's disabled installed profiles or backend.
     monkeypatch.setattr(local_ai_mcp, 'PROFILE_CATALOG', local_ai_mcp.OllamaSubagentCatalog({}))
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
 
 
 def test_vision_feature_toggle_removes_vision_action_and_hint() -> None:
@@ -95,6 +97,23 @@ def test_mcp_descriptions_explain_agent_tier_boundaries() -> None:
     assert "does not route or manage" in descriptions
     assert "review_diff" in descriptions
     assert "security_audit" in descriptions
+
+
+def test_repo_review_diff_uses_durable_delivery_from_cold_start(monkeypatch, tmp_path: Path) -> None:
+    calls = {}
+
+    class _Client:
+        def post(self, endpoint, payload, **kwargs):
+            calls.update(endpoint=endpoint, payload=payload, kwargs=kwargs)
+            return {"success": True, "job_id": "job-review"}
+
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", _Client())
+
+    result = local_ai_mcp.local_ai_repo(action="review_diff", root=str(tmp_path))
+
+    assert result["success"] is True
+    assert calls["endpoint"] == "/api/review/diff"
+    assert calls["payload"]["delivery"] == "async"
 
 
 def test_dynamic_descriptions_make_first_choice_routing_explicit() -> None:
