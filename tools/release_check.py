@@ -66,6 +66,8 @@ def _iter_release_hygiene_violations(root: Path, *, post_test: bool = False, all
                 continue
             if path.name in {"config.toml", ".local-ai-hub.zip"}:
                 continue
+            if ".local-ai-hub-backup-" in path.name:
+                continue
         if post_test:
             if ".pytest_cache" in parts or "__pycache__" in parts or any(part.endswith(".egg-info") for part in parts):
                 continue

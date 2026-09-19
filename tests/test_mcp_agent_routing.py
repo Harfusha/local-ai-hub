@@ -46,7 +46,7 @@ def test_public_action_parameters_are_explicit_literals() -> None:
         assert set(get_args(annotation)) == values, name
     repo_action = get_type_hints(local_ai_mcp.local_ai_repo)["action"]
     assert get_origin(repo_action) is Literal
-    assert "batch_replace" in get_args(repo_action)
+    assert ("batch_replace" in get_args(repo_action)) is local_ai_mcp.FEATURES.batch_replacement
 
 
 def test_live_mcp_catalog_uses_feature_specific_batch_schema(tmp_path: Path, monkeypatch) -> None:

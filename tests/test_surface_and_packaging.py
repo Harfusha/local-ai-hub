@@ -184,3 +184,14 @@ def test_release_check_allow_installed(tmp_path: Path):
 
     violations_installed = list(_iter_release_hygiene_violations(tmp_path, allow_installed=True))
     assert len(violations_installed) == 0
+
+
+def test_release_check_allow_installed_ignores_config_backup(tmp_path: Path):
+    from tools.release_check import _iter_release_hygiene_violations
+
+    (tmp_path / "config.toml").write_text("dummy", encoding="utf-8")
+    (tmp_path / "config.toml.local-ai-hub-backup-20260919-012113-076").write_text("backup", encoding="utf-8")
+
+    violations = list(_iter_release_hygiene_violations(tmp_path, allow_installed=True))
+
+    assert violations == []
