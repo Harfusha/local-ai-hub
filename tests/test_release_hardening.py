@@ -226,6 +226,11 @@ def test_release_gate_can_bind_expected_tag_version() -> None:
     assert any("expected release version '9.9.9'" in e for e in bad["errors"])
 
 
+def test_release_gate_allows_the_live_installed_checkout() -> None:
+    result = run_checks(ROOT, expected_version="3.0.0", allow_installed=True)
+    assert result["success"] is True, result["errors"]
+
+
 def test_release_workflow_contracts() -> None:
     defaults = (ROOT / "defaults.toml").read_text(encoding="utf-8")
     assert "fingerprint_flight_timeout_seconds = 8.0" in defaults
