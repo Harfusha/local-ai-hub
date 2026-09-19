@@ -69,37 +69,43 @@ def test_async_jobs_rebuilds_non_current_schema(tmp_path):
     finally:
         manager.close()
 
-def test_submit_coalesces_active_job_and_uses_low_priority_enqueue(tmp_path):
+def test_submit_coalesces_active_job_without_outer_scheduler_enqueue(tmp_path):
     manager, scheduler = _manager(tmp_path)
 
     first = manager.submit("tenant-a", "reason", {"task": "same"})
     second = manager.submit("tenant-a", "reason", {"task": "same"})
-    assert scheduler.enqueued.wait(1)
-
     assert first["job_id"] == second["job_id"]
     assert second["coalesced"] is True
-    assert len(scheduler.calls) == 1
-    assert scheduler.calls[0]["background"] is False
-    assert scheduler.calls[0]["priority"] == 1
+    assert scheduler.calls == []
     manager.close()
 
 
-def test_submit_returns_before_slow_scheduler_enqueue(tmp_path):
+def test_async_execution_does_not_consume_model_scheduler_slot(tmp_path):
+    manager, scheduler = _manager(tmp_path)
+
+    submitted = manager.submit("tenant-a", "reason", {"task": "run outside model slot"})
+    result = manager.wait("tenant-a", submitted["job_id"], 1)
+
+    assert result["state"] == "done"
+    assert scheduler.calls == []
+    manager.close()
+
+
+def test_submit_returns_before_slow_async_execution(tmp_path):
     release = threading.Event()
     started = threading.Event()
 
-    class _SlowScheduler(_Scheduler):
-        def enqueue(self, *args, **kwargs):
-            started.set()
-            release.wait(1.5)
-            return super().enqueue(*args, **kwargs)
+    def execute(_action, _payload, _tenant):
+        started.set()
+        release.wait(1.5)
+        return {"success": True}
 
-    scheduler = _SlowScheduler()
+    scheduler = _Scheduler()
     manager = AsyncJobManager(
         {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}},
         scheduler,
         _Artifacts(),
-        lambda action, payload, tenant: {"success": True, "action": action},
+        execute,
     )
     try:
         started_at = time.monotonic()
@@ -137,19 +143,24 @@ def test_wait_clamps_to_ninety_seconds_without_polling(tmp_path):
 
 def test_recovery_requeues_persisted_job_once(tmp_path):
     manager, scheduler = _manager(tmp_path)
-    submitted = manager.submit("tenant-a", "reason", {"task": "resume"})
+    now = time.time()
+    with closing(manager._connect()) as con:
+        con.execute(
+            "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,'running',?,?,?)",
+            ("persisted", "tenant-a", "reason", "persisted-hash", '{"task":"resume"}', now, now, now + 600),
+        )
+        con.commit()
 
     assert manager.recover() == 1
-    assert manager.status("tenant-a", submitted["job_id"])["state"] == "queued"
-    assert len(scheduler.calls) == 2
+    assert manager.wait("tenant-a", "persisted", 1)["state"] == "done"
+    assert scheduler.calls == []
     manager.close()
 
 
 def test_completed_job_returns_artifact_backed_result(tmp_path):
     manager, _scheduler = _manager(tmp_path)
     submitted = manager.submit("tenant-a", "reason", {"task": "finish"})
-
-    manager._execute(submitted["job_id"])
+    assert manager.wait("tenant-a", submitted["job_id"], 3)["state"] == "done"
     result = manager.result("tenant-a", submitted["job_id"])
 
     assert result["success"] is True
@@ -169,7 +180,8 @@ def test_malformed_executor_result_fails_job_without_retry(tmp_path):
     try:
         submitted = manager.submit("tenant-a", "reason", {"task": "bad result"})
 
-        result = manager._execute(submitted["job_id"])
+        assert manager.wait("tenant-a", submitted["job_id"], 1)["state"] == "failed"
+        result = manager.result("tenant-a", submitted["job_id"])
 
         assert result["success"] is False
         assert result["retryable"] is False
@@ -185,18 +197,11 @@ def test_async_job_trace_links_prompt_scheduler_and_terminal_state(tmp_path):
     manager = AsyncJobManager(config, scheduler, _Artifacts(), lambda action, payload, tenant: {"success": True, "action": action, "task": payload.get("task"), "tenant": tenant}, debug_traces=store)
 
     submitted = manager.submit("tenant-a", "reason", {"task": "trace me", "context": "full context"})
-    assert scheduler.enqueued.wait(1)
-
-    deadline = time.monotonic() + 1.0
-    detail = store.detail(submitted["trace_id"])
-    while detail["session"].get("scheduler_job_id") != "7" and time.monotonic() < deadline:
-        time.sleep(0.01)
-        detail = store.detail(submitted["trace_id"])
-    manager._execute(submitted["job_id"])
+    assert manager.wait("tenant-a", submitted["job_id"], 3)["state"] == "done"
     detail = store.detail(submitted["trace_id"])
     assert detail["session"]["request"]["task"] == "trace me"
     assert detail["session"]["async_job_id"] == submitted["job_id"]
-    assert detail["session"]["scheduler_job_id"] == "7"
+    assert detail["session"]["scheduler_job_id"] == ""
     assert detail["session"]["state"] == "done"
     assert [event["event_type"] for event in detail["events"]][-2:] == ["running", "done"]
     manager.close()
@@ -249,15 +254,15 @@ def test_async_jobs_tick_evicts_terminal_events(tmp_path):
 
 
 
-def test_close_releases_watchers_and_rejects_new_jobs(tmp_path):
+def test_close_releases_workers_and_rejects_new_jobs(tmp_path):
     manager, _scheduler = _manager(tmp_path)
     submitted = manager.submit("tenant-a", "reason", {"task": "long-running"})
     assert submitted["success"] is True
-    assert manager._dispatchers or manager._watchers
+    assert manager._dispatchers or manager._workers
 
     manager.close()
 
-    assert not any(thread.is_alive() for thread in manager._watchers)
+    assert not any(thread.is_alive() for thread in manager._workers)
     rejected = manager.submit("tenant-a", "reason", {"task": "too-late"})
     assert rejected == {
         "success": False,

@@ -375,26 +375,28 @@ class LocalAIApp:
         self._watchdog_thread.start()
 
     def _execute_async_task(self, action: str, payload: dict[str, Any], tenant: str) -> dict[str, Any]:
+        async_payload = dict(payload)
+        async_payload["priority"] = 1
         if action == "delegate":
-            return self.services.delegate(payload, tenant)
+            return self.services.delegate(async_payload, tenant)
         if action == "reason":
-            return self.services.reason({"problem": payload.get("task", ""), "context": payload.get("context", ""), "max_tokens": payload.get("max_tokens", 1200)}, tenant)
+            return self.services.reason({"problem": async_payload.get("task", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1200), "priority": 1}, tenant)
         if action == "review":
-            return self.services.review({"code": payload.get("context", ""), "instructions": payload.get("task", "Report actionable defects only."), "complexity": payload.get("complexity", "auto"), "max_tokens": payload.get("max_tokens", 1300)}, tenant)
+            return self.services.review({"code": async_payload.get("context", ""), "instructions": async_payload.get("task", "Report actionable defects only."), "complexity": async_payload.get("complexity", "auto"), "max_tokens": async_payload.get("max_tokens", 1300), "priority": 1}, tenant)
         if action == "review_diff":
-            review_payload = dict(payload)
+            review_payload = dict(async_payload)
             review_payload["_async_job"] = True
             return self.services.review_diff(review_payload, tenant)
         if action == "second_opinion":
-            return self.services.second_opinion({"question": payload.get("task", ""), "candidate": payload.get("candidate", ""), "context": payload.get("context", ""), "max_tokens": payload.get("max_tokens", 1100)}, tenant)
+            return self.services.second_opinion({"question": async_payload.get("task", ""), "candidate": async_payload.get("candidate", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1100), "priority": 1}, tenant)
         if action == "compress":
-            return self.services.compress({"text": payload.get("context", ""), "instruction": payload.get("task", "Compress while preserving facts."), "target_tokens": payload.get("max_tokens", 650)}, tenant)
+            return self.services.compress({"text": async_payload.get("context", ""), "instruction": async_payload.get("task", "Compress while preserving facts."), "target_tokens": async_payload.get("max_tokens", 650), "priority": 1}, tenant)
         if action == "route":
-            return self.services.route_context({"text": payload.get("context", ""), "query": payload.get("task", "")}, tenant)
+            return self.services.route_context({"text": async_payload.get("context", ""), "query": async_payload.get("task", "")}, tenant)
         if action == "batch":
-            return self.services.batch_delegate({"tasks": payload.get("tasks", [])}, tenant)
+            return self.services.batch_delegate({"tasks": async_payload.get("tasks", []), "priority": 1}, tenant)
         if action == "speculative_lint":
-            return self.services.speculative_lint(payload, tenant)
+            return self.services.speculative_lint(async_payload, tenant)
         return {"success": False, "error": f"unsupported async task action: {action}", "terminal": True, "retryable": False}
 
     def capabilities(self) -> dict[str, Any]:

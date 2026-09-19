@@ -164,6 +164,7 @@ def _merge_review_segment_results(
     complexity: str,
     tenant: str,
     delegate: Any,
+    priority: int = 5,
 ) -> tuple[str, dict[str, Any]]:
     """Return raw review output or a bounded synthesis of chunked results."""
     raw_text = "\n\n".join(
@@ -183,6 +184,7 @@ def _merge_review_segment_results(
                 "context": raw_text,
                 "complexity": complexity,
                 "max_tokens": min(max_output_tokens, 1800),
+                "priority": int(priority),
             },
             tenant,
         )
@@ -4119,6 +4121,7 @@ class LocalAIServices:
                 "context": review_code,
                 "complexity": complexity,
                 "max_tokens": per_chunk_output_tokens,
+                "priority": int(args.get("priority", 5)),
             }
             review_payloads.append(review_payload)
             response = self.delegate(review_payload, tenant)
@@ -4217,6 +4220,7 @@ class LocalAIServices:
             "complexity": complexity,
             "tenant": tenant,
             "delegate": self.delegate,
+            "priority": int(args.get("priority", 5)),
         }
         result["text"], result["review_synthesis"] = _merge_review_segment_results(
             primary_results, label="Review segment", task_type="review", **merge_options
@@ -4320,7 +4324,7 @@ class LocalAIServices:
             result = self._generate(
                 general_model, prompt,
                 "Compress aggressively. Preserve only information needed to reconstruct decisions/facts. Use a flat list without nested bullets when useful.",
-                per_chunk_out, 0.1, tenant, "compress:map", 4,
+                per_chunk_out, 0.1, tenant, "compress:map", int(args.get("priority", 4)),
                 internal=True,
             )
             if not result.get("success"):
@@ -4333,7 +4337,7 @@ class LocalAIServices:
                 general_model,
                 f"TARGET: <= {target_tokens} estimated tokens.\nINSTRUCTION: {instruction}\n\nPARTIAL SUMMARIES:\n{combined}",
                 "Merge the partial summaries without duplication. Preserve concrete evidence and uncertainty. Be dense.",
-                target_tokens, 0.1, tenant, "compress:reduce", 4,
+                target_tokens, 0.1, tenant, "compress:reduce", int(args.get("priority", 4)),
                 internal=True,
             )
         else:
@@ -4958,7 +4962,10 @@ class LocalAIServices:
             active = None
         prepared.sort(key=lambda item: (0 if item[1] == active else 1, item[1], item[0]))
         results: dict[int, dict[str, Any]] = {}
+        default_priority = int(args.get("priority", 5))
         for i, _model, item in prepared:
+            item = dict(item)
+            item.setdefault("priority", default_priority)
             results[i] = self.delegate(item, tenant)
         return {"success": all(r.get("success", False) for r in results.values()), "results": [results[i] for i in range(len(results))]}
 

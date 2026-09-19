@@ -18,7 +18,7 @@ from .trace_context import reset_observer, set_observer
 
 
 class AsyncJobManager:
-    """Durable, tenant-scoped async work scheduled below foreground requests."""
+    """Durable, tenant-scoped orchestration whose model calls use the scheduler."""
 
     ACTIONS = {"delegate", "reason", "review", "review_diff", "second_opinion", "compress", "route", "batch", "speculative_lint"}
 
@@ -50,8 +50,8 @@ class AsyncJobManager:
         self._events: dict[str, threading.Event] = {}
         self._delayed_dispatch: dict[str, threading.Timer] = {}
         self._dispatchers: set[threading.Thread] = set()
+        self._workers: set[threading.Thread] = set()
         self._shutdown = threading.Event()
-        self._watchers: set[threading.Thread] = set()
         self._stats = {"submitted": 0, "coalesced": 0, "completed": 0, "failed": 0, "cancelled": 0, "recovered": 0, "expired": 0}
         self._initialized = False
         self._init_db()
@@ -179,13 +179,8 @@ class AsyncJobManager:
     def _dispatch(self, job_id: str) -> None:
         if self._shutdown.is_set():
             return
-        if self.scheduler is None:
-            # Keep the durable row for recovery when no runtime scheduler is
-            # configured; never mutate it through a failing dispatch attempt.
-            return
         with self._lock:
             self._delayed_dispatch.pop(job_id, None)
-        completion = self._event(job_id)
         with self._lock, closing(self._connect()) as con:
             con.row_factory = sqlite3.Row
             row = con.execute("SELECT * FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
@@ -193,50 +188,22 @@ class AsyncJobManager:
                 return
             con.execute("UPDATE async_jobs SET lease_until=?,updated_at=? WHERE job_id=? AND state='queued'", (time.time() + self.lease_seconds, time.time(), job_id))
             con.commit()
-            tenant = str(row["tenant"])
-        completion.clear()
-        try:
-            model = str(getattr(self.scheduler, "config", {}).get("models", {}).get("heavy_code", ""))
-            queued = self.scheduler.enqueue(model, tenant, "async-job", lambda: self._execute(job_id), priority=1, background=False)
-            trace_id = str(row["trace_id"] or "")
-            if self.debug_traces is not None and trace_id:
-                self.debug_traces.update(trace_id, model=model)
-                self.debug_traces.event(trace_id, "scheduled", {"model": model, "scheduler_job_id": str(getattr(queued, "id", ""))})
-                self.debug_traces.link(trace_id, scheduler_job_id=str(getattr(queued, "id", "")))
-        except Exception as exc:
-            self._release_for_retry(job_id, str(exc))
-            return
-        watcher = threading.Thread(
-            target=self._watch_scheduler_job,
-            args=(job_id, queued),
-            name=f"async-job-{job_id[:8]}",
-            daemon=True,
-        )
+
+        def run() -> None:
+            try:
+                self._execute(job_id)
+            except Exception as exc:
+                self._release_for_retry(job_id, str(exc))
+            finally:
+                with self._lock:
+                    self._workers.discard(threading.current_thread())
+
+        worker = threading.Thread(target=run, name=f"async-job-{job_id[:8]}", daemon=True)
         with self._lock:
             if self._shutdown.is_set():
                 return
-            self._watchers.add(watcher)
-        watcher.start()
-
-    def _watch_scheduler_job(self, job_id: str, queued: Any) -> None:
-        completion = self._event(job_id)
-        try:
-            while not self._shutdown.is_set():
-                # The durable job can reach a terminal state through cancellation,
-                # recovery or direct execution before the scheduler adapter signals
-                # its own completion event. In that case there is nothing left to
-                # watch and the helper thread should exit immediately.
-                if completion.wait(0.25):
-                    return
-                if queued.done.is_set():
-                    break
-            if self._shutdown.is_set() or not queued.done.is_set():
-                return
-            if getattr(queued, "error", None):
-                self._release_for_retry(job_id, str(queued.error))
-        finally:
-            with self._lock:
-                self._watchers.discard(threading.current_thread())
+            self._workers.add(worker)
+        worker.start()
 
     def _release_for_retry(self, job_id: str, error: str) -> None:
         trace_id = ""
@@ -251,7 +218,6 @@ class AsyncJobManager:
             con.commit()
             if state == "failed": self._stats["failed"] += 1
             if state == "cancelled": self._stats["cancelled"] += 1
-        self._event(job_id).set()
         if self.debug_traces is not None and trace_id:
             try:
                 self.debug_traces.event(trace_id, "retry" if state == "queued" else state, {"error": error, "attempts": attempts})
@@ -259,6 +225,7 @@ class AsyncJobManager:
                     self.debug_traces.finish(trace_id, state=state, error=error)
             except Exception:
                 pass
+        self._event(job_id).set()
 
     def _execute(self, job_id: str) -> dict[str, Any]:
         with self._lock, closing(self._connect()) as con:
@@ -358,12 +325,12 @@ class AsyncJobManager:
                         except Exception:
                             pass
             con.commit()
-        self._event(job_id).set()
         if self.debug_traces is not None and trace_id:
             try:
                 self.debug_traces.finish(trace_id, state="done" if final.get("success") else "failed", response=final if final.get("success") else None, error=str(final.get("error", "")))
             except Exception:
                 pass
+        self._event(job_id).set()
         return final
 
     def status(self, tenant: str, job_id: str) -> dict[str, Any]:
@@ -487,7 +454,7 @@ class AsyncJobManager:
         self._shutdown.set()
         with self._lock:
             waiters = list(self._events.values())
-            watchers = list(self._watchers)
+            workers = list(self._workers)
             dispatchers = list(self._dispatchers)
             delayed = list(self._delayed_dispatch.values())
             self._delayed_dispatch.clear()
@@ -497,7 +464,7 @@ class AsyncJobManager:
             event.set()
         deadline = time.monotonic() + 1.5
         current = threading.current_thread()
-        for worker in dispatchers + watchers:
+        for worker in dispatchers + workers:
             if worker is current or not worker.is_alive():
                 continue
             remaining = deadline - time.monotonic()
@@ -506,7 +473,7 @@ class AsyncJobManager:
             worker.join(timeout=remaining)
         with self._lock:
             self._dispatchers = {thread for thread in self._dispatchers if thread.is_alive()}
-            self._watchers = {thread for thread in self._watchers if thread.is_alive()}
+            self._workers = {thread for thread in self._workers if thread.is_alive()}
 
     def stats(self) -> dict[str, Any]:
         def read() -> dict[str, int]:
