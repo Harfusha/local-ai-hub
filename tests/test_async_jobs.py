@@ -69,7 +69,7 @@ def test_async_jobs_rebuilds_non_current_schema(tmp_path):
     finally:
         manager.close()
 
-def test_submit_coalesces_active_job_and_uses_background_enqueue(tmp_path):
+def test_submit_coalesces_active_job_and_uses_low_priority_enqueue(tmp_path):
     manager, scheduler = _manager(tmp_path)
 
     first = manager.submit("tenant-a", "reason", {"task": "same"})
@@ -79,7 +79,7 @@ def test_submit_coalesces_active_job_and_uses_background_enqueue(tmp_path):
     assert first["job_id"] == second["job_id"]
     assert second["coalesced"] is True
     assert len(scheduler.calls) == 1
-    assert scheduler.calls[0]["background"] is True
+    assert scheduler.calls[0]["background"] is False
     assert scheduler.calls[0]["priority"] == 1
     manager.close()
 
