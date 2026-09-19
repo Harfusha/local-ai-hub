@@ -304,14 +304,16 @@ class ReviewDiffChunkingTests(unittest.TestCase):
         diff_text = "".join(files)
         services = self._services(diff_text, estimate_tokens(diff_text), changed_files=[f"file_{i}.py" for i in range(25)])
         services.config["review"] = {"max_async_chunks": 32}
-        services.delegate = lambda payload, tenant: {
+        calls = []
+        services.delegate = lambda payload, tenant: calls.append(payload) or {
             "success": True, "text": "SUMMARY: No actionable findings.", "model": "7b"
         }
 
-        result = LocalAIServices.review_diff(services, {"root": ".", "_async_job": True}, "test")
+        result = LocalAIServices.review_diff(services, {"root": ".", "_async_job": True, "priority": 1}, "test")
 
         assert result["success"] is True
         assert result["diff"]["review_chunks"] > 8
+        assert all(call["priority"] == 1 for call in calls)
 
     def test_review_text_error_tolerance(self):
         # Valid forms including markdown headers, bold, bullets, code fences, openers
