@@ -1,36 +1,26 @@
 # llama.cpp SYCL on Intel GPUs
 
-Use this optional backend when an Intel Arc/iGPU is the inference device, especially if Ollama's Vulkan path is unstable. Local AI Hub routes 0.5B preprocessing, 1.5B quick requests, 3B complex requests, and 7B hardest reasoning to one loopback llama.cpp router. The router loads one model at a time. If it is unavailable, the default configuration falls back to Ollama. Intel's Ollama iGPU/Vulkan admission is disabled by the integrated Intel profile.
+Use this optional backend only when an Intel Arc/iGPU is the inference device and an existing llama.cpp router is actually needed. Local AI Hub routes 0.5B preprocessing, 1.5B quick requests, 3B complex requests, 7B hardest reasoning, and Qwen3-VL vision to one loopback llama.cpp router. The router loads one model at a time. The Hub never installs or starts llama.cpp automatically and does not fall back to Ollama in the default policy.
 
-NVIDIA and AMD discrete GPUs keep the existing Ollama CUDA/ROCm route. AMD iGPU is not an Intel SYCL target: it keeps the existing Vulkan route and can fall back to CPU. Do not set `llama_cpp.mode = "on"` on those machines. Official llama.cpp SYCL support targets Intel GPUs; its documented support includes Intel Arc and newer Intel integrated GPUs, while other-vendor GPU support is not the supported target for this backend. [SYCL backend support](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/SYCL.md)
+NVIDIA and AMD discrete GPUs do not trigger Ollama or llama.cpp installation. AMD iGPU is not an Intel SYCL target and should use deterministic/CPU paths unless another explicitly configured backend exists. Do not set `llama_cpp.mode = "on"` on those machines. Official llama.cpp SYCL support targets Intel GPUs; its documented support includes Intel Arc and newer Intel integrated GPUs, while other-vendor GPU support is not the supported target for this backend. [SYCL backend support](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/SYCL.md)
 
 ## When to install it
 
 Install llama.cpp SYCL after Local AI Hub has been installed, only on a machine where inference should use an Intel GPU. First verify the driver and device. On Windows 11, use the official Windows x64 SYCL release and check that `llama-server.exe --list-devices` lists the Intel GPU as `SYCL0` or another `SYCL*` device. The official Windows bundle includes the SYCL runtime DLLs, so a separate oneAPI installation is not required. [Official releases](https://github.com/ggml-org/llama.cpp/releases) · [Windows SYCL instructions](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/SYCL.md#option-1-download-the-binary-package-directly)
 
-If the device is not listed, stop here: the Hub will not make a CPU or Vulkan server into a SYCL server. Keep Ollama installed and leave `mode = "auto"` so the regular Ollama path remains available.
+If the device is not listed, stop here: the Hub will not make a CPU or Vulkan server into a SYCL server. Leave `mode = "auto"`; the Hub will use deterministic/indexed operations and report the optional local-model backend as unavailable.
 
 ## Windows installation and setup
 
 1. Download the current `Windows x64 (SYCL)` archive from the [official llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases) and extract it, for example to `$env:LOCALAPPDATA\llama.cpp-sycl`. Keep the extracted DLLs beside `llama-server.exe`.
-2. Make a persistent model directory and copy the GGUF weight files there before uninstalling Ollama. `ollama show --modelfile` prints the model tag, not the backing GGUF path. For the official `qwen2.5-coder` Ollama tags, copy the model layer named by each manifest and keep its license layer beside it:
+2. Make a persistent model directory and obtain trusted GGUF weight files from the model publisher. Do not install Ollama or use an Ollama cache as an implicit prerequisite:
 
    ```powershell
-   $manifestDir = Join-Path $env:USERPROFILE '.ollama\models\manifests\registry.ollama.ai\library\qwen2.5-coder'
-   $blobDir = Join-Path $env:USERPROFILE '.ollama\models\blobs'
    $modelDir = Join-Path $env:LOCALAPPDATA 'llama.cpp-sycl\models'
    New-Item -ItemType Directory -Path $modelDir -Force | Out-Null
-   foreach ($tag in @('0.5b', '1.5b', '3b', '7b')) {
-       $manifest = Get-Content (Join-Path $manifestDir $tag) -Raw | ConvertFrom-Json
-       foreach ($layer in $manifest.layers | Where-Object { $_.mediaType -in @('application/vnd.ollama.image.model', 'application/vnd.ollama.image.license') }) {
-           $source = Join-Path $blobDir ('sha256-' + $layer.digest.Substring(7))
-           $suffix = if ($layer.mediaType -eq 'application/vnd.ollama.image.model') { 'gguf' } else { 'license' }
-           Copy-Item -LiteralPath $source -Destination (Join-Path $modelDir "qwen2.5-coder-$tag.$suffix") -Force
-       }
-   }
    ```
 
-   This creates all four `qwen2.5-coder-*.gguf` files plus matching `.license` files. If a manifest is missing, pull that tag with Ollama before uninstalling it, or download a compatible GGUF and its license from a trusted model publisher.
+   Place the four `qwen2.5-coder-*.gguf` files plus `qwen3-vl-4b-q4_k_m.gguf` and `qwen3-vl-4b-mmproj-q8_0.gguf` in that directory when vision is enabled. If a required file is unavailable, stop and report it; do not install a second model runtime just to obtain weights.
 3. Create `models.ini` in the extracted llama.cpp directory. Stable internal aliases avoid model-tag punctuation being rewritten by the router; the Hub maps its own model tags to these aliases. The preset caps residency at one model to match the Hub scheduler:
 
    ```ini
@@ -55,6 +45,11 @@ If the device is not listed, stop here: the Hub will not make a CPU or Vulkan se
 
    [hub-qwen-7]
    model = ./models/qwen2.5-coder-7b.gguf
+
+   [hub-qwen-vl]
+   model = ./models/qwen3-vl-4b-q4_k_m.gguf
+   mmproj = ./models/qwen3-vl-4b-mmproj-q8_0.gguf
+   c = 8192
    ```
 
    `./models/...` is relative to the server's working directory. If the machine has less than 24 GB system memory or model loading fails, reduce the `c` values and the corresponding `context_length` values in `config.toml` to the same size. The Intel SYCL guide calls out shared memory as a model-size limit. [llama.cpp router presets and model loading](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#using-multiple-models)
@@ -95,10 +90,10 @@ If the device is not listed, stop here: the Hub will not make a CPU or Vulkan se
    ```toml
    [llama_cpp]
    mode = "auto"
-   fallback_to_ollama = true
+   fallback_to_ollama = false
    ```
 
-   On a hybrid system where automatic detection cannot see the Intel device, set `mode = "on"` only after confirming this local server is the SYCL build. To run without Ollama, set `fallback_to_ollama = false` after all four models work.
+   On a hybrid system where automatic detection cannot see the Intel device, set `mode = "on"` only after confirming this local server is the SYCL build. Keep `fallback_to_ollama = false` unless Ollama is separately and explicitly approved.
 6. Verify the router before restarting the Hub:
 
    ```powershell
@@ -116,4 +111,4 @@ Use a Linux build explicitly compiled with `GGML_SYCL=ON`, install the Intel GPU
 
 ## Rollback and other GPUs
 
-Stop the llama-server process and set `llama_cpp.mode = "off"`, or keep `mode = "auto"` and remove the Intel SYCL server. With the default fallback enabled, requests return to Ollama. NVIDIA/AMD dedicated GPU behavior is unchanged. AMD iGPU does not use SYCL; leave Vulkan enabled there unless its driver path also proves unstable, then disable Vulkan in that machine's user config to use CPU fallback.
+Stop the llama-server process and set `llama_cpp.mode = "off"`, or keep `mode = "auto"` and remove the Intel SYCL server. Requests then use deterministic/indexed operations and return a bounded unavailable-backend result for model work. NVIDIA/AMD dedicated GPU behavior is unchanged; no runtime is installed automatically.

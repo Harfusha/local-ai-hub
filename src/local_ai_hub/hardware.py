@@ -280,7 +280,7 @@ def choose_profile(gpus: list[dict[str, Any]], ram_gb: float, requested: str = "
     if dedicated > 0:
         return "low"
     # Shared-memory iGPUs must not be sized from Windows AdapterRAM.  A 32 GB
-    # Core Ultra notebook is useful, but running 7B models plus a second Ollama
+    # Core Ultra notebook is useful, but running 7B models plus a second local
     # worker is too aggressive for an iGPU that competes with system memory.
     if integrated:
         return "integrated" if ram_gb >= 16 else "cpu"
@@ -384,8 +384,8 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         },
         "scheduler": {"max_parallel": 1, "max_loaded_models": 1, "max_queue": 32, "max_queued_per_tenant": 12, "max_inflight_per_tenant": 1},
         # Keep shared-memory systems serial. Intel inference is routed to the
-        # optional llama.cpp SYCL server; Ollama stays off that iGPU and remains
-        # the fallback. AMD integrated GPUs retain the existing Vulkan path.
+        # optional llama.cpp SYCL server; no Ollama fallback is implied. AMD
+        # integrated GPUs retain the existing Vulkan path when explicitly used.
         "ollama": {
             "num_parallel": 1,
             "allow_integrated_gpu": True,

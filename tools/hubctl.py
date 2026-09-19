@@ -35,7 +35,9 @@ def status() -> dict:
     if not c._online():
         return {"running": False}
     try:
-        data = c.status()
+        # The live light endpoint intentionally omits model inventory. The
+        # status command must also report configured llama.cpp models.
+        data = c.get("/api/status")
     except Exception:
         data = {}
     data["running"] = True
@@ -296,7 +298,7 @@ def main() -> int:
             print(f"{'STATUS':<8} {'COMPONENT':<25} {'DETAIL'}")
             print("-" * 65)
             for c_item in checks:
-                status_symbol = "[✓]" if c_item.get("status") == "OK" else f"[{c_item.get('status', 'WARN')}]"
+                status_symbol = "[OK]" if c_item.get("status") == "OK" else f"[{c_item.get('status', 'WARN')}]"
                 comp = str(c_item.get("component", ""))[:24]
                 det = str(c_item.get("detail", ""))
                 print(f"{status_symbol:<8} {comp:<25} {det}")
@@ -333,6 +335,7 @@ def main() -> int:
             return 0
     if args.action == "status":
         st = status()
+        cfg = load_config(_config_arg(args.config))
         if args.raw_json:
             print(json.dumps(st, indent=2, ensure_ascii=False))
             return 0
@@ -343,8 +346,12 @@ def main() -> int:
         pid = st.get("hub_pid", "N/A")
         ver = st.get("version", "unknown")
         ollama_ok = st.get("ollama_online", False)
+        ollama_cfg = cfg.get("ollama", {})
+        ollama_enabled = bool(ollama_cfg.get("enabled", False)) if isinstance(ollama_cfg, dict) else False
         active_model = (st.get("scheduler") or {}).get("active_model") or "None"
         installed_models = st.get("installed_models", [])
+        llama_status = (st.get("ollama_profile") or {}).get("llama_cpp", {})
+        llama_models = llama_status.get("online_models", []) if isinstance(llama_status, dict) else []
         hardware = st.get("hardware") or {}
         gpus = hardware.get("gpus") or []
         gpu_name = gpus[0].get("name", "N/A") if (gpus and isinstance(gpus[0], dict)) else "N/A"
@@ -358,9 +365,14 @@ def main() -> int:
         tasks_cnt = len(agent_st.get("tasks", [])) if isinstance(agent_st.get("tasks"), list) else 0
         leases_cnt = len(agent_st.get("leases", [])) if isinstance(agent_st.get("leases"), list) else 0
 
-        print(f"Local AI Hub v{ver} — Online (PID: {pid})")
+        print(f"Local AI Hub v{ver} - Online (PID: {pid})")
         print("=" * 55)
-        print(f"Ollama:       {'Online' if ollama_ok else 'Offline'} (Active: {active_model})")
+        ollama_state = 'Online' if ollama_ok else 'Offline'
+        if not ollama_enabled:
+            ollama_state = 'Disabled by policy'
+        print(f"Ollama:       {ollama_state} (Active: {active_model})")
+        if llama_models:
+            print(f"Backend:      llama.cpp ({len(llama_models)} models online)")
         model_sample = f" ({', '.join(installed_models[:3])}{'...' if len(installed_models) > 3 else ''})" if installed_models else ""
         print(f"Models:       {len(installed_models)} installed{model_sample}")
         if gpu_name != "N/A":

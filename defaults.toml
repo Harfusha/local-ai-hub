@@ -3,7 +3,7 @@ bind = "127.0.0.1"
 client_host = "" # optional client-side override; wildcard binds automatically connect via loopback
 port = 11435
 ollama_url = "http://127.0.0.1:11434"
-auto_start_ollama = true
+auto_start_ollama = false
 state_dir = "~/.local-ai-hub/state"
 request_timeout_seconds = 900
 # Slow/broken clients cannot occupy a handler while dribbling a request body.
@@ -65,10 +65,10 @@ cloud_provider = ""
 
 [llama_cpp]
 # On Intel-only systems, use the loopback SYCL model router when ready.
-# NVIDIA/AMD systems keep Ollama routing; the default permits Ollama fallback.
+# The adapter is optional and never installs or starts a model server.
 mode = "auto" # off | auto | on (on is an explicit manual override)
 model_load_timeout_seconds = 600
-fallback_to_ollama = true
+fallback_to_ollama = false
 
 [llama_cpp.models."qwen2.5-coder:1.5b"]
 url = "http://127.0.0.1:12438"
@@ -89,6 +89,11 @@ context_length = 32768
 url = "http://127.0.0.1:12438"
 served_model = "hub-qwen-7"
 context_length = 32768
+
+[llama_cpp.models."qwen3-vl:4b"]
+url = "http://127.0.0.1:12438"
+served_model = "hub-qwen-vl"
+context_length = 8192
 
 [openvino]
 # Optional Intel NPU/iGPU acceleration for retrieval. The integrated hardware
@@ -253,6 +258,7 @@ cleanup_batch_size = 50
 max_list_limit = 200
 
 [ollama]
+enabled = false # explicit opt-in only; setup/service never install, start, or pull Ollama by default
 num_parallel = 2
 # Auto hardware profiles admit Vulkan only for non-Intel integrated graphics.
 # Intel GPU inference uses the optional llama.cpp SYCL route instead.
@@ -267,7 +273,7 @@ retry_delay_seconds = 0.6
 startup_timeout_seconds = 60
 
 [smart_ollama]
-# Disabled by default: the foreground Ollama process remains user-managed.
+# Disabled by default: no foreground Ollama process is started or assumed.
 enabled = false
 url = "http://127.0.0.1:11437"
 model = ""
@@ -881,7 +887,7 @@ max_request_timeout_seconds = 1800.0
 [headless]
 enabled = true
 install_service = true
-manage_ollama = true
+manage_ollama = false
 health_check_interval_seconds = 2.0
 health_probe_timeout_seconds = 2.0
 unhealthy_grace_seconds = 15.0

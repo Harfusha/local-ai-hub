@@ -1,8 +1,9 @@
 """Optional loopback llama.cpp SYCL adapter for Ollama-shaped Hub calls.
 
-The Hub continues to use Ollama for model management and as a fallback.  This
-adapter only translates inference requests for explicitly mapped models when a
-local llama.cpp server is healthy and Intel SYCL routing is enabled.
+This adapter only translates inference requests for explicitly mapped models
+when an already-running local llama.cpp server is healthy and hardware/profile
+routing allows it.  It never installs or starts llama.cpp, and it has no Ollama
+fallback.
 """
 
 from __future__ import annotations
