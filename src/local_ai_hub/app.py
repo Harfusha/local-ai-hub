@@ -74,6 +74,41 @@ def _runtime_is_available(runtime: Any) -> bool:
         return True
 
 
+def _prewarm_route_is_eligible(runtime: Any, model: str) -> bool:
+    """Avoid retrying a model whose explicit adapter cannot run on this host."""
+    candidates = [runtime, getattr(runtime, "fast", None), getattr(runtime, "smart", None)]
+    seen: set[int] = set()
+    for candidate in candidates:
+        if candidate is None or id(candidate) in seen:
+            continue
+        seen.add(id(candidate))
+        router = getattr(candidate, "llama_cpp", None)
+        supports = getattr(router, "supports_model", None)
+        hardware_enabled = getattr(router, "hardware_enabled", None)
+        if not callable(supports) or not callable(hardware_enabled):
+            continue
+        try:
+            fallback = bool(getattr(candidate, "config", {}).get("llama_cpp", {}).get("fallback_to_ollama", True))
+            if bool(supports(model)) and not bool(hardware_enabled()) and not fallback:
+                return False
+        except Exception:
+            continue
+    return True
+
+
+def _wait_for_prewarm_backend(runtime: Any, shutdown: threading.Event, max_wait_seconds: float) -> bool:
+    """Give a managed backend a short startup grace period without blocking requests."""
+    deadline = time.monotonic() + max(0.0, float(max_wait_seconds))
+    while not shutdown.is_set():
+        if _runtime_is_available(runtime):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        shutdown.wait(min(1.0, remaining))
+    return False
+
+
 # Table whitelists for bundle import/restore — created once at module level.
 _PREPROCESS_TABLES = frozenset({"file_refs", "module_cards", "project_cards", "external_index_state"})
 _DET_TABLES = frozenset({"files", "facts", "dependencies", "scripts", "project_state", "query_cache"})
@@ -233,9 +268,14 @@ class LocalAIApp:
                     return
                 model_ref = str(prewarm.get("startup_model", "fast_code"))
                 model = self.config.get("models", {}).get(model_ref, model_ref)
-                if model and not _runtime_is_available(self.runtime):
+                backend_wait = max(0.0, float(prewarm.get("backend_wait_seconds", 30.0)))
+                if model and not _wait_for_prewarm_backend(self.runtime, self._shutdown, backend_wait):
                     self.logger.warning("prewarm skipped: local model backend unavailable")
                     self.telemetry.record_system("prewarm_skipped_backend_unavailable", model=str(model))
+                    return
+                if model and not _prewarm_route_is_eligible(self.runtime, str(model)):
+                    self.logger.warning("prewarm skipped: model route unavailable on this host: %s", model)
+                    self.telemetry.record_system("prewarm_skipped_route_unavailable", model=str(model))
                     return
                 # Prewarm is opportunistic but persistent: if startup is busy, retry
                 # during later idle windows instead of silently giving up forever.
