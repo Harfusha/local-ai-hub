@@ -197,7 +197,7 @@ class AsyncJobManager:
         completion.clear()
         try:
             model = str(getattr(self.scheduler, "config", {}).get("models", {}).get("heavy_code", ""))
-            queued = self.scheduler.enqueue(model, tenant, "async-job", lambda: self._execute(job_id), priority=1, background=True)
+            queued = self.scheduler.enqueue(model, tenant, "async-job", lambda: self._execute(job_id), priority=1, background=False)
             trace_id = str(row["trace_id"] or "")
             if self.debug_traces is not None and trace_id:
                 self.debug_traces.update(trace_id, model=model)
