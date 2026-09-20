@@ -374,6 +374,12 @@ def test_dashboard_modal_forms_and_actions_defined() -> None:
         assert act in DASHBOARD_HTML, f"Expected action/form function {act} missing from DASHBOARD_HTML"
 
 
+def test_dashboard_task_criterion_reads_completion_satisfied_criteria() -> None:
+    section = DASHBOARD_HTML.split("async function checkTaskCriterion(", 1)[1].split("function renderCodeIntelModal", 1)[0]
+    assert "c.satisfied_criteria" in section
+    assert "c.passed_criteria" not in section
+
+
 def test_dashboard_type_inference_and_dispatcher() -> None:
     assert "function inferEntityType(obj)" in DASHBOARD_HTML
     assert "function openModal(obj,title='',entityType='')" in DASHBOARD_HTML

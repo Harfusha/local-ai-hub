@@ -218,12 +218,20 @@ def test_recovered_async_job_reopens_terminal_trace(tmp_path):
         debug_traces=store,
     )
     try:
-        submitted = manager.submit("tenant-a", "reason", {"task": "recover me"})
+        now = time.time()
+        trace_id = store.start(kind="async_job", tenant="tenant-a", action="reason", source="async-job")
+        store.update(trace_id, request={"task": "recover me"})
+        with closing(manager._connect()) as con:
+            con.execute(
+                "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at,trace_id) VALUES(?,?,?,?,?,'running',?,?,?,?)",
+                ("persisted", "tenant-a", "reason", "persisted-hash", '{"task":"recover me"}', now, now, now + 600, trace_id),
+            )
+            con.commit()
         assert store.recover_incomplete(reason="hub restarted")["recovered_sessions"] == 1
-        assert store.detail(submitted["trace_id"])["terminal"] is True
+        assert store.detail(trace_id)["terminal"] is True
 
         assert manager.recover() == 1
-        detail = store.detail(submitted["trace_id"])
+        detail = store.detail(trace_id)
         assert detail["session"]["state"] == "queued"
         assert detail["session"]["finished_at"] == 0
         assert detail["session"]["error"] == ""

@@ -773,10 +773,20 @@ if($('saveToken')) $('saveToken').onclick=()=>{if($('apiToken'))saveToken($('api
 
 async function apiFetch(path,opts={}){
   opts={...opts};const h=new Headers(opts.headers||{});if(apiToken)h.set('X-LocalAI-Token',apiToken);opts.headers=h;
-  let r=await nativeFetch(path,opts);
+  const request=async requestOpts=>{
+    const next={...requestOpts};let controller=null,timer=null;
+    if(!next.signal&&typeof AbortController==='function'){
+      controller=new AbortController();next.signal=controller.signal;
+      const requestedTimeout=Number(next.timeoutMs),timeoutMs=Number.isFinite(requestedTimeout)&&requestedTimeout>0?requestedTimeout:30000;
+      timer=setTimeout(()=>controller.abort(),Math.max(1000,timeoutMs));
+    }
+    delete next.timeoutMs;
+    try{return await nativeFetch(path,next)}finally{if(timer)clearTimeout(timer)}
+  };
+  let r=await request(opts);
   if(r.status===401&&!apiToken){
     const entered=prompt('Local AI Hub API token');
-    if(entered){saveToken(entered);if($('apiToken'))$('apiToken').value=apiToken;h.set('X-LocalAI-Token',apiToken);r=await nativeFetch(path,{...opts,headers:h})}
+    if(entered){saveToken(entered);if($('apiToken'))$('apiToken').value=apiToken;h.set('X-LocalAI-Token',apiToken);r=await request({...opts,headers:h})}
   }
   return r;
 }
@@ -830,7 +840,7 @@ async function checkTaskCriterion(taskId,criterion,btn){
   try{
     const res=await post('/api/agent-state/verification',{action:'completion',task_id:taskId});
     const c=res.completion||{};
-    const passed=(c.passed_criteria||[]).includes(criterion);
+    const passed=(c.satisfied_criteria||[]).includes(criterion);
     if(passed){
       btn.className='action-btn-sm ok';
       btn.textContent='✓ Verified';
@@ -5057,7 +5067,7 @@ function renderTraceList(items){
   $('traceSideSummary').textContent=`${sidebarVisible.length} trace${sidebarVisible.length===1?'':'s'} · click to inspect`;
   $('traceSidebarList').innerHTML=sidebarVisible.length?sidebarVisible.map(x=>{const state=traceStatus(x),label=state==='interrupted'?'Interrupted':state,cls=state==='interrupted'?'interrupted':(state==='failed'||state==='error'?'failed':(x.terminal||state==='completed'||state==='succeeded'?'done':'')),kindLabel=x.kind==='api_request'?'API request':humanLabel(x.kind||'trace'),context=traceContextLabel({...x,kind:'',model:''}),project=traceProjectLabel(x)||'Project not recorded';return `<button class="trace-side-item ${String(x.trace_id)===activeTraceId?'active':''}" data-trace-page-id="${esc(x.trace_id)}"><span class="trace-side-top"><span class="trace-side-state ${cls}"></span><span class="trace-side-action">${esc(x.action||x.kind||'Trace')}</span><span class="tiny spacer">${esc(label)}</span></span><span class="trace-side-meta">${esc(project)} · ${esc(context||x.agent||'unknown agent')}</span><span class="trace-side-meta">${esc(x.agent||'unknown agent')} · ${esc(kindLabel)} · ${x.updated_at?new Date(x.updated_at*1000).toLocaleTimeString():'—'} · ${esc(x.tenant||'no tenant')}</span></button>`}).join(''):'<div class="empty-human">No retained traces</div>';
 }
-async function pollTraces(){try{const kind=$('traceKind')?.value||'',suffix=kind?'&kind='+encodeURIComponent(kind):'',r=await apiFetch('/api/debug-traces?limit=200'+suffix,{cache:'no-store'}),d=await r.json();if(d.success){lastTraces=d.items||[];renderTraceList(lastTraces)}}catch(e){console.warn('trace refresh failed',e)}}
+async function pollTraces(){if(tracesPollInFlight)return;tracesPollInFlight=true;try{const kind=$('traceKind')?.value||'',suffix=kind?'&kind='+encodeURIComponent(kind):'',r=await apiFetch('/api/debug-traces?limit=200'+suffix,{cache:'no-store'}),d=await r.json();if(d.success){lastTraces=d.items||[];renderTraceList(lastTraces)}}catch(e){console.warn('trace refresh failed',e)}finally{tracesPollInFlight=false}}
 $('traceRefresh')?.addEventListener('click',pollTraces);$('traceKind')?.addEventListener('change',()=>renderTraceList(lastTraces));
 $('traceHistorySearch')?.addEventListener('input',()=>renderTraceList(lastTraces));$('traceHistoryState')?.addEventListener('change',()=>renderTraceList(lastTraces));
 
@@ -5098,7 +5108,7 @@ async function pollStatus(){
   }catch(e){console.error('dashboard status refresh failed',e);if(last&&lastOverviewReceivedAt)renderOverviewHealth(last,lastOverviewReceivedAt);$('conn').textContent=hasLiveStatus?'stale':'offline';$('conn').className=hasLiveStatus?'pill warn-t':'pill bad-t'}
   finally{statusPollInFlight=false}
 }
-let liveEvents=[];
+let liveEvents=[],eventsPollInFlight=false,tracesPollInFlight=false;
 function eventSeverity(event){
   if(event?.success===false||/fail|error|crash|reject/i.test([event?.kind,event?.event_type,event?.status].join(' ')))return 'failure';
   if(/warn|retry|degrad|stale/i.test([event?.kind,event?.event_type,event?.status].join(' ')))return 'warning';
@@ -5116,7 +5126,7 @@ function renderEvents(events=liveEvents){
 }
 $('eventSeverity')?.addEventListener('change',()=>renderEvents([]));
 $('eventSource')?.addEventListener('input',()=>renderEvents([]));
-async function pollEvents(){try{const r=await apiFetch('/api/live?after='+cursor+'&limit=200',{cache:'no-store'}),d=await r.json();cursor=Number(d.cursor||cursor);renderEvents(d.events||[])}catch{}}
+async function pollEvents(){if(eventsPollInFlight)return;eventsPollInFlight=true;try{const r=await apiFetch('/api/live?after='+cursor+'&limit=200',{cache:'no-store'}),d=await r.json();cursor=Number(d.cursor||cursor);renderEvents(d.events||[])}catch{}finally{eventsPollInFlight=false}}
 
 probeHealth();pollStatus();pollEvents();pollTraces();
 let isVisible=!document.hidden;
