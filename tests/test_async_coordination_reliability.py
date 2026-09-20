@@ -84,7 +84,7 @@ def test_async_retry_dispatch_clears_stale_completion_event(tmp_path: Path):
         lambda _action, _payload, _tenant: {"success": False, "retryable": True, "error": "retry"},
     )
     try:
-        submitted = manager.submit("tenant-a", "reason", {"task": "retry-event"})
+        submitted = manager.submit("tenant-a", "reason", {"task": "retry-event"}, dispatch_delay_seconds=30.0)
         job_id = submitted["job_id"]
         manager._execute(job_id)
         assert manager._event(job_id).is_set()
@@ -103,7 +103,7 @@ def test_async_jobs_tick_reclaims_stuck_running_job(tmp_path: Path):
         _Artifacts(),
         lambda a, p, t: {"success": True},
     )
-    submitted = manager.submit("tenant-a", "reason", {"task": "stuck-job"})
+    submitted = manager.submit("tenant-a", "reason", {"task": "stuck-job"}, dispatch_delay_seconds=30.0)
     job_id = submitted["job_id"]
 
     # Artificially set job to running with an expired lease

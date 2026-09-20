@@ -44,6 +44,23 @@ def test_live_events_with_trace_id_link_to_trace_inspector() -> None:
     assert "data-detail=\"${id}\"" in source
 
 
+def test_live_pollers_skip_overlapping_requests() -> None:
+    pollers = DASHBOARD_HTML[DASHBOARD_HTML.index("let liveEvents=[]") : DASHBOARD_HTML.index("probeHealth();pollStatus()")]
+    trace_poller = DASHBOARD_HTML[DASHBOARD_HTML.index("async function pollTraces()") : DASHBOARD_HTML.index("$('traceRefresh')")]
+    assert "let liveEvents=[],eventsPollInFlight=false,tracesPollInFlight=false" in pollers
+    assert "if(tracesPollInFlight)return;tracesPollInFlight=true" in trace_poller
+    assert "if(eventsPollInFlight)return;eventsPollInFlight=true" in pollers
+    assert "finally{tracesPollInFlight=false}" in trace_poller
+    assert "finally{eventsPollInFlight=false}" in pollers
+
+
+def test_dashboard_api_fetch_has_bounded_request_timeout() -> None:
+    api_fetch = DASHBOARD_HTML[DASHBOARD_HTML.index("async function apiFetch") : DASHBOARD_HTML.index("function setFrontendVisionCaptureState")]
+    assert "AbortController" in api_fetch
+    assert "setTimeout" in api_fetch
+    assert "clearTimeout" in api_fetch
+
+
 def test_destructive_controls_describe_scope_and_impact() -> None:
     assert "Restart hub service" in DASHBOARD_HTML
     assert "Purge expired cache" in DASHBOARD_HTML

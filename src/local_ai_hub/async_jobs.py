@@ -439,6 +439,9 @@ class AsyncJobManager:
             con.commit()
         self._stats["expired"] += int(expired or 0)
         for (job_id,) in rows[:self.max_pending]:
+            # A retry reuses the job event; clear the previous attempt's
+            # completion signal before a delayed or immediate next attempt.
+            self._event(str(job_id)).clear()
             if str(job_id) not in delayed_ids:
                 self._dispatch(str(job_id))
 

@@ -98,7 +98,7 @@ def test_async_jobs_retry_state():
             _Artifacts(),
             lambda a, p, t: {"success": False, "retryable": True, "error": "first failure"},
         )
-        submit = mgr.submit("tenant_a", "reason", {})
+        submit = mgr.submit("tenant_a", "reason", {}, dispatch_delay_seconds=30.0)
         assert submit["success"]
         job_id = submit["job_id"]
 
