@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter, deque
+import hashlib
 from threading import Lock
 from typing import Any
 
@@ -14,6 +15,7 @@ class ContextLedger:
         self._entries: deque[dict[str, Any]] = deque(maxlen=max(1, int(max_entries)))
         self._totals: Counter[str] = Counter()
         self._outcomes: Counter[str] = Counter()
+        self._compiled: dict[str, dict[str, Any]] = {}
         self._lock = Lock()
 
     def record(
@@ -72,3 +74,36 @@ class ContextLedger:
             if hits >= max(2, len(recent) // 2):
                 return "minimal"
         return "compact"
+
+    def compile(
+        self,
+        task_id: str,
+        revision: str,
+        evidence_ids: list[str] | tuple[str, ...],
+        context: str,
+        *,
+        phase: str = "",
+    ) -> dict[str, Any]:
+        """Return materialized context once, then a pointer or evidence delta."""
+        task = str(task_id or "")[:96]
+        rev = str(revision or "")[:200]
+        phase_value = str(phase or "")[:64]
+        ids = list(dict.fromkeys(str(item)[:120] for item in evidence_ids if str(item)))[:64]
+        digest = hashlib.sha256(f"{task}|{rev}|{phase_value}|{','.join(ids)}|{context}".encode("utf-8", "replace")).hexdigest()[:16]
+        reuse_key = f"ctx_{digest}"
+        current = {"revision": rev, "phase": phase_value, "evidence_ids": ids, "digest": digest, "reuse_key": reuse_key}
+        with self._lock:
+            previous = self._compiled.get(task)
+            self._compiled[task] = current
+        if previous and previous["digest"] == digest:
+            return {"status": "unchanged", "context": None, "reuse_key": reuse_key, "etag": digest}
+        added = [item for item in ids if not previous or item not in previous.get("evidence_ids", [])]
+        if previous:
+            return {
+                "status": "delta",
+                "context": str(context or "")[:12000],
+                "added_evidence_ids": added,
+                "reuse_key": reuse_key,
+                "etag": digest,
+            }
+        return {"status": "materialized", "context": str(context or "")[:12000], "reuse_key": reuse_key, "etag": digest}

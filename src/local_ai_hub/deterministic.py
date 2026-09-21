@@ -4503,6 +4503,18 @@ def test_{sym}_regression_edge_cases():
 
         high_count = sum(1 for f in findings if f.get("severity") == "HIGH")
         med_count = sum(1 for f in findings if f.get("severity") == "MEDIUM")
+        test_findings = []
+        for finding in findings:
+            rel_path = str(finding.get("path", ""))
+            is_test = rel_path.casefold().startswith("tests/") or Path(rel_path).name.casefold().startswith("test_")
+            finding["is_test"] = is_test
+            if is_test:
+                finding["classification"] = "test_fixture"
+                test_findings.append(finding)
+        untriaged_high = sum(
+            1 for finding in findings
+            if finding.get("severity") == "HIGH" and finding.get("classification") != "test_fixture"
+        )
 
         return {
             "success": True,
@@ -4510,7 +4522,9 @@ def test_{sym}_regression_edge_cases():
             "findings_count": len(findings),
             "high_severity_count": high_count,
             "medium_severity_count": med_count,
-            "is_clean": len(findings) == 0,
+            "untriaged_high_severity_count": untriaged_high,
+            "test_findings_count": len(test_findings),
+            "is_clean": untriaged_high == 0,
             "findings": findings[:limit],
         }
 

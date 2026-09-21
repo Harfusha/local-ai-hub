@@ -19,6 +19,7 @@ from local_ai_hub.client import HubClient
 from local_ai_hub.compact import compact_result
 from local_ai_hub.response_budget import budget_response, delta_response, result_id
 from local_ai_hub.context_ledger import ContextLedger
+from local_ai_hub.budget import RootFamilyBudget
 from local_ai_hub.projection import AgentProjector
 from local_ai_hub.config import load_config
 from local_ai_hub.features import FeatureSet
@@ -28,6 +29,8 @@ from local_ai_hub.token_accounting import account_projection, attach_accounting,
 from local_ai_hub.adoption_metrics import AdoptionMetricsStore
 from local_ai_hub.routing import semantic_handoff_hint
 from local_ai_hub.state_paths import configured_state_dir
+from local_ai_hub.semantic_quality import assess_semantic_result
+from local_ai_hub.evidence_contract import evidence_meta
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -82,6 +85,10 @@ try:
     RESPONSE_TOOL_TOKENS = RESPONSE_BUDGET_CFG.get("tool_tokens", {}) if isinstance(RESPONSE_BUDGET_CFG.get("tool_tokens", {}), dict) else {}
     RESPONSE_REUSE_LIMIT = max(16, int(RESPONSE_BUDGET_CFG.get("reuse_cache_size", 256)))
     CONTEXT_LEDGER = ContextLedger(max_entries=int(RESPONSE_BUDGET_CFG.get("ledger_size", 512)))
+    ROOT_FAMILY_BUDGET = RootFamilyBudget(
+        default_limit=int(CFG.get("workflow", {}).get("root_family_token_budget", 0) or 0),
+        max_active_scopes=int(CFG.get("workflow", {}).get("root_family_max_active_scopes", 1) or 1),
+    )
     ADOPTION_METRICS = AdoptionMetricsStore(configured_state_dir(CFG))
 except Exception as _init_exc:  # pragma: no cover
     import sys
@@ -486,9 +493,35 @@ def _invalid_action(tool: str, action: str, valid: tuple[str, ...], guidance: st
     }
 
 
+def _release_root_family_reservation() -> None:
+    reservation = _CURRENT_ROOT_FAMILY_RESERVATION.get()
+    if not reservation:
+        return
+    ROOT_FAMILY_BUDGET.release(
+        str(reservation.get("family", "")),
+        tokens=int(reservation.get("tokens", 0) or 0),
+        scope=str(reservation.get("scope", "")),
+    )
+    _CURRENT_ROOT_FAMILY_RESERVATION.set(None)
+
+
+def _release_root_family_on_exit(fn: Any) -> Any:
+    @functools.wraps(fn)
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _release_root_family_reservation()
+
+    return wrapped
+
+
 
 _CURRENT_EXTRA_FIELDS: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar("_CURRENT_EXTRA_FIELDS", default=None)
 _CURRENT_RESPONSE_OPTIONS: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar("_CURRENT_RESPONSE_OPTIONS", default={})
+_CURRENT_ROOT_FAMILY_RESERVATION: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "_CURRENT_ROOT_FAMILY_RESERVATION", default=None
+)
 _REUSE_DIGESTS: OrderedDict[str, str] = OrderedDict()
 _REUSE_VALUES: OrderedDict[str, Any] = OrderedDict()
 _GUARDED_CONTEXT_TOP_LEVEL = frozenset({
@@ -500,6 +533,8 @@ _GUARDED_CONTEXT_TOP_LEVEL = frozenset({
     "task_status", "waiting", "contract", "reuse", "reuse_candidates", "mappings", "model_warnings",
     "relevance", "model_degraded", "model_degraded_reason", "response_budget", "reuse_key", "reused",
     "unchanged", "preload_profile", "preload_evidence_ids",
+    "task_context", "complete", "partial", "text", "source_layers", "agent_state", "repository",
+    "provenance", "omitted_sections", "next_action", "estimated_tokens", "truncated",
 })
 _GUARDED_CONTEXT_PACK = frozenset({
     "contract", "reuse_candidates", "mappings", "warnings", "evidence", "repo_revision", "changed_paths",
@@ -638,6 +673,104 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
             reuse_only=repeated and json_tokens(compacted) > requested // 2,
         )
     return _normalize_deterministic(account_projection(raw_value, compacted))
+
+
+def _load_task_context(
+    *,
+    task_id: str,
+    root: str,
+    context: str,
+    phase: str = "",
+    focus: list[str] | None = None,
+    preload_profile: str = "",
+    changed_paths: list[str] | None = None,
+    repository_revision: str = "",
+    token_budget: int = 0,
+) -> tuple[str, dict[str, Any]]:
+    """Fetch one unified Agent OS + repository context for a model call."""
+    if not task_id.strip():
+        return context, {}
+    payload = {
+        "action": "compile",
+        "task_id": task_id,
+        "token_budget": token_budget or 4000,
+        "root": _client_root(root),
+        "phase": phase,
+        "focus": list(focus or []),
+        "preload_profile": preload_profile,
+        "changed_paths": list(changed_paths or []),
+        "repository_revision": repository_revision,
+        "compact": True,
+    }
+    raw = CLIENT.post("/api/agent-state/context", payload, timeout=_timeout("context"))
+    if not isinstance(raw, dict):
+        return "", {
+            "success": False,
+            "terminal": True,
+            "retryable": True,
+            "error": "task context response must be a JSON object",
+        }
+    task_context = raw.get("task_context")
+    if not isinstance(task_context, dict):
+        # Keep legacy endpoint responses usable for callers that do not request
+        # repository context, while making the missing unified layer explicit.
+        task_context = {}
+    if not raw.get("success", False) or not raw.get("complete", bool(task_context)):
+        return "", {
+            "success": False,
+            "terminal": bool(raw.get("terminal", False)),
+            "retryable": bool(raw.get("retryable", True)),
+            "error": str(raw.get("error") or "task context is incomplete"),
+            "task_context": task_context,
+        }
+    task_text = str(task_context.get("text") or raw.get("text") or "").strip()
+    if not task_text:
+        return "", {
+            "success": False,
+            "terminal": True,
+            "retryable": False,
+            "error": "task context is empty",
+            "task_context": task_context,
+        }
+    merged = "\n\n".join(part for part in (context.strip(), "Task-scoped context:\n" + task_text) if part)
+    return merged, {
+        "success": True,
+        "context_id": task_context.get("context_id", ""),
+        "etag": task_context.get("etag", ""),
+        "evidence_ids": task_context.get("evidence_ids", []),
+    }
+
+
+_SEMANTIC_PATH_RE = re.compile(r"(?<![\w./-])[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+(?:\.[A-Za-z0-9_-]+)(?::\d+)?")
+
+
+def _quality_check_semantic_result(
+    result: Any,
+    *,
+    task: str,
+    context: str,
+    changed_paths: list[str] | None = None,
+) -> Any:
+    if not isinstance(result, dict) or not result.get("success", "error" not in result):
+        return result
+    evidence_paths = [str(path) for path in (changed_paths or []) if str(path).strip()]
+    if not evidence_paths:
+        evidence_paths = list(dict.fromkeys(_SEMANTIC_PATH_RE.findall(context)))[:64]
+    if not evidence_paths:
+        return result
+    quality = assess_semantic_result(task, evidence_paths, result)
+    result["advisory_only"] = True
+    result["semantic_quality"] = quality
+    if not quality.get("usable", False):
+        return {
+            **result,
+            "success": False,
+            "terminal": False,
+            "retryable": False,
+            "error": f"semantic result rejected: {quality.get('bypass_reason', quality.get('reason', 'quality_gate'))}",
+            "bypass_reason": quality.get("bypass_reason", quality.get("reason", "quality_gate")),
+        }
+    return result
 
 
 class _ProtocolAccountingReporter:
@@ -992,6 +1125,7 @@ def local_ai_status(detail: StatusDetail = "brief", scope: str = "process", extr
 
 @mcp.tool()
 @_instrumented_tool()
+@_release_root_family_on_exit
 def local_ai_task(
     action: TaskAction,
     task: str = "",
@@ -1037,6 +1171,12 @@ def local_ai_task(
     profile: str = "",
     root: str = "",
     workspace: str = "",
+    task_id: str = "",
+    phase: str = "",
+    focus: list[str] | None = None,
+    preload_profile: str = "",
+    changed_paths: list[str] | None = None,
+    repository_revision: str = "",
     conversation: bool = False,
     conversation_id: str = "",
     approver: str = "",
@@ -1077,14 +1217,19 @@ def local_ai_task(
         }, timeout=_timeout("quick")), "status")
     if not FEATURES.tasks or not FEATURES.has_any_model():
         return {"success": False, "unsupported": True, "error": "Local model execution is disabled (features.tasks=false or no Ollama runtime configured)"}
-    if action == "continue":
-        if profile:
-            return {"success": False, "unsupported": True, "error": "Conversations do not support profiles"}
-        if not conversation_id.strip():
-            return {"success": False, "error": "conversation_id is required", "terminal": True, "retryable": False}
-        return _compact(CLIENT.post("/api/conversations/continue", {
-            "conversation_id": conversation_id, "task": task, "context": context,
-        }, timeout=_timeout("model")), "delegate")
+    context, task_context_meta = _load_task_context(
+        task_id=task_id,
+        root=root,
+        context=context,
+        phase=phase,
+        focus=focus,
+        preload_profile=preload_profile,
+        changed_paths=changed_paths,
+        repository_revision=repository_revision,
+        token_budget=max_tokens,
+    )
+    if task_id.strip() and not task_context_meta.get("success", False):
+        return task_context_meta
     if profile:
         if not PROFILE_CATALOG.enabled:
             return {"success": False, "unsupported": True, "error": "Ollama subagent profiles disabled"}
@@ -1110,6 +1255,35 @@ def local_ai_task(
             "task": task, "context": context, "candidate": candidate, "complexity": complexity,
             "max_tokens": max_tokens, "tasks": tasks or [], "profile": profile, "root": root, "workspace": workspace,
         }, timeout=_timeout("quick")), "status")
+    budgeted_actions = {"continue", "delegate", "explore", "reason", "review", "second_opinion", "compress"}
+    if task_id.strip() and action in budgeted_actions and ROOT_FAMILY_BUDGET.default_limit:
+        family_key = hashlib.sha1(_client_root(root).encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:16]
+        budget_tokens = max_tokens or 4096
+        budget_scope = f"{task_id}:{action}"
+        admission = ROOT_FAMILY_BUDGET.reserve(
+            family_key,
+            input_tokens=budget_tokens,
+            limit=ROOT_FAMILY_BUDGET.default_limit,
+            task_id=task_id,
+            scope=budget_scope,
+        )
+        if admission.get("status") == "rejected":
+            return {
+                "success": False,
+                "terminal": not bool(admission.get("retryable", False)),
+                "retryable": bool(admission.get("retryable", False)),
+                "error": str(admission.get("reason", "root family budget denied")),
+                "budget": admission,
+            }
+        _CURRENT_ROOT_FAMILY_RESERVATION.set({"family": family_key, "tokens": budget_tokens, "scope": budget_scope})
+    if action == "continue":
+        if profile:
+            return {"success": False, "unsupported": True, "error": "Conversations do not support profiles"}
+        if not conversation_id.strip():
+            return {"success": False, "error": "conversation_id is required", "terminal": True, "retryable": False}
+        return _compact(_quality_check_semantic_result(CLIENT.post("/api/conversations/continue", {
+            "conversation_id": conversation_id, "task": task, "context": context,
+        }, timeout=_timeout("model")), task=task, context=context, changed_paths=changed_paths), "delegate")
     if profile:
         payload = {
             "profile": profile, "task": task, "context": context, "candidate": candidate,
@@ -1117,7 +1291,7 @@ def local_ai_task(
             "root": root, "workspace": workspace or None,
         }
         endpoint = "/api/delegate/repo" if root else "/api/delegate"
-        return _compact(CLIENT.post(endpoint, payload, timeout=_timeout("model")), "delegate")
+        return _compact(_quality_check_semantic_result(CLIENT.post(endpoint, payload, timeout=_timeout("model")), task=task, context=context, changed_paths=changed_paths), "delegate")
     if action in {"delegate", "explore"}:
         payload = {
             "task": task, "context": context, "complexity": complexity, "max_tokens": max_tokens or 4096,
@@ -1127,7 +1301,7 @@ def local_ai_task(
             payload["format"] = format or json_schema
         if conversation:
             payload["conversation"] = True
-        return _compact(CLIENT.post("/api/delegate", payload), "explore" if action == "explore" else "delegate")
+        return _compact(_quality_check_semantic_result(CLIENT.post("/api/delegate", payload), task=task, context=context, changed_paths=changed_paths), "explore" if action == "explore" else "delegate")
     if action == "reason":
         payload = {
             "problem": task, "context": context, "max_tokens": max_tokens or 4096,
@@ -1137,7 +1311,7 @@ def local_ai_task(
             payload["format"] = format or json_schema
         if conversation:
             payload["conversation"] = True
-        return _compact(CLIENT.post("/api/reason", payload), "reason")
+        return _compact(_quality_check_semantic_result(CLIENT.post("/api/reason", payload), task=task, context=context, changed_paths=changed_paths), "reason")
     if action == "review":
         payload = {
             "code": context, "instructions": task or "Report actionable defects only.",
@@ -1146,18 +1320,18 @@ def local_ai_task(
         }
         if format or json_schema:
             payload["format"] = format or json_schema
-        return _compact(CLIENT.post("/api/review", payload), "review")
+        return _compact(_quality_check_semantic_result(CLIENT.post("/api/review", payload), task=task, context=context, changed_paths=changed_paths), "review")
     if action == "second_opinion":
-        return _compact(CLIENT.post("/api/second-opinion", {
+        return _compact(_quality_check_semantic_result(CLIENT.post("/api/second-opinion", {
             "question": task, "candidate": candidate, "context": context, "max_tokens": max_tokens or 4096,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model,
-        }), "second_opinion")
+        }), task=task, context=context, changed_paths=changed_paths), "second_opinion")
     if action == "compress":
-        return _compact(CLIENT.post("/api/compress", {
+        return _compact(_quality_check_semantic_result(CLIENT.post("/api/compress", {
             "text": context, "instruction": task or "Compress while preserving facts, identifiers, numbers, errors, decisions and uncertainty.",
             "target_tokens": max_tokens or 650,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms,
-        }, timeout=_timeout("model")), "compress")
+        }, timeout=_timeout("model")), task=task, context=context, changed_paths=changed_paths), "compress")
     if action == "route":
         return _compact(CLIENT.post("/api/route", {"text": context, "query": task, "delivery": delivery, "latency_budget_ms": latency_budget_ms}, timeout=_timeout("model")), "route")
     if action == "batch":
@@ -1365,6 +1539,14 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
         max_evidence=MAX_EVIDENCE,
         extra_fields=extra_fields,
     )
+    if isinstance(final, dict) and ("adaptive_context_pack" in safe_value or "context_pack" in safe_value or safe_value.get("guarded")):
+        final["provenance"] = evidence_meta(
+            "repo.context",
+            str(authoritative.get("repo_revision", safe_value.get("repo_revision", ""))),
+            authoritative.get("evidence_ids", []),
+            bool(authoritative.get("stale", safe_value.get("stale", False))),
+            "stale" if bool(authoritative.get("stale", safe_value.get("stale", False))) else ("success" if safe_value.get("success", True) else "incomplete"),
+        )
     options = _CURRENT_RESPONSE_OPTIONS.get()
     requested, profile, reuse_key, enabled = _response_budget("context", options)
     if enabled:
@@ -2004,6 +2186,10 @@ def local_ai_coord(
     session_id: str = "",
     tenant: str = "",
     repository_revision: str = "",
+    phase: str = "",
+    focus: list[str] | None = None,
+    preload_profile: str = "",
+    since_hash: str = "",
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. Actions: claim, release, leases, memo_put, memo_get, memo_search, memo_delete, task_create, task_get, task_checkpoint, task_rollback, task_transition, task_resume, task_list, task_complete, task_fail, task_heartbeat, memory_record, memory_get, memory_find, memory_promote, memory_reap, context_compile, verify_receipt, verify_completion, negative_knowledge_record, negative_knowledge_find, incident_decision, blackboard_update, blackboard_get, blackboard_list, blackboard_merge, blackboard_delete, swarm_dispatch, swarm_step, swarm_status, swarm_list, swarm_cancel. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool. Use when: Hub workers share edit paths, leases, or reusable findings. Skip when: work is isolated and no shared Hub state or memo is involved."""
     if not FEATURES.coord:
@@ -2058,7 +2244,7 @@ def local_ai_coord(
             limit=max_tokens or 50,
         ), "status")
     if action == "context_compile":
-        since_hash = str(fingerprint or record_id or status or "")
+        since_hash = str(since_hash or fingerprint or record_id or status or "")
         return _compact(CLIENT.post("/api/agent-state/context", {
             "action": "compile", "task_id": task_id or query or value or key,
             "token_budget": max_tokens or ttl_seconds or 4000, "root": root,
@@ -2072,6 +2258,9 @@ def local_ai_coord(
             "repository_id": repository_id,
             "session_id": session_id,
             "repository_revision": repository_revision,
+            "phase": phase,
+            "focus": list(focus or []),
+            "preload_profile": preload_profile,
         }, timeout=_timeout("context")), "context")
     if action == "verify_receipt":
         return _compact(CLIENT.post("/api/agent-state/verification", {
@@ -2084,6 +2273,7 @@ def local_ai_coord(
     if action == "verify_completion":
         return _compact(CLIENT.post("/api/agent-state/verification", {
             "action": "completion", "task_id": task_id or query or value or key, "root": root,
+            "repository_revision": repository_revision,
         }, timeout=_timeout("quick")), "verify")
     if action.startswith("negative_knowledge_"):
         sub_act = "record" if action == "negative_knowledge_record" else "find"

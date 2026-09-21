@@ -336,6 +336,7 @@ artifact_ttl_hours = 72
 [review]
 # Synchronous reviews stay bounded; large reviews use durable async delivery.
 max_async_chunks = 32
+max_queue_age_ms = 30000
 
 [cpu_retrieval]
 foreground_priority = 3
@@ -593,6 +594,8 @@ fast_repo_context_tokens = 8000
 heavy_repo_context_tokens = 16000
 impact_max_symbols = 48
 impact_max_dependents = 30
+root_family_token_budget = 250000
+root_family_max_active_scopes = 1
 
 [agents]
 agent_skills_standard = true
