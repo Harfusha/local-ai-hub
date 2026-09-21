@@ -97,3 +97,4 @@ the `mcp_server.py` type literals are the public contract checked by
 - Live hardware benchmark: success on `qwen2.5-coder:7b`; host still reports high VRAM pressure and context factor 0.5.
 - Live optional backend probes: Serena and CodeGraph healthy. Reranker/OpenVINO/llama.cpp hardware quality remains **not claimed**.
 - Busy-database regression: isolated 8/8 pass; the earlier full-suite timing miss was not reproducible as an isolated defect.
+- Final release candidate `3b96cb88b9e0805c6a14ff2685c3f24b19d42e37`: `1687 passed, 5 skipped, 6 subtests passed` in 288.75 seconds; compileall, release-check, selftest and diff-check also passed.
