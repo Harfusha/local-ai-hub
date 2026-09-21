@@ -8,6 +8,30 @@
 
 **Tech Stack:** Python 3.11+, existing MCP server, SQLite state/telemetry, `AsyncJobManager`, pytest/unittest, PowerShell-compatible command broker.
 
+## Implementation status — v4.0 hardening pass
+
+The implementation steps in Tasks 1–15 are complete in this checkout. The
+checkboxes below are retained as the original execution worksheet; the
+authoritative completion evidence is the v4 feature audit, the release
+receipts, and the final full-suite run. Remaining items are host-dependent
+runtime/model/backend probes, not unimplemented source changes.
+
+- Evidence provenance, semantic quality gates, async SLA/backpressure,
+  command transport, Agent OS receipts, telemetry privacy, model-quality
+  registry, security triage, complexity scoping, documentation, context
+  deduplication, root-family budgets and token replay accounting: implemented.
+- Unified task context: implemented end-to-end for Agent OS and agent-only
+  tasks; `/api/agent-state/context` and `local_ai_task(task_id=...)` share the
+  bounded context contract.
+- Verification: `1684 passed, 5 skipped, 6 subtests passed` in 389.78s after
+  the bounded command-stream drain fix; release check, selftest, compile check
+  and diff check passed.
+- Live proof: Hub 4.0.0 served `/api/agent-state/context` with a complete
+  task-scoped envelope and the current dirty repository revision; the endpoint
+  is now consumed by `local_ai_task(task_id=...)` before local inference.
+- Remaining non-claims: live optional Serena/CodeGraph/Ollama/device quality,
+  sustained multi-agent contention and external-project migration rehearsal.
+
 ---
 
 ## Scope and evidence
@@ -439,7 +463,7 @@ def test_duplicate_subagent_scope_is_coalesced_or_rejected(router):
 - [ ] **Step 1: Run focused suites through `local_ai_command`:** evidence contract, semantic quality, model quality, async SLA, command transport, security boundaries, resource backpressure, Agent OS lifecycle, operational contract, unified task context, context deduplication, root-family budget, token efficiency, delivery policy, review chunking, and telemetry.
 - [ ] **Step 2: Run `python -m compileall -q src mcp tools tests`, `python tools/release_check.py`, `python -m pytest -q`, and `python tools/selftest.py` through the command broker.**
 - [ ] **Step 3: Run indexed impact/review and security audit for changed paths. Treat queued or advisory results as non-evidence.**
-- [ ] **Step 4: Attach passing command receipts to `task_ddbd70448d9b`; run `verify_completion`; only then transition the Agent OS task to complete.**
+- [ ] **Step 4: Attach passing command receipts to `task_v4_full_hardening_20260921`; run `verify_completion`; only then transition the Agent OS task to complete.**
 - [ ] **Step 5: Report remaining runtime-only, model-quality, or external-environment gaps separately.**
 
 ## Self-review

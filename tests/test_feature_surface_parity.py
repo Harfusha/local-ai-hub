@@ -15,7 +15,7 @@ from local_ai_hub.generator import (
 from local_ai_hub import mcp_server as local_ai_mcp
 
 
-def _config(*, agent_os: bool = True, work_orchestrator: bool = False) -> dict:
+def _config(*, agent_os: bool = True, work_orchestrator: bool = False, speculative_lint: bool = False) -> dict:
     return {
         "features": {
             "agent_os": agent_os,
@@ -30,6 +30,7 @@ def _config(*, agent_os: bool = True, work_orchestrator: bool = False) -> dict:
         "commands": {"enabled": True},
         "coord": {"enabled": True},
         "work_orchestrator": {"enabled": work_orchestrator},
+        "speculative_lint": {"enabled": speculative_lint},
     }
 
 
@@ -123,6 +124,13 @@ def test_whole_task_tool_obeys_its_feature_gate():
     assert "local_ai_work" in enabled_refs["tools.md"]
     assert "local_ai_work" in enabled_refs["multi-agent.md"]
     assert "local_ai_work" in enabled_schemas
+
+
+def test_speculative_lint_is_exposed_only_when_opted_in():
+    disabled = generate_mcp_tool_schemas(_config(speculative_lint=False))
+    enabled = generate_mcp_tool_schemas(_config(speculative_lint=True))
+    assert "speculative_lint" not in _actions(disabled["local_ai_command"])
+    assert "speculative_lint" in _actions(enabled["local_ai_command"])
 
 
 def test_guarded_context_extends_existing_repo_tool_without_duplicate_surface():

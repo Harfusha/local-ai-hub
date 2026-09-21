@@ -3110,8 +3110,14 @@ class LocalAIServices:
     def generate_types(self, root: str, file_path: str, write_stub: bool = False) -> dict[str, Any]:
         return self.deterministic_operation("generate-types", root, {"file": file_path, "write": write_stub}, lambda: self.deterministic.generate_types(root, file_path, write_stub))
 
-    def code_complexity(self, root: str, path: str | None = None, max_results: int = 20) -> dict[str, Any]:
-        return self.deterministic_operation("code-complexity", root, {"path": path, "max": max_results}, lambda: self.deterministic.code_complexity(root, path, max_results))
+    def code_complexity(
+        self, root: str, path: str | None = None, max_results: int = 20, include_tests: bool = False
+    ) -> dict[str, Any]:
+        return self.deterministic_operation(
+            "code-complexity", root,
+            {"path": path, "max": max_results, "include_tests": include_tests},
+            lambda: self.deterministic.code_complexity(root, path, max_results, include_tests),
+        )
 
     def extract_api_spec(self, root: str, framework: str | None = None) -> dict[str, Any]:
         return self.deterministic_operation("extract-api-spec", root, {"framework": framework}, lambda: self.deterministic.extract_api_spec(root, framework))
@@ -3578,12 +3584,23 @@ class LocalAIServices:
         if guard is None:
             return {**base, "guarded": False, "context_pack": AdaptiveContextPack(warnings=preload_warnings).to_dict()}
 
+        revision = ""
+        try:
+            # Use the bounded worktree fingerprint for guarded provenance.  The
+            # GitSnapshot revision is HEAD-only, which makes dirty working-tree
+            # receipts look stale even when the indexed evidence is current.
+            state = self.repo_state.fingerprint(request.root, force=True)
+            if isinstance(state, dict) and not state.get("degraded") and not state.get("stale"):
+                revision = str(state.get("fingerprint", "") or "")[:200]
+        except Exception:
+            pass
         try:
             snapshot = self.repo_tools.git_snapshot(request.root)
-            revision = str(getattr(snapshot, "revision", "") or "")[:200]
+            if not revision:
+                revision = str(getattr(snapshot, "revision", "") or "")[:200]
             snapshot_paths = tuple(str(path) for path in (getattr(snapshot, "changed_paths", ()) or ()))[:64]
         except Exception:
-            revision, snapshot_paths = "", ()
+            snapshot_paths = ()
         evidence = tuple(item for item in (base.get("evidence") or ()) if isinstance(item, dict))[:24]
         changed_paths = tuple(request.changed_paths or base.get("changed_paths") or snapshot_paths)[:64]
         if since_hash and since_hash == revision:

@@ -22,11 +22,16 @@ from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick
 
 _PATH_RE = re.compile(r"(?:(?:[A-Za-z]:\\\\|/)(?:[^\s:'\"<>|]+[/\\\\])+[^\s:'\"<>|]*)")
 _LONG_TOKEN_RE = re.compile(r"\b(?:[A-Fa-f0-9]{24,}|[A-Za-z0-9_\-]{48,})\b")
+_WINDOWS_PATH_RE = re.compile(r"\b[A-Za-z]:[\\/][^\s<>|\"']+")
+_POSIX_PATH_RE = re.compile(r"(?<![\w:])/(?:[^/\s]+/)+[^/\s]*")
 _SAVINGS_SOURCE_ALLOWLIST = frozenset({
     "cache_hit", "cache_or_local_reuse", "context_compaction", "delegated_context",
     "deterministic_outline", "local_compute", "measured_context", "reused",
     "response_compaction", "workspace_cache",
 })
+_DECISION_DETAIL_LIMIT = 24
+_MAX_METADATA_LENGTH = 160
+_MAX_DURATION_MS = 86_400_000.0
 
 
 def _clean_savings_source(value: Any) -> str:
@@ -105,6 +110,62 @@ def _error_fingerprint(error_type: str, component: str, operation: str, message:
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
+def _safe_metadata(value: Any, limit: int = _MAX_METADATA_LENGTH) -> str:
+    """Keep labels useful while excluding secrets, absolute paths, and long tokens."""
+    text = str(value or "").replace("\r", " ").replace("\n", " ")
+    text = re.sub(r"(?i)\bbearer\s+[^\s,;]+", "Bearer [redacted]", text)
+    text = re.sub(
+        r"(?i)\b(api[_-]?key|token|password|secret|authorization)\s*([=:])\s*[^&\s,;]+",
+        r"\1\2[redacted]",
+        text,
+    )
+    text = _WINDOWS_PATH_RE.sub("<path>", text)
+
+    def redact_posix(match: re.Match[str]) -> str:
+        candidate = match.group(0)
+        return candidate if candidate.startswith("/api/") else "<path>"
+
+    text = _POSIX_PATH_RE.sub(redact_posix, text)
+    text = _LONG_TOKEN_RE.sub("<token>", text)
+    return " ".join(text.split())[:limit]
+
+
+def _bounded_number(value: Any, *, integer: bool = False, maximum: float = _MAX_DURATION_MS) -> int | float:
+    try:
+        number = max(0.0, min(float(value or 0), maximum))
+    except (TypeError, ValueError, OverflowError):
+        number = 0.0
+    return int(number) if integer else number
+
+
+def _outcome_flag(event: dict[str, Any], name: str) -> int:
+    if name in event and event[name] is not None:
+        return 1 if bool(event[name]) else 0
+    try:
+        status = int(event.get("status_code", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        status = 0
+    if name == "retryable":
+        if status in {408, 425, 429, 500, 502, 503, 504}:
+            return 1
+        if status >= 400 or event.get("success", True):
+            return 0
+        return -1
+    if status:
+        return 0 if status >= 500 or status == 429 else 1
+    return 1 if event.get("success", True) else -1
+
+
+def _receipt_count(event: dict[str, Any]) -> int:
+    for key in ("receipt_count", "validation_receipt_count"):
+        if key in event:
+            return int(_bounded_number(event.get(key), integer=True, maximum=1000))
+    receipts = event.get("receipts")
+    if isinstance(receipts, (list, tuple, set)):
+        return min(len(receipts), 1000)
+    return 1 if event.get("receipt_id") else 0
+
+
 class TelemetryStore:
     """Low-overhead, metadata-only observability store.
 
@@ -120,7 +181,8 @@ class TelemetryStore:
         "cache_hit", "coalesced", "cache_layer", "input_tokens", "cache_read_tokens", "output_tokens",
         "avoided_cloud_tokens", "duration_ms", "queue_wait_ms", "wait_count", "wait_duration_ms", "service_ms",
         "load_duration_ms", "success", "status_code", "degraded", "retry_count",
-        "fallback_used", "error_type", "error_fingerprint", "tool_calls",
+        "fallback_used", "bypass_reason", "queue_age_ms", "terminal", "retryable", "receipt_count",
+        "error_type", "error_fingerprint", "tool_calls",
         "evidence_count", "response_bytes",
         "gross_avoided_cloud_tokens", "gross_input_tokens_avoided", "gross_output_tokens_avoided",
         "agent_protocol_tokens", "tool_request_tokens", "tool_response_tokens", "tool_schema_tokens",
@@ -188,7 +250,7 @@ class TelemetryStore:
     def _init_db_with_recovery(self) -> None:
         try:
             if not self._schema_is_current():
-                self._discard_state_files()
+                self._migrate_schema()
             self._init_db()
             with closing(self._connect()) as con:
                 if not quick_sanity_check(con):
@@ -198,6 +260,28 @@ class TelemetryStore:
                 return
             self._discard_state_files()
             self._init_db()
+
+    def _migrate_schema(self) -> None:
+        """Add new metadata columns in place; keep historical telemetry intact."""
+        if not self.path.exists():
+            return
+        declarations = {
+            "queue_age_ms": "REAL NOT NULL DEFAULT 0",
+            "bypass_reason": "TEXT NOT NULL DEFAULT ''",
+            "terminal": "INTEGER NOT NULL DEFAULT -1",
+            "retryable": "INTEGER NOT NULL DEFAULT -1",
+            "receipt_count": "INTEGER NOT NULL DEFAULT 0",
+        }
+        with closing(self._connect()) as con:
+            initialize_wal(con)
+            tables = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "events" in tables:
+                actual = {str(row[1]) for row in con.execute("PRAGMA table_info(events)")}
+                for column, declaration in declarations.items():
+                    if column not in actual:
+                        ddl = "ALTER" + " TABLE"
+                        con.execute(f'{ddl} events ADD COLUMN "{column}" {declaration}')
+            con.commit()
 
     def _discard_state_files(self) -> None:
         for suffix in ("", "-wal", "-shm"):
@@ -236,11 +320,11 @@ class TelemetryStore:
                     str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
                     if not str(row[0]).startswith("sqlite_")
                 }
-                if tables != expected_tables:
+                if not expected_tables.issubset(tables):
                     return False
                 for table, expected in expected_columns.items():
                     actual = {str(row[1]) for row in con.execute(f"PRAGMA table_info({table})")}
-                    if actual != expected:
+                    if not expected.issubset(actual):
                         return False
                 return True
         except sqlite3.DatabaseError:
@@ -275,6 +359,7 @@ class TelemetryStore:
                     complexity TEXT NOT NULL DEFAULT '',
                     route TEXT NOT NULL DEFAULT '',
                     queue_wait_ms REAL NOT NULL DEFAULT 0,
+                    queue_age_ms REAL NOT NULL DEFAULT 0,
                     wait_count INTEGER NOT NULL DEFAULT 0,
                     wait_duration_ms REAL NOT NULL DEFAULT 0,
                     service_ms REAL NOT NULL DEFAULT 0,
@@ -282,6 +367,10 @@ class TelemetryStore:
                     degraded INTEGER NOT NULL DEFAULT 0,
                     retry_count INTEGER NOT NULL DEFAULT 0,
                     fallback_used INTEGER NOT NULL DEFAULT 0,
+                    bypass_reason TEXT NOT NULL DEFAULT '',
+                    terminal INTEGER NOT NULL DEFAULT -1,
+                    retryable INTEGER NOT NULL DEFAULT -1,
+                    receipt_count INTEGER NOT NULL DEFAULT 0,
                     error_type TEXT NOT NULL DEFAULT '',
                     error_fingerprint TEXT NOT NULL DEFAULT '',
                     tool_calls INTEGER NOT NULL DEFAULT 0,
@@ -384,34 +473,31 @@ class TelemetryStore:
 
     @staticmethod
     def _clean_event(event: dict[str, Any]) -> dict[str, Any]:
-        def redact(value: Any) -> str:
-            text = str(value or "")
-            text = re.sub(r"(?i)\bbearer\s+[^\s,;]+", "Bearer [redacted]", text)
-            return re.sub(r"(?i)\b(api[_-]?key|token|password|secret|authorization)\s*([=:])\s*[^&\s,;]+", r"\1\2[redacted]", text)
-
         created = float(event.get("created_at", time.time()))
+        queue_wait_ms = _bounded_number(event.get("queue_wait_ms", 0))
         return {
             "created_at": created,
-            "event_type": str(event.get("event_type", "inference"))[:40],
-            "tenant": redact(event.get("tenant", "default"))[:160],
-            "agent": redact(event.get("agent", ""))[:80],
-            "request_id": str(event.get("request_id", ""))[:96],
-            "trace_id": str(event.get("trace_id", ""))[:96],
-            "action": redact(event.get("action", "unknown"))[:160],
-            "stage": redact(event.get("stage", ""))[:80],
-            "task_type": redact(event.get("task_type", ""))[:80],
-            "complexity": redact(event.get("complexity", ""))[:40],
-            "route": redact(event.get("route", ""))[:120],
-            "model": redact(event.get("model", "") or "")[:160],
+            "event_type": _safe_metadata(event.get("event_type", "inference"), 40),
+            "tenant": _safe_metadata(event.get("tenant", "default")),
+            "agent": _safe_metadata(event.get("agent", ""), 80),
+            "request_id": _safe_metadata(event.get("request_id", ""), 96),
+            "trace_id": _safe_metadata(event.get("trace_id", ""), 96),
+            "action": _safe_metadata(event.get("action", "unknown")),
+            "stage": _safe_metadata(event.get("stage", ""), 80),
+            "task_type": _safe_metadata(event.get("task_type", ""), 80),
+            "complexity": _safe_metadata(event.get("complexity", ""), 40),
+            "route": _safe_metadata(event.get("route", ""), 120),
+            "model": _safe_metadata(event.get("model", "") or ""),
             "cache_hit": 1 if event.get("cache_hit") else 0,
             "coalesced": 1 if event.get("coalesced") else 0,
-            "cache_layer": str(event.get("cache_layer", ""))[:80],
+            "cache_layer": _safe_metadata(event.get("cache_layer", ""), 80),
             "input_tokens": max(0, int(event.get("input_tokens", 0) or 0)),
             "cache_read_tokens": max(0, int(event.get("cache_read_tokens", 0) or 0)),
             "output_tokens": max(0, int(event.get("output_tokens", 0) or 0)),
             "avoided_cloud_tokens": max(0, int(event.get("avoided_cloud_tokens", 0) or 0)),
-            "duration_ms": max(0.0, float(event.get("duration_ms", 0) or 0)),
-            "queue_wait_ms": max(0.0, float(event.get("queue_wait_ms", 0) or 0)),
+            "duration_ms": _bounded_number(event.get("duration_ms", 0)),
+            "queue_wait_ms": queue_wait_ms,
+            "queue_age_ms": _bounded_number(event.get("queue_age_ms", queue_wait_ms)),
             "wait_count": max(0, int(event.get("wait_count", 0) or 0)),
             "wait_duration_ms": max(0.0, float(event.get("wait_duration_ms", 0) or 0)),
             "service_ms": max(0.0, float(event.get("service_ms", 0) or 0)),
@@ -421,8 +507,12 @@ class TelemetryStore:
             "degraded": 1 if event.get("degraded") else 0,
             "retry_count": max(0, int(event.get("retry_count", 0) or 0)),
             "fallback_used": 1 if event.get("fallback_used") else 0,
-            "error_type": str(event.get("error_type", ""))[:120],
-            "error_fingerprint": str(event.get("error_fingerprint", ""))[:32],
+            "bypass_reason": _safe_metadata(event.get("bypass_reason", ""), 80),
+            "terminal": _outcome_flag(event, "terminal"),
+            "retryable": _outcome_flag(event, "retryable"),
+            "receipt_count": _receipt_count(event),
+            "error_type": _safe_metadata(event.get("error_type", ""), 120),
+            "error_fingerprint": _safe_metadata(event.get("error_fingerprint", ""), 32),
             "tool_calls": max(0, int(event.get("tool_calls", 0) or 0)),
             "evidence_count": max(0, int(event.get("evidence_count", 0) or 0)),
             "response_bytes": max(0, int(event.get("response_bytes", 0) or 0)),
@@ -451,7 +541,8 @@ class TelemetryStore:
             "action", "stage", "task_type", "complexity", "route", "model",
             "cache_hit", "coalesced", "cache_layer", "duration_ms", "queue_wait_ms", "wait_count", "wait_duration_ms",
             "service_ms", "load_duration_ms", "success", "status_code", "degraded",
-            "retry_count", "fallback_used", "error_type", "error_fingerprint",
+            "retry_count", "fallback_used", "bypass_reason", "queue_age_ms", "terminal", "retryable", "receipt_count",
+            "error_type", "error_fingerprint",
             "tool_calls", "evidence_count", "response_bytes", "component", "operation",
             "fingerprint", "retryable", "recovered", "name", "metrics_json",
             "preprocessed_hit",
@@ -607,6 +698,15 @@ class TelemetryStore:
             "active_request_count": len(active_requests), "active_requests": active_requests,
             "live_cursor": self._live_seq,
             "recent_http": report.get("recent_http", []) if isinstance(report, dict) else [],
+            "window": history.get("window", {"scope": scope}),
+            "counts": history.get("counts", {}),
+            "routes": history.get("routes", []),
+            "cache": history.get("cache", []),
+            "bypass": history.get("bypass", []),
+            "errors": history.get("errors", {}),
+            "queue": history.get("queue", {}),
+            "detail": history.get("detail", {}),
+            "decision_grade": history.get("decision_grade", {}),
         }
 
     def record(self, **event: Any) -> None:
@@ -1159,6 +1259,117 @@ class TelemetryStore:
             }
         return result
 
+    def _decision_grade(self, con: sqlite3.Connection, cutoff: float) -> dict[str, Any]:
+        """Return bounded, metadata-only aggregates for operational decisions."""
+        limit = _DECISION_DETAIL_LIMIT
+        route_rows = con.execute(
+            """SELECT route,COUNT(*),COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0),
+                      COALESCE(AVG(duration_ms),0)
+               FROM events WHERE created_at>=? AND route<>''
+               GROUP BY route ORDER BY COUNT(*) DESC,route LIMIT ?""",
+            (cutoff, limit + 1),
+        ).fetchall()
+        cache_rows = con.execute(
+            """SELECT CASE WHEN cache_layer='' THEN 'uncategorized' ELSE cache_layer END,
+                      COUNT(*),COALESCE(SUM(cache_hit),0),COALESCE(SUM(coalesced),0)
+               FROM events WHERE created_at>=?
+               GROUP BY cache_layer ORDER BY COUNT(*) DESC,cache_layer LIMIT ?""",
+            (cutoff, limit + 1),
+        ).fetchall()
+        bypass_rows = con.execute(
+            """SELECT bypass_reason,COUNT(*) FROM events
+               WHERE created_at>=? AND bypass_reason<>''
+               GROUP BY bypass_reason ORDER BY COUNT(*) DESC,bypass_reason LIMIT ?""",
+            (cutoff, limit + 1),
+        ).fetchall()
+        queue_rows = con.execute(
+            "SELECT queue_age_ms FROM events WHERE created_at>=? AND queue_age_ms>0 ORDER BY id DESC LIMIT 1000",
+            (cutoff,),
+        ).fetchall()
+        outcome = con.execute(
+            """SELECT COALESCE(SUM(CASE WHEN terminal=1 THEN 1 ELSE 0 END),0),
+                      COALESCE(SUM(CASE WHEN retryable=1 THEN 1 ELSE 0 END),0),
+                      COALESCE(SUM(CASE WHEN terminal>=0 THEN 1 ELSE 0 END),0),
+                      COALESCE(SUM(CASE WHEN retryable>=0 THEN 1 ELSE 0 END),0)
+               FROM events WHERE created_at>=?""",
+            (cutoff,),
+        ).fetchone()
+        receipts = con.execute(
+            """SELECT COALESCE(SUM(receipt_count),0),
+                      COALESCE(SUM(CASE WHEN receipt_count>0 THEN 1 ELSE 0 END),0),
+                      COALESCE(MAX(receipt_count),0)
+               FROM events WHERE created_at>=?""",
+            (cutoff,),
+        ).fetchone()
+        total = int(con.execute("SELECT COUNT(*) FROM events WHERE created_at>=?", (cutoff,)).fetchone()[0] or 0)
+        cache_hits = int(con.execute("SELECT COALESCE(SUM(cache_hit),0) FROM events WHERE created_at>=?", (cutoff,)).fetchone()[0] or 0)
+        bypass_total = int(con.execute("SELECT COUNT(*) FROM events WHERE created_at>=? AND bypass_reason<>''", (cutoff,)).fetchone()[0] or 0)
+        truncated = any(len(rows) > limit for rows in (route_rows, cache_rows, bypass_rows))
+        queue_ages = [float(row[0] or 0) for row in queue_rows]
+        routes = [
+            {"route": str(row[0]), "events": int(row[1]), "failures": int(row[2]), "avg_ms": round(float(row[3]), 1)}
+            for row in route_rows[:limit]
+        ]
+        cache = [
+            {
+                "layer": str(row[0]), "events": int(row[1]), "hits": int(row[2]),
+                "coalesced": int(row[3]), "hit_rate": round(int(row[2]) / int(row[1]), 4) if row[1] else 0.0,
+            }
+            for row in cache_rows[:limit]
+        ]
+        bypass = [{"reason": str(row[0]), "events": int(row[1])} for row in bypass_rows[:limit]]
+        return {
+            "counts": {
+                "events": total, "cache_hits": cache_hits, "bypasses": bypass_total,
+                "terminal": int(outcome[0]), "retryable": int(outcome[1]), "receipts": int(receipts[0]),
+                "cache_hit_count": cache_hits, "bypass_count": bypass_total,
+                "terminal_count": int(outcome[0]), "retryable_count": int(outcome[1]),
+                "receipt_count": int(receipts[0]),
+            },
+            "routes": routes,
+            "cache": cache,
+            "bypass": bypass,
+            "queue": {
+                "events": len(queue_ages),
+                "avg_age_ms": round(sum(queue_ages) / len(queue_ages), 1) if queue_ages else 0.0,
+                "p95_age_ms": _percentile(queue_ages, 0.95),
+                "max_age_ms": round(max(queue_ages), 1) if queue_ages else 0.0,
+                "avg_queue_age_ms": round(sum(queue_ages) / len(queue_ages), 1) if queue_ages else 0.0,
+                "p95_queue_age_ms": _percentile(queue_ages, 0.95),
+                "max_queue_age_ms": round(max(queue_ages), 1) if queue_ages else 0.0,
+            },
+            "outcomes": {
+                "terminal": int(outcome[0]), "retryable": int(outcome[1]),
+                "terminal_known": int(outcome[2]), "retryable_known": int(outcome[3]),
+            },
+            "receipts": {
+                "events": int(receipts[1]), "total": int(receipts[0]), "max_per_event": int(receipts[2]),
+            },
+            "errors": {"failures": int(con.execute(
+                "SELECT COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0) FROM events WHERE created_at>=?",
+                (cutoff,),
+            ).fetchone()[0] or 0)},
+            "_truncated": truncated,
+        }
+
+    @staticmethod
+    def _detail_status(*, truncated: bool, flush_complete: bool, writer: dict[str, Any]) -> dict[str, Any]:
+        incomplete = bool(truncated or not flush_complete or writer.get("dropped") or writer.get("writer_errors"))
+        omitted: list[str] = []
+        if truncated:
+            omitted.append("decision_grade_lists")
+        if not flush_complete:
+            omitted.append("pending_events")
+        if writer.get("dropped") or writer.get("writer_errors"):
+            omitted.append("writer_failures")
+        return {
+            "status": "incomplete" if incomplete else "complete",
+            "truncated": bool(truncated),
+            "incomplete": incomplete,
+            "omitted_sections": omitted,
+            "list_limit": _DECISION_DETAIL_LIMIT,
+        }
+
     def summary(self, days: int = 30, *, scope: str = "window", _flush: bool = True) -> dict[str, Any]:
         if not self.enabled:
             return {"enabled": False}
@@ -1172,8 +1383,9 @@ class TelemetryStore:
         cached = self._summary_cache.get(key)
         if cached and now - cached["time"] < 3.0:
             return dict(cached["data"])
+        flush_complete = True
         if _flush:
-            self.flush(0.5)
+            flush_complete = self.flush(0.5)
         with closing(self._connect()) as con:
             row = con.execute(
                 """SELECT COUNT(*), COALESCE(SUM(cache_hit),0), COALESCE(SUM(coalesced),0),
@@ -1279,6 +1491,7 @@ class TelemetryStore:
                    ) GROUP BY source ORDER BY 2 DESC""",
                 (cutoff, cutoff),
             ).fetchall()
+            decision_grade = self._decision_grade(con, cutoff)
         total = int(row[0]); cached = int(row[1]); http_total = int(http[0])
         cache_domains: dict[str, dict[str, Any]] = {}
         for domain, events, hits, coalesced in cache_domains_rows:
@@ -1341,6 +1554,11 @@ class TelemetryStore:
         with self._stats_lock:
             writer = dict(self._stats)
         writer["queue_depth"] = self._queue.qsize()
+        decision_grade["detail"] = self._detail_status(
+            truncated=bool(decision_grade.pop("_truncated", False)),
+            flush_complete=flush_complete,
+            writer=writer,
+        )
         res = {
             "enabled": True, "window_days": max(1, int(days)), "scope": scope,
             "process_started_at": self.process_started_at if scope == "process" else None, "events": total,
@@ -1402,6 +1620,15 @@ class TelemetryStore:
                 "command_calls": int(tool_http[2]), "repo_calls": int(tool_http[3]),
             },
             "writer": writer,
+            "window": {"days": max(1, int(days)), "scope": scope, "events": total},
+            "counts": decision_grade["counts"],
+            "routes": decision_grade["routes"],
+            "cache": decision_grade["cache"],
+            "bypass": decision_grade["bypass"],
+            "errors": decision_grade["errors"],
+            "queue": decision_grade["queue"],
+            "detail": decision_grade["detail"],
+            "decision_grade": decision_grade,
         }
         self._summary_cache[key] = {"time": now, "data": res}
         return res
@@ -1410,8 +1637,9 @@ class TelemetryStore:
         """Produce a prompt/source-free diagnostic report suitable for sharing."""
         if not self.enabled:
             return {"enabled": False}
+        flush_complete = True
         if _flush:
-            self.flush(1.0)
+            flush_complete = self.flush(1.0)
         days = max(1, min(int(days), self.rollup_retention_days))
         cutoff, scope = self._scope_cutoff(days, scope)
         with closing(self._connect()) as con:
@@ -1527,8 +1755,8 @@ class TelemetryStore:
             "scope": scope,
             "process_started_at": self.process_started_at if scope == "process" else None,
             "privacy": {
-                "prompts_stored": False, "source_text_stored": False, "model_output_stored": False,
-                "error_messages": "sanitized paths/tokens; max 500 chars",
+                "mode": "metadata_only", "payloads": "not_stored",
+                "labels": "bounded and sanitized", "error_messages": "sanitized paths/tokens; max 500 chars",
             },
             "summary": summary,
             "token_efficiency": {
@@ -1605,6 +1833,19 @@ class TelemetryStore:
             ],
             "evaluation": evaluation,
             "hotspots": hotspots,
+            "window": summary.get("window", {"days": days, "scope": scope}),
+            "counts": summary.get("counts", {}),
+            "routes": summary.get("routes", []),
+            "cache": summary.get("cache", []),
+            "bypass": summary.get("bypass", []),
+            "errors": summary.get("errors", {}),
+            "queue": summary.get("queue", {}),
+            "detail": self._detail_status(
+                truncated=bool(summary.get("detail", {}).get("truncated", False)),
+                flush_complete=flush_complete,
+                writer=summary.get("writer", {}),
+            ),
+            "decision_grade": summary.get("decision_grade", {}),
         }
 
     def tail(self, limit: int = 20) -> list[dict[str, Any]]:

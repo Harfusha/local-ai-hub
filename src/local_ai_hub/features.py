@@ -36,6 +36,7 @@ class FeatureSet:
         art = cfg.get("artifacts", {})
         prep = cfg.get("preprocessing", {})
         work = cfg.get("work_orchestrator", {})
+        speculative = cfg.get("speculative_lint", {})
 
         # Primary tool toggles
         self.status: bool = bool(feat.get("status", True))
@@ -90,6 +91,7 @@ class FeatureSet:
         self.batch_replacement: bool = rollout_feature_enabled(cfg, "batch_replacement")
         self.diagnostic_artifacts: bool = rollout_feature_enabled(cfg, "diagnostic_artifacts")
         self.local_diagnostic_dispatch: bool = rollout_feature_enabled(cfg, "local_diagnostic_dispatch")
+        self.speculative_lint: bool = bool(speculative.get("enabled", False)) if isinstance(speculative, dict) else False
 
         # Model names — used in descriptions and routing
         self.fast_model: str = str(mdl.get("fast_code", "qwen2.5-coder:1.5b"))
@@ -241,7 +243,7 @@ class FeatureSet:
         """Return list of valid local_ai_command actions supported by active broker."""
         if not self.commands:
             return []
-        return [
+        actions = [
             "run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix",
             "run_affected", "format", "lint_fix", "spawn_daemon", "daemon_status", "stop_daemon",
             "http_probe", "stash_save", "stash_restore", "record_mock", "replay_mock",
@@ -249,6 +251,9 @@ class FeatureSet:
             "mock_server", "mock_server_start", "mock_server_stop", "mock_server_status",
             "patch_and_verify", "preflight",
         ]
+        if self.speculative_lint:
+            actions.append("speculative_lint")
+        return actions
 
     def semantic_hint(self) -> str:
         """Short label for the semantic action(s) available."""

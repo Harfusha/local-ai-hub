@@ -8,10 +8,10 @@ existing semantic projection and keeps exact detail behind artifact/evidence IDs
 """
 
 from hashlib import sha256
-from typing import Any
+from typing import Any, Mapping
 
 from .compact import compact_result, syntax_aware_truncate
-from .token_accounting import json_tokens
+from .token_accounting import json_tokens, token_efficiency_metadata
 
 
 _POINTER_KEYS = (
@@ -112,6 +112,7 @@ def _with_budget_meta(
     original: int,
     reused: bool = False,
     protected_keys: tuple[str, ...] = (),
+    token_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     value["response_budget"] = {
         "requested_tokens": requested,
@@ -120,7 +121,10 @@ def _with_budget_meta(
         "truncated": True,
         "reused": reused,
     }
-    _fit_to_tokens(value, requested, protected_keys=protected_keys)
+    effective_protected = protected_keys
+    if token_metadata is not None:
+        value["token_efficiency"] = token_efficiency_metadata(token_metadata)
+    _fit_to_tokens(value, requested, protected_keys=effective_protected)
     value["response_budget"]["returned_tokens"] = min(requested, json_tokens(value))
     return value
 
@@ -145,6 +149,13 @@ def _budget_rejection(*, requested: int, original: int) -> dict[str, Any]:
         value["response_budget"]["returned_tokens"] = json_tokens(value)
         return value
     return {"success": False, "error": "max_response_tokens too small"}
+
+
+def _bounded_result(result: Any, *, requested: int, original: int) -> Any:
+    """Never let envelope metadata invalidate the advertised hard budget."""
+    if json_tokens(result) <= requested:
+        return result
+    return _budget_rejection(requested=requested, original=original)
 
 
 def result_id(value: Any) -> str:
@@ -183,6 +194,7 @@ def budget_response(
     reuse_key: str = "",
     reuse_only: bool = False,
     protected_keys: tuple[str, ...] = (),
+    token_metadata: Mapping[str, Any] | None = None,
 ) -> Any:
     """Apply a hard aggregate estimate to an already projected MCP value."""
     requested = _safe_limit(max_tokens, 1200)
@@ -201,10 +213,9 @@ def budget_response(
             original=original,
             reused=True,
             protected_keys=protected_keys,
+            token_metadata=token_metadata,
         )
-        if protected_keys and json_tokens(result) > requested:
-            return _budget_rejection(requested=requested, original=original)
-        return result
+        return _bounded_result(result, requested=requested, original=original) if protected_keys or json_tokens(result) > requested else result
     if original <= requested:
         return value
 
@@ -236,9 +247,13 @@ def budget_response(
                     requested=requested,
                     original=original,
                     protected_keys=protected_keys,
+                    token_metadata=token_metadata,
                 )
-                if json_tokens(result) <= requested or not protected_keys:
+                if json_tokens(result) <= requested:
                     return result
+                if not protected_keys:
+                    return _bounded_result(result, requested=requested, original=original)
+                continue
             return candidate
 
     envelope = _pointer_envelope(
@@ -252,7 +267,6 @@ def budget_response(
         requested=requested,
         original=original,
         protected_keys=protected_keys,
+        token_metadata=token_metadata,
     )
-    if protected_keys and json_tokens(result) > requested:
-        return _budget_rejection(requested=requested, original=original)
-    return result
+    return _bounded_result(result, requested=requested, original=original)

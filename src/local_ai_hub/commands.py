@@ -1034,7 +1034,12 @@ class CommandBroker:
                 except Exception:
                     pass
 
-        drain_deadline = time.monotonic() + self.post_kill_drain_seconds
+        # A successful child can exit before the reader/callback threads finish
+        # publishing their last SSE/event chunks.  Keep the drain bounded, but
+        # give callback delivery a small scheduler-load margin so callers never
+        # observe a successful command before its final stream evidence exists.
+        drain_seconds = max(self.post_kill_drain_seconds, 5.0)
+        drain_deadline = time.monotonic() + drain_seconds
         t_out.join(timeout=max(0.0, drain_deadline - time.monotonic()))
         t_err.join(timeout=max(0.0, drain_deadline - time.monotonic()))
         try:

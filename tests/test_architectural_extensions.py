@@ -243,6 +243,22 @@ def test_deterministic_code_complexity(tmp_path: Path):
     assert top["cognitive_complexity"] >= 6
 
 
+def test_code_complexity_excludes_test_tree_by_default(tmp_path: Path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "app.py").write_text("def production():\n    if True:\n        return 1\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_app.py").write_text("def fixture():\n    if True:\n        return 1\n", encoding="utf-8")
+
+    engine = DeterministicEngine({"server": {"state_dir": str(tmp_path)}})
+    production = engine.code_complexity(str(tmp_path))
+    with_tests = engine.code_complexity(str(tmp_path), include_tests=True)
+
+    assert production["include_tests"] is False
+    assert all(not item["file"].startswith("tests\\") for item in production["functions"])
+    assert with_tests["include_tests"] is True
+    assert any(item["file"].startswith("tests\\") for item in with_tests["functions"])
+
+
 def test_deterministic_extract_api_spec(tmp_path: Path):
     api_file = tmp_path / "routes.py"
     api_file.write_text(

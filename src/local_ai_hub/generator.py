@@ -856,6 +856,8 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "path": {"type": "string", "default": ""},
                     "task": {"type": "string", "default": ""},
                     "task_id": {"type": "string", "default": ""},
+                    "include_code": {"type": "boolean", "default": False},
+                    "include_tests": {"type": "boolean", "default": False},
                     "phase": {"type": "string", "default": ""},
                     "focus": {"type": "array", "items": {"type": "string"}},
                     "preload_profile": {"type": "string", "default": ""},

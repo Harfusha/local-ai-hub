@@ -1,5 +1,12 @@
 # Changelog
 
+## 4.0.0 — 2026-09-21
+
+- Unified task context joins Agent OS state, repository evidence, revisions, freshness and bounded deltas.
+- Deterministic quality gates keep local-model output advisory and reject irrelevant, queued, malformed or unverified claims.
+- Added shell-safe command transport, review queue SLA, root-family budgets, context reuse and receipt-gated completion.
+- Added the 3.0 → 4.0 migration contract and rollback checklist.
+
 ## Unreleased
 
 - Register the managed Python package so global CLI commands work outside the checkout.

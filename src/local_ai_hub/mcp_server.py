@@ -25,7 +25,8 @@ from local_ai_hub.config import load_config
 from local_ai_hub.features import FeatureSet
 from local_ai_hub.ollama_subagents import OllamaSubagentCatalog
 from local_ai_hub.process_utils import canonical_root, is_rooted_path
-from local_ai_hub.token_accounting import account_projection, attach_accounting, finalize_tool_accounting, json_tokens, pop_accounting
+from local_ai_hub.token_accounting import account_projection, attach_accounting, context_digest, finalize_tool_accounting, json_tokens, pop_accounting
+from local_ai_hub.trace_context import efficiency_metadata, reset_metadata, set_metadata
 from local_ai_hub.adoption_metrics import AdoptionMetricsStore
 from local_ai_hub.routing import semantic_handoff_hint
 from local_ai_hub.state_paths import configured_state_dir
@@ -671,6 +672,7 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
             profile=profile,
             reuse_key=reuse_key,
             reuse_only=repeated and json_tokens(compacted) > requested // 2,
+            token_metadata=efficiency_metadata(),
         )
     return _normalize_deterministic(account_projection(raw_value, compacted))
 
@@ -930,12 +932,24 @@ def _instrumented_tool():
                 "reuse_key": arguments.get("reuse_key", ""),
                 "tool": fn.__name__,
             })
+            metadata_token = set_metadata(
+                task_id=arguments.get("task_id", ""),
+                parent_task=arguments.get("parent_task_id", ""),
+                phase=arguments.get("phase", ""),
+                activity=f"{fn.__name__}:{arguments.get('action', 'default')}",
+                revision=arguments.get("repository_revision") or arguments.get("repo_revision", ""),
+                context_digest=context_digest(arguments.get("context", "")) if arguments.get("context") else "",
+                fanout_count=len(arguments.get("tasks") or []) if isinstance(arguments.get("tasks"), list) else 0,
+            )
+            metadata = {}
             try:
                 result = fn(*args, **kwargs)
             except Exception:
                 _record_adoption(fn.__name__, arguments, None, (time.monotonic() - started) * 1000, failed=True)
                 raise
             finally:
+                metadata = efficiency_metadata()
+                reset_metadata(metadata_token)
                 if token is not None:
                     _CURRENT_EXTRA_FIELDS.reset(token)
                 _CURRENT_RESPONSE_OPTIONS.reset(response_token)
@@ -969,6 +983,7 @@ def _instrumented_tool():
                 event = finalize_tool_accounting(
                     tool_name=fn.__name__, arguments=arguments, response=clean, measured=measured,
                     schema_tokens_est=_tool_catalog_schema_tokens(),
+                    metadata=metadata,
                 )
                 event.update({"tenant": TENANT, "agent": AGENT_NAME, "created_at": time.time()})
                 CONTEXT_LEDGER.record(
@@ -1556,6 +1571,7 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
             profile=profile,
             reuse_key=reuse_key,
             protected_keys=tuple(authoritative),
+            token_metadata=efficiency_metadata(),
         )
     return _normalize_deterministic(final)
 
@@ -1580,6 +1596,7 @@ def _local_ai_repo_impl(
     receipt: dict[str, Any] | None = None,
     task_id: str = "",
     include_code: bool = False,
+    include_tests: bool = False,
     edits: list[dict[str, Any]] | None = None,
     extra_fields: list[str] | None = None,
     max_response_tokens: int = 0,
@@ -1884,6 +1901,7 @@ def _local_ai_repo_impl(
     if action == "complexity":
         return _compact(CLIENT.post("/api/repo/complexity", {
             "root": root, "path": path or query or task or None, "max_results": max_tokens or 20,
+            "include_tests": bool(include_tests),
         }, timeout=_timeout("quick")), "architecture")
     if action == "api_spec":
         return _compact(CLIENT.post("/api/repo/api_spec", {
@@ -1970,6 +1988,7 @@ def local_ai_repo(
     receipt: dict[str, Any] | None = None,
     task_id: str = "",
     include_code: bool = False,
+    include_tests: bool = False,
     edits: list[dict[str, Any]] | None = None,
     extra_fields: list[str] | None = None,
     max_response_tokens: int = 0,
@@ -1996,7 +2015,7 @@ def local_ai_repo(
     return _local_ai_repo_impl(
         action, root, query, diff, task, workspace, path, base, staged, dry_run,
         max_tokens, evidence, mode, relation, language, profile, receipt, task_id,
-        include_code, edits, extra_fields, max_response_tokens, response_profile, reuse_key,
+        include_code, include_tests, edits, extra_fields, max_response_tokens, response_profile, reuse_key,
         include_diagnostics, clone_id, worktree_id, branch, repository_id, session_id, repository_revision,
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
         token_budget,

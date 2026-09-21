@@ -5682,7 +5682,9 @@ def test_{sym}_regression_edge_cases():
             "stub_lines": len(stub_lines),
         }
 
-    def code_complexity(self, root: str, path: str | None = None, max_results: int = 20) -> dict[str, Any]:
+    def code_complexity(
+        self, root: str, path: str | None = None, max_results: int = 20, include_tests: bool = False
+    ) -> dict[str, Any]:
         """Compute McCabe cyclomatic and cognitive complexity metrics per function/method."""
         p_root = Path(root).expanduser().resolve(strict=False)
         targets: list[Path] = []
@@ -5695,7 +5697,8 @@ def test_{sym}_regression_edge_cases():
         else:
             skip_dirs = {".git", ".venv", "venv", "node_modules", "__pycache__"}
             for p in p_root.rglob("*.py"):
-                if not any(part in skip_dirs for part in p.parts):
+                is_test_path = "tests" in p.parts or p.name.startswith("test_")
+                if not any(part in skip_dirs for part in p.parts) and (include_tests or not is_test_path):
                     targets.append(p)
                 if len(targets) >= 50:
                     break
@@ -5757,6 +5760,7 @@ def test_{sym}_regression_edge_cases():
             "files_analyzed": len(targets),
             "total_functions": len(results),
             "high_risk_count": sum(1 for r in results if r["risk"] == "high"),
+            "include_tests": bool(include_tests),
             "functions": results[:max(1, min(int(max_results), 100))],
         }
 

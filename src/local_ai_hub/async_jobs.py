@@ -3,6 +3,7 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -15,6 +16,7 @@ from .cache import stable_hash
 from .debug_traces import DebugTraceObserver
 from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
 from .trace_context import reset_observer, set_observer
+from .process_utils import terminate_tree
 
 
 class AsyncJobManager:
@@ -40,6 +42,7 @@ class AsyncJobManager:
         self.lease_seconds = max(30.0, float(cfg.get("lease_seconds", 900)))
         self.result_ttl_seconds = max(60.0, float(cfg.get("result_ttl_seconds", 259200)))
         self.max_attempts = max(1, int(cfg.get("max_attempts", 2)))
+        self.stats_max_items = max(1, min(256, int(cfg.get("stats_max_items", 32))))
         self.scheduler, self.artifacts, self.executor, self.debug_traces = scheduler, artifacts, executor, debug_traces
         self.task_store = task_store
         self.verification_store = verification_store
@@ -51,6 +54,7 @@ class AsyncJobManager:
         self._delayed_dispatch: dict[str, threading.Timer] = {}
         self._dispatchers: set[threading.Thread] = set()
         self._workers: set[threading.Thread] = set()
+        self._processes: dict[str, list[Any]] = {}
         self._shutdown = threading.Event()
         self._stats = {"submitted": 0, "coalesced": 0, "completed": 0, "failed": 0, "cancelled": 0, "recovered": 0, "expired": 0}
         self._initialized = False
@@ -104,6 +108,68 @@ class AsyncJobManager:
         with self._lock:
             return self._events.setdefault(job_id, threading.Event())
 
+    @staticmethod
+    def _admission(state: str, reason: str, *, retryable: bool, queue_age_ms: float = 0.0) -> dict[str, Any]:
+        return {
+            "state": state, "reason": reason, "queue_age_ms": max(0.0, round(float(queue_age_ms), 1)),
+            "retryable": bool(retryable),
+        }
+
+    def _resource_admission(self) -> dict[str, Any]:
+        provider = getattr(self.scheduler, "resource_status", None) or getattr(self.scheduler, "_resource_status", None)
+        resource: dict[str, Any] = {}
+        if callable(provider):
+            try:
+                value = provider()
+                if isinstance(value, dict):
+                    resource = value
+            except Exception:
+                pass
+        pressure = str(resource.get("pressure_level", "nominal") or "nominal").lower()
+        try:
+            factor = max(0.0, min(1.0, float(resource.get("context_budget_factor", 1.0))))
+        except (TypeError, ValueError, OverflowError):
+            factor = 1.0
+        if pressure == "critical" or (pressure == "high" and bool(resource.get("throttle_background", False))):
+            return {**self._admission("rejected", "resource_pressure", retryable=True), "pressure_level": pressure, "context_budget_factor": factor}
+        if pressure in {"moderate", "high"} or factor < 1.0:
+            return {**self._admission("degraded", "resource_pressure", retryable=False), "pressure_level": pressure, "context_budget_factor": factor}
+        return self._admission("accepted", "capacity_available", retryable=False)
+
+    def register_process(self, job_id: str, process_or_pid: Any) -> None:
+        """Register child process so cancellation/close can terminate its process tree."""
+        with self._lock:
+            processes = self._processes.setdefault(str(job_id), [])
+            if not any(existing is process_or_pid for existing in processes):
+                processes.append(process_or_pid)
+
+    def _cleanup_processes(self, job_id: str) -> None:
+        with self._lock:
+            processes = list(self._processes.pop(str(job_id), []))
+        for process in processes:
+            if hasattr(process, "poll") and hasattr(process, "terminate"):
+                try:
+                    if process.poll() is None:
+                        process.terminate()
+                        process.wait(timeout=1.0)
+                    continue
+                except Exception:
+                    try:
+                        process.kill()
+                        process.wait(timeout=1.0)
+                    except Exception:
+                        pass
+                    continue
+            try:
+                pid = int(getattr(process, "pid", process))
+            except (TypeError, ValueError):
+                continue
+            if pid > 0 and pid != os.getpid():
+                try:
+                    terminate_tree(pid, grace_seconds=1.0)
+                except Exception:
+                    pass
+
     def _dispatch_background(self, job_id: str) -> None:
         """Start scheduler admission off the request thread."""
         def run() -> None:
@@ -139,10 +205,16 @@ class AsyncJobManager:
             existing = con.execute("SELECT job_id,state,trace_id,task_id FROM async_jobs WHERE tenant=? AND request_hash=? AND state IN ('queued','running')", (tenant, request_hash)).fetchone()
             if existing:
                 self._stats["coalesced"] += 1
-                return {"success": True, "job_id": existing[0], "trace_id": str(existing[2] or ""), "task_id": str(existing[3] or ""), "state": existing[1], "coalesced": True}
+                age_ms = max(0.0, (now - float(con.execute("SELECT created_at FROM async_jobs WHERE job_id=?", (existing[0],)).fetchone()[0])) * 1000.0)
+                admission = self._admission("coalesced", "duplicate_active_job", retryable=False, queue_age_ms=age_ms)
+                return {"success": True, "job_id": existing[0], "trace_id": str(existing[2] or ""), "task_id": str(existing[3] or ""), "state": existing[1], "coalesced": True, "admission": admission, "admission_state": admission["state"]}
+            admission = self._resource_admission()
+            if admission["state"] == "rejected":
+                return {"success": False, "state": "rejected", "error": "async job admission rejected by resource pressure", "admission": admission, "admission_state": admission["state"], "terminal": False, "retryable": True, "coalesced": False}
             pending = int(con.execute("SELECT COUNT(*) FROM async_jobs WHERE state IN ('queued','running')").fetchone()[0])
             if pending >= self.max_pending:
-                return {"success": False, "error": "async job queue limit reached", "retryable": True}
+                admission = self._admission("rejected", "queue_limit", retryable=True)
+                return {"success": False, "state": "rejected", "error": "async job queue limit reached", "admission": admission, "admission_state": admission["state"], "terminal": False, "retryable": True, "coalesced": False}
             job_id = uuid.uuid4().hex
             con.execute("INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at,task_id) VALUES(?,?,?,?,?,'queued',?,?,?,?)", (job_id, tenant, action, request_hash, encoded, now, now, now + self.result_ttl_seconds, task_id))
             con.commit()
@@ -167,7 +239,7 @@ class AsyncJobManager:
             timer.start()
         else:
             self._dispatch_background(job_id)
-        return {"success": True, "job_id": job_id, "trace_id": trace_id, "task_id": task_id, "state": "queued", "coalesced": False}
+        return {"success": True, "job_id": job_id, "trace_id": trace_id, "task_id": task_id, "state": "queued", "coalesced": False, "admission": admission, "admission_state": admission["state"]}
 
     def _row(self, tenant: str, job_id: str) -> sqlite3.Row | None:
         def read() -> sqlite3.Row | None:
@@ -231,8 +303,13 @@ class AsyncJobManager:
         with self._lock, closing(self._connect()) as con:
             con.row_factory = sqlite3.Row
             row = con.execute("SELECT * FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
-            if not row or row["state"] != "queued" or row["cancel_requested"]:
-                return {"success": False, "error": "async job cancelled before execution", "terminal": True}
+            if not row:
+                return {"success": False, "error": "async job cancelled before execution (job not found)", "terminal": True, "retryable": False}
+            current_state = str(row["state"])
+            if current_state != "queued" or row["cancel_requested"]:
+                cancelled = bool(row["cancel_requested"]) or current_state == "cancelled"
+                state = "cancelled" if cancelled else current_state
+                return {"success": False, "job_id": job_id, "state": state, "error": "async job cancelled before execution" if cancelled else "async job is not queued", "terminal": state in {"failed", "cancelled", "expired", "done"}, "retryable": state in {"queued", "running"}, "admission": self._admission("accepted", "capacity_available", retryable=False)}
             con.execute("UPDATE async_jobs SET state='running',attempts=attempts+1,lease_until=?,updated_at=? WHERE job_id=?", (time.time() + self.lease_seconds, time.time(), job_id))
             con.commit()
             tenant, action, payload, trace_id = str(row["tenant"]), str(row["action"]), json.loads(str(row["payload_json"])), str(row["trace_id"] or "")
@@ -263,6 +340,9 @@ class AsyncJobManager:
             result = {"success": False, "error": str(exc), "retryable": True}
         finally:
             reset_observer(observer_token)
+            self._cleanup_processes(job_id)
+        if result.get("success") and str(result.get("state", "")) in {"queued", "running"}:
+            result = {"success": False, "error": "async executor returned non-terminal state", "retryable": True}
         with self._lock, closing(self._connect()) as con:
             cur_cancel = con.execute("SELECT cancel_requested FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
             cancelled = bool(cur_cancel[0]) if cur_cancel else False
@@ -351,7 +431,9 @@ class AsyncJobManager:
             "terminal": state in {"failed", "cancelled", "expired"},
             "retryable": state in {"queued", "running"},
             "next_action": "wait_or_result" if state in {"queued", "running"} else "inspect_result",
+            "admission": self._admission("accepted", "capacity_available", retryable=False, queue_age_ms=(time.time() - float(row["created_at"])) * 1000.0),
         }
+        result["admission_state"] = result["admission"]["state"]
         if "trace_id" in row.keys(): result["trace_id"] = str(row["trace_id"] or "")
         return result
 
@@ -393,12 +475,17 @@ class AsyncJobManager:
             state = str(row[0])
             trace_id = str(row[1] or "")
             if state in {"done", "failed", "cancelled", "expired"}: return {"success": False, "job_id": job_id, "state": state, "error": "async job is already terminal", "terminal": True, "retryable": False}
-            con.execute("UPDATE async_jobs SET cancel_requested=1,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,updated_at=? WHERE job_id=?", (time.time(), job_id)); con.commit()
-        self._stats["cancelled"] += 1; self._event(job_id).set()
+            changed = con.execute("UPDATE async_jobs SET cancel_requested=1,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,updated_at=? WHERE job_id=? AND cancel_requested=0", (time.time(), job_id)).rowcount
+            con.commit()
+        self._cleanup_processes(job_id)
+        if changed:
+            self._stats["cancelled"] += 1
+        self._event(job_id).set()
         if self.debug_traces is not None and trace_id and state == "queued":
             try: self.debug_traces.finish(trace_id, state="cancelled", error="async job cancelled before execution")
             except Exception: pass
-        return {"success": True, "job_id": job_id, "state": "cancelled" if state == "queued" else "running", "cancel_requested": True}
+        admission = self._admission("accepted", "capacity_available", retryable=False)
+        return {"success": True, "job_id": job_id, "state": "cancelled" if state == "queued" else "running", "cancel_requested": True, "admission": admission, "admission_state": admission["state"]}
 
     def recover(self) -> int:
         if self._shutdown.is_set():
@@ -474,10 +561,15 @@ class AsyncJobManager:
             dispatchers = list(self._dispatchers)
             delayed = list(self._delayed_dispatch.values())
             self._delayed_dispatch.clear()
+        with self._lock, closing(self._connect()) as con:
+            con.execute("UPDATE async_jobs SET cancel_requested=1,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,updated_at=? WHERE state IN ('queued','running')", (time.time(),))
+            con.commit()
         for timer in delayed:
             timer.cancel()
         for event in waiters:
             event.set()
+        for job_id in list(self._processes):
+            self._cleanup_processes(job_id)
         deadline = time.monotonic() + 1.5
         current = threading.current_thread()
         for worker in dispatchers + workers:
@@ -495,7 +587,8 @@ class AsyncJobManager:
         def read() -> dict[str, int]:
             with closing(self._connect()) as con:
                 return {str(state): int(count) for state, count in con.execute("SELECT state,COUNT(*) FROM async_jobs GROUP BY state")}
-        counts = retry_busy(read, retries=3)
+        all_counts = retry_busy(read, retries=3)
+        counts = dict(sorted(all_counts.items())[: self.stats_max_items])
         with self._lock:
             current_stats = dict(self._stats)
-        return {"enabled": self.enabled, "counts": counts, "wait_max_seconds": self.wait_max_seconds, **current_stats}
+        return {"enabled": self.enabled, "counts": counts, "counts_total": len(all_counts), "counts_truncated": len(all_counts) > self.stats_max_items, "counts_limit": self.stats_max_items, "wait_max_seconds": self.wait_max_seconds, **current_stats}
