@@ -156,6 +156,11 @@ class TaskState:
     verification_receipts: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        stale = bool(
+            self.heartbeat_expires_at > 0
+            and self.heartbeat_expires_at < time.time()
+            and self.status not in {TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.FAILED}
+        )
         return {
             "task_id": self.task_id,
             "status": self.status.value,
@@ -175,6 +180,8 @@ class TaskState:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "heartbeat_expires_at": self.heartbeat_expires_at,
+            "stale": stale,
+            "stale_reason": "heartbeat_expired" if stale else "",
         }
 
 
@@ -807,7 +814,7 @@ class TaskStore:
                 cur = con.execute(
                     """
                     SELECT task_id FROM agent_tasks_projection
-                    WHERE status IN ('active', 'verifying', 'waiting', 'blocked')
+                    WHERE status IN ('planned', 'active', 'verifying', 'waiting', 'blocked')
                       AND heartbeat_expires_at > 0 AND heartbeat_expires_at < ?
                     """,
                     (current_time,),
@@ -819,7 +826,8 @@ class TaskStore:
         reaped: list[str] = []
         for t_id in expired_ids:
             try:
-                target_status = TaskStatus.WAITING if auto_recover else TaskStatus.ABANDONED
+                current = self.get(t_id)
+                target_status = TaskStatus.WAITING if auto_recover and current and current.status != TaskStatus.PLANNED else TaskStatus.ABANDONED
                 reason = "heartbeat expired - auto-recovered to waiting" if auto_recover else "heartbeat expired"
                 self.transition(
                     t_id,

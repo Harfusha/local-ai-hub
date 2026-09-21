@@ -338,7 +338,20 @@ class AsyncJobManager:
         if not row: return {"success": False, "error": "async job not found", "terminal": True, "retryable": False}
         if float(row["expires_at"]) <= time.time() and row["state"] in {"done", "failed", "cancelled"}:
             return {"success": False, "job_id": job_id, "state": "expired", "terminal": True, "retryable": False}
-        result = {"success": True, "job_id": job_id, "state": row["state"], "attempts": int(row["attempts"]), "cancel_requested": bool(row["cancel_requested"]), "updated_at": float(row["updated_at"]), "retryable": row["state"] in {"queued", "running"}}
+        state = str(row["state"])
+        result = {
+            "success": True,
+            "job_id": job_id,
+            "state": state,
+            "attempts": int(row["attempts"]),
+            "cancel_requested": bool(row["cancel_requested"]),
+            "updated_at": float(row["updated_at"]),
+            "queue_age_ms": max(0.0, (time.time() - float(row["created_at"])) * 1000.0),
+            "in_progress": state in {"queued", "running"},
+            "terminal": state in {"failed", "cancelled", "expired"},
+            "retryable": state in {"queued", "running"},
+            "next_action": "wait_or_result" if state in {"queued", "running"} else "inspect_result",
+        }
         if "trace_id" in row.keys(): result["trace_id"] = str(row["trace_id"] or "")
         return result
 

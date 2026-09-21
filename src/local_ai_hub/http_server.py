@@ -29,7 +29,7 @@ from .agent_tasks import CompletionGateError, GoalContract, InvalidTransitionErr
 from .agent_memory import ApprovalRequiredError, MAX_MEMORY_QUERY_LIMIT, MemoryKind, MemoryRecord, MemoryStatus
 from .agent_incidents import IncidentFingerprint, ToolOutcome
 from .agent_verification import VerificationReceipt
-from .agent_context import ContextRequest
+from .task_context import build_context_request, compose_task_context
 from .agent_learning import ImprovementCandidate, SLOObservation
 from .json_utils import dumps as json_dumps
 from .browser_bridge import (
@@ -168,8 +168,27 @@ def _memory_query_limit(value: Any) -> int:
     return max(1, min(parsed, MAX_MEMORY_QUERY_LIMIT))
 
 
-def _completion_revision_or_stop(root: Any, repo_tools: Any) -> tuple[str, dict[str, Any] | None]:
+def _completion_revision_or_stop(root: Any, repo_tools: Any, repo_state: Any = None) -> tuple[str, dict[str, Any] | None]:
     root_value = str(root or "").strip()
+    tracker = repo_state
+    fingerprint = getattr(tracker, "fingerprint", None)
+    if root_value and callable(fingerprint):
+        try:
+            try:
+                state = fingerprint(root_value, force=True)
+            except TypeError:
+                state = fingerprint(root_value)
+            revision = str(state.get("fingerprint", "") if isinstance(state, dict) else "").strip()
+            if (
+                isinstance(state, dict)
+                and state.get("success") is not False
+                and not state.get("degraded")
+                and not state.get("stale")
+                and revision
+            ):
+                return revision, None
+        except Exception:
+            pass
     snapshotter = getattr(repo_tools, "git_snapshot", None)
     if not root_value or not callable(snapshotter):
         return "", {
@@ -1120,7 +1139,28 @@ class Handler(BaseHTTPRequestHandler):
             delivery = str(payload.get("delivery", "sync"))
             budget_ms = float(payload.get("latency_budget_ms", 0) or 0)
             samples = int(estimate.get("samples", 0) or 0)
-            if job_action == "review_diff" and delivery.strip().lower() == "auto" and budget_ms > 0 and samples < 5:
+            queue_age_ms = float(payload.get("queue_age_ms", estimate.get("queue_age_ms", 0)) or 0)
+            max_queue_age_ms = float(
+                payload.get(
+                    "max_queue_age_ms",
+                    getattr(APP, "config", {}).get("review", {}).get("max_queue_age_ms", 30_000),
+                ) or 0
+            )
+            if (
+                job_action == "review_diff"
+                and delivery.strip().lower() == "auto"
+                and max_queue_age_ms > 0
+                and queue_age_ms > max_queue_age_ms
+            ):
+                decision = decide_delivery(
+                    delivery,
+                    latency_budget_ms=budget_ms,
+                    observed_p95_ms=estimate.get("p95_duration_ms", 0),
+                    samples=samples,
+                    queue_age_ms=queue_age_ms,
+                    max_queue_age_ms=max_queue_age_ms,
+                )
+            elif job_action == "review_diff" and delivery.strip().lower() == "auto" and budget_ms > 0 and samples < 5:
                 # A cold-start review has no trustworthy p95 yet. Do not let a
                 # large diff run synchronously while telemetry learns the cost.
                 decision = {"mode": "async", "reason": "cold_start_review_diff"}
@@ -1128,9 +1168,20 @@ class Handler(BaseHTTPRequestHandler):
                 decision = decide_delivery(
                     delivery, latency_budget_ms=payload.get("latency_budget_ms", 0),
                     observed_p95_ms=estimate.get("p95_duration_ms", 0), samples=estimate.get("samples", 0),
+                    queue_age_ms=queue_age_ms,
+                    max_queue_age_ms=max_queue_age_ms,
                 )
         except (TypeError, ValueError) as exc:
             return 400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}
+        if decision["mode"] == "bypass":
+            return 503, {
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error": "review queue age exceeded delivery budget",
+                "delivery": decision,
+                "next_action": "retry_with_bounded_sync_or_inspect_existing_job",
+            }
         if decision["mode"] != "async":
             return None
         job_payload = dict(payload)
@@ -2674,7 +2725,9 @@ class Handler(BaseHTTPRequestHandler):
                     requested_revision = str(payload.get("repository_revision", "")).strip()
                     repo_tools = getattr(APP, "repo_tools", None)
                     if root or requested_revision:
-                        current_revision, revision_stop = _completion_revision_or_stop(root, repo_tools)
+                        current_revision, revision_stop = _completion_revision_or_stop(
+                            root, repo_tools, getattr(APP, "repo_state", None)
+                        )
                         if revision_stop:
                             self._send(409, revision_stop); return
                     res = APP.agent_verification.completion(task_id, current_revision=current_revision)
@@ -2682,7 +2735,9 @@ class Handler(BaseHTTPRequestHandler):
                         str(getattr(receipt, "repository_revision", "") or "").strip()
                         for receipt in res.receipts
                     ):
-                        _, revision_stop = _completion_revision_or_stop(root, repo_tools)
+                        _, revision_stop = _completion_revision_or_stop(
+                            root, repo_tools, getattr(APP, "repo_state", None)
+                        )
                         self._send(409, revision_stop or {
                             "success": False,
                             "terminal": True,
@@ -2697,27 +2752,85 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
                 if action == "compile":
-                    req = ContextRequest(
-                        task_id=str(payload.get("task_id", "")),
-                        token_budget=int(payload.get("token_budget", 4000)),
-                        include_kinds=tuple(payload.get("include_kinds") or ()),
-                        changed_paths=tuple(payload.get("changed_paths") or ()),
-                        root=str(payload.get("root", "")),
-                        tenant=tenant,
-                        include_diagnostics=bool(payload.get("include_diagnostics", False)),
-                        clone_id=str(payload.get("clone_id", "")),
-                        worktree_id=str(payload.get("worktree_id", "")),
-                        branch=str(payload.get("branch", "")),
-                        repository_id=str(payload.get("repository_id", "")),
-                        session_id=str(payload.get("session_id", "")),
-                        repository_revision=str(payload.get("repository_revision", "")),
-                    )
+                    req = build_context_request(payload, tenant=tenant)
+                    if not req.task_id:
+                        self._send(400, {
+                            "success": False,
+                            "error": "task_id is required for context compilation",
+                            "terminal": True,
+                            "retryable": False,
+                        }); return
                     compiled = APP.agent_context.compile(req)
-                    etag = compiled.etag()
                     since_hash = str(payload.get("since_hash") or payload.get("etag") or "").strip()
+                    compact_mode = bool(payload.get("compact", False))
+                    root = req.root.strip()
+                    if root:
+                        from .agent_consistency import ConsistencyRequest
+
+                        repository_request = ConsistencyRequest(
+                            root=root,
+                            task_id=req.task_id,
+                            query=str(payload.get("query", "")),
+                            phase=req.phase,
+                            focus=req.focus,
+                            workspace=str(payload.get("workspace", "")),
+                            preload_profile=req.preload_profile,
+                            token_budget=req.token_budget,
+                            changed_paths=req.changed_paths,
+                            base=str(payload.get("base", "HEAD")),
+                            staged=bool(payload.get("staged", False)),
+                            tenant=tenant,
+                            override_reason=str(payload.get("override_reason", "")),
+                            approval=payload.get("approval", ""),
+                        )
+                        try:
+                            repository = APP.services.adaptive_context_pack(
+                                repository_request,
+                                mode=str(payload.get("mode", "fast")),
+                                since_hash=str(payload.get("repo_since_hash", "")),
+                            )
+                        except Exception as exc:
+                            repository = {
+                                "success": False,
+                                "terminal": False,
+                                "retryable": True,
+                                "error": f"repository context unavailable: {exc}",
+                            }
+                        task_context = compose_task_context(
+                            task_id=req.task_id,
+                            compiled=compiled,
+                            repository=repository if isinstance(repository, dict) else {
+                                "success": False,
+                                "terminal": True,
+                                "retryable": True,
+                                "error": "repository context response must be an object",
+                            },
+                            token_budget=req.token_budget,
+                        )
+                        if since_hash and since_hash == task_context["etag"]:
+                            self._send(200, {
+                                "success": True,
+                                "unchanged": True,
+                                "etag": task_context["etag"],
+                                "context_id": task_context["context_id"],
+                                "estimated_tokens": 10,
+                            }); return
+                        response = {
+                            "success": bool(task_context["success"]),
+                            "complete": bool(task_context["complete"]),
+                            "partial": bool(task_context["partial"]),
+                            "etag": task_context["etag"],
+                            "context": compiled.to_dict(compact=compact_mode),
+                            "task_context": task_context,
+                            "text": task_context["text"],
+                            "evidence_ids": task_context["evidence_ids"],
+                            "repo_revision": task_context["repo_revision"],
+                            "warnings": task_context["warnings"],
+                        }
+                        self._send(200, response); return
+                    etag = compiled.etag()
                     if since_hash and since_hash == etag:
                         self._send(200, {"success": True, "unchanged": True, "etag": etag, "estimated_tokens": 10}); return
-                    compact_mode = bool(payload.get("compact", False))
                     self._send(200, {"success": True, "etag": etag, "context": compiled.to_dict(compact=compact_mode), "text": compiled.text()}); return
                 self._send(400, {"success": False, "error": f"unknown context action '{action}'", "terminal": True, "retryable": False}); return
             if path == "/api/agent-state/learning":
@@ -3286,6 +3399,28 @@ class Handler(BaseHTTPRequestHandler):
                         mode=mode,
                         since_hash=str(payload.get("since_hash", "")),
                     )
+                    if guarded_requested and str(payload.get("task_id", "")).strip() and getattr(APP, "agent_context", None):
+                        task_request = build_context_request({
+                            "task_id": payload.get("task_id", ""),
+                            "token_budget": max_tokens,
+                            "root": root,
+                            "phase": payload.get("phase", ""),
+                            "focus": payload.get("focus") or [],
+                            "preload_profile": payload.get("preload_profile", ""),
+                            "changed_paths": payload.get("changed_paths") or [],
+                            "repository_revision": payload.get("repository_revision", payload.get("repo_revision", "")),
+                            "since_hash": payload.get("task_since_hash", ""),
+                        }, tenant=tenant)
+                        compiled = APP.agent_context.compile(task_request)
+                        unified = compose_task_context(
+                            task_id=task_request.task_id,
+                            compiled=compiled,
+                            repository=result if isinstance(result, dict) else {"success": False, "error": "repository context response must be an object"},
+                            token_budget=task_request.token_budget,
+                        )
+                        if isinstance(result, dict):
+                            result["task_context"] = unified
+                            result["task_context_id"] = unified["context_id"]
                     self._send(200, result); return
                 result = APP.services.fast_context(root, query_text, max_tokens) if mode == "fast" else APP.services._hybrid_context(
                     root, query_text, tenant, payload.get("workspace"), max_tokens,

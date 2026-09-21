@@ -59,6 +59,7 @@ from .frontend_review import (
 from .agent_consistency import AdaptiveContextPack, ConsistencyRequest, GuardWarning
 from .agent_context import ContextCompiler, ContextRequest
 from .agent_events import AgentStateStore
+from .semantic_quality import assess_semantic_result
 
 
 def normalize_generation_cache_prompt(prompt: str) -> str:
@@ -1310,7 +1311,29 @@ class LocalAIServices:
             semantic_query=task, semantic_context_fingerprint=stable_hash(context),
             format=format_val,
         )
+        result = self._apply_semantic_quality(result, task=task, evidence_paths=args.get("changed_paths") or ())
         result["route"] = route
+        return result
+
+    @staticmethod
+    def _apply_semantic_quality(result: dict[str, Any], *, task: str, evidence_paths: Any) -> dict[str, Any]:
+        """Reject obvious ungrounded model paths while keeping output advisory."""
+        if not isinstance(result, dict) or not result.get("success", "error" not in result):
+            return result
+        paths = evidence_paths if isinstance(evidence_paths, (list, tuple, set)) else ()
+        if not paths:
+            return result
+        quality = assess_semantic_result(task, [str(path) for path in paths], result)
+        result["advisory_only"] = True
+        result["semantic_quality"] = quality
+        if not quality.get("usable", False):
+            result.update({
+                "success": False,
+                "terminal": False,
+                "retryable": False,
+                "bypass_reason": quality.get("bypass_reason", quality.get("reason", "quality_gate")),
+                "error": "semantic result rejected by deterministic quality gate",
+            })
         return result
 
     def delegate_profile(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
@@ -1423,6 +1446,7 @@ class LocalAIServices:
             tenant, "second-opinion", int(args.get("priority", 6)),
             semantic_query=f"{question}\n{focus}", semantic_context_fingerprint=stable_hash({"candidate": candidate, "context": context}),
         )
+        result = self._apply_semantic_quality(result, task=question, evidence_paths=args.get("changed_paths") or ())
         result["route"] = route
         return result
 

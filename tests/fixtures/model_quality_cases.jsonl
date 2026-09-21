@@ -1,0 +1,7 @@
+{"id":"grounded_diagnosis","task":"identify diagnosis","evidence_paths":["fixtures/diagnosis.txt"],"output":{"finding":"timeout","reason":"request exceeded deadline"},"expected":{"finding":"timeout"}}
+{"id":"valid_phone","task":"classify contact","evidence_paths":["fixtures/contact.txt"],"output":{"label":"phone","reason":"matches phone pattern"},"expected":{"label":"phone","valid":true}}
+{"id":"valid_email","task":"classify contact","evidence_paths":["fixtures/contact.txt"],"output":{"label":"email","reason":"contains address marker"},"expected":{"label":"email","valid":true}}
+{"id":"unrelated_path_rejected","task":"classify contact","evidence_paths":["fixtures/contact.txt"],"output":{"label":"phone","references":["fixtures/unrelated.txt"]},"expected":{"label":"phone","valid":true}}
+{"id":"missing_evidence_abstention","task":"review missing evidence","evidence_paths":[],"output":{"abstain":true,"label":"unknown","reason":"evidence missing"},"expected":{"abstain":true,"label":"unknown"}}
+{"id":"structured_review","task":"review finding","evidence_paths":["fixtures/review.txt"],"output":{"severity":"high","finding":"unsafe input"},"expected":{"severity":"high","finding":"unsafe input"}}
+{"id":"invalid_contact_false_positive","task":"classify invalid contact","evidence_paths":["fixtures/contact.txt"],"output":{"label":"phone","valid":true},"expected":{"label":"invalid","valid":false}}
