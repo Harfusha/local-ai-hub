@@ -59,7 +59,7 @@ def test_async_jobs_retry_on_execution_failure(tmp_path: Path):
         _Artifacts(),
         _fail_first,
     )
-    submitted = manager.submit("tenant-a", "reason", {"task": "retry-job"})
+    submitted = manager.submit("tenant-a", "reason", {"task": "retry-job"}, dispatch_delay_seconds=30.0)
     job_id = submitted["job_id"]
 
     # First attempt fails -> should requeue because attempts (1) < max_attempts (2)
