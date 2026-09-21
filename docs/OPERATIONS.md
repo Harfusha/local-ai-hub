@@ -4,7 +4,7 @@ Use `tools/hubctl.py status|watch`, `tools/doctor.py`, `tools/monitor.py`, and `
 
 If Serena or CodeGraph misbehaves, use the dashboard or `/api/code-intelligence/control` to rediscover executables or reset sessions. If derived indexes are corrupt, stop the hub, back up any needed state and remove only derived cache/index databases; they are rebuildable.
 
-Bundles move preprocessed project state between Local AI Hub 3.0 installations; they are not source-code backups. Derived cache/index databases are disposable and are rebuilt when their current schema contract does not match.
+Bundles move preprocessed project state between Local AI Hub 4.0 installations; they are not source-code backups. Derived cache/index databases are disposable and are rebuilt when their current schema contract does not match.
 ## Latency and restart diagnostics
 
 If a request becomes slow, inspect realtime runtime statistics before raising timeouts. Repository-state counters expose Git timeouts, degraded fingerprints and slow-root cooldowns. On a warm watched project, normal edits should invalidate only watcher-reported paths; a full preprocessing inventory is a periodic consistency pass, not a per-edit operation.

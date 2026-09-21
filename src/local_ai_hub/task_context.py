@@ -81,10 +81,16 @@ def compose_task_context(
     compiled: CompiledContext,
     repository: Mapping[str, Any],
     token_budget: int,
+    repository_required: bool = True,
 ) -> dict[str, Any]:
     """Compose Agent OS state and repository evidence into one bounded contract."""
     repo = _repository_projection(repository)
     repo_ok = bool(repo.get("success", False))
+    # A task may be purely Agent-OS scoped (for example a coordination or
+    # model-evaluation task without a checkout).  Such a request must still
+    # receive the same durable task_context contract; absence of a repository
+    # is only incomplete when the caller explicitly supplied one.
+    repository_available = bool(repository_required and repo_ok)
     agent_text = compiled.text()
     repo_text = str(repo.get("text") or repo.get("context") or "")
     raw_text = "\n\n".join(part for part in (agent_text, repo_text) if part)
@@ -114,7 +120,7 @@ def compose_task_context(
     warnings.extend(item for item in (repo.get("warnings") or ()) if isinstance(item, Mapping))
     if revision_mismatch:
         warnings.append({"code": "repository_revision_mismatch", "expected": expected_revision, "actual": repo_revision})
-    complete = repo_ok and not compiled.stale and not bool(repo.get("stale", False)) and not revision_mismatch
+    complete = (repository_available or not repository_required) and not compiled.stale and not bool(repo.get("stale", False)) and not revision_mismatch
     provenance = evidence_meta(
         "task_context.repository",
         repo_revision,
@@ -133,7 +139,7 @@ def compose_task_context(
         "estimated_tokens": max(1, len(text) // 4) if text else 0,
         "token_budget": int(token_budget or 4000),
         "truncated": truncated or compiled.truncated,
-        "source_layers": ["agent_state", "repository"],
+        "source_layers": ["agent_state", "repository"] if repository_required else ["agent_state"],
         "agent_state": compiled.to_dict(compact=True),
         "repository": repo,
         "repo_revision": repo_revision,
@@ -141,6 +147,7 @@ def compose_task_context(
         "provenance": provenance,
         "stale": bool(compiled.stale or repo.get("stale", False) or revision_mismatch),
         "warnings": warnings[:32],
-        "omitted_sections": ["repository"] if not repo_ok else [],
-        "next_action": "refresh_repository_context" if not repo_ok else "use_compiled_context",
+        "repository_required": bool(repository_required),
+        "omitted_sections": ["repository"] if repository_required and not repo_ok else [],
+        "next_action": "refresh_repository_context" if repository_required and not repo_ok else "use_compiled_context",
     }

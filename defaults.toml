@@ -213,6 +213,9 @@ switch_cooldown_seconds = 1
 model_switch_failure_cooldown_seconds = 20
 # Absolute ceiling for any scheduler caller, including accidental unbounded waits.
 max_caller_wait_timeout_seconds = 1800
+# Status payloads stay bounded; truncation is reported explicitly.
+status_max_items = 64
+cache_stats_max_items = 32
 
 [async_jobs]
 enabled = true
@@ -221,6 +224,7 @@ wait_max_seconds = 600
 lease_seconds = 3600
 result_ttl_seconds = 259200
 max_attempts = 3
+stats_max_items = 32
 
 [work_orchestrator]
 # Whole-task delegation: plan -> bounded DAG -> transactional edits -> validation -> final handoff.

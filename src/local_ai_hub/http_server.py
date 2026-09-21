@@ -2806,6 +2806,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "error": "repository context response must be an object",
                             },
                             token_budget=req.token_budget,
+                            repository_required=True,
                         )
                         if since_hash and since_hash == task_context["etag"]:
                             self._send(200, {
@@ -2828,10 +2829,34 @@ class Handler(BaseHTTPRequestHandler):
                             "warnings": task_context["warnings"],
                         }
                         self._send(200, response); return
-                    etag = compiled.etag()
+                    task_context = compose_task_context(
+                        task_id=req.task_id,
+                        compiled=compiled,
+                        repository={},
+                        token_budget=req.token_budget,
+                        repository_required=False,
+                    )
+                    etag = task_context["etag"]
                     if since_hash and since_hash == etag:
-                        self._send(200, {"success": True, "unchanged": True, "etag": etag, "estimated_tokens": 10}); return
-                    self._send(200, {"success": True, "etag": etag, "context": compiled.to_dict(compact=compact_mode), "text": compiled.text()}); return
+                        self._send(200, {
+                            "success": True,
+                            "complete": True,
+                            "unchanged": True,
+                            "etag": etag,
+                            "context_id": task_context["context_id"],
+                            "estimated_tokens": 10,
+                        }); return
+                    self._send(200, {
+                        "success": bool(task_context["success"]),
+                        "complete": bool(task_context["complete"]),
+                        "partial": bool(task_context["partial"]),
+                        "etag": etag,
+                        "context": compiled.to_dict(compact=compact_mode),
+                        "task_context": task_context,
+                        "text": task_context["text"],
+                        "evidence_ids": task_context["evidence_ids"],
+                        "warnings": task_context["warnings"],
+                    }); return
                 self._send(400, {"success": False, "error": f"unknown context action '{action}'", "terminal": True, "retryable": False}); return
             if path == "/api/agent-state/learning":
                 if not getattr(APP, "agent_learning", None) or not APP.agent_learning.state_store.enabled:
@@ -3602,7 +3627,10 @@ class Handler(BaseHTTPRequestHandler):
             if path in {"/api/repo/generate_types", "/api/generate_types"}:
                 self._send(200, APP.services.generate_types(str(payload.get("root", ".")), str(payload.get("file", payload.get("path", ""))), write_stub=bool(payload.get("write_stub", False)))); return
             if path in {"/api/repo/complexity", "/api/complexity"}:
-                self._send(200, APP.services.code_complexity(str(payload.get("root", ".")), path=payload.get("path"), max_results=int(payload.get("max_results", 20)))); return
+                self._send(200, APP.services.code_complexity(
+                    str(payload.get("root", ".")), path=payload.get("path"),
+                    max_results=int(payload.get("max_results", 20)), include_tests=bool(payload.get("include_tests", False))
+                )); return
             if path in {"/api/repo/api_spec", "/api/api_spec"}:
                 self._send(200, APP.services.extract_api_spec(str(payload.get("root", ".")), framework=payload.get("framework"))); return
             if path in {"/api/repo/dependency_slice", "/api/dependency_slice"}:

@@ -1,6 +1,6 @@
 {
   "name": "local-ai-hub",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "release_date": "2026-09-08",
   "status": "production-ready",
   "focus": "Single current application contract across HTTP, MCP, telemetry, derived state, caches and dashboard rendering."

@@ -31,14 +31,29 @@ class Job:
     finished_at: float = 0.0
     context: contextvars.Context = field(default_factory=contextvars.copy_context)
     trace_id: str = ""
+    admission: dict[str, Any] = field(default_factory=dict)
 
 
 class QueueFullError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, reason: str = "queue_limit", retryable: bool = True, admission: dict[str, Any] | None = None):
+        self.admission = admission or {
+            "state": "rejected", "reason": reason, "queue_age_ms": 0, "retryable": bool(retryable),
+        }
+        self.admission_state = str(self.admission["state"])
+        self.retryable = bool(retryable)
+        self.terminal = not self.retryable
+        super().__init__(message)
 
 
 class ModelUnavailableError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, reason: str = "model_unavailable", retryable: bool = True):
+        self.admission = {
+            "state": "rejected", "reason": reason, "queue_age_ms": 0, "retryable": bool(retryable),
+        }
+        self.admission_state = "rejected"
+        self.retryable = bool(retryable)
+        self.terminal = not self.retryable
+        super().__init__(message)
 
 
 class SchedulerTimeoutError(TimeoutError):
@@ -91,6 +106,8 @@ class AffinityScheduler:
         self.unload_others = int(cfg.get("max_loaded_models", 1)) <= 1
         self.background_idle_grace = max(0.0, float(bg_cfg.get("idle_grace_seconds", 3.0)))
         self.background_switch_grace = max(self.background_idle_grace, float(bg_cfg.get("model_switch_idle_seconds", 10.0)))
+        self.status_max_items = max(1, min(256, int(cfg.get("status_max_items", 64))))
+        self.cache_stats_max_items = max(1, min(256, int(cfg.get("cache_stats_max_items", 32))))
 
         self._cond = threading.Condition()
         self._pending: list[Job] = []
@@ -153,6 +170,63 @@ class AffinityScheduler:
         self._dispatcher = threading.Thread(target=self._dispatch_loop, name="local-ai-dispatcher", daemon=True)
         self._dispatcher.start()
 
+    def _resource_status(self) -> dict[str, Any]:
+        candidates = [
+            getattr(self.runtime, "resource_status", None),
+            getattr(self.runtime, "vram_status", None),
+            getattr(getattr(self.runtime, "vram_balancer", None), "status", None),
+            getattr(getattr(self.runtime, "resource_monitor", None), "status", None),
+        ]
+        for candidate in candidates:
+            if not callable(candidate):
+                continue
+            try:
+                value = candidate()
+            except Exception:
+                continue
+            if isinstance(value, dict):
+                return value
+        configured = self.config.get("resource_pressure", self.config.get("scheduler", {}).get("resource_pressure", {}))
+        return dict(configured) if isinstance(configured, dict) else {}
+
+    def _admission(self, *, background: bool) -> dict[str, Any]:
+        resource = self._resource_status()
+        pressure = str(resource.get("pressure_level", "nominal") or "nominal").lower()
+        factor = resource.get("context_budget_factor", 1.0)
+        try:
+            factor = max(0.0, min(1.0, float(factor)))
+        except (TypeError, ValueError, OverflowError):
+            factor = 1.0
+        throttled = bool(resource.get("throttle_background", False))
+        if background and throttled and pressure in {"high", "critical"}:
+            return {
+                "state": "rejected", "reason": "resource_pressure", "pressure_level": pressure,
+                "context_budget_factor": factor, "queue_age_ms": 0, "retryable": True,
+            }
+        degraded = pressure in {"moderate", "high", "critical"} or factor < 1.0
+        return {
+            "state": "degraded" if degraded else "accepted",
+            "reason": "resource_pressure" if degraded else "capacity_available",
+            "pressure_level": pressure, "context_budget_factor": factor,
+            "queue_age_ms": 0, "retryable": False,
+        }
+
+    @staticmethod
+    def _bounded_mapping(value: Any, limit: int) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {"items": {}, "truncated": False, "total": 0, "limit": limit}
+        items = dict(sorted(value.items(), key=lambda item: str(item[0]))[:limit])
+        return {"items": items, "truncated": len(value) > limit, "total": len(value), "limit": limit}
+
+    def _cache_stats(self) -> dict[str, Any]:
+        provider = getattr(self.runtime, "cache_stats", None)
+        if not callable(provider):
+            return self._bounded_mapping({}, self.cache_stats_max_items)
+        try:
+            return self._bounded_mapping(provider(), self.cache_stats_max_items)
+        except Exception:
+            return {"items": {}, "truncated": False, "total": 0, "limit": self.cache_stats_max_items, "degraded": True}
+
     def submit(
         self,
         model: str,
@@ -188,13 +262,18 @@ class AffinityScheduler:
                 self._model_blocked_until.pop(model, None)
                 self._model_last_error.pop(model, None)
             tenant_queued = sum(1 for job in self._pending if job.tenant == tenant)
+            admission = self._admission(background=background)
+            if admission["state"] == "rejected":
+                self._stats["queue_rejections"] += 1
+                raise QueueFullError("resource pressure blocks background admission", reason="resource_pressure", admission=admission)
             if len(self._pending) >= self.max_queue or tenant_queued >= self.max_queued_per_tenant:
                 self._stats["queue_rejections"] += 1
-                raise QueueFullError(f"queue limit reached for tenant {tenant!r}")
+                admission = {"state": "rejected", "reason": "queue_limit", "queue_age_ms": 0, "retryable": True}
+                raise QueueFullError(f"queue limit reached for tenant {tenant!r}", admission=admission)
             self._job_id += 1
             trace_observer = observer()
             trace_id = str(getattr(trace_observer, "trace_id", "") or "")
-            job = Job(self._job_id, model, tenant, source, priority, execute, background=background, trace_id=trace_id)
+            job = Job(self._job_id, model, tenant, source, priority, execute, background=background, trace_id=trace_id, admission=admission)
             self._pending.append(job)
             if trace_observer is not None and trace_id:
                 try:
@@ -242,9 +321,15 @@ class AffinityScheduler:
         queue_wait_ms = max(0.0, ((job.started_at or job.finished_at or time.monotonic()) - job.created_at) * 1000)
         service_ms = max(0.0, (job.finished_at - job.started_at) * 1000) if job.finished_at and job.started_at else 0.0
         if job.error:
-            return {"success": False, "error": job.error, "job_id": job.id, "_lah_scheduler_queue_wait_ms": queue_wait_ms, "_lah_scheduler_service_ms": service_ms, "_lah_scheduler_background": job.background}
+            admission = dict(job.admission)
+            admission["queue_age_ms"] = round(queue_wait_ms, 1)
+            return {"success": False, "error": job.error, "job_id": job.id, "admission": admission, "admission_state": admission["state"], "_lah_scheduler_queue_wait_ms": queue_wait_ms, "_lah_scheduler_service_ms": service_ms, "_lah_scheduler_background": job.background}
         if isinstance(job.result, dict):
             job.result.setdefault("job_id", job.id)
+            admission = dict(job.admission)
+            admission["queue_age_ms"] = round(queue_wait_ms, 1)
+            job.result.setdefault("admission", admission)
+            job.result.setdefault("admission_state", admission["state"])
             job.result.setdefault("_lah_scheduler_queue_wait_ms", queue_wait_ms)
             job.result.setdefault("_lah_scheduler_service_ms", service_ms)
             job.result.setdefault("_lah_scheduler_background", job.background)
@@ -274,13 +359,18 @@ class AffinityScheduler:
                 detail = self._model_last_error.get(model, "model preparation failed")
                 raise ModelUnavailableError(f"model {model!r} temporarily unavailable ({detail}); retry after ~{remaining}s")
             tenant_queued = sum(1 for job in self._pending if job.tenant == tenant)
+            admission = self._admission(background=background)
+            if admission["state"] == "rejected":
+                self._stats["queue_rejections"] += 1
+                raise QueueFullError("resource pressure blocks background admission", reason="resource_pressure", admission=admission)
             if len(self._pending) >= self.max_queue or tenant_queued >= self.max_queued_per_tenant:
                 self._stats["queue_rejections"] += 1
-                raise QueueFullError(f"queue limit reached for tenant {tenant!r}")
+                admission = {"state": "rejected", "reason": "queue_limit", "queue_age_ms": 0, "retryable": True}
+                raise QueueFullError(f"queue limit reached for tenant {tenant!r}", admission=admission)
             self._job_id += 1
             trace_observer = observer()
             trace_id = str(getattr(trace_observer, "trace_id", "") or "")
-            job = Job(self._job_id, model, tenant, source, priority, execute, background=background, trace_id=trace_id)
+            job = Job(self._job_id, model, tenant, source, priority, execute, background=background, trace_id=trace_id, admission=admission)
             self._pending.append(job)
             if trace_observer is not None and trace_id:
                 try:
@@ -699,6 +789,8 @@ class AffinityScheduler:
             "priority": job.priority, "background": job.background,
             "created_at": job.created_wall, "wait_ms": wait_ms, "service_ms": service_ms,
             "wait_reason": wait_reason, "caller_timed_out": job.caller_timed_out,
+            "admission": {**job.admission, "queue_age_ms": wait_ms},
+            "admission_state": job.admission.get("state", "accepted"),
         }
 
     def status(self) -> dict[str, Any]:
@@ -715,7 +807,7 @@ class AffinityScheduler:
                 by_tenant[job.tenant] = by_tenant.get(job.tenant, 0) + 1
                 background_queued += int(job.background)
                 model_positions[job.model] = model_positions.get(job.model, 0) + 1
-                if len(pending_jobs) < 64:
+                if len(pending_jobs) < self.status_max_items:
                     item = self._job_public(job, now, state="queued", position=model_positions[job.model])
                     pending_jobs.append(item)
             inflight_jobs = [self._job_public(job, now, state="running") for job in sorted(self._inflight_jobs.values(), key=lambda j: j.started_at or j.created_at)]
@@ -734,12 +826,15 @@ class AffinityScheduler:
                 "queued_by_model": by_model,
                 "queued_by_tenant": by_tenant,
                 "pending_jobs": pending_jobs,
+                "pending_jobs_total": len(self._pending),
+                "pending_jobs_truncated": len(self._pending) > self.status_max_items,
                 "inflight_jobs": inflight_jobs,
                 "active_batch_dispatched": self._active_dispatched,
                 "background_allowed": self.background_allowed(),
                 "blocked_models": {m: max(0, int((until - now) * 1000)) for m, until in self._model_blocked_until.items() if until > now},
                 "last_foreground_activity_ms": max(0, int((now - self._last_foreground_activity) * 1000)),
                 "stats": dict(self._stats),
+                "cache_stats": self._cache_stats(),
             }
 
     def close(self) -> None:

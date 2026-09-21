@@ -1,6 +1,6 @@
 # Contributing to Local AI Hub
 
-Local AI Hub 3.0 is the sole supported application contract. Prefer one direct implementation over parallel aliases or alternate historical paths.
+Local AI Hub 4.0 is the sole supported application contract. Prefer one direct implementation over parallel aliases or alternate historical paths.
 
 ## Getting started
 

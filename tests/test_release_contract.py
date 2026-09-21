@@ -12,10 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_release_metadata_and_documentation_are_current():
-    assert __version__ == "3.0.0"
-    assert 'version = "3.0.0"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert __version__ == "4.0.0"
+    assert 'version = "4.0.0"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     release = json.loads((ROOT / "RELEASE.json").read_text(encoding="utf-8"))
-    assert release["version"] == "3.0.0" and release["status"] == "production-ready"
+    assert release["version"] == "4.0.0" and release["status"] == "production-ready"
     assert f'placeholder: "{__version__}"' in (ROOT / ".github" / "ISSUE_TEMPLATE" / "bug_report.yml").read_text(encoding="utf-8")
     required = {
         "ARCHITECTURE.md", "INSTALLATION.md", "CONFIGURATION.md", "MCP_AND_AGENTS.md",

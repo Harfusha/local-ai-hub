@@ -41,6 +41,40 @@ def test_local_ai_task_loads_unified_context_before_model_call(monkeypatch):
     assert "Task goal and indexed evidence" in model_call["context"]
 
 
+def test_local_ai_task_uses_agent_only_context_without_repository_root(monkeypatch):
+    calls = []
+
+    def post(path, payload, **kwargs):
+        calls.append((path, payload))
+        if path == "/api/agent-state/context":
+            assert payload["task_id"] == "task-agent-only"
+            return {
+                "success": True,
+                "complete": True,
+                "task_context": {
+                    "context_id": "taskctx-agent-only",
+                    "etag": "etag-agent-only",
+                    "evidence_ids": [],
+                    "text": "Durable Agent OS task state",
+                },
+                "text": "Durable Agent OS task state",
+            }
+        return {"success": True, "answer": "ok"}
+
+    monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(mcp_server.CLIENT, "post", post)
+    result = mcp_server.local_ai_task(
+        action="reason",
+        task="Summarize task state",
+        task_id="task-agent-only",
+    )
+
+    assert result["success"] is True
+    model_call = next(payload for path, payload in calls if path == "/api/reason")
+    assert "Durable Agent OS task state" in model_call["context"]
+
+
 def test_local_ai_task_rejects_unrelated_semantic_paths(monkeypatch):
     def post(path, payload, **kwargs):
         if path == "/api/reason":

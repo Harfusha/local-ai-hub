@@ -20,7 +20,7 @@ import local_ai_hub.mcp_server as mcp_mod
 
 
 def test_release_version() -> None:
-    assert __version__ == "3.0.0"
+    assert __version__ == "4.0.0"
 
 
 def test_rooted_path_detection_is_host_independent() -> None:

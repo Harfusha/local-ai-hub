@@ -17,7 +17,9 @@ Accounting rules:
   often schemas are injected. It is not subtracted from the default net metric.
 """
 
+import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
@@ -25,6 +27,117 @@ from .budget import estimate_tokens
 
 
 _PRIVATE_KEY = "_token_accounting"
+_TOKEN_EFFICIENCY_FIELDS = (
+    "root_family", "task_id", "parent_task", "phase", "activity", "revision", "context_digest",
+    "input_tokens_est", "output_tokens_est", "raw_input_tokens_est", "reused_input_tokens_est",
+    "generated_output_tokens_est", "avoided_payload_tokens_est", "reuse_state", "cache_state",
+    "queue_wait_ms", "bypass_reason", "fanout_count",
+)
+_METADATA_ALIASES = {
+    "parent_task_id": "parent_task", "activity_class": "activity", "repository_revision": "revision",
+    "reuse": "reuse_state", "cache": "cache_state",
+}
+
+
+def context_digest(value: Any) -> str:
+    """Return an opaque digest without retaining the context that produced it."""
+    try:
+        canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    except Exception:
+        canonical = repr(value)
+    return hashlib.sha256(canonical.encode("utf-8", errors="replace")).hexdigest()[:32]
+
+
+def _safe_metadata_text(value: Any, *, limit: int = 160) -> str:
+    if value is None or isinstance(value, (dict, list, tuple, set)):
+        return ""
+    text = str(value).replace("\r", " ").replace("\n", " ")
+    text = re.sub(r"(?i)\bbearer\s+[^\s,;]+", "Bearer [redacted]", text)
+    text = re.sub(r"(?i)\b(api[_-]?key|token|password|secret|authorization)\s*([=:])\s*[^&\s,;]+", r"\1\2[redacted]", text)
+    text = re.sub(r"\b[A-Za-z]:[\\/][^\s<>|\"']+", "<path>", text)
+    text = re.sub(r"(?<![\w:])/(?:[^/\s]+/)+[^/\s]*", "<path>", text)
+    return " ".join(text.split())[:limit]
+
+
+def _safe_metadata_float(value: Any) -> float:
+    try:
+        return round(max(0.0, float(value or 0)), 1)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+def _safe_context_digest(value: Any) -> str:
+    text = _safe_metadata_text(value, limit=64)
+    if not text:
+        return ""
+    if len(text) in {16, 32, 64} and all(char in "0123456789abcdefABCDEF" for char in text):
+        return text.lower()
+    return context_digest(text)
+
+
+def token_efficiency_metadata(metadata: Mapping[str, Any] | None = None, **fields: Any) -> dict[str, Any]:
+    """Normalize future token metadata while excluding payload-bearing fields."""
+    source = dict(metadata or {})
+    source.update(fields)
+    for alias, canonical in _METADATA_ALIASES.items():
+        if canonical not in source and alias in source:
+            source[canonical] = source[alias]
+
+    raw_input = max(
+        _nonneg_int(source.get("raw_input_tokens_est", source.get("input_tokens_est", 0))),
+        _nonneg_int(source.get("reused_input_tokens_est", 0)),
+    )
+    reused_input = min(raw_input, _nonneg_int(source.get("reused_input_tokens_est", 0)))
+    generated_output = _nonneg_int(source.get("generated_output_tokens_est", source.get("output_tokens_est", 0)))
+    output_tokens = _nonneg_int(source.get("output_tokens_est", generated_output))
+    avoided = max(0, reused_input + max(0, generated_output - output_tokens))
+    explicit_avoided = source.get("avoided_payload_tokens_est")
+    if explicit_avoided is not None:
+        avoided = max(avoided, _nonneg_int(explicit_avoided))
+
+    result = {
+        "root_family": _safe_metadata_text(source.get("root_family")),
+        "task_id": _safe_metadata_text(source.get("task_id")),
+        "parent_task": _safe_metadata_text(source.get("parent_task")),
+        "phase": _safe_metadata_text(source.get("phase"), limit=64),
+        "activity": _safe_metadata_text(source.get("activity"), limit=96),
+        "revision": _safe_metadata_text(source.get("revision"), limit=200),
+        "context_digest": _safe_context_digest(source.get("context_digest")),
+        "input_tokens_est": raw_input,
+        "output_tokens_est": output_tokens,
+        "raw_input_tokens_est": raw_input,
+        "reused_input_tokens_est": reused_input,
+        "generated_output_tokens_est": generated_output,
+        "avoided_payload_tokens_est": avoided,
+        "reuse_state": _safe_metadata_text(source.get("reuse_state"), limit=32),
+        "cache_state": _safe_metadata_text(source.get("cache_state"), limit=32),
+        "queue_wait_ms": _safe_metadata_float(source.get("queue_wait_ms", 0)),
+        "bypass_reason": _safe_metadata_text(source.get("bypass_reason"), limit=160),
+        "fanout_count": _nonneg_int(source.get("fanout_count", 0)),
+    }
+    return {key: result[key] for key in _TOKEN_EFFICIENCY_FIELDS}
+
+
+def replay_accounting(
+    *,
+    raw_input_tokens_est: int = 0,
+    reused_input_tokens_est: int = 0,
+    generated_output_tokens_est: int = 0,
+    output_tokens_est: int = 0,
+    reuse_state: str = "",
+    cache_state: str = "",
+    fanout_count: int = 0,
+) -> dict[str, Any]:
+    """Return additive replay metrics; cached tokens remain raw usage, not cost."""
+    return token_efficiency_metadata(
+        raw_input_tokens_est=raw_input_tokens_est,
+        reused_input_tokens_est=reused_input_tokens_est,
+        generated_output_tokens_est=generated_output_tokens_est,
+        output_tokens_est=output_tokens_est,
+        reuse_state=reuse_state,
+        cache_state=cache_state,
+        fanout_count=fanout_count,
+    )
 
 
 def json_tokens(value: Any) -> int:
@@ -285,6 +398,7 @@ def finalize_tool_accounting(
     response: Any,
     measured: Mapping[str, Any] | None = None,
     schema_tokens_est: int = 0,
+    metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     measured = dict(measured or {})
     request_tokens = tool_request_tokens(tool_name, arguments)
@@ -329,7 +443,37 @@ def finalize_tool_accounting(
         budget = {}
     cache_outcome = "reused" if isinstance(response, dict) and response.get("reused") else "cache_hit" if isinstance(response, dict) and response.get("cache_hit") else "coalesced" if isinstance(response, dict) and response.get("coalesced") else "in_progress" if isinstance(response, dict) and response.get("in_progress") else "miss"
 
-    return {
+    if metadata is None:
+        try:
+            from .trace_context import efficiency_metadata
+            metadata = efficiency_metadata()
+        except Exception:
+            metadata = None
+    metadata_values = dict(metadata or {})
+    for key in (
+        "input_tokens_est", "output_tokens_est", "raw_input_tokens_est", "reused_input_tokens_est",
+        "generated_output_tokens_est", "avoided_payload_tokens_est",
+    ):
+        if key in measured:
+            metadata_values[key] = measured[key]
+    efficiency = token_efficiency_metadata(metadata_values)
+    if not efficiency["reuse_state"]:
+        efficiency["reuse_state"] = cache_outcome
+    if not efficiency["cache_state"]:
+        efficiency["cache_state"] = cache_outcome
+    if not efficiency["raw_input_tokens_est"]:
+        efficiency["raw_input_tokens_est"] = _nonneg_int(measured.get("raw_input_tokens_est"))
+        efficiency["input_tokens_est"] = efficiency["raw_input_tokens_est"]
+    if not efficiency["generated_output_tokens_est"]:
+        efficiency["generated_output_tokens_est"] = _nonneg_int(measured.get("generated_output_tokens_est"))
+    if not efficiency["output_tokens_est"]:
+        efficiency["output_tokens_est"] = _nonneg_int(measured.get("output_tokens_est")) or response_tokens
+    efficiency["avoided_payload_tokens_est"] = max(
+        _nonneg_int(efficiency.get("avoided_payload_tokens_est")),
+        _nonneg_int(measured.get("avoided_payload_tokens_est")),
+    )
+
+    event = {
         "tool": str(tool_name)[:80],
         "gross_cloud_tokens_avoided_est": gross,
         "gross_input_tokens_avoided_est": gross_in,
@@ -359,6 +503,8 @@ def finalize_tool_accounting(
         "local_compute_tokens_avoided_est": _nonneg_int(measured.get("local_compute_tokens_avoided_est")),
         "savings_breakdown": measured.get("savings_breakdown", {}) if isinstance(measured.get("savings_breakdown"), dict) else {},
     }
+    event["token_efficiency"] = efficiency
+    return event
 
 
 class TenantQuotaEnforcer:

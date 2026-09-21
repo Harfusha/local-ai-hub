@@ -76,6 +76,8 @@ def test_submit_coalesces_active_job_without_outer_scheduler_enqueue(tmp_path):
     second = manager.submit("tenant-a", "reason", {"task": "same"})
     assert first["job_id"] == second["job_id"]
     assert second["coalesced"] is True
+    assert second["admission"]["state"] == "coalesced"
+    assert second["admission"]["reason"] == "duplicate_active_job"
     assert scheduler.calls == []
     manager.close()
 

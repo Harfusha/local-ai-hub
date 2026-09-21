@@ -1,9 +1,9 @@
 # Local AI Hub 3.0.0 → 4.0.0 migration
 
-This guide describes the planned, reversible migration from the repository's
-current `3.0.0` contract to the `4.0.0` contract. The checkout and release
-metadata remain `3.0.0` until the 4.0 release is cut; this document is not a
-claim that the current installation is already version 4.
+This guide describes the planned, reversible migration from the released
+`3.0.0` contract to the `4.0.0` contract. The repository metadata now targets
+4.0; this document is an operator runbook and is not proof that a particular
+running installation completed migration.
 
 ## Scope and version transition rules
 
@@ -228,6 +228,6 @@ the rollout in canary/blocked state and retain the 3.0 rollback path.
 
 This guide is a migration contract and operator runbook, not a promise that
 every 4.0 implementation detail already exists in the current 3.0 checkout.
-The current metadata still declares `3.0.0`; model quality promotion,
-unified context propagation, schema migration, and rollout gates must be
-verified against the released 4.0 implementation before production use.
+The repository metadata declares `4.0.0`; model quality promotion, unified
+context propagation, schema migration, and rollout gates must still be
+verified against the running installation before production use.

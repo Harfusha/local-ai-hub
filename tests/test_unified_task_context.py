@@ -85,6 +85,20 @@ def test_compose_task_context_never_claims_complete_with_failed_repository_layer
     assert result["repository"]["error"] == "index unavailable"
 
 
+def test_compose_task_context_can_be_agent_only_when_repository_is_not_required():
+    result = compose_task_context(
+        task_id="task-1",
+        compiled=_compiled(),
+        repository={},
+        token_budget=100,
+        repository_required=False,
+    )
+    assert result["success"] is True
+    assert result["complete"] is True
+    assert result["source_layers"] == ["agent_state"]
+    assert result["repository_required"] is False
+
+
 def test_compose_task_context_rejects_revision_mismatch():
     compiled = CompiledContext(
         elements=[], estimated_tokens=0, token_budget=100, repo_revision="expected"
