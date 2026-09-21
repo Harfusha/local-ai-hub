@@ -12,7 +12,7 @@
 
 ## Evidence baseline
 
-- Baseline committed revision: `200387242e1a3ffa7cd2812b7160e232b6e084a0220ac52bda73cde3f9cb01f6`.
+- Final committed revision: `3b96cb88b9e0805c6a14ff2685c3f24b19d42e37`.
 - Full suite: `1684 passed, 5 skipped, 6 subtests passed`; the five skips are platform/grammar-dependent.
 - Focused v4 matrix: `139 passed`.
 - Live status: Hub `4.0.0`, Ollama online, `qwen2.5-coder:7b`, `vram_pressure=high`, `context_budget_factor=0.5`.
@@ -43,7 +43,7 @@
 - [x] **Step 1: Run the existing model, tier, RAG, hardware, and fallback tests through the command broker.** Focused v4 matrix: 139 passed.
 - [x] **Step 2: Run bounded live benchmark/eval.** Hardware benchmark passed after adapter fix; synthetic eval passed 2/2; Hub status showed Ollama online, qwen 7B, high VRAM pressure and context factor 0.5.
 - [x] **Step 3: Probe optional backends once.** Serena and CodeGraph returned healthy live backend receipts; RAG index/search succeeded after the lock fix; unavailable optional llama.cpp/OpenVINO paths remain explicit non-claims.
-- [ ] **Step 4: Update the feature audit so every optional capability has a measured status and an explicit non-claim when the host lacks it.** In progress with final release record.
+- [x] **Step 4: Update the feature audit so every optional capability has a measured status and an explicit non-claim when the host lacks it.** Live receipts and host-specific non-claims are recorded in `docs/FEATURE_AUDIT_V4.md`.
 
 ## Task 3: Stability and contention proof
 
@@ -74,6 +74,6 @@
 - Modify: this plan
 
 - [x] **Step 1: Run indexed impact/review/security checks after edits; queued or advisory output is not completion evidence.** Deterministic impact and focused gates are retained; queued review is not counted.
-- [ ] **Step 2: Run focused gates, compileall, release check, selftest, diff check, and the full pytest suite through the command broker on one final revision.
-- [ ] **Step 3: Verify live `/health` and `/api/agent-state/context` with a task-scoped current revision and record receipts.
-- [ ] **Step 4: Require `verify_completion` for every acceptance criterion, then mark the Agent OS task complete only after the worktree is clean.
+- [x] **Step 2: Run focused gates, compileall, release check, selftest, diff check, and the full pytest suite through the command broker on one final revision.** Full receipt `rcpt_4f57295eb5b3`: 1687 passed, 5 skipped, 6 subtests.
+- [x] **Step 3: Verify live `/health` and `/api/agent-state/context` with a task-scoped current revision and record receipts.** Hub 4.0.0/Ollama online; context returned current repository fingerprint plus evidence IDs.
+- [ ] **Step 4: Require `verify_completion` for every acceptance criterion, then mark the Agent OS task complete only after the worktree is clean.** Final receipt-gated completion is the remaining administrative step.
