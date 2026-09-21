@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 from local_ai_hub.rag import RAGStore, _fragment_hash
 
 
@@ -53,3 +55,38 @@ def test_hybrid_rag_search_combines_fts_and_vector(tmp_path):
     top = search_res["results"][0]
     assert "auth.py" in top["path"]
     assert search_res.get("hybrid") is True
+
+
+def test_rag_index_retries_transient_publish_lock(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "locked.py").write_text("def locked():\n    return 1\n", encoding="utf-8")
+
+    state = {"failures": 1, "begins": 0}
+
+    class _FlakyConnection:
+        def __init__(self, connection):
+            self._connection = connection
+
+        def execute(self, sql, *args):
+            if sql == "BEGIN IMMEDIATE":
+                state["begins"] += 1
+                if state["failures"]:
+                    state["failures"] -= 1
+                    raise sqlite3.OperationalError("database is locked")
+            return self._connection.execute(sql, *args)
+
+        def close(self):
+            self._connection.close()
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+    original_connect = store._connect
+    monkeypatch.setattr(store, "_connect", lambda: _FlakyConnection(original_connect()))
+
+    result = store.index(str(root), "test_tenant", workspace="locked-workspace")
+
+    assert result["success"] is True
+    assert state["begins"] == 2

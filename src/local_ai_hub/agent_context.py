@@ -662,7 +662,10 @@ class ContextCompiler:
                     freshness=task.created_at,
                 )
                 if task.checkpoint.phase or task.checkpoint.next_action:
+                    checkpoint_paths = tuple(str(path) for path in task.checkpoint.affected_paths[:32] if str(path).strip())
                     chk_content = f"Checkpoint: Phase={task.checkpoint.phase}, Next={task.checkpoint.next_action}"
+                    if checkpoint_paths:
+                        chk_content += f"\nAffected paths: {', '.join(checkpoint_paths)}"
                     candidates.append((
                         90,
                         ContextElement(

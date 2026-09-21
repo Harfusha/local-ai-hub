@@ -59,7 +59,11 @@ class HardwareBenchmarkRunner:
                         first_token_time = now
                     tokens_count += 1
             elif hasattr(self.runtime, "generate"):
-                res = self.runtime.generate(target_model, prompt, max_tokens=num_tokens)
+                res = self.runtime.generate(
+                    target_model,
+                    prompt,
+                    options={"num_predict": max(1, int(num_tokens))},
+                )
                 first_token_time = time.perf_counter()
                 text = res.get("text", "")
                 tokens_count = max(1, len(text.split()))
