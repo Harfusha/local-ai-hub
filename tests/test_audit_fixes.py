@@ -108,6 +108,7 @@ def test_async_jobs_retry_state():
         assert st["state"] == "queued"
         assert st["attempts"] == 1
     finally:
+        mgr.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
 
