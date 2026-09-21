@@ -34,11 +34,15 @@ def test_local_ai_task_loads_unified_context_before_model_call(monkeypatch):
     )
 
     assert result["success"] is True
+    assert result["task_context_id"] == "taskctx-1"
+    assert result["task_context_evidence_ids"] == ["E1"]
     assert calls[0][0] == "/api/agent-state/context"
     assert calls[0][1]["task_id"] == "task-1"
     model_call = next(payload for path, payload in calls if path == "/api/reason")
     assert "Caller notes" in model_call["context"]
     assert "Task goal and indexed evidence" in model_call["context"]
+    assert "Task context receipt: context_id=taskctx-1" in model_call["context"]
+    assert "evidence_ids=E1" in model_call["context"]
 
 
 def test_local_ai_task_uses_agent_only_context_without_repository_root(monkeypatch):

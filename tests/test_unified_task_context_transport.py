@@ -76,6 +76,8 @@ def test_context_endpoint_composes_agent_and_repository_context(tmp_path: Path, 
         assert result["evidence_ids"] == ["E1"]
         assert seen["request"].phase == "review"
         assert seen["request"].focus == ("context",)
+        assert seen["repository"][0].query == "context"
+        assert seen["repository"][1] == "full"
         assert seen["repository"][2] == "repo-etag"
     finally:
         server.shutdown()

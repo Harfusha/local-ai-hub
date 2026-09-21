@@ -72,3 +72,22 @@ def test_benchmark_runner_handles_offline_runtime(tmp_path: Path) -> None:
     res = runner.run(model="qwen2.5-coder:7b")
     assert res["success"] is False
     assert "Ollama offline" in res["error"]
+
+
+def test_benchmark_runner_supports_non_streaming_runtime(tmp_path: Path) -> None:
+    class GenerateOnlyRuntime:
+        def generate(self, model, prompt, options=None):
+            assert model == "qwen2.5-coder:7b"
+            assert prompt == "return 42"
+            assert options == {"num_predict": 4}
+            return {"text": "42"}
+
+    runner = HardwareBenchmarkRunner(
+        benchmarks_path=tmp_path / "benchmarks.json",
+        runtime=GenerateOnlyRuntime(),
+    )
+
+    result = runner.run(model="qwen2.5-coder:7b", prompt="return 42", num_tokens=4)
+
+    assert result["success"] is True
+    assert result["tokens_generated"] == 1

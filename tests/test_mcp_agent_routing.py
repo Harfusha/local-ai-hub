@@ -423,6 +423,29 @@ def test_invalid_task_action_excludes_orchestration() -> None:
     assert "peer subagents" in result["error"]
 
 
+def test_eval_suite_forwards_bounded_cases_and_model(monkeypatch) -> None:
+    calls = {}
+
+    def fake_post(endpoint, payload, **kwargs):
+        calls.update(endpoint=endpoint, payload=payload)
+        return {"success": True, "summary": {"total": 1, "passed": 1, "failed": 0}}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+
+    result = local_ai_mcp.local_ai_task(
+        action="eval_suite",
+        task="synthetic_quality",
+        model="test-model",
+        cases=[{"id": "grounded", "input": "facts", "expected": "facts"}],
+    )
+
+    assert result["success"] is True
+    assert calls["endpoint"] == "/api/task/eval_suite"
+    assert calls["payload"]["suite_name"] == "synthetic_quality"
+    assert calls["payload"]["model"] == "test-model"
+    assert calls["payload"]["cases"] == [{"id": "grounded", "input": "facts", "expected": "facts"}]
+
+
 def test_local_ai_task_exposes_named_profile_fields() -> None:
     parameters = inspect.signature(local_ai_mcp.local_ai_task).parameters
 

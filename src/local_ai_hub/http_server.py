@@ -2767,10 +2767,23 @@ class Handler(BaseHTTPRequestHandler):
                     if root:
                         from .agent_consistency import ConsistencyRequest
 
+                        # A task context request often carries its intent only in
+                        # focus. Feed that intent into repository retrieval instead
+                        # of silently running an empty fast search. Focused task
+                        # context gets the complete deterministic-first pack; callers
+                        # can still force the bounded fast mode explicitly.
+                        repository_query = str(payload.get("query", "")).strip()
+                        if not repository_query:
+                            repository_query = " ".join(req.focus[:8])
+                        requested_mode = str(payload.get("mode", "")).strip().lower()
+                        repository_mode = requested_mode if requested_mode in {"fast", "full"} else (
+                            "full" if (repository_query or req.focus or req.changed_paths) else "fast"
+                        )
+
                         repository_request = ConsistencyRequest(
                             root=root,
                             task_id=req.task_id,
-                            query=str(payload.get("query", "")),
+                            query=repository_query,
                             phase=req.phase,
                             focus=req.focus,
                             workspace=str(payload.get("workspace", "")),
@@ -2786,7 +2799,7 @@ class Handler(BaseHTTPRequestHandler):
                         try:
                             repository = APP.services.adaptive_context_pack(
                                 repository_request,
-                                mode=str(payload.get("mode", "fast")),
+                                mode=repository_mode,
                                 since_hash=str(payload.get("repo_since_hash", "")),
                             )
                         except Exception as exc:

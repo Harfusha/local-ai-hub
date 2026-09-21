@@ -103,6 +103,13 @@ class RAGStore:
         self._index_wait_timeout_seconds = float(
             config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 240)
         )
+        preprocessing_cfg = config.get("preprocessing", {})
+        self._sqlite_busy_seconds = max(
+            0.25, float(preprocessing_cfg.get("sqlite_busy_timeout_seconds", 0.5))
+        )
+        self._sqlite_write_retries = max(
+            1, int(preprocessing_cfg.get("sqlite_write_retries", 6))
+        )
         rag_cfg = config.get("rag", {})
         cpu_cfg = config.get("cpu_retrieval", {})
         model_cfg = config.get("models", {})
@@ -668,28 +675,37 @@ class RAGStore:
                     changed_records[duplicate_idx]["embedding"] = embedding
 
         # One transaction publishes all changed/deleted file state atomically.
-        with self._get_workspace_lock(workspace), closing(self._connect()) as con:
-            con.execute("BEGIN IMMEDIATE")
-            del_paths = [(scope_key, workspace, rel) for rel in (deleted_paths + changed_paths)]
-            if del_paths:
-                con.executemany("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", del_paths)
-                con.executemany("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", del_paths)
-                try:
-                    con.executemany("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", del_paths)
-                except Exception:
-                    pass
-            con.executemany(
-                "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) VALUES(?,?,?,?,?,?,?)",
-                [
-                    (scope_key, workspace, r["path"], r["chunk_no"], r["hash"], r["text"], r["embedding"])
-                    for r in changed_records
-                ],
-            )
-            con.executemany(
-                "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
-                [(scope_key, workspace, rel, mtime_ns, size, file_hash) for rel, mtime_ns, size, file_hash in file_rows],
-            )
-            con.commit()
+        # The embed phase is intentionally outside this retry: a transient writer
+        # must not cause expensive model work to run again.
+        def publish() -> None:
+            with self._get_workspace_lock(workspace), closing(self._connect()) as con:
+                con.execute("BEGIN IMMEDIATE")
+                del_paths = [(scope_key, workspace, rel) for rel in (deleted_paths + changed_paths)]
+                if del_paths:
+                    con.executemany("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", del_paths)
+                    con.executemany("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", del_paths)
+                    try:
+                        con.executemany("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", del_paths)
+                    except Exception:
+                        pass
+                con.executemany(
+                    "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) VALUES(?,?,?,?,?,?,?)",
+                    [
+                        (scope_key, workspace, r["path"], r["chunk_no"], r["hash"], r["text"], r["embedding"])
+                        for r in changed_records
+                    ],
+                )
+                con.executemany(
+                    "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
+                    [(scope_key, workspace, rel, mtime_ns, size, file_hash) for rel, mtime_ns, size, file_hash in file_rows],
+                )
+                con.commit()
+
+        retry_busy(
+            publish,
+            retries=self._sqlite_write_retries,
+            base_delay_seconds=min(0.25, max(0.01, self._sqlite_busy_seconds / 10.0)),
+        )
 
         with closing(self._connect()) as con:
             chunk_count = con.execute(

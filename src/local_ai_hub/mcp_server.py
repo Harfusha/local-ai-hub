@@ -734,13 +734,33 @@ def _load_task_context(
             "error": "task context is empty",
             "task_context": task_context,
         }
-    merged = "\n\n".join(part for part in (context.strip(), "Task-scoped context:\n" + task_text) if part)
+    context_id = str(task_context.get("context_id") or "")[:80]
+    context_etag = str(task_context.get("etag") or "")[:80]
+    evidence_ids = [str(item)[:120] for item in (task_context.get("evidence_ids") or [])[:64] if str(item)]
+    receipt = (
+        f"Task context receipt: context_id={context_id or 'unknown'} "
+        f"etag={context_etag or 'unknown'} evidence_ids={','.join(evidence_ids) or 'none'}"
+    )
+    merged = "\n\n".join(part for part in (context.strip(), "Task-scoped context:\n" + task_text, receipt) if part)
     return merged, {
         "success": True,
-        "context_id": task_context.get("context_id", ""),
-        "etag": task_context.get("etag", ""),
-        "evidence_ids": task_context.get("evidence_ids", []),
+        "context_id": context_id,
+        "etag": context_etag,
+        "evidence_ids": evidence_ids,
     }
+
+
+def _attach_task_context_receipt(result: Any, metadata: dict[str, Any]) -> Any:
+    """Expose the exact task-context receipt used by a semantic model call."""
+    if not isinstance(result, dict) or not metadata.get("success"):
+        return result
+    enriched = dict(result)
+    enriched["task_context_id"] = str(metadata.get("context_id") or "")[:80]
+    enriched["task_context_etag"] = str(metadata.get("etag") or "")[:80]
+    enriched["task_context_evidence_ids"] = [
+        str(item)[:120] for item in (metadata.get("evidence_ids") or [])[:64] if str(item)
+    ]
+    return enriched
 
 
 _SEMANTIC_PATH_RE = re.compile(r"(?<![\w./-])[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+(?:\.[A-Za-z0-9_-]+)(?::\d+)?")
@@ -1172,6 +1192,7 @@ def local_ai_task(
     complexity: str = "auto",
     max_tokens: int = 0,
     tasks: list[dict[str, Any]] | None = None,
+    cases: list[dict[str, Any]] | None = None,
     delivery: str = "sync",
     latency_budget_ms: float = 0.0,
     job_action: str = "reason",
@@ -1296,9 +1317,9 @@ def local_ai_task(
             return {"success": False, "unsupported": True, "error": "Conversations do not support profiles"}
         if not conversation_id.strip():
             return {"success": False, "error": "conversation_id is required", "terminal": True, "retryable": False}
-        return _compact(_quality_check_semantic_result(CLIENT.post("/api/conversations/continue", {
+        return _compact(_attach_task_context_receipt(_quality_check_semantic_result(CLIENT.post("/api/conversations/continue", {
             "conversation_id": conversation_id, "task": task, "context": context,
-        }, timeout=_timeout("model")), task=task, context=context, changed_paths=changed_paths), "delegate")
+        }, timeout=_timeout("model")), task=task, context=context, changed_paths=changed_paths), task_context_meta), "delegate")
     if profile:
         payload = {
             "profile": profile, "task": task, "context": context, "candidate": candidate,
@@ -1306,7 +1327,7 @@ def local_ai_task(
             "root": root, "workspace": workspace or None,
         }
         endpoint = "/api/delegate/repo" if root else "/api/delegate"
-        return _compact(_quality_check_semantic_result(CLIENT.post(endpoint, payload, timeout=_timeout("model")), task=task, context=context, changed_paths=changed_paths), "delegate")
+        return _compact(_attach_task_context_receipt(_quality_check_semantic_result(CLIENT.post(endpoint, payload, timeout=_timeout("model")), task=task, context=context, changed_paths=changed_paths), task_context_meta), "delegate")
     if action in {"delegate", "explore"}:
         payload = {
             "task": task, "context": context, "complexity": complexity, "max_tokens": max_tokens or 4096,
@@ -1316,7 +1337,7 @@ def local_ai_task(
             payload["format"] = format or json_schema
         if conversation:
             payload["conversation"] = True
-        return _compact(_quality_check_semantic_result(CLIENT.post("/api/delegate", payload), task=task, context=context, changed_paths=changed_paths), "explore" if action == "explore" else "delegate")
+        return _compact(_attach_task_context_receipt(_quality_check_semantic_result(CLIENT.post("/api/delegate", payload), task=task, context=context, changed_paths=changed_paths), task_context_meta), "explore" if action == "explore" else "delegate")
     if action == "reason":
         payload = {
             "problem": task, "context": context, "max_tokens": max_tokens or 4096,
@@ -1326,7 +1347,7 @@ def local_ai_task(
             payload["format"] = format or json_schema
         if conversation:
             payload["conversation"] = True
-        return _compact(_quality_check_semantic_result(CLIENT.post("/api/reason", payload), task=task, context=context, changed_paths=changed_paths), "reason")
+        return _compact(_attach_task_context_receipt(_quality_check_semantic_result(CLIENT.post("/api/reason", payload), task=task, context=context, changed_paths=changed_paths), task_context_meta), "reason")
     if action == "review":
         payload = {
             "code": context, "instructions": task or "Report actionable defects only.",
@@ -1335,18 +1356,18 @@ def local_ai_task(
         }
         if format or json_schema:
             payload["format"] = format or json_schema
-        return _compact(_quality_check_semantic_result(CLIENT.post("/api/review", payload), task=task, context=context, changed_paths=changed_paths), "review")
+        return _compact(_attach_task_context_receipt(_quality_check_semantic_result(CLIENT.post("/api/review", payload), task=task, context=context, changed_paths=changed_paths), task_context_meta), "review")
     if action == "second_opinion":
-        return _compact(_quality_check_semantic_result(CLIENT.post("/api/second-opinion", {
+        return _compact(_attach_task_context_receipt(_quality_check_semantic_result(CLIENT.post("/api/second-opinion", {
             "question": task, "candidate": candidate, "context": context, "max_tokens": max_tokens or 4096,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms, "model": model,
-        }), task=task, context=context, changed_paths=changed_paths), "second_opinion")
+        }), task=task, context=context, changed_paths=changed_paths), task_context_meta), "second_opinion")
     if action == "compress":
-        return _compact(_quality_check_semantic_result(CLIENT.post("/api/compress", {
+        return _compact(_attach_task_context_receipt(_quality_check_semantic_result(CLIENT.post("/api/compress", {
             "text": context, "instruction": task or "Compress while preserving facts, identifiers, numbers, errors, decisions and uncertainty.",
             "target_tokens": max_tokens or 650,
             "delivery": delivery, "latency_budget_ms": latency_budget_ms,
-        }, timeout=_timeout("model")), task=task, context=context, changed_paths=changed_paths), "compress")
+        }, timeout=_timeout("model")), task=task, context=context, changed_paths=changed_paths), task_context_meta), "compress")
     if action == "route":
         return _compact(CLIENT.post("/api/route", {"text": context, "query": task, "delivery": delivery, "latency_budget_ms": latency_budget_ms}, timeout=_timeout("model")), "route")
     if action == "batch":
@@ -1406,9 +1427,22 @@ def local_ai_task(
             "audio_path": candidate or context or task or prompt, "model": model,
         }, timeout=_timeout("long")), "delegate")
     if action == "eval_suite":
-        return _compact(CLIENT.post("/api/task/eval_suite", {
-            "suite_name": task or prompt or "default",
-        }, timeout=_timeout("long")), "status")
+        eval_payload: dict[str, Any] = {"suite_name": task or prompt or "default"}
+        if model:
+            eval_payload["model"] = model[:160]
+        if cases:
+            bounded_cases: list[dict[str, Any]] = []
+            for raw_case in cases[:32]:
+                if not isinstance(raw_case, dict):
+                    continue
+                bounded_cases.append({
+                    "id": str(raw_case.get("id", "case"))[:120],
+                    "input": str(raw_case.get("input", ""))[:4000],
+                    "expected": str(raw_case.get("expected", ""))[:2000],
+                })
+            if bounded_cases:
+                eval_payload["cases"] = bounded_cases
+        return _compact(CLIENT.post("/api/task/eval_suite", eval_payload, timeout=_timeout("long")), "status")
     if action == "prompt_eval":
         return _compact(CLIENT.post("/api/task/prompt_eval", {
             "template": prompt or task, "variables": candidate_data or ({"input": context} if context else {}),
