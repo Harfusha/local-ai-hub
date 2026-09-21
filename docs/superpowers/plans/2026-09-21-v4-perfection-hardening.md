@@ -12,7 +12,7 @@
 
 ## Evidence baseline
 
-- Final committed revision: `3b96cb88b9e0805c6a14ff2685c3f24b19d42e37`.
+- Final release state: the functional hardening commit is followed by this docs-only audit pin; use `git rev-parse HEAD` for the exact checkout SHA.
 - Full suite: `1684 passed, 5 skipped, 6 subtests passed`; the five skips are platform/grammar-dependent.
 - Focused v4 matrix: `139 passed`.
 - Live status: Hub `4.0.0`, Ollama online, `qwen2.5-coder:7b`, `vram_pressure=high`, `context_budget_factor=0.5`.
