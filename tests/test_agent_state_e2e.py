@@ -86,9 +86,12 @@ def test_busy_database_returns_bounded_retryable_result_without_corrupting_event
             idempotency_key="busy-k1",
             actor="agent",
         )
+        started = time.perf_counter()
         result = app.agent_state.append(ev)
+        elapsed = time.perf_counter() - started
         assert result.retryable is True
         assert result.seq == 0
+        assert elapsed < 3.0
     finally:
         lock_conn.rollback()
         lock_conn.close()

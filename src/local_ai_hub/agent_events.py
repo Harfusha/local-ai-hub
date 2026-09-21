@@ -215,7 +215,9 @@ class AgentStateStore:
         self._ensure_schema()
 
         def _do_append() -> AppendResult:
-            con = connect_sqlite(self.db_path, isolation_level=None)
+            # Keep each busy wait short; retry_busy provides bounded recovery for
+            # transient locks, while persistent locks must return retryable quickly.
+            con = connect_sqlite(self.db_path, isolation_level=None, timeout_seconds=0.25)
             try:
                 con.execute("BEGIN IMMEDIATE")
                 existing = con.execute(
