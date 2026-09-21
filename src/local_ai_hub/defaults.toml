@@ -3,7 +3,7 @@ bind = "127.0.0.1"
 client_host = "" # optional client-side override; wildcard binds automatically connect via loopback
 port = 11435
 ollama_url = "http://127.0.0.1:11434"
-auto_start_ollama = true
+auto_start_ollama = false
 state_dir = "~/.local-ai-hub/state"
 request_timeout_seconds = 900
 # Slow/broken clients cannot occupy a handler while dribbling a request body.
@@ -19,6 +19,19 @@ max_request_body_bytes = 16777216 # 16 MiB for JSON/API requests; bundle upload 
 # Fail closed if the HTTP hub is exposed beyond loopback. Multi-tenancy is scheduling/fairness, not authentication.
 allow_remote = false
 api_token = "" # required (>=16 chars) when allow_remote=true and bind is non-loopback
+
+[browser_bridge]
+# Capture is explicit: only the extension action click can request the current tab.
+enabled = true
+# Empty by default: operators must configure the exact extension origin (or
+# protect the route with the hub API token). Never use a wildcard origin.
+allowed_origins = []
+capability_ttl_seconds = 60
+max_payload_bytes = 12582912
+max_screenshot_bytes = 8388608
+max_dom_chars = 2000000
+max_context_chars = 1000000
+max_elements = 256
 
 [hardware]
 # auto detects OS/architecture, RAM and NVIDIA/AMD/Intel/Apple graphics.
@@ -36,6 +49,7 @@ fast_code = "qwen2.5-coder:1.5b"
 heavy_code = "qwen2.5-coder:3b"
 reasoning = "qwen2.5-coder:7b"
 general = "qwen2.5-coder:3b"
+vision = "qwen3-vl:4b"
 embedding = "BAAI/bge-small-en-v1.5"
 embedding_backend = "sentence-transformers"
 embedding_device = "cpu"
@@ -43,12 +57,18 @@ reranker = "BAAI/bge-reranker-v2-m3"
 reranker_backend = "torch"
 reranker_device = "cpu"
 
+[vision]
+# Local Qwen3-VL is authoritative. Cloud fallback is opt-in and fails closed
+# until an explicit provider integration is configured by the operator.
+cloud_fallback_enabled = false
+cloud_provider = ""
+
 [llama_cpp]
 # On Intel-only systems, use the loopback SYCL model router when ready.
-# NVIDIA/AMD systems keep Ollama routing; the default permits Ollama fallback.
+# The adapter is optional and never installs or starts a model server.
 mode = "auto" # off | auto | on (on is an explicit manual override)
 model_load_timeout_seconds = 600
-fallback_to_ollama = true
+fallback_to_ollama = false
 
 [llama_cpp.models."qwen2.5-coder:1.5b"]
 url = "http://127.0.0.1:12438"
@@ -69,6 +89,11 @@ context_length = 32768
 url = "http://127.0.0.1:12438"
 served_model = "hub-qwen-7"
 context_length = 32768
+
+[llama_cpp.models."qwen3-vl:4b"]
+url = "http://127.0.0.1:12438"
+served_model = "hub-qwen-vl"
+context_length = 8192
 
 [openvino]
 # Optional Intel NPU/iGPU acceleration for retrieval. The integrated hardware
@@ -126,6 +151,17 @@ max_prompt_tokens = 24000
 context_reserve_tokens = 2048
 thinking = false
 
+[model_execution.vision]
+# Screenshot review uses a separate conservative single-slot role.
+context_tokens = 8192
+large_context_tokens = 8192
+max_context_tokens = 8192
+background_context_tokens = 8192
+parallel = 1
+max_prompt_tokens = 6000
+context_reserve_tokens = 1024
+thinking = false
+
 [routing]
 heavy_min_score = 3
 # Reviews need stronger evidence before spending smart-tier latency.
@@ -167,11 +203,11 @@ module_batch_size = 4
 max_parallel = 2
 max_loaded_models = 1
 max_queue = 256
-max_queued_per_tenant = 64
-max_inflight_per_tenant = 2
+max_queued_per_tenant = 128
+max_inflight_per_tenant = 4
 affinity_batch_jobs = 0 # 0 = drain current-model queue first
 affinity_batch_seconds = 0 # 0 = no time-based switch while current-model jobs remain
-max_other_model_wait_seconds = 30 # anti-starvation safety valve; 0 disables it
+max_other_model_wait_seconds = 120 # anti-starvation safety valve; 0 disables it
 switch_cooldown_seconds = 1
 # A failed model load fails queued callers immediately and briefly opens a circuit breaker.
 model_switch_failure_cooldown_seconds = 20
@@ -180,11 +216,11 @@ max_caller_wait_timeout_seconds = 1800
 
 [async_jobs]
 enabled = true
-max_pending = 64
+max_pending = 256
 wait_max_seconds = 600
-lease_seconds = 1800
+lease_seconds = 3600
 result_ttl_seconds = 259200
-max_attempts = 1
+max_attempts = 3
 
 [work_orchestrator]
 # Whole-task delegation: plan -> bounded DAG -> transactional edits -> validation -> final handoff.
@@ -199,10 +235,10 @@ max_replans = 2
 max_seconds = 3600
 parallel_llm_steps = 1
 parallel_deterministic_steps = 2
-step_retry_limit = 2
-validation_commands = 3
-max_patch_files = 24
-max_patch_bytes = 524288
+step_retry_limit = 3
+validation_commands = 5
+max_patch_files = 64
+max_patch_bytes = 2097152
 allow_edits = true
 allow_create = true
 allow_delete = true
@@ -222,6 +258,7 @@ cleanup_batch_size = 50
 max_list_limit = 200
 
 [ollama]
+enabled = false # explicit opt-in only; setup/service never install, start, or pull Ollama by default
 num_parallel = 2
 # Auto hardware profiles admit Vulkan only for non-Intel integrated graphics.
 # Intel GPU inference uses the optional llama.cpp SYCL route instead.
@@ -236,7 +273,7 @@ retry_delay_seconds = 0.6
 startup_timeout_seconds = 60
 
 [smart_ollama]
-# Disabled by default: the foreground Ollama process remains user-managed.
+# Disabled by default: no foreground Ollama process is started or assumed.
 enabled = false
 url = "http://127.0.0.1:11437"
 model = ""
@@ -295,6 +332,10 @@ cloud_output_token_cost_usd_per_million = 3.0
 compact_responses = true
 max_inline_chars = 1800
 artifact_ttl_hours = 72
+
+[review]
+# Synchronous reviews stay bounded; large reviews use durable async delivery.
+max_async_chunks = 32
 
 [cpu_retrieval]
 foreground_priority = 3
@@ -364,14 +405,21 @@ enabled = true
 allow_read = true
 allow_validation = true
 allow_build = true
-allow_mutating = false
-allow_unknown = false
+allow_mutating = true
+allow_unknown = true
 # User-whitelisted executable names for custom developer tooling:
 extra_allowed_tools = []
-timeout_seconds = 900
+timeout_seconds = 1800
 # Duplicate agents wait only this long for an identical owner; the owner continues
 # and the waiter receives an in-progress response instead of hanging for the full build.
-coalesced_wait_seconds = 90
+coalesced_wait_seconds = 180
+
+[speculative_lint]
+# Opt-in only. Runs read-only lint after a quiet period against caller-supplied changed paths.
+enabled = false
+debounce_seconds = 1.0
+max_paths = 64
+timeout_seconds = 120
 terminate_grace_seconds = 2
 post_kill_drain_seconds = 2
 success_ttl_seconds = 43200
@@ -389,6 +437,8 @@ environment_keys = ["CI", "NODE_ENV", "APP_ENV", "PYTHONPATH"]
 enabled = true
 startup_model = "fast_code"
 delay_seconds = 1.5
+# Allow managed backends to finish startup before abandoning prewarm.
+backend_wait_seconds = 30.0
 
 [search]
 special_filenames = ["Dockerfile", "Containerfile", "docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml", "Makefile", "GNUmakefile", "justfile", "Gemfile", "Pipfile", ".env", ".env.example", ".env.sample", ".gitlab-ci.yml", ".gitlab-ci.yaml", "azure-pipelines.yml", "azure-pipelines.yaml"]
@@ -448,7 +498,7 @@ codegraph_output_format = "gcf"
 codegraph_max_file_size_mb = 5
 startup_timeout_seconds = 45
 query_timeout_seconds = 20
-index_timeout_seconds = 120
+index_timeout_seconds = 1200
 max_output_chars = 9000
 failure_threshold = 2
 cooldown_seconds = 60
@@ -470,6 +520,7 @@ max_rows_per_table = 1000000
 status = true # health, queue, cache, telemetry inspection (local_ai_status)
 repo = true # primary repository worker (local_ai_repo)
 tasks = true # local model inference worker (local_ai_task)
+vision = true # image understanding/frontend review and qwen3-vl model
 rag = true # semantic retrieval fallback (local_ai_rag)
 commands = true # safe command execution broker (local_ai_command)
 coord = true # coordination leases, memos, task contracts (local_ai_coord)
@@ -480,10 +531,10 @@ subagents = true # advisory local profiles (qwen-explorer, etc.)
 agent_os = true # durable execution: tasks, verification receipts, memory
 dashboard = true # realtime web dashboard at /dashboard
 work_orchestrator = true # whole-task DAG execution and verified handoff (local_ai_work)
-enriched_search = false # rollout only: source-enriched repository search
-batch_replacement = false # rollout only: atomic repository batch replacement
-diagnostic_artifacts = false # rollout only: persist command diagnostic artifacts
-local_diagnostic_dispatch = false # rollout only: bounded L1 local failure diagnosis
+enriched_search = true # source-enriched repository search
+batch_replacement = true # atomic repository batch replacement
+diagnostic_artifacts = true # persist command diagnostic artifacts
+local_diagnostic_dispatch = true # bounded L1 local failure diagnosis
 reranker = true
 install_local_nlp_dependencies = true
 install_openvino_dependencies = true
@@ -507,6 +558,8 @@ ignore_dirs = [
   ".git", ".svn", ".hg", ".idea", ".vscode", ".venv", "venv", "node_modules",
   "vendor", "dist", "build", "bin", "obj", "coverage", ".next", ".cache",
   ".serena", ".codegraphcontext", ".local-ai-hub", "tool-envs", "site-packages", "__pycache__",
+  ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox", ".eggs", "htmlcov",
+  "target", "out", ".terraform", ".turbo", ".parcel-cache",
   "Library", "Temp", "Logs", "UserSettings"
 ]
 
@@ -614,7 +667,7 @@ circuit_cooldown_seconds = 20
 scheduler_wait_timeout_seconds = 900
 singleflight_wait_timeout_seconds = 300
 model_fallback_enabled = true
-max_model_fallbacks = 2
+max_model_fallbacks = 1
 serve_stale_on_error = true
 stale_generation_ttl_seconds = 2592000
 stale_generation_max_entries = 10000
@@ -840,7 +893,7 @@ max_request_timeout_seconds = 1800.0
 [headless]
 enabled = true
 install_service = true
-manage_ollama = true
+manage_ollama = false
 health_check_interval_seconds = 2.0
 health_probe_timeout_seconds = 2.0
 unhealthy_grace_seconds = 15.0
@@ -890,6 +943,15 @@ event_retention_days = 30
 max_payload_bytes = 65536
 snapshot_interval_events = 50
 cleanup_batch_size = 100
+
+[context.preloads]
+# Empty by default: repositories opt into bounded files, patterns, and memory kinds.
+files = []
+patterns = []
+memory_kinds = []
+max_files = 8
+max_bytes = 16000
+max_memory = 8
 
 [agent_output]
 ultra_compact = true

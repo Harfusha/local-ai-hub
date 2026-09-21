@@ -11,13 +11,14 @@ from unittest.mock import MagicMock
 import pytest
 
 from local_ai_hub.agent_blackboard import BlackboardStore
-from local_ai_hub.agent_context import ContextCompiler
+from local_ai_hub.agent_context import ContextCompiler, ContextRequest
 from local_ai_hub.agent_events import AgentEvent, AgentStateStore
 from local_ai_hub.agent_identity import AgentScope
 from local_ai_hub.agent_incidents import IncidentStore
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
 from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskCheckpoint, TaskState, TaskStatus, TaskStore
 from local_ai_hub.agent_verification import VerificationStore
+from local_ai_hub.leases import ScopeLeaseStore
 from local_ai_hub.rag import RAGStore
 from local_ai_hub.scheduler import QueueFullError
 
@@ -224,6 +225,32 @@ def test_store_concurrency_locks(tmp_path: Path) -> None:
         t.join()
 
     assert errors == []
+
+
+def test_disabled_agent_state_keeps_stateless_context_useful(tmp_path: Path) -> None:
+    state = AgentStateStore(tmp_path / "agent_state.sqlite3", enabled=False)
+    leases = ScopeLeaseStore(tmp_path / "leases")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    claimed = leases.claim("other-agent", str(repo), ["src/core.py"], purpose="inspect")
+    assert claimed["success"] is True
+
+    compiler = ContextCompiler(state, lease_store=leases)
+    compiled = compiler.compile(
+        ContextRequest(
+            task_id="task-stateless",
+            token_budget=512,
+            include_kinds=("active_lease",),
+            root=str(repo),
+            tenant="current-agent",
+        )
+    )
+
+    assert state.enabled is False
+    assert compiled.elements
+    assert "src/core.py" in compiled.text()
+    assert "other-agent" in compiled.text()
+    assert compiled.to_dict(compact=True)["etag"]
 
 
 def test_rag_embedder_queue_exception_handling(tmp_path: Path) -> None:

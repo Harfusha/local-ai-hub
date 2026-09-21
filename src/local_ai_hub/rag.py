@@ -23,6 +23,7 @@ from .process_utils import canonical_root
 
 
 import re
+from functools import lru_cache
 
 
 def _canonical_fragment_text(text: str) -> str:
@@ -36,6 +37,14 @@ def _fragment_hash(text: str) -> str:
     ).hexdigest()
 
 
+@lru_cache(maxsize=131_072)
+def _simhash_shingle_hash(shingle: str) -> int:
+    return int(
+        hashlib.md5(shingle.encode("utf-8"), usedforsecurity=False).hexdigest()[:16],
+        16,
+    )
+
+
 def _simhash(text: str) -> int:
     """Compute 64-bit SimHash of text based on character 4-grams."""
     clean = re.sub(r"\s+", " ", text.lower().strip())
@@ -46,14 +55,16 @@ def _simhash(text: str) -> int:
     if not shingles:
         return 0
 
-    v = [0] * 64
+    # Start at -N, then add two for each set bit. This is mathematically
+    # identical to adding +1/-1 for every bit, without 64 Python bit tests
+    # per shingle.
+    v = [-len(shingles)] * 64
     for s in shingles:
-        h = int(hashlib.md5(s.encode("utf-8"), usedforsecurity=False).hexdigest()[:16], 16)
-        for i in range(64):
-            if (h >> i) & 1:
-                v[i] += 1
-            else:
-                v[i] -= 1
+        h = _simhash_shingle_hash(s)
+        while h:
+            lsb = h & -h
+            v[lsb.bit_length() - 1] += 2
+            h ^= lsb
     fp = 0
     for i in range(64):
         if v[i] > 0:
@@ -213,6 +224,7 @@ class RAGStore:
             con.execute("INSERT OR REPLACE INTO rag_meta(key,value) VALUES('index_fingerprint',?)", (current,))
             con.execute("CREATE INDEX IF NOT EXISTS idx_chunks_workspace ON chunks(tenant, workspace)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_chunks_content_hash ON chunks(content_hash)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_chunks_tenant_hash ON chunks(tenant, content_hash)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_files_workspace ON files(tenant, workspace)")
             con.commit()
 
@@ -225,19 +237,34 @@ class RAGStore:
     def _iter_files(self, root: Path) -> Iterable[Path]:
         cfg = self.config.get("rag", {})
         extensions = {x.lower() for x in cfg.get("extensions", [])}
-        ignored = set(cfg.get("ignore_dirs", []))
+        ignored = {str(name).lower() for name in cfg.get("ignore_dirs", [])}
         max_bytes = int(cfg.get("max_file_bytes", 2_000_000))
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if d not in ignored]
-            for filename in filenames:
-                path = Path(dirpath) / filename
-                if extensions and path.suffix.lower() not in extensions:
-                    continue
+        pending = [Path(root)]
+        while pending:
+            current = pending.pop()
+            try:
+                entries = sorted(os.scandir(current), key=lambda entry: entry.name)
+            except OSError:
+                continue
+            child_dirs: list[Path] = []
+            for entry in entries:
                 try:
-                    if path.stat().st_size <= max_bytes:
+                    if entry.is_dir(follow_symlinks=False):
+                        if entry.name.lower() not in ignored:
+                            child_dirs.append(Path(entry.path))
+                        continue
+                    # Never follow directory symlinks, matching os.walk's default,
+                    # but preserve the historical behavior for symlinked files.
+                    if entry.is_symlink() and entry.is_dir(follow_symlinks=True):
+                        continue
+                    path = Path(entry.path)
+                    if extensions and path.suffix.lower() not in extensions:
+                        continue
+                    if entry.stat(follow_symlinks=True).st_size <= max_bytes:
                         yield path
                 except OSError:
                     continue
+            pending.extend(reversed(child_dirs))
 
     def _chunks(self, text: str, path: str = "") -> list[str]:
         """Split text into semantically meaningful chunks.

@@ -30,6 +30,8 @@ classifiers = [
 local-nlp = ["sentence-transformers>=5.4,<6"]
 intel-accelerators = ["sentence-transformers[openvino]>=5.4,<6", "openvino>=2026.1,<2027"]
 token-economy = ["tiktoken>=0.7", "files-to-prompt>=0.4", "grep-ast>=0.3"]
+performance = ["orjson>=3.10,<4", "msgspec>=0.18,<1", "Cython>=3,<4"]
+profiling = ["py-spy>=0.3,<1", "scalene>=1.5,<2"]
 dev = ["pytest>=8,<10", "pyflakes>=3.2,<4", "coverage[toml]>=7,<8"]
 
 [project.scripts]
@@ -46,6 +48,9 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 local_ai_hub = ["defaults.toml"]
+
+[tool.setuptools.data-files]
+"browser_bridge" = ["browser_bridge/background.js", "browser_bridge/capture.js", "browser_bridge/manifest.json", "browser_bridge/README.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -147,10 +147,10 @@ def test_repair_model_requires_explicit_diagnostic_dispatch_opt_in():
     services.proxy_request.assert_not_called()
 
 
-def test_defaults_disable_local_diagnostic_dispatch():
+def test_defaults_enable_local_diagnostic_dispatch():
     defaults = tomllib.loads((ROOT / "defaults.toml").read_text(encoding="utf-8"))
 
-    assert defaults["features"]["local_diagnostic_dispatch"] is False
+    assert defaults["features"]["local_diagnostic_dispatch"] is True
 
 
 def test_proxy_timeout_clamps_only_explicit_diagnostic_cap():

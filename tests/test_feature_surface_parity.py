@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+import inspect
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -11,6 +12,7 @@ from local_ai_hub.generator import (
     generate_skill_markdown,
     generate_skill_references,
 )
+from local_ai_hub import mcp_server as local_ai_mcp
 
 
 def _config(*, agent_os: bool = True, work_orchestrator: bool = False) -> dict:
@@ -58,6 +60,8 @@ def test_enabled_agent_os_and_tool_actions_are_discoverable():
     assert "semantic generation" in tools_reference
     assert "exact facts, symbols, diff and tests" in tools_reference
     assert "preserves one bounded local pass" in tools_reference
+    assert "semantic handoff is mandatory" in tools_reference
+    assert "before cloud reasoning" in tools_reference
     assert 'local_ai_task(action="delegate")' in workflows_reference
     assert 'local_ai_task(action="explore")' in workflows_reference
     assert 'local_ai_task(action="reason")' in workflows_reference
@@ -119,3 +123,56 @@ def test_whole_task_tool_obeys_its_feature_gate():
     assert "local_ai_work" in enabled_refs["tools.md"]
     assert "local_ai_work" in enabled_refs["multi-agent.md"]
     assert "local_ai_work" in enabled_schemas
+
+
+def test_guarded_context_extends_existing_repo_tool_without_duplicate_surface():
+    parameters = inspect.signature(local_ai_mcp.local_ai_repo).parameters
+    assert {
+        "phase", "focus", "preload_profile", "changed_paths", "base", "staged",
+        "task_id", "guarded", "since_hash", "approval", "override_reason", "token_budget",
+    }.issubset(parameters)
+
+    names = list(local_ai_mcp.mcp._tool_manager._tools)
+    assert names.count("local_ai_repo") == 1
+    assert not any(name in {"local_ai_context", "local_ai_context_pack"} for name in names)
+
+
+def test_generated_repo_schema_declares_guarded_context_and_compact_controls():
+    schema = generate_mcp_tool_schemas(_config())["local_ai_repo"]
+    properties = schema["parameters"]["properties"]
+
+    assert {
+        "task", "task_id", "max_tokens", "token_budget", "workspace",
+        "phase", "focus", "preload_profile", "guarded", "changed_paths",
+        "since_hash", "approval", "override_reason", "max_response_tokens",
+        "response_profile", "reuse_key", "extra_fields",
+    }.issubset(properties)
+    assert properties["focus"] == {"type": "array", "items": {"type": "string"}}
+    assert properties["changed_paths"] == {"type": "array", "items": {"type": "string"}}
+    assert properties["approval"]["type"] == ["boolean", "string"]
+    assert properties["response_profile"]["default"] == "compact"
+    assert "" not in properties["response_profile"]["enum"]
+
+    guidance = schema["description"].lower()
+    for phrase in (
+        "default adaptive context pack",
+        "planning, edit, review or test",
+        "evidence ids",
+        "reuse candidates first",
+        "override_reason",
+        "deterministic/indexed evidence is authoritative",
+        "raw model/debug fields",
+        "3200",
+    ):
+        assert phrase in guidance
+
+
+def test_http_context_docs_match_guarded_warning_and_degraded_fields():
+    docs = (ROOT / "docs/HTTP_API.md").read_text(encoding="utf-8")
+
+    assert "`guarded`" in docs
+    for field in (
+        "`warnings`", "`model_warnings`", "`degraded`", "`context_source`",
+        "`continuation`", "`model_degraded`", "`model_degraded_reason`",
+    ):
+        assert field in docs

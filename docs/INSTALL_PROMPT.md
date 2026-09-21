@@ -7,7 +7,7 @@ Use this prompt with any AI coding agent (Claude Code, Codex, Cursor, Windsurf, 
 ```markdown
 # TASK: Install, Verify, and Integrate Local AI Hub in Environment & Repository
 
-You are an autonomous AI engineering agent. Your task is to install and configure **Local AI Hub** on this system (if not already installed or running), verify all components (service, Ollama, token economy suite, code intelligence), ensure MCP integration, and inject the canonical tool and token economy policies into this repository's agent instructions.
+You are an autonomous AI engineering agent. Your task is to install and configure **Local AI Hub** on this system (if not already installed or running), verify all components (service, configured local backends, token economy suite, code intelligence), ensure MCP integration, and inject the canonical tool and token economy policies into this repository's agent instructions. Ollama is disabled unless explicitly opted in.
 
 Hub adoption telemetry is aggregate-only: retain normalized tool/action/intent/outcome plus time, latency, and output-size buckets. Never send prompts, source, secrets, absolute paths, or raw request records. Mark a bypass only when the client explicitly signals one; do not infer it from missing Hub calls.
 
@@ -33,7 +33,9 @@ Execute the following phases deterministically:
 
 ### PHASE 2: RUN BOOTSTRAP INSTALLATION
 
-Run the platform installer from the repository root. This automatically configures Python 3.11+, virtual environment, Token Economy tools, backend-appropriate local model support, Serena/CodeGraphContext environments, global MCP configs, and background supervisor. Ollama is installed and its models are pulled only when `server.auto_start_ollama = true` and `llama_cpp.fallback_to_ollama = true`; an exclusive `llama_cpp.mode = "on"` configuration with `fallback_to_ollama = false` skips Ollama entirely. The default install deploys the `token-economizer` skill and registers its CLI directory on the user's persistent PATH; verify both after setup, then open a new terminal. Do not pass `--skip-token-economy` or `--skip-companion-skills` for the standard install.
+Run the platform installer from the repository root. This automatically configures Python 3.11+, virtual environment, Token Economy tools, backend-appropriate local model support, Serena/CodeGraphContext environments, global MCP configs, and background supervisor. Ollama is installed or pulled only when `[ollama].enabled = true`, `server.auto_start_ollama = true`, and `llama_cpp.fallback_to_ollama = true`; the default is disabled. llama.cpp is not installed automatically: `llama_cpp.mode = "auto"` uses only an existing healthy endpoint when hardware/profile detection requires it. If it is unavailable, do not install Ollama as a fallback. Set `features.vision = false` to remove vision capability and its model pull. The default install deploys the `token-economizer` skill and registers its CLI directory on the user's persistent PATH; verify both after setup, then open a new terminal. Do not pass `--skip-token-economy` or `--skip-companion-skills` for the standard install.
+
+When `[ollama].enabled = false` (default), Ollama is not installed, started, pulled, or probed. Never start it with `ollama serve`. Use only a pre-existing llama.cpp endpoint when the hardware-gated profile requires it; do not install llama.cpp blindly.
 
 - **Windows (PowerShell)**:
   ```powershell
@@ -44,7 +46,7 @@ Run the platform installer from the repository root. This automatically configur
   bash "$HOME/.local-ai-hub/install.sh" --profile auto
   ```
 
-*Note*: If Ollama or specific heavy models cannot be downloaded immediately due to bandwidth or permissions, the installer still sets up deterministic tools and built-in indexers.
+*Note*: If an explicitly configured local backend or heavy model is unavailable, the installer still sets up deterministic tools and built-in indexers and reports the unavailable optional backend.
 
 ---
 
@@ -79,7 +81,7 @@ Run the platform installer from the repository root. This automatically configur
    - On Intel-only systems, follow `docs/LLAMA_CPP_SYCL.md` and verify that the official SYCL `llama-server.exe --list-devices` lists the Intel GPU before enabling `llama_cpp.mode = "on"`. The installed Hub selects the SYCL backend in `auto` mode when its Intel hardware profile and routes are present. Do not set `OLLAMA_VULKAN` for Intel inference.
    - NVIDIA/AMD discrete GPUs continue through the configured Ollama CUDA/ROCm path. AMD iGPU is not an Intel SYCL target and retains its configured Ollama route. Do not enable llama.cpp SYCL on non-Intel hardware.
    - If an NPU (Intel AI Boost / AMD XDNA) or Intel iGPU is present:
-     Ensure OpenVINO dependencies are installed in the venv to offload embeddings and reranking from CPU:
+     Ensure OpenVINO dependencies are installed in the venv only when active hardware/configuration selects OpenVINO for embeddings or reranking. Do not install OpenVINO on NVIDIA-only systems merely because the feature permission is true:
      ```powershell
      & "$HOME\.local-ai-hub\.venv\Scripts\pip.exe" install -r "$HOME\.local-ai-hub\requirements-openvino.txt"
      & "$HOME\.local-ai-hub\.venv\Scripts\python.exe" "$HOME\.local-ai-hub\tools\prefetch_openvino.py"
@@ -110,6 +112,7 @@ Trigger map:
 - task contracts, ownership leases, checkpoints, verification receipts, and receipt-gated completion: `local_ai_coord`
 - semantic retrieval after indexed paths are insufficient: `local_ai_rag`
 - semantic generation, exploration, reasoning, review, second opinion and compression: use `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` after any needed evidence. Deterministic/indexed tools remain for exact facts, symbols, diff and tests; they do not replace semantic local-model work. `local_ai_repo(action="solve")` preserves one bounded local pass when its task text explicitly requests explore/explain/why/compare/second-opinion semantics, even when exact evidence is strong. Failure diagnosis is disabled by default; enable `features.local_diagnostic_dispatch=true` only after low-confidence deterministic command parsing with an artifact reference plus narrow preview, never raw logs. Automatic local inference never handles architecture, security, mutations, or open-ended coding.
+- Semantic handoff is mandatory: after deterministic/indexed evidence, planning, interpretation, synthesis, generation, review, compression, and second-opinion work must call `local_ai_task` before cloud reasoning. The cloud agent integrates the bounded local result and does not redo semantic work. If local inference is unavailable or intentionally excluded by a permitted boundary, report the bypass through `local_ai_status(adoption_signal="bypassed", target_tool="local_ai_task", target_action="reason")`. Preserve exceptions for architecture, security, mutations, open-ended coding, exact evidence, and verification.
 - closed, verified handoff work: `local_ai_work`; skip micro-edits and live discussion
 
 Recipes (guidance, not gates):
@@ -140,6 +143,8 @@ For every non-trivial repository task, use Local AI Hub before broad native disc
 
 Adoption gate: `local_ai_command` alone is never sufficient for a repository task. The first useful Hub operation must be `local_ai_repo` (preprocess plus the cheapest applicable deterministic/code-index/search/context action); use the command broker only for commands, after repository evidence exists. For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence and before native edits. After edits, use the applicable indexed impact/review/security/evidence action before final validation.
 
+Default context contract: use `local_ai_repo(action="context")` before non-trivial planning, edit, review or test. It is an adaptive, bounded pack: reuse existing evidence and reuse candidates first, require evidence IDs for factual claims, and treat deterministic/indexed evidence as authoritative. Local models may rank, select or compress structured evidence only; they may not invent repository facts. Guarded fields are additive: `phase`, `focus`, `preload_profile`, `guarded`, `changed_paths`, `since_hash`, `approval`, and `override_reason`, alongside existing task/budget/workspace and compact response controls. Scope or drift overrides require an explicit `override_reason` and approval when requested. Omit guarded fields to retain legacy `mode="fast"|"full"` behavior. Raw model/debug fields are omitted unless explicitly requested through `extra_fields`.
+
 Cheapest path for repository evidence: deterministic -> code_index/search -> semantic/graph -> context/solve -> RAG. Semantic generation, reasoning, review, independent second opinions and compression use `local_ai_task` after any needed evidence.
  Stop escalating as soon as a cheaper layer provides enough evidence. Do not fan out overlapping retrieval layers in parallel for the same question. Before native `find`/`rg`/`grep`/recursive glob/tree or opening more than two files for discovery, use that hub path first. Reuse fresh evidence IDs, artifact slices, memos and cache hits;
  do not repeat the same hub action with the same root/query while repository state is unchanged.
@@ -153,7 +158,7 @@ Selection guide: `local_ai_repo` for bounded repository facts and checks (includ
 
 For non-trivial multi-step work, create a `local_ai_coord` task contract first, claim overlapping paths, checkpoint phase changes, attach validation receipts, and complete only after receipt verification passes.
 
-Rollout controls: `features.enriched_search`, `features.batch_replacement`, `features.diagnostic_artifacts`, and `features.local_diagnostic_dispatch` start `false`. Enable only one literal TOML `true` flag for a 10–20% pilot after a 14-day read-only baseline. Compare `/api/adoption` token, latency, first-pass validation, terminal failure, and native fallback metrics. Promote only sustained quality-neutral gains. Roll back immediately: set that flag to `false`, restart Hub, run `python tools/hubctl.py generate`. Disabled flags return structured unavailable before work starts; malformed values stay disabled. `local_diagnostic_dispatch=true` alone may retain only its bounded failure preview for the one local diagnosis; never raw output and no `diagnostic_artifacts=true` dependency.
+Rollout controls: `features.enriched_search`, `features.batch_replacement`, `features.diagnostic_artifacts`, and `features.local_diagnostic_dispatch` are enabled in the installed default profile. They remain independently switchable for rollback or a controlled pilot. Compare `/api/adoption` token, latency, first-pass validation, terminal failure, and native fallback metrics. Roll back immediately by setting the affected flag to `false`, restarting Hub, and running `python tools/hubctl.py generate`. Disabled flags return structured unavailable before work starts; malformed values stay disabled. `local_diagnostic_dispatch=true` may retain only its bounded failure preview for one local diagnosis; never raw output and no `diagnostic_artifacts=true` dependency.
 
 Batch edits require `features.batch_replacement=true`. Then use `local_ai_repo(action="batch_replace", edits=[...], dry_run=true)` for preview. `staged` is not batch dry-run and is never forwarded. Each edit needs exact target text that matches once. The engine preflights all edits, rolls back write failures, and never auto-commits. Set `dry_run=false` only after review.
 
@@ -220,7 +225,7 @@ Trigger one-time asynchronous preprocessing on the current repository root:
 Output concise confirmation with:
 1. Local AI Hub version and service status (`online` / `offline`).
 2. Tools verified (`rg`, `fd`, `ast-grep`, `repomix`, `tokcount`, `trim-run`).
-3. Ollama & models status.
+3. Configured local backend and model status (Ollama must be reported as disabled unless explicitly opted in).
 4. Instruction files created/modified in this repo.
 5. Readiness confirmation.
 ```

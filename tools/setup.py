@@ -505,20 +505,27 @@ def try_install_ollama() -> str | None:
 
 def ollama_setup_required(cfg: dict[str, Any]) -> bool:
     """Return whether setup should install, start, or pull Ollama resources."""
+    ollama = cfg.get("ollama", {})
     server = cfg.get("server", {})
     llama_cpp = cfg.get("llama_cpp", {})
+    if not isinstance(ollama, dict):
+        ollama = {}
     if not isinstance(server, dict):
         server = {}
     if not isinstance(llama_cpp, dict):
         llama_cpp = {}
-    # A user-managed Ollama or an exclusive llama.cpp route must not trigger
-    # package installation or model downloads as an incidental setup side effect.
-    return bool(server.get("auto_start_ollama", True)) and bool(llama_cpp.get("fallback_to_ollama", True))
+    # Ollama is explicit opt-in.  A llama.cpp route never implicitly installs
+    # Ollama or downloads Ollama models as an incidental setup side effect.
+    return (
+        bool(ollama.get("enabled", False))
+        and bool(server.get("auto_start_ollama", False))
+        and bool(llama_cpp.get("fallback_to_ollama", False))
+    )
 
 
 def ensure_ollama_for_setup(cfg: dict[str, Any], install_dir: Path, *, allow_install: bool) -> bool:
     if not ollama_setup_required(cfg):
-        log("Skipping Ollama setup: configuration uses llama.cpp exclusively or keeps Ollama user-managed.")
+        log("Skipping Ollama setup: Ollama is disabled or not explicitly opted in; no package/model changes requested.")
         return True
     executable = find_ollama_executable() or (try_install_ollama() if allow_install else None)
     if not executable:
@@ -530,7 +537,7 @@ def ensure_ollama_for_setup(cfg: dict[str, Any], install_dir: Path, *, allow_ins
     try:
         from local_ai_hub.ollama import OllamaRuntime
         runtime = OllamaRuntime(cfg)
-        return runtime.is_online() or runtime.ensure_running()
+        return runtime.ensure_running()
     except Exception as exc:
         log(f"WARNING: Ollama startup check failed: {exc}")
         return False
@@ -546,6 +553,10 @@ def pull_ollama_models(cfg: dict[str, Any]) -> None:
     model_cfg = cfg.get("models", {})
     for key in ["background_code", "fast_code", "heavy_code", "reasoning", "general"]:
         model = str(model_cfg.get(key, "") or "")
+        if model and model not in models:
+            models.append(model)
+    if bool(cfg.get("features", {}).get("vision", True)):
+        model = str(model_cfg.get("vision", "") or "")
         if model and model not in models:
             models.append(model)
     if bool(cfg.get("ollama_subagents", {}).get("enabled", True)):
@@ -806,7 +817,8 @@ def main() -> int:
         has_nvidia = any(str(g.get("vendor", "")).lower() == "nvidia" for g in detected_gpus if isinstance(g, dict))
         has_igpu = any(bool(g.get("integrated")) or "intel" in str(g.get("name", "")).lower() or "radeon" in str(g.get("name", "")).lower() for g in detected_gpus if isinstance(g, dict))
         is_integrated_profile = cfg.get("_hardware", {}).get("profile") == "integrated" or cfg.get("hardware", {}).get("profile") == "integrated"
-        if (has_igpu or is_integrated_profile) and not has_nvidia:
+        ollama_enabled = bool(cfg.get("ollama", {}).get("enabled", False)) if isinstance(cfg.get("ollama", {}), dict) else False
+        if ollama_enabled and (has_igpu or is_integrated_profile) and not has_nvidia:
             if not os.environ.get("OLLAMA_VULKAN"):
                 try:
                     ps_cmd = "[System.Environment]::SetEnvironmentVariable('OLLAMA_VULKAN', '1', 'User')"

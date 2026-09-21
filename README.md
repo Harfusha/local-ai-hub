@@ -9,6 +9,7 @@ Local AI Hub 3.0 uses one current runtime contract across packaging, HTTP, MCP, 
 ## What it does
 
 - deterministic repository facts, symbols, references, manifests, routes, tests and risk signals;
+- default adaptive repository context packs before non-trivial planning, edit, review or test, with reuse-first candidates, evidence IDs, guarded override reasons and bounded deterministic/local-model composition;
 - managed **Serena** semantic-symbol indexing/querying;
 - managed **CodeGraphContext** call/dependency/impact graph indexing/querying;
 - checkpointed background preprocessing that warms built-in indexes, Serena, CodeGraph, RAG and compact project cards;
@@ -17,7 +18,7 @@ Local AI Hub 3.0 uses one current runtime contract across packaging, HTTP, MCP, 
 - local semantic retrieval and reranking with persistent caches plus optional Intel NPU/iGPU OpenVINO acceleration;
 - safe cached test/lint/typecheck/build/read command execution;
 - exact evidence IDs and artifact-backed large responses;
-- model-affinity scheduling, bounded fallbacks and an optional preemptible background Ollama runtime;
+- model-affinity scheduling, bounded fallbacks and optional local backends (Ollama is disabled by default);
 - automatic hardware profile selection across Windows, macOS and Linux, including NVIDIA, AMD, Intel and Apple graphics detection;
 - metadata-only telemetry, realtime monitoring and a self-contained dashboard;
 - **Agent Operating System**: durable execution state, scoped key-value memory, exact token-bounded context compilation, verification receipts, and negative knowledge incident avoidance;
@@ -45,11 +46,12 @@ Local AI Hub is engineered to maximize **Quality**, **Speed**, and **Token Econo
 | Capability / Feature | Core Mechanism | Quality Impact | Speed & Latency Impact | Cloud Context & Cost Savings |
 |---|---|---|---|---|
 | **Deterministic Code Intelligence** (`local_ai_repo`) | AST parsing, FQN symbol indexing, route & ORM extraction across PHP, JS/TS, Python, C#, HTML, CSS | **100% exact facts**: Eliminates LLM hallucinations for imports, symbol definitions, routes, and DB relationships. | **Sub-millisecond**: Zero network latency; index hits in <5ms vs waiting 5–15s for cloud agent file reads. | **85–95% input token reduction**: Injects targeted symbol cards/fact summaries instead of full 500+ line files. |
+| **Adaptive Context Guard** (`local_ai_repo(action="context")`) | Phase/focus/preload-aware bounded pack with reuse candidates, evidence IDs, revision/delta metadata and guarded approvals | Deterministic/indexed evidence stays authoritative; local models rank/compress structured evidence only | Compact default packs before planning, edit, review and test; raw model/debug fields stay opt-in | Avoids duplicate discovery and unsupported repository claims while preserving legacy fast/full callers |
 | **Token Economy Suite** (`tokcount`, `trim-run`, `repo-map`, `rg`, `fd`, `ast-grep`, `jq`) | Dedicated CLI tools & wrappers installed into PATH; ANSI stripping, head/tail log truncation, AST outline search | **Eliminates prompt pollution**: Prevents "Lost in the Middle" attention degradation caused by noisy logs and raw file dumps. | **Dramatically faster TTFT**: Cloud models generate answers in seconds when context stays bounded (<15k tokens). | **70–98% output token savings**: Caps bloated build/test logs and API JSON responses to only actionable lines. |
 | **Unified 8-Tool MCP Surface** (Managed Serena & CodeGraph) | Serena (LSP) and CodeGraph (call/dependency graph) run under `local_ai_repo` without separate schemas | **Deep graph reasoning**: Agent queries blast-radius impact and cross-file callers before modifying code. | **Pre-indexed & warm**: External tool processes run persistently; no cold-start timeouts during agent turns. | **Saves ~1,500 schema tokens/turn**: Avoids exposing multiple heavy tool schemas on every single agent interaction. |
 | **Agent Operating System** (`local_ai_coord`) | Durable execution state, scoped KV memory, negative knowledge incidents, verification receipts, path leases | **Prevents repeated mistakes**: Negative knowledge prevents retrying broken patterns; receipts enforce true test verification. | **Instant resumption**: Restores task state and active memory without re-discovering repository facts. | **Bounded context compilation**: Assembles exact token-budgeted memory slices, preventing runaway session context bloat. |
 | **Single-Flight Command Broker** (`local_ai_command`) | Deduplicated test/lint execution, SHA256 caching, ANSI removal, verification receipt generation | **Deterministic verification**: Guarantees identical execution conditions; prevents flaky duplicate runs. | **Instant cache returns (0ms)**: Subsequent test/lint runs in the same workspace state return cached results immediately. | **Avoids 5k–25k rerun tokens**: Keeps massive compiler errors or test suites from repeating across agent iterations. |
-| **Local Ollama Inference** (`local_ai_task`) | 0.5B preprocessing, 1.5B quick/simple requests, 3B ordinary and more involved tasks, and 7B hardest reasoning (llama.cpp SYCL on configured Intel iGPU; Ollama fallback) | **Unbiased second opinion**: Local models review diffs and draft AST fixes without cloud context contamination. | **Local concurrency**: Local generation runs in parallel with cloud agent high-level planning. | **100% free (0 cloud tokens)**: Offloads routine microtasks, file summaries, and formatting repairs completely off cloud bills. |
+| **Optional Local Inference** (`local_ai_task`) | 0.5B preprocessing, 1.5B quick/simple requests, 3B ordinary and more involved tasks, and 7B hardest reasoning through an already-configured local backend (llama.cpp only when hardware/profile-gated) | **Unbiased second opinion**: Local models review diffs and draft AST fixes without cloud context contamination. | **Local concurrency**: Local generation runs in parallel with cloud agent high-level planning. | **100% free (0 cloud tokens)**: Offloads routine microtasks, file summaries, and formatting repairs completely off cloud bills. |
 | **Whole-Task Delegation** (`local_ai_work`) | Autonomous closed-loop execution: local plan, transactional patch staging, rollback journal, verification | **Transactional safety**: Automatic rollback on test failure prevents partially broken codebase commits. | **Autonomous iteration**: Iterates through 10–30 test-fix cycles locally without internet or cloud rate limits. | **Massive savings (95%+)**: Compresses multi-turn cloud exchanges (50k–200k tokens, $1–$5) into a single <350 token handoff. |
 | **Hardware-Aware Scheduling & NPU Acceleration** | Automatic hardware profiling (`integrated` to `max`), Vulkan/CUDA offloading, Intel NPU OpenVINO retrieval | **Rock-solid stability**: Never crashes host system with OOMs; scheduler throttles background work gracefully. | **NPU/iGPU offload**: Frees primary CPU cores for IDE responsiveness and build tools while searching vectors. | **Zero cloud dependency**: Enables fast local semantic search and embeddings on standard laptops without paid APIs. |
 
@@ -78,10 +80,10 @@ The bootstrapper finds or installs a suitable Python 3.11+ runtime where the pla
 
 - the Local AI Hub virtual environment, core dependencies, and Token Economy Suite (`tokcount`, `trim-run`, `repo-map`);
 - external CLI tools (`ripgrep` / `rg`, `fd`, `ast-grep`, `repomix`, `jq`);
-- The configured local inference backend and all four Qwen tiers (`qwen2.5-coder:0.5b`, `qwen2.5-coder:1.5b`, `qwen2.5-coder:3b`, `qwen2.5-coder:7b`), plus embedding models (`bge-m3`);
+- The configured local inference backend and all four Qwen tiers (`qwen2.5-coder:0.5b`, `qwen2.5-coder:1.5b`, `qwen2.5-coder:3b`, `qwen2.5-coder:7b`), plus the default embedding model (`BAAI/bge-small-en-v1.5`);
 - Serena and CodeGraphContext in isolated tool environments;
 - local SentenceTransformers/reranker dependencies and model cache;
-- optional OpenVINO dependencies/models when the selected Intel integrated profile requests NPU/iGPU retrieval acceleration;
+- optional OpenVINO dependencies/models when OpenVINO is configured, NPU hardware is detected, or an Intel GPU is detected with the `integrated` profile, subject to the OpenVINO and feature install flags;
 - MCP server registration into Codex, Claude Desktop, Gemini, Cursor, Windsurf, and VS Code/Copilot;
 - companion agent skills (`local-ai-orchestrator`, `token-economizer`, `caveman`, `tool-orchestration`, `ollama-quality-routing`) and policies (`LOCAL AI HUB TOOL POLICY`, `TOKEN ECONOMY POLICY`);
 - a per-user headless service/supervisor.
@@ -110,7 +112,7 @@ Profiles: `cpu`, `integrated`, `low`, `balanced`, `high`, `max`.
 
 `integrated` is selected for shared-memory iGPUs (for example Intel Arc Graphics on Core Ultra notebooks) instead of sizing the machine from the tiny `AdapterRAM` aperture value reported by Windows. It keeps one LLM/model resident at a time, uses 0.5B only for preprocessing, 1.5B for quick/simple requests, 3B for ordinary and more involved tasks, and 7B for the hardest reasoning, disables the separate background Ollama process and prewarm, limits the scheduler queue to 32 (12 per tenant), async pending work to 16, code-intelligence/headless sessions to two per backend, and starts background preprocessing only after 15 seconds of idle time.
 
-On Intel integrated systems, embeddings/reranking can use OpenVINO in `NPU -> GPU -> CPU` order. This is optional and failure-safe: missing drivers, unsupported model shapes, export failures or an unavailable OpenVINO runtime fall through to the next device and finally CPU. Ollama LLM generation is separate; the integrated profile admits the iGPU/Vulkan path for the managed Ollama process but remains serial and can fall back to CPU.
+On Intel integrated systems, embeddings/reranking can use OpenVINO in `NPU -> GPU -> CPU` order. This is optional and failure-safe: missing drivers, unsupported model shapes, export failures or an unavailable OpenVINO runtime fall through to the next device and finally CPU. LLM generation is separate; the integrated profile may use an already-running llama.cpp SYCL endpoint, but does not install Ollama or llama.cpp and does not silently fall back to either.
 
 ## Configuration
 
@@ -181,7 +183,7 @@ External indexes are revision-tracked. If Serena/CodeGraph is missing, fails, or
 
 ## Local-model tools
 
-The local Ollama tool agent can query:
+The optional local-model tool agent can query:
 
 - built-in deterministic facts and code index;
 - preprocessed cards/context;

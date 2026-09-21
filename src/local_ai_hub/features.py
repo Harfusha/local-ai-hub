@@ -70,6 +70,7 @@ class FeatureSet:
             and bool(feat.get("local_models", True))
             and (self.ollama or self.llama_cpp)
         )
+        self.vision: bool = self.tasks and bool(feat.get("vision", True)) and bool(mdl.get("vision", "qwen3-vl:4b"))
 
         # Code-intelligence backends
         self.code_intelligence: bool = self.repo and bool(feat.get("code_intelligence", True)) and bool(ci.get("enabled", True))
@@ -96,6 +97,7 @@ class FeatureSet:
         self.reasoning_model: str = str(mdl.get("reasoning", "qwen2.5-coder:7b"))
         self.general_model: str = str(mdl.get("general", self.smart_model))
         self.background_model: str = str(mdl.get("background_code", "qwen2.5-coder:0.5b"))
+        self.vision_model: str = str(mdl.get("vision", "qwen3-vl:4b")) if self.vision else ""
         self.embedding_model: str = str(mdl.get("embedding", "BAAI/bge-small-en-v1.5"))
         self.reranker_model: str = str(mdl.get("reranker", "BAAI/bge-reranker-v2-m3"))
 
@@ -195,13 +197,16 @@ class FeatureSet:
         """Return list of valid local_ai_task actions supported by active backends."""
         if not self.tasks or not self.has_any_model():
             return []
-        return [
+        actions = [
             "delegate", "explore", "reason", "continue", "review", "second_opinion", "compress",
             "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report",
             "submit", "status", "wait", "result", "cancel", "candidate_create",
-            "candidate_promote", "speculative_draft", "vision", "transcribe",
+            "candidate_promote", "speculative_draft", "transcribe",
             "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold",
         ]
+        if self.vision:
+            actions.insert(actions.index("transcribe"), "vision")
+        return actions
 
     def supported_coord_actions(self) -> list[str]:
         """Return list of valid local_ai_coord actions supported by active backends."""
@@ -308,7 +313,7 @@ class FeatureSet:
 
         task_actions = set(self.supported_task_actions())
         if "vision" in task_actions:
-            lines.append("- image understanding: `local_ai_task(action=\"vision\")`")
+            lines.append(f"- image understanding/frontend review via `{self.vision_model}`: `local_ai_task(action=\"vision\")`")
         if "transcribe" in task_actions:
             lines.append("- audio transcription: `local_ai_task(action=\"transcribe\")`")
         if task_actions & {"benchmark", "hardware_benchmark"}:

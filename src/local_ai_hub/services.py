@@ -2,13 +2,18 @@ from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
 
+import base64
 import copy
+import hashlib
 import json
+import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
 import threading
+from dataclasses import asdict
 from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
@@ -29,9 +34,31 @@ from .router import ModelRouter, review_diff_complexity
 from .sqlite_support import connect_sqlite
 from .adoption_metrics import AdoptionMetricsStore
 from .state_paths import configured_state_dir
+from .speculative_lint import normalize_changed_paths
 from .telemetry import TelemetryStore
 from .trace_context import observer
 from .treesitter_parser import parse_treesitter
+from .vision_contracts import (
+    UNTRUSTED_CONTEXT_INSTRUCTION,
+    VISION_MAX_BUNDLE_CHARS,
+    VISION_MAX_IMAGE_BYTES,
+    VISION_MAX_IMAGE_CHARS,
+    VISION_MAX_INLINE_RESPONSE_CHARS,
+    VISION_MAX_PROMPT_CHARS,
+    VISION_MAX_RUNTIME_OUTPUT_CHARS,
+    VISION_MAX_SCHEMA_CHARS,
+    bound_vision_result,
+    parse_vision_result,
+)
+from .frontend_review import (
+    FrontendReviewError,
+    build_coder_context,
+    build_model_context,
+    parse_bounded_context,
+)
+from .agent_consistency import AdaptiveContextPack, ConsistencyRequest, GuardWarning
+from .agent_context import ContextCompiler, ContextRequest
+from .agent_events import AgentStateStore
 
 
 def normalize_generation_cache_prompt(prompt: str) -> str:
@@ -78,6 +105,21 @@ _REVIEW_DIFF_CONTEXT_FRACTION = 0.5
 _MAX_REVIEW_DIFF_CHUNKS = 8
 _REVIEW_SYNTHESIS_CONTEXT_TOKENS = 6000
 _UNIFIED_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
+_GUARD_REASON_SECRET_RE = re.compile(
+    r"(?i)\b((?:token|api[-_]?key|access[-_]?token|refresh[-_]?token|auth(?:orization)?|bearer|secret|password|passwd|credential|cookie|private[-_]?key)\b\s*[:=]\s*)(?!Bearer\b)([\"']?)([^\"'\s,;]+)\2"
+)
+_GUARD_REASON_PROMPT_RE = re.compile(r"(?is)\b(?:system\s+|user\s+)?(?:prompt|instructions?)\s*[:=].*$")
+
+
+def _redact_guard_reason(reason: Any) -> str:
+    """Keep a short operator reason without persisting secret or prompt content."""
+    text = str(reason or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [REDACTED]", text)
+    text = _GUARD_REASON_SECRET_RE.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
+    text = _GUARD_REASON_PROMPT_RE.sub("prompt: [REDACTED]", text)
+    return text[:500]
 
 
 def _review_text_error(value: Any) -> str | None:
@@ -122,6 +164,7 @@ def _merge_review_segment_results(
     complexity: str,
     tenant: str,
     delegate: Any,
+    priority: int = 5,
 ) -> tuple[str, dict[str, Any]]:
     """Return raw review output or a bounded synthesis of chunked results."""
     raw_text = "\n\n".join(
@@ -141,6 +184,7 @@ def _merge_review_segment_results(
                 "context": raw_text,
                 "complexity": complexity,
                 "max_tokens": min(max_output_tokens, 1800),
+                "priority": int(priority),
             },
             tenant,
         )
@@ -278,6 +322,11 @@ def generation_cache_key(
     think: Any,
     execution: Any,
     format: Any = None,
+    repository_revision: str = "",
+    phase: str = "",
+    memory_revision: str = "",
+    focus: Any = None,
+    preload_profile: str = "",
 ) -> str:
     return stable_hash({
         "model": model,
@@ -287,6 +336,11 @@ def generation_cache_key(
         "think": think,
         "execution": execution,
         "format": format,
+        "repository_revision": repository_revision,
+        "phase": phase,
+        "memory_revision": memory_revision,
+        "focus": focus,
+        "preload_profile": preload_profile,
         "app_version": __version__,
     })
 
@@ -322,6 +376,8 @@ class LocalAIServices:
     tool_agent: Any = None
     blackboard: Any = None
     agent_state: Any = None
+    _VISION_MAX_OUTPUT_TOKENS = 4096
+    consistency_guard: Any = None
 
     def __init__(
         self,
@@ -373,6 +429,7 @@ class LocalAIServices:
         self.swarm: Any | None = None
         self.blackboard: Any | None = None
         self.agent_state: Any | None = None
+        self.consistency_guard: Any | None = None
         self.flight_group = SingleFlightGroup(shards=32, default_timeout_seconds=60.0)
 
         cache_cfg = config.get("cache", {})
@@ -388,6 +445,18 @@ class LocalAIServices:
             l1_ttl_seconds=int(cache_cfg.get("l1_generation_ttl_seconds", 1800)),
         )
         self.generation_cache = SingleFlightCache(generation_tier, enabled=bool(cache_cfg.get("generation", True)), wait_timeout_seconds=float(config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 45)))
+        embedding_cache = SQLiteCache(
+            Path(config["server"]["state_dir"]) / "cache.sqlite3",
+            namespace="embeddings",
+            ttl_seconds=int(cache_cfg.get("embedding_ttl_seconds", 30 * 86400)),
+            max_entries=int(cache_cfg.get("embedding_max_entries", 100000)),
+        )
+        self.embedding_cache = TieredCache(
+            embedding_cache,
+            l1_entries=int(cache_cfg.get("l1_embedding_entries", 16384)),
+            l1_ttl_seconds=int(cache_cfg.get("l1_embedding_ttl_seconds", 7200)),
+        )
+        self.embedding_cache_enabled = bool(cache_cfg.get("embeddings", True))
         workspace_cfg = config.get("workspace_cache", {})
         self.repo_cache = TieredCache(
             SQLiteCache(
@@ -472,6 +541,158 @@ class LocalAIServices:
 
     def set_agent_state(self, store: Any) -> None:
         self.agent_state = store
+
+    def set_consistency_guard(self, guard: Any) -> None:
+        self.consistency_guard = guard
+
+    @staticmethod
+    def _guard_truthy(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        return str(value or "").strip().lower() not in {"", "0", "false", "no", "off", "none"}
+
+    def _guard_decision(self, request: ConsistencyRequest, revision: str, *, reason: str = "", approval: Any = "") -> tuple[bool, bool]:
+        """Persist bounded operator decisions through the guard's existing memory store."""
+        reason_text = str(reason or "").strip()
+        if not reason_text and not self._guard_truthy(approval):
+            return False, False
+        store = getattr(self.consistency_guard, "memory_store", None)
+        if store is None or not callable(getattr(store, "record", None)):
+            return True, False
+        state_store = getattr(store, "state_store", None)
+        if state_store is not None and getattr(state_store, "enabled", True) is False:
+            return True, False
+        if getattr(store, "enabled", True) is False:
+            return True, False
+        try:
+            from .agent_identity import AgentScope
+            from .agent_memory import MemoryKind, MemoryRecord
+
+            token = hashlib.sha256(
+                f"{request.root}:{request.task_id}:{request.phase}:{revision}:{reason_text}:{approval}".encode("utf-8", "replace")
+            ).hexdigest()[:16]
+            record = MemoryRecord.create(
+                kind=MemoryKind.DECISION,
+                scope=AgentScope.REPOSITORY,
+                key=f"consistency_decision:{token}",
+                value={"approved": self._guard_truthy(approval), "reason": _redact_guard_reason(reason_text)},
+                source="consistency_guard",
+                repository_revision=revision,
+                path_refs=tuple(request.changed_paths),
+                related_task=request.task_id or None,
+                provenance={"root": request.root, "phase": request.phase, "guard": "agent_consistency"},
+            )
+            try:
+                saved = store.record(record, actor="consistency_guard", idempotency_key=f"consistency-decision:{token}")
+            except TypeError:
+                saved = store.record(record)
+            return True, saved is not None and saved is not False
+        except Exception:
+            return True, False
+
+    def _guard_existing_approval(self, request: ConsistencyRequest) -> bool:
+        store = getattr(self.consistency_guard, "memory_store", None)
+        finder = getattr(store, "find", None)
+        if not callable(finder) or not request.task_id:
+            return False
+        try:
+            records = finder(root=request.root, limit=12, semantic=False)
+        except TypeError:
+            try:
+                records = finder(limit=12)
+            except Exception:
+                return False
+        except Exception:
+            return False
+        for record in records or ():
+            kind = getattr(getattr(record, "kind", None), "value", getattr(record, "kind", ""))
+            value = getattr(record, "value", {})
+            provenance = getattr(record, "provenance", {}) or {}
+            if kind != "decision" or provenance.get("related_task") != request.task_id:
+                continue
+            if isinstance(value, dict) and self._guard_truthy(value.get("approved") or value.get("approval")):
+                return True
+        return False
+
+    def _guard_task_state(self, request: ConsistencyRequest, warnings: tuple[GuardWarning, ...], revision: str) -> tuple[str, bool]:
+        store = getattr(self.consistency_guard, "task_store", None)
+        if store is None or not request.task_id or not callable(getattr(store, "get", None)):
+            return "", False
+        try:
+            state = store.get(request.task_id)
+        except Exception:
+            return "", False
+        if state is None:
+            return "", False
+        status = getattr(getattr(state, "status", None), "value", getattr(state, "status", ""))
+        boundary = tuple(item for item in warnings if item.requires_approval or item.severity.lower() in {"boundary", "high", "high-risk"})
+        checkpoint_data = getattr(getattr(state, "checkpoint", None), "state_data", {}) or {}
+        checkpoint_approval = checkpoint_data.get("approval") or checkpoint_data.get("approved") or checkpoint_data.get("coordinator_decision")
+        approved = self._guard_truthy(request.approval) or self._guard_existing_approval(request) or self._guard_truthy(checkpoint_approval)
+        if boundary and not approved and status == "active":
+            warning_ids = tuple(dict.fromkeys(evidence_id for item in boundary for evidence_id in item.evidence_ids))[:24]
+            try:
+                from .agent_tasks import TaskCheckpoint, TaskStatus
+
+                store.transition(
+                    request.task_id,
+                    TaskStatus.WAITING,
+                    reason="consistency guard boundary warning",
+                    actor="consistency_guard",
+                    idempotency_key=f"guard-wait:{request.task_id}:{revision}",
+                )
+                store.checkpoint(
+                    request.task_id,
+                    TaskCheckpoint(
+                        phase=request.phase,
+                        next_action=boundary[0].recommended_action or "obtain approval before continuing",
+                        affected_paths=tuple(request.changed_paths),
+                        evidence_ids=warning_ids,
+                        blockers=tuple(item.code for item in boundary)[:24],
+                        state_data={"warning_ids": list(warning_ids), "repository_revision": revision},
+                    ),
+                    actor="consistency_guard",
+                    idempotency_key=f"guard-checkpoint:{request.task_id}:{revision}",
+                )
+            except Exception:
+                pass
+        elif approved and status == "waiting":
+            try:
+                store.resume(request.task_id, actor="consistency_guard", idempotency_key=f"guard-resume:{request.task_id}:{revision}")
+            except Exception:
+                pass
+        try:
+            refreshed = store.get(request.task_id)
+            refreshed_status = getattr(getattr(refreshed, "status", None), "value", getattr(refreshed, "status", ""))
+            refreshed_status = str(refreshed_status)
+            return refreshed_status, bool(refreshed_status.lower() == "waiting" or (boundary and not approved))
+        except Exception:
+            return str(status), bool(boundary and not approved)
+
+    def _guard_stop_code(self, request: ConsistencyRequest, boundary: bool) -> str:
+        """Return terminal stop code when high-risk delivery lacks Agent OS state."""
+        if not boundary:
+            return ""
+        if not request.task_id:
+            return "guard_task_id_required"
+        agent_state = getattr(self, "agent_state", None)
+        if agent_state is not None and getattr(agent_state, "enabled", True) is False:
+            return "agent_os_disabled"
+        store = getattr(self.consistency_guard, "task_store", None)
+        if store is None or getattr(store, "enabled", True) is False:
+            return "agent_os_disabled"
+        state_store = getattr(store, "state_store", None)
+        if state_store is not None and getattr(state_store, "enabled", True) is False:
+            return "agent_os_disabled"
+        getter = getattr(store, "get", None)
+        if not callable(getter):
+            return "guard_task_state_unavailable"
+        try:
+            if getter(request.task_id) is None:
+                return "guard_task_state_unavailable"
+        except Exception:
+            return "guard_task_state_unavailable"
+        return ""
 
     def _touch_project(self, root: str) -> None:
         # Local AI: repository reads refresh only explicitly registered projects.
@@ -658,8 +879,28 @@ class LocalAIServices:
                     reused["_lah_semantic_similarity"] = semantic_score
                     return reused
 
+            availability = getattr(self.runtime, "is_online", None)
+            if callable(availability):
+                try:
+                    backend_online = bool(availability())
+                except Exception:
+                    backend_online = True
+                if not backend_online:
+                    return {
+                        "success": False,
+                        "unsupported": True,
+                        "degraded": True,
+                        "terminal": False,
+                        "retryable": True,
+                        "error_code": "local_backend_unavailable",
+                        "error": "No local model backend is currently available; retry after the backend is online.",
+                        "model": requested_model,
+                    }
+
             candidates = [requested_model] + self._fallback_models(requested_model)
             errors: list[str] = []
+            retryable_error = False
+            timeout_error = False
             for index, candidate in enumerate(candidates):
                 breaker_key = f"model:{candidate}"
                 if not self.breakers.allow(breaker_key):
@@ -731,8 +972,26 @@ class LocalAIServices:
                         candidate, tenant, source if index == 0 else f"{source}:fallback", run, priority=priority,
                         wait_timeout=float(resilience.get("scheduler_wait_timeout_seconds", self.config.get("server", {}).get("request_timeout_seconds", 300) + 30)),
                     )
+                except TimeoutError as exc:
+                    timeout_error = True
+                    retryable_error = True
+                    result = {
+                        "success": False,
+                        "error": str(exc),
+                        "model": candidate,
+                        "terminal": False,
+                        "retryable": True,
+                        "error_code": str(getattr(exc, "error_code", "model_request_timeout")),
+                    }
+                    job_id = getattr(exc, "job_id", None)
+                    if job_id is not None:
+                        result["scheduler_job_id"] = int(job_id)
+                    state = getattr(exc, "state", "")
+                    if state:
+                        result["scheduler_state"] = str(state)
                 except Exception as exc:
                     result = {"success": False, "error": str(exc), "model": candidate}
+                retryable_error = retryable_error or bool(result.get("retryable", False))
                 if result.get("success"):
                     self.breakers.success(breaker_key)
                     if candidate != requested_model:
@@ -754,7 +1013,16 @@ class LocalAIServices:
                     reused["stale_fallback"] = True
                     reused["runtime_errors"] = errors[-3:]
                     return reused
-            return {"success": False, "error": "; ".join(errors) or "all local model attempts failed", "model": requested_model}
+            failure = {
+                "success": False,
+                "error": "; ".join(errors) or "all local model attempts failed",
+                "model": requested_model,
+            }
+            if retryable_error:
+                failure.update({"terminal": False, "retryable": True})
+            if timeout_error:
+                failure["error_code"] = "model_request_timeout"
+            return failure
 
         def compute() -> dict[str, Any]:
             nonlocal semantic_score
@@ -1236,6 +1504,45 @@ class LocalAIServices:
             "duration_ms": gen_result.get("duration_ms", 0),
         }
 
+    def speculative_lint(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+        """Run opt-in, read-only lint against only caller-supplied changed paths."""
+        root = str(args.get("root", args.get("cwd", ".")))
+        try:
+            paths = normalize_changed_paths(root, list(args.get("paths") or []))
+        except ValueError as exc:
+            return {"success": False, "error": str(exc), "terminal": True, "retryable": False}
+        custom = str(args.get("command", "")).strip()
+        if custom:
+            target_text = " ".join(subprocess.list2cmdline([path]) for path in paths) if os.name == "nt" else " ".join(shlex.quote(path) for path in paths)
+            command = custom.replace("{paths}", target_text)
+            if command == custom:
+                command = f"{custom} {target_text}"
+        elif shutil.which("ruff"):
+            target_text = " ".join(subprocess.list2cmdline([path]) for path in paths) if os.name == "nt" else " ".join(shlex.quote(path) for path in paths)
+            command = f"ruff check {target_text}"
+        elif shutil.which("eslint"):
+            target_text = " ".join(subprocess.list2cmdline([path]) for path in paths) if os.name == "nt" else " ".join(shlex.quote(path) for path in paths)
+            command = f"eslint {target_text}"
+        else:
+            return {"success": False, "error": "no read-only linter found (tried ruff, eslint)", "terminal": True, "retryable": False}
+        lowered = command.lower()
+        if any(marker in lowered for marker in ("--fix", " -w ", "autopep8", "cargo fix", "gofmt -w")):
+            return {"success": False, "error": "speculative lint rejects formatter or auto-fix commands", "terminal": True, "retryable": False}
+        classification = self.commands.classify(command) if self.commands is not None else {"allowed": False, "class": "unknown"}
+        if not classification.get("allowed", False) or classification.get("class") in {"mutating", "dangerous"}:
+            return {"success": False, "error": "speculative lint requires an allowed read-only command", "classification": classification, "terminal": True, "retryable": False}
+        result = self.commands.run(
+            command,
+            str(Path(root).expanduser().resolve(strict=False)),
+            tenant=tenant,
+            timeout=int(args.get("timeout", self.config.get("speculative_lint", {}).get("timeout_seconds", 120)) or 120),
+            force=True,
+            auto_fix=False,
+            bypass_cache=True,
+        )
+        result.update({"read_only": True, "auto_fix": False, "paths": paths, "command": command})
+        return result
+
     def task_scaffold(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         """Generate boilerplate code, DTOs, interfaces, or unit test scaffolds using local model."""
         spec = str(args.get("spec", args.get("prompt", args.get("task", ""))))
@@ -1283,42 +1590,707 @@ class LocalAIServices:
 
     def vision(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         """Multimodal image understanding via local vision model."""
+        features = self.config.get("features", {})
+        if isinstance(features, dict) and not bool(features.get("vision", True)):
+            return {
+                "success": False,
+                "unsupported": True,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "vision_disabled",
+                "error": "Vision capability is disabled. Enable features.vision explicitly.",
+            }
         image_path = str(args.get("image", args.get("image_path", "")))
         prompt = str(args.get("prompt", args.get("task", "Describe this image in detail.")))
-        model = str(args.get("model") or self.config.get("models", {}).get("vision", "llava"))
+        models = self.config.get("models", {})
+        configured_model = models.get("vision", "qwen3-vl:4b") if isinstance(models, dict) else "qwen3-vl:4b"
+        model = str(args.get("model") or configured_model or "").strip()
+        if bool(args.get("cloud_fallback", False)):
+            vision_policy = self.config.get("vision", {})
+            if not isinstance(vision_policy, dict) or not bool(vision_policy.get("cloud_fallback_enabled", False)):
+                return {
+                    "success": False,
+                    "terminal": True,
+                    "retryable": False,
+                    "error_code": "vision_cloud_fallback_disabled",
+                    "error": "Cloud vision fallback is disabled. Enable vision.cloud_fallback_enabled explicitly.",
+                    "cloud_fallback": False,
+                }
+            provider = str(vision_policy.get("cloud_provider", "")).strip()
+            if not provider:
+                return {
+                    "success": False,
+                    "terminal": True,
+                    "retryable": False,
+                    "error_code": "vision_cloud_fallback_unavailable",
+                    "error": "Cloud vision fallback is enabled but no provider is configured.",
+                    "cloud_fallback": False,
+                }
+        if not model:
+            return {
+                "success": False,
+                "unsupported": True,
+                "degraded": True,
+                "terminal": True,
+                "retryable": False,
+                "error": "Vision model is not configured; set models.vision to qwen3-vl:4b or another Ollama vision model.",
+            }
 
-        images = []
+        def input_error(message: str, code: str = "vision_input_error") -> dict[str, Any]:
+            return {
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error": message,
+                "error_code": code,
+            }
+
+        images: list[str] = []
+
+        def append_image(value: str) -> dict[str, Any] | None:
+            if len(value) > VISION_MAX_IMAGE_CHARS:
+                return input_error(
+                    "Vision image transport exceeds the bounded character limit.",
+                    "vision_image_transport_too_large",
+                )
+            encoded = value
+            if value.startswith("data:image/"):
+                if "," not in value:
+                    return input_error("Vision image data URL is invalid.", "vision_image_integrity")
+                encoded = value.split(",", 1)[1]
+            try:
+                decoded = base64.b64decode(encoded, validate=True)
+            except (ValueError, TypeError):
+                return input_error("Vision image input is not valid base64.", "vision_image_integrity")
+            if len(decoded) > VISION_MAX_IMAGE_BYTES:
+                return input_error(
+                    "Vision image exceeds the bounded decoded-byte limit.",
+                    "vision_image_too_large",
+                )
+            images.append(value)
+            return None
+
+        def is_inline_image(value: str) -> bool:
+            if value.startswith("data:image/"):
+                return True
+            try:
+                return bool(value) and bool(base64.b64decode(value, validate=True))
+            except (ValueError, TypeError):
+                return False
+
         if image_path:
-            p = Path(image_path)
-            if p.is_file():
-                import base64
-                try:
-                    b64 = base64.b64encode(p.read_bytes()).decode("utf-8")
-                    images.append(b64)
-                except Exception as e:
-                    return {"success": False, "error": f"Failed to read image file: {e}"}
+            if (
+                "image_path" not in args
+                and (image_path.startswith("data:image/") or len(image_path) > VISION_MAX_IMAGE_CHARS or is_inline_image(image_path))
+            ):
+                error = append_image(image_path)
+                if error:
+                    return error
             else:
-                images.append(image_path)
+                try:
+                    p = Path(image_path)
+                    is_file = p.is_file()
+                except (OSError, ValueError):
+                    return input_error("Vision image path could not be inspected; provide a readable image or base64 data.")
+                if not is_file:
+                    return input_error("Vision image path was not found; provide a readable image or base64 data.")
+                try:
+                    size_bytes = int(p.stat().st_size)
+                    encoded_chars = ((size_bytes + 2) // 3) * 4
+                    if size_bytes > VISION_MAX_IMAGE_BYTES:
+                        return input_error("Vision image exceeds the bounded decoded-byte limit.", "vision_image_too_large")
+                    if encoded_chars > VISION_MAX_IMAGE_CHARS:
+                        return input_error("Vision image transport exceeds the bounded character limit.", "vision_image_transport_too_large")
+                    b64 = base64.b64encode(p.read_bytes()).decode("utf-8")
+                    error = append_image(b64)
+                    if error:
+                        return error
+                except (OSError, ValueError):
+                    return input_error("Failed to read image file; verify the path and permissions.")
+
+        image_artifact_id = str(
+            args.get("image_artifact_id") or args.get("screenshot_artifact_id") or ""
+        ).strip()
+        bundle_artifact_id = str(
+            args.get("bundle_artifact_id") or args.get("frontend_bundle_artifact_id") or ""
+        ).strip()
+        direct_context_refs = {
+            "dom": str(args.get("dom_artifact_id") or args.get("html_artifact_id") or "").strip(),
+            "accessibility": str(
+                args.get("accessibility_artifact_id") or args.get("a11y_artifact_id") or ""
+            ).strip(),
+            "computed_styles": str(
+                args.get("computed_styles_artifact_id") or args.get("computed_style_artifact_id") or ""
+            ).strip(),
+            "runtime": str(
+                args.get("runtime_artifact_id") or args.get("runtime_context_artifact_id") or ""
+            ).strip(),
+        }
+        network_artifact_id = str(args.get("network_artifact_id") or "").strip()
+
+        def resolve_artifact(artifact_id: str, max_chars: int) -> tuple[str, dict[str, Any] | None]:
+            try:
+                artifact = self.artifacts.get(artifact_id, max_chars=max_chars, tenant=tenant)
+            except Exception:
+                return "", {
+                    "success": False,
+                    "terminal": False,
+                    "retryable": True,
+                    "error": "Vision artifact store is unavailable; retry the request.",
+                }
+            if not isinstance(artifact, dict) or not artifact.get("success"):
+                detail = str(artifact.get("error", "")).lower() if isinstance(artifact, dict) else ""
+                if any(marker in detail for marker in ("not found", "expired", "missing")):
+                    return "", input_error("Vision artifact was not found or has expired.")
+                return "", {
+                    "success": False,
+                    "terminal": False,
+                    "retryable": True,
+                    "error": "Vision artifact store returned an error; retry the request.",
+                }
+            text = artifact.get("text")
+            if not isinstance(text, str) or not text:
+                return "", input_error("Vision artifact does not contain usable content.")
+            try:
+                total_chars = int(artifact.get("total_chars", len(text)))
+            except (TypeError, ValueError, OverflowError):
+                return "", input_error("Vision artifact metadata is invalid.")
+            if artifact.get("next_offset") is not None or total_chars > len(text):
+                return "", input_error(
+                    "Vision artifact is truncated; provide the complete artifact.",
+                    "vision_artifact_truncated",
+                )
+            if total_chars > max_chars:
+                return "", input_error(
+                    "Vision artifact exceeds the bounded size limit.",
+                    "vision_artifact_too_large",
+                )
+            return text[:max_chars], None
+
+        def resolve_binary_artifact(artifact_id: str, max_bytes: int) -> tuple[str, dict[str, Any] | None]:
+            try:
+                artifact = self.artifacts.get_binary(artifact_id, tenant=tenant)
+            except Exception:
+                return "", {
+                    "success": False,
+                    "terminal": False,
+                    "retryable": True,
+                    "error": "Vision artifact store is unavailable; retry the request.",
+                }
+            if not isinstance(artifact, dict) or not artifact.get("success"):
+                detail = str(artifact.get("error", "")).lower() if isinstance(artifact, dict) else ""
+                if any(marker in detail for marker in ("not found", "expired", "missing")):
+                    return "", input_error("Vision artifact was not found or has expired.")
+                return "", input_error("Vision image artifact failed integrity validation.", "vision_artifact_integrity")
+            mime_type = str(artifact.get("mime_type", ""))
+            encoded = artifact.get("data_base64")
+            try:
+                size_bytes = int(artifact.get("size_bytes", -1))
+            except (TypeError, ValueError, OverflowError):
+                size_bytes = -1
+            if not mime_type.startswith("image/") or not isinstance(encoded, str) or size_bytes < 0:
+                return "", input_error("Vision image artifact exceeds the bounded integrity contract.", "vision_artifact_integrity")
+            if len(encoded) > VISION_MAX_IMAGE_CHARS:
+                return "", input_error(
+                    "Vision image transport exceeds the bounded character limit.",
+                    "vision_image_transport_too_large",
+                )
+            try:
+                decoded = base64.b64decode(encoded, validate=True)
+            except (ValueError, TypeError):
+                return "", input_error("Vision image artifact is not valid base64.", "vision_artifact_integrity")
+            if len(decoded) > max_bytes:
+                return "", input_error(
+                    "Vision image exceeds the bounded decoded-byte limit.",
+                    "vision_image_too_large",
+                )
+            if len(decoded) != size_bytes:
+                return "", input_error("Vision image artifact is truncated or incomplete.", "vision_artifact_truncated")
+            return encoded, None
+
+        def resolve_bundle_context(raw: str) -> tuple[str, dict[str, Any] | None]:
+            nonlocal image_artifact_id
+            if not raw.lstrip().startswith(("{", "[")):
+                return raw, None
+            try:
+                bundle = parse_bounded_context(raw, "frontend_bundle")
+            except FrontendReviewError as exc:
+                if exc.code == "invalid_frontend_context":
+                    return "", input_error(
+                        "Vision frontend bundle is not valid JSON.",
+                        "vision_bundle_invalid",
+                    )
+                return "", exc.as_result()
+            resolved = dict(bundle)
+            screenshot = resolved.get("screenshot")
+            screenshot_ref = screenshot.get("artifact_id", "") if isinstance(screenshot, dict) else ""
+            if screenshot_ref and not images:
+                image_data, error = resolve_binary_artifact(str(screenshot_ref), VISION_MAX_IMAGE_BYTES)
+                if error:
+                    return "", error
+                error = append_image(image_data)
+                if error:
+                    return "", error
+                image_artifact_id = str(screenshot_ref)
+            for field_name in ("dom", "accessibility", "computed_styles", "runtime"):
+                value = resolved.get(field_name)
+                if field_name == "runtime":
+                    runtime_refs: dict[str, str] = {}
+                    if isinstance(value, dict):
+                        for ref_key in ("artifact_id", "console_artifact_id", "network_artifact_id"):
+                            ref = str(value.get(ref_key, "")).strip()
+                            if ref:
+                                runtime_refs[ref_key] = ref
+                    for ref_key in ("runtime_artifact_id", "network_artifact_id"):
+                        ref = str(resolved.get(ref_key, "")).strip()
+                        if ref:
+                            runtime_refs.setdefault(
+                                "console_artifact_id" if ref_key == "runtime_artifact_id" else ref_key,
+                                ref,
+                            )
+                    if runtime_refs:
+                        runtime_value = dict(value) if isinstance(value, dict) else {}
+                        for ref_key, ref in runtime_refs.items():
+                            content, error = resolve_artifact(ref, VISION_MAX_BUNDLE_CHARS)
+                            if error:
+                                return "", error
+                            content_key = {
+                                "artifact_id": "content",
+                                "console_artifact_id": "console_content",
+                                "network_artifact_id": "network_content",
+                            }[ref_key]
+                            runtime_value[content_key] = content
+                        resolved[field_name] = runtime_value
+                    continue
+                reference = value.get("artifact_id", "") if isinstance(value, dict) else ""
+                if not reference:
+                    reference = resolved.get(f"{field_name}_artifact_id", "")
+                if not reference:
+                    continue
+                content, error = resolve_artifact(str(reference), VISION_MAX_BUNDLE_CHARS)
+                if error:
+                    return "", error
+                if isinstance(value, dict):
+                    resolved[field_name] = {**value, "content": content}
+                else:
+                    resolved[field_name] = {"artifact_id": str(reference), "content": content}
+            return json_dumps(resolved, ensure_ascii=False), None
+
+        if image_artifact_id and not images:
+            artifact_data, error = resolve_binary_artifact(image_artifact_id, VISION_MAX_IMAGE_BYTES)
+            if error:
+                return error
+            error = append_image(artifact_data)
+            if error:
+                return error
+
+        bundle_context = ""
+        if bundle_artifact_id:
+            bundle_context, error = resolve_artifact(bundle_artifact_id, VISION_MAX_BUNDLE_CHARS)
+            if error:
+                return error
+            bundle_context, error = resolve_bundle_context(bundle_context)
+            if error:
+                return error
+
+        def parse_context_value(field_name: str, value: Any) -> Any:
+            return parse_bounded_context(value, field_name)
+
+        frontend_bundle: dict[str, Any] = {}
+        if bundle_context:
+            if not bundle_context.lstrip().startswith(("{", "[")):
+                frontend_bundle = {}
+            else:
+                try:
+                    frontend_bundle = parse_bounded_context(bundle_context, "frontend_bundle")
+                except FrontendReviewError as exc:
+                    if exc.code == "invalid_frontend_context":
+                        return input_error(
+                            "Vision frontend bundle is not valid JSON.",
+                            "vision_bundle_invalid",
+                        )
+                    return exc.as_result()
+                frontend_bundle["bundle_artifact_id"] = bundle_artifact_id
+
+        inline_bundle = args.get("bundle") or args.get("frontend_bundle") or args.get("dom_bundle")
+        if inline_bundle is not None:
+            try:
+                decoded_inline = (
+                    parse_context_value("bundle", inline_bundle)
+                    if not isinstance(inline_bundle, dict)
+                    else dict(inline_bundle)
+                )
+            except FrontendReviewError as exc:
+                return exc.as_result()
+            frontend_bundle.update(decoded_inline)
+
+        for field_name, artifact_id in direct_context_refs.items():
+            if not artifact_id:
+                continue
+            content, error = resolve_artifact(artifact_id, VISION_MAX_BUNDLE_CHARS)
+            if error:
+                return error
+            try:
+                context_value = parse_context_value(field_name, content)
+            except FrontendReviewError as exc:
+                return exc.as_result()
+            ref_key = "console_artifact_id" if field_name == "runtime" else "artifact_id"
+            frontend_bundle[field_name] = {ref_key: artifact_id, **context_value}
+        if network_artifact_id:
+            content, error = resolve_artifact(network_artifact_id, VISION_MAX_BUNDLE_CHARS)
+            if error:
+                return error
+            runtime_value = frontend_bundle.get("runtime")
+            runtime_value = dict(runtime_value) if isinstance(runtime_value, dict) else {}
+            runtime_value.update(
+                {"network_artifact_id": network_artifact_id, "network_content": content}
+            )
+            frontend_bundle["runtime"] = runtime_value
+
+        inline_aliases = {
+            "dom": ("dom", "html"),
+            "accessibility": ("accessibility", "accessibility_snapshot"),
+            "computed_styles": ("computed_styles", "computed_style_data"),
+            "runtime": ("runtime", "runtime_context"),
+        }
+        for field_name, aliases in inline_aliases.items():
+            supplied = next((args[name] for name in aliases if name in args and args[name] is not None), None)
+            if supplied is not None:
+                try:
+                    frontend_bundle[field_name] = parse_context_value(field_name, supplied)
+                except FrontendReviewError as exc:
+                    return exc.as_result()
+        for field_name in ("viewport", "page", "source"):
+            if field_name in args and args.get(field_name) is not None:
+                frontend_bundle[field_name] = args[field_name]
+        if image_artifact_id:
+            frontend_bundle.setdefault("screenshot", {"artifact_id": image_artifact_id})
+
+        for field_name in ("dom", "accessibility", "computed_styles", "runtime"):
+            value = frontend_bundle.get(field_name)
+            if isinstance(value, dict) and isinstance(value.get("content"), str):
+                try:
+                    decoded_value = parse_context_value(field_name, value["content"])
+                except FrontendReviewError as exc:
+                    return exc.as_result()
+                ref = str(value.get("artifact_id", ""))
+                frontend_bundle[field_name] = {"artifact_id": ref, **decoded_value} if ref else decoded_value
+
+        model_context = None
+        if any(key in frontend_bundle for key in ("dom", "accessibility", "computed_styles", "runtime")):
+            try:
+                dom_value = frontend_bundle.get("dom") or {}
+                accessibility_value = frontend_bundle.get("accessibility") or {}
+                styles_value = frontend_bundle.get("computed_styles") or {}
+                runtime_value = frontend_bundle.get("runtime") or {}
+                model_context = build_model_context(
+                    prompt=prompt,
+                    screenshot_data_url=images[0] if images else "",
+                    dom=dom_value if isinstance(dom_value, dict) else parse_context_value("dom", dom_value),
+                    accessibility=accessibility_value if isinstance(accessibility_value, dict) else parse_context_value("accessibility", accessibility_value),
+                    computed_styles=styles_value if isinstance(styles_value, dict) else parse_context_value("computed_styles", styles_value),
+                    viewport=frontend_bundle.get("viewport") or {},
+                    runtime=runtime_value if isinstance(runtime_value, dict) else parse_context_value("runtime", runtime_value),
+                )
+                if model_context.dom.get("truncated"):
+                    return FrontendReviewError(
+                        "frontend_dom_context_truncated",
+                        "vision review requires complete live DOM within the configured bound",
+                        original_chars=model_context.dom.get("original_chars"),
+                        limit_chars=model_context.dom.get("limit_chars"),
+                    ).as_result()
+                for field_name, value in (
+                    ("dom", model_context.dom),
+                    ("accessibility", model_context.accessibility),
+                    ("computed_styles", model_context.computed_styles),
+                    ("runtime", model_context.runtime),
+                ):
+                    original = frontend_bundle.get(field_name)
+                    ref = original.get("artifact_id", "") if isinstance(original, dict) else ""
+                    frontend_bundle[field_name] = {"artifact_id": ref, **value} if ref else value
+            except FrontendReviewError as exc:
+                return exc.as_result()
 
         if not images:
-            return {"success": False, "error": "image path or base64 data required"}
+            return input_error("Vision image path, base64 data, or image artifact is required.")
 
+        try:
+            requested_max_tokens = int(args.get("max_tokens", 1200))
+        except (TypeError, ValueError, OverflowError):
+            requested_max_tokens = 1200
+        max_tokens = max(64, min(requested_max_tokens, self._VISION_MAX_OUTPUT_TOKENS))
+        schema = args.get("json_schema")
+        if isinstance(schema, dict):
+            try:
+                schema_text = json_dumps(schema, ensure_ascii=False, separators=(",", ":"))
+            except (TypeError, ValueError, OverflowError):
+                return input_error("Vision JSON schema is invalid.")
+            if len(schema_text) > VISION_MAX_SCHEMA_CHARS:
+                return input_error("Vision JSON schema exceeds the bounded size limit.")
+        prompt_suffix = (
+            "\n\nReturn only a JSON object matching this contract: "
+            "{\"summary\": string, \"findings\": [{\"id\": string, "
+            "\"severity\": \"blocker|high|medium|low|info\", "
+            "\"category\": \"layout|responsive|accessibility|interaction|visual-regression|runtime\", "
+            "\"problem\": string, \"observed\": string, \"hypothesized\": string, "
+            "\"uncertainty\": [string], \"confidence\": number, "
+            "\"element_ids\": [string], \"bbox\": [number, number, number, number] or null, "
+            "\"evidence\": [string], \"likely_cause\": string, \"fix_hint\": string, "
+            "\"needs_runtime_check\": boolean}], "
+            "\"unknowns\": [string], \"recommended_checks\": [string]} ."
+        )
+        prompt_context = prompt
+        if model_context is not None:
+            prompt_context += "\n\n" + UNTRUSTED_CONTEXT_INSTRUCTION + "\nFrontend evidence bundle:\n" + json_dumps(
+                model_context.prompt_payload(), ensure_ascii=False
+            )
+        elif bundle_context:
+            prompt_context += "\n\n" + UNTRUSTED_CONTEXT_INSTRUCTION + "\nFrontend evidence bundle:\n" + bundle_context
+        prompt_budget = max(0, VISION_MAX_PROMPT_CHARS - len(prompt_suffix))
+        if len(prompt_context) > prompt_budget:
+            return input_error(
+                "Vision prompt and frontend evidence exceed the bounded prompt limit.",
+                "frontend_prompt_too_large",
+            )
+        prompt_context += prompt_suffix
         payload = {
             "model": model,
-            "prompt": prompt,
+            "prompt": prompt_context,
             "images": images,
             "stream": False,
+            "format": schema if isinstance(schema, dict) else "json",
+            "options": {"num_predict": max_tokens},
         }
+        payload, _profile = self.model_policy.apply_payload(
+            model,
+            payload,
+            role="vision",
+            output_tokens=max_tokens,
+        )
         try:
-            res = self.runtime.request("/api/generate", payload)
-            return {
+            timeout = float(
+                self.config.get("resilience", {}).get(
+                    "vision_timeout_seconds",
+                    self.config.get("server", {}).get("request_timeout_seconds", 300),
+                )
+            )
+        except (TypeError, ValueError, OverflowError):
+            timeout = 300.0
+        timeout = max(0.05, min(timeout, 300.0))
+        try:
+            capability_response = self.runtime.request(
+                "/api/show",
+                {"name": model},
+                timeout=min(timeout, 1.0),
+            )
+            if not isinstance(capability_response, dict):
+                return {
+                    "success": False,
+                    "model": model,
+                    "terminal": True,
+                    "retryable": False,
+                    "error": "Vision model capability preflight returned an invalid response.",
+                }
+            if capability_response.get("error"):
+                capability_error = str(capability_response.get("error", "")).lower()
+                missing_model = (
+                    "model not found" in capability_error
+                    or "no such model" in capability_error
+                    or ("not found" in capability_error and "model" in capability_error)
+                )
+                transient = any(
+                    marker in capability_error
+                    for marker in (
+                        "timeout", "timed out", "connection", "network", "handoff",
+                        "temporarily", "unavailable", "try again", "http 429", "http 502", "http 503",
+                    )
+                )
+                if missing_model:
+                    return {
+                        "success": False,
+                        "model": model,
+                        "unsupported": True,
+                        "degraded": True,
+                        "terminal": True,
+                        "retryable": False,
+                        "error": f"Vision model '{model}' is unavailable. Configure an existing vision-capable local backend and models.vision; no runtime is installed automatically.",
+                        "error_code": "vision_model_missing",
+                    }
+                return {
+                    "success": False,
+                    "model": model,
+                    "terminal": not transient,
+                    "retryable": transient,
+                    "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision model capability preflight failed; inspect the configured local backend and vision model.",
+                    "error_code": "vision_preflight_failed",
+                }
+            capability_values: list[str] = []
+            for value in capability_response.get("capabilities", []):
+                capability_values.append(str(value).lower())
+            details = capability_response.get("details")
+            if isinstance(details, dict):
+                for key in ("family", "families"):
+                    values = details.get(key, [])
+                    if isinstance(values, list):
+                        capability_values.extend(str(value).lower() for value in values)
+                    elif values:
+                        capability_values.append(str(values).lower())
+            supports_vision = any(
+                marker in value
+                for value in capability_values
+                for marker in ("vision", "image", "multimodal", "clip", "vl")
+            )
+            if not supports_vision:
+                return {
+                    "success": False,
+                    "model": model,
+                    "unsupported": True,
+                    "degraded": True,
+                    "terminal": True,
+                    "retryable": False,
+                    "error": f"Vision model '{model}' does not advertise image or multimodal capability; choose a configured vision-capable local model.",
+                    "error_code": "vision_model_unsupported",
+                }
+            res = self.runtime.request("/api/generate", payload, timeout=timeout)
+            if not isinstance(res, dict):
+                return {
+                    "success": False,
+                    "model": model,
+                    "terminal": True,
+                    "retryable": False,
+                    "error": "Vision runtime returned an invalid response.",
+                }
+            if res.get("error"):
+                error_text = str(res.get("error", "")).lower()
+                missing_model = (
+                    "model not found" in error_text
+                    or "no such model" in error_text
+                    or ("not found" in error_text and "model" in error_text)
+                )
+                if missing_model:
+                    return {
+                        "success": False,
+                        "model": model,
+                        "unsupported": True,
+                        "degraded": True,
+                        "terminal": True,
+                        "retryable": False,
+                        "error": f"Vision model '{model}' is unavailable. Configure an existing vision-capable local backend and models.vision; no runtime is installed automatically.",
+                    }
+                transient = any(
+                    marker in error_text
+                    for marker in (
+                        "timeout", "timed out", "connection", "network", "handoff",
+                        "temporarily", "unavailable", "try again", "http 429", "http 502", "http 503",
+                    )
+                )
+                return {
+                    "success": False,
+                    "model": model,
+                    "terminal": not transient,
+                    "retryable": transient,
+                    "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision runtime returned an error; inspect the configured local backend and vision model.",
+                }
+            raw_output = res.get("response", "")
+            if not isinstance(raw_output, str):
+                return {
+                    "success": False,
+                    "model": model,
+                    "terminal": True,
+                    "retryable": False,
+                    "error": "Vision runtime returned an invalid response.",
+                }
+            if len(raw_output) > VISION_MAX_RUNTIME_OUTPUT_CHARS:
+                raw_artifact_id = ""
+                try:
+                    raw_artifact_id = str(self.artifacts.put(raw_output[:VISION_MAX_RUNTIME_OUTPUT_CHARS], tenant, "vision-output"))
+                except Exception:
+                    pass
+                return {
+                    "success": False,
+                    "model": model,
+                    "terminal": True,
+                    "retryable": False,
+                    "error": "Vision runtime output exceeds the bounded response limit.",
+                    "raw_output_artifact_id": raw_artifact_id,
+                }
+            raw_artifact_id = ""
+            try:
+                raw_artifact_id = str(self.artifacts.put(raw_output, tenant, "vision-output"))
+            except Exception:
+                pass
+            parsed = parse_vision_result(
+                raw_output, require_observation_fields=model_context is not None
+            )
+            if parsed.terminal:
+                return {
+                    "success": False,
+                    "model": model,
+                    "terminal": True,
+                    "retryable": False,
+                    "error": parsed.error,
+                    "raw_output_artifact_id": raw_artifact_id,
+                }
+            parsed = bound_vision_result(parsed)
+            result = {
                 "success": True,
                 "model": model,
-                "response": res.get("response", ""),
-                "prompt": prompt,
+                "response": raw_output[:VISION_MAX_INLINE_RESPONSE_CHARS],
+                "review": asdict(parsed),
+                "prompt": prompt_context,
+                "image_artifact_id": image_artifact_id,
+                "bundle_artifact_id": bundle_artifact_id,
+                "raw_output_artifact_id": raw_artifact_id,
             }
+            if frontend_bundle:
+                repo_context = None
+                root = str(args.get("root") or "").strip()
+                fix_requested = any(
+                    marker in prompt.lower()
+                    for marker in ("fix", "repair", "implement", "change", "correct")
+                )
+                if root and fix_requested and self.repo_tools is not None:
+                    findings = asdict(parsed).get("findings", [])
+                    query = " ".join(
+                        [
+                            prompt,
+                            *[str(item.get("finding_id", "")) for item in findings],
+                            *[str(element_id) for item in findings for element_id in item.get("element_ids", [])],
+                            *[str(item.get("fix_hint", "")) for item in findings],
+                        ]
+                    ).strip()
+                    try:
+                        context_result = self.repo_tools.context_pack(root, query, max_tokens=2600)
+                        if isinstance(context_result, dict) and context_result.get("success", True):
+                            repo_context = context_result
+                    except Exception:
+                        repo_context = None
+                coder_context = build_coder_context(
+                    asdict(parsed), frontend_bundle, repo_context=repo_context
+                )
+                if coder_context.get("terminal"):
+                    return {
+                        "success": False,
+                        "model": model,
+                        "terminal": True,
+                        "retryable": False,
+                        "error": coder_context.get("error", {}).get("message", "Invalid coder context"),
+                        "error_code": coder_context.get("error", {}).get("code", "invalid_coder_context"),
+                    }
+                result["coder_context"] = coder_context
+            return result
         except Exception as exc:
-            return {"success": False, "error": f"Vision model inference failed: {exc}", "model": model}
+            detail = str(exc).lower()
+            transient = isinstance(exc, (TimeoutError, ConnectionError, OSError)) or any(
+                marker in detail for marker in ("timeout", "timed out", "connection", "network", "handoff", "temporarily", "unavailable")
+            )
+            return {
+                "success": False,
+                "model": model,
+                "terminal": not transient,
+                "retryable": transient,
+                "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision runtime failed; inspect the configured local backend and vision model.",
+            }
 
     def transcribe(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         """Transcribe audio recording to text via local Whisper / STT CLI or fallback."""
@@ -1410,27 +2382,79 @@ class LocalAIServices:
 
 
 
+    @staticmethod
+    def _embedding_key(text: str, *, backend: str, model: str, query: bool) -> str:
+        return stable_hash({
+            "kind": "embedding",
+            "backend": backend,
+            "model": model,
+            "query": bool(query),
+            "text": str(text),
+            "app_version": __version__,
+        })
+
+    @staticmethod
+    def _json_embedding(vector: Any) -> list[float]:
+        if hasattr(vector, "tolist"):
+            vector = vector.tolist()
+        return [float(value) for value in vector]
+
     def embed(self, texts: list[str], tenant: str, priority: int = 3, query: bool = False, background: bool | None = None, wait_timeout: float | None = None) -> dict[str, Any]:
         backend = self.config["models"].get("embedding_backend", "sentence-transformers")
         model = str(self.config.get("models", {}).get("embedding", "qwen3-embedding:0.6b"))
-        if backend in {"sentence-transformers", "openvino"}:
-            return self.embeddings.encode(texts, query=query, priority=priority)
-
         if not texts:
             return {"success": True, "model": model, "backend": "ollama", "embeddings": []}
-        batch_size = int(self.config.get("rag", {}).get("embedding_batch_size", 12))
 
-        def run() -> dict[str, Any]:
-            all_vectors: list[list[float]] = []
-            for start in range(0, len(texts), batch_size):
-                response = self.runtime.request("/api/embed", {"model": model, "input": texts[start:start + batch_size]})
-                if "error" in response:
-                    return {"success": False, "error": response["error"], "model": model}
-                all_vectors.extend(response.get("embeddings", []))
-            return {"success": True, "model": model, "backend": "ollama", "embeddings": all_vectors}
+        def encode_uncached(batch: list[str]) -> dict[str, Any]:
+            if backend in {"sentence-transformers", "openvino"}:
+                return self.embeddings.encode(batch, query=query, priority=priority)
+            batch_size = int(self.config.get("rag", {}).get("embedding_batch_size", 12))
 
-        is_bg = background if background is not None else (priority <= 1)
-        return self.scheduler.submit(model, tenant, "embed", run, priority=priority, background=is_bg, wait_timeout=wait_timeout)
+            def run() -> dict[str, Any]:
+                all_vectors: list[list[float]] = []
+                for start in range(0, len(batch), batch_size):
+                    response = self.runtime.request("/api/embed", {"model": model, "input": batch[start:start + batch_size]})
+                    if "error" in response:
+                        return {"success": False, "error": response["error"], "model": model}
+                    all_vectors.extend(response.get("embeddings", []))
+                return {"success": True, "model": model, "backend": "ollama", "embeddings": all_vectors}
+
+            is_bg = background if background is not None else (priority <= 1)
+            return self.scheduler.submit(model, tenant, "embed", run, priority=priority, background=is_bg, wait_timeout=wait_timeout)
+
+        cache = getattr(self, "embedding_cache", None)
+        cache_enabled = bool(getattr(self, "embedding_cache_enabled", self.config.get("cache", {}).get("embeddings", True)))
+        if not cache_enabled or cache is None:
+            return encode_uncached(list(texts))
+
+        keys = [self._embedding_key(text, backend=backend, model=model, query=query) for text in texts]
+        vectors: list[list[float] | None] = [None] * len(texts)
+        missing: dict[str, list[int]] = {}
+        for index, key in enumerate(keys):
+            cached = cache.get(key)
+            if isinstance(cached, list):
+                vectors[index] = [float(value) for value in cached]
+            else:
+                missing.setdefault(key, []).append(index)
+
+        if missing:
+            missing_indices = [indices[0] for indices in missing.values()]
+            result = encode_uncached([texts[index] for index in missing_indices])
+            if not isinstance(result, dict) or not result.get("success"):
+                return result if isinstance(result, dict) else {"success": False, "error": "embedding failed"}
+            raw_vectors = result.get("embeddings", [])
+            if len(raw_vectors) != len(missing_indices):
+                return {"success": False, "error": f"embedding count mismatch: {len(raw_vectors)} != {len(missing_indices)}"}
+            for vector, key, indices in zip(raw_vectors, missing, missing.values()):
+                normalized = self._json_embedding(vector)
+                cache.set(key, normalized)
+                for index in indices:
+                    vectors[index] = normalized
+            result = dict(result)
+            result["embeddings"] = vectors
+            return result
+
+        return {"success": True, "model": model, "backend": backend, "embeddings": vectors}
 
     def _repo_cached(self, operation: str, root: str, params: dict[str, Any], compute: Any) -> dict[str, Any]:
         # Worktrees/temp repositories can disappear between an agent request and a
@@ -2303,6 +3327,361 @@ class LocalAIServices:
             lambda: self.repo_tools.git_diff(root, base, staged, max_tokens),
         )
 
+    @staticmethod
+    def _adaptive_label(value: Any, limit: int = 160) -> str:
+        text = str(value or "")[:limit]
+        if re.search(r"(?i)(api[_ -]?key|access[_ -]?token|password|secret|authorization|bearer)\s*[:=]", text):
+            return "<redacted>"
+        return re.sub(r"[^A-Za-z0-9_./:@+ -]", " ", text).strip()[:limit]
+
+    def _adaptive_memory_revision(self, request: ConsistencyRequest) -> str:
+        explicit = str(getattr(request, "memory_revision", "") or "")[:200]
+        if explicit:
+            return explicit
+        store = getattr(self.consistency_guard, "memory_store", None)
+        for name in ("memory_revision", "revision"):
+            value = getattr(store, name, "") if store is not None else ""
+            if callable(value):
+                try:
+                    value = value(request.root)
+                except TypeError:
+                    try:
+                        value = value()
+                    except Exception:
+                        value = ""
+                except Exception:
+                    value = ""
+            if value:
+                return str(value)[:200]
+        return ""
+
+    def _context_preload_source(self) -> ContextCompiler | None:
+        compiler = getattr(self, "context_compiler", None)
+        if compiler is not None:
+            return compiler
+        try:
+            compiler = ContextCompiler(
+                AgentStateStore(
+                    configured_state_dir(getattr(self, "config", {}), create=False) / "agent_state.sqlite3",
+                    enabled=False,
+                ),
+                config=getattr(self, "config", {}),
+            )
+        except Exception:
+            return None
+        self.context_compiler = compiler
+        return compiler
+
+    def _apply_context_preloads(
+        self, request: ConsistencyRequest, base: dict[str, Any],
+    ) -> tuple[dict[str, Any], tuple[GuardWarning, ...]]:
+        compiler = self._context_preload_source()
+        if compiler is None:
+            return base, ()
+        try:
+            elements, preload_warnings = compiler.preload_elements(ContextRequest(
+                task_id=request.task_id,
+                token_budget=max(1, int(request.token_budget)),
+                changed_paths=tuple(request.changed_paths or ()),
+                root=request.root,
+                tenant=request.tenant,
+                phase=request.phase,
+                focus=tuple(request.focus or ()),
+                preload_profile=request.preload_profile,
+            ))
+        except Exception:
+            return base, ()
+        if not elements and not preload_warnings:
+            return base, ()
+
+        enriched = dict(base)
+        evidence = [dict(item) for item in (base.get("evidence") or ()) if isinstance(item, dict)]
+        context = str(base.get("context", "") or "").strip()
+        for element in elements:
+            content = str(element.content or "")
+            context = "\n\n".join(item for item in (context, content) if item)
+            provenance = dict(element.provenance or {})
+            evidence.append({
+                "evidence_id": element.element_id,
+                "source_kind": element.source_kind,
+                "path": provenance.get("path", ""),
+                "text": content,
+                "reason": element.reason,
+            })
+        enriched["context"] = context
+        enriched["evidence"] = evidence[:64]
+        enriched["preload_profile"] = request.preload_profile
+        enriched["preload_evidence_ids"] = [element.element_id for element in elements[:32]]
+        warning_objects = tuple(
+            GuardWarning(
+                "warning",
+                str(item.get("code", "preload_warning")),
+                str(item.get("message", "preload warning")),
+                affected_paths=(str(item["path"]),) if item.get("path") else (),
+                recommended_action="review configured context preload",
+            )
+            for item in preload_warnings
+            if isinstance(item, dict)
+        )
+        return enriched, warning_objects
+
+    def _adaptive_relevance(self, request: ConsistencyRequest, evidence: tuple[dict[str, Any], ...], revision: str, memory_revision: str) -> dict[str, Any]:
+        guard = self.consistency_guard
+        if guard is None or not evidence:
+            return {"success": False, "degraded": True, "degraded_reason": "no_authoritative_evidence", "warnings": []}
+        try:
+            projector = getattr(guard, "structured_evidence", None)
+            if callable(projector):
+                structured = list(projector(evidence, limit=24))
+            else:
+                structured = []
+                for item in evidence[:24]:
+                    if isinstance(item, dict):
+                        structured.append({
+                            "evidence_id": str(item.get("evidence_id") or item.get("id") or "")[:200],
+                            "authority": "deterministic",
+                            "path": self._adaptive_label(item.get("path"), 240),
+                            "start_line": max(0, int(item.get("start_line", 0) or 0)),
+                            "end_line": max(0, int(item.get("end_line", 0) or 0)),
+                        })
+            structured = [item for item in structured if isinstance(item, dict) and item.get("evidence_id")][:24]
+            if not structured:
+                return {"success": False, "degraded": True, "degraded_reason": "no_authoritative_evidence", "warnings": []}
+            focus = [self._adaptive_label(item, 80) for item in tuple(getattr(request, "focus", ()) or ())[:16]]
+            model_focus = ["focus-" + hashlib.sha256(item.encode("utf-8", "replace")).hexdigest()[:12] for item in focus if item]
+            phase = self._adaptive_label(request.phase, 80)
+            if phase.casefold() not in {"plan", "edit", "implementation", "review", "test", "handoff"}:
+                phase = "other"
+            preload_profile = self._adaptive_label(request.preload_profile, 120)
+            if preload_profile.casefold() not in {"", "default", "plan", "edit", "review", "test", "handoff"}:
+                preload_profile = "profile-" + hashlib.sha256(preload_profile.encode("utf-8", "replace")).hexdigest()[:12]
+            payload = {
+                "operation": "context_relevance",
+                "phase": phase,
+                "focus": model_focus,
+                "preload_profile": preload_profile,
+                "repository_revision": str(revision)[:200],
+                "memory_revision": str(memory_revision)[:200],
+                "evidence": structured,
+                "limits": {"max_selected_evidence": 12, "max_claims": 16, "max_gaps": 16, "max_wording_chars": 1200},
+            }
+            params = {
+                "repository_revision": str(revision)[:200],
+                "phase": self._adaptive_label(request.phase, 80),
+                "memory_revision": str(memory_revision)[:200],
+                "focus": tuple(focus),
+                "preload_profile": self._adaptive_label(request.preload_profile, 120),
+                "evidence_ids": tuple(str(item["evidence_id"])[:200] for item in structured),
+            }
+
+            def compute() -> dict[str, Any]:
+                try:
+                    models = getattr(self, "config", {}).get("models", {})
+                    model = getattr(self, "config", {}).get("context_relevance_model") or models.get("general") or models.get("fast_code") or "context-relevance"
+                    generated = self._generate(
+                        str(model),
+                        json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
+                        "Return JSON only. Use only supplied deterministic evidence IDs. Never invent repository facts, repeat source text, reveal secrets, or use the user prompt as evidence.",
+                        min(512, max(64, int(request.token_budget) // 4)),
+                        0.0,
+                        request.tenant or "context",
+                        "context-relevance",
+                        4,
+                        semantic_query="context relevance",
+                        semantic_context_fingerprint=stable_hash(params),
+                        internal=True,
+                        format={"type": "object"},
+                    )
+                except Exception:
+                    return {"success": False, "degraded": True, "degraded_reason": "model_error", "warnings": []}
+                if not isinstance(generated, dict) or not generated.get("success"):
+                    return {"success": False, "degraded": True, "degraded_reason": "model_unavailable", "warnings": []}
+                raw = generated.get("text") or generated.get("response") or ""
+                try:
+                    if isinstance(raw, dict):
+                        parsed = raw
+                    else:
+                        text = str(raw).strip()
+                        if text.startswith("```"):
+                            text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I | re.S)
+                        parsed = json.loads(text)
+                    if not isinstance(parsed, dict):
+                        raise ValueError("structured response required")
+                except Exception:
+                    return {"success": False, "degraded": True, "degraded_reason": "invalid_model_output", "warnings": []}
+                claims = parsed.get("claims") if isinstance(parsed.get("claims"), list) else []
+                postprocess = getattr(guard, "postprocess_model_claims", None)
+                if callable(postprocess):
+                    checked = postprocess(evidence, claims, request)
+                else:
+                    checked = {"claims": [], "unknowns": [], "warnings": []}
+                authoritative = set(checked.get("authoritative_evidence_ids", ()))
+                selected = [str(item)[:200] for item in (parsed.get("selected_evidence_ids") or ()) if str(item) in authoritative][:12]
+                gaps = [self._adaptive_label(item, 240) for item in (parsed.get("gaps") or ())][:16]
+                wording = self._adaptive_label(parsed.get("wording"), 1200)
+                warning_dicts = []
+                for warning in checked.get("warnings", ())[:24]:
+                    converter = getattr(warning, "to_dict", None)
+                    warning_dicts.append(converter() if callable(converter) else dict(warning) if isinstance(warning, dict) else {"code": "unsupported_model_claim", "message": self._adaptive_label(warning, 240)})
+                return {
+                    "success": True,
+                    "selected_evidence_ids": selected,
+                    "claims": list(checked.get("claims", ()))[:16],
+                    "unknowns": [self._adaptive_label(item, 240) for item in checked.get("unknowns", ())][:16],
+                    "gaps": [item for item in gaps if item],
+                    "wording": wording,
+                    "warnings": warning_dicts[:24],
+                }
+
+            return self._repo_cached("adaptive-relevance", request.root, params, compute)
+        except Exception:
+            return {"success": False, "degraded": True, "degraded_reason": "relevance_error", "warnings": []}
+
+    def adaptive_context_pack(self, request: ConsistencyRequest, *, mode: str = "fast", since_hash: str = "") -> dict[str, Any]:
+        """Build deterministic context plus bounded, soft consistency findings."""
+        if not isinstance(request, ConsistencyRequest):
+            raise TypeError("guarded context request must be ConsistencyRequest")
+        if mode == "full":
+            base = self._hybrid_context(request.root, request.query, request.tenant, request.workspace or None, request.token_budget)
+        else:
+            base = self.fast_context(request.root, request.query, request.token_budget)
+        if not isinstance(base, dict):
+            base = {"success": False, "context": "", "evidence": []}
+        else:
+            base = dict(base)
+        base, preload_warnings = self._apply_context_preloads(request, base)
+        guard = self.consistency_guard
+        if guard is None:
+            return {**base, "guarded": False, "context_pack": AdaptiveContextPack(warnings=preload_warnings).to_dict()}
+
+        try:
+            snapshot = self.repo_tools.git_snapshot(request.root)
+            revision = str(getattr(snapshot, "revision", "") or "")[:200]
+            snapshot_paths = tuple(str(path) for path in (getattr(snapshot, "changed_paths", ()) or ()))[:64]
+        except Exception:
+            revision, snapshot_paths = "", ()
+        evidence = tuple(item for item in (base.get("evidence") or ()) if isinstance(item, dict))[:24]
+        changed_paths = tuple(request.changed_paths or base.get("changed_paths") or snapshot_paths)[:64]
+        if since_hash and since_hash == revision:
+            changed_paths = ()
+        contract = guard.build_contract(request)
+        candidates = tuple(guard.find_reuse_candidates(request, contract))[:24]
+        mappings, mapping_warnings = guard.build_contract_mappings(request, evidence)
+        diff: Any = None
+        try:
+            diff = self.repo_tools.git_diff(request.root, base=request.base, staged=request.staged, max_tokens=request.token_budget)
+            if since_hash and isinstance(diff, dict):
+                diff = {**diff, "diff_sha256": since_hash}
+        except Exception:
+            pass
+        drift_warnings = guard.check_drift(request, contract, changed_paths, diff)
+        warnings = tuple(dict.fromkeys((*preload_warnings, *mapping_warnings, *drift_warnings)))[:24]
+        boundary = any(item.requires_approval or item.severity.lower() in {"boundary", "high", "high-risk"} for item in warnings)
+        stop_code = self._guard_stop_code(request, boundary)
+        if stop_code:
+            warning_payload = [
+                warning.to_dict() if hasattr(warning, "to_dict") else dict(warning)
+                for warning in warnings
+            ]
+            return {
+                **base,
+                "success": False,
+                "guarded": True,
+                "delivery_mode": mode,
+                "terminal": True,
+                "retryable": False,
+                "stop_code": stop_code,
+                "error": f"guarded context stopped: {stop_code}",
+                "warnings": warning_payload[:24],
+                "repo_revision": revision,
+                "changed_paths": list(changed_paths),
+                "task_status": "",
+                "waiting": False,
+            }
+        memory_revision = self._adaptive_memory_revision(request)
+        relevance = self._adaptive_relevance(request, evidence, revision, memory_revision)
+        metric = getattr(guard, "record_metric", None)
+        if callable(metric):
+            if since_hash and since_hash == revision:
+                metric("duplicate_context_reuse")
+            if not isinstance(relevance, dict) or not relevance.get("success"):
+                metric("degraded_local_model_fallback")
+            relevance_warnings = tuple(relevance.get("warnings", ())) if isinstance(relevance, dict) else ()
+            for warning in relevance_warnings:
+                severity = getattr(warning, "severity", None)
+                if severity is None and isinstance(warning, dict):
+                    severity = warning.get("severity", "warning")
+                metric("warning", severity=str(severity or "warning"))
+        model_warnings = tuple(relevance.get("warnings", ()))[:24] if isinstance(relevance, dict) else ()
+        pack = AdaptiveContextPack(
+            contract=contract,
+            reuse_candidates=candidates,
+            mappings=tuple(mappings),
+            warnings=warnings,
+            evidence=evidence,
+            repo_revision=revision,
+            changed_paths=changed_paths,
+            stale=False,
+            context_id=hashlib.sha256(f"{request.root}:{revision}:{request.task_id}:{request.phase}:{request.query}".encode("utf-8", "replace")).hexdigest()[:24],
+            phase=request.phase,
+            focus=request.focus,
+            preload_profile=request.preload_profile,
+            memory_revision=memory_revision,
+            model_warnings=model_warnings,
+        )
+        pack_data = pack.to_dict()
+        ordinary = any(not (item.requires_approval or item.severity.lower() in {"boundary", "high", "high-risk"}) for item in warnings)
+        decision_recorded, decision_persisted = self._guard_decision(request, revision, reason=request.override_reason, approval=request.approval)
+        task_status, waiting = self._guard_task_state(request, warnings, revision)
+        approved = self._guard_truthy(request.approval) or self._guard_existing_approval(request)
+        if str(task_status).lower() == "waiting":
+            approved = False
+        result = dict(base)
+        result.update({
+            "guarded": True,
+            "delivery_mode": mode,
+            "adaptive_context_pack": pack_data,
+            "context_pack": pack_data,
+            "contract": pack_data["contract"],
+            "reuse": pack_data["reuse_candidates"],
+            "reuse_candidates": pack_data["reuse_candidates"],
+            "mappings": pack_data["mappings"],
+            "warnings": [*pack_data["warnings"], *list(model_warnings)][:24],
+            "evidence_ids": list(dict.fromkeys(item.get("evidence_id", "") for item in evidence if item.get("evidence_id")))[:24],
+            "warning_ids": list(dict.fromkeys(
+                evidence_id
+                for item in (*warnings, *model_warnings)
+                for evidence_id in (item.evidence_ids if hasattr(item, "evidence_ids") else item.get("evidence_ids", ()) if isinstance(item, dict) else ())
+            ))[:24],
+            "model_warnings": list(model_warnings),
+            "relevance": {
+                key: relevance.get(key)
+                for key in ("selected_evidence_ids", "claims", "unknowns", "gaps", "wording")
+                if isinstance(relevance, dict) and key in relevance
+            },
+            "model_degraded": bool(not isinstance(relevance, dict) or not relevance.get("success")),
+            "model_degraded_reason": str(relevance.get("degraded_reason", ""))[:120] if isinstance(relevance, dict) else "relevance_error",
+            "repo_revision": revision,
+            "memory_revision": memory_revision,
+            "changed_paths": list(changed_paths),
+            "since_hash": str(since_hash)[:200],
+            "delta_from": str(since_hash)[:200] if since_hash else "",
+            "requires_override": bool(ordinary and not str(request.override_reason or "").strip() and not approved),
+            "requires_approval": bool(boundary and not approved),
+            "decision_recorded": bool(decision_recorded),
+            "decision_persisted": bool(decision_persisted),
+            "task_status": task_status,
+            "waiting": bool(waiting),
+        })
+        snapshotter = getattr(getattr(self, "telemetry", None), "record_snapshot", None)
+        metrics_getter = getattr(guard, "metrics_snapshot", None)
+        if callable(snapshotter) and callable(metrics_getter):
+            try:
+                snapshotter("consistency_guard", metrics_getter())
+            except Exception:
+                pass
+        return result
+
     def fast_context(self, root: str, query: str, max_tokens: int) -> dict[str, Any]:
         """Return bounded deterministic context when foreground SLO excludes hybrid retrieval."""
         if self.deterministic is None:
@@ -2694,12 +4073,18 @@ class LocalAIServices:
                 "largest_review_chunk_tokens": largest_review_chunk_tokens,
                 "review_chunk_token_budget": review_chunk_token_budget,
             }
-        if len(review_chunks) > _MAX_REVIEW_DIFF_CHUNKS:
+        max_review_chunks = _MAX_REVIEW_DIFF_CHUNKS
+        if bool(args.get("_async_job")):
+            max_review_chunks = max(
+                _MAX_REVIEW_DIFF_CHUNKS,
+                int(self.config.get("review", {}).get("max_async_chunks", 32)),
+            )
+        if len(review_chunks) > max_review_chunks:
             return {
                 "success": False,
                 "error": (
                     f"Review requires {len(review_chunks)} segments; the safe limit is "
-                    f"{_MAX_REVIEW_DIFF_CHUNKS}. Narrow the diff or lower diff_tokens."
+                    f"{max_review_chunks}. Narrow the diff or lower diff_tokens."
                 ),
                 "changed_files": diff.get("changed_files", []),
                 "diff_truncated": bool(diff.get("truncated", False)),
@@ -2736,6 +4121,7 @@ class LocalAIServices:
                 "context": review_code,
                 "complexity": complexity,
                 "max_tokens": per_chunk_output_tokens,
+                "priority": int(args.get("priority", 5)),
             }
             review_payloads.append(review_payload)
             response = self.delegate(review_payload, tenant)
@@ -2834,6 +4220,7 @@ class LocalAIServices:
             "complexity": complexity,
             "tenant": tenant,
             "delegate": self.delegate,
+            "priority": int(args.get("priority", 5)),
         }
         result["text"], result["review_synthesis"] = _merge_review_segment_results(
             primary_results, label="Review segment", task_type="review", **merge_options
@@ -2937,7 +4324,7 @@ class LocalAIServices:
             result = self._generate(
                 general_model, prompt,
                 "Compress aggressively. Preserve only information needed to reconstruct decisions/facts. Use a flat list without nested bullets when useful.",
-                per_chunk_out, 0.1, tenant, "compress:map", 4,
+                per_chunk_out, 0.1, tenant, "compress:map", int(args.get("priority", 4)),
                 internal=True,
             )
             if not result.get("success"):
@@ -2950,7 +4337,7 @@ class LocalAIServices:
                 general_model,
                 f"TARGET: <= {target_tokens} estimated tokens.\nINSTRUCTION: {instruction}\n\nPARTIAL SUMMARIES:\n{combined}",
                 "Merge the partial summaries without duplication. Preserve concrete evidence and uncertainty. Be dense.",
-                target_tokens, 0.1, tenant, "compress:reduce", 4,
+                target_tokens, 0.1, tenant, "compress:reduce", int(args.get("priority", 4)),
                 internal=True,
             )
         else:
@@ -3575,13 +4962,15 @@ class LocalAIServices:
             active = None
         prepared.sort(key=lambda item: (0 if item[1] == active else 1, item[1], item[0]))
         results: dict[int, dict[str, Any]] = {}
+        default_priority = int(args.get("priority", 5))
         for i, _model, item in prepared:
+            item = dict(item)
+            item.setdefault("priority", default_priority)
             results[i] = self.delegate(item, tenant)
         return {"success": all(r.get("success", False) for r in results.values()), "results": [results[i] for i in range(len(results))]}
 
     def optimize_databases(self) -> dict[str, Any]:
         """Perform WAL checkpointing, page pruning and VACUUM/optimize across all SQLite stores."""
-        import sqlite3
         state_dir = Path(self.config["server"]["state_dir"])
         db_files = list(state_dir.glob("*.sqlite3"))
         optimized = []
@@ -3638,7 +5027,7 @@ class LocalAIServices:
                     verified_fix="Resolved by operator",
                     root_cause="Operator manual resolve",
                 )
-            except Exception as exc:
+            except Exception:
                 resolved_incidents = -1
 
         try:

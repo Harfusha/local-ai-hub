@@ -38,9 +38,10 @@ The automated setup runner (`install.ps1` / `install.sh` / `python tools/setup.p
    - `ast-grep` (`sg`): Structural AST pattern matcher via `npm`.
    - `repomix`: Repository context compactor via `npm`.
    - `jq`: High-speed JSON stream processor and projection filter via `winget` / `brew` / `apt`.
-5. **Configures Local Ollama Runtime & Models**:
-   - Auto-starts Ollama daemon.
-   - Pulls the configured model tiers (0.5B preprocessing, 1.5B quick, 3B complex, 7B hardest reasoning) and embedding models (`bge-m3` or `nomic-embed-text`).
+5. **Configures Optional Local Model Runtime & Models**:
+   - Uses an already configured llama.cpp endpoint when the active Intel hardware/profile requires it; the Hub never installs or starts a runtime automatically.
+   - Ollama is disabled by default and is never installed, started, or pulled unless all explicit Ollama opt-ins are enabled.
+   - Uses configured model tiers (0.5B preprocessing, 1.5B quick, 3B complex, 7B hardest reasoning) only when a healthy local backend is available; otherwise deterministic/indexed Hub paths remain active.
 6. **Auto-Wires MCP Hosts & Skills**:
    - Configures MCP endpoints into **Codex**, **Claude Desktop**, **Gemini**, **Cursor**, **Windsurf**, and **VS Code / GitHub Copilot**.
    - Installs companion skills: `token-economizer`, `caveman`, `tool-orchestration`, `ollama-quality-routing`.

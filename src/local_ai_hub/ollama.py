@@ -26,7 +26,14 @@ def _normalise_keep_alive(payload: dict[str, Any] | None) -> dict[str, Any] | No
         clean["keep_alive"] = "-1m"
     return clean
 
-from .process_utils import hidden_run_kwargs, set_process_priority, terminate_tree, pid_alive, process_executable
+from .process_utils import (
+    find_listening_pid,
+    hidden_run_kwargs,
+    pid_alive,
+    process_executable,
+    set_process_priority,
+    terminate_tree,
+)
 from .model_policy import ModelExecutionPolicy
 
 
@@ -544,13 +551,88 @@ class OllamaRuntime:
             env["OLLAMA_NUM_THREADS"] = str(int(num_threads))
         return env
 
+    def _management_enabled(self) -> bool:
+        headless = self.config.get("headless", {})
+        return bool(headless.get("manage_ollama", False)) and bool(headless.get("autostart_ollama", True))
+
+    def _managed_pid_alive(self) -> bool:
+        try:
+            pid = int(self.managed_pid_path.read_text(encoding="utf-8").strip() or 0)
+        except Exception:
+            return False
+        executable = (process_executable(pid) or "").lower()
+        return bool(pid_alive(pid) and "ollama" in Path(executable).name)
+
+    def _local_external_pid(self) -> int | None:
+        if not self._management_enabled() or self._managed_pid_alive():
+            return None
+        parsed = urlparse(self.base_url)
+        if parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+            return None
+        pid = find_listening_pid(int(parsed.port or 11434))
+        if not pid or pid == os.getpid():
+            return None
+        executable = (process_executable(pid) or "").lower()
+        return pid if "ollama" in Path(executable).name else None
+
+    def _take_over_external_server(self) -> bool | None:
+        """Stop a local unmanaged Ollama so the Hub can restart it with its profile.
+
+        ``None`` means no safe local Ollama owner was found.  ``False`` means a
+        takeover was attempted but the endpoint did not go offline.  The latter
+        fails closed instead of killing an unknown process repeatedly.
+        """
+        pid = self._local_external_pid()
+        if pid is None:
+            return None
+        if not terminate_tree(pid, grace_seconds=5.0):
+            return False
+        deadline = time.monotonic() + 6.0
+        while time.monotonic() < deadline:
+            if not self.is_online():
+                return True
+            time.sleep(0.1)
+        return not self.is_online()
+
+    def _cleanup_failed_start(self, proc: subprocess.Popen[Any]) -> None:
+        """Reap a child whose endpoint never became healthy."""
+        try:
+            running = proc.poll() is None
+        except Exception:
+            running = True
+        if running:
+            try:
+                terminate_tree(proc.pid, grace_seconds=2.0)
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=3.0)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=1.0)
+            except Exception:
+                pass
+        try:
+            if self.managed_pid_path.read_text(encoding="utf-8").strip() == str(proc.pid):
+                self.managed_pid_path.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass
+
     def ensure_running(self) -> bool:
         if self.llama_cpp.is_online():
             return True
         if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)):
             return False
         if self.is_online():
-            return True
+            takeover = self._take_over_external_server()
+            if takeover is None:
+                return True
+            if not takeover:
+                return False
         if not bool(self.config.get("headless", {}).get("autostart_ollama", True)):
             return False
         with self._ensure_lock:
@@ -580,12 +662,17 @@ class OllamaRuntime:
                     except OSError:
                         pass
 
+            takeover = self._take_over_external_server()
+            if takeover is False:
+                return False
+
             env = self._configured_environment()
             executable = self.config.get("ollama", {}).get("executable") or "ollama"
             args = [executable, "serve"]
             popen_kwargs: dict[str, Any] = hidden_run_kwargs(new_group=True)
             if os.name != "nt":
                 popen_kwargs["start_new_session"] = True
+            proc: subprocess.Popen[Any] | None = None
             try:
                 proc = subprocess.Popen(
                     args, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -597,6 +684,8 @@ class OllamaRuntime:
                 set_process_priority(proc.pid, priority)
                 self.managed_pid_path.write_text(str(proc.pid), encoding="utf-8")
             except Exception:
+                if proc is not None:
+                    self._cleanup_failed_start(proc)
                 return False
 
             startup_timeout = max(1.0, float(self.config.get("ollama", {}).get("startup_timeout_seconds", 12.0)))
@@ -607,7 +696,10 @@ class OllamaRuntime:
                 if proc.poll() is not None:
                     break
                 time.sleep(min(0.4, max(0.05, deadline - time.monotonic())))
-            return self.is_online()
+            if self.is_online():
+                return True
+            self._cleanup_failed_start(proc)
+            return False
 
     def managed_profile_status(self) -> dict[str, Any]:
         pid = 0

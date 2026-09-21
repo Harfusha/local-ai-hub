@@ -26,12 +26,22 @@ from .config import ConfigError, deep_merge, load_config, save_runtime_overrides
 from .delivery import decide_delivery
 from .agent_identity import AgentScope, ScopeContext
 from .agent_tasks import CompletionGateError, GoalContract, InvalidTransitionError, TaskCheckpoint, TaskStatus
-from .agent_memory import ApprovalRequiredError, MemoryKind, MemoryRecord, MemoryStatus
+from .agent_memory import ApprovalRequiredError, MAX_MEMORY_QUERY_LIMIT, MemoryKind, MemoryRecord, MemoryStatus
 from .agent_incidents import IncidentFingerprint, ToolOutcome
 from .agent_verification import VerificationReceipt
 from .agent_context import ContextRequest
 from .agent_learning import ImprovementCandidate, SLOObservation
 from .json_utils import dumps as json_dumps
+from .browser_bridge import (
+    abandon_staged_capture,
+    capture_failure,
+    capture_to_artifacts,
+    commit_staged_capture,
+    issue_capture_capability,
+    origin_allowed,
+    stage_capture,
+    validate_capture_request,
+)
 
 
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
@@ -53,6 +63,140 @@ MONITOR_PATHS = {
 
 def _json_bytes(data: Any) -> bytes:
     return json_dumps(data).encode("utf-8")
+
+
+def _resolve_memory_scope(
+    scope: AgentScope | None,
+    *,
+    scope_id: Any = None,
+    root: Any = None,
+    repository_id: Any = None,
+    tenant: Any = None,
+    task_id: Any = None,
+    session_id: Any = None,
+    clone_id: Any = None,
+    worktree_id: Any = None,
+    branch: Any = None,
+) -> tuple[AgentScope | None, str | None, bool]:
+    """Resolve one unambiguous memory scope; reject mixed identity contexts."""
+    clean = lambda value: str(value or "").strip()
+    values = {
+        "task": clean(task_id),
+        "session": clean(session_id),
+        "clone": clean(clone_id),
+        "worktree": clean(worktree_id),
+        "branch": clean(branch),
+    }
+    identity_scopes = [(name, value) for name, value in values.items() if value]
+    scope_id_value = clean(scope_id)
+    root_value = clean(root)
+    repository_value = clean(repository_id)
+    tenant_value = clean(tenant)
+
+    if scope is AgentScope.TASK and not values["task"] and any(
+        values[name] for name in ("session", "clone", "worktree", "branch")
+    ):
+        return None, None, True
+    if scope is AgentScope.SESSION and not values["session"] and any(
+        values[name] for name in ("task", "clone", "worktree", "branch")
+    ):
+        return None, None, True
+
+    if scope is None:
+        if len(identity_scopes) > 1:
+            return None, None, True
+        if identity_scopes:
+            scope = AgentScope.parse(identity_scopes[0][0], default=None)
+            if scope is None:
+                return None, None, True
+            if not scope_id_value:
+                scope_id_value = identity_scopes[0][1]
+        elif root_value or repository_value:
+            scope = AgentScope.REPOSITORY
+        elif tenant_value:
+            scope = AgentScope.SESSION
+            if not scope_id_value:
+                scope_id_value = tenant_value
+        elif scope_id_value:
+            return None, None, True
+
+    if scope is AgentScope.SESSION and tenant_value and not scope_id_value and not values["session"]:
+        return None, None, True
+
+    expected = {
+        AgentScope.TASK: values["task"],
+        AgentScope.SESSION: values["session"],
+        AgentScope.CLONE: values["clone"],
+        AgentScope.WORKTREE: values["worktree"],
+        AgentScope.BRANCH: values["branch"],
+    }.get(scope, "")
+    if identity_scopes:
+        if scope is None:
+            return None, None, True
+        if expected == "":
+            if scope is AgentScope.GLOBAL:
+                return None, None, True
+        elif scope_id_value and scope_id_value != expected:
+            return None, None, True
+        elif expected:
+            scope_id_value = expected
+        if scope is None:
+            return None, None, True
+
+    return scope, (scope_id_value or None), False
+
+
+def _parse_memory_scope(value: Any) -> AgentScope | None:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None
+    aliases = {
+        "code", "task", "tasks", "repo", "repository", "project", "workspace",
+        "worktree", "worktrees", "clone", "branch", "branches", "session", "sessions",
+        "global", "user",
+    }
+    if raw not in aliases:
+        raise ValueError(f"invalid memory scope '{raw}'")
+    return AgentScope.parse(raw, default=None)
+
+
+def _memory_query_limit(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("memory limit must be an integer") from exc
+    return max(1, min(parsed, MAX_MEMORY_QUERY_LIMIT))
+
+
+def _completion_revision_or_stop(root: Any, repo_tools: Any) -> tuple[str, dict[str, Any] | None]:
+    root_value = str(root or "").strip()
+    snapshotter = getattr(repo_tools, "git_snapshot", None)
+    if not root_value or not callable(snapshotter):
+        return "", {
+            "success": False,
+            "terminal": True,
+            "retryable": False,
+            "stop_code": "completion_repository_revision_unavailable",
+            "error": "completion requires a repository snapshot with a non-empty revision",
+        }
+    try:
+        snapshot = snapshotter(root_value)
+        revision = str(getattr(snapshot, "revision", "") or "").strip()
+        if getattr(snapshot, "degraded", False) or getattr(snapshot, "error", None) or not revision:
+            raise ValueError("repository snapshot revision unavailable")
+    except Exception:
+        return "", {
+            "success": False,
+            "terminal": True,
+            "retryable": False,
+            "stop_code": "completion_repository_revision_unavailable",
+            "error": "completion requires a repository snapshot with a non-empty revision",
+        }
+    return revision, None
+
+
+def _memory_lookup_has_identity(*values: Any) -> bool:
+    return any(str(value or "").strip() for value in values)
 
 
 def _telemetry_http_outcome(status: int, data: Any, path: str = "") -> tuple[bool, str, bool]:
@@ -305,6 +449,10 @@ class Handler(BaseHTTPRequestHandler):
             method = getattr(self, mname)
             method()
             self.wfile.flush()
+            # The hub does not pool request handlers. Closing every response
+            # releases the handler socket immediately and prevents stale
+            # keep-alive sockets from surviving shutdown or app replacement.
+            self.close_connection = True
         except (socket.timeout, TimeoutError):
             self.close_connection = True
             return
@@ -320,6 +468,30 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        request_headers = getattr(self, "headers", None)
+        if not hasattr(request_headers, "get"):
+            request_headers = {}
+        header = lambda name, default="": request_headers.get(name, default)
+        request_origin = str(header("Origin", "") or "").strip()
+        bridge_path = str(getattr(self, "path", "")).startswith("/api/browser/") or str(getattr(self, "path", "")) == "/api/vision/review"
+        requested_headers = str(header("Access-Control-Request-Headers", "") or "").lower()
+        token_preflight = str(getattr(self, "command", "")) == "OPTIONS" and ("x-localai-token" in requested_headers or "authorization" in requested_headers)
+        if request_origin and bridge_path and APP is not None and origin_allowed(APP.config, request_origin):
+            self.send_header("Access-Control-Allow-Origin", request_origin)
+            self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-LocalAI-Tenant, X-LocalAI-Token, Authorization")
+            self.send_header("Vary", "Origin")
+        elif request_origin and bridge_path and APP is not None:
+            expected_token = str(APP.config.get("security", {}).get("api_token", ""))
+            supplied_token = str(header("X-LocalAI-Token", "") or "")
+            auth_header = str(header("Authorization", "") or "")
+            if auth_header.lower().startswith("bearer "):
+                supplied_token = auth_header[7:].strip()
+            if expected_token and (hmac.compare_digest(supplied_token, expected_token) or token_preflight):
+                self.send_header("Access-Control-Allow-Origin", request_origin)
+                self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type, X-LocalAI-Tenant, X-LocalAI-Token, Authorization")
+                self.send_header("Vary", "Origin")
         if html:
             script_source = f"'nonce-{nonce}'" if nonce else "'none'"
             self.send_header("Content-Security-Policy", f"default-src 'none'; connect-src 'self'; img-src 'self' data:; style-src 'unsafe-inline'; script-src {script_source}; script-src-attr 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
@@ -330,6 +502,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Connection", "close")
             self._common_headers(html=True, nonce=nonce)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -596,7 +769,26 @@ class Handler(BaseHTTPRequestHandler):
             self._trace_context_token = None
 
     def _tenant(self) -> str:
-        return self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID") or "http-default"
+        requested = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID") or "http-default"
+        path = str(getattr(self, "path", ""))
+        security = APP.config.get("security", {}) if APP is not None else {}
+        if APP is not None and (path.startswith("/api/browser/") or path == "/api/vision/review") and security.get("api_token"):
+            return str(APP.config.get("browser_bridge", {}).get("tenant", "http-default") or "http-default")
+        return requested
+
+    def _tenant_binding_allowed(self) -> bool:
+        if APP is None:
+            return True
+        path = str(getattr(self, "path", ""))
+        security = APP.config.get("security", {})
+        if not (path.startswith("/api/browser/") or path == "/api/vision/review") or not security.get("api_token"):
+            return True
+        configured = str(APP.config.get("browser_bridge", {}).get("tenant", "http-default") or "http-default")
+        requested = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
+        if requested and str(requested).strip() != configured:
+            self._send(403, {"success": False, "error": "browser bridge tenant is bound to its configured token tenant", "error_code": "tenant_binding_mismatch", "terminal": True, "retryable": False})
+            return False
+        return True
 
     def _agent(self) -> str:
         return self.headers.get("X-LocalAI-Agent") or "generic"
@@ -617,7 +809,11 @@ class Handler(BaseHTTPRequestHandler):
         """Validate Host and Origin headers to protect against DNS rebinding and cross-origin attacks."""
         if APP is None:
             return True
-        host_header = self.headers.get("Host", "").strip()
+        request_headers = getattr(self, "headers", None)
+        if not hasattr(request_headers, "get"):
+            request_headers = {}
+        header = lambda name, default="": request_headers.get(name, default)
+        host_header = str(header("Host", "") or "").strip()
         if host_header:
             host_name = host_header.split(":", 1)[0].strip("[]").lower()
             allowed_hosts = {"127.0.0.1", "localhost", "::1", "testserver"}
@@ -636,7 +832,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(403, {"success": False, "error": "forbidden: invalid Host header"})
                     return False
 
-        origin_header = self.headers.get("Origin", "").strip()
+        origin_header = str(header("Origin", "") or "").strip()
         if origin_header:
             parsed_origin = urlparse(origin_header)
             origin_host = str(parsed_origin.hostname or "").lower()
@@ -652,7 +848,19 @@ class Handler(BaseHTTPRequestHandler):
                 allowed_origins.add(str(extra).strip("[]").lower())
 
             if not APP.config.get("security", {}).get("allow_remote", False):
-                if origin_host not in allowed_origins:
+                bridge_origin = False
+                bridge_token = False
+                if str(getattr(self, "path", "")).startswith("/api/browser/") or str(getattr(self, "path", "")) == "/api/vision/review":
+                    bridge_origin = origin_allowed(APP.config, origin_header)
+                    expected_token = str(APP.config.get("security", {}).get("api_token", ""))
+                    supplied_token = str(header("X-LocalAI-Token", "") or "")
+                    auth_header = str(header("Authorization", "") or "")
+                    if auth_header.lower().startswith("bearer "):
+                        supplied_token = auth_header[7:].strip()
+                    requested_headers = str(header("Access-Control-Request-Headers", "") or "").lower()
+                    token_preflight = str(getattr(self, "command", "")) == "OPTIONS" and ("x-localai-token" in requested_headers or "authorization" in requested_headers)
+                    bridge_token = bool(expected_token and (hmac.compare_digest(supplied_token, expected_token) or token_preflight))
+                if origin_host not in allowed_origins and not bridge_origin and not bridge_token:
                     self._send(403, {"success": False, "error": "forbidden: cross-origin requests are not allowed"})
                     return False
         return True
@@ -662,6 +870,8 @@ class Handler(BaseHTTPRequestHandler):
             return False
         if not self._authorized():
             self._send(401, {"success": False, "error": "unauthorized"})
+            return False
+        if not self._tenant_binding_allowed():
             return False
         # Rate limit is checked after auth to avoid leaking tenant existence to unauthenticated callers.
         srv = self.server
@@ -841,12 +1051,46 @@ class Handler(BaseHTTPRequestHandler):
             edits = payload.get("edits") or payload.get("replacements")
             if not isinstance(edits, list) or not edits:
                 raise RequestBodyError("edits must be a non-empty list of replacement operations")
+        elif path in {"/api/speculative-lint", "/api/command/speculative-lint"}:
+            action = text(payload.get("action", "submit"), "action", 32).strip().lower().replace("-", "_")
+            if action not in {"submit", "status", "cancel"}:
+                raise RequestBodyError("unsupported speculative lint action")
+            if action == "submit":
+                required_text("root", maximum=4096)
+                paths = payload.get("paths")
+                if not isinstance(paths, list) or not paths or len(paths) > 256:
+                    raise RequestBodyError("paths must be a non-empty list of at most 256 entries")
+                for item in paths:
+                    text(item, "changed path", 4096)
+                if "command" in payload:
+                    text(payload["command"], "command", 4000)
+            else:
+                required_text("job_id", maximum=128)
         elif path == "/api/code-intelligence/query":
             action = text(payload.get("action", "search"), "action", 80).strip().lower().replace("-", "_")
             if action not in {"dead_code", "dead", "stats", "repository_stats"}:
                 required_text("query", maximum=4096)
             if action in {"overview", "symbols_overview", "references", "find_references", "referencing"}:
                 required_text("path", maximum=4096)
+        elif path == "/api/browser/capability":
+            required_text("origin", maximum=512)
+            if "tab_id" not in payload or payload["tab_id"] in (None, ""):
+                raise RequestBodyError("tab_id is required")
+            if not isinstance(payload["tab_id"], (int, str)):
+                raise RequestBodyError("tab_id must be an integer or string")
+            if "window_id" not in payload or payload["window_id"] in (None, ""):
+                raise RequestBodyError("window_id is required")
+            if not isinstance(payload["window_id"], (int, str)):
+                raise RequestBodyError("window_id must be an integer or string")
+        elif path == "/api/browser/capture":
+            required_text("capability", maximum=256)
+            if "tab_id" not in payload:
+                raise RequestBodyError("tab_id is required")
+            if "window_id" not in payload or payload["window_id"] in (None, ""):
+                raise RequestBodyError("window_id is required")
+        elif path == "/api/vision/review":
+            if "prompt" in payload:
+                text(payload["prompt"], "prompt", 20000)
         evaluation = payload.get("evaluation")
         if evaluation is not None:
             if not isinstance(evaluation, dict):
@@ -860,6 +1104,7 @@ class Handler(BaseHTTPRequestHandler):
             return None
         action_by_path = {
             "/api/delegate": "delegate", "/api/reason": "reason", "/api/review": "review",
+            "/api/review/diff": "review_diff",
             "/api/second-opinion": "second_opinion", "/api/compress": "compress",
             "/api/route": "route", "/api/delegate/batch": "batch",
         }
@@ -872,10 +1117,18 @@ class Handler(BaseHTTPRequestHandler):
             return None
         try:
             estimate = APP.telemetry.http_latency_estimate(path)
-            decision = decide_delivery(
-                str(payload.get("delivery", "sync")), latency_budget_ms=payload.get("latency_budget_ms", 0),
-                observed_p95_ms=estimate.get("p95_duration_ms", 0), samples=estimate.get("samples", 0),
-            )
+            delivery = str(payload.get("delivery", "sync"))
+            budget_ms = float(payload.get("latency_budget_ms", 0) or 0)
+            samples = int(estimate.get("samples", 0) or 0)
+            if job_action == "review_diff" and delivery.strip().lower() == "auto" and budget_ms > 0 and samples < 5:
+                # A cold-start review has no trustworthy p95 yet. Do not let a
+                # large diff run synchronously while telemetry learns the cost.
+                decision = {"mode": "async", "reason": "cold_start_review_diff"}
+            else:
+                decision = decide_delivery(
+                    delivery, latency_budget_ms=payload.get("latency_budget_ms", 0),
+                    observed_p95_ms=estimate.get("p95_duration_ms", 0), samples=estimate.get("samples", 0),
+                )
         except (TypeError, ValueError) as exc:
             return 400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}
         if decision["mode"] != "async":
@@ -895,6 +1148,8 @@ class Handler(BaseHTTPRequestHandler):
         elif job_action == "route":
             job_payload["task"] = str(job_payload.get("query", job_payload.get("task", "")))
             job_payload["context"] = str(job_payload.get("text", job_payload.get("context", "")))
+        elif job_action == "review_diff":
+            job_payload["_async_job"] = True
         result = APP.async_jobs.submit(tenant, job_action, job_payload)
         result["delivery"] = decision
         trace_store = getattr(APP, "debug_traces", None)
@@ -963,6 +1218,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Connection", "close")
             self._common_headers()
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -1088,6 +1344,24 @@ class Handler(BaseHTTPRequestHandler):
             APP.agent_state.unsubscribe(q)
             self._finish_stream_request(True)
 
+    def do_OPTIONS(self) -> None:
+        if APP is None:
+            self._send(503, {"success": False, "error": "hub starting up; please retry", "retryable": True})
+            return
+        path = urlparse(self.path).path
+        bridge_route = path.startswith("/api/browser/") or path == "/api/vision/review"
+        if not bridge_route or not self._validate_host_and_origin():
+            self._send(404, {"success": False, "error": "unsupported browser bridge route", "terminal": True, "retryable": False})
+            return
+        try:
+            self.send_response(204)
+            self._common_headers()
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        except OSError as exc:
+            if not _is_client_disconnect(exc):
+                raise
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
@@ -1168,12 +1442,53 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 rec_id = (query.get("record_id") or [""])[0]
                 if rec_id:
-                    rec = APP.agent_memory.get(rec_id)
+                    scope_raw = (query.get("scope") or [None])[0]
+                    scope_val = _parse_memory_scope(scope_raw)
+                    scope_id_val = (query.get("scope_id") or [None])[0]
+                    root_val = (query.get("root") or [None])[0]
+                    repository_id_val = (query.get("repository_id") or [None])[0]
+                    tenant_val = (query.get("tenant") or [None])[0]
+                    task_id_val = (query.get("task_id") or [None])[0]
+                    session_id_val = (query.get("session_id") or [None])[0]
+                    clone_id_val = (query.get("clone_id") or [None])[0]
+                    worktree_id_val = (query.get("worktree_id") or [None])[0]
+                    branch_val = (query.get("branch") or [None])[0]
+                    scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
+                        scope_val,
+                        scope_id=scope_id_val,
+                        root=root_val,
+                        repository_id=repository_id_val,
+                        tenant=tenant_val,
+                        task_id=task_id_val,
+                        session_id=session_id_val,
+                        clone_id=clone_id_val,
+                        worktree_id=worktree_id_val,
+                        branch=branch_val,
+                    )
+                    if ambiguous_scope:
+                        self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
+                    if scope_val is None:
+                        scope_val = AgentScope.GLOBAL
+                    matches = APP.agent_memory.find(
+                            record_id=rec_id,
+                            scope=scope_val,
+                            scope_id=str(scope_id_val) if scope_id_val is not None else None,
+                            root=str(root_val) if root_val else None,
+                            repository_id=str(repository_id_val) if repository_id_val else None,
+                            tenant=str(tenant_val) if tenant_val else None,
+                            task_id=str(task_id_val) if task_id_val else None,
+                            session_id=str(session_id_val) if session_id_val else None,
+                            clone_id=str(clone_id_val) if clone_id_val else None,
+                            worktree_id=str(worktree_id_val) if worktree_id_val else None,
+                            branch=str(branch_val) if branch_val else None,
+                            limit=1,
+                    )
+                    rec = matches[0] if matches else None
                     if not rec:
                         self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
                     self._send(200, {"success": True, "record": rec.to_dict()}); return
                 scope_raw = (query.get("scope") or [None])[0]
-                scope_val = AgentScope.parse(scope_raw, default=None) if scope_raw else None
+                scope_val = _parse_memory_scope(scope_raw)
                 key_val = (query.get("key") or [None])[0]
                 query_val = (query.get("query") or [None])[0]
                 status_raw = (query.get("status") or [None])[0]
@@ -1183,8 +1498,68 @@ class Handler(BaseHTTPRequestHandler):
                         status_val = MemoryStatus(str(status_raw).lower())
                     except ValueError:
                         pass
-                limit_val = int((query.get("limit") or [100])[0])
-                records = APP.agent_memory.find(scope=scope_val, key=key_val, query=query_val, status=status_val, limit=limit_val)
+                limit_val = _memory_query_limit((query.get("limit") or [100])[0])
+                scope_id_val = (query.get("scope_id") or [None])[0]
+                root_val = (query.get("root") or [None])[0]
+                repository_id_val = (query.get("repository_id") or [None])[0]
+                tenant_val = (query.get("tenant") or [None])[0]
+                task_id_val = (query.get("task_id") or [None])[0]
+                session_id_val = (query.get("session_id") or [None])[0]
+                clone_id_val = (query.get("clone_id") or [None])[0]
+                worktree_id_val = (query.get("worktree_id") or [None])[0]
+                branch_val = (query.get("branch") or [None])[0]
+                if not _memory_lookup_has_identity(
+                    scope_id_val, root_val, repository_id_val, tenant_val, task_id_val,
+                    session_id_val, clone_id_val, worktree_id_val, branch_val,
+                ):
+                    self._send(400, {"success": False, "error": "memory lookup requires explicit root or identity", "terminal": True, "retryable": False}); return
+                legacy_unscoped = scope_val is None and not any(
+                    str(value or "").strip()
+                    for value in (
+                        scope_id_val, task_id_val, session_id_val, clone_id_val, worktree_id_val,
+                        branch_val, root_val, repository_id_val, tenant_val,
+                    )
+                )
+                if legacy_unscoped:
+                    records = APP.agent_memory.find(
+                        scope=None,
+                        allow_legacy_unscoped=True,
+                        key=key_val,
+                        query=query_val,
+                        status=status_val,
+                        limit=limit_val,
+                    )
+                if not legacy_unscoped:
+                    scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
+                        scope_val,
+                        scope_id=scope_id_val,
+                        root=root_val,
+                        repository_id=repository_id_val,
+                        tenant=tenant_val,
+                        task_id=task_id_val,
+                        session_id=session_id_val,
+                        clone_id=clone_id_val,
+                        worktree_id=worktree_id_val,
+                        branch=branch_val,
+                    )
+                    if ambiguous_scope:
+                        self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
+                    records = APP.agent_memory.find(
+                            scope=scope_val,
+                            scope_id=str(scope_id_val) if scope_id_val is not None else None,
+                            root=str(root_val) if root_val else None,
+                            repository_id=str(repository_id_val) if repository_id_val else None,
+                            tenant=str(tenant_val) if tenant_val else None,
+                            task_id=str(task_id_val) if task_id_val else None,
+                            session_id=str(session_id_val) if session_id_val else None,
+                            clone_id=str(clone_id_val) if clone_id_val else None,
+                            worktree_id=str(worktree_id_val) if worktree_id_val else None,
+                            branch=str(branch_val) if branch_val else None,
+                            key=key_val,
+                            query=query_val,
+                            status=status_val,
+                            limit=limit_val,
+                    )
                 self._send(200, {"success": True, "records": [r.to_dict() for r in records]}); return
             if path == "/api/agent-state/events":
                 if not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
@@ -1679,6 +2054,58 @@ class Handler(BaseHTTPRequestHandler):
                         os._exit(0)
                     threading.Thread(target=_graceful_stop, daemon=True).start(); return
                 self._send(400, {"success": False, "error": "unknown control action"}); return
+            if path == "/api/browser/capability":
+                if not APP.config.get("browser_bridge", {}).get("enabled", True):
+                    self._send(501, capture_failure("unsupported")); return
+                origin = str(payload.get("origin", ""))
+                try:
+                    capability = issue_capture_capability(
+                        APP.config,
+                        origin=origin,
+                        tenant=tenant,
+                        tab_id=payload.get("tab_id"),
+                        window_id=payload.get("window_id"),
+                        api_token_authorized=bool(APP.config.get("security", {}).get("api_token")) and self._authorized(),
+                    )
+                except Exception as exc:
+                    code = getattr(exc, "error_code", "permission_denied")
+                    status = int(getattr(exc, "status", 403))
+                    self._send(status, {"success": False, "error": str(exc), "error_code": code, "terminal": True, "retryable": False}); return
+                ttl = int(APP.config.get("browser_bridge", {}).get("capability_ttl_seconds", 60))
+                self._send(200, {"success": True, "capability": capability, "one_use": True, "expires_in_seconds": ttl, "tab_id": payload.get("tab_id"), "window_id": payload.get("window_id")}); return
+            if path in {"/api/browser/capture/stage", "/api/browser/capture/commit", "/api/browser/capture/abandon"}:
+                request = {
+                    "origin": self.headers.get("Origin", payload.get("origin", "")),
+                    "tenant": tenant,
+                    "tab_id": payload.get("tab_id"),
+                    "window_id": payload.get("window_id"),
+                    "request_id": payload.get("request_id"),
+                }
+                capability = str(payload.get("capability", ""))
+                if path == "/api/browser/capture/stage":
+                    staged_payload = dict(payload)
+                    staged_payload["origin"] = request["origin"]
+                    result = stage_capture(capability, staged_payload, tenant=tenant, config=APP.config)
+                elif path == "/api/browser/capture/commit":
+                    result = commit_staged_capture(capability, request, artifacts=APP.artifacts, tenant=tenant, config=APP.config)
+                else:
+                    result = abandon_staged_capture(capability, request, tenant=tenant)
+                self._send(int(result.get("status", 200 if result.get("success") else 400)), result); return
+            if path == "/api/browser/capture":
+                request = {
+                    "origin": self.headers.get("Origin", payload.get("origin", "")),
+                    "tenant": tenant,
+                    "tab_id": payload.get("tab_id"),
+                    "window_id": payload.get("window_id"),
+                }
+                checked = validate_capture_request(str(payload.get("capability", "")), request, tenant=tenant)
+                if not checked.get("success"):
+                    status = int(checked.get("status", 403))
+                    self._send(status, checked); return
+                if payload.get("capture_error"):
+                    failure = capture_failure(str(payload["capture_error"]))
+                    self._send(int(failure["status"]), failure); return
+                self._send(200, capture_to_artifacts(payload, artifacts=APP.artifacts, tenant=tenant, config=APP.config)); return
             delivery = self._async_delivery(path, payload, tenant)
             if delivery is not None:
                 self._send(*delivery); return
@@ -1699,6 +2126,19 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "cancel":
                     self._send(200, APP.async_jobs.cancel(tenant, str(payload.get("job_id", "")))); return
                 self._send(400, {"success": False, "error": "unknown async job action", "terminal": True, "retryable": False}); return
+            if path in {"/api/speculative-lint", "/api/command/speculative-lint"}:
+                action = str(payload.get("action", "submit")).strip().lower().replace("-", "_")
+                if action == "submit":
+                    self._send(200, APP.speculative_lint.submit(
+                        tenant,
+                        str(payload.get("root", ".")),
+                        payload.get("paths") or [],
+                        str(payload.get("command", "")),
+                    )); return
+                if action == "status":
+                    self._send(200, APP.speculative_lint.status(tenant, str(payload.get("job_id", "")))); return
+                if action == "cancel":
+                    self._send(200, APP.speculative_lint.cancel(tenant, str(payload.get("job_id", "")))); return
             if path == "/api/agent-state/tasks":
                 if not getattr(APP, "agent_tasks", None) or not APP.agent_tasks.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
@@ -1898,6 +2338,8 @@ class Handler(BaseHTTPRequestHandler):
                             "evidence_ids": payload.get("evidence_ids") or [],
                             "sensitivity": payload.get("sensitivity", "normal"),
                             "provenance": payload.get("provenance"),
+                            "expires_at": payload.get("expires_at"),
+                            "ttl_seconds": payload.get("ttl_seconds"),
                         }
                     try:
                         raw_kind = str(rec_data.get("kind", MemoryKind.FACT.value)).lower()
@@ -1906,7 +2348,7 @@ class Handler(BaseHTTPRequestHandler):
                         except ValueError:
                             kind_val = MemoryKind.FACT
                         raw_scope = str(rec_data.get("scope", AgentScope.TASK.value)).lower()
-                        scope_val = AgentScope.parse(raw_scope, default=AgentScope.TASK)
+                        scope_val = _parse_memory_scope(raw_scope) or AgentScope.TASK
                         raw_status = rec_data.get("status")
                         status_val = None
                         if raw_status:
@@ -1914,6 +2356,10 @@ class Handler(BaseHTTPRequestHandler):
                                 status_val = MemoryStatus(str(raw_status).lower())
                             except ValueError:
                                 status_val = None
+                        record_expiry = rec_data.get("expires_at", payload.get("expires_at"))
+                        record_ttl = rec_data.get("ttl_seconds", payload.get("ttl_seconds"))
+                        if record_expiry is None and record_ttl is not None and float(record_ttl) > 0:
+                            record_expiry = time.time() + float(record_ttl)
                         record = MemoryRecord.create(
                             kind=kind_val,
                             scope=scope_val,
@@ -1926,23 +2372,123 @@ class Handler(BaseHTTPRequestHandler):
                             evidence_ids=tuple(rec_data.get("evidence_ids") or ()),
                             sensitivity=str(rec_data.get("sensitivity", "normal")),
                             provenance=rec_data.get("provenance"),
+                            expires_at=(float(record_expiry) if record_expiry is not None else None),
                         )
                         saved = APP.agent_memory.record(record, actor=actor, idempotency_key=idempotency_key)
                         self._send(200, {"success": True, "record": saved.to_dict()}); return
                     except Exception as exc:
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "get":
-                    rec = APP.agent_memory.get(str(payload.get("record_id", "")))
+                    scope_raw = payload.get("scope")
+                    scope_val = _parse_memory_scope(scope_raw)
+                    scope_id_val = payload.get("scope_id")
+                    root_val = payload.get("root")
+                    repository_id_val = payload.get("repository_id")
+                    tenant_val = payload.get("tenant")
+                    task_id_val = payload.get("task_id")
+                    session_id_val = payload.get("session_id")
+                    clone_id_val = payload.get("clone_id")
+                    worktree_id_val = payload.get("worktree_id")
+                    branch_val = payload.get("branch")
+                    scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
+                        scope_val,
+                        scope_id=scope_id_val,
+                        root=root_val,
+                        repository_id=repository_id_val,
+                        tenant=tenant_val,
+                        task_id=task_id_val,
+                        session_id=session_id_val,
+                        clone_id=clone_id_val,
+                        worktree_id=worktree_id_val,
+                        branch=branch_val,
+                    )
+                    if ambiguous_scope:
+                        self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
+                    if scope_val is None:
+                        scope_val = AgentScope.GLOBAL
+                    rec = APP.agent_memory.get(
+                        str(payload.get("record_id", "")),
+                        scope=scope_val,
+                        scope_id=str(scope_id_val) if scope_id_val is not None else None,
+                        root=str(root_val) if root_val else None,
+                        repository_id=str(repository_id_val) if repository_id_val else None,
+                        tenant=str(tenant_val) if tenant_val else None,
+                        task_id=str(task_id_val) if task_id_val else None,
+                        session_id=str(session_id_val) if session_id_val else None,
+                        clone_id=str(clone_id_val) if clone_id_val else None,
+                        worktree_id=str(worktree_id_val) if worktree_id_val else None,
+                        branch=str(branch_val) if branch_val else None,
+                    )
                     if not rec:
                         self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
                     self._send(200, {"success": True, "record": rec.to_dict()}); return
                 if action == "find":
-                    scope_val = AgentScope.parse(payload["scope"], default=None) if payload.get("scope") else None
+                    scope_val = _parse_memory_scope(payload.get("scope"))
                     key_val = str(payload["key"]) if payload.get("key") else None
                     query_val = str(payload["query"]) if payload.get("query") else None
                     status_val = MemoryStatus(str(payload["status"])) if payload.get("status") else None
-                    limit_val = int(payload.get("limit", 100))
-                    records = APP.agent_memory.find(scope=scope_val, key=key_val, query=query_val, status=status_val, limit=limit_val)
+                    limit_val = _memory_query_limit(payload.get("limit", 100))
+                    scope_id_val = payload.get("scope_id")
+                    root_val = payload.get("root")
+                    repository_id_val = payload.get("repository_id")
+                    tenant_val = payload.get("tenant")
+                    task_id_val = payload.get("task_id")
+                    session_id_val = payload.get("session_id")
+                    clone_id_val = payload.get("clone_id")
+                    worktree_id_val = payload.get("worktree_id")
+                    branch_val = payload.get("branch")
+                    if not _memory_lookup_has_identity(
+                        scope_id_val, root_val, repository_id_val, tenant_val, task_id_val,
+                        session_id_val, clone_id_val, worktree_id_val, branch_val,
+                    ):
+                        self._send(400, {"success": False, "error": "memory lookup requires explicit root or identity", "terminal": True, "retryable": False}); return
+                    legacy_unscoped = scope_val is None and not any(
+                        str(value or "").strip()
+                        for value in (
+                            scope_id_val, task_id_val, session_id_val, clone_id_val, worktree_id_val,
+                            branch_val, root_val, repository_id_val, tenant_val,
+                        )
+                    )
+                    if legacy_unscoped:
+                        records = APP.agent_memory.find(
+                            scope=None,
+                            allow_legacy_unscoped=True,
+                            key=key_val,
+                            query=query_val,
+                            status=status_val,
+                            limit=limit_val,
+                        )
+                    if not legacy_unscoped:
+                        scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
+                            scope_val,
+                            scope_id=scope_id_val,
+                            root=root_val,
+                            repository_id=repository_id_val,
+                            tenant=tenant_val,
+                            task_id=task_id_val,
+                            session_id=session_id_val,
+                            clone_id=clone_id_val,
+                            worktree_id=worktree_id_val,
+                            branch=branch_val,
+                        )
+                        if ambiguous_scope:
+                            self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
+                        records = APP.agent_memory.find(
+                                scope=scope_val,
+                                scope_id=str(scope_id_val) if scope_id_val is not None else None,
+                                root=str(root_val) if root_val else None,
+                                repository_id=str(repository_id_val) if repository_id_val else None,
+                                tenant=str(tenant_val) if tenant_val else None,
+                                task_id=str(task_id_val) if task_id_val else None,
+                                session_id=str(session_id_val) if session_id_val else None,
+                                clone_id=str(clone_id_val) if clone_id_val else None,
+                                worktree_id=str(worktree_id_val) if worktree_id_val else None,
+                                branch=str(branch_val) if branch_val else None,
+                                key=key_val,
+                                query=query_val,
+                                status=status_val,
+                                limit=limit_val,
+                        )
                     self._send(200, {"success": True, "records": [r.to_dict() for r in records]}); return
                 if action == "promote":
                     target_scope_str = str(payload.get("target_scope", "")).strip().lower()
@@ -2123,7 +2669,27 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "completion":
                     task_id = str(payload.get("task_id", "")).strip()
-                    res = APP.agent_verification.completion(task_id)
+                    current_revision = ""
+                    root = str(payload.get("root", "")).strip()
+                    requested_revision = str(payload.get("repository_revision", "")).strip()
+                    repo_tools = getattr(APP, "repo_tools", None)
+                    if root or requested_revision:
+                        current_revision, revision_stop = _completion_revision_or_stop(root, repo_tools)
+                        if revision_stop:
+                            self._send(409, revision_stop); return
+                    res = APP.agent_verification.completion(task_id, current_revision=current_revision)
+                    if not current_revision and any(
+                        str(getattr(receipt, "repository_revision", "") or "").strip()
+                        for receipt in res.receipts
+                    ):
+                        _, revision_stop = _completion_revision_or_stop(root, repo_tools)
+                        self._send(409, revision_stop or {
+                            "success": False,
+                            "terminal": True,
+                            "retryable": False,
+                            "stop_code": "completion_repository_revision_unavailable",
+                            "error": "completion requires a repository snapshot with a non-empty revision",
+                        }); return
                     self._send(200, {"success": True, "completion": res.to_dict()}); return
                 self._send(400, {"success": False, "error": f"unknown verification action '{action}'", "terminal": True, "retryable": False}); return
             if path == "/api/agent-state/context":
@@ -2138,6 +2704,13 @@ class Handler(BaseHTTPRequestHandler):
                         changed_paths=tuple(payload.get("changed_paths") or ()),
                         root=str(payload.get("root", "")),
                         tenant=tenant,
+                        include_diagnostics=bool(payload.get("include_diagnostics", False)),
+                        clone_id=str(payload.get("clone_id", "")),
+                        worktree_id=str(payload.get("worktree_id", "")),
+                        branch=str(payload.get("branch", "")),
+                        repository_id=str(payload.get("repository_id", "")),
+                        session_id=str(payload.get("session_id", "")),
+                        repository_revision=str(payload.get("repository_revision", "")),
                     )
                     compiled = APP.agent_context.compile(req)
                     etag = compiled.etag()
@@ -2656,10 +3229,64 @@ class Handler(BaseHTTPRequestHandler):
                 )); return
             if path == "/api/context/pack":
                 root = str(payload.get("root", ".")); query_text = str(payload.get("query", ""))
-                max_tokens = int(payload.get("max_tokens", APP.config.get("token_saving", {}).get("default_repo_context_tokens", 4200)))
+                raw_max_tokens = payload.get("max_tokens", APP.config.get("token_saving", {}).get("default_repo_context_tokens", 4200))
+                if isinstance(raw_max_tokens, bool):
+                    self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "max_tokens must be an integer"}); return
+                try:
+                    max_tokens = int(raw_max_tokens)
+                except (TypeError, ValueError, OverflowError):
+                    self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "max_tokens must be an integer"}); return
+                if max_tokens < 0:
+                    self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "max_tokens must be non-negative"}); return
                 mode = str(payload.get("mode", "fast")).strip().lower()
                 if mode not in {"full", "fast"}:
                     self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "context mode must be full or fast"}); return
+                guarded = payload.get("guarded", False)
+                if not isinstance(guarded, bool):
+                    self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "guarded must be boolean"}); return
+                guarded_requested = bool(guarded) or bool(str(payload.get("task_id", "")).strip()) or bool(str(payload.get("phase", "")).strip())
+                if not guarded_requested:
+                    guard_fields = ("focus", "preload_profile", "changed_paths", "base", "staged", "since_hash", "approval", "override_reason", "token_budget")
+                    unexpected = next((field for field in guard_fields if field in payload), None)
+                    if unexpected is not None:
+                        self._send(400, {"success": False, "terminal": True, "retryable": False, "error": f"guard-related fields require guarded=true, task_id, or phase: {unexpected}"}); return
+                if guarded_requested:
+                    if payload.get("focus") is not None and not isinstance(payload.get("focus"), list):
+                        self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "focus must be a list"}); return
+                    if payload.get("changed_paths") is not None and not isinstance(payload.get("changed_paths"), list):
+                        self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "changed_paths must be a list"}); return
+                    if payload.get("staged") is not None and not isinstance(payload.get("staged"), bool):
+                        self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "staged must be boolean"}); return
+                    for field in ("task_id", "phase", "query", "preload_profile", "base", "since_hash", "override_reason"):
+                        if payload.get(field) is not None and not isinstance(payload.get(field), str):
+                            self._send(400, {"success": False, "terminal": True, "retryable": False, "error": f"{field} must be string"}); return
+                    approval = payload.get("approval", "")
+                    if not isinstance(approval, (bool, str)):
+                        self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "approval must be boolean or string"}); return
+                    from .agent_consistency import ConsistencyRequest
+
+                    request = ConsistencyRequest(
+                        root=root,
+                        task_id=str(payload.get("task_id", "")),
+                        query=query_text,
+                        phase=str(payload.get("phase", "")),
+                        focus=tuple(str(item) for item in (payload.get("focus") or [])),
+                        workspace=str(payload.get("workspace", "")),
+                        preload_profile=str(payload.get("preload_profile", "")),
+                        token_budget=max_tokens,
+                        changed_paths=tuple(str(item) for item in (payload.get("changed_paths") or [])),
+                        base=str(payload.get("base", "HEAD")),
+                        staged=bool(payload.get("staged", False)),
+                        tenant=tenant,
+                        override_reason=str(payload.get("override_reason", "")),
+                        approval=approval,
+                    )
+                    result = APP.services.adaptive_context_pack(
+                        request,
+                        mode=mode,
+                        since_hash=str(payload.get("since_hash", "")),
+                    )
+                    self._send(200, result); return
                 result = APP.services.fast_context(root, query_text, max_tokens) if mode == "fast" else APP.services._hybrid_context(
                     root, query_text, tenant, payload.get("workspace"), max_tokens,
                 )
@@ -2667,7 +3294,10 @@ class Handler(BaseHTTPRequestHandler):
                     result["delivery_mode"] = mode
                 self._send(200, result); return
             if path == "/api/artifact/get":
-                self._send(200, APP.artifacts.get(str(payload.get("artifact_id", "")), int(payload.get("offset", 0)), int(payload.get("max_chars", 6000)), str(payload.get("section", "")))); return
+                artifact_id = str(payload.get("artifact_id", ""))
+                if bool(payload.get("binary", False)):
+                    self._send(200, APP.artifacts.get_binary(artifact_id, tenant=tenant)); return
+                self._send(200, APP.artifacts.get(artifact_id, int(payload.get("offset", 0)), int(payload.get("max_chars", 6000)), str(payload.get("section", "")), tenant=tenant)); return
             if path == "/api/evidence/verify":
                 evidence = payload.get("evidence", [])
                 self._send(200, APP.repo_tools.verify_evidence(str(payload.get("root", ".")), evidence if isinstance(evidence, list) else [])); return
@@ -2759,7 +3389,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     events = list(payload.get("events", []))
                     self._send(200, APP.agent_state_store.import_delta(events)); return
-            if path in {"/api/task/vision", "/api/vision"}:
+            if path in {"/api/task/vision", "/api/vision", "/api/vision/review"}:
                 self._send(200, APP.services.vision(payload, tenant)); return
             if path in {"/api/repo/split_changes", "/api/split_changes"}:
                 root = str(payload.get("root", "."))

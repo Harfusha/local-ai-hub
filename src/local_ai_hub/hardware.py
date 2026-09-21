@@ -280,7 +280,7 @@ def choose_profile(gpus: list[dict[str, Any]], ram_gb: float, requested: str = "
     if dedicated > 0:
         return "low"
     # Shared-memory iGPUs must not be sized from Windows AdapterRAM.  A 32 GB
-    # Core Ultra notebook is useful, but running 7B models plus a second Ollama
+    # Core Ultra notebook is useful, but running 7B models plus a second local
     # worker is too aggressive for an iGPU that competes with system memory.
     if integrated:
         return "integrated" if ram_gb >= 16 else "cpu"
@@ -337,6 +337,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "heavy_code": "qwen2.5-coder:3b",
             "reasoning": "qwen2.5-coder:7b",
             "general": "qwen2.5-coder:1.5b",
+            "vision": "qwen3-vl:4b",
         },
         "features": {"reranker": True},
         "scheduler": {"max_parallel": 1, "max_inflight_per_tenant": 1, "max_loaded_models": 1},
@@ -379,11 +380,12 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "heavy_code": "qwen2.5-coder:3b",
             "reasoning": "qwen2.5-coder:7b",
             "general": "qwen2.5-coder:1.5b",
+            "vision": "qwen3-vl:4b",
         },
         "scheduler": {"max_parallel": 1, "max_loaded_models": 1, "max_queue": 32, "max_queued_per_tenant": 12, "max_inflight_per_tenant": 1},
         # Keep shared-memory systems serial. Intel inference is routed to the
-        # optional llama.cpp SYCL server; Ollama stays off that iGPU and remains
-        # the fallback. AMD integrated GPUs retain the existing Vulkan path.
+        # optional llama.cpp SYCL server; no Ollama fallback is implied. AMD
+        # integrated GPUs retain the existing Vulkan path when explicitly used.
         "ollama": {
             "num_parallel": 1,
             "allow_integrated_gpu": True,
@@ -441,6 +443,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "heavy_code": "qwen2.5-coder:3b",
             "reasoning": "qwen2.5-coder:7b",
             "general": "qwen2.5-coder:1.5b",
+            "vision": "qwen3-vl:4b",
         },
         "scheduler": {"max_parallel": 1, "max_inflight_per_tenant": 1},
         "ollama": {"num_parallel": 1},
@@ -461,9 +464,10 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "models": {
             "background_code": "qwen2.5-coder:0.5b",
             "fast_code": "qwen2.5-coder:1.5b",
-            "heavy_code": "qwen2.5-coder:3b",
+            "heavy_code": "qwen2.5-coder:7b",
             "reasoning": "qwen2.5-coder:7b",
-            "general": "qwen2.5-coder:1.5b",
+            "general": "qwen2.5-coder:7b",
+            "vision": "qwen3.5:9b",
         },
         "scheduler": {"max_parallel": 2, "max_inflight_per_tenant": 2},
         "ollama": {"num_parallel": 2},
@@ -476,7 +480,8 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "fast_code": "qwen2.5-coder:1.5b",
             "heavy_code": "qwen2.5-coder:3b",
             "reasoning": "qwen2.5-coder:7b",
-            "general": "qwen2.5-coder:1.5b",
+            "general": "qwen3.5:9b",
+            "vision": "qwen3.5:9b",
         },
         "scheduler": {"max_parallel": 3, "max_inflight_per_tenant": 3},
         "ollama": {"num_parallel": 3},
@@ -489,7 +494,8 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "fast_code": "qwen2.5-coder:1.5b",
             "heavy_code": "qwen2.5-coder:3b",
             "reasoning": "qwen2.5-coder:7b",
-            "general": "qwen2.5-coder:1.5b",
+            "general": "qwen3.5:9b",
+            "vision": "qwen3.5:9b",
         },
         "scheduler": {"max_parallel": 4, "max_inflight_per_tenant": 4},
         "ollama": {"num_parallel": 4},

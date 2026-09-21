@@ -141,29 +141,29 @@ class Supervisor:
     def write_status(self, state: str, error: str = "", ollama_online: bool | None = None) -> None:
         hub_pid = 0
         p = self.state_dir / "hub.pid"
-        if self.child is not None and self.child.poll() is None:
+        port_owner = find_listening_pid(int(self.config.get("server", {}).get("port", 11435)))
+        if port_owner and int(port_owner) != os.getpid():
+            # Windows launchers can wrap pythonw. Report process owning public port.
+            hub_pid = int(port_owner)
+            try:
+                p.write_text(str(hub_pid), encoding="utf-8")
+            except OSError:
+                pass
+        elif self.child is not None and self.child.poll() is None:
             hub_pid = int(self.child.pid)
             try:
                 p.write_text(str(hub_pid), encoding="utf-8")
             except OSError:
                 pass
         else:
-            port_owner = find_listening_pid(int(self.config.get("server", {}).get("port", 11435)))
-            if port_owner:
-                hub_pid = int(port_owner)
-                try:
-                    p.write_text(str(hub_pid), encoding="utf-8")
-                except OSError:
-                    pass
-            else:
-                try:
-                    candidate = int(p.read_text(encoding="utf-8").strip() or 0)
-                    if pid_alive(candidate):
-                        hub_pid = candidate
-                    else:
-                        p.unlink(missing_ok=True)
-                except Exception:
-                    pass
+            try:
+                candidate = int(p.read_text(encoding="utf-8").strip() or 0)
+                if pid_alive(candidate):
+                    hub_pid = candidate
+                else:
+                    p.unlink(missing_ok=True)
+            except Exception:
+                pass
         atomic_json(self.status_path, {
             "state": state,
             "pid": os.getpid(),
@@ -192,11 +192,11 @@ class Supervisor:
         logs_dir = self.state_dir / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
         try:
-            self.child_log_handle = child_log_path.open("a", encoding="utf-8", buffering=1)
+            self.child_log_handle = child_log_path.open("a", encoding="utf-8", errors="replace", buffering=1)
         except OSError:
             self.child_log_handle = None
         try:
-            self.child_stderr_handle = (logs_dir / "hub_stderr.log").open("a", encoding="utf-8", buffering=1)
+            self.child_stderr_handle = (logs_dir / "hub_stderr.log").open("a", encoding="utf-8", errors="replace", buffering=1)
         except OSError:
             self.child_stderr_handle = None
         output = self.child_log_handle if self.child_log_handle is not None else subprocess.DEVNULL
@@ -302,12 +302,17 @@ class Supervisor:
                     self.log("disabled marker observed; stopping")
                     self.stopping = True
                     break
+                if self.child is None:
+                    try:
+                        owner = find_listening_pid(int(self.config.get("server", {}).get("port", 11435)))
+                    except Exception:
+                        owner = None
+                    if owner and int(owner) != os.getpid():
+                        self.log(f"reaping stale hub listener pid {int(owner)} before managed start")
+                        self.terminate_child()
                 now = time.time()
                 manage_ollama = bool(self.cfg.get("manage_ollama", True))
-                ollama_online = self.runtime.is_online() if manage_ollama else None
-                if manage_ollama and not ollama_online:
-                    self.runtime.ensure_running()
-                    ollama_online = self.runtime.is_online()
+                ollama_online = self.runtime.ensure_running() if manage_ollama else None
                 if self.hub_online():
                     unhealthy_since = 0.0
                     backoff = initial_backoff

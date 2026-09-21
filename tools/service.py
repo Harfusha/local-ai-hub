@@ -142,6 +142,30 @@ def hub_pid() -> int:
         return 0
 
 
+def request_graceful_hub_stop() -> bool:
+    """Ask a live hub to close its telemetry and runtime state before killing it."""
+    control = HubClient(tenant="service-control", config_path=_ACTIVE_CONFIG_ARG, auto_start=False)
+    if not control._online():
+        return False
+    try:
+        result = control.request(
+            "/api/control",
+            {"action": "stop_service"},
+            timeout=2.0,
+            replay_safe=False,
+        )
+        if not result.get("success"):
+            return False
+    except Exception:
+        return False
+    deadline = time.monotonic() + 6.0
+    while time.monotonic() < deadline:
+        if not control._online():
+            return True
+        time.sleep(0.15)
+    return not control._online()
+
+
 def managed_service_running() -> bool:
     if any(pid_alive(p) for p in all_supervisor_pids()):
         return True
@@ -182,6 +206,7 @@ def stop_managed_ollama() -> None:
 
 def native_stop() -> None:
     mark_disabled(True)
+    request_graceful_hub_stop()
     if os.name == "nt":
         run(["schtasks", "/Change", "/TN", "LocalAIHubSupervisor", "/DISABLE"])
     elif sys.platform == "darwin":
@@ -192,8 +217,8 @@ def native_stop() -> None:
         dest = Path.home() / ".config/systemd/user/local-ai-hub.service"
         if systemctl and dest.exists():
             run([systemctl, "--user", "stop", "local-ai-hub.service"])
-    # Kill both layers explicitly. This also cleans up installations recovered from
-    # an old/orphaned supervisor state instead of leaving a headless process behind.
+    # Reap both layers even after graceful shutdown. This cleans up stale listeners
+    # and installations recovered from an old/orphaned supervisor state.
     kill_supervisor()
     kill_hub()
     stop_managed_ollama()
@@ -368,19 +393,28 @@ def main() -> int:
     if action == "stop": native_stop(); print("stopped"); return 0
     if action == "start": native_start(); time.sleep(0.5); print("started"); return 0
     if action == "restart": native_stop(); time.sleep(0.5); native_start(); print("restarted"); return 0
-    client = HubClient(tenant="service-control", config_path=_ACTIVE_CONFIG_ARG)
+    client = HubClient(tenant="service-control", config_path=_ACTIVE_CONFIG_ARG, auto_start=False)
     status_path = STATE / "supervisor.status.json"
     try:
         data = json.loads(status_path.read_text(encoding="utf-8")) if status_path.exists() else {"state": "stopped"}
     except (OSError, ValueError):
         data = {"state": "stopped", "last_error": "invalid supervisor status"}
-    online = client._online()
+    online = bool(client._online())
     normalized = normalize_status(
         data,
         supervisor_alive=pid_alive(supervisor_pid()),
         hub_alive=online or managed_service_running(),
     )
-    print(json.dumps(normalized, ensure_ascii=False, separators=(",", ":")))
+    normalized["hub_online"] = online
+    if not online:
+        # A supervisor status file can outlive its child after an abrupt stop.
+        # Never report that stale state as running and never auto-start from a
+        # read-only status command.
+        if normalized.get("state") in {"running", "starting"}:
+            normalized["state"] = "unavailable"
+        normalized["last_error"] = normalized.get("last_error") or "hub endpoint unavailable"
+        normalized["ollama_online"] = False
+    print(json.dumps(normalized, ensure_ascii=False, sort_keys=True))
     return 0 if online else 1
 
 

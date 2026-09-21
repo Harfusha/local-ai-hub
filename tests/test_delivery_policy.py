@@ -64,3 +64,65 @@ def test_async_delivery_maps_reason_payload_to_the_existing_job_contract(monkeyp
     assert status == 200
     assert response["delivery"]["reason"] == "p95_latency_budget_exceeded"
     assert submitted == {"tenant": "tenant-a", "action": "reason", "payload": {"problem": "find cause", "context": "facts", "task": "find cause"}}
+
+
+def test_async_delivery_maps_review_diff_to_durable_review_job(monkeypatch):
+    submitted = {}
+
+    class _Telemetry:
+        def http_latency_estimate(self, _action):
+            return {"samples": 20, "p95_duration_ms": 70_000}
+
+    class _Jobs:
+        def submit(self, tenant, action, payload):
+            submitted.update(tenant=tenant, action=action, payload=payload)
+            return {"success": True, "job_id": "job-review", "state": "queued"}
+
+    class _App:
+        telemetry = _Telemetry()
+        async_jobs = _Jobs()
+
+    monkeypatch.setattr(http_server, "APP", _App())
+    handler = object.__new__(http_server.Handler)
+    status, response = handler._async_delivery(
+        "/api/review/diff",
+        {"delivery": "auto", "latency_budget_ms": 5_000, "instructions": "find defects", "context": "large diff"},
+        "tenant-a",
+    )
+
+    assert status == 200
+    assert response["job_id"] == "job-review"
+    assert submitted == {
+        "tenant": "tenant-a",
+        "action": "review_diff",
+        "payload": {"instructions": "find defects", "context": "large diff", "_async_job": True},
+    }
+
+
+def test_cold_start_review_diff_auto_delivery_is_async(monkeypatch):
+    submitted = {}
+
+    class _Telemetry:
+        def http_latency_estimate(self, _action):
+            return {"samples": 0, "p95_duration_ms": 0}
+
+    class _Jobs:
+        def submit(self, tenant, action, payload):
+            submitted.update(tenant=tenant, action=action, payload=payload)
+            return {"success": True, "job_id": "job-cold-review", "state": "queued"}
+
+    class _App:
+        telemetry = _Telemetry()
+        async_jobs = _Jobs()
+
+    monkeypatch.setattr(http_server, "APP", _App())
+    handler = object.__new__(http_server.Handler)
+    status, response = handler._async_delivery(
+        "/api/review/diff",
+        {"delivery": "auto", "latency_budget_ms": 30_000, "instructions": "find defects"},
+        "tenant-a",
+    )
+
+    assert status == 200
+    assert response["job_id"] == "job-cold-review"
+    assert submitted["action"] == "review_diff"

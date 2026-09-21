@@ -22,6 +22,38 @@ from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick
 
 _PATH_RE = re.compile(r"(?:(?:[A-Za-z]:\\\\|/)(?:[^\s:'\"<>|]+[/\\\\])+[^\s:'\"<>|]*)")
 _LONG_TOKEN_RE = re.compile(r"\b(?:[A-Fa-f0-9]{24,}|[A-Za-z0-9_\-]{48,})\b")
+_SAVINGS_SOURCE_ALLOWLIST = frozenset({
+    "cache_hit", "cache_or_local_reuse", "context_compaction", "delegated_context",
+    "deterministic_outline", "local_compute", "measured_context", "reused",
+    "response_compaction", "workspace_cache",
+})
+
+
+def _clean_savings_source(value: Any) -> str:
+    label = re.sub(r"[^a-z0-9_.-]+", "_", str(value or "").strip().casefold())[:80]
+    return label if label in _SAVINGS_SOURCE_ALLOWLIST else ""
+
+
+def _clean_savings_breakdown(value: Any) -> str:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return ""
+    if not isinstance(value, dict):
+        return ""
+    cleaned: dict[str, int] = {}
+    for source, tokens in list(value.items())[:16]:
+        label = _clean_savings_source(source)
+        if not label:
+            continue
+        try:
+            bounded = max(0, int(tokens or 0))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if bounded:
+            cleaned[label] = bounded
+    return json_dumps(cleaned, separators=(",", ":"), sort_keys=True) if cleaned else ""
 
 
 def _percentile(values: list[float], pct: float) -> float:
@@ -86,7 +118,7 @@ class TelemetryStore:
         "created_at", "event_type", "tenant", "agent", "request_id", "trace_id",
         "action", "stage", "task_type", "complexity", "route", "model",
         "cache_hit", "coalesced", "cache_layer", "input_tokens", "cache_read_tokens", "output_tokens",
-        "avoided_cloud_tokens", "duration_ms", "queue_wait_ms", "service_ms",
+        "avoided_cloud_tokens", "duration_ms", "queue_wait_ms", "wait_count", "wait_duration_ms", "service_ms",
         "load_duration_ms", "success", "status_code", "degraded", "retry_count",
         "fallback_used", "error_type", "error_fingerprint", "tool_calls",
         "evidence_count", "response_bytes",
@@ -243,6 +275,8 @@ class TelemetryStore:
                     complexity TEXT NOT NULL DEFAULT '',
                     route TEXT NOT NULL DEFAULT '',
                     queue_wait_ms REAL NOT NULL DEFAULT 0,
+                    wait_count INTEGER NOT NULL DEFAULT 0,
+                    wait_duration_ms REAL NOT NULL DEFAULT 0,
                     service_ms REAL NOT NULL DEFAULT 0,
                     status_code INTEGER NOT NULL DEFAULT 0,
                     degraded INTEGER NOT NULL DEFAULT 0,
@@ -378,6 +412,8 @@ class TelemetryStore:
             "avoided_cloud_tokens": max(0, int(event.get("avoided_cloud_tokens", 0) or 0)),
             "duration_ms": max(0.0, float(event.get("duration_ms", 0) or 0)),
             "queue_wait_ms": max(0.0, float(event.get("queue_wait_ms", 0) or 0)),
+            "wait_count": max(0, int(event.get("wait_count", 0) or 0)),
+            "wait_duration_ms": max(0.0, float(event.get("wait_duration_ms", 0) or 0)),
             "service_ms": max(0.0, float(event.get("service_ms", 0) or 0)),
             "load_duration_ms": max(0.0, float(event.get("load_duration_ms", 0) or 0)),
             "success": 1 if event.get("success", True) else 0,
@@ -402,10 +438,10 @@ class TelemetryStore:
             "cloud_token_overhead": max(0, int(event.get("cloud_token_overhead", 0) or 0)),
             "net_after_schema_token_delta": int(event.get("net_after_schema_token_delta", 0) or 0),
             "schema_adjusted_overhead": max(0, int(event.get("schema_adjusted_overhead", 0) or 0)),
-            "savings_source": str(event.get("savings_source", ""))[:80],
-            "input_savings_source": str(event.get("input_savings_source", ""))[:80],
-            "output_savings_source": str(event.get("output_savings_source", ""))[:80],
-            "savings_breakdown_json": str(event.get("savings_breakdown_json", ""))[:2000],
+            "savings_source": _clean_savings_source(event.get("savings_source", "")),
+            "input_savings_source": _clean_savings_source(event.get("input_savings_source", "")),
+            "output_savings_source": _clean_savings_source(event.get("output_savings_source", "")),
+            "savings_breakdown_json": _clean_savings_breakdown(event.get("savings_breakdown_json", ""))[:2000],
             "preprocessed_hit": 1 if event.get("preprocessed_hit") else 0,
         }
 
@@ -413,7 +449,7 @@ class TelemetryStore:
         allowed = {
             "created_at", "event_type", "tenant", "agent", "request_id", "trace_id",
             "action", "stage", "task_type", "complexity", "route", "model",
-            "cache_hit", "coalesced", "cache_layer", "duration_ms", "queue_wait_ms",
+            "cache_hit", "coalesced", "cache_layer", "duration_ms", "queue_wait_ms", "wait_count", "wait_duration_ms",
             "service_ms", "load_duration_ms", "success", "status_code", "degraded",
             "retry_count", "fallback_used", "error_type", "error_fingerprint",
             "tool_calls", "evidence_count", "response_bytes", "component", "operation",
@@ -598,18 +634,12 @@ class TelemetryStore:
         if not isinstance(event, dict):
             return
         breakdown = event.get("savings_breakdown") if isinstance(event.get("savings_breakdown"), dict) else {}
-        clean_breakdown: dict[str, int] = {}
-        for source, tokens in list(breakdown.items())[:16]:
-            try:
-                bounded = max(0, int(tokens or 0))
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if bounded:
-                clean_breakdown[str(source)[:64]] = bounded
+        clean_breakdown_json = _clean_savings_breakdown(breakdown)
+        clean_breakdown = json.loads(clean_breakdown_json) if clean_breakdown_json else {}
         primary = max(clean_breakdown.items(), key=lambda kv: kv[1], default=("", 0))[0]
         gross = max(0, int(event.get("gross_cloud_tokens_avoided_est", 0) or 0))
-        input_source = str(event.get("input_savings_source", ""))[:80]
-        output_source = str(event.get("output_savings_source", ""))[:80]
+        input_source = _clean_savings_source(event.get("input_savings_source", ""))
+        output_source = _clean_savings_source(event.get("output_savings_source", ""))
         gross_input = max(0, int(event.get("gross_input_tokens_avoided_est", 0) or 0))
         gross_output = max(0, int(event.get("gross_output_tokens_avoided_est", 0) or 0))
         self.record(
@@ -1160,6 +1190,10 @@ class TelemetryStore:
                 "SELECT COALESCE(SUM(cache_read_tokens),0) FROM events WHERE created_at>=? AND event_type='inference'",
                 (cutoff,),
             ).fetchone()[0]
+            wait_metrics = con.execute(
+                "SELECT COALESCE(SUM(wait_count),0), COALESCE(SUM(wait_duration_ms),0) FROM events WHERE created_at>=? AND wait_count>0",
+                (cutoff,),
+            ).fetchone()
             by_action = con.execute(
                 """SELECT action,COUNT(*),COALESCE(SUM(avoided_cloud_tokens),0),COALESCE(AVG(duration_ms),0)
                    FROM events WHERE created_at>=? AND event_type='inference' GROUP BY action ORDER BY COUNT(*) DESC LIMIT 20""",
@@ -1349,6 +1383,7 @@ class TelemetryStore:
             "aggregate_duration_scope": "inference_only", "cohorts": cohorts,
             "failures": int(row[7]), "failure_rate": round(int(row[7]) / total, 4) if total else 0.0,
             "avg_model_load_duration_ms": round(float(row[8]), 1), "avg_queue_wait_ms": round(float(row[9]), 1),
+            "wait_count": int(wait_metrics[0]), "wait_duration_ms": round(float(wait_metrics[1]), 1),
             "fallback_count": int(row[10]), "degraded_count": int(row[11]), "retry_count": int(row[12]),
             "ollama_inference_calls": int(dict(by_cache).get("ollama", 0)),
             "ollama_calls_avoided_est": max(0, total - int(dict(by_cache).get("ollama", 0))),
@@ -1580,7 +1615,7 @@ class TelemetryStore:
         with closing(self._connect()) as con:
             rows = con.execute(
                 """SELECT id,created_at,event_type,tenant,agent,request_id,action,stage,model,cache_hit,coalesced,input_tokens,cache_read_tokens,output_tokens,
-                          avoided_cloud_tokens,duration_ms,queue_wait_ms,success,status_code,cache_layer,fallback_used,degraded,error_type,error_fingerprint
+                          avoided_cloud_tokens,duration_ms,queue_wait_ms,wait_count,wait_duration_ms,success,status_code,cache_layer,fallback_used,degraded,error_type,error_fingerprint
                    FROM events ORDER BY id DESC LIMIT ?""", (limit,)
             ).fetchall()
         return [
@@ -1588,8 +1623,8 @@ class TelemetryStore:
                 "id": r[0], "created_at": r[1], "event_type": r[2], "tenant": r[3], "agent": r[4], "request_id": r[5],
                 "action": r[6], "stage": r[7], "model": r[8], "cache_hit": bool(r[9]), "coalesced": bool(r[10]),
                 "input_tokens": r[11], "cache_read_tokens": r[12], "output_tokens": r[13], "net_cloud_token_delta_est": r[14], "duration_ms": r[15],
-                "queue_wait_ms": r[16], "success": bool(r[17]), "status_code": r[18], "cache_layer": r[19],
-                "fallback_used": bool(r[20]), "degraded": bool(r[21]), "error_type": r[22], "error_fingerprint": r[23],
+                "queue_wait_ms": r[16], "wait_count": r[17], "wait_duration_ms": r[18], "success": bool(r[19]), "status_code": r[20], "cache_layer": r[21],
+                "fallback_used": bool(r[22]), "degraded": bool(r[23]), "error_type": r[24], "error_fingerprint": r[25],
             }
             for r in rows
         ]

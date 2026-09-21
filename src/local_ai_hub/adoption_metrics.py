@@ -12,7 +12,7 @@ from .sqlite_support import connect_sqlite
 
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
-_OUTCOMES = {"used", "bypassed", "blocked", "failed"}
+_OUTCOMES = {"used", "bypassed", "blocked", "failed", "recommended", "fallback_used"}
 _REASONS = {"policy", "unsupported", "unavailable", "timeout", "validation", "explicit_client_signal", "other"}
 _FORBIDDEN = {"prompt", "source", "content", "path", "secret", "token", "password", "api_key"}
 
@@ -116,4 +116,8 @@ class AdoptionMetricsStore:
             if outcome == "failed" and reason: failures[reason] = failures.get(reason, 0) + count
             if latency_bucket: latency[latency_bucket] = latency.get(latency_bucket, 0) + count
             if output_bucket: output[output_bucket] = output.get(output_bucket, 0) + count
-        return {"days": days, "daily": list(daily.values()), "totals": totals, "action_adoption": [{"tool": tool, "action": action, "outcome": outcome, "count": count} for (tool, action, outcome), count in sorted(actions.items())], "blocked_reasons": [{"reason": key, "count": value} for key, value in sorted(reasons.items())], "terminal_failures": [{"reason": key, "count": value} for key, value in sorted(failures.items())], "dormant_actions": [f"{tool}:{action}" for tool, action in dormant], "latency_buckets": [{"bucket": key, "count": value} for key, value in sorted(latency.items())], "output_size_buckets": [{"bucket": key, "count": value} for key, value in sorted(output.items())]}
+        local_used = sum(
+            count for (tool, _action, outcome), count in actions.items()
+            if tool == "local_ai_task" and outcome == "used"
+        )
+        return {"days": days, "daily": list(daily.values()), "totals": totals, "routing_adoption": {"local_recommended": totals["recommended"], "local_used": local_used, "bypassed": totals["bypassed"], "fallback_used": totals["fallback_used"]}, "action_adoption": [{"tool": tool, "action": action, "outcome": outcome, "count": count} for (tool, action, outcome), count in sorted(actions.items())], "blocked_reasons": [{"reason": key, "count": value} for key, value in sorted(reasons.items())], "terminal_failures": [{"reason": key, "count": value} for key, value in sorted(failures.items())], "dormant_actions": [f"{tool}:{action}" for tool, action in dormant], "latency_buckets": [{"bucket": key, "count": value} for key, value in sorted(latency.items())], "output_size_buckets": [{"bucket": key, "count": value} for key, value in sorted(output.items())]}

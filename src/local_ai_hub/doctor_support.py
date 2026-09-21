@@ -3,6 +3,27 @@ from __future__ import annotations
 from typing import Any
 
 
+def installed_models_from_status(
+    status: dict[str, Any],
+    *,
+    runtime_factory: Any | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> set[str]:
+    """Return installed model names, falling back when Hub status omits inventory."""
+    direct = status.get("installed_models", []) if isinstance(status, dict) else []
+    names = {str(name) for name in direct if str(name)} if isinstance(direct, list) else set()
+    if names:
+        return names
+    try:
+        if runtime_factory is None:
+            from .ollama import OllamaRuntime
+            runtime_factory = OllamaRuntime
+        runtime = runtime_factory(cfg or {})
+        return {str(name) for name in runtime.installed_models() if str(name)}
+    except Exception:
+        return set()
+
+
 def probe_hub_status(client: Any, *, timeout: float = 15.0) -> dict[str, Any]:
     """Keep a healthy hub distinct from an unavailable diagnostic status payload."""
     try:

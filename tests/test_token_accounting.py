@@ -21,6 +21,19 @@ def test_telemetry_keeps_measured_provider_cache_reads_as_numeric_metadata():
     assert event["cache_read_tokens"] == 80
 
 
+def test_telemetry_keeps_wait_count_and_duration_numeric(tmp_path: Path):
+    store = TelemetryStore(tmp_path, enabled=True, flush_interval_seconds=0.01)
+    try:
+        store.record(event_type="coordination", action="wait", wait_count=2, wait_duration_ms=125.5)
+        assert store.flush()
+
+        tail = store.tail(1)[0]
+        assert tail["wait_count"] == 2
+        assert tail["wait_duration_ms"] == 125.5
+    finally:
+        store.close()
+
+
 def test_telemetry_reports_provider_cache_reads_by_action_and_task_type(tmp_path: Path):
     store = TelemetryStore(tmp_path, enabled=True, flush_interval_seconds=0.01)
     try:

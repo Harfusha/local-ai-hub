@@ -174,6 +174,7 @@ def test_config_mergers_preserve_user_content(tmp_path: Path):
 
 def test_ollama_setup_skips_exclusive_llama_cpp_configuration(monkeypatch, tmp_path: Path, capsys):
     cfg = {
+        "ollama": {"enabled": False},
         "server": {"auto_start_ollama": True},
         "llama_cpp": {"mode": "on", "fallback_to_ollama": False},
     }
@@ -198,8 +199,46 @@ def test_ollama_setup_requires_auto_start_and_fallback(cfg):
 
 def test_ollama_setup_remains_enabled_for_fallback_configuration():
     assert setup.ollama_setup_required(
-        {"server": {"auto_start_ollama": True}, "llama_cpp": {"mode": "auto", "fallback_to_ollama": True}}
+        {"ollama": {"enabled": True}, "server": {"auto_start_ollama": True}, "llama_cpp": {"mode": "auto", "fallback_to_ollama": True}}
     ) is True
+
+
+def test_pull_ollama_models_includes_vision_when_enabled(monkeypatch):
+    pulled = []
+    monkeypatch.setattr(setup, "find_ollama_executable", lambda: "ollama")
+    monkeypatch.setattr(setup, "run", lambda args, **kwargs: pulled.append(args))
+
+    setup.pull_ollama_models(
+        {
+            "ollama": {"enabled": True},
+            "features": {"pull_models_during_setup": True, "vision": True},
+            "server": {"auto_start_ollama": True},
+            "llama_cpp": {"fallback_to_ollama": True},
+            "models": {"general": "qwen2.5-coder:7b", "vision": "qwen3-vl:4b"},
+            "ollama_subagents": {"enabled": False},
+        }
+    )
+
+    assert [args[-1] for args in pulled] == ["qwen2.5-coder:7b", "qwen3-vl:4b"]
+
+
+def test_pull_ollama_models_skips_vision_when_disabled(monkeypatch):
+    pulled = []
+    monkeypatch.setattr(setup, "find_ollama_executable", lambda: "ollama")
+    monkeypatch.setattr(setup, "run", lambda args, **kwargs: pulled.append(args))
+
+    setup.pull_ollama_models(
+        {
+            "ollama": {"enabled": True},
+            "features": {"pull_models_during_setup": True, "vision": False},
+            "server": {"auto_start_ollama": True},
+            "llama_cpp": {"fallback_to_ollama": True},
+            "models": {"general": "qwen2.5-coder:7b", "vision": "qwen3-vl:4b"},
+            "ollama_subagents": {"enabled": False},
+        }
+    )
+
+    assert [args[-1] for args in pulled] == ["qwen2.5-coder:7b"]
 
 
 def test_setup_rerun_preserves_installed_config_without_explicit_override(tmp_path: Path, monkeypatch):

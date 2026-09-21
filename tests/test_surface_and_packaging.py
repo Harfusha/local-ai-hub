@@ -26,7 +26,17 @@ def test_compact_mcp_surface_is_exactly_eight_tools():
 
 
 def test_packaged_defaults_match_source_defaults():
-    assert (ROOT / "defaults.toml").read_bytes() == (ROOT / "src" / "local_ai_hub" / "defaults.toml").read_bytes()
+    packaged = (ROOT / "defaults.toml").read_text(encoding="utf-8").replace("\r\n", "\n")
+    source = (ROOT / "src" / "local_ai_hub" / "defaults.toml").read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert packaged == source
+
+
+def test_browser_bridge_files_are_in_source_and_wheel_manifests():
+    manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    for name in ("background.js", "capture.js", "manifest.json", "README.md"):
+        assert f"browser_bridge/{name}" in manifest or "recursive-include browser_bridge" in manifest
+        assert f"browser_bridge/{name}" in pyproject
 
 
 def test_shipping_agent_policy_advertises_compact_workflow():
@@ -174,3 +184,14 @@ def test_release_check_allow_installed(tmp_path: Path):
 
     violations_installed = list(_iter_release_hygiene_violations(tmp_path, allow_installed=True))
     assert len(violations_installed) == 0
+
+
+def test_release_check_allow_installed_ignores_config_backup(tmp_path: Path):
+    from tools.release_check import _iter_release_hygiene_violations
+
+    (tmp_path / "config.toml").write_text("dummy", encoding="utf-8")
+    (tmp_path / "config.toml.local-ai-hub-backup-20260919-012113-076").write_text("backup", encoding="utf-8")
+
+    violations = list(_iter_release_hygiene_violations(tmp_path, allow_installed=True))
+
+    assert violations == []

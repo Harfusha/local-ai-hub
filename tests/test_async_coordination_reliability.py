@@ -10,9 +10,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from local_ai_hub.async_jobs import AsyncJobManager
+from local_ai_hub.agent_consistency import ConsistencyRequest
+from local_ai_hub.agent_tasks import GoalContract
 from local_ai_hub.client import HubClient
 from local_ai_hub.commands import CommandBroker
 from local_ai_hub.leases import ScopeLeaseStore, _norm_rel
+from local_ai_hub.services import LocalAIServices
 import local_ai_hub.mcp_server as mcp_mod
 from local_ai_hub.agent_blackboard import BlackboardStore
 
@@ -56,7 +59,7 @@ def test_async_jobs_retry_on_execution_failure(tmp_path: Path):
         _Artifacts(),
         _fail_first,
     )
-    submitted = manager.submit("tenant-a", "reason", {"task": "retry-job"})
+    submitted = manager.submit("tenant-a", "reason", {"task": "retry-job"}, dispatch_delay_seconds=30.0)
     job_id = submitted["job_id"]
 
     # First attempt fails -> should requeue because attempts (1) < max_attempts (2)
@@ -81,7 +84,7 @@ def test_async_retry_dispatch_clears_stale_completion_event(tmp_path: Path):
         lambda _action, _payload, _tenant: {"success": False, "retryable": True, "error": "retry"},
     )
     try:
-        submitted = manager.submit("tenant-a", "reason", {"task": "retry-event"})
+        submitted = manager.submit("tenant-a", "reason", {"task": "retry-event"}, dispatch_delay_seconds=30.0)
         job_id = submitted["job_id"]
         manager._execute(job_id)
         assert manager._event(job_id).is_set()
@@ -100,7 +103,7 @@ def test_async_jobs_tick_reclaims_stuck_running_job(tmp_path: Path):
         _Artifacts(),
         lambda a, p, t: {"success": True},
     )
-    submitted = manager.submit("tenant-a", "reason", {"task": "stuck-job"})
+    submitted = manager.submit("tenant-a", "reason", {"task": "stuck-job"}, dispatch_delay_seconds=30.0)
     job_id = submitted["job_id"]
 
     # Artificially set job to running with an expired lease
@@ -168,6 +171,79 @@ def test_client_mutating_endpoints_not_replay_safe():
     mock_get.assert_called_once()
     called_url = mock_get.call_args[0][0]
     assert "C%3A" in called_url or "test%20dir" in called_url
+
+
+def test_unchanged_context_delta_reuses_revision_and_keeps_pack_useful():
+    class Snapshot:
+        revision = "rev-1"
+        changed_paths = ("src/routes.py",)
+
+    class RepoTools:
+        def git_snapshot(self, _root):
+            return Snapshot()
+
+        def git_diff(self, _root, base="HEAD", staged=False, max_tokens=10000):
+            assert base == "HEAD" and staged is False and max_tokens > 0
+            return {"success": True, "revision": "rev-1", "changed_paths": ["src/routes.py"], "diff": ""}
+
+    class Deterministic:
+        def context_pack(self, _root, _query, *, max_chars, max_raw_evidence):
+            assert max_chars > 0 and max_raw_evidence > 0
+            return {
+                "success": True,
+                "context": "route evidence",
+                "evidence": [{"evidence_id": "route-1", "path": "src/routes.py"}],
+            }
+
+    class Guard:
+        def build_contract(self, request):
+            return GoalContract(goal=request.query)
+
+        def find_reuse_candidates(self, _request, _contract):
+            return ()
+
+        def build_contract_mappings(self, _request, _evidence):
+            return (), ()
+
+        def check_drift(self, _request, _contract, _changed_paths, _diff):
+            return ()
+
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"deterministic": {"context_max_chars": 5200, "context_raw_evidence": 5}}
+    services.deterministic = Deterministic()
+    services.repo_tools = RepoTools()
+    services.consistency_guard = Guard()
+    services._repo_cached = lambda _op, _root, _params, compute: compute()
+
+    result = services.adaptive_context_pack(
+        ConsistencyRequest(root="C:/repo", query="route", task_id="task-1", phase="review"),
+        mode="fast",
+        since_hash="rev-1",
+    )
+
+    assert result["delta_from"] == "rev-1"
+    assert result["since_hash"] == "rev-1"
+    assert result["changed_paths"] == []
+    assert result["context"] == "route evidence"
+    assert result["evidence_ids"] == ["route-1"]
+
+
+def test_legacy_context_validation_allows_omitted_guard_fields():
+    assert mcp_mod._validate_context_pack_inputs(
+        task_id="",
+        phase="",
+        focus=None,
+        preload_profile="",
+        changed_paths=None,
+        base="HEAD",
+        staged=False,
+        guarded=False,
+        since_hash="",
+        approval="",
+        override_reason="",
+        max_tokens=512,
+        token_budget=0,
+    ) is None
 
 
 def test_mcp_server_client_root_normalization(monkeypatch):

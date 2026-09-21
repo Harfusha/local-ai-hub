@@ -15,7 +15,7 @@ sys.path.insert(0, str(root / "src"))
 from local_ai_hub import __version__
 from local_ai_hub.client import HubClient
 from local_ai_hub.config import load_config
-from local_ai_hub.doctor_support import probe_hub_status
+from local_ai_hub.doctor_support import installed_models_from_status, probe_hub_status
 from local_ai_hub.http_server import validate_network_security
 
 
@@ -88,8 +88,19 @@ for key in ("background_code", "fast_code", "heavy_code", "reasoning", "general"
     model = str(models.get(key, ""))
     if model and model not in configured_generation:
         configured_generation.append(model)
-installed = set(status.get("installed_models", [])) if isinstance(status, dict) else set()
+features = cfg.get("features", {}) if isinstance(cfg.get("features", {}), dict) else {}
+ollama_cfg = cfg.get("ollama", {}) if isinstance(cfg.get("ollama", {}), dict) else {}
+ollama_enabled = bool(ollama_cfg.get("enabled", False))
+vision_enabled = bool(features.get("vision", True))
+vision_model = str(models.get("vision", "") or "") if vision_enabled else ""
+llama_cfg = cfg.get("llama_cpp", {}) if isinstance(cfg.get("llama_cpp", {}), dict) else {}
+llama_routes = llama_cfg.get("models", {}) if isinstance(llama_cfg.get("models", {}), dict) else {}
+llama_cpp_vision_route = bool(vision_model and vision_model in llama_routes)
+installed = installed_models_from_status(status, cfg=cfg)
 missing_models = [m for m in configured_generation if installed and m not in installed]
+vision_installed = bool(vision_model and installed and vision_model in installed)
+vision_missing = bool(vision_model and installed and vision_model not in installed)
+vision_status_known = bool(installed) or bool(vision_model and not ollama_enabled and not llama_cpp_vision_route)
 
 mcp_file = root / "src" / "local_ai_hub" / "mcp_server.py"
 state_dir = Path(cfg.get("server", {}).get("state_dir", "~/.local-ai-hub/state")).expanduser()
@@ -116,7 +127,7 @@ has_igpu = any(bool(g.get("integrated")) or "intel" in str(g.get("name", "")).lo
 if npus and not openvino_installed:
     warnings.append("NPU hardware detected, but openvino is not installed in hub environment. Embeddings and reranker will burn CPU. Run: pip install -r requirements-openvino.txt && python tools/prefetch_openvino.py")
 
-if os.name == "nt" and (has_igpu or cfg.get("hardware", {}).get("profile") == "integrated") and not has_nvidia:
+if ollama_enabled and os.name == "nt" and (has_igpu or cfg.get("hardware", {}).get("profile") == "integrated") and not has_nvidia:
     if not os.environ.get("OLLAMA_VULKAN"):
         warnings.append("Integrated GPU detected on Windows, but OLLAMA_VULKAN is not set in the environment. Ollama may run LLMs entirely on CPU. Run in PowerShell: [System.Environment]::SetEnvironmentVariable('OLLAMA_VULKAN', '1', 'User') and restart Ollama.")
 try:
@@ -129,10 +140,16 @@ if not hub_online:
     warnings.append("Local AI Hub is not online")
 elif not status_available:
     warnings.append("Local AI Hub health check passed but its status endpoint did not return diagnostic data")
-if status.get("hub_online", False) and not status.get("ollama_online", False):
+if ollama_enabled and status.get("hub_online", False) and not status.get("ollama_online", False):
     warnings.append("Ollama is not online")
-if missing_models:
+if ollama_enabled and missing_models:
     warnings.append("Missing configured Ollama models: " + ", ".join(missing_models))
+if vision_enabled and not vision_model:
+    warnings.append("Vision capability is enabled but models.vision is not configured")
+if vision_missing:
+    warnings.append("Missing configured vision model: " + vision_model)
+if vision_enabled and vision_model and vision_status_known and not vision_installed and not vision_missing:
+    warnings.append("Vision model is not available: Ollama is disabled and no llama.cpp vision route is configured; no backend was installed automatically")
 if not mcp_file.exists():
     warnings.append(f"Selected MCP surface file is missing: {mcp_file}")
 telemetry_summary = ((telemetry_report.get("report") or {}).get("summary") or {}) if isinstance(telemetry_report, dict) else {}
@@ -154,6 +171,8 @@ if not ollama_profile:
         pass
 diag_cfg = cfg.get("diagnostics", {})
 if (
+    ollama_enabled
+    and
     bool(diag_cfg.get("warn_if_external_ollama_profile_unknown", True))
     and status.get("ollama_online", False)
     and isinstance(ollama_profile, dict)
@@ -237,6 +256,7 @@ report = {
         "active_model": (status.get("scheduler") or {}).get("active_model") if isinstance(status, dict) else None,
         "configured_generation_models": configured_generation,
         "missing_generation_models": missing_models,
+        "vision": {"enabled": vision_enabled, "model": vision_model, "installed": vision_installed, "status_known": vision_status_known},
         "model_execution": execution_summary,
         "loaded_model_details": loaded_details,
         "ollama_profile": ollama_profile,
@@ -296,16 +316,19 @@ def format_doctor_report(rep: dict[str, Any]) -> str:
     hub_ok = rt.get("hub_online", False)
     ver = rep.get("version") or __version__
     py_ver = rep.get("python", sys.version.split()[0])
-    hub_sym = "[✓]" if hub_ok else "[✗]"
+    hub_sym = "[OK]" if hub_ok else "[ERR]"
     lines.append(f"{hub_sym} Hub Server:        {'Online' if hub_ok else 'Offline'} (v{ver}, Python {py_ver})")
 
     ollama_ok = rt.get("ollama_online", False)
     active_m = rt.get("active_model") or "None"
-    ollama_sym = "[✓]" if ollama_ok else "[✗]"
-    lines.append(f"{ollama_sym} Ollama Backend:     {'Online' if ollama_ok else 'Offline'} (Active: {active_m})")
+    if not ollama_enabled:
+        lines.append("[--] Ollama Backend:    Disabled by policy")
+    else:
+        ollama_sym = "[OK]" if ollama_ok else "[ERR]"
+        lines.append(f"{ollama_sym} Ollama Backend:     {'Online' if ollama_ok else 'Offline'} (Active: {active_m})")
 
     mcp_count = cfg_info.get("mcp_tool_count", 0)
-    lines.append(f"[✓] MCP Surface:        {cfg_info.get('mcp_surface', 'compact')} ({mcp_count} tools)")
+    lines.append(f"[OK] MCP Surface:       {cfg_info.get('mcp_surface', 'compact')} ({mcp_count} tools)")
     lines.append("")
 
     lines.append("Hardware & Acceleration:")
@@ -315,23 +338,31 @@ def format_doctor_report(rep: dict[str, Any]) -> str:
             if isinstance(g, dict):
                 name = g.get("name", "Unknown GPU")
                 vram = g.get("vram_mb", 0)
-                lines.append(f"  • GPU:                {name} ({vram // 1024} GB)")
+                lines.append(f"  - GPU:                {name} ({vram // 1024} GB)")
     else:
-        lines.append("  • GPU:                No dedicated GPU detected")
+        lines.append("  - GPU:                No dedicated GPU detected")
     ov = rt.get("openvino", {}) if isinstance(rt, dict) else {}
     ov_status = "Installed" if ov.get("installed") else "Not installed"
-    lines.append(f"  • OpenVINO:           {ov_status}")
+    lines.append(f"  - OpenVINO:           {ov_status}")
     st_status = "Installed" if rt.get("sentence_transformers") else "Not installed"
-    lines.append(f"  • SentenceTransf:     {st_status}")
+    lines.append(f"  - SentenceTransf:     {st_status}")
     lines.append("")
 
     lines.append("Models:")
     cfg_models = rt.get("configured_generation_models", [])
     missing = rt.get("missing_generation_models", [])
     if missing:
-        lines.append(f"  [✗] Missing Models:   {', '.join(missing)}")
+        lines.append(f"  [ERR] Missing Models: {', '.join(missing)}")
     else:
-        lines.append(f"  [✓] Configured:       {', '.join(cfg_models) if cfg_models else 'None'}")
+        lines.append(f"  [OK] Configured:       {', '.join(cfg_models) if cfg_models else 'None'}")
+    vision = rt.get("vision", {}) if isinstance(rt, dict) else {}
+    if not vision.get("enabled", True):
+        lines.append("  [--] Vision:          Disabled")
+    elif vision.get("status_known") and not vision.get("installed"):
+        lines.append(f"  [ERR] Vision:         Missing {vision.get('model') or 'configured model'}")
+    else:
+        suffix = "" if vision.get("status_known") else " (presence unknown)"
+        lines.append(f"  [OK] Vision:           {vision.get('model') or 'Not configured'}{suffix}")
     lines.append("")
 
     lines.append("CLI Tools:")
@@ -345,7 +376,7 @@ def format_doctor_report(rep: dict[str, Any]) -> str:
         ("trim-run", rt.get("trim_run_command")),
     ]
     for name, cmd in cli_tools:
-        sym = "[✓]" if cmd else "[ ]"
+        sym = "[OK]" if cmd else "[ ]"
         val = Path(cmd).name if cmd else "not found (optional)"
         lines.append(f"  {sym} {name:<17} {val}")
     lines.append("")
@@ -362,7 +393,7 @@ def format_doctor_report(rep: dict[str, Any]) -> str:
     ]
     for label, k in db_keys:
         exists = st_info.get(k, False)
-        sym = "[✓]" if exists else "[ ]"
+        sym = "[OK]" if exists else "[ ]"
         lines.append(f"  {sym} {label:<17} {'present' if exists else 'not created'}")
     lines.append("")
 

@@ -272,9 +272,13 @@ def test_scheduler_omitted_wait_timeout_is_still_hard_bounded():
     scheduler = AffinityScheduler(_HealthyRuntime(), config)
     started = time.monotonic()
     try:
-        with pytest.raises(TimeoutError):
+        with pytest.raises(TimeoutError) as exc_info:
             scheduler.submit("slow", "tenant", "test", lambda: (time.sleep(0.3) or {"success": True}))
         assert time.monotonic() - started < 0.2
+        assert exc_info.value.error_code == "scheduler_caller_timeout"
+        assert exc_info.value.state in {"running", "dispatching"}
+        assert exc_info.value.retryable is True
+        assert exc_info.value.job_id > 0
         assert scheduler.status()["stats"]["caller_timeouts"] >= 1
     finally:
         scheduler.close()

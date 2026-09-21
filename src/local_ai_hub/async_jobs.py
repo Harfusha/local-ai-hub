@@ -18,9 +18,9 @@ from .trace_context import reset_observer, set_observer
 
 
 class AsyncJobManager:
-    """Durable, tenant-scoped async work scheduled below foreground requests."""
+    """Durable, tenant-scoped orchestration whose model calls use the scheduler."""
 
-    ACTIONS = {"delegate", "reason", "review", "second_opinion", "compress", "route", "batch"}
+    ACTIONS = {"delegate", "reason", "review", "review_diff", "second_opinion", "compress", "route", "batch", "speculative_lint"}
 
     def __init__(
         self,
@@ -31,6 +31,7 @@ class AsyncJobManager:
         debug_traces: Any | None = None,
         task_store: Any | None = None,
         verification_store: Any | None = None,
+        telemetry: Any | None = None,
     ):
         cfg = config.get("async_jobs", {})
         self.enabled = bool(cfg.get("enabled", True))
@@ -42,12 +43,15 @@ class AsyncJobManager:
         self.scheduler, self.artifacts, self.executor, self.debug_traces = scheduler, artifacts, executor, debug_traces
         self.task_store = task_store
         self.verification_store = verification_store
+        self.telemetry = telemetry
         self.path = Path(config["server"]["state_dir"]) / "async_jobs.sqlite3"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._events: dict[str, threading.Event] = {}
+        self._delayed_dispatch: dict[str, threading.Timer] = {}
+        self._dispatchers: set[threading.Thread] = set()
+        self._workers: set[threading.Thread] = set()
         self._shutdown = threading.Event()
-        self._watchers: set[threading.Thread] = set()
         self._stats = {"submitted": 0, "coalesced": 0, "completed": 0, "failed": 0, "cancelled": 0, "recovered": 0, "expired": 0}
         self._initialized = False
         self._init_db()
@@ -90,14 +94,33 @@ class AsyncJobManager:
 
     @staticmethod
     def _safe_payload(payload: dict[str, Any]) -> dict[str, Any]:
-        allowed = {"task", "context", "candidate", "complexity", "max_tokens", "tasks", "task_id"}
+        allowed = {
+            "task", "context", "candidate", "complexity", "max_tokens", "tasks", "task_id", "root", "paths", "command",
+            "instructions", "base", "staged", "mode", "diff_tokens", "consensus", "_async_job",
+        }
         return {key: payload[key] for key in allowed if key in payload}
 
     def _event(self, job_id: str) -> threading.Event:
         with self._lock:
             return self._events.setdefault(job_id, threading.Event())
 
-    def submit(self, tenant: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _dispatch_background(self, job_id: str) -> None:
+        """Start scheduler admission off the request thread."""
+        def run() -> None:
+            try:
+                self._dispatch(job_id)
+            finally:
+                with self._lock:
+                    self._dispatchers.discard(threading.current_thread())
+
+        worker = threading.Thread(target=run, name=f"async-dispatch-{job_id[:8]}", daemon=True)
+        with self._lock:
+            if self._shutdown.is_set():
+                return
+            self._dispatchers.add(worker)
+        worker.start()
+
+    def submit(self, tenant: str, action: str, payload: dict[str, Any], *, dispatch_delay_seconds: float = 0.0) -> dict[str, Any]:
         if self._shutdown.is_set():
             return {"success": False, "error": "async job manager is closed", "terminal": True, "retryable": False}
         if not self.enabled:
@@ -135,7 +158,15 @@ class AsyncJobManager:
             except Exception:
                 trace_id = ""
         self._event(job_id)
-        self._dispatch(job_id)
+        delay = max(0.0, min(30.0, float(dispatch_delay_seconds or 0.0)))
+        if delay:
+            timer = threading.Timer(delay, self._dispatch, args=(job_id,))
+            timer.daemon = True
+            with self._lock:
+                self._delayed_dispatch[job_id] = timer
+            timer.start()
+        else:
+            self._dispatch_background(job_id)
         return {"success": True, "job_id": job_id, "trace_id": trace_id, "task_id": task_id, "state": "queued", "coalesced": False}
 
     def _row(self, tenant: str, job_id: str) -> sqlite3.Row | None:
@@ -148,7 +179,8 @@ class AsyncJobManager:
     def _dispatch(self, job_id: str) -> None:
         if self._shutdown.is_set():
             return
-        completion = self._event(job_id)
+        with self._lock:
+            self._delayed_dispatch.pop(job_id, None)
         with self._lock, closing(self._connect()) as con:
             con.row_factory = sqlite3.Row
             row = con.execute("SELECT * FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
@@ -156,50 +188,22 @@ class AsyncJobManager:
                 return
             con.execute("UPDATE async_jobs SET lease_until=?,updated_at=? WHERE job_id=? AND state='queued'", (time.time() + self.lease_seconds, time.time(), job_id))
             con.commit()
-            tenant = str(row["tenant"])
-        completion.clear()
-        try:
-            model = str(getattr(self.scheduler, "config", {}).get("models", {}).get("heavy_code", ""))
-            queued = self.scheduler.enqueue(model, tenant, "async-job", lambda: self._execute(job_id), priority=1, background=True)
-            trace_id = str(row["trace_id"] or "")
-            if self.debug_traces is not None and trace_id:
-                self.debug_traces.update(trace_id, model=model)
-                self.debug_traces.event(trace_id, "scheduled", {"model": model, "scheduler_job_id": str(getattr(queued, "id", ""))})
-                self.debug_traces.link(trace_id, scheduler_job_id=str(getattr(queued, "id", "")))
-        except Exception as exc:
-            self._release_for_retry(job_id, str(exc))
-            return
-        watcher = threading.Thread(
-            target=self._watch_scheduler_job,
-            args=(job_id, queued),
-            name=f"async-job-{job_id[:8]}",
-            daemon=True,
-        )
+
+        def run() -> None:
+            try:
+                self._execute(job_id)
+            except Exception as exc:
+                self._release_for_retry(job_id, str(exc))
+            finally:
+                with self._lock:
+                    self._workers.discard(threading.current_thread())
+
+        worker = threading.Thread(target=run, name=f"async-job-{job_id[:8]}", daemon=True)
         with self._lock:
             if self._shutdown.is_set():
                 return
-            self._watchers.add(watcher)
-        watcher.start()
-
-    def _watch_scheduler_job(self, job_id: str, queued: Any) -> None:
-        completion = self._event(job_id)
-        try:
-            while not self._shutdown.is_set():
-                # The durable job can reach a terminal state through cancellation,
-                # recovery or direct execution before the scheduler adapter signals
-                # its own completion event. In that case there is nothing left to
-                # watch and the helper thread should exit immediately.
-                if completion.wait(0.25):
-                    return
-                if queued.done.is_set():
-                    break
-            if self._shutdown.is_set() or not queued.done.is_set():
-                return
-            if getattr(queued, "error", None):
-                self._release_for_retry(job_id, str(queued.error))
-        finally:
-            with self._lock:
-                self._watchers.discard(threading.current_thread())
+            self._workers.add(worker)
+        worker.start()
 
     def _release_for_retry(self, job_id: str, error: str) -> None:
         trace_id = ""
@@ -214,7 +218,6 @@ class AsyncJobManager:
             con.commit()
             if state == "failed": self._stats["failed"] += 1
             if state == "cancelled": self._stats["cancelled"] += 1
-        self._event(job_id).set()
         if self.debug_traces is not None and trace_id:
             try:
                 self.debug_traces.event(trace_id, "retry" if state == "queued" else state, {"error": error, "attempts": attempts})
@@ -222,6 +225,7 @@ class AsyncJobManager:
                     self.debug_traces.finish(trace_id, state=state, error=error)
             except Exception:
                 pass
+        self._event(job_id).set()
 
     def _execute(self, job_id: str) -> dict[str, Any]:
         with self._lock, closing(self._connect()) as con:
@@ -321,12 +325,12 @@ class AsyncJobManager:
                         except Exception:
                             pass
             con.commit()
-        self._event(job_id).set()
         if self.debug_traces is not None and trace_id:
             try:
                 self.debug_traces.finish(trace_id, state="done" if final.get("success") else "failed", response=final if final.get("success") else None, error=str(final.get("error", "")))
             except Exception:
                 pass
+        self._event(job_id).set()
         return final
 
     def status(self, tenant: str, job_id: str) -> dict[str, Any]:
@@ -339,10 +343,21 @@ class AsyncJobManager:
         return result
 
     def wait(self, tenant: str, job_id: str, timeout_seconds: float) -> dict[str, Any]:
+        started = time.perf_counter()
         timeout = max(1.0, min(self.wait_max_seconds, float(timeout_seconds or self.wait_max_seconds)))
         status = self.status(tenant, job_id)
         if status.get("success") and status.get("state") in {"queued", "running"}: self._event(job_id).wait(timeout)
         result = self.status(tenant, job_id); result["wait_timeout_seconds"] = timeout
+        if self.telemetry is not None:
+            try:
+                elapsed_ms = max(0.0, (time.perf_counter() - started) * 1000.0)
+                self.telemetry.record(
+                    event_type="coordination", action="async_wait", tenant=tenant,
+                    success=bool(result.get("success")), duration_ms=elapsed_ms,
+                    wait_count=1, wait_duration_ms=elapsed_ms,
+                )
+            except Exception:
+                pass
         return result
 
     def result(self, tenant: str, job_id: str) -> dict[str, Any]:
@@ -355,6 +370,10 @@ class AsyncJobManager:
         return {"success": True, "job_id": job_id, "state": "done", "artifact_id": str(row["artifact_id"]), "result": value}
 
     def cancel(self, tenant: str, job_id: str) -> dict[str, Any]:
+        with self._lock:
+            delayed = self._delayed_dispatch.pop(job_id, None)
+            if delayed is not None:
+                delayed.cancel()
         with self._lock, closing(self._connect()) as con:
             row = con.execute("SELECT state,trace_id FROM async_jobs WHERE job_id=? AND tenant=?", (job_id, tenant)).fetchone()
             if not row: return {"success": False, "error": "async job not found", "terminal": True, "retryable": False}
@@ -372,14 +391,21 @@ class AsyncJobManager:
         if self._shutdown.is_set():
             return 0
         with self._lock, closing(self._connect()) as con:
-            rows = con.execute("SELECT job_id,state,attempts,cancel_requested FROM async_jobs WHERE state IN ('queued','running')").fetchall(); ids: list[str] = []
-            for job_id, state, attempts, cancelled in rows:
+            rows = con.execute("SELECT job_id,state,attempts,cancel_requested,trace_id FROM async_jobs WHERE state IN ('queued','running')").fetchall(); ids: list[tuple[str, str]] = []
+            for job_id, state, attempts, cancelled, trace_id in rows:
                 if cancelled: con.execute("UPDATE async_jobs SET state='cancelled',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id))
                 elif int(attempts or 0) >= self.max_attempts and state == "running": con.execute("UPDATE async_jobs SET state='failed',lease_until=0,error='async job interrupted too many times',updated_at=? WHERE job_id=?", (time.time(), job_id))
                 else:
-                    con.execute("UPDATE async_jobs SET state='queued',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id)); ids.append(str(job_id))
+                    con.execute("UPDATE async_jobs SET state='queued',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id)); ids.append((str(job_id), str(trace_id or "")))
             con.commit()
-        for job_id in ids: self._event(job_id); self._dispatch(job_id)
+        for job_id, trace_id in ids:
+            if self.debug_traces is not None and trace_id:
+                try:
+                    self.debug_traces.update(trace_id, state="queued")
+                    self.debug_traces.event(trace_id, "recovered", {"job_id": job_id})
+                except Exception:
+                    pass
+            self._event(job_id); self._dispatch(job_id)
         self._stats["recovered"] += len(ids); return len(ids)
 
     def tick(self) -> None:
@@ -404,6 +430,7 @@ class AsyncJobManager:
                 else:
                     con.execute("UPDATE async_jobs SET state='queued',lease_until=0,updated_at=? WHERE job_id=?", (now, str(s_id)))
             rows = con.execute("SELECT job_id FROM async_jobs WHERE state='queued' AND lease_until<?", (now,)).fetchall()
+            delayed_ids = set(self._delayed_dispatch)
             active_rows = con.execute("SELECT job_id FROM async_jobs WHERE state IN ('queued','running')").fetchall()
             active_ids = {str(r[0]) for r in active_rows}
             for jid in list(self._events.keys()):
@@ -411,7 +438,12 @@ class AsyncJobManager:
                     self._events.pop(jid, None)
             con.commit()
         self._stats["expired"] += int(expired or 0)
-        for (job_id,) in rows[:self.max_pending]: self._dispatch(str(job_id))
+        for (job_id,) in rows[:self.max_pending]:
+            # A retry reuses the job event; clear the previous attempt's
+            # completion signal before a delayed or immediate next attempt.
+            self._event(str(job_id)).clear()
+            if str(job_id) not in delayed_ids:
+                self._dispatch(str(job_id))
 
     def __enter__(self) -> "AsyncJobManager":
         return self
@@ -425,20 +457,26 @@ class AsyncJobManager:
         self._shutdown.set()
         with self._lock:
             waiters = list(self._events.values())
-            watchers = list(self._watchers)
+            workers = list(self._workers)
+            dispatchers = list(self._dispatchers)
+            delayed = list(self._delayed_dispatch.values())
+            self._delayed_dispatch.clear()
+        for timer in delayed:
+            timer.cancel()
         for event in waiters:
             event.set()
         deadline = time.monotonic() + 1.5
         current = threading.current_thread()
-        for watcher in watchers:
-            if watcher is current or not watcher.is_alive():
+        for worker in dispatchers + workers:
+            if worker is current or not worker.is_alive():
                 continue
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            watcher.join(timeout=remaining)
+            worker.join(timeout=remaining)
         with self._lock:
-            self._watchers = {thread for thread in self._watchers if thread.is_alive()}
+            self._dispatchers = {thread for thread in self._dispatchers if thread.is_alive()}
+            self._workers = {thread for thread in self._workers if thread.is_alive()}
 
     def stats(self) -> dict[str, Any]:
         def read() -> dict[str, int]:
