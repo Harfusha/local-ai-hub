@@ -195,6 +195,14 @@ class OllamaRuntime:
     def request(self, endpoint: str, payload: dict[str, Any] | None = None, timeout: float | None = None) -> dict[str, Any]:
         if payload is not None and endpoint in {"/api/chat", "/api/generate"}:
             return self.request_stream(endpoint, payload, lambda _chunk: None, timeout)
+        if endpoint == "/api/show":
+            router = getattr(self, "llama_cpp", None)
+            describe = getattr(router, "model_capabilities", None)
+            model = payload.get("name", "") if isinstance(payload, dict) else ""
+            if callable(describe):
+                result = describe(str(model))
+                if isinstance(result, dict):
+                    return result
         if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)):
             if endpoint == "/api/version":
                 router = getattr(self, "llama_cpp", None)
