@@ -1456,6 +1456,19 @@ class CommandBroker:
                 pass
         try:
             result = self._execute(command, cwd, int(timeout or self.timeout), cancel_event, log_callback=log_callback)
+            # CPython compileall reports missing targets as a diagnostic while
+            # still exiting 0. A green exit code must not hide that no target
+            # was compiled.
+            combined_output = f"{result.get('stdout', '')}\n{result.get('stderr', '')}"
+            if result.get("success") and "compileall" in command.lower() and re.search(r"can't\s+list\s+['\"]?[^\r\n]+", combined_output, re.I):
+                result.update({
+                    "success": False,
+                    "exit_code": 1,
+                    "error": "compileall reported an unavailable target",
+                    "terminal": True,
+                    "retryable": False,
+                    "target_missing": True,
+                })
             if git_snapshot:
                 if rollback_on_failure and not result.get("success"):
                     try:
@@ -2768,6 +2781,12 @@ class CommandBroker:
             "error": "diagnostic artifacts are disabled (features.diagnostic_artifacts=false)",
         }
         result["summary"] = self._deterministic_summary(result)
+        classification = result.get("classification") if isinstance(result.get("classification"), dict) else {}
+        if classification:
+            # Keep the policy decision visible even in compact responses.
+            result["allowed"] = bool(classification.get("allowed", False))
+            result["class"] = str(classification.get("class", "unknown"))
+            result["reason"] = str(classification.get("reason", ""))[:240]
         diagnostics = list(result.get("diagnostics") or self._extract_diagnostics(result))
         failure_summary = self._first_failure_summary({**result, "diagnostics": diagnostics})
         if result.get("remediation"):

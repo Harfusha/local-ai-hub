@@ -30,6 +30,52 @@ def test_existing_tools_expose_response_budget_options() -> None:
         assert {"max_response_tokens", "response_profile", "reuse_key"} <= names
 
 
+def test_telemetry_status_projection_keeps_slow_paths_and_omits_bulk_report() -> None:
+    report = {
+        "success": True,
+        "summary": {"events": 10, "avg_queue_wait_ms": 700, "failure_rate": 0.1, "raw": "drop"},
+        "queue": {"p95_queue_age_ms": 900},
+        "hotspots": [{"signal": "queue_wait"}],
+        "by_operation": [{"action": "context", "avg_ms": 1200}],
+        "error_fingerprints": [{"error_type": "timeout"}],
+        "daily": [{"day": "bulk"}] * 100,
+        "provider_token_usage": [{"prompt": "must not pass"}] * 100,
+    }
+
+    result = mcp_server._telemetry_status_projection({"success": True, "report": report})
+
+    assert result["summary"] == {"events": 10, "avg_queue_wait_ms": 700, "failure_rate": 0.1}
+    assert result["queue"]["p95_queue_age_ms"] == 900
+    assert result["by_operation"][0]["action"] == "context"
+    assert "daily" not in result
+    assert "provider_token_usage" not in result
+
+
+def test_context_projection_keeps_actual_context_text_after_budget() -> None:
+    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set(
+        {"max_response_tokens": 220, "response_profile": "compact", "reuse_key": "ctx-budget", "tool": "local_ai_repo"}
+    )
+    try:
+        result = mcp_server._context_pack_projection(
+            {
+                "success": True,
+                "guarded": True,
+                "context": "deterministic facts about logs",
+                "context_source": "deterministic-fast",
+                "contract": {"goal": "inspect logs"},
+                "context_pack": {"context_id": "ctx-1", "evidence": [{"evidence_id": "E1"}]},
+                "evidence_ids": ["E1"],
+                "repo_revision": "rev-1",
+            }
+        )
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
+
+    assert result["context"] == "deterministic facts about logs"
+    assert result["contract"]["goal"] == "inspect logs"
+    assert result["evidence_ids"] == ["E1"]
+
+
 def test_mcp_compact_applies_aggregate_budget(monkeypatch) -> None:
     monkeypatch.setattr(mcp_server, "_REUSE_DIGESTS", mcp_server.OrderedDict())
     value = {

@@ -16,6 +16,7 @@ from local_ai_hub.agent_verification import (
 from local_ai_hub.agent_consistency import AgentConsistencyGuard, ConsistencyRequest, GuardWarning
 from local_ai_hub.agent_memory import MemoryStore
 from local_ai_hub.repo_tools import RepositoryTools
+from local_ai_hub.sqlite_support import connect_sqlite
 
 
 @pytest.fixture
@@ -78,6 +79,41 @@ def test_verification_store_record_methods_are_noops_when_agent_state_disabled(t
     assert store.record_change(change) is change
     assert store.record_outcome(outcome) is outcome
     assert not state_store.db_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("task_id", "criterion"),
+    [("", "tests"), ("task-1", "")],
+)
+def test_verification_receipts_require_task_and_criterion(task_id: str, criterion: str):
+    with pytest.raises(ValueError, match="requires"):
+        VerificationReceipt.create(task_id, criterion)
+
+
+def test_verification_store_prunes_legacy_invalid_receipts(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "legacy.sqlite3")
+    VerificationStore(state_store)
+    con = connect_sqlite(state_store.db_path)
+    try:
+        con.execute(
+            "INSERT INTO agent_verification_receipts "
+            "(receipt_id, task_id, criterion, change_intent_id, evidence_id, command_id, "
+            "repository_revision, observed_at, expires_at, passed, details) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("legacy-invalid", "task-legacy", "", "", "", "", "", 1.0, None, 1, "{}"),
+        )
+    finally:
+        con.close()
+
+    VerificationStore(state_store)
+    con = connect_sqlite(state_store.db_path)
+    try:
+        assert con.execute(
+            "SELECT 1 FROM agent_verification_receipts WHERE receipt_id=?",
+            ("legacy-invalid",),
+        ).fetchone() is None
+    finally:
+        con.close()
 
 
 def test_current_revision_rejects_fresh_receipt_from_other_revision(stores: tuple[TaskStore, VerificationStore]):

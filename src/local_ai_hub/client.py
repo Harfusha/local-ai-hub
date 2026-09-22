@@ -485,13 +485,21 @@ class HubClient:
                 "root": kwargs.get("root", "."),
             })
         if act == "verify_receipt":
+            receipt = kwargs.get("receipt") or {
+                "task_id": kwargs.get("task_id", ""),
+                "criterion": kwargs.get("criterion", kwargs.get("key", "")),
+                "passed": kwargs.get("passed", True),
+            }
+            if not str(receipt.get("task_id", "")).strip() or not str(receipt.get("criterion", "")).strip():
+                return {
+                    "success": False,
+                    "terminal": True,
+                    "retryable": False,
+                    "error": "verify_receipt requires task_id and criterion",
+                }
             return self.post("/api/agent-state/verification", {
                 "action": "receipt",
-                "receipt": kwargs.get("receipt") or {
-                    "task_id": kwargs.get("task_id", ""),
-                    "criterion": kwargs.get("criterion", kwargs.get("key", "")),
-                    "passed": kwargs.get("passed", True),
-                },
+                "receipt": receipt,
                 "root": kwargs.get("root", "."),
             })
         if act == "verify_completion":

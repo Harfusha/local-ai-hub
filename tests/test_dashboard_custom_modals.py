@@ -75,7 +75,7 @@ def _trace_remediation_probe(expression):
     return json.loads(result.stdout)
 
 
-def test_trace_task8_technical_keys_and_values_cannot_bypass_bounds():
+def test_trace_task8_technical_keys_and_values_render_without_display_markers():
     rendered = _trace_remediation_probe("""(()=>{
       const cases={};
       for(const length of [100000,500000])for(const char of ['K','<']){
@@ -86,23 +86,39 @@ def test_trace_task8_technical_keys_and_values_cannot_bypass_bounds():
       return cases;
     })()""")
     for html in rendered.values():
-        assert len(html) < 50000
-        assert 'payload budget truncated' in html
+        assert len(html) > 80000
+        assert 'payload budget truncated' not in html
         parsed = _TraceMarkupParser(html)
         assert not parsed.errors and not parsed.stack
 
 
-def test_trace_task8_raw_event_projection_caps_serialized_keys():
+def test_trace_task8_raw_event_projection_keeps_serialized_keys():
     rendered = _trace_remediation_probe("""(()=>{
       const detail={session:{kind:'async_job'},events:[{event_type:'job_progress',payload:{worker_output:{['K'.repeat(500000)]:1}}}]};
       const model=traceDisplayModel(detail);
       return {size:JSON.stringify(model.events).length,truncated:model.eventsTruncated,raw:model.panels.find(panel=>panel.id==='raw').render()};
     })()""")
-    assert rendered['size'] < 26000
-    assert rendered['truncated'] is True
-    assert 'payload budget truncated' in rendered['raw']
+    assert rendered['size'] > 500000
+    assert rendered['truncated'] is False
+    assert 'payload budget truncated' not in rendered['raw']
     parsed = _TraceMarkupParser(rendered['raw'])
     assert not parsed.errors and not parsed.stack
+
+
+def test_trace_inspector_keeps_deep_retained_payload_without_display_marker():
+    html = _trace_remediation_probe(
+        "probe({request:{prompt:{level1:{level2:{level3:{level4:{value:'deep-retained-value'}}}}}},output:'answer'})"
+    )
+
+    assert "deep-retained-value" in html
+    assert "payload budget truncated" not in html
+
+
+def test_trace_inspector_keeps_payload_larger_than_old_presentation_budget():
+    html = _trace_remediation_probe("probe({request:{prompt:'x'.repeat(30000)},output:'answer'})")
+
+    assert len(html) > 30000
+    assert "payload budget truncated" not in html
 
 
 def test_trace_task8_specialized_response_arrays_remain_visible():
@@ -169,17 +185,18 @@ def test_trace_task8_tool_errors_survive_exhausted_display_budget():
     for html in [rendered['chat'], rendered['dispatched']]:
         parsed = _TraceMarkupParser(html)
         assert not parsed.errors and not parsed.stack
-        assert len(html) < 100000
+        assert len(html) > 80000
+        assert 'payload budget truncated' not in html
 
 
-def test_trace_remediation_large_model_and_wide_command_are_bounded():
+def test_trace_remediation_large_model_and_wide_command_render_full_payloads():
     rendered = _trace_remediation_probe("""({
       chat:probe({action:'/api/chat',request:{prompt:'PROMPT-'+ 'p'.repeat(100000)},output:'ANSWER-'+ 'a'.repeat(100000)}),
       command:probe({action:'/api/command',request:{command:'pytest'},output:{exit_code:0,stdout:Object.fromEntries(Array.from({length:50},(_,i)=>['field'+i,Object.fromEntries(Array.from({length:50},(_,j)=>['value'+j,'x'.repeat(300)]))]))}})
     })""")
     for html in rendered.values():
-        assert len(html) < 100000
-        assert 'truncat' in html.lower()
+        assert len(html) > 100000
+        assert 'payload budget truncated' not in html
         parsed = _TraceMarkupParser(html)
         assert not parsed.errors and not parsed.stack
     assert 'PROMPT-' in rendered['chat'] and 'ANSWER-' in rendered['chat']
@@ -213,12 +230,12 @@ def test_trace_remediation_tool_defaults_follow_actual_result_presence():
     assert 'complete' in agent and 'pending' not in agent and 'found' in agent
 
 
-def test_trace_remediation_review_preserves_first_findings_when_truncated():
+def test_trace_remediation_review_preserves_all_findings_without_display_marker():
     html = _trace_remediation_probe("probe({action:'/api/review',output:{status:'complete',findings:Array.from({length:20},(_,i)=>({severity:'high',message:'Finding '+i+' '+ 'm'.repeat(900)}))}})")
     visible = ''.join(_TraceMarkupParser(html).visible)
     assert 'Finding 0' in visible
-    assert 'omitted' in visible.lower()
-    assert 0 < html.count('class="trace-finding-item"') < 20
+    assert 'omitted' not in visible.lower()
+    assert html.count('class="trace-finding-item"') == 20
 
 
 def test_trace_remediation_normalization_preserves_async_and_repo_fields():
@@ -257,7 +274,8 @@ def test_trace_remediation_rag_limits_preserve_html_and_stable_open_identity():
     })()""")
     large = _TraceMarkupParser(result['large'])
     assert not large.errors and not large.stack
-    assert len(result['large']) < 26000
+    assert len(result['large']) > 26000
+    assert 'payload budget truncated' not in result['large']
     first = [k for k in _TraceMarkupParser(result['first']).keys if k.startswith('rag-result:')]
     second = [k for k in _TraceMarkupParser(result['second']).keys if k.startswith('rag-result:')]
     assert len(first) == 2 and first == second[::-1]
@@ -296,10 +314,10 @@ def test_trace_remediation_all_kinds_bound_escaped_aggregate_and_keep_core_value
     for kind, html in rendered.items():
         parsed = _TraceMarkupParser(html)
         assert not parsed.errors and not parsed.stack, kind
-        assert parsed.primary_length < 26000, (kind, parsed.primary_length)
-        assert len(html) < 100000, (kind, len(html))
+        assert parsed.primary_length > 26000, (kind, parsed.primary_length)
+        assert len(html) > 100000, (kind, len(html))
         assert 'Core' in ''.join(parsed.visible), kind
-        assert 'truncat' in html.lower(), kind
+        assert 'payload budget truncated' not in html, kind
 
 
 def test_dashboard_modal_css_classes_present() -> None:
@@ -1577,7 +1595,7 @@ def test_trace_renderers_render_per_kind_fixtures_as_semantic_output() -> None:
         "command": ["Command and arguments", "--json", "stdout", "build complete", "stderr", "exit code", "retries", "duration"],
         "review": ["Review this patch", "dashboard contract", "diff", "findings", "critical", "Null check", "merge after fix", "changes requested"],
         "repo_intelligence": ["local-ai-hub", "search symbols", "tracePresentation", "dashboard.py", "custom_modals.py", "traceRenderBudget", "3 matches"],
-        "rag_search": ["trace contract", "2 results", "dashboard.py", "line 2200", "serena", "0.91", "semantic renderer", "Use the semantic contract", "Truncation"],
+        "rag_search": ["trace contract", "2 results", "dashboard.py", "line 2200", "serena", "0.91", "semantic renderer", "Use the semantic contract"],
         "async_job": ["running", "queued", "queue wait", "125", "retries", "job result", "timeout recovered"],
         "request_response": ["POST", "/chat", "ok", "response text", "complete", "timing", "42", "transport failed"],
     }
@@ -1618,8 +1636,8 @@ def test_trace_async_and_request_response_outputs_keep_full_human_code_blocks() 
     ):
         assert "trace-code-card" in html
         assert marker in html
-        assert len(html) < 24000
-        assert html.count("x" if marker == "async-output-" else "y") < 10000
+        assert len(html) > 16000
+        assert html.count("x" if marker == "async-output-" else "y") > 10000
         assert "[object Object]" not in html
         assert not re.search(r"\{\s*[\"'][A-Za-z_][\w-]*[\"']\s*:", html)
 
@@ -1749,7 +1767,7 @@ def test_trace_task5_handles_incomplete_empty_malformed_and_bounded_states() -> 
     assert '<section class="trace-primary' not in empty_primary
     assert "malformed" in rendered["malformed"] and "kept" in rendered["malformed"]
     assert "[object Object]" not in rendered["malformed"]
-    assert len(rendered["bounded"]) < 24000
+    assert len(rendered["bounded"]) > 16000
     assert "payload-" in rendered["bounded"]
     assert "live / incomplete" in rendered["live"] and "finished" not in rendered["live"]
     assert "live / incomplete" in rendered["streaming"] and "finished" not in rendered["streaming"]
@@ -1757,7 +1775,7 @@ def test_trace_task5_handles_incomplete_empty_malformed_and_bounded_states() -> 
     assert "malformed async job" in malformed_async_primary
     assert "background job" not in malformed_async_primary
     multi_primary = rendered["multiHuge"].split('<details class="trace-secondary-details', 1)[0]
-    assert len(multi_primary) < 24000
+    assert len(multi_primary) > 24000
     for marker in ["request", "response", "status", "error", "input-", "response-", "error-"]:
         assert marker in multi_primary, marker
 
@@ -1944,7 +1962,7 @@ def test_trace_timeline_runtime_tolerates_malformed_events_and_caps_cumulative_p
     output = json.loads(result.stdout)
     assert output["compact"] > 0
     assert output["timeline"] > 0
-    assert output["bounded"] <= 26000
+    assert output["bounded"] > 26000
 
 
 def test_trace_bounded_events_uses_one_shared_budget_for_wide_deep_events() -> None:
@@ -1954,8 +1972,8 @@ def test_trace_bounded_events_uses_one_shared_budget_for_wide_deep_events() -> N
         )
     ]
     assert "traceRawBoundValue(traceRawBoundValue" not in source
-    assert "traceRawBoundValue(event,2048,0,budget)" in source
-    assert "remaining:23000" in source
+    assert "traceRawBoundValue(event)" in source
+    assert "remaining:23000" not in source
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     wide = {f"wide_{i}": {f"deep_{j}": "x" * 500 for j in range(20)} for i in range(80)}
     script = (
@@ -1965,8 +1983,8 @@ def test_trace_bounded_events_uses_one_shared_budget_for_wide_deep_events() -> N
     )
     result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
     bounded = json.loads(result.stdout)
-    assert len(json.dumps(bounded["events"])) <= 26000
-    assert bounded["eventsTruncated"] is True
+    assert len(json.dumps(bounded["events"])) > 26000
+    assert bounded["eventsTruncated"] is False
 
 
 def test_trace_presentation_runtime_coerces_non_array_events_to_empty() -> None:
@@ -2034,9 +2052,9 @@ def test_trace_unknown_malformed_and_missing_content_use_safe_bounded_fallbacks(
         assert "[object Object]" not in html
         assert not re.search(r"\{\s*[\"'][A-Za-z_$][\w$]*\s*:", html)
     assert "fallback-secret" not in rendered["bounded"]
-    assert len(rendered["bounded"]) < 24000
+    assert len(rendered["bounded"]) > 16000
     assert "bounded-output-" in rendered["bounded"]
-    assert rendered["bounded"].count("x") < 10000
+    assert rendered["bounded"].count("x") > 10000
 
 
 def test_trace_review_severity_runtime_merges_counts_map_and_findings() -> None:
@@ -2437,8 +2455,8 @@ def test_trace_agent_loop_runtime_bounds_malformed_redacted_and_truncated_values
     html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
     assert "Malformed event payload" in html
     assert "REDACTED_TOKEN" not in html and "REDACTED_SECRET" not in html
-    assert "payload budget" in html.lower()
-    assert len(html) < 80000
+    assert "payload budget" not in html.lower()
+    assert len(html) > 80000
 
 
 def test_trace_presentations_treat_empty_containers_as_empty_not_missing() -> None:
@@ -3082,9 +3100,9 @@ def test_trace_command_and_review_primary_fields_are_bounded_and_status_is_dedup
     rendered = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
     command_primary = rendered["command"].split('<details class="trace-secondary-details', 1)[0]
     review_primary = rendered["review"].split('<details class="trace-secondary-details', 1)[0]
-    assert len(command_primary) < 9000 and len(review_primary) < 9000
-    assert huge[-200:] not in command_primary
-    assert huge[-200:] not in review_primary
+    assert len(command_primary) > 9000 and len(review_primary) > 9000
+    assert huge[-200:] in command_primary
+    assert huge[-200:] in review_primary
     assert "DETAILS_ONLY" not in review_primary
     assert "DETAILS_ONLY" in rendered["review"]
     assert "changes requested" in review_primary
@@ -3118,8 +3136,8 @@ def test_trace_command_and_review_direct_malformed_redacted_and_truncated_payloa
         assert "[object Object]" not in html
         assert redacted not in html
         assert "redacted" in html.lower()
-        assert "truncated" in html.lower()
-        assert len(html) < 60000
+        assert "TRUNCATED_TAIL" in html
+        assert len(html) > 60000
 
 
 def test_trace_review_finding_metadata_keeps_aggregate_bound_with_many_large_findings() -> None:
@@ -3150,9 +3168,10 @@ def test_trace_review_finding_metadata_keeps_aggregate_bound_with_many_large_fin
     html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
     evidence = html.split('<summary>Review evidence</summary>', 1)[1].split('</details>', 1)[0]
     finding_metadata = evidence.split('<h3>Full finding metadata</h3>', 1)[1].split('</section>', 1)[0]
-    assert len(finding_metadata) < 20000
-    assert "payload budget truncated" in finding_metadata or "truncated" in finding_metadata.lower()
-    assert len(html) < 60000
+    assert len(finding_metadata) > 20000
+    assert "finding-79" in finding_metadata
+    assert "payload budget truncated" not in finding_metadata
+    assert len(html) > 60000
 
 
 def test_trace_command_primary_and_closed_details_show_execution_contract() -> None:
@@ -3193,7 +3212,7 @@ def test_trace_command_primary_and_closed_details_show_execution_contract() -> N
         "python -m pytest", "arguments", "exit state", "Failed", "exit code", "2",
         "duration", "1234", "stdout-preview-", "stderr", "Command failed",
     ])
-    assert len(primary) < 7000
+    assert len(primary) > 7000
     assert all(marker in html for marker in [
         "Command details", "C:/workspace", "dashboard.py", "retries", "criterion",
         "raw command", "Full stdout", stdout[-100:], "COMMAND_HEADER_MARKER",
@@ -3436,7 +3455,7 @@ def test_trace_model_chat_runtime_keeps_repeated_human_messages() -> None:
     html = json.loads(result.stdout)
     assert len(html) > 24000
     assert large[-100:] in html
-    assert "payload budget" in html.lower()
+    assert "payload budget" not in html.lower()
 
 
 def test_trace_model_chat_runtime_redacts_embedded_pem_certificate_and_ssh_keys() -> None:
@@ -3511,7 +3530,7 @@ def test_trace_display_model_bounds_events_and_raw_fields_before_sanitization() 
             "function traceRaw("
         )
     ]
-    assert "value.slice(0,room)" in projection_source
+    assert "value.slice(0,room)" not in projection_source
     assert "traceRawBoundValue(rawSession.request)" in projection_source
 
 
@@ -3522,7 +3541,7 @@ def test_bounded_trace_events_retain_request_metadata_and_cap_each_event() -> No
         )
     ]
     assert "event_type==='request_received'" in source
-    assert "traceRawBoundValue(event,2048,0,budget)" in source
+    assert "traceRawBoundValue(event)" in source
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     script = (
         source
@@ -3691,7 +3710,7 @@ def test_trace_repo_and_rag_presentations_are_result_first_and_bounded() -> None
 
     empty = rendered["empty"]
     assert "No results found" in empty
-    assert "truncated results" in empty
+    assert "truncated results" not in empty
     assert "missing" in empty
 
 
@@ -3746,24 +3765,24 @@ def test_trace_rag_aggregate_budget_structured_truncation_and_malformed_results(
     rendered = json.loads(result.stdout)
 
     large = rendered["large"]
-    assert len(large) < 40000
-    assert "Aggregate output truncated" in large
+    assert len(large) > 40000
+    assert "Aggregate output truncated" not in large
     assert "ranked results" in large
-    assert "Result 0" in large
+    assert "Result 49" in large
 
     oversized = rendered["oversized"]
-    assert len(oversized) <= 24000
+    assert len(oversized) > 24000
     assert "primary result" in oversized
     assert "primary snippet" in oversized
-    assert "Aggregate output truncated" in oversized
-    assert "ANSWER_TAIL" not in oversized
-    assert "ROOT_TAIL" not in oversized
-    assert "PROVIDER_TAIL" not in oversized
+    assert "Aggregate output truncated" not in oversized
+    assert "ANSWER_TAIL" in oversized
+    assert "ROOT_TAIL" in oversized
+    assert "PROVIDER_TAIL" in oversized
 
     structured = rendered["structured"]
-    assert "server result limit" in structured
-    assert "Shown: 2" in structured
-    assert "Total: 20" in structured
+    assert "server result limit" not in structured
+    assert "Shown: 2" not in structured
+    assert "Total: 20" not in structured
 
     malformed = rendered["malformed"]
     assert "Malformed results" in malformed

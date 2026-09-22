@@ -41,11 +41,17 @@ class VerificationReceipt:
         expires_at: float | None = None,
         details: dict[str, Any] | None = None,
     ) -> VerificationReceipt:
+        task_key = str(task_id or "").strip()
+        criterion_text = str(criterion or "").strip()
+        if not task_key:
+            raise ValueError("verification receipt requires task_id")
+        if not criterion_text:
+            raise ValueError("verification receipt requires criterion")
         now = time.time()
         return cls(
             receipt_id=f"rcpt_{uuid.uuid4().hex[:12]}",
-            task_id=task_id,
-            criterion=criterion,
+            task_id=task_key,
+            criterion=criterion_text,
             change_intent_id=change_intent_id,
             evidence_id=evidence_id,
             command_id=command_id,
@@ -401,11 +407,30 @@ class VerificationStore:
                 finally:
                     con.close()
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+            # Older Hub versions accepted empty task/criterion values and
+            # polluted task context with unusable verification entries.  They
+            # are not valid evidence and are safe to remove from disposable
+            # derived Agent OS state during schema initialization.
+            def _prune_invalid() -> None:
+                con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+                try:
+                    con.execute(
+                        "DELETE FROM agent_verification_receipts "
+                        "WHERE trim(task_id) = '' OR trim(criterion) = ''"
+                    )
+                finally:
+                    con.close()
+
+            retry_busy(_prune_invalid, retries=5, base_delay_seconds=0.02)
             self._initialized = True
 
     def record(self, receipt: VerificationReceipt) -> VerificationReceipt:
         if not self.state_store.enabled:
             return receipt
+        if not str(receipt.task_id or "").strip():
+            raise ValueError("verification receipt requires task_id")
+        if not str(receipt.criterion or "").strip():
+            raise ValueError("verification receipt requires criterion")
         self._init_tables()
         event = AgentEvent.create(
             stream_id=f"verification:{receipt.task_id}",

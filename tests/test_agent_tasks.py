@@ -15,6 +15,7 @@ from local_ai_hub.agent_tasks import (
     TaskStatus,
     TaskStore,
 )
+from local_ai_hub.sqlite_support import connect_sqlite
 
 
 @pytest.fixture
@@ -33,6 +34,33 @@ def contract_with_criteria(*criteria: str) -> GoalContract:
         acceptance_criteria=tuple(criteria),
         scope=AgentScope.TASK,
     )
+
+
+def test_goal_contract_requires_nonempty_goal():
+    with pytest.raises(ValueError, match="requires goal"):
+        GoalContract(goal=" ")
+
+
+def test_legacy_empty_goal_is_loadable_with_explicit_fallback(store: TaskStore):
+    task = store.create(contract_with_criteria("tests"), task_context(), task_id="legacy-goal")
+    con = connect_sqlite(store.state_store.db_path, isolation_level=None)
+    try:
+        row = con.execute(
+            "SELECT contract FROM agent_tasks_projection WHERE task_id=?",
+            (task.task_id,),
+        ).fetchone()
+        data = json.loads(row[0])
+        data["goal"] = ""
+        con.execute(
+            "UPDATE agent_tasks_projection SET contract=? WHERE task_id=?",
+            (json.dumps(data), task.task_id),
+        )
+    finally:
+        con.close()
+
+    loaded = store.get(task.task_id)
+    assert loaded is not None
+    assert loaded.contract.goal == "Legacy task contract: legacy-goal"
 
 
 def test_task_creation_and_retrieval(store: TaskStore):

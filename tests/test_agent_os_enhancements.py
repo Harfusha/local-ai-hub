@@ -124,6 +124,9 @@ def test_command_broker_auto_registers_verification_receipt(tmp_path: Path):
     )
     broker.set_verification_store(v_store)
 
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_smoke.py").write_text("def test_smoke(): pass\n", encoding="utf-8")
+
     # Run a passing python test command with task_id
     res = broker.run(
         "python -m compileall tests",

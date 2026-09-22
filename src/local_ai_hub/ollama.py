@@ -924,6 +924,11 @@ class OllamaRuntime:
     def generate(self, model: str, prompt: str, *, system: str | None = None, options: dict[str, Any] | None = None, keep_alive: str | None = None) -> dict[str, Any]:
         options = dict(options or {})
         payload: dict[str, Any] = {"model": model, "prompt": prompt, "stream": False, "options": options}
+        # Ollama expects `think` at the request top level.  Accepting it in the
+        # options mapping keeps small callers (benchmarks and probes) bounded and
+        # prevents reasoning models from consuming the whole visible-output budget.
+        if "think" in options:
+            payload["think"] = bool(options.pop("think"))
         if system:
             payload["system"] = system
         if keep_alive:

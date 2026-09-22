@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .prompt_contracts import capability_for
+
 
 @dataclass(frozen=True)
 class ExecutionProfile:
@@ -211,5 +213,12 @@ class ModelExecutionPolicy:
                 continue
             seen.add(model)
             p = self.profile(model)
-            models.append({"model": model, **p.cache_scope()})
+            capability = capability_for(model, role="vision" if key == "vision" else "")
+            models.append({
+                "model": model,
+                **p.cache_scope(),
+                "capability_tier": capability.tier,
+                "can": list(capability.can),
+                "cannot": list(capability.cannot),
+            })
         return {"models": models}

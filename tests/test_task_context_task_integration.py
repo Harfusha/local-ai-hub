@@ -79,7 +79,7 @@ def test_local_ai_task_uses_agent_only_context_without_repository_root(monkeypat
     assert "Durable Agent OS task state" in model_call["context"]
 
 
-def test_local_ai_task_rejects_unrelated_semantic_paths(monkeypatch):
+def test_local_ai_task_keeps_unrelated_semantic_paths_as_advisory_warning(monkeypatch):
     def post(path, payload, **kwargs):
         if path == "/api/reason":
             return {"success": True, "text": "Fix src/Calculator.java"}
@@ -101,6 +101,7 @@ def test_local_ai_task_rejects_unrelated_semantic_paths(monkeypatch):
         changed_paths=["src/auth.py"],
     )
 
-    assert result["success"] is False
+    assert result["success"] is True
     assert result["advisory_only"] is True
     assert result["bypass_reason"] == "unrelated_output"
+    assert "quality_warning" in result

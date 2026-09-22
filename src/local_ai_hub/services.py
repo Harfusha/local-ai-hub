@@ -60,6 +60,17 @@ from .agent_consistency import AdaptiveContextPack, ConsistencyRequest, GuardWar
 from .agent_context import ContextCompiler, ContextRequest
 from .agent_events import AgentStateStore
 from .semantic_quality import assess_semantic_result
+from .prompt_contracts import build_prompt
+
+
+def is_retryable_local_backend_error(value: Any) -> bool:
+    """Recognize transport/runtime failures that must keep async work retryable."""
+    text = str(value or "").lower()
+    return any(marker in text for marker in (
+        "winerror 10054", "winerror 10061", "connection reset", "connection refused",
+        "connection aborted", "broken pipe", "temporarily unavailable", "ollama unavailable",
+        "timed out", "timeout", "eof",
+    ))
 
 
 def normalize_generation_cache_prompt(prompt: str) -> str:
@@ -949,7 +960,13 @@ class LocalAIServices:
                             "_lah_retry_count": int(response.get("_lah_retry_count", 0) or 0),
                         }
                     if "error" in response:
-                        return {"success": False, "error": response["error"], "model": candidate_model, "_lah_retry_count": int(response.get("_lah_retry_count", 0) or 0)}
+                        retryable = is_retryable_local_backend_error(response["error"])
+                        return {
+                            "success": False, "error": response["error"], "model": candidate_model,
+                            "retryable": retryable, "terminal": not retryable,
+                            "error_code": "local_backend_transport" if retryable else "local_model_error",
+                            "_lah_retry_count": int(response.get("_lah_retry_count", 0) or 0),
+                        }
                     raw_text = response.get("response", "")
                     clean_text, parsed_thinking = postprocess_model_output(raw_text, role=role)
                     thinking = response.get("thinking") or parsed_thinking
@@ -991,7 +1008,12 @@ class LocalAIServices:
                     if state:
                         result["scheduler_state"] = str(state)
                 except Exception as exc:
-                    result = {"success": False, "error": str(exc), "model": candidate}
+                    retryable = is_retryable_local_backend_error(exc)
+                    result = {
+                        "success": False, "error": str(exc), "model": candidate,
+                        "retryable": retryable, "terminal": not retryable,
+                        "error_code": "local_backend_transport" if retryable else "local_model_error",
+                    }
                 retryable_error = retryable_error or bool(result.get("retryable", False))
                 if result.get("success"):
                     self.breakers.success(breaker_key)
@@ -1272,29 +1294,25 @@ class LocalAIServices:
         except ValueError as exc:
             return {"success": False, "error": str(exc), "terminal": True, "retryable": False}
         task_type = route["task_type"]
-        system = {
-            "code": (
-                "You are a precise local coding subagent. Terse technical output only: zero conversational filler, pleasantries, or preamble. "
-                "Start with `SUMMARY:` in <=5 dense lines, then only actionable evidence/patch guidance. "
-                "Cite supplied file paths/lines when present. Do not restate context, do not invent repository facts, and stop after the useful answer."
-            ),
-            "review": (
-                "You are a defect-first code reviewer. Terse technical output only: zero conversational filler, pleasantries, or preamble. "
-                "Start with `SUMMARY:` then report at most 8 actionable findings ordered by severity. "
-                "Prioritize correctness, regressions, security/concurrency and missing tests. Cite file/line evidence. No style commentary or praise."
-            ),
-            "reasoning": (
-                "You are a critical engineering reasoning subagent. Terse technical output only: zero conversational filler, pleasantries, or preamble. "
-                "Start with `SUMMARY:` in <=5 lines. Then give only key assumptions, "
-                "failure modes, tradeoffs and the strongest counterargument. Prefer falsifiable claims over exposition."
-            ),
-            "general": (
-                "You are a local second-brain assistant. Terse technical output only: zero conversational filler, pleasantries, or preamble. "
-                "Start with `SUMMARY:` and produce the shortest answer that preserves useful facts, "
-                "decisions, identifiers, numbers and uncertainty. Do not repeat the prompt."
-            ),
-        }[task_type]
-        prompt = self._conversation_user_prompt(task, context)
+        operation = str(args.get("operation") or task_type).strip().lower()
+        package = build_prompt(
+            operation=operation,
+            model=route["model"],
+            role=task_type,
+            profile=str(getattr(self, "config", {}).get("_hardware", {}).get("profile", "auto")),
+            task=task,
+            context=context,
+            changed_paths=args.get("changed_paths") or (),
+            evidence_ids=args.get("evidence_ids") or (),
+            acceptance_criteria=args.get("acceptance_criteria") or (),
+            repository_revision=str(args.get("repository_revision", "")),
+            static_facts=str(args.get("static_facts", "")),
+        )
+        system = package.system
+        # Conversation turns keep the compact transcript protocol so follow-ups
+        # remain lossless; the richer static contract lives in the conversation
+        # system message and one-shot operations use the full package.user form.
+        prompt = self._conversation_user_prompt(task, context) if bool(args.get("conversation", False)) else package.user
         max_tokens = int(args.get("max_tokens", 4096))
         temperature = float(args.get("temperature", 0.15))
         source = f"delegate:{task_type}"
@@ -1327,13 +1345,9 @@ class LocalAIServices:
         result["advisory_only"] = True
         result["semantic_quality"] = quality
         if not quality.get("usable", False):
-            result.update({
-                "success": False,
-                "terminal": False,
-                "retryable": False,
-                "bypass_reason": quality.get("bypass_reason", quality.get("reason", "quality_gate")),
-                "error": "semantic result rejected by deterministic quality gate",
-            })
+            reason = quality.get("bypass_reason", quality.get("reason", "quality_gate"))
+            result["quality_warning"] = f"advisory semantic output requires verification: {reason}"
+            result["bypass_reason"] = reason
         return result
 
     def delegate_profile(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
@@ -1366,15 +1380,17 @@ class LocalAIServices:
 
         context = str(args.get("context", ""))
         candidate = str(args.get("candidate", ""))
-        prompt = f"TASK:\n{task}\n"
-        if context:
-            prompt += f"\nCONTEXT:\n{context}\n"
-        if candidate:
-            prompt += f"\nCANDIDATE:\n{candidate}\n"
+        package = build_prompt(
+            operation=str(args.get("operation") or profile.role or "delegate"),
+            model=profile.model,
+            profile=str(getattr(self, "config", {}).get("_hardware", {}).get("profile", "auto")),
+            task=task,
+            context=context + (f"\nCANDIDATE:\n{candidate}" if candidate else ""),
+        )
         result = self._generate(
             profile.model,
-            prompt,
-            self.profile_catalog.system_contract(profile, task),
+            package.user,
+            self.profile_catalog.system_contract(profile, task, prompt=package.system),
             int(args.get("max_tokens", 0) or profile.max_tokens),
             profile.temperature,
             tenant,
@@ -1387,7 +1403,10 @@ class LocalAIServices:
             "profile": profile.name,
             "language": self.profile_catalog.detect_language(task),
             "advisory_only": profile.advisory_only,
+            "declared_model": profile.declared_model,
+            "resolved_model": profile.model,
             "model_fallback": profile.model_fallback,
+            "model_fallback_reason": profile.model_fallback_reason,
             "tools_used": [],
         })
         return result
@@ -1397,6 +1416,7 @@ class LocalAIServices:
         payload["task_type"] = "review"
         payload["task"] = str(args.get("instructions", "Review the supplied code or diff and report actionable defects only."))
         payload["context"] = str(args.get("code", args.get("context", "")))
+        payload["operation"] = str(args.get("operation", "review"))
         payload.setdefault("max_tokens", 4096)
         return self.delegate(payload, tenant)
 
@@ -1404,6 +1424,7 @@ class LocalAIServices:
         payload = dict(args)
         payload["task_type"] = "reasoning"
         payload["task"] = str(args.get("problem", args.get("task", "")))
+        payload["operation"] = str(args.get("operation", "reason"))
         payload.setdefault("max_tokens", 4096)
         return self.delegate(payload, tenant)
 
@@ -1427,11 +1448,6 @@ class LocalAIServices:
         candidate = str(args.get("candidate", ""))
         context = str(args.get("context", ""))
         focus = str(args.get("focus", "correctness, missing assumptions, edge cases, and alternative explanations"))
-        prompt = (
-            f"QUESTION:\n{question}\n\nCANDIDATE ANSWER / PLAN:\n{candidate}\n\n"
-            f"ADDITIONAL CONTEXT:\n{context}\n\nFOCUS:\n{focus}\n\n"
-            "Independently challenge the candidate. Return only concrete weaknesses, corrections and a stronger conclusion."
-        )
         route = self.router.classify(
             f"{question}\n{focus}",
             f"{candidate}\n{context}",
@@ -1439,9 +1455,18 @@ class LocalAIServices:
             str(args.get("complexity", "auto")),
         )
         model = str(route["model"])
+        package = build_prompt(
+            operation="second_opinion",
+            model=model,
+            role="reasoning",
+            profile=str(getattr(self, "config", {}).get("_hardware", {}).get("profile", "auto")),
+            task=question,
+            context=f"CANDIDATE ANSWER / PLAN:\n{candidate}\n\nADDITIONAL CONTEXT:\n{context}",
+            changed_paths=args.get("changed_paths") or (),
+            static_facts=f"FOCUS: {focus}",
+        )
         result = self._generate(
-            model, prompt,
-            "You are an independent skeptical reviewer. Terse technical output only: zero conversational filler, pleasantries, or preamble. Do not merely agree and do not restate the candidate.",
+            model, package.user, package.system,
             int(args.get("max_tokens", 4096)), float(args.get("temperature", 0.2)),
             tenant, "second-opinion", int(args.get("priority", 6)),
             semantic_query=f"{question}\n{focus}", semantic_context_fingerprint=stable_hash({"candidate": candidate, "context": context}),
@@ -1462,17 +1487,20 @@ class LocalAIServices:
             return {"success": False, "error": "task or prompt is required"}
 
         fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
-        prompt = (
-            f"TASK:\n{task}\n\n"
-            f"FILE: {file_path}\n\n"
-            f"CONTEXT:\n{context}\n\n"
-            "Provide the exact implementation code or code replacement. Return ONLY code or diff."
+        package = build_prompt(
+            operation="speculative_draft",
+            model=fast_model,
+            role="code",
+            profile=str(getattr(self, "config", {}).get("_hardware", {}).get("profile", "auto")),
+            task=task,
+            context=f"FILE: {file_path}\n\n{context}",
+            changed_paths=[file_path] if file_path else (),
         )
 
         gen_result = self._generate(
             fast_model,
-            prompt,
-            "You are a precise, fast coding specialist. Return only valid code without conversational filler.",
+            package.user,
+            package.system + " Return the minimal valid code or diff only after grounding it in the supplied file and context.",
             int(args.get("max_tokens", 2048)),
             float(args.get("temperature", 0.1)),
             tenant,
@@ -1691,7 +1719,10 @@ class LocalAIServices:
                     "Vision image exceeds the bounded decoded-byte limit.",
                     "vision_image_too_large",
                 )
-            images.append(value)
+            # Ollama expects the raw base64 payload, not the transport prefix
+            # from a browser-style data URL. Keep validation accepting both,
+            # but normalize the provider payload to one canonical form.
+            images.append(encoded)
             return None
 
         def is_inline_image(value: str) -> bool:
@@ -4158,8 +4189,11 @@ class LocalAIServices:
                 )
             review_payload = {
                 "task_type": "review",
+                "operation": "review_diff",
                 "task": task,
                 "context": review_code,
+                "changed_paths": diff.get("changed_files", []),
+                "static_facts": det_hint,
                 "complexity": complexity,
                 "max_tokens": per_chunk_output_tokens,
                 "priority": int(args.get("priority", 5)),
@@ -4361,10 +4395,16 @@ class LocalAIServices:
         per_chunk_out = max(180, min(700, target_tokens // max(1, len(chunks)) + 120))
         general_model = str(self.config.get("models", {}).get("general", self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b")))
         for index, chunk in enumerate(chunks):
-            prompt = f"INSTRUCTION:\n{instruction}\n\nCHUNK {index + 1}/{len(chunks)}:\n{chunk}"
+            package = build_prompt(
+                operation="compress",
+                model=general_model,
+                profile=str(getattr(self, "config", {}).get("_hardware", {}).get("profile", "auto")),
+                task=f"{instruction}\nChunk {index + 1}/{len(chunks)}",
+                context=chunk,
+            )
             result = self._generate(
-                general_model, prompt,
-                "Compress aggressively. Preserve only information needed to reconstruct decisions/facts. Use a flat list without nested bullets when useful.",
+                general_model, package.user,
+                package.system,
                 per_chunk_out, 0.1, tenant, "compress:map", int(args.get("priority", 4)),
                 internal=True,
             )
@@ -4374,10 +4414,17 @@ class LocalAIServices:
 
         combined = "\n\n".join(summaries)
         if len(chunks) > 1 or estimate_tokens(combined) > target_tokens:
+            package = build_prompt(
+                operation="compress",
+                model=general_model,
+                profile=str(getattr(self, "config", {}).get("_hardware", {}).get("profile", "auto")),
+                task=f"{instruction}\nTarget: <= {target_tokens} estimated tokens.",
+                context=combined,
+            )
             final = self._generate(
                 general_model,
-                f"TARGET: <= {target_tokens} estimated tokens.\nINSTRUCTION: {instruction}\n\nPARTIAL SUMMARIES:\n{combined}",
-                "Merge the partial summaries without duplication. Preserve concrete evidence and uncertainty. Be dense.",
+                package.user,
+                package.system,
                 target_tokens, 0.1, tenant, "compress:reduce", int(args.get("priority", 4)),
                 internal=True,
             )
@@ -5116,41 +5163,151 @@ class LocalAIServices:
     def eval_suite(self, payload: dict[str, Any], tenant: str = "default") -> dict[str, Any]:
         """Run bounded local agent benchmark evaluation test cases."""
         suite_name = str(payload.get("suite_name", "default"))
+        requested_model = str(payload.get("model") or getattr(self, "config", {}).get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
+        benchmark_kind = str(payload.get("benchmark_kind", "text") or "text").strip().lower()
         cases = payload.get("cases") or [
             {"id": "c1", "input": "def add(a, b):", "expected": "return a + b"},
             {"id": "c2", "input": "def is_even(n):", "expected": "return n % 2 == 0"},
         ]
+        configured_roles = tuple(
+            str(role)
+            for role, model in (getattr(self, "config", {}).get("models", {}) or {}).items()
+            if str(model or "") == requested_model and str(role) not in {"embedding", "embedding_backend", "embedding_device", "reranker", "reranker_backend", "reranker_device"}
+        )
+        vision_only = bool(configured_roles) and all(role == "vision" for role in configured_roles)
+        if vision_only and benchmark_kind != "vision":
+            mismatch_cases = []
+            for case in cases:
+                case_id = str(case.get("id", "case"))
+                mismatch_cases.append({
+                    "case_id": case_id,
+                    "model": requested_model,
+                    "status": "role_mismatch",
+                    "passed": False,
+                    "error": f"model is configured only for vision role: {', '.join(configured_roles)}",
+                    "response_chars": 0,
+                    "response_tokens_est": 0,
+                    "response_sha256": hashlib.sha256(b"").hexdigest(),
+                    "response_preview": "",
+                    "response_preview_truncated": False,
+                    "duration_ms": 0.0,
+                })
+            return {
+                "success": True,
+                "suite": suite_name,
+                "model": requested_model,
+                "model_roles": list(configured_roles),
+                "benchmark_kind": benchmark_kind,
+                "summary": {
+                    "total": len(cases),
+                    "passed": 0,
+                    "failed": len(cases),
+                    "pass_rate": 0.0,
+                    "execution_failures": 0,
+                    "benchmark_valid": False,
+                    "role_mismatch": True,
+                },
+                "cases": mismatch_cases,
+            }
         results = []
         passed = 0
+        execution_failures = 0
         for case in cases:
             c_id = str(case.get("id", "case"))
             c_in = str(case.get("input", ""))
             c_exp = str(case.get("expected", ""))
+            started = time.perf_counter()
             try:
-                model = str(payload.get("model") or getattr(self, "config", {}).get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
                 response = self.runtime.request("/api/generate", {
-                    "model": model, "prompt": c_in, "stream": False,
+                    "model": requested_model,
+                    "prompt": c_in,
+                    "system": "Return the shortest correct answer containing the requested completion. Output only the answer; no greeting, explanation, or generic advice.",
+                    "stream": False,
+                    # Evaluation cases measure visible task output, not hidden
+                    # reasoning.  Without this, Qwen3.5 can consume the whole
+                    # small eval budget in `thinking` and look like a bad model.
+                    "think": False,
                     "options": {"num_predict": 128, "temperature": 0.0},
                 })
-                is_pass = bool(c_exp and not response.get("error") and c_exp in str(response.get("response", "")))
-                result = {"case_id": c_id, "passed": is_pass}
-                if response.get("error"):
-                    result["error"] = str(response["error"])
+                response = response if isinstance(response, dict) else {"error": "runtime returned a non-object response"}
+                error = str(response.get("error", "") or "")
+                response_text = str(response.get("response", response.get("text", "")) or "")
+                message = response.get("message")
+                if not response_text and isinstance(message, dict):
+                    response_text = str(message.get("content", "") or "")
+                is_pass = bool(c_exp and not error and c_exp in response_text)
+                if error:
+                    execution_failures += 1
+                    lowered = error.lower()
+                    status = "unavailable" if any(marker in lowered for marker in ("404", "not found", "unavailable", "no route")) else "error"
+                else:
+                    status = "passed" if is_pass else "failed"
+                lowered_text = response_text.casefold()
+                generic_markers = ("certainly!", "below is", "here is", "this function", "hope this helps")
+                generic_filler = any(marker in lowered_text for marker in generic_markers)
+                concise_limit = max(240, len(c_exp) * 6)
+                style_quality = {
+                    "contains_expected": is_pass,
+                    "exact_expected": response_text.strip() == c_exp.strip(),
+                    "generic_filler": generic_filler,
+                    "concise": len(response_text.strip()) <= concise_limit,
+                    "quality_pass": bool(is_pass and not generic_filler and len(response_text.strip()) <= concise_limit),
+                }
+                result = {
+                    "case_id": c_id,
+                    "model": requested_model,
+                    "passed": is_pass,
+                    "status": status,
+                    "response_chars": len(response_text),
+                    "response_tokens_est": estimate_tokens(response_text),
+                    "response_sha256": hashlib.sha256(response_text.encode("utf-8")).hexdigest(),
+                    "response_preview": response_text[:240],
+                    "response_preview_truncated": len(response_text) > 240,
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                    "style_quality": style_quality,
+                }
+                if error:
+                    result["error"] = error
             except Exception as exc:
                 is_pass = False
-                result = {"case_id": c_id, "passed": False, "error": str(exc)}
+                execution_failures += 1
+                result = {
+                    "case_id": c_id,
+                    "model": requested_model,
+                    "passed": False,
+                    "status": "error",
+                    "error": str(exc),
+                    "response_chars": 0,
+                    "response_tokens_est": 0,
+                    "response_sha256": hashlib.sha256(b"").hexdigest(),
+                    "response_preview": "",
+                    "response_preview_truncated": False,
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                }
             results.append(result)
             if is_pass:
                 passed += 1
 
+        quality_passed = sum(
+            1 for item in results
+            if isinstance(item, dict) and bool((item.get("style_quality") or {}).get("quality_pass"))
+        )
         return {
             "success": True,
             "suite": suite_name,
+            "model": requested_model,
+            "model_roles": list(configured_roles),
+            "benchmark_kind": benchmark_kind,
             "summary": {
                 "total": len(cases),
                 "passed": passed,
                 "failed": len(cases) - passed,
                 "pass_rate": round(passed / max(1, len(cases)), 2),
+                "execution_failures": execution_failures,
+                "benchmark_valid": True,
+                "role_mismatch": False,
+                "quality_passed": quality_passed,
+                "quality_pass_rate": round(quality_passed / max(1, len(cases)), 2),
             },
             "cases": results,
         }

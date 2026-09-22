@@ -53,6 +53,26 @@ def test_reasoning_uses_basic_qwen_until_complexity_requires_smart_model():
     assert complex_task["model"] == "qwen2.5-coder:7b"
 
 
+def test_balanced_profile_reserves_9b_for_extreme_reasoning():
+    from local_ai_hub.router import ModelRouter
+
+    router = ModelRouter({
+        "models": {
+            "fast_code": "qwen2.5-coder:7b",
+            "heavy_code": "qwen2.5-coder:7b",
+            "reasoning": "qwen3.5:9b",
+            "general": "qwen2.5-coder:7b",
+        },
+        "routing": {"heavy_min_score": 3},
+    })
+
+    ordinary = router.classify("Explain this failure", task_type="reasoning", complexity="fast")
+    extreme = router.classify("Analyze the root cause across modules", task_type="reasoning", complexity="heavy")
+
+    assert ordinary["model"] == "qwen2.5-coder:7b"
+    assert extreme["model"] == "qwen3.5:9b"
+
+
 def test_second_opinion_uses_basic_qwen_by_default():
     from local_ai_hub.router import ModelRouter
     from local_ai_hub.services import LocalAIServices

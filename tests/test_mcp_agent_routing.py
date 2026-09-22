@@ -99,7 +99,7 @@ def test_mcp_descriptions_explain_agent_tier_boundaries() -> None:
     assert "security_audit" in descriptions
 
 
-def test_repo_review_diff_uses_durable_delivery_from_cold_start(monkeypatch, tmp_path: Path) -> None:
+def test_repo_review_diff_returns_foreground_result_by_default(monkeypatch, tmp_path: Path) -> None:
     calls = {}
 
     class _Client:
@@ -113,7 +113,55 @@ def test_repo_review_diff_uses_durable_delivery_from_cold_start(monkeypatch, tmp
 
     assert result["success"] is True
     assert calls["endpoint"] == "/api/review/diff"
-    assert calls["payload"]["delivery"] == "async"
+    assert calls["payload"]["delivery"] == "sync"
+
+
+def test_coord_verify_receipt_rejects_missing_identity_before_network(monkeypatch):
+    class _Client:
+        def post(self, *args, **kwargs):
+            raise AssertionError("invalid receipt must not reach the Hub")
+
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", _Client())
+    result = local_ai_mcp.local_ai_coord(action="verify_receipt", task_id="", key="")
+
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert "task_id and criterion" in result["error"]
+
+
+def test_coord_forwards_explicit_receipt_criterion_and_blackboard_identity(monkeypatch):
+    calls = []
+
+    class _Client:
+        def post(self, endpoint, payload, **kwargs):
+            calls.append((endpoint, payload))
+            return {"success": True, "echo": payload}
+
+        def coord(self, **kwargs):
+            calls.append(("coord", kwargs))
+            return {"success": True, "echo": kwargs}
+
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", _Client())
+    receipt = local_ai_mcp.local_ai_coord(
+        action="verify_receipt", task_id="task-1", criterion="criterion-1"
+    )
+    board = local_ai_mcp.local_ai_coord(
+        action="blackboard_update", board_id="board-1", section="review", value="finding"
+    )
+    assert receipt["success"] is True
+    assert board["success"] is True
+    assert calls[0][1]["receipt"]["criterion"] == "criterion-1"
+    assert calls[1][1]["board_id"] == "board-1"
+    assert calls[1][1]["section"] == "review"
+
+
+def test_empty_semantic_success_is_structured_retryable_failure():
+    result = local_ai_mcp._quality_check_semantic_result(
+        {"success": True, "model": "qwen2.5-coder:3b"}, task="review", context=""
+    )
+    assert result["success"] is False
+    assert result["error_code"] == "empty_semantic_result"
+    assert result["retryable"] is True
 
 
 def test_dynamic_descriptions_make_first_choice_routing_explicit() -> None:

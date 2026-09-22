@@ -465,7 +465,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "background_code": "qwen2.5-coder:0.5b",
             "fast_code": "qwen2.5-coder:1.5b",
             "heavy_code": "qwen2.5-coder:7b",
-            "reasoning": "qwen2.5-coder:7b",
+            "reasoning": "qwen3.5:9b",
             "general": "qwen2.5-coder:7b",
             "vision": "qwen3.5:9b",
         },

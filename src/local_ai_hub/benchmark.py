@@ -3,6 +3,7 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import json
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -50,38 +51,104 @@ class HardwareBenchmarkRunner:
         t0 = time.perf_counter()
         first_token_time: float | None = None
         tokens_count = 0
+        response_text = ""
+        thinking_chars = 0
+        generation_duration_ns: int | None = None
+        streaming = False
 
         try:
-            if hasattr(self.runtime, "generate_stream"):
-                for _chunk in self.runtime.generate_stream(target_model, prompt, options={"num_predict": num_tokens}):
+            if callable(getattr(self.runtime, "generate_stream", None)):
+                streaming = True
+                # Qwen reasoning models can spend the whole small benchmark budget
+                # in a hidden thinking stream.  Hardware routing needs visible
+                # generation latency, so explicitly disable thinking here.
+                for chunk in self.runtime.generate_stream(
+                    target_model,
+                    prompt,
+                    options={"num_predict": num_tokens, "think": False},
+                ):
+                    if isinstance(chunk, dict) and chunk.get("error"):
+                        return {"success": False, "model": target_model, "error": str(chunk["error"])}
                     now = time.perf_counter()
                     if first_token_time is None:
                         first_token_time = now
-                    tokens_count += 1
-            elif hasattr(self.runtime, "generate"):
+                    if isinstance(chunk, dict):
+                        visible = str(chunk.get("response", chunk.get("text", "")) or "")
+                        response_text += visible
+                        thinking_chars += len(str(chunk.get("thinking", "") or ""))
+                        if visible:
+                            tokens_count += 1
+                    else:
+                        visible = str(chunk or "")
+                        response_text += visible
+                        if visible:
+                            tokens_count += 1
+                if not response_text and thinking_chars:
+                    return {
+                        "success": False,
+                        "model": target_model,
+                        "error": "benchmark produced thinking-only output",
+                        "measurement_warning": "thinking_only_output",
+                        "thinking_chars": thinking_chars,
+                    }
+            elif callable(getattr(self.runtime, "generate", None)):
                 res = self.runtime.generate(
                     target_model,
                     prompt,
-                    options={"num_predict": max(1, int(num_tokens))},
+                    options={"num_predict": max(1, int(num_tokens)), "think": False},
                 )
-                first_token_time = time.perf_counter()
-                text = res.get("text", "")
-                tokens_count = max(1, len(text.split()))
+                if not isinstance(res, dict):
+                    return {"success": False, "model": target_model, "error": "benchmark runtime returned a non-object response"}
+                if res.get("error"):
+                    return {"success": False, "model": target_model, "error": str(res["error"])}
+                response_text = str(res.get("response", res.get("text", "")) or "")
+                thinking_chars = len(str(res.get("thinking", "") or ""))
+                tokens_count = int(res.get("eval_count", 0) or 0)
+                if tokens_count <= 0:
+                    tokens_count = len(response_text.split())
+                generation_duration_ns = int(res.get("eval_duration", 0) or 0) or None
+                if not response_text:
+                    return {
+                        "success": False,
+                        "model": target_model,
+                        "error": "benchmark produced no visible output",
+                        "measurement_warning": "thinking_only_output" if thinking_chars else "empty_visible_output",
+                        "thinking_chars": thinking_chars,
+                    }
             else:
                 return {"success": False, "error": "Runtime does not support generation"}
         except Exception as exc:
             return {"success": False, "error": f"Benchmark generation failed: {exc}", "model": target_model}
 
+        if not response_text:
+            return {
+                "success": False,
+                "model": target_model,
+                "error": "benchmark produced no visible output",
+                "measurement_warning": "thinking_only_output" if thinking_chars else "empty_visible_output",
+                "thinking_chars": thinking_chars,
+            }
+
         t_end = time.perf_counter()
 
         ttft_ms = round((first_token_time - t0) * 1000, 2) if first_token_time else round((t_end - t0) * 1000, 2)
-        gen_duration = max(0.001, t_end - (first_token_time or t0))
+        gen_duration = max(0.001, (generation_duration_ns / 1e9) if generation_duration_ns else t_end - (first_token_time or t0) if streaming else t_end - t0)
         tps = round(tokens_count / gen_duration, 2) if tokens_count > 0 else 0.0
 
         # Composite score 0..100 based on TTFT and TPS
-        tps_part = min(60.0, (tps / 50.0) * 60.0)
-        ttft_part = min(40.0, max(0.0, (500.0 - ttft_ms) / 500.0) * 40.0)
-        score = round(tps_part + ttft_part, 1)
+        score: float | None
+        measurement_warning = ""
+        if tokens_count < 2:
+            score = None
+            measurement_warning = "insufficient_output_tokens"
+        else:
+            # Use a smooth score: the previous hard 500 ms TTFT cutoff made
+            # every realistic Windows model score the same 60/100 once TTFT was
+            # above the cutoff.  This keeps 0..100 bounded while preserving
+            # meaningful separation for routing and benchmark history.
+            tps_part = min(60.0, (tps / 100.0) * 60.0)
+            ttft_part = min(40.0, 40.0 * math.exp(-max(0.0, ttft_ms) / 3000.0))
+            score = round(tps_part + ttft_part, 1)
 
         final_vram = {}
         if self.vram_balancer and hasattr(self.vram_balancer, "sample_vram"):
@@ -97,9 +164,14 @@ class HardwareBenchmarkRunner:
             "ttft_ms": ttft_ms,
             "tokens_per_second": tps,
             "hardware_score": score,
+            "generation_duration_ms": round(gen_duration * 1000, 2),
+            "output_chars": len(response_text),
+            "streaming": streaming,
             "initial_vram": initial_vram,
             "final_vram": final_vram,
         }
+        if measurement_warning:
+            record["measurement_warning"] = measurement_warning
 
         self._persist_record(record)
         return {"success": True, **record}

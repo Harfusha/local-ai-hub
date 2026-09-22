@@ -29,6 +29,17 @@ def test_trace_list_defaults_to_200_and_accepts_higher_configured_limit(tmp_path
     assert DebugTraceStore(_config(tmp_path / "custom", max_list_limit=500)).max_list_limit == 500
 
 
+def test_trace_defaults_allow_large_retained_payloads(tmp_path):
+    config = _config(tmp_path)
+    del config["debug_traces"]["max_event_bytes"]
+    del config["debug_traces"]["max_session_text_bytes"]
+
+    store = DebugTraceStore(config)
+
+    assert store.max_event_bytes == 4 * 1024 * 1024
+    assert store.max_session_text_bytes == 64 * 1024 * 1024
+
+
 def test_trace_detail_preserves_ordered_full_debug_content(tmp_path):
     store = DebugTraceStore(_config(tmp_path))
     trace_id = store.start(kind="async_job", tenant="tenant", agent="codex", action="reason")

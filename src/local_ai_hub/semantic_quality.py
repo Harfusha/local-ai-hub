@@ -33,6 +33,15 @@ _BARE_FILE = re.compile(
 _URL = re.compile(r"\b(?:https?|file)://\S+", re.IGNORECASE)
 _LINE_SUFFIX = re.compile(r"(?:[:#]\d+(?:-\d+)?)$")
 _DETACHED_LINE_REFERENCE = re.compile(r"\b(?:at\s+)?line\s+\d+(?:\s*[-–]\s*\d+)?\b", re.IGNORECASE)
+_QUALIFIED_LINE_REFERENCE = re.compile(
+    r"(?<![\w./-])[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+\.(?:py|js|jsx|ts|tsx|java|go|rs|cs|cpp|c|h|hpp|json|toml|yaml|yml|md|sql|sh|ps1|html|css)[:#]\d+(?:-\d+)?\b",
+    re.IGNORECASE,
+)
+_GENERIC_OUTPUT_MARKER = re.compile(
+    r"\b(?:hardware or software|best practices|potential mismatch|it is important to note|"
+    r"could be due to a variety of|in the context of|hope this helps)\b",
+    re.IGNORECASE,
+)
 
 
 def assess_semantic_result(
@@ -74,7 +83,11 @@ def assess_semantic_result(
     # or supplied by the deterministic evidence layer.  This blocks the common
     # local-model failure mode of inventing line numbers while retaining useful
     # path-qualified references.
-    if _DETACHED_LINE_REFERENCE.search(text):
+    # Models often write both a human-readable ``path line N`` label and a
+    # machine-usable ``path:N`` reference in the same finding.  Reject only
+    # outputs that contain no qualified path:line reference at all; otherwise
+    # the path-overlap check below remains authoritative.
+    if _DETACHED_LINE_REFERENCE.search(text) and not _QUALIFIED_LINE_REFERENCE.search(text):
         return _reject("unsupported_location")
 
     status = _STATUS_MARKER.fullmatch(stripped)
@@ -82,6 +95,8 @@ def assess_semantic_result(
         return _reject("queued" if status.group(1).casefold() in _QUEUED_STATES else "malformed_output")
     if _ERROR_MARKER.search(stripped):
         return _reject("model_error")
+    if _GENERIC_OUTPUT_MARKER.search(stripped):
+        return _reject("generic_output")
 
     unrelated = [
         path
