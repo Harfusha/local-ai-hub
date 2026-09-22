@@ -476,10 +476,10 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "high": {
         "models": {
-            "background_code": "qwen2.5-coder:0.5b",
-            "fast_code": "qwen2.5-coder:1.5b",
-            "heavy_code": "qwen2.5-coder:3b",
-            "reasoning": "qwen2.5-coder:7b",
+            "background_code": "qwen2.5-coder:1.5b",
+            "fast_code": "qwen2.5-coder:3b",
+            "heavy_code": "qwen2.5-coder:7b",
+            "reasoning": "qwen3.5:9b",
             "general": "qwen3.5:9b",
             "vision": "qwen3.5:9b",
         },
@@ -490,10 +490,10 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "max": {
         "models": {
-            "background_code": "qwen2.5-coder:0.5b",
-            "fast_code": "qwen2.5-coder:1.5b",
-            "heavy_code": "qwen2.5-coder:3b",
-            "reasoning": "qwen2.5-coder:7b",
+            "background_code": "qwen2.5-coder:1.5b",
+            "fast_code": "qwen2.5-coder:3b",
+            "heavy_code": "qwen3.5:9b",
+            "reasoning": "qwen3.5:9b",
             "general": "qwen3.5:9b",
             "vision": "qwen3.5:9b",
         },

@@ -176,32 +176,32 @@ class LlamaCppRoutingTests(unittest.TestCase):
             "integrated": "qwen2.5-coder:0.5b",
             "low": "qwen2.5-coder:0.5b",
             "balanced": "qwen2.5-coder:1.5b",
-            "high": "qwen2.5-coder:0.5b",
-            "max": "qwen2.5-coder:0.5b",
+            "high": "qwen2.5-coder:1.5b",
+            "max": "qwen2.5-coder:1.5b",
         }
         expected_fast = {
             "cpu": "qwen2.5-coder:1.5b",
             "integrated": "qwen2.5-coder:1.5b",
             "low": "qwen2.5-coder:1.5b",
             "balanced": "qwen2.5-coder:3b",
-            "high": "qwen2.5-coder:1.5b",
-            "max": "qwen2.5-coder:1.5b",
+            "high": "qwen2.5-coder:3b",
+            "max": "qwen2.5-coder:3b",
         }
         expected_reasoning = {
             "cpu": "qwen2.5-coder:7b",
             "integrated": "qwen2.5-coder:7b",
             "low": "qwen2.5-coder:7b",
             "balanced": "qwen3.5:9b",
-            "high": "qwen2.5-coder:7b",
-            "max": "qwen2.5-coder:7b",
+            "high": "qwen3.5:9b",
+            "max": "qwen3.5:9b",
         }
         expected_heavy = {
             "cpu": "qwen2.5-coder:3b",
             "integrated": "qwen2.5-coder:3b",
             "low": "qwen2.5-coder:3b",
             "balanced": "qwen2.5-coder:7b",
-            "high": "qwen2.5-coder:3b",
-            "max": "qwen2.5-coder:3b",
+            "high": "qwen2.5-coder:7b",
+            "max": "qwen3.5:9b",
         }
         expected_vision = {
             "cpu": "qwen3-vl:4b",
