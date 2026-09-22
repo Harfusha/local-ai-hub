@@ -569,13 +569,18 @@ class TelemetryStore:
         if not self.enabled:
             return
         self._publish_live(kind, payload)
+        # Reserve the queue sequence before publishing the item.  The writer
+        # thread may consume a freshly queued item immediately; incrementing
+        # afterwards lets flush() observe processed >= queued and return before
+        # the item is actually visible in SQLite.
+        with self._stats_lock:
+            self._stats["queued"] += 1
         try:
             self._queue.put_nowait((kind, payload))
-            with self._stats_lock:
-                self._stats["queued"] += 1
         except queue.Full:
             # Observability must never become a back-pressure source for foreground work.
             with self._stats_lock:
+                self._stats["queued"] -= 1
                 self._stats["dropped"] += 1
 
     def record_live(self, kind: str = "live", **event: Any) -> None:
