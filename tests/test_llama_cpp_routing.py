@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -11,6 +12,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from local_ai_hub.hardware import profile_overrides
 from local_ai_hub.llama_cpp import LlamaCppRouter, _loopback_url
+from local_ai_hub.ollama import OllamaRuntime
 
 
 class _Response:
@@ -147,6 +149,50 @@ class LlamaCppRoutingTests(unittest.TestCase):
         self.assertEqual(call["id"], "c1")
         self.assertEqual(call["function"]["name"], "local_ai_repo")
         self.assertEqual(call["function"]["arguments"], {"action": "search"})
+
+    def test_model_capabilities_translate_llama_cpp_image_metadata(self):
+        config = self._config()
+        config["llama_cpp"]["models"]["qwen3-vl:4b"] = {
+            "url": "http://127.0.0.1:12438",
+            "served_model": "hub-qwen-vl",
+            "context_length": 8192,
+        }
+        router = LlamaCppRouter(config)
+
+        def fake_urlopen(req, timeout=0):
+            if req.full_url.endswith("/health"):
+                return _Response({"status": "ok"})
+            if req.full_url.endswith("/models"):
+                return _Response({"data": [{
+                    "id": "hub-qwen-vl",
+                    "status": {"value": "loaded"},
+                    "architecture": {"input_modalities": ["text", "image"], "output_modalities": ["text"]},
+                }]})
+            self.fail(f"unexpected URL: {req.full_url}")
+
+        with patch("local_ai_hub.llama_cpp.urlopen", side_effect=fake_urlopen):
+            result = router.model_capabilities("qwen3-vl:4b")
+
+        self.assertEqual(result["capabilities"], ["completion", "vision"])
+
+    def test_show_endpoint_uses_llama_cpp_capabilities_when_ollama_disabled(self):
+        with tempfile.TemporaryDirectory() as state_dir:
+            config = {
+                "server": {"ollama_url": "http://127.0.0.1:11434", "state_dir": state_dir},
+                "ollama": {"enabled": False},
+                "llama_cpp": {"fallback_to_ollama": False, "models": {}},
+            }
+            runtime = OllamaRuntime(config)
+            runtime.llama_cpp = unittest.mock.Mock()
+            runtime.llama_cpp.model_capabilities.return_value = {
+                "model": "qwen3-vl:4b",
+                "capabilities": ["completion", "vision"],
+            }
+
+            result = runtime.request("/api/show", {"name": "qwen3-vl:4b"})
+
+        self.assertEqual(result["capabilities"], ["completion", "vision"])
+        runtime.llama_cpp.model_capabilities.assert_called_once_with("qwen3-vl:4b")
 
     def test_context_over_limit_falls_back_without_sending_request(self):
         router = LlamaCppRouter(self._config())

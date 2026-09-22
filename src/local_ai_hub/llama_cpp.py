@@ -222,6 +222,40 @@ class LlamaCppRouter:
             })
         return rows
 
+    def model_capabilities(self, model: str) -> dict[str, Any] | None:
+        """Expose Ollama-shaped capability metadata for a mapped model.
+
+        The local llama.cpp router publishes model metadata through its
+        OpenAI-compatible ``/models`` endpoint, not Ollama's ``/api/show``.
+        Keep this adapter-specific so callers can run capability preflights
+        without enabling or starting Ollama.
+        """
+        selected = self._entry(model)
+        if not selected:
+            return None
+        entry, url = selected
+        if not self._healthy(url, 0.6):
+            return None
+        alias = str(entry.get("served_model") or model)
+        row = self._model_info(url).get(alias)
+        if not isinstance(row, dict):
+            return {"error": f"model not found: {model}"}
+        architecture = row.get("architecture", {})
+        architecture = architecture if isinstance(architecture, dict) else {}
+        modalities = architecture.get("input_modalities", [])
+        modalities = modalities if isinstance(modalities, list) else []
+        lowered = {str(value).strip().lower() for value in modalities}
+        capabilities = ["completion"]
+        if lowered.intersection({"image", "video"}):
+            capabilities.append("vision")
+        if "audio" in lowered:
+            capabilities.append("audio")
+        return {
+            "model": model,
+            "capabilities": capabilities,
+            "details": {"architecture": architecture},
+        }
+
     def unload_model(self, model: str) -> bool:
         selected = self._entry(model)
         if not selected:
