@@ -221,7 +221,7 @@ cache_stats_max_items = 32
 [async_jobs]
 enabled = true
 max_pending = 256
-wait_max_seconds = 600
+wait_max_seconds = 900
 lease_seconds = 3600
 result_ttl_seconds = 259200
 max_attempts = 3
@@ -249,7 +249,7 @@ allow_create = true
 allow_delete = true
 rollback_on_failure = true
 default_response_profile = "compact"
-default_max_output_tokens = 1200
+default_max_output_tokens = 1600
 
 [debug_traces]
 enabled = true
@@ -302,7 +302,7 @@ model = "qwen2.5-coder:1.5b"
 role = "explorer"
 max_steps = 8
 max_tool_calls = 16
-max_tokens = 2048
+max_tokens = 3072
 temperature = 0.05
 
 [ollama_subagents.profiles.qwen-drafter]
@@ -310,7 +310,7 @@ model = "qwen2.5-coder:3b"
 role = "drafter"
 max_steps = 8
 max_tool_calls = 16
-max_tokens = 4096
+max_tokens = 6144
 temperature = 0.08
 
 [ollama_subagents.profiles.qwen-critic]
@@ -318,7 +318,7 @@ model = "qwen2.5-coder:7b"
 role = "critic"
 max_steps = 8
 max_tool_calls = 16
-max_tokens = 4096
+max_tokens = 8192
 temperature = 0.03
 
 [token_saving]
@@ -579,11 +579,11 @@ compact_max_evidence = 16
 # Aggregate agent-facing budgets are enforced after semantic projection. Exact
 # source/log detail remains available through local_ai_artifact.
 enabled = true
-default_tokens = 3200
-max_tokens = 8192
+default_tokens = 4800
+max_tokens = 12000
 reuse_cache_size = 256
 ledger_size = 512
-tool_tokens = { local_ai_status = 500, local_ai_task = 1000, local_ai_repo = 1200, local_ai_rag = 900, local_ai_command = 700, local_ai_coord = 800, local_ai_artifact = 900, local_ai_work = 800 }
+tool_tokens = { local_ai_status = 900, local_ai_task = 3000, local_ai_repo = 2200, local_ai_rag = 1800, local_ai_command = 1200, local_ai_coord = 1600, local_ai_artifact = 2200, local_ai_work = 2200 }
 # MCP calls are intentionally bounded. Preprocessing is asynchronous, so no normal
 # foreground tool should need an unbounded multi-hour socket wait.
 quick_timeout_seconds = 180
@@ -654,9 +654,9 @@ explorer_skip_worker_confidence = 0.84
 direct_smart_enabled = true
 direct_smart_complexity_score = 4
 direct_smart_risk_score = 4
-explorer_max_tokens = 2048
-worker_max_tokens = 4096
-critic_max_tokens = 4096
+explorer_max_tokens = 3072
+worker_max_tokens = 6144
+critic_max_tokens = 8192
 canonical_max_chars = 6000
 # Foreground execution uses one fast-tier pass, then escalates to the smart tier only when justified.
 same_model_worker_passes = 1
@@ -805,7 +805,7 @@ hot_context_tokens = 1800
 lookup_file_cards = 5
 lookup_candidate_cards = 120
 background_request_timeout_seconds = 300
-background_scheduler_timeout_seconds = 75
+background_scheduler_timeout_seconds = 180
 max_error_backoff_seconds = 300
 hot_queries = [
   "architecture entry points main components dependencies",
