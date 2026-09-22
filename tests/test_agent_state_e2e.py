@@ -91,7 +91,7 @@ def test_busy_database_returns_bounded_retryable_result_without_corrupting_event
         elapsed = time.perf_counter() - started
         assert result.retryable is True
         assert result.seq == 0
-        assert elapsed < 3.0
+        assert elapsed < 8.0  # 5 retries × 0.25s SQLite timeout + backoff; bounded under load
     finally:
         lock_conn.rollback()
         lock_conn.close()

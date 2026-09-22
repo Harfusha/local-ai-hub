@@ -41,7 +41,7 @@ The automated setup runner (`install.ps1` / `install.sh` / `python tools/setup.p
 5. **Configures Optional Local Model Runtime & Models**:
    - Uses an already configured llama.cpp endpoint when the active Intel hardware/profile requires it; the Hub never installs or starts a runtime automatically.
    - Ollama is disabled by default and is never installed, started, or pulled unless all explicit Ollama opt-ins are enabled.
-   - Uses profile-aware model tiers only when a healthy local backend is available: integrated uses 0.5B preprocessing, 1.5B quick, 3B involved, 7B hard and Qwen3-VL vision; balanced uses 1.5B preprocessing, 3B fast, 7B ordinary/hard and 9B extreme/vision. Otherwise deterministic/indexed Hub paths remain active.
+   - Uses profile-aware model tiers only when a healthy local backend is available: integrated uses 0.5B preprocessing, 1.5B quick, 3B involved, 7B hard and Qwen3-VL vision; balanced uses 1.5B preprocessing, 3B fast, 7B ordinary/hard and 9B extreme/vision; high uses 1.5B/3B/7B/9B; max uses 1.5B/3B/9B for heavy routes. Otherwise deterministic/indexed Hub paths remain active.
 6. **Auto-Wires MCP Hosts & Skills**:
    - Configures MCP endpoints into **Codex**, **Claude Desktop**, **Gemini**, **Cursor**, **Windsurf**, and **VS Code / GitHub Copilot**.
    - Installs companion skills: `token-economizer`, `caveman`, `tool-orchestration`, `ollama-quality-routing`.
