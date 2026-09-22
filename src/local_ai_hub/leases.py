@@ -20,7 +20,7 @@ def _norm_rel(value: str, root: str = "") -> str:
         try:
             rel = Path(raw).resolve().relative_to(Path(root).resolve())
             raw = str(rel)
-        except (ValueError, Exception):
+        except Exception:
             pass
     if raw.startswith(("/", "\\")):
         raise ValueError(f"lease path must be repository-relative: {value}")
