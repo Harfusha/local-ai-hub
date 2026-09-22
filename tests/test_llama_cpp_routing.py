@@ -171,9 +171,21 @@ class LlamaCppRoutingTests(unittest.TestCase):
         self.assertTrue(amd["ollama"]["enable_vulkan"])
 
     def test_hardware_profiles_select_model_roles(self):
-        expected = {
-            "background_code": "qwen2.5-coder:0.5b",
-            "fast_code": "qwen2.5-coder:1.5b",
+        expected_background = {
+            "cpu": "qwen2.5-coder:0.5b",
+            "integrated": "qwen2.5-coder:0.5b",
+            "low": "qwen2.5-coder:0.5b",
+            "balanced": "qwen2.5-coder:1.5b",
+            "high": "qwen2.5-coder:0.5b",
+            "max": "qwen2.5-coder:0.5b",
+        }
+        expected_fast = {
+            "cpu": "qwen2.5-coder:1.5b",
+            "integrated": "qwen2.5-coder:1.5b",
+            "low": "qwen2.5-coder:1.5b",
+            "balanced": "qwen2.5-coder:3b",
+            "high": "qwen2.5-coder:1.5b",
+            "max": "qwen2.5-coder:1.5b",
         }
         expected_reasoning = {
             "cpu": "qwen2.5-coder:7b",
@@ -210,7 +222,8 @@ class LlamaCppRoutingTests(unittest.TestCase):
         for name in ("cpu", "integrated", "low", "balanced", "high", "max"):
             with self.subTest(profile=name):
                 profile = profile_overrides(name, {"gpus": [], "ram": {"total_gb": 32}})
-                self.assertEqual({k: profile["models"][k] for k in expected}, expected)
+                self.assertEqual(profile["models"]["background_code"], expected_background[name])
+                self.assertEqual(profile["models"]["fast_code"], expected_fast[name])
                 self.assertEqual(profile["models"]["reasoning"], expected_reasoning[name])
                 self.assertEqual(profile["models"]["heavy_code"], expected_heavy[name])
                 self.assertEqual(profile["models"]["general"], expected_general[name])

@@ -413,9 +413,9 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         },
         "ollama_subagents": {
             "profiles": {
-        "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
-        "qwen-drafter": {"model": "qwen2.5-coder:3b"},
-        "qwen-critic": {"model": "qwen2.5-coder:7b"},
+                "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
+                "qwen-drafter": {"model": "qwen2.5-coder:3b"},
+                "qwen-critic": {"model": "qwen2.5-coder:7b"},
             }
         },
         "preprocessing": {
@@ -462,8 +462,8 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "balanced": {
         "models": {
-            "background_code": "qwen2.5-coder:0.5b",
-            "fast_code": "qwen2.5-coder:1.5b",
+            "background_code": "qwen2.5-coder:1.5b",
+            "fast_code": "qwen2.5-coder:3b",
             "heavy_code": "qwen2.5-coder:7b",
             "reasoning": "qwen3.5:9b",
             "general": "qwen2.5-coder:7b",

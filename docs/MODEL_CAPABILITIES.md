@@ -13,6 +13,16 @@ visible with `semantic_quality` and `quality_warning` metadata.
 | `qwen3-vl:4b` | visual review, UI observations, accessibility observations | source-only reasoning, security decisions, edits, final verification |
 | `qwen3.5:9b` | heavy reasoning, cross-file review, patch plans, visual review | edits, security decisions, final verification |
 
+## Profile routing
+
+| Profile | Preprocessing | Fast/simple | Ordinary/involved | Hard reasoning | Extreme reasoning | Vision |
+| --- | --- | --- | --- | --- | --- | --- |
+| `integrated` | `qwen2.5-coder:0.5b` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | none | `qwen3-vl:4b` |
+| `balanced` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen3.5:9b` |
+
+The integrated profile never selects `qwen3.5:9b`; the 9B model is reserved for
+the balanced profile's extreme reasoning and vision routes.
+
 ## Static operation contracts
 
 `local_ai_task`, named subagent profiles, `review`, `review_diff`,
