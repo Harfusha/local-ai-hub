@@ -1388,7 +1388,7 @@ class Handler(BaseHTTPRequestHandler):
                         self.wfile.flush()
                     except OSError:
                         break
-        except (OSError, Exception):
+        except Exception:
             pass
         finally:
             self.close_connection = True
