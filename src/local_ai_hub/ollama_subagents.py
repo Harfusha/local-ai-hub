@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .prompt_contracts import build_prompt
+
 
 @dataclass(frozen=True)
 class OllamaSubagentProfile:
@@ -16,6 +18,8 @@ class OllamaSubagentProfile:
     temperature: float
     advisory_only: bool = True
     model_fallback: bool = False
+    declared_model: str = ""
+    model_fallback_reason: str = ""
 
 
 class OllamaSubagentCatalog:
@@ -66,16 +70,23 @@ class OllamaSubagentCatalog:
         requested_model = str(raw.get("model", default_model))
         model = requested_model
         model_fallback = False
+        model_fallback_reason = ""
         if available_models is not None and requested_model not in available_models:
             if default_model in available_models:
                 model = default_model
                 model_fallback = model != requested_model
+                if model_fallback:
+                    model_fallback_reason = "declared_model_unavailable"
+            else:
+                model_fallback_reason = "declared_model_unavailable_no_fallback"
 
         role = str(raw.get("role", canonical.removeprefix("qwen-")))
         return OllamaSubagentProfile(
             name=canonical,
             role=role,
             model=model,
+            declared_model=requested_model,
+            model_fallback_reason=model_fallback_reason,
             tools=self.READ_ONLY_TOOLS,
             max_steps=max(1, min(int(raw.get("max_steps", 3)), 8)),
             max_tool_calls=max(1, min(int(raw.get("max_tool_calls", 6)), 16)),
@@ -100,16 +111,17 @@ class OllamaSubagentCatalog:
         language, score = max(scores.items(), key=lambda item: item[1])
         return language if score else "und"
 
-    def system_contract(self, profile: OllamaSubagentProfile, task: str) -> str:
+    def system_contract(self, profile: OllamaSubagentProfile, task: str, *, prompt: str = "") -> str:
         language = self.detect_language(task) if self.language == "match_input" else self.language
+        base = prompt or build_prompt(operation=profile.role, model=profile.model, task=task).system
         return (
-            f"You are {profile.name}, a local Ollama {profile.role} subagent inside Local AI Hub. "
+            f"{base} You are {profile.name}, a local Ollama {profile.role} subagent inside Local AI Hub. "
             "ADVISORY_ONLY: never edit files, execute commands, create worktrees, or claim that a proposal was applied. "
             "Use Local AI Hub read-only tooling directly: preprocessed context, deterministic facts, code index, "
             "semantic symbols, code graph, repository search, RAG, evidence IDs, and bounded file slices. "
             "Start with the cheapest evidence path. Respond in the same language as TASK while preserving paths, "
             "identifiers, code, line numbers, errors, numbers, and uncertainty exactly. "
-            "TERSE TECHNICAL OUTPUT: zero conversational filler, pleasantries, or preamble. Return facts, exact paths, line numbers, and minimal diffs only as a flat list without nested bullet loops. "
+            "TERSE TECHNICAL OUTPUT: zero conversational filler, pleasantries, or preamble, but do not omit required evidence or limitations. Return facts, exact paths, line numbers, and minimal diffs only as a flat list without nested bullet loops. "
             f"Detected task language: {language}. Return compact structured output with profile={profile.name}, "
             "advisory_only=true."
         )

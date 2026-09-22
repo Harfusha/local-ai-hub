@@ -41,7 +41,7 @@ The automated setup runner (`install.ps1` / `install.sh` / `python tools/setup.p
 5. **Configures Optional Local Model Runtime & Models**:
    - Uses an already configured llama.cpp endpoint when the active Intel hardware/profile requires it; the Hub never installs or starts a runtime automatically.
    - Ollama is disabled by default and is never installed, started, or pulled unless all explicit Ollama opt-ins are enabled.
-   - Uses configured model tiers (0.5B preprocessing, 1.5B quick, 3B complex, 7B hardest reasoning) only when a healthy local backend is available; otherwise deterministic/indexed Hub paths remain active.
+   - Uses configured model tiers (0.5B preprocessing, 1.5B quick, 3B ordinary, 7B hard reasoning, 9B extreme reasoning in balanced) only when a healthy local backend is available; otherwise deterministic/indexed Hub paths remain active.
 6. **Auto-Wires MCP Hosts & Skills**:
    - Configures MCP endpoints into **Codex**, **Claude Desktop**, **Gemini**, **Cursor**, **Windsurf**, and **VS Code / GitHub Copilot**.
    - Installs companion skills: `token-economizer`, `caveman`, `tool-orchestration`, `ollama-quality-routing`.
@@ -65,7 +65,7 @@ The automated setup runner (`install.ps1` / `install.sh` / `python tools/setup.p
 | **`repomix`** | npm (`repomix`) | Packs repos with comment stripping, empty line removal, and token counts | 40–60% vs raw directory |
 | **`files-to-prompt`** | PyPI (`files-to-prompt`) | Formats files into clean XML prompt structures without shell overhead | Clean prompt format |
 | **`local_ai_artifact`** | Local AI Hub MCP | Fetches exact line slices (`slice`) or evidence fragments | Zero whole-file reads |
-| **`local_ai_task`** | Local AI Hub MCP | Local model inference: 1.5B for quick work, 3B for complex tasks, 7B for hardest reasoning | 100% free (0 cloud tokens) |
+| **`local_ai_task`** | Local AI Hub MCP | Local model inference: 1.5B for quick work, 3B for ordinary work, 7B for hard reasoning, 9B for extreme balanced reasoning | 100% free (0 cloud tokens) |
 | **`local_ai_command`** | Local AI Hub MCP | Single-flight cached command broker with automated ANSI stripping | Prevents rerun token waste |
 
 ---

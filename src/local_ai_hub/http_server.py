@@ -2217,6 +2217,16 @@ class Handler(BaseHTTPRequestHandler):
                             "constraints": payload.get("constraints") or [],
                             "risk_profile": payload.get("risk_profile", "normal"),
                         }
+                    elif isinstance(contract_data, Mapping) and not str(contract_data.get("goal", "")).strip():
+                        contract_data = dict(contract_data)
+                        contract_data["goal"] = str(
+                            payload.get("goal")
+                            or payload.get("title")
+                            or payload.get("value")
+                            or payload.get("query")
+                            or payload.get("task")
+                            or ""
+                        ).strip()
                     contract = GoalContract.from_dict(contract_data) if isinstance(contract_data, Mapping) else GoalContract(goal=str(contract_data))
                     ctx_data = payload.get("context") or {}
                     context = ScopeContext(
@@ -2379,7 +2389,10 @@ class Handler(BaseHTTPRequestHandler):
                     if not rec_data:
                         rec_data = {
                             "kind": payload.get("kind", MemoryKind.FACT.value),
-                            "scope": payload.get("scope", AgentScope.TASK.value),
+                            # Resolve the scope below from the supplied identity.
+                            # Defaulting here to TASK made a repository-only
+                            # write impossible to read back by root.
+                            "scope": payload.get("scope"),
                             "key": str(payload.get("key") or payload.get("query") or ""),
                             "value": payload.get("value"),
                             "scope_id": str(payload.get("scope_id", "")),
@@ -2398,8 +2411,23 @@ class Handler(BaseHTTPRequestHandler):
                             kind_val = MemoryKind(raw_kind)
                         except ValueError:
                             kind_val = MemoryKind.FACT
-                        raw_scope = str(rec_data.get("scope", AgentScope.TASK.value)).lower()
-                        scope_val = _parse_memory_scope(raw_scope) or AgentScope.TASK
+                        raw_scope = str(rec_data.get("scope") or "").lower()
+                        requested_scope = _parse_memory_scope(raw_scope)
+                        scope_val, resolved_scope_id, ambiguous_scope = _resolve_memory_scope(
+                            requested_scope,
+                            scope_id=rec_data.get("scope_id") or payload.get("scope_id"),
+                            root=payload.get("root") or rec_data.get("root"),
+                            repository_id=payload.get("repository_id") or rec_data.get("repository_id"),
+                            tenant=payload.get("tenant") or rec_data.get("tenant"),
+                            task_id=payload.get("task_id") or rec_data.get("task_id"),
+                            session_id=payload.get("session_id") or rec_data.get("session_id"),
+                            clone_id=payload.get("clone_id") or rec_data.get("clone_id"),
+                            worktree_id=payload.get("worktree_id") or rec_data.get("worktree_id"),
+                            branch=payload.get("branch") or rec_data.get("branch"),
+                        )
+                        if ambiguous_scope:
+                            self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
+                        scope_val = scope_val or AgentScope.TASK
                         raw_status = rec_data.get("status")
                         status_val = None
                         if raw_status:
@@ -2411,18 +2439,26 @@ class Handler(BaseHTTPRequestHandler):
                         record_ttl = rec_data.get("ttl_seconds", payload.get("ttl_seconds"))
                         if record_expiry is None and record_ttl is not None and float(record_ttl) > 0:
                             record_expiry = time.time() + float(record_ttl)
+                        provenance = dict(rec_data.get("provenance") or {})
+                        for identity_key in (
+                            "root", "repository_id", "tenant", "task_id", "session_id",
+                            "clone_id", "worktree_id", "branch",
+                        ):
+                            identity_value = payload.get(identity_key) or rec_data.get(identity_key)
+                            if identity_value not in (None, ""):
+                                provenance[identity_key] = str(identity_value)
                         record = MemoryRecord.create(
                             kind=kind_val,
                             scope=scope_val,
                             key=str(rec_data.get("key", "")),
                             value=rec_data.get("value"),
-                            scope_id=str(rec_data.get("scope_id", "")),
+                            scope_id=str(resolved_scope_id or rec_data.get("scope_id", "")),
                             confidence=float(rec_data.get("confidence", 1.0)),
                             status=status_val,
                             source=str(rec_data.get("source", actor)),
                             evidence_ids=tuple(rec_data.get("evidence_ids") or ()),
                             sensitivity=str(rec_data.get("sensitivity", "normal")),
-                            provenance=rec_data.get("provenance"),
+                            provenance=provenance,
                             expires_at=(float(record_expiry) if record_expiry is not None else None),
                         )
                         saved = APP.agent_memory.record(record, actor=actor, idempotency_key=idempotency_key)
@@ -2473,6 +2509,17 @@ class Handler(BaseHTTPRequestHandler):
                     if not rec:
                         self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
                     self._send(200, {"success": True, "record": rec.to_dict()}); return
+                if action == "delete":
+                    record_id_val = str(payload.get("record_id", "")).strip()
+                    if not record_id_val:
+                        self._send(400, {"success": False, "error": "memory delete requires record_id", "terminal": True, "retryable": False}); return
+                    deleted = APP.agent_memory.delete(record_id_val)
+                    self._send(200 if deleted else 404, {
+                        "success": bool(deleted),
+                        "deleted": bool(deleted),
+                        "record_id": record_id_val,
+                        **({} if deleted else {"error": "memory record not found", "terminal": True, "retryable": False}),
+                    }); return
                 if action == "find":
                     scope_val = _parse_memory_scope(payload.get("scope"))
                     key_val = str(payload["key"]) if payload.get("key") else None
@@ -2833,12 +2880,19 @@ class Handler(BaseHTTPRequestHandler):
                             "success": bool(task_context["success"]),
                             "complete": bool(task_context["complete"]),
                             "partial": bool(task_context["partial"]),
+                            "context_id": task_context["context_id"],
                             "etag": task_context["etag"],
                             "context": compiled.to_dict(compact=compact_mode),
                             "task_context": task_context,
                             "text": task_context["text"],
                             "evidence_ids": task_context["evidence_ids"],
                             "repo_revision": task_context["repo_revision"],
+                            "source_layers": task_context["source_layers"],
+                            "stale": task_context["stale"],
+                            "truncated": task_context["truncated"],
+                            "omitted_sections": task_context["omitted_sections"],
+                            "next_action": task_context["next_action"],
+                            "estimated_tokens": task_context["estimated_tokens"],
                             "warnings": task_context["warnings"],
                         }
                         self._send(200, response); return
@@ -2863,11 +2917,18 @@ class Handler(BaseHTTPRequestHandler):
                         "success": bool(task_context["success"]),
                         "complete": bool(task_context["complete"]),
                         "partial": bool(task_context["partial"]),
+                        "context_id": task_context["context_id"],
                         "etag": etag,
                         "context": compiled.to_dict(compact=compact_mode),
                         "task_context": task_context,
                         "text": task_context["text"],
                         "evidence_ids": task_context["evidence_ids"],
+                        "source_layers": task_context["source_layers"],
+                        "stale": task_context["stale"],
+                        "truncated": task_context["truncated"],
+                        "omitted_sections": task_context["omitted_sections"],
+                        "next_action": task_context["next_action"],
+                        "estimated_tokens": task_context["estimated_tokens"],
                         "warnings": task_context["warnings"],
                     }); return
                 self._send(400, {"success": False, "error": f"unknown context action '{action}'", "terminal": True, "retryable": False}); return
@@ -3416,12 +3477,17 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "approval must be boolean or string"}); return
                     from .agent_consistency import ConsistencyRequest
 
+                    focus_values = tuple(str(item).strip() for item in (payload.get("focus") or []) if str(item).strip())
+                    guarded_query = query_text.strip() or " ".join(focus_values[:8]).strip()
+                    if not guarded_query:
+                        guarded_query = f"repository context {str(payload.get('phase', '')).strip() or 'unspecified phase'}"
+
                     request = ConsistencyRequest(
                         root=root,
                         task_id=str(payload.get("task_id", "")),
-                        query=query_text,
+                        query=guarded_query,
                         phase=str(payload.get("phase", "")),
-                        focus=tuple(str(item) for item in (payload.get("focus") or [])),
+                        focus=focus_values,
                         workspace=str(payload.get("workspace", "")),
                         preload_profile=str(payload.get("preload_profile", "")),
                         token_budget=max_tokens,

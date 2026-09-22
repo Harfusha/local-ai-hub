@@ -423,6 +423,14 @@ def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path):
         status, unguarded = post({"root": str(tmp_path), "query": "x", "changed_paths": ["src/app.py"]})
         assert status == 400
         assert "guarded=true" in unguarded["error"]
+
+        status, phase_only = post(
+            {"root": str(tmp_path), "phase": "discover", "focus": ["logs", "timeouts"], "max_tokens": 512}
+        )
+        assert status == 200
+        assert phase_only["success"] is True
+        assert phase_only["context_pack"]["contract"]["goal"] == "logs timeouts"
+        assert phase_only["query"] == "logs timeouts"
     finally:
         server.shutdown()
         server.server_close()

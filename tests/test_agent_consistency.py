@@ -56,6 +56,16 @@ def _request(repo: Path, **changes) -> ConsistencyRequest:
     return ConsistencyRequest(**values)
 
 
+def test_build_contract_handles_phase_only_guarded_context(repository: Path):
+    guard = AgentConsistencyGuard()
+    request = ConsistencyRequest(root=str(repository), phase="discover", focus=("logs", "timeouts"))
+
+    contract = guard.build_contract(request)
+
+    assert contract.goal == "logs, timeouts"
+    assert contract.scope == "task"
+
+
 @pytest.fixture
 def repository(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
@@ -288,6 +298,19 @@ def test_local_model_evidence_cannot_form_contract_mapping(repository: Path):
     evidence = [
         {"evidence_id": "be-1", "path": "backend/users.py", "raw": "GET /users/{id} -> User {id: string}"},
         {"evidence_id": "fe-local", "path": "frontend/users.ts", "provider": "qwen3.5:9b", "raw": "type User = { id: string }"},
+    ]
+
+    mappings, warnings = guard.build_contract_mappings(_request(repository), evidence)
+
+    assert mappings == ()
+    assert warnings == ()
+
+
+def test_contract_mapping_ignores_tests_and_python_client_as_frontend(repository: Path):
+    guard = _guard(repository)
+    evidence = [
+        {"evidence_id": "src-1", "path": "src/local_ai_hub/client.py", "raw": "def logs(): return get('/api/logs')"},
+        {"evidence_id": "test-1", "path": "tests/test_agent_state_transport.py", "raw": "def test_logs(): pass"},
     ]
 
     mappings, warnings = guard.build_contract_mappings(_request(repository), evidence)

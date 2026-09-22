@@ -53,6 +53,8 @@ def test_model_resolution_does_not_select_unavailable_model() -> None:
 
     assert resolved.model == "qwen2.5-coder:7b"
     assert resolved.model_fallback is True
+    assert resolved.declared_model == "missing:99b"
+    assert resolved.model_fallback_reason == "declared_model_unavailable"
 
 
 def test_profile_tool_allowlist_excludes_mutation_and_commands() -> None:

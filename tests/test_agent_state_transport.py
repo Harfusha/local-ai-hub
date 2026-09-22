@@ -130,6 +130,18 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
     # local_ai_coord actions
     c_res1 = mcp_mod.local_ai_coord(action="task_create", task_id="t1", contract={"goal": "g"})
     assert c_res1["success"] is True
+    c_res_goal_fallback = mcp_mod.local_ai_coord(
+        action="task_create",
+        task_id="t-goal-fallback",
+        task="goal from task field",
+        contract={"acceptance_criteria": ["criterion"]},
+    )
+    assert c_res_goal_fallback["success"] is True
+    goal_fallback_payload = next(
+        call[2] for call in calls
+        if call[0] == "COORD" and call[1] == "task_create" and call[2].get("task_id") == "t-goal-fallback"
+    )
+    assert goal_fallback_payload["task"] == "goal from task field"
 
     c_res2 = mcp_mod.local_ai_coord(
         action="memory_record",
@@ -285,6 +297,63 @@ def test_http_agent_state_routes(running_app_client):
     assert app.agent_context.state_store.enabled is True
     # 4. Learning endpoint
     assert app.agent_learning.state_store.enabled is True
+
+
+def test_mcp_context_compile_keeps_task_context_contract_when_budgeting(monkeypatch):
+    import local_ai_hub.mcp_server as mcp_mod
+
+    class ContextClient:
+        def post(self, path, payload, **kwargs):
+            assert path == "/api/agent-state/context"
+            task_context = {
+                "success": True,
+                "complete": True,
+                "partial": False,
+                "task_id": payload["task_id"],
+                "context_id": "taskctx-1",
+                "etag": "etag-1",
+                "text": "authoritative task facts\n" * 1200,
+                "estimated_tokens": 3600,
+                "token_budget": payload["token_budget"],
+                "truncated": False,
+                "source_layers": ["agent_state", "repository"],
+                "repo_revision": "rev-1",
+                "evidence_ids": ["E1", "E2"],
+                "stale": False,
+                "warnings": [],
+                "repository_required": True,
+                "omitted_sections": [],
+                "next_action": "use_compiled_context",
+            }
+            return {
+                "success": True,
+                "complete": True,
+                "partial": False,
+                "etag": "etag-1",
+                "context_id": "taskctx-1",
+                "task_context": task_context,
+                "text": task_context["text"],
+                "evidence_ids": ["E1", "E2"],
+                "repo_revision": "rev-1",
+                "warnings": [],
+            }
+
+    monkeypatch.setattr(mcp_mod, "CLIENT", ContextClient())
+    result = mcp_mod.local_ai_coord(
+        action="context_compile",
+        task_id="task-1",
+        root="repo-root",
+        max_response_tokens=3200,
+        response_profile="standard",
+    )
+
+    assert result["success"] is True
+    assert result["complete"] is True
+    assert result["context_id"] == "taskctx-1"
+    assert result["etag"] == "etag-1"
+    assert result["evidence_ids"] == ["E1", "E2"]
+    assert result["task_context"]["context_id"] == "taskctx-1"
+    assert result["task_context"]["next_action"] == "use_compiled_context"
 
 
 def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):

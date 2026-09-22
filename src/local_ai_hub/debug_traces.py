@@ -35,8 +35,8 @@ class DebugTraceStore:
         self.max_bytes = max(1024, int(cfg.get("max_bytes", 268435456)))
         self.max_sessions = max(1, int(cfg.get("max_sessions", 1000)))
         self.max_events_per_session = max(2, int(cfg.get("max_events_per_session", 20000)))
-        self.max_event_bytes = max(256, int(cfg.get("max_event_bytes", 65536)))
-        self.max_session_text_bytes = max(1024, int(cfg.get("max_session_text_bytes", 8388608)))
+        self.max_event_bytes = max(256, int(cfg.get("max_event_bytes", 4 * 1024 * 1024)))
+        self.max_session_text_bytes = max(1024, int(cfg.get("max_session_text_bytes", 64 * 1024 * 1024)))
         self.cleanup_batch_size = max(1, int(cfg.get("cleanup_batch_size", 50)))
         self.max_list_limit = max(1, int(cfg.get("max_list_limit", 200)))
         self.path = Path(config["server"]["state_dir"]) / "debug_traces.sqlite3"

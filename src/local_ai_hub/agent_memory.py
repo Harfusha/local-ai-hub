@@ -1921,6 +1921,7 @@ class MemoryStore:
         self._init_table()
         visited_nodes: set[str] = {start_entity.strip()}
         collected_edges: list[dict[str, Any]] = []
+        seen_edges: set[Any] = set()
         queue = [(start_entity.strip(), 0)]
         while queue and len(visited_nodes) < max_nodes:
             curr_node, depth = queue.pop(0)
@@ -1928,6 +1929,14 @@ class MemoryStore:
                 continue
             rels = self.find_relations(curr_node, direction="both", limit=20)
             for r in rels:
+                edge_key = str(r.get("relation_id") or "") or (
+                    str(r.get("source_entity", "")),
+                    str(r.get("relation", "")),
+                    str(r.get("target_entity", "")),
+                )
+                if edge_key in seen_edges:
+                    continue
+                seen_edges.add(edge_key)
                 collected_edges.append(r)
                 neighbor = r["target_entity"] if r["source_entity"] == curr_node else r["source_entity"]
                 if neighbor not in visited_nodes and len(visited_nodes) < max_nodes:

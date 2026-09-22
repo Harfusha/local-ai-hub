@@ -16,7 +16,7 @@ Local AI Hub is a local deterministic-first service between coding agents and re
 
 `/api/agent-state/context` is the unified task-context contract. It joins Agent OS state (goal, checkpoint, receipts, memories, leases and incidents) with the revision-bound repository context pack. `context_id` and `etag` identify the bounded result; stale or mismatched revisions are partial and cannot establish completion. `local_ai_task(task_id=...)` consumes this contract before semantic inference, while deterministic facts and validation remain authoritative.
 
-Local-model responses pass a deterministic quality gate for empty, queued, malformed, error and unrelated-path output. Accepted results stay advisory; rejected results carry `advisory_only` and a bounded bypass reason. Model candidates require reproducible evaluation receipts and a quality floor before promotion.
+Local-model responses pass a deterministic quality assessment for empty, queued, malformed, error and unrelated-path output. Every result stays visible and advisory; weak results carry `semantic_quality`, `quality_warning` and a bounded bypass reason instead of being discarded or converted into a task failure. Model candidates require reproducible evaluation receipts and a quality floor before promotion.
 
 ## Failure model
 

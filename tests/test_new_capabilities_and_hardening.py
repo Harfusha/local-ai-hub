@@ -448,8 +448,54 @@ def test_eval_suite_checks_model_output_instead_of_expected_text():
     result = services.eval_suite(payload)
     assert result["summary"]["failed"] == 1
     services.runtime.request.assert_called_once()
+    first_payload = services.runtime.request.call_args.args[1]
+    assert first_payload["think"] is False
+    assert "no greeting" in first_payload["system"]
     services.runtime.request.return_value = {"response": "expected"}
-    assert services.eval_suite(payload)["summary"]["passed"] == 1
+    result = services.eval_suite(payload)
+    assert result["summary"]["passed"] == 1
+    assert result["cases"][0]["response_chars"] == len("expected")
+    assert result["summary"]["quality_pass_rate"] == 1.0
+    assert len(result["cases"][0]["response_sha256"]) == 64
+
+
+def test_eval_suite_exposes_model_errors_without_hiding_them():
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"models": {"fast_code": "qwen3.5:9b"}}
+    services.runtime = MagicMock()
+    services.runtime.request.return_value = {"error": "HTTP 404: model not found"}
+
+    result = services.eval_suite({"cases": [{"id": "missing", "input": "task", "expected": "ok"}]})
+
+    assert result["success"] is True
+    assert result["summary"]["failed"] == 1
+    assert result["cases"][0]["status"] == "unavailable"
+    assert "404" in result["cases"][0]["error"]
+    assert result["cases"][0]["response_chars"] == 0
+
+
+def test_eval_suite_marks_vision_only_model_as_role_mismatch_for_text_suite():
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {
+        "models": {
+            "fast_code": "qwen2.5-coder:7b",
+            "general": "qwen2.5-coder:7b",
+            "vision": "qwen3.5:9b",
+        }
+    }
+    services.runtime = MagicMock()
+
+    result = services.eval_suite({
+        "model": "qwen3.5:9b",
+        "suite_name": "text_quality",
+        "cases": [{"id": "text", "input": "Return 17", "expected": "17"}],
+    })
+
+    assert result["success"] is True
+    assert result["summary"]["benchmark_valid"] is False
+    assert result["summary"]["role_mismatch"] is True
+    assert result["cases"][0]["status"] == "role_mismatch"
+    services.runtime.request.assert_not_called()
 
 
 def test_ast_outline_rejects_paths_outside_root(tmp_path):

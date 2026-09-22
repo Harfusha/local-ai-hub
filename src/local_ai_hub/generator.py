@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from local_ai_hub.features import FeatureSet
+from local_ai_hub.prompt_contracts import capability_for
 
 
 def _reasoning_tier_label(cfg: dict[str, Any], fs: FeatureSet) -> str:
@@ -22,6 +23,22 @@ def _reasoning_tier_label(cfg: dict[str, Any], fs: FeatureSet) -> str:
     if isinstance(models, dict) and "reasoning" in models:
         return f"`{fs.reasoning_model}`"
     return "the configured hardest-reasoning tier"
+
+
+def _model_capability_guidance(cfg: dict[str, Any]) -> str:
+    models = cfg.get("models", {})
+    if not isinstance(models, dict):
+        return ""
+    seen: set[str] = set()
+    parts: list[str] = []
+    for role in ("background_code", "fast_code", "heavy_code", "reasoning", "general", "vision"):
+        model = str(models.get(role, "") or "")
+        if not model or model in seen:
+            continue
+        seen.add(model)
+        capability = capability_for(model, role="vision" if role == "vision" else "")
+        parts.append(f"`{model}`: {', '.join(capability.can[:4])}; not {', '.join(capability.cannot[:3])}")
+    return " Model capability contract: " + " | ".join(parts) + "."
 
 
 def _semantic_handoff_contract(fs: FeatureSet) -> str:
@@ -234,7 +251,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         routing_lines.append(f'{r_idx}. `local_ai_rag` — semantic fallback only when indexed evidence is insufficient.')
         r_idx += 1
     if fs.tasks and fs.has_any_model():
-        routing_lines.append(f'{r_idx}. `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` — {_semantic_handoff_contract(fs)} Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks, `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning. Deterministic/indexed tools remain for exact facts, symbols, diff and tests.')
+        routing_lines.append(f'{r_idx}. `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` — {_semantic_handoff_contract(fs)} Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks, `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning. Deterministic/indexed tools remain for exact facts, symbols, diff and tests. Specialized operations use the shared evidence-grounded prompt contract; weak output remains advisory with a warning.{_model_capability_guidance(cfg)}')
         r_idx += 1
     if fs.commands:
         routing_lines.append(f'{r_idx}. `local_ai_command(action="run")` — tests, lint, typecheck, builds and repeatable read-only commands before native execution.')
@@ -720,7 +737,7 @@ Load and follow this skill before any coding or repository task. Apply its disco
 
 ### 4. Offload to Optional Local Model (Local AI Hub)
 - For microtasks (summarization, lint fixing, boilerplate, second opinion), delegate only when an approved local backend is already available:
-- Use `qwen2.5-coder:1.5b` for quick local work, `qwen2.5-coder:3b` for complex tasks, and `qwen2.5-coder:7b` for the hardest reasoning; reserve `qwen2.5-coder:0.5b` for preprocessing.
+- Use `qwen2.5-coder:1.5b` for quick local work, `qwen2.5-coder:3b` for ordinary work, `qwen2.5-coder:7b` for hard reasoning, and `qwen3.5:9b` for extreme reasoning in the balanced profile; reserve `qwen2.5-coder:0.5b` for preprocessing.
   - Do not install Ollama or llama.cpp just to satisfy a delegation; use deterministic/indexed Hub tools when no local backend is healthy.
 
 ### 5. Concise Output (Caveman Protocol)

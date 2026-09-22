@@ -55,6 +55,18 @@ def test_vision_defaults_to_qwen_model_and_requests_json(tmp_path: Path) -> None
     assert payload["images"] == ["ZmFrZS1pbWFnZQ=="]
 
 
+def test_vision_normalizes_data_url_to_provider_base64(tmp_path: Path) -> None:
+    services, runtime, _image = _services(tmp_path)
+
+    result = services.vision(
+        {"image": "data:image/png;base64,ZmFrZS1pbWFnZQ==", "prompt": "Review UI"},
+        "t",
+    )
+
+    assert result["success"] is True
+    assert runtime.request.call_args.args[1]["images"] == ["ZmFrZS1pbWFnZQ=="]
+
+
 def test_vision_cloud_fallback_is_explicitly_disabled_by_default(tmp_path: Path) -> None:
     services, runtime, image = _services(tmp_path)
 

@@ -42,7 +42,8 @@ profile = "auto"
 auto_tune = true
 
 [models]
-# Use 0.5B for preprocessing, 1.5B for quick/simple requests, 3B for ordinary and more involved work, and 7B for the hardest reasoning.
+# Use 0.5B for preprocessing, 1.5B for quick/simple requests, 3B for ordinary work,
+# 7B for hard reasoning, and 9B for extreme reasoning in the balanced profile.
 # These are the only model choices most users need to edit.
 background_code = "qwen2.5-coder:0.5b"
 fast_code = "qwen2.5-coder:1.5b"
@@ -130,7 +131,7 @@ context_reserve_tokens = 2048
 thinking = false
 
 [model_execution.smart]
-# Complex 3B and highest-reasoning 7B tiers. Qwen 2.5 Coder supports up to 32k here.
+# Complex 3B, hard 7B, and optional extreme 9B reasoning tiers. Qwen supports up to 32k here.
 context_tokens = 32768
 large_context_tokens = 32768
 max_context_tokens = 32768
@@ -256,8 +257,8 @@ terminal_ttl_seconds = 259200
 max_bytes = 268435456
 max_sessions = 1000
 max_events_per_session = 20000
-max_event_bytes = 65536
-max_session_text_bytes = 8388608
+max_event_bytes = 4194304
+max_session_text_bytes = 67108864
 cleanup_batch_size = 50
 max_list_limit = 200
 

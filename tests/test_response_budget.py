@@ -51,3 +51,59 @@ def test_budget_response_can_return_reuse_envelope() -> None:
     assert result["artifact_id"] == "artifact-123"
     assert "results" not in result
     assert "evidence" not in result
+
+
+def test_budget_response_preserves_bounded_task_context_contract() -> None:
+    result = budget_response(
+        {
+            "success": True,
+            "complete": True,
+            "partial": False,
+            "etag": "etag-1",
+            "context_id": "taskctx-1",
+            "evidence_ids": ["E1"],
+            "task_context": {
+                "success": True,
+                "complete": True,
+                "partial": False,
+                "task_id": "task-1",
+                "context_id": "taskctx-1",
+                "etag": "etag-1",
+                "text": "authoritative task facts\n" * 800,
+                "source_layers": ["agent_state", "repository"],
+                "next_action": "use_compiled_context",
+            },
+            "text": "authoritative task facts\n" * 800,
+        },
+        max_tokens=320,
+        profile="compact",
+        protected_keys=(
+            "success", "complete", "partial", "task_context", "context_id", "etag",
+            "evidence_ids", "next_action",
+        ),
+    )
+
+    assert json_tokens(result) <= 320
+    assert result["task_context"]["context_id"] == "taskctx-1"
+    assert result["task_context"]["etag"] == "etag-1"
+    assert result["evidence_ids"] == ["E1"]
+
+
+def test_budget_response_keeps_guarded_repository_context_pointer() -> None:
+    result = budget_response(
+        {
+            "success": True,
+            "context": "deterministic repository facts",
+            "context_pack": {"contract": {"goal": "inspect logs"}, "evidence": [{"evidence_id": "E1"}]},
+            "context_id": "ctx-1",
+            "evidence_ids": ["E1"],
+        },
+        max_tokens=220,
+        profile="compact",
+        protected_keys=("success", "context", "context_pack", "context_id", "evidence_ids"),
+    )
+
+    assert json_tokens(result) <= 220
+    assert result["context_id"] == "ctx-1"
+    assert result["context"]
+    assert result["context_pack"]

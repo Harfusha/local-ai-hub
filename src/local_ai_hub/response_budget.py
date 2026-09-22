@@ -19,7 +19,20 @@ _POINTER_KEYS = (
     "action", "task_id", "work_id", "cache_hit", "coalesced", "in_progress",
     "terminal", "retryable", "artifact_id", "artifact_ids", "evidence_id",
     "evidence_ids", "changed_paths", "affected_tests", "summary", "text",
+    "context", "context_pack", "adaptive_context_pack", "contract", "reuse_candidates", "mappings", "relevance", "model_warnings",
     "context_id", "repo_revision", "stale", "warnings", "delta_from", "since_hash",
+    # A compiled task context is the authoritative handoff contract.  Keep its
+    # bounded projection in pointer responses; dropping it silently turns a
+    # successful context call into an unauditable text-only result.
+    "task_context", "complete", "partial", "source_layers", "provenance",
+    "omitted_sections", "next_action", "estimated_tokens", "truncated",
+    "repository_required", "etag",
+)
+
+_CONTEXT_PROTECTED_KEYS = (
+    "success", "complete", "partial", "task_context", "context_id", "etag",
+    "evidence_ids", "repo_revision", "stale", "warnings", "omitted_sections",
+    "next_action",
 )
 
 

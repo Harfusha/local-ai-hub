@@ -30,6 +30,18 @@ def test_empty_model_result_requests_bypass():
     assert result["reason"] == "empty_output"
 
 
+def test_generic_model_output_is_flagged_without_auto_rejection():
+    result = assess_semantic_result(
+        task="diagnose adapter readback",
+        evidence_paths=["src/adapter.py"],
+        output="This indicates a potential mismatch between hardware or software.",
+    )
+
+    assert result["usable"] is False
+    assert result["reason"] == "generic_output"
+    assert result["advisory_only"] is True
+
+
 def test_explicit_model_error_is_rejected():
     result = assess_semantic_result("review diff", ["src/a.py"], "ERROR: model unavailable")
 
@@ -111,6 +123,16 @@ def test_detached_line_claim_is_rejected_as_unverified_location():
     assert result["reason"] == "unsupported_location"
 
 
+def test_human_line_label_is_allowed_when_qualified_location_is_also_present():
+    result = assess_semantic_result(
+        "review diff",
+        ["tests/test_demo.py"],
+        "Path:tests/test_demo.py line 4; exact location tests/test_demo.py:4.",
+    )
+
+    assert result["usable"] is True
+
+
 def test_pathless_analysis_is_usable():
     result = assess_semantic_result("summarize evidence", ["src/auth.py"], "The branch handles missing tokens.")
 
@@ -118,12 +140,14 @@ def test_pathless_analysis_is_usable():
     assert result["advisory_only"] is True
 
 
-def test_service_quality_gate_marks_unrelated_model_result_unusable():
+def test_service_quality_gate_keeps_unrelated_model_result_visible_as_advisory():
     result = LocalAIServices._apply_semantic_quality(
         {"success": True, "text": "Fix src/Calculator.java"},
         task="diagnose src/auth.py",
         evidence_paths=["src/auth.py"],
     )
-    assert result["success"] is False
+    assert result["success"] is True
     assert result["advisory_only"] is True
     assert result["bypass_reason"] == "unrelated_output"
+    assert result["semantic_quality"]["usable"] is False
+    assert "quality_warning" in result

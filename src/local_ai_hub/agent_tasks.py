@@ -76,6 +76,10 @@ class GoalContract:
     slo_profile: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        goal = str(self.goal or "").strip()
+        if not goal:
+            raise ValueError("task contract requires goal")
+        object.__setattr__(self, "goal", goal)
         if not isinstance(self.scope, AgentScope):
             object.__setattr__(self, "scope", AgentScope.parse(self.scope))
         if not isinstance(self.acceptance_criteria, tuple):
@@ -918,7 +922,15 @@ class TaskStore:
             created_at,
             updated_at,
         ) = row
-        contract = GoalContract.from_dict(json.loads(contract_raw))
+        contract_data = json.loads(contract_raw)
+        if not str(contract_data.get("goal", "")).strip():
+            # V4 rejects empty goals for new contracts, but older persisted
+            # projections may still contain one. Keep those tasks loadable and
+            # make the missing intent explicit instead of returning blank
+            # task context or failing the entire Agent OS startup.
+            contract_data = dict(contract_data)
+            contract_data["goal"] = f"Legacy task contract: {task_id}"
+        contract = GoalContract.from_dict(contract_data)
         ctx_data = json.loads(context_raw)
         context = ScopeContext(
             repository_id=ctx_data.get("repository_id", ""),

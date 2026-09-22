@@ -58,6 +58,24 @@ def test_request_stream_separates_thinking_and_ignores_empty_output_chunks(tmp_p
     assert result["thinking"] == "reason more"
 
 
+def test_generate_promotes_benchmark_think_flag_to_ollama_payload(tmp_path):
+    runtime = _runtime(tmp_path)
+    seen = {}
+
+    def request(endpoint, payload):
+        seen["endpoint"] = endpoint
+        seen["payload"] = payload
+        return {"response": "ok"}
+
+    runtime.request = request
+    result = runtime.generate("qwen3.5:9b", "Return ok", options={"num_predict": 8, "think": False})
+
+    assert result["response"] == "ok"
+    assert seen["endpoint"] == "/api/generate"
+    assert seen["payload"]["think"] is False
+    assert seen["payload"]["options"] == {"num_predict": 8}
+
+
 def test_request_stream_aggregates_chat_content_and_ignores_bad_lines(tmp_path, monkeypatch):
     response = _Response([
         b"not-json".decode(),

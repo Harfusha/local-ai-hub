@@ -750,7 +750,14 @@ class AgentConsistencyGuard:
             return contract
         if isinstance(contract, Mapping):
             return GoalContract.from_dict(contract)
-        return GoalContract(goal=request.query, scope="task")
+        # Guarded context can be requested for a lifecycle phase before a
+        # durable task exists.  Keep that request valid without inventing
+        # repository facts; derive a bounded synthetic goal from caller intent.
+        goal = _text(request.query, 800).strip()
+        if not goal:
+            focus = ", ".join(_text(item, 120).strip() for item in request.focus if _text(item, 120).strip())
+            goal = focus or f"Repository context: {_text(request.phase, 80).strip() or 'unspecified phase'}"
+        return GoalContract(goal=goal, scope="task")
 
     @staticmethod
     def _evidence_id(item: Mapping[str, Any]) -> str:
@@ -960,8 +967,12 @@ class AgentConsistencyGuard:
         if isinstance(evidence, Mapping):
             evidence = evidence.get("evidence") or evidence.get("results") or ()
         items = [dict(item) for item in _bounded_sequence(evidence, _MAX_ITEMS) if isinstance(item, Mapping) and not _is_local_model_evidence(item)]
-        back = [item for item in items if self._is_backend(item)]
-        front = [item for item in items if not self._is_backend(item)]
+        # Contract comparison requires an actual frontend/backend pair.  Treat
+        # tests and ordinary Python client modules as neutral evidence; the old
+        # inverse heuristic classified them as frontend and emitted false state
+        # warnings for unrelated repository queries.
+        front = [item for item in items if self._is_frontend(item)]
+        back = [item for item in items if not self._is_frontend(item) and not self._is_test(item)]
         tests = [str(item.get("path")) for item in items if self._is_test(item)]
         if not back or not front:
             return (), ()
@@ -1006,6 +1017,13 @@ class AgentConsistencyGuard:
     def _is_backend(item: Mapping[str, Any]) -> bool:
         path = str(item.get("path", "")).lower()
         return not any(token in path for token in ("frontend", "client", ".ts", ".tsx", "component"))
+
+    @staticmethod
+    def _is_frontend(item: Mapping[str, Any]) -> bool:
+        path = str(item.get("path", "")).replace("\\", "/").lower()
+        parts = {part for part in path.split("/") if part}
+        suffix = Path(path).suffix
+        return bool(parts.intersection({"frontend", "web", "ui", "components"}) or suffix in {".ts", ".tsx", ".jsx", ".vue", ".svelte"})
 
     @staticmethod
     def _is_test(item: Mapping[str, Any]) -> bool:

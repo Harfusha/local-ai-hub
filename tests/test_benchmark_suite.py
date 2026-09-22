@@ -79,7 +79,7 @@ def test_benchmark_runner_supports_non_streaming_runtime(tmp_path: Path) -> None
         def generate(self, model, prompt, options=None):
             assert model == "qwen2.5-coder:7b"
             assert prompt == "return 42"
-            assert options == {"num_predict": 4}
+            assert options == {"num_predict": 4, "think": False}
             return {"text": "42"}
 
     runner = HardwareBenchmarkRunner(
@@ -91,3 +91,57 @@ def test_benchmark_runner_supports_non_streaming_runtime(tmp_path: Path) -> None
 
     assert result["success"] is True
     assert result["tokens_generated"] == 1
+
+
+def test_benchmark_runner_does_not_treat_error_response_as_success(tmp_path: Path) -> None:
+    class ErrorRuntime:
+        def generate(self, model, prompt, options=None):
+            return {"error": "HTTP 404: model not found"}
+
+    runner = HardwareBenchmarkRunner(
+        benchmarks_path=tmp_path / "benchmarks.json",
+        runtime=ErrorRuntime(),
+    )
+
+    result = runner.run(model="qwen3.5:9b", prompt="Return BENCH_OK", num_tokens=16)
+
+    assert result["success"] is False
+    assert result["model"] == "qwen3.5:9b"
+    assert "404" in result["error"]
+    assert not (tmp_path / "benchmarks.json").exists()
+
+
+def test_benchmark_runner_reports_insufficient_sample_for_one_token_output(tmp_path: Path) -> None:
+    class ShortRuntime:
+        def generate(self, model, prompt, options=None):
+            return {"response": "OK", "eval_count": 1, "eval_duration": 1_000_000}
+
+    runner = HardwareBenchmarkRunner(
+        benchmarks_path=tmp_path / "benchmarks.json",
+        runtime=ShortRuntime(),
+    )
+
+    result = runner.run(model="qwen2.5-coder:7b", prompt="Return OK", num_tokens=16)
+
+    assert result["success"] is True
+    assert result["tokens_generated"] == 1
+    assert result["measurement_warning"] == "insufficient_output_tokens"
+    assert result["hardware_score"] is None
+
+
+def test_benchmark_runner_rejects_thinking_only_stream(tmp_path: Path) -> None:
+    class ThinkingOnlyRuntime:
+        def generate_stream(self, model, prompt, options=None):
+            assert options == {"num_predict": 16, "think": False}
+            yield {"thinking": "internal reasoning without visible answer"}
+
+    runner = HardwareBenchmarkRunner(
+        benchmarks_path=tmp_path / "benchmarks.json",
+        runtime=ThinkingOnlyRuntime(),
+    )
+
+    result = runner.run(model="qwen3.5:9b", prompt="Return BENCH_OK", num_tokens=16)
+
+    assert result["success"] is False
+    assert result["measurement_warning"] == "thinking_only_output"
+    assert not (tmp_path / "benchmarks.json").exists()

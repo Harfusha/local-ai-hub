@@ -4029,17 +4029,33 @@ def test_{sym}_regression_edge_cases():
         except Exception:
             db_test_paths = []
 
+        def is_test_source(rel_path: str) -> bool:
+            """Reject indexed fixture/docs paths even when the index is stale."""
+            normalized = rel_path.replace("\\", "/").lower()
+            suffix = Path(normalized).suffix
+            if suffix not in {".py", ".go", ".cs", ".ts", ".tsx", ".js", ".jsx", ".java", ".rs", ".cpp", ".cc", ".c"}:
+                return False
+            name = Path(normalized).name
+            return (
+                name.startswith("test_") or name.startswith("tests_") or
+                name.endswith(("_test.py", "_test.go", ".spec.ts", ".spec.js", ".spec.tsx", ".spec.jsx", ".test.ts", ".test.js", ".test.tsx", ".test.jsx")) or
+                any(part in {"test", "tests", "spec", "specs"} for part in Path(normalized).parts)
+            )
+
+        # The indexed is_test bit is advisory and can be stale after generated
+        # fixtures are added. Always re-validate the path and language here.
+        db_test_paths = [rel for rel in db_test_paths if is_test_source(rel)]
         if not db_test_paths:
             # Fallback to repo_tools iter_files which respects .gitignore and ignores Library/node_modules
             all_files = [str(p.relative_to(resolved_root)).replace("\\", "/") for p in self.repo_tools.iter_files(str(resolved_root))]
             for rel in all_files:
                 f_lower = rel.lower()
-                if f_lower.startswith("test_") or f_lower.endswith(("_test.py", "_test.go", ".spec.ts", ".spec.js", ".test.ts", ".test.js", "tests.cs", "test.cs")) or "tests/" in f_lower:
+                if is_test_source(rel):
                     db_test_paths.append(rel)
                     if len(db_test_paths) >= 50:
                         break
 
-        for rel in db_test_paths[:40]:
+        for rel in [rel for rel in db_test_paths if is_test_source(rel)][:40]:
             f = resolved_root / rel
             cases: list[str] = []
             if f.is_file():
@@ -6189,7 +6205,7 @@ def test_{sym}_regression_edge_cases():
             p = Path(lockfile_path)
             target_lock = p if p.is_absolute() else (p_root / p)
         else:
-            candidates = ["poetry.lock", "requirements.txt", "package-lock.json", "composer.lock", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "uv.lock"]
+            candidates = ["poetry.lock", "requirements.txt", "package-lock.json", "composer.lock", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "uv.lock", "pyproject.toml"]
             for c in candidates:
                 cand = p_root / c
                 if cand.is_file():
@@ -6197,7 +6213,7 @@ def test_{sym}_regression_edge_cases():
                     break
 
         if not target_lock or not target_lock.is_file():
-            return {"success": False, "error": "no supported lockfile found in root"}
+            return {"success": False, "error": "no supported dependency manifest or lockfile found in root", "terminal": True, "retryable": False}
 
         KNOWN_CVES: list[dict[str, Any]] = [
             {"package": "requests", "max_version": "2.31.0", "cve": "CVE-2023-32681", "severity": "MEDIUM", "fix": ">=2.31.0"},
@@ -6248,6 +6264,23 @@ def test_{sym}_regression_edge_cases():
                         scanned_pkgs[str(p_item["name"]).lower()] = str(p_item["version"]).lstrip("v")
             except Exception:
                 pass
+        elif target_lock.name == "pyproject.toml":
+            try:
+                project = tomllib.loads(text).get("project", {})
+                dependencies = list(project.get("dependencies", []) or [])
+                optional = project.get("optional-dependencies", {}) or {}
+                for values in optional.values() if isinstance(optional, dict) else []:
+                    dependencies.extend(values or [])
+                for requirement in dependencies:
+                    match = re.match(r"\s*([A-Za-z0-9_.-]+)\s*(?:\(==|==)\s*([0-9][^;,) ]*)", str(requirement))
+                    if match:
+                        scanned_pkgs[match.group(1).lower()] = match.group(2)
+                    else:
+                        name = re.match(r"\s*([A-Za-z0-9_.-]+)", str(requirement))
+                        if name:
+                            scanned_pkgs.setdefault(name.group(1).lower(), "unresolved")
+            except Exception:
+                return {"success": False, "error": "invalid pyproject.toml dependency manifest", "terminal": True, "retryable": False}
 
         vulnerabilities: list[dict[str, Any]] = []
         for rule in KNOWN_CVES:
@@ -6256,7 +6289,7 @@ def test_{sym}_regression_edge_cases():
                 inst = scanned_pkgs[pkg]
                 def parse_v(v_str: str) -> tuple[int, ...]:
                     return tuple(int(x) if x.isdigit() else 0 for x in re.findall(r"\d+", v_str)[:3])
-                if parse_v(inst) < parse_v(rule["max_version"]):
+                if inst != "unresolved" and parse_v(inst) < parse_v(rule["max_version"]):
                     vulnerabilities.append({
                         "package": pkg,
                         "installed_version": inst,
@@ -6268,7 +6301,9 @@ def test_{sym}_regression_edge_cases():
 
         return {
             "success": True,
-            "lockfile": str(target_lock),
+            "lockfile": str(target_lock) if target_lock.name != "pyproject.toml" else None,
+            "manifest": str(target_lock),
+            "manifest_only": target_lock.name == "pyproject.toml",
             "packages_scanned": len(scanned_pkgs),
             "vulnerabilities_found": len(vulnerabilities),
             "vulnerabilities": vulnerabilities,

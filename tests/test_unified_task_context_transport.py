@@ -74,6 +74,9 @@ def test_context_endpoint_composes_agent_and_repository_context(tmp_path: Path, 
         assert "Agent goal" in result["text"]
         assert "Indexed evidence" in result["text"]
         assert result["evidence_ids"] == ["E1"]
+        assert result["context_id"] == result["task_context"]["context_id"]
+        assert result["stale"] is False
+        assert result["next_action"] == "use_compiled_context"
         assert seen["request"].phase == "review"
         assert seen["request"].focus == ("context",)
         assert seen["repository"][0].query == "context"

@@ -11,6 +11,7 @@ from typing import Any
 from .cache import stable_hash
 from .model_policy import ModelExecutionPolicy
 from .ollama_subagents import OllamaSubagentCatalog, OllamaSubagentProfile
+from .prompt_contracts import build_prompt
 from .trace_context import observer
 
 
@@ -413,22 +414,24 @@ class ToolAwareLocalAgent:
             if prepared_bootstrap:
                 self.tool_calls += len(prepared_bootstrap)
 
-            system = (
-                self.profile_catalog.system_contract(profile, task) if profile else
-                f"You are the local {role} subagent inside a coding orchestration hub. "
-                "The hub already computed compact project intelligence for you. Treat PRECOMPUTED INTELLIGENCE as primary evidence; do not rediscover it. "
-                "Use read-only tools only when the supplied evidence is insufficient: deterministic/preprocessed first, code index/Serena/CodeGraph second, lexical/RAG third, exact source slices last. "
-                "Never request broad source dumps and never invent files, symbols or relationships. "
-                "Return a compact JSON answer when possible with summary, confidence, evidence_ids, candidate_files, missing_evidence, actions and risks. "
-                "Prefer coordinates/IDs over copying source. "
-            ) + system_suffix
-            user = f"TASK:\n{task}"
+            context_parts = []
             if pre:
-                user += f"\n\nPREPROCESSED CACHE:\n{pre}"
+                context_parts.append(f"PREPROCESSED CACHE:\n{pre}")
             if prepared_bootstrap:
-                user += "\n\nPRECOMPUTED INTELLIGENCE:\n" + self._trim(prepared_bootstrap)
+                context_parts.append("PRECOMPUTED INTELLIGENCE:\n" + self._trim(prepared_bootstrap))
             if seed_context:
-                user += f"\n\nSEED EVIDENCE:\n{seed_context}"
+                context_parts.append(f"SEED EVIDENCE:\n{seed_context}")
+            package = build_prompt(
+                operation=role,
+                model=model,
+                profile=str(getattr(self.services, "config", {}).get("_hardware", {}).get("profile", "auto")),
+                task=task,
+                context="\n\n".join(context_parts),
+            )
+            system = (
+                self.profile_catalog.system_contract(profile, task, prompt=package.system) if profile else package.system
+            ) + system_suffix
+            user = package.user
 
             # High-confidence deterministic evidence usually needs synthesis, not a
             # multi-turn tool-selection loop. Avoid sending all tool schemas in that
@@ -579,7 +582,9 @@ class ToolAwareLocalAgent:
                 "error": f"profile model unavailable: {profile.model}",
                 "profile": profile.name,
                 "model": profile.model,
+                "declared_model": profile.declared_model,
                 "model_fallback": profile.model_fallback,
+                "model_fallback_reason": profile.model_fallback_reason,
             }
         result = self.run(
             profile.model,
@@ -597,7 +602,10 @@ class ToolAwareLocalAgent:
             "profile": profile.name,
             "language": self.profile_catalog.detect_language(task),
             "advisory_only": profile.advisory_only,
+            "declared_model": profile.declared_model,
+            "resolved_model": profile.model,
             "model_fallback": profile.model_fallback,
+            "model_fallback_reason": profile.model_fallback_reason,
             "tools_used": list(profile.tools),
         })
         return result

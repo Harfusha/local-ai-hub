@@ -19,7 +19,7 @@ Recipes (guidance, not gates):
 
 Delegation is the default for any task with useful bounded independent work.
 
-- Use `qwen2.5-coder:0.5b` only for preprocessing, `qwen2.5-coder:1.5b` only for quick/simple requests, `qwen2.5-coder:3b` for ordinary and more involved tasks, and `qwen2.5-coder:7b` for the hardest reasoning. Keep deterministic simple tasks enabled for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression.
+- Use `qwen2.5-coder:0.5b` only for preprocessing, `qwen2.5-coder:1.5b` only for quick/simple requests, `qwen2.5-coder:3b` for ordinary and more involved tasks, `qwen2.5-coder:7b` for hard reasoning, and `qwen3.5:9b` for extreme reasoning in the balanced profile. Keep deterministic simple tasks enabled for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression.
 - Use the native Codex `multi_agent_v1__spawn_agent` path only for useful independent bounded work or an explicit Codex-subagent request.
 - Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
 - Do not duplicate the same scope across agents. Keep final decisions, edits, and integration in Codex.
@@ -51,7 +51,7 @@ Route test/lint/typecheck/build/read-only commands through `local_ai_command` be
 
 Selection guide: `local_ai_repo` for bounded repository facts and checks (including `review_diff` and `security_audit`), `local_ai_command` for bounded repeatable commands, `local_ai_task` for bounded semantic generation, exploration, reasoning, review, independent second opinions and compression, `local_ai_work` for a complete bounded repository task with planning, edits, validation and handoff, `local_ai_rag` only after cheaper indexed evidence, `local_ai_artifact` for exact slices, `local_ai_coord` for leases/memos.
 
-Local model policy: `qwen2.5-coder:0.5b` is preprocessing-only, `qwen2.5-coder:1.5b` handles quick/simple work, `qwen2.5-coder:3b` handles ordinary and more involved tasks, and `qwen2.5-coder:7b` handles the hardest reasoning. Run deterministic and indexed Hub actions first for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, exploration, reasoning, review, independent second opinions and compression.
+Local model policy: `qwen2.5-coder:0.5b` is preprocessing-only, `qwen2.5-coder:1.5b` handles quick/simple work, `qwen2.5-coder:3b` handles ordinary and more involved tasks, `qwen2.5-coder:7b` handles hard reasoning, and `qwen3.5:9b` handles extreme reasoning in the balanced profile. Run deterministic and indexed Hub actions first for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, exploration, reasoning, review, independent second opinions and compression.
 <!-- END LOCAL AI HUB TOOL POLICY -->
 
 <!-- BEGIN TOKEN ECONOMY POLICY -->
@@ -62,7 +62,7 @@ Local model policy: `qwen2.5-coder:0.5b` is preprocessing-only, `qwen2.5-coder:1
 - Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.
 - Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.
 - Surgical edits: Prefer targeted block replacements over rewriting entire files.
-- Local model delegation: Use `qwen2.5-coder:1.5b` only for quick/simple microtasks, `qwen2.5-coder:3b` for ordinary and more involved work, and `qwen2.5-coder:7b` for the hardest reasoning via `local_ai_task`. Reserve `qwen2.5-coder:0.5b` for preprocessing.
+- Local model delegation: Use `qwen2.5-coder:1.5b` only for quick/simple microtasks, `qwen2.5-coder:3b` for ordinary and more involved work, `qwen2.5-coder:7b` for hard reasoning, and `qwen3.5:9b` for extreme reasoning in the balanced profile via `local_ai_task`. Reserve `qwen2.5-coder:0.5b` for preprocessing.
 <!-- END TOKEN ECONOMY POLICY -->
 
 ## Architecture rules
