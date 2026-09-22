@@ -1,15 +1,15 @@
 # Generic Agent Update & Upgrade Prompt for Local AI Hub
 
-Use this prompt with any AI coding agent (Claude Code, Codex, Cursor, Windsurf, Gemini, Roo, GitHub Copilot) in any repository to update an existing Local AI Hub installation to the latest release, upgrade dependencies, restart services, and refresh the repository's instruction policies.
+Use this prompt with any AI coding agent (Claude Code, Codex, Cursor, Windsurf, Gemini, Roo, GitHub Copilot) in any repository to upgrade an existing Local AI Hub installation from V3 to V4 from the canonical `master` branch, upgrade dependencies, restart services, and refresh the repository's instruction policies.
 
 Preserve model routing defaults when refreshing repository instructions: qwen2.5-coder:0.5b for preprocessing only, qwen2.5-coder:1.5b only for quick/simple requests, qwen2.5-coder:3b for ordinary and more involved tasks, qwen2.5-coder:7b for hard reasoning, and qwen3.5:9b for extreme reasoning in the balanced profile.
 
 ---
 
 ```markdown
-# TASK: Update Local AI Hub and Refresh Repository Instructions
+# TASK: Upgrade Local AI Hub from V3 to V4 and Refresh Repository Instructions
 
-You are an autonomous AI engineering agent. Your task is to update **Local AI Hub** on this system to the latest version, update dependencies, restart the background service, re-verify health, and refresh the Local AI Hub Tool Policy and Token Economy Policy in this repository.
+You are an autonomous AI engineering agent. Your task is to upgrade **Local AI Hub** from V3 to V4 on this system using the canonical `master` branch, update dependencies, restart the background service, re-verify health, and refresh the Local AI Hub Tool Policy and Token Economy Policy in this repository.
 
 Preserve privacy-safe adoption telemetry: it contains only normalized aggregate tool/action/intent/outcome, time, latency, and output-size buckets. Never migrate or expose prompts, source, secrets, absolute paths, or raw request records. Bypasses require an explicit client signal.
 
@@ -17,18 +17,24 @@ Follow these execution phases:
 
 ---
 
-### PHASE 1: LOCATE INSTALLATION & PULL LATEST RELEASE
+### PHASE 1: LOCATE INSTALLATION & FAST-FORWARD TO V4 MASTER
 
 1. **Locate Installation Directory**:
    - Windows: `$HOME\.local-ai-hub` (or `%USERPROFILE%\.local-ai-hub`)
    - Linux / macOS: `~/.local-ai-hub`
-2. **Pull Latest Changes**:
-   - Fetch and fast-forward the currently checked-out installation branch. Do not hardcode a branch name; this installation may use `master` or another configured default:
+2. **Protect Local Changes**:
+   - Run `git status --short` before changing branches.
+   - If the installation worktree is dirty, preserve the changes and stop for operator review. Never use `git reset --hard`, `git checkout -- .`, or discard local configuration/source changes.
+3. **Fetch V4 from the Canonical Master Branch**:
+   - V4 is published on `origin/master`. Do not use the old `codex/v4.0-hardening` feature branch for installations.
+   - Fetch `master`, switch to local `master`, and fast-forward only:
      ```bash
      git -C "$HOME/.local-ai-hub" fetch --prune origin
-     git -C "$HOME/.local-ai-hub" pull --ff-only
+     git -C "$HOME/.local-ai-hub" switch master
+     git -C "$HOME/.local-ai-hub" pull --ff-only origin master
      ```
-     *(On Windows PowerShell: `git -C "$HOME\.local-ai-hub" fetch --prune origin`, then `git -C "$HOME\.local-ai-hub" pull --ff-only`.)*
+     *(On Windows PowerShell: `git -C "$HOME\.local-ai-hub" fetch --prune origin`, then `git -C "$HOME\.local-ai-hub" switch master`, then `git -C "$HOME\.local-ai-hub" pull --ff-only origin master`.)*
+   - If local `master` does not exist, create it only as a tracking branch from `origin/master`; never overwrite an existing local branch.
 
 ---
 
