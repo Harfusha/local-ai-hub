@@ -172,6 +172,21 @@ def managed_service_running() -> bool:
     port = int(CFG.get("server", {}).get("port", 11435))
     return bool(find_listening_pid(port))
 
+
+def normalize_status(data: dict[str, object], *, supervisor_alive: bool, hub_alive: bool) -> dict[str, object]:
+    """Replace active states left behind by a hard supervisor crash."""
+    state = str(data.get("state", "stopped"))
+    if state in {"running", "starting", "degraded", "cooldown"} and not supervisor_alive and not hub_alive:
+        normalized = dict(data)
+        normalized.update({
+            "state": "stopped",
+            "pid": 0,
+            "hub_pid": 0,
+            "last_error": "supervisor process not running",
+        })
+        return normalized
+    return data
+
 def kill_hub() -> None:
     pid = hub_pid()
     if pid > 0:
@@ -381,20 +396,25 @@ def main() -> int:
     client = HubClient(tenant="service-control", config_path=_ACTIVE_CONFIG_ARG, auto_start=False)
     status_path = STATE / "supervisor.status.json"
     try:
-        status = json.loads(status_path.read_text(encoding="utf-8")) if status_path.exists() else {"state": "stopped"}
+        data = json.loads(status_path.read_text(encoding="utf-8")) if status_path.exists() else {"state": "stopped"}
     except (OSError, ValueError):
-        status = {"state": "unknown"}
+        data = {"state": "stopped", "last_error": "invalid supervisor status"}
     online = bool(client._online())
-    status["hub_online"] = online
+    normalized = normalize_status(
+        data,
+        supervisor_alive=pid_alive(supervisor_pid()),
+        hub_alive=online or managed_service_running(),
+    )
+    normalized["hub_online"] = online
     if not online:
         # A supervisor status file can outlive its child after an abrupt stop.
         # Never report that stale state as running and never auto-start from a
         # read-only status command.
-        if status.get("state") in {"running", "starting"}:
-            status["state"] = "unavailable"
-        status["last_error"] = status.get("last_error") or "hub endpoint unavailable"
-        status["ollama_online"] = False
-    print(json.dumps(status, ensure_ascii=False, sort_keys=True))
+        if normalized.get("state") in {"running", "starting"}:
+            normalized["state"] = "unavailable"
+        normalized["last_error"] = normalized.get("last_error") or "hub endpoint unavailable"
+        normalized["ollama_online"] = False
+    print(json.dumps(normalized, ensure_ascii=False, sort_keys=True))
     return 0 if online else 1
 
 
