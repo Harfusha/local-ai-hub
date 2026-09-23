@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 
 from .config import load_config
 from .ollama import OllamaRuntime
+from .llama_cpp_runtime import llama_cpp_managed_selected
 from .process_utils import find_listening_pid, pid_alive, terminate_tree, hidden_run_kwargs
 
 
@@ -292,7 +293,8 @@ class Supervisor:
                         self.terminate_child()
                 now = time.time()
                 manage_ollama = bool(self.cfg.get("manage_ollama", True))
-                ollama_online = self.runtime.ensure_running() if manage_ollama else None
+                manage_llama_cpp = llama_cpp_managed_selected(self.config)
+                ollama_online = self.runtime.ensure_running() if manage_ollama or manage_llama_cpp else None
                 if self.hub_online():
                     unhealthy_since = 0.0
                     backoff = initial_backoff

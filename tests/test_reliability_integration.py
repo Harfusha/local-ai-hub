@@ -443,7 +443,7 @@ def _ollama_config(tmp_path: Path) -> dict:
     return {
         "server": {"ollama_url": "http://127.0.0.1:11434", "request_timeout_seconds": 1, "state_dir": str(tmp_path)},
         "headless": {"autostart_ollama": True},
-        "ollama": {"request_attempts": 3, "retry_delay_seconds": 0.02, "startup_timeout_seconds": 1},
+        "ollama": {"enabled": True, "request_attempts": 3, "retry_delay_seconds": 0.02, "startup_timeout_seconds": 1},
         "scheduler": {"max_parallel": 1, "max_loaded_models": 1},
         "models": {}, "model_execution": {},
     }

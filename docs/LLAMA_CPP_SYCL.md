@@ -1,16 +1,16 @@
 # llama.cpp SYCL on Intel GPUs
 
-Use this optional backend only when an Intel Arc/iGPU is the inference device and an existing llama.cpp router is actually needed. Local AI Hub routes 0.5B preprocessing, 1.5B quick requests, 3B ordinary requests, 7B hard reasoning, and Qwen3-VL vision to one loopback llama.cpp router. The 9B extreme-reasoning tier belongs to the balanced discrete-GPU profile and is not selected for integrated hardware. The router loads one model at a time. The Hub never installs or starts llama.cpp automatically and does not fall back to Ollama in the default policy.
+Use `llama_cpp.mode = "on"` when Local AI Hub should use llama.cpp instead of Ollama. Setup downloads a pinned llama.cpp build and the default Qwen 1.5B GGUF into `server.state_dir`, verifies both SHA-256 digests, and supervises a loopback router. On Windows x64 with Intel graphics it tries SYCL0, then retries once with CPU if GPU initialization fails. Supported CPU packages cover Windows x64/ARM64, macOS x64/ARM64, and Ubuntu x64/ARM64. `mode = "auto"` only checks a pre-existing loopback server; it never downloads. If `[ollama].enabled = true`, Ollama takes priority and llama.cpp is not provisioned.
 
-NVIDIA and AMD discrete GPUs do not trigger Ollama or llama.cpp installation. AMD iGPU is not an Intel SYCL target and should use deterministic/CPU paths unless another explicitly configured backend exists. Do not set `llama_cpp.mode = "on"` on those machines. Official llama.cpp SYCL support targets Intel GPUs; its documented support includes Intel Arc and newer Intel integrated GPUs, while other-vendor GPU support is not the supported target for this backend. [SYCL backend support](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/SYCL.md)
+Other supported platforms use the pinned CPU runtime unless the operator configures an external endpoint. Official llama.cpp SYCL support targets Intel GPUs; other-vendor GPUs are not supported by this backend. [SYCL backend support](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/SYCL.md)
 
-## When to install it
+## Managed setup
 
-Install llama.cpp SYCL after Local AI Hub has been installed, only on a machine where inference should use an Intel GPU. First verify the driver and device. On Windows 11, use the official Windows x64 SYCL release and check that `llama-server.exe --list-devices` lists the Intel GPU as `SYCL0` or another `SYCL*` device. The official Windows bundle includes the SYCL runtime DLLs, so a separate oneAPI installation is not required. [Official releases](https://github.com/ggml-org/llama.cpp/releases) · [Windows SYCL instructions](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/SYCL.md#option-1-download-the-binary-package-directly)
+Set `ollama.enabled = false` and `llama_cpp.mode = "on"`, then run setup or restart the Hub. The installer selects the pinned platform build; on Windows Intel it uses the official SYCL bundle, which includes the SYCL runtime DLLs. The default GGUF is Qwen2.5-Coder 1.5B Q4_K_M. No model is downloaded while mode is `auto` or `off`. [Official releases](https://github.com/ggml-org/llama.cpp/releases) · [Windows SYCL instructions](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/SYCL.md#option-1-download-the-binary-package-directly)
 
-If the device is not listed, stop here: the Hub will not make a CPU or Vulkan server into a SYCL server. Leave `mode = "auto"`; the Hub will use deterministic/indexed operations and report the optional local-model backend as unavailable.
+If SYCL initialization fails, the managed server retries on CPU and status reports `device: none`. To use a manually managed server, leave mode at `auto` and point the configured model routes at its loopback URL.
 
-## Windows installation and setup
+## Advanced: external Windows router
 
 1. Download the current `Windows x64 (SYCL)` archive from the [official llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases) and extract it, for example to `$env:LOCALAPPDATA\llama.cpp-sycl`. Keep the extracted DLLs beside `llama-server.exe`.
 2. Make a persistent model directory and obtain trusted GGUF weight files from the model publisher. Do not install Ollama or use an Ollama cache as an implicit prerequisite:
@@ -105,10 +105,10 @@ If the device is not listed, stop here: the Hub will not make a CPU or Vulkan se
 
    `/models` must list `hub-qwen-05`, `hub-qwen-15`, `hub-qwen-3`, and `hub-qwen-7`. Hub background preprocessing uses 0.5B (`hub-qwen-05`), quick requests use 1.5B (`hub-qwen-15`), complex requests use 3B, and the hardest reasoning uses 7B. Per-model context is controlled by the preset, so do not override it with a global `-c` command-line argument. The router loads the requested model on demand and unloads others because `--models-max 1` is set. The Hub only sends inference to loopback URLs validated by config.
 
-## Linux
+## Advanced: external Linux SYCL router
 
-Use a Linux build explicitly compiled with `GGML_SYCL=ON`, install the Intel GPU driver and the oneAPI runtime matching that build, and verify `sycl-ls` reports a `[level_zero:gpu]` device before starting the router. Then use the same preset, loopback URL, port, model aliases and `config.toml` settings. Follow the [official Linux SYCL setup](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/SYCL.md#linux); a Windows release archive is not a Linux runtime.
+Managed Linux setup currently provisions the pinned Ubuntu CPU bundle. For Intel Linux acceleration, run an external SYCL router: build or install one explicitly compiled with `GGML_SYCL=ON`, install its matching Intel driver/runtime, and verify `sycl-ls` reports a `[level_zero:gpu]` device. Point `mode="auto"` routes at its loopback URL. Follow the [official Linux SYCL setup](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/SYCL.md#linux); a Windows release archive is not a Linux runtime.
 
 ## Rollback and other GPUs
 
-Stop the llama-server process and set `llama_cpp.mode = "off"`, or keep `mode = "auto"` and remove the Intel SYCL server. Requests then use deterministic/indexed operations and return a bounded unavailable-backend result for model work. NVIDIA/AMD dedicated GPU behavior is unchanged; no runtime is installed automatically.
+Set `llama_cpp.mode = "off"` to stop managed llama.cpp. `mode = "auto"` continues to use only a configured external endpoint. When mode is off and Ollama is disabled, model requests report the selected backend as disabled/unavailable. NVIDIA/AMD systems use the verified CPU bundle unless an external endpoint is selected.

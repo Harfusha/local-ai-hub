@@ -19,7 +19,7 @@ def test_ensure_running_takes_over_local_external_ollama(tmp_path: Path, monkeyp
             },
             "headless": {"autostart_ollama": True, "manage_ollama": True},
             "llama_cpp": {"fallback_to_ollama": True},
-            "ollama": {"startup_timeout_seconds": 0.2},
+            "ollama": {"enabled": True, "startup_timeout_seconds": 0.2},
         }
     )
     state = {"online": initial_online, "external_terminated": False, "spawns": 0}
@@ -70,6 +70,7 @@ def test_ensure_running_preserves_external_ollama_when_management_disabled(tmp_p
             "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
             "headless": {"autostart_ollama": True, "manage_ollama": False},
             "llama_cpp": {"fallback_to_ollama": True},
+            "ollama": {"enabled": True},
         }
     )
     monkeypatch.setattr(runtime, "is_online", lambda: True)
@@ -97,7 +98,7 @@ def test_ensure_running_cleans_process_when_startup_never_becomes_healthy(tmp_pa
             },
             "headless": {"autostart_ollama": True, "manage_ollama": True},
             "llama_cpp": {"fallback_to_ollama": True},
-            "ollama": {"startup_timeout_seconds": 1.0},
+            "ollama": {"enabled": True, "startup_timeout_seconds": 1.0},
         }
     )
     monkeypatch.setattr(runtime.llama_cpp, "is_online", lambda: False)

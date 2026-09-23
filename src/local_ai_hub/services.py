@@ -5139,10 +5139,25 @@ class LocalAIServices:
     def run_doctor(self) -> dict[str, Any]:
         """Run comprehensive system, GPU, model, and database diagnostics."""
         from .gpu_monitor import get_gpu_telemetry
+        from .llama_cpp_runtime import llama_cpp_backend_selection
         checks = []
-        
-        ollama_ok = self.runtime.is_online()
-        checks.append({"component": "Ollama Service", "status": "OK" if ollama_ok else "FAIL", "detail": f"Installed models: {len(self.runtime.installed_models())}"})
+
+        selected = llama_cpp_backend_selection(self.config)
+        if selected == "disabled":
+            checks.append({"component": "Inference Backend", "status": "OFF", "detail": "Ollama and llama.cpp are disabled."})
+        elif selected == "ollama":
+            online = self.runtime.is_online()
+            checks.append({"component": "Inference Backend (Ollama)", "status": "OK" if online else "FAIL", "detail": f"Installed models: {len(self.runtime.installed_models())}"})
+        else:
+            online = self.runtime.llama_cpp.is_online()
+            runtime_status = self.runtime.llama_cpp_managed.status() if selected == "llama.cpp (managed)" else {}
+            mode = str(runtime_status.get("mode", "") or "device unreported")
+            detail = f"Selected provider: {selected}; server {'online' if online else 'unavailable'}"
+            if selected == "llama.cpp (managed)":
+                detail += f"; execution device: {mode}"
+                if not online and runtime_status.get("last_error"):
+                    detail += f"; {runtime_status['last_error']}"
+            checks.append({"component": "Inference Backend (llama.cpp)", "status": "OK" if online else "FAIL", "detail": detail})
         
         gpu = get_gpu_telemetry()
         checks.append({

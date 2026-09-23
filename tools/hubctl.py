@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from local_ai_hub.client import HubClient
 from local_ai_hub.config import load_config
+from local_ai_hub.llama_cpp_runtime import llama_cpp_backend_selection
 from local_ai_hub.process_utils import hidden_run_kwargs, terminate_tree
 
 ROOT_CONFIG = ROOT / "config.toml"
@@ -367,12 +368,20 @@ def main() -> int:
 
         print(f"Local AI Hub v{ver} - Online (PID: {pid})")
         print("=" * 55)
-        ollama_state = 'Online' if ollama_ok else 'Offline'
-        if not ollama_enabled:
-            ollama_state = 'Disabled by policy'
-        print(f"Ollama:       {ollama_state} (Active: {active_model})")
-        if llama_models:
-            print(f"Backend:      llama.cpp ({len(llama_models)} models online)")
+        provider = llama_cpp_backend_selection(cfg)
+        if provider == "ollama":
+            ollama_state = 'Online' if ollama_ok else 'Offline'
+            print(f"Backend:      Ollama {ollama_state} (Active: {active_model})")
+        elif provider == "disabled":
+            print("Backend:      Disabled by policy")
+        else:
+            online = bool(llama_status.get("online", False)) or bool(llama_models)
+            llama_state = "Online" if online else "Offline"
+            mode = str(llama_status.get("mode", "") or "")
+            suffix = f"; device: {mode}" if provider == "llama.cpp (managed)" and mode else ""
+            print(f"Backend:      {provider} {llama_state} ({len(llama_models)} models online{suffix})")
+        if provider != "ollama":
+            print(f"Ollama:       {'Enabled' if ollama_enabled else 'Disabled by policy'}")
         model_sample = f" ({', '.join(installed_models[:3])}{'...' if len(installed_models) > 3 else ''})" if installed_models else ""
         print(f"Models:       {len(installed_models)} installed{model_sample}")
         if gpu_name != "N/A":

@@ -160,6 +160,10 @@ def validate_config(data: dict[str, Any]) -> None:
         if mode not in {"off", "auto", "on"}:
             raise ConfigError("llama_cpp.mode must be off, auto, or on")
         _number(llama_cpp, "model_load_timeout_seconds", minimum=1, maximum=3600)
+        _number(llama_cpp, "startup_timeout_seconds", minimum=1, maximum=3600)
+        model_filename = str(llama_cpp.get("managed_model_filename", "hub-qwen-15.gguf")).strip()
+        if not model_filename or Path(model_filename).name != model_filename or not model_filename.lower().endswith(".gguf"):
+            raise ConfigError("llama_cpp.managed_model_filename must be a .gguf filename inside the managed model directory")
         models = llama_cpp.get("models", {})
         if not isinstance(models, dict):
             raise ConfigError("llama_cpp.models must be a TOML table")
