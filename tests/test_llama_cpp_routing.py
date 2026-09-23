@@ -51,16 +51,40 @@ class LlamaCppRoutingTests(unittest.TestCase):
             },
         }
 
-    def test_auto_route_is_intel_only_and_explicit_on_is_opt_in(self):
+    def test_auto_uses_only_configured_external_loopback_endpoint_on_any_hardware(self):
         self.assertTrue(LlamaCppRouter(self._config("intel"))._hardware_allows())
-        self.assertFalse(LlamaCppRouter(self._config("amd"))._hardware_allows())
-        self.assertFalse(LlamaCppRouter(self._config("nvidia"))._hardware_allows())
+        self.assertTrue(LlamaCppRouter(self._config("amd"))._hardware_allows())
+        self.assertTrue(LlamaCppRouter(self._config("nvidia"))._hardware_allows())
         self.assertTrue(LlamaCppRouter(self._config("nvidia", "on"))._hardware_allows())
 
-    def test_auto_does_not_take_over_when_dedicated_other_gpu_is_present(self):
+    def test_off_disables_route_even_when_loopback_endpoint_is_configured(self):
         config = self._config()
-        config["_hardware"]["gpus"].append({"vendor": "nvidia", "name": "RTX", "integrated": False})
+        config["llama_cpp"]["mode"] = "off"
         self.assertFalse(LlamaCppRouter(config)._hardware_allows())
+
+    def test_disabled_ollama_never_becomes_implicit_provider_fallback(self):
+        config = self._config(mode="auto")
+        with tempfile.TemporaryDirectory() as state_dir:
+            config["server"].update({"ollama_url": "http://127.0.0.1:11434", "state_dir": state_dir})
+            config["ollama"] = {"enabled": False}
+            config["llama_cpp"]["fallback_to_ollama"] = True
+            runtime = OllamaRuntime(config)
+            with patch.object(runtime.llama_cpp, "request_stream", return_value={"_lah_backend_unavailable": "endpoint offline"}), \
+                 patch("local_ai_hub.ollama.urlopen", side_effect=AssertionError("disabled Ollama must not be called")):
+                result = runtime.request_stream("/api/generate", {"model": "qwen2.5-coder:1.5b"}, lambda _chunk: None, timeout=1)
+        self.assertIn("llama.cpp unavailable", result["error"])
+        self.assertEqual(result["_lah_provider"], "llama.cpp")
+
+    def test_enabled_ollama_takes_priority_over_llama_cpp_mode(self):
+        config = self._config(mode="on")
+        with tempfile.TemporaryDirectory() as state_dir:
+            config["server"].update({"ollama_url": "http://127.0.0.1:11434", "state_dir": state_dir})
+            config["ollama"] = {"enabled": True}
+            runtime = OllamaRuntime(config)
+            with patch.object(runtime.llama_cpp, "request_stream", side_effect=AssertionError("Ollama is selected")):
+                with patch("local_ai_hub.ollama.urlopen", return_value=_Response(lines=[b'{"response":"ok","done":true}\n'])):
+                    result = runtime.request_stream("/api/generate", {"model": "qwen2.5-coder:1.5b", "prompt": "hi"}, lambda _chunk: None, timeout=1)
+        self.assertEqual(result.get("response"), "ok")
 
     def test_router_mode_stream_translates_generate_and_chat(self):
         router = LlamaCppRouter(self._config())

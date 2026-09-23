@@ -18,6 +18,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from local_ai_hub.config import load_config as load_hub_config  # noqa: E402
+from local_ai_hub.llama_cpp_runtime import LlamaCppManagedRuntime, llama_cpp_managed_selected  # noqa: E402
 from local_ai_hub.generator import generate_global_policy, generate_token_economy_policy, write_all_generated  # noqa: E402
 
 MARKER_BEGIN = "# BEGIN LOCAL AI HUB MANAGED"
@@ -543,6 +544,23 @@ def ensure_ollama_for_setup(cfg: dict[str, Any], install_dir: Path, *, allow_ins
         return False
 
 
+def ensure_llama_cpp_for_setup(cfg: dict[str, Any]) -> bool:
+    """Install and start llama.cpp only when it is the explicit provider."""
+    if not llama_cpp_managed_selected(cfg):
+        log("Skipping managed llama.cpp setup: Ollama or external/disabled llama.cpp is selected.")
+        return True
+    runtime = LlamaCppManagedRuntime(cfg)
+    try:
+        if not runtime.ensure_running():
+            detail = str(runtime.status().get("last_error", "") or "llama-server did not become healthy after GPU and CPU startup attempts")
+            raise RuntimeError(detail)
+        status = runtime.status()
+        log(f"Managed llama.cpp is ready at {status['url']} ({status['mode'] or 'device mode unknown'}).")
+        return True
+    except Exception as exc:
+        raise RuntimeError(f"Managed llama.cpp setup failed: {exc}") from exc
+
+
 def pull_ollama_models(cfg: dict[str, Any]) -> None:
     if not cfg.get("features", {}).get("pull_models_during_setup", True) or not ollama_setup_required(cfg):
         return
@@ -830,6 +848,7 @@ def main() -> int:
 
     ensure_ollama_for_setup(cfg, install_dir, allow_install=not args.skip_ollama_install)
     pull_ollama_models(cfg)
+    ensure_llama_cpp_for_setup(cfg)
 
     if not args.skip_service and bool(setup_cfg.get("install_service", True)) and cfg.get("headless", {}).get("enabled", True):
         try:

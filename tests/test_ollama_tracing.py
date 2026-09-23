@@ -20,7 +20,7 @@ class _Response:
 
 
 def _runtime(tmp_path):
-    return OllamaRuntime({"server": {"state_dir": str(tmp_path), "ollama_url": "http://ollama", "request_timeout_seconds": 5}})
+    return OllamaRuntime({"server": {"state_dir": str(tmp_path), "ollama_url": "http://ollama", "request_timeout_seconds": 5}, "ollama": {"enabled": True}})
 
 
 def test_request_stream_aggregates_generate_chunks_and_notifies_callback(tmp_path, monkeypatch):

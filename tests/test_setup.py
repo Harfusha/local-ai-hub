@@ -203,6 +203,40 @@ def test_ollama_setup_remains_enabled_for_fallback_configuration():
     ) is True
 
 
+def test_managed_llama_setup_runs_only_when_selected(monkeypatch, capsys):
+    class ManagedRuntime:
+        def __init__(self, config):
+            self.config = config
+
+        def ensure_running(self):
+            return True
+
+        def status(self):
+            return {"url": "http://127.0.0.1:12438", "mode": "none"}
+
+    monkeypatch.setattr(setup, "LlamaCppManagedRuntime", ManagedRuntime)
+    assert setup.ensure_llama_cpp_for_setup({"ollama": {"enabled": False}, "llama_cpp": {"mode": "on"}})
+    assert "Managed llama.cpp is ready" in capsys.readouterr().out
+    assert setup.ensure_llama_cpp_for_setup({"ollama": {"enabled": True}, "llama_cpp": {"mode": "on"}})
+    assert "Skipping managed llama.cpp setup" in capsys.readouterr().out
+
+
+def test_managed_llama_setup_fails_closed_when_server_never_becomes_healthy(monkeypatch):
+    class ManagedRuntime:
+        def __init__(self, config):
+            pass
+
+        def ensure_running(self):
+            return False
+
+        def status(self):
+            return {"last_error": "llama-server did not become healthy"}
+
+    monkeypatch.setattr(setup, "LlamaCppManagedRuntime", ManagedRuntime)
+    with pytest.raises(RuntimeError, match="did not become healthy"):
+        setup.ensure_llama_cpp_for_setup({"ollama": {"enabled": False}, "llama_cpp": {"mode": "on"}})
+
+
 def test_pull_ollama_models_includes_vision_when_enabled(monkeypatch):
     pulled = []
     monkeypatch.setattr(setup, "find_ollama_executable", lambda: "ollama")

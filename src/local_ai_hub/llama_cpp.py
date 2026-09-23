@@ -1,9 +1,8 @@
 """Optional loopback llama.cpp SYCL adapter for Ollama-shaped Hub calls.
 
-This adapter only translates inference requests for explicitly mapped models
-when an already-running local llama.cpp server is healthy and hardware/profile
-routing allows it.  It never installs or starts llama.cpp, and it has no Ollama
-fallback.
+This adapter translates inference requests for explicitly mapped models when a
+configured loopback llama.cpp server is healthy. Managed server installation
+and process lifecycle live in :mod:`llama_cpp_runtime`.
 """
 
 from __future__ import annotations
@@ -48,24 +47,9 @@ class LlamaCppRouter:
             return False
         if mode == "on":
             return True
-        if mode != "auto":
-            return False
-        hardware = self.config.get("_hardware", {})
-        hardware = hardware if isinstance(hardware, dict) else {}
-        gpus = hardware.get("gpus", [])
-        if not isinstance(gpus, list):
-            return False
-        intel = any(
-            str(item.get("vendor", "")).lower() == "intel"
-            or "intel" in str(item.get("name", "")).lower()
-            for item in gpus if isinstance(item, dict)
-        )
-        dedicated_other = any(
-            str(item.get("vendor", "")).lower() in {"amd", "nvidia"}
-            and not bool(item.get("integrated"))
-            for item in gpus if isinstance(item, dict)
-        )
-        return intel and not dedicated_other
+        # Auto mode is external-only, not hardware-gated: a loopback endpoint
+        # explicitly present in config is the operator's provider choice.
+        return mode == "auto"
 
     def hardware_enabled(self) -> bool:
         """Expose whether this adapter can serve routes on the current host."""

@@ -40,7 +40,7 @@ Follow these execution phases:
 
 ### PHASE 2: RUN UPDATE / RE-SETUP
 
-Run the platform installer with the active hardware profile to apply dependency updates, regenerate MCP schemas/manifests, and update skills. The installer must inspect the active config first: install/start/pull Ollama only when `[ollama].enabled = true`, `server.auto_start_ollama = true`, and `llama_cpp.fallback_to_ollama = true`; otherwise skip all Ollama installation and model pulls. llama.cpp is not installed automatically; `mode = "auto"` may use only an existing healthy endpoint when hardware/profile detection requires it. Pull `models.vision` only for an explicitly enabled Ollama backend and `features.vision = true`. Never start `ollama serve` for the default disabled policy:
+Run the platform installer with the active hardware profile to apply dependency updates, regenerate MCP schemas/manifests, and update skills. Inspect provider config first: Ollama is selected when `[ollama].enabled = true` and its install/model pulls still require the existing explicit opt-ins (`server.auto_start_ollama = true`, `llama_cpp.fallback_to_ollama = true`). If Ollama is disabled, `llama_cpp.mode = "on"` provisions the pinned llama.cpp runtime and default Qwen 1.5B model under `server.state_dir`; `"auto"` uses only a configured existing endpoint; `"off"` disables it. Never switch providers silently or start `ollama serve` as a fallback. Pull `models.vision` only for an explicitly enabled Ollama backend and `features.vision = true`:
 
 - **Windows (PowerShell)**:
   ```powershell
@@ -79,8 +79,8 @@ Run the platform installer with the active hardware profile to apply dependency 
      "$HOME/.local-ai-hub/.venv/bin/python" "$HOME/.local-ai-hub/tools/doctor.py"
      ```
 4. **Hardware Acceleration Check (iGPU / NPU)**:
-   - On Intel-only systems, follow `docs/LLAMA_CPP_SYCL.md` and verify that the official SYCL `llama-server.exe --list-devices` lists the Intel GPU before enabling `llama_cpp.mode = "on"`. The installed Hub selects the SYCL backend in `auto` mode when its Intel hardware profile and routes are present. Do not set `OLLAMA_VULKAN` for Intel inference.
-   - NVIDIA/AMD discrete GPUs do not trigger Ollama installation. Do not enable llama.cpp SYCL on non-Intel hardware; use deterministic Hub operations unless an explicitly configured backend already exists.
+   - On Windows Intel systems, managed llama.cpp setup tries SYCL0 and retries on CPU if GPU startup fails. `mode = "auto"` checks an existing endpoint only. Do not set `OLLAMA_VULKAN` for Intel llama.cpp inference.
+   - Other supported platforms use the pinned CPU build for managed llama.cpp. NVIDIA/AMD GPU builds require an explicitly configured external endpoint.
    - If an NPU (Intel AI Boost / AMD XDNA) or Intel iGPU is present:
      Ensure OpenVINO dependencies are installed in the venv only when active hardware/configuration selects OpenVINO for embeddings or reranking. Do not install OpenVINO on NVIDIA-only systems merely because the feature permission is true:
      ```powershell

@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 from urllib.parse import urlparse
 
 from .llama_cpp import LlamaCppRouter
+from .llama_cpp_runtime import LlamaCppManagedRuntime, llama_cpp_backend_selection, llama_cpp_managed_selected
 from .json_utils import dumps as json_dumps
 
 
@@ -184,6 +185,7 @@ class OllamaRuntime:
         self.managed_pid_path = self.state_dir / f"{safe_name}.managed.pid"
         self.model_policy = ModelExecutionPolicy(config)
         self.llama_cpp = LlamaCppRouter(config)
+        self.llama_cpp_managed = LlamaCppManagedRuntime(config)
         self._meta_cache: dict[str, Any] = {}
         self._meta_cache_at: dict[str, float] = {}
         self._ensure_lock = threading.Lock()
@@ -191,6 +193,12 @@ class OllamaRuntime:
     def _is_embedding_model(self, model: str) -> bool:
         configured = str(self.config.get("models", {}).get("embedding", "") or "").strip()
         return bool(configured) and str(model or "").strip() == configured
+
+    def _llama_version_label(self) -> str:
+        if llama_cpp_managed_selected(self.config):
+            mode = str(self.llama_cpp_managed.status().get("mode", ""))
+            return "llama.cpp CPU" if mode == "none" else "llama.cpp SYCL" if mode else "llama.cpp"
+        return "llama.cpp external"
 
     def request(self, endpoint: str, payload: dict[str, Any] | None = None, timeout: float | None = None) -> dict[str, Any]:
         if payload is not None and endpoint in {"/api/chat", "/api/generate"}:
@@ -203,10 +211,10 @@ class OllamaRuntime:
                 result = describe(str(model))
                 if isinstance(result, dict):
                     return result
-        if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)):
+        if not bool(self.config.get("ollama", {}).get("enabled", False)):
             if endpoint == "/api/version":
                 router = getattr(self, "llama_cpp", None)
-                return {"version": "llama.cpp SYCL"} if router is not None and router.is_online() else {"error": "llama.cpp SYCL router unavailable"}
+                return {"version": self._llama_version_label()} if router is not None and router.is_online() else {"error": "llama.cpp router unavailable"}
             if endpoint == "/api/tags":
                 return {"models": [{"name": model} for model in self.llama_cpp.available_models()]}
             if endpoint == "/api/ps":
@@ -214,7 +222,7 @@ class OllamaRuntime:
                     {"name": row["name"], "model": row["name"], "context_length": row.get("context_length", 0), "size": 0, "size_vram": 0, "details": {"quantization_level": row.get("quantization", "GGUF")}}
                     for row in self.llama_cpp.loaded_model_details()
                 ]}
-            return {"error": "Ollama fallback is disabled and this endpoint is not provided by llama.cpp SYCL"}
+            return {"error": "Ollama is not the selected backend and this endpoint is not provided by llama.cpp"}
         payload = _normalise_keep_alive(payload)
         body = json_dumps(payload).encode("utf-8") if payload is not None else None
         headers = {"Content-Type": "application/json"} if body is not None else {}
@@ -260,17 +268,21 @@ class OllamaRuntime:
 
     def request_stream(self, endpoint: str, payload: dict[str, Any] | None, on_chunk: Any, timeout: float | None = None, *, on_thinking: Any | None = None) -> dict[str, Any]:
         llama_router = getattr(self, "llama_cpp", None)
-        llama_result = llama_router.request_stream(endpoint, payload, on_chunk, timeout=timeout, on_thinking=on_thinking) if llama_router is not None else None
+        llama_selected = not bool(self.config.get("ollama", {}).get("enabled", False))
+        llama_result = llama_router.request_stream(endpoint, payload, on_chunk, timeout=timeout, on_thinking=on_thinking) if llama_selected and llama_router is not None else None
         if llama_result is not None:
             if "_lah_backend_unavailable" not in llama_result:
+                if llama_cpp_managed_selected(self.config):
+                    device = str(self.llama_cpp_managed.status().get("mode", ""))
+                    llama_result["_lah_provider"] = "llama.cpp-cpu" if device == "none" else "llama.cpp-sycl" if device else "llama.cpp"
                 return llama_result
             backend_fallback = str(llama_result.get("_lah_backend_unavailable", "SYCL unavailable"))
-            if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)):
-                return {"error": f"llama.cpp SYCL unavailable: {backend_fallback}", "_lah_provider": "llama.cpp-sycl"}
+            if llama_selected:
+                return {"error": f"llama.cpp unavailable: {backend_fallback}", "_lah_provider": "llama.cpp"}
         else:
             backend_fallback = ""
-            if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)):
-                return {"error": "Ollama fallback is disabled and no llama.cpp SYCL route matches this model", "_lah_provider": "llama.cpp-sycl"}
+            if llama_selected:
+                return {"error": "Selected llama.cpp route is unavailable for this model", "_lah_provider": "llama.cpp"}
         clean = dict(_normalise_keep_alive(payload) or {})
         clean["stream"] = True
         body = json_dumps(clean).encode("utf-8")
@@ -411,19 +423,23 @@ class OllamaRuntime:
             pass
 
         llama_router = getattr(self, "llama_cpp", None)
+        llama_selected = not bool(self.config.get("ollama", {}).get("enabled", False))
         llama_result = (
             llama_router.request_stream(
                 endpoint, payload, lambda _chunk: None, timeout=timeout, should_stop=should_stop,
             )
-            if llama_router is not None else None
+            if llama_selected and llama_router is not None else None
         )
         if llama_result is not None:
             if "_lah_backend_unavailable" not in llama_result:
+                if llama_cpp_managed_selected(self.config):
+                    device = str(self.llama_cpp_managed.status().get("mode", ""))
+                    llama_result["_lah_provider"] = "llama.cpp-cpu" if device == "none" else "llama.cpp-sycl" if device else "llama.cpp"
                 return llama_result
-            if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)):
-                return {"error": f"llama.cpp SYCL unavailable: {llama_result['_lah_backend_unavailable']}", "_lah_provider": "llama.cpp-sycl"}
-        elif not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)):
-            return {"error": "Ollama fallback is disabled and no llama.cpp SYCL route matches this model", "_lah_provider": "llama.cpp-sycl"}
+            if llama_selected:
+                return {"error": f"llama.cpp unavailable: {llama_result['_lah_backend_unavailable']}", "_lah_provider": "llama.cpp"}
+        elif llama_selected:
+            return {"error": "Selected llama.cpp route is unavailable for this model", "_lah_provider": "llama.cpp"}
 
         clean = _normalise_keep_alive(payload) or {}
         clean = dict(clean)
@@ -631,8 +647,10 @@ class OllamaRuntime:
             pass
 
     def ensure_running(self) -> bool:
-        if self.llama_cpp.is_online():
-            return True
+        if llama_cpp_managed_selected(self.config):
+            return self.llama_cpp_managed.ensure_running()
+        if not bool(self.config.get("ollama", {}).get("enabled", False)):
+            return self.llama_cpp.is_online()
         if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)):
             return False
         if self.is_online():
@@ -737,10 +755,13 @@ class OllamaRuntime:
             "llama_cpp": {
                 "mode": str(self.config.get("llama_cpp", {}).get("mode", "auto")),
                 "online_models": self.llama_cpp.available_models(),
+                **self.llama_cpp_managed.status(),
             },
         }
 
     def stop_managed_server(self) -> bool:
+        if llama_cpp_managed_selected(self.config):
+            return self.llama_cpp_managed.stop()
         try:
             pid = int(self.managed_pid_path.read_text(encoding="utf-8").strip() or 0)
         except Exception:
@@ -772,9 +793,9 @@ class OllamaRuntime:
         if v:
             return v
         if self.llama_cpp.is_online():
-            self._meta_cache["version"] = "llama.cpp SYCL"
+            self._meta_cache["version"] = self._llama_version_label()
             self._meta_cache_at["version"] = now
-            return "llama.cpp SYCL"
+            return self._meta_cache["version"]
         return self._meta_cache.get("version")
 
     def installed_models(self) -> list[str]:
