@@ -285,7 +285,7 @@ def test_leases_norm_rel_windows_drive_rejection():
     assert _norm_rel("foo/bar/baz.txt") == "foo/bar/baz.txt"
 
 
-def test_leases_cross_tenant_release_by_id(tmp_path: Path):
+def test_leases_release_and_renew_require_owner_by_id(tmp_path: Path):
     store = ScopeLeaseStore(tmp_path)
     root = str(tmp_path)
 
@@ -298,8 +298,12 @@ def test_leases_cross_tenant_release_by_id(tmp_path: Path):
     claim2 = store.claim("tenant-2", root, ["src/worker.py"])
     assert claim2["success"] is False
 
-    # Cross-tenant release using http-default or * by lease_id
-    rel = store.release(tenant="http-default", lease_id=lease_id)
+    # Special tenant labels must not act as cross-tenant authorization.
+    for tenant in ("http-default", "system", "admin", "*"):
+        assert store.release(tenant=tenant, lease_id=lease_id)["released_rows"] == 0
+        assert store.renew(tenant=tenant, lease_id=lease_id)["success"] is False
+
+    rel = store.release(tenant="tenant-1", lease_id=lease_id)
     assert rel["success"] is True
     assert rel["released_rows"] >= 1
 
