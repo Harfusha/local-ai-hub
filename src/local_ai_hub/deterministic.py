@@ -4882,12 +4882,16 @@ def test_{sym}_regression_edge_cases():
         else:
             fields = {"id": "uuid", "name": "str", "status": "str"}
 
+        dataset_seed = repr(tuple(fields.items()))
         rows: list[dict[str, Any]] = []
         for i in range(1, n + 1):
             row: dict[str, Any] = {}
             for col, ctype in fields.items():
                 if "uuid" in ctype or col.lower() in ("id", "guid"):
-                    row[col] = f"{uuid.uuid4().hex[:12]}"
+                    row[col] = uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"{dataset_seed}:{col}:{i}",
+                    ).hex[:12]
                 elif "int" in ctype or col.lower() in ("age", "count", "seq", "index"):
                     row[col] = i * 10
                 elif "float" in ctype or col.lower() in ("price", "amount", "score", "rate"):
@@ -4965,7 +4969,7 @@ def test_{sym}_regression_edge_cases():
                 "top_functions": entries,
             }
         except Exception:
-            pass
+            entries.clear()
 
         try:
             raw = p.read_text(encoding="utf-8", errors="replace")
@@ -4994,7 +4998,7 @@ def test_{sym}_regression_edge_cases():
                     "top_functions": entries,
                 }
         except Exception:
-            pass
+            entries.clear()
 
         try:
             lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -5004,6 +5008,8 @@ def test_{sym}_regression_edge_cases():
                     entries.append({"summary": line.strip()})
                     if len(entries) >= limit:
                         break
+            if not entries:
+                return {"success": False, "error": "failed to parse profile: no profile records found"}
             return {
                 "success": True,
                 "profile_path": str(p),
