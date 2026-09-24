@@ -4051,7 +4051,9 @@ class LocalAIServices:
         visit(payload)
         return found
 
-    def _external_context_candidates(self, root: str, query: str) -> tuple[dict[str, list[str]], list[str], dict[str, str]]:
+    def _external_context_candidates(
+        self, root: str, query: str, *, timeout_budget: float | None = None
+    ) -> tuple[dict[str, list[str]], list[str], dict[str, str]]:
         """Query optional structural backends concurrently; degrade per backend."""
         groups: dict[str, list[str]] = {}
         warnings: list[str] = []
@@ -4097,6 +4099,13 @@ class LocalAIServices:
             timeout = max(0.05, min(float(timeout), 120.0))
         except (TypeError, ValueError):
             timeout = 3.0
+        if timeout_budget is not None:
+            try:
+                timeout = min(timeout, max(0.0, float(timeout_budget)))
+            except (TypeError, ValueError, OverflowError):
+                timeout = 0.0
+        if timeout <= 0.0:
+            return groups, warnings, {"serena": "skipped"}
         futures = {
             _CONTEXT_BACKEND_POOLS[backend].submit(run, backend): backend
             for backend in ("serena",)
