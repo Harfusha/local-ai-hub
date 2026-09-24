@@ -364,30 +364,44 @@ def test_different_replay_safe_payloads_do_not_coalesce(tmp_path, monkeypatch):
     assert len(set(request_ids)) == 2
 
 
-def test_coord_pubsub_poll_uses_since_timestamp_in_json_body(tmp_path, monkeypatch):
+def test_coord_pubsub_poll_uses_after_seq_in_json_body(tmp_path, monkeypatch):
     client = _client(tmp_path)
-    captured = {}
+    captured = []
 
     def capture_open(method, path, body, _headers, _timeout):
-        captured.update({"method": method, "path": path, "body": json.loads(body.decode("utf-8"))})
+        captured.append({"method": method, "path": path, "body": json.loads(body.decode("utf-8"))})
         return b'{"success":true}'
 
     monkeypatch.setattr(client, "_terminal_preflight", lambda *_args: None)
     monkeypatch.setattr(client, "_pooled_open", capture_open)
 
-    result = client.coord("pubsub_poll", root="repo", topic="updates", since_timestamp=1700000000.25)
+    default_result = client.coord("pubsub_poll", root="repo", topic="updates")
+    explicit_result = client.coord("pubsub_poll", root="repo", topic="updates", after_seq=17)
 
-    assert result["success"] is True
-    assert captured == {
-        "method": "POST",
-        "path": "/api/coord/pubsub_poll",
-        "body": {
-            "root": "repo",
-            "topic": "updates",
-            "since_timestamp": 1700000000.25,
-            "limit": 50,
+    assert default_result["success"] is True
+    assert explicit_result["success"] is True
+    assert captured == [
+        {
+            "method": "POST",
+            "path": "/api/coord/pubsub_poll",
+            "body": {
+                "root": "repo",
+                "topic": "updates",
+                "after_seq": 0,
+                "limit": 50,
+            },
         },
-    }
+        {
+            "method": "POST",
+            "path": "/api/coord/pubsub_poll",
+            "body": {
+                "root": "repo",
+                "topic": "updates",
+                "after_seq": 17,
+                "limit": 50,
+            },
+        },
+    ]
 
 
 def test_coord_worktree_release_keeps_physical_id_separate_from_lease(tmp_path, monkeypatch):
