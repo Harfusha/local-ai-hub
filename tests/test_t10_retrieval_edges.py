@@ -66,6 +66,32 @@ def test_code_index_call_queries_filter_non_call_edges_and_match_rust_paths(tmp_
         ("Thing::caller", "Thing::target", "calls")
     ]
 
+@pytest.mark.parametrize("wildcard", ["_", "%"])
+def test_call_queries_treat_like_metacharacters_as_literal_suffixes(tmp_path, wildcard) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    index = CodeIndex({"server": {"state_dir": str(tmp_path / "state")}}, repo_tools=None)
+    resolved = str(root.resolve())
+    target = f"target{wildcard}tail"
+    caller = f"caller{wildcard}tail"
+    with closing(index._connect()) as con:
+        con.executemany(
+            "INSERT INTO edges(root,src,dst,kind,path,line) VALUES(?,?,?,?,?,?)",
+            [
+                (resolved, "Pkg::caller_exact", f"Pkg::{target}", "calls", "src/lib.rs", 1),
+                (resolved, "Pkg::caller_false", "Pkg::targetXtail", "calls", "src/lib.rs", 2),
+                (resolved, f"Pkg::{caller}", "Pkg::target_exact", "calls", "src/lib.rs", 3),
+                (resolved, "Pkg::callerXtail", "Pkg::target_false", "calls", "src/lib.rs", 4),
+            ],
+        )
+        con.commit()
+
+    callers = index.find_callers(str(root), target)["callers"]
+    callees = index.find_callees(str(root), caller)["callees"]
+
+    assert [item["caller"] for item in callers] == ["Pkg::caller_exact"]
+    assert [item["callee"] for item in callees] == ["Pkg::target_exact"]
+
 def test_missing_tree_sitter_language_returns_none(monkeypatch) -> None:
     import local_ai_hub.treesitter_parser as parser
 
@@ -78,15 +104,28 @@ def test_code_index_falls_back_when_tree_sitter_is_unavailable(monkeypatch, tmp_
     import local_ai_hub.treesitter_parser as parser
 
     index = CodeIndex({"server": {"state_dir": str(tmp_path / "state")}}, repo_tools=None)
-    monkeypatch.setattr(parser, "parse_treesitter", lambda *_args: None)
+    source = "def caller():\n    target()\n"
+    parser_calls = []
 
-    symbols, _refs, edges = index._parse_file_content("def caller():\n    target()\n", "python")
+    def unavailable(text, language):
+        parser_calls.append((text, language))
+        return {
+            "result": None, "status": "unavailable", "parser": "tree_sitter",
+            "fallback_reason": "parser_unavailable", "syntax_error_count": 0,
+        }
 
+    monkeypatch.setattr(parser, "parse_treesitter_with_status", unavailable)
+
+    symbols, _refs, edges, diagnostic = index._parse_file_content_report(source, "python")
+
+    assert parser_calls == [(source, "python")]
     assert any(item.get("name") == "caller" for item in symbols)
     assert any(
         item.get("kind") == "calls" and item.get("src") == "caller" and item.get("dst") == "target"
         for item in edges
     )
+    assert diagnostic["fallback_used"] is True
+    assert diagnostic["fallback_reason"] == "parser_unavailable"
 
 def test_call_edge_analyzer_version_rejects_stale_parse_blobs(tmp_path) -> None:
     index = CodeIndex({"server": {"state_dir": str(tmp_path / "state")}}, repo_tools=None)
