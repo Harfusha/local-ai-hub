@@ -118,6 +118,14 @@ def _annotation_values(node: ast.AST, type_aliases: dict[str, set[str]]) -> set[
     return values
 
 
+def _documented_actions(function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    docstring = ast.get_docstring(function) or ""
+    match = re.search(r"\bactions?\s*:\s*([^\n.]+)", docstring, re.IGNORECASE)
+    if not match:
+        return set()
+    return set(re.findall(r"[a-z][a-z0-9_]*", match.group(1), re.IGNORECASE))
+
+
 def _dispatch_literals(
     functions: list[ast.FunctionDef | ast.AsyncFunctionDef],
     parameter: str,
@@ -208,9 +216,13 @@ def _mcp_action_handlers(
         and not (isinstance(statement.value, ast.Constant) and statement.value.value is None)
         for statement in function.body
     )
-    # Fallthrough only covers source-declared values with a concrete result;
-    # a generic `return None` does not prove dispatch for any action.
-    default_actions = (declared_actions - dispatch_actions) if has_explicit_fallback else set()
+    # Fallthrough covers only actions named in the handler contract; a generic
+    # truthy return cannot claim every source-declared or generated action.
+    default_actions = (
+        (declared_actions & _documented_actions(function)) - dispatch_actions
+        if has_explicit_fallback
+        else set()
+    )
     return {
         "actions": sorted(dispatch_actions),
         "default_actions": sorted(default_actions),
