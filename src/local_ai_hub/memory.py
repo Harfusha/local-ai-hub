@@ -20,6 +20,13 @@ class WorkspaceMemoryStore:
 
     This intentionally stores only data agents explicitly write to it. It is not an
     automatic conversation logger and is not used as hidden long-term memory.
+
+    This is trusted-local shared state, not a multi-tenant authorization boundary.
+    Memos are shared by every local agent using the same canonical workspace and key;
+    the tenant field records provenance and can select deletes, but it does not
+    restrict reads or prove caller identity. A later write replaces the earlier
+    value (last writer wins). Private identity-scoped memory needs authenticated
+    identity in every key and access check.
     """
 
     def __init__(self, state_dir: Path, default_ttl_hours: int = 168, max_value_chars: int = 6000):
@@ -68,10 +75,21 @@ class WorkspaceMemoryStore:
 
     @staticmethod
     def _clean_key(key: str) -> str:
-        key = " ".join(str(key).strip().split())
+        if not isinstance(key, str):
+            raise ValueError("memo key must be a string")
+        key = " ".join(key.strip().split())
         if not key or len(key) > 160:
             raise ValueError("memo key must be 1..160 characters")
         return key
+
+    @staticmethod
+    def _clean_tenant(tenant: str) -> str:
+        if not isinstance(tenant, str):
+            raise ValueError("memo tenant label must be a string")
+        tenant = tenant.strip()
+        if not tenant or len(tenant) > 128:
+            raise ValueError("memo tenant label must be 1..128 characters")
+        return tenant
 
     def _purge(self, con: sqlite3.Connection) -> None:
         con.execute("DELETE FROM memos WHERE expires_at <= ?", (time.time(),))
@@ -88,7 +106,10 @@ class WorkspaceMemoryStore:
     ) -> dict[str, Any]:
         workspace = self.workspace_id(root)
         key = self._clean_key(key)
-        value = str(value).strip()
+        tenant = self._clean_tenant(tenant)
+        if not isinstance(value, str):
+            raise ValueError("memo value must be a string")
+        value = value.strip()
         if not value:
             raise ValueError("memo value must not be empty")
         truncated = len(value) > self.max_value_chars
@@ -106,7 +127,15 @@ class WorkspaceMemoryStore:
                 )
                 con.commit()
         retry_busy(write, retries=4)
-        return {"success": True, "workspace": workspace, "key": key, "truncated": truncated, "expires_in_seconds": ttl}
+        return {
+            "success": True,
+            "workspace": workspace,
+            "key": key,
+            "scope": "workspace-shared",
+            "tenant": tenant,
+            "truncated": truncated,
+            "expires_in_seconds": ttl,
+        }
 
     def get(self, root: str, key: str) -> dict[str, Any]:
         workspace = self.workspace_id(root)
@@ -120,11 +149,12 @@ class WorkspaceMemoryStore:
                 ).fetchone()
         row = retry_busy(read, retries=3)
         if not row:
-            return {"success": False, "error": "memo not found", "workspace": workspace, "key": key}
+            return {"success": False, "error": "memo not found", "workspace": workspace, "key": key, "scope": "workspace-shared"}
         return {
             "success": True,
             "workspace": workspace,
             "key": key,
+            "scope": "workspace-shared",
             "value": row[0],
             "tenant": row[1],
             "metadata": json.loads(row[2] or "{}"),
@@ -152,14 +182,17 @@ class WorkspaceMemoryStore:
                 continue
             items.append({
                 "key": row[0], "value": row[1], "tenant": row[2],
+                "scope": "workspace-shared",
                 "metadata": json.loads(row[3] or "{}"), "updated_at": row[4], "expires_at": row[5], "score": score,
             })
         items.sort(key=lambda x: (-x["score"], -x["updated_at"]))
-        return {"success": True, "workspace": workspace, "results": items[:limit]}
+        return {"success": True, "workspace": workspace, "scope": "workspace-shared", "results": items[:limit]}
 
     def delete(self, root: str, key: str, tenant: str = "") -> dict[str, Any]:
         workspace = self.workspace_id(root)
         key = self._clean_key(key)
+        if tenant != "":
+            tenant = self._clean_tenant(tenant)
         def write() -> int:
             with closing(self._connect()) as con:
                 if tenant:
@@ -169,4 +202,4 @@ class WorkspaceMemoryStore:
                 con.commit()
                 return int(cur.rowcount or 0)
         deleted = retry_busy(write, retries=4)
-        return {"success": True, "workspace": workspace, "key": key, "deleted": deleted > 0}
+        return {"success": True, "workspace": workspace, "key": key, "scope": "workspace-shared", "deleted": deleted > 0}
