@@ -178,6 +178,7 @@ def test_operation_contract_metadata(row):
     assert row["acceptance"]
     assert row["evidence"]
     assert row["state"] in {"verified", "conditional", "unsupported", "removed"}
+    assert row["test_coverage"] == "metadata only; operation behavior unverified"
     assert required_contract_fields <= row["contract"].keys()
     assert row["test_ids"] == [
         f"tests/test_surface_inventory.py::test_operation_contract_metadata[{row['operation_id']}]"
@@ -347,6 +348,32 @@ def test_coverage_rows_never_claim_unobserved_audit_findings():
     assert all("task_id" not in row for row in rows)
 
 
+def test_coverage_rows_disambiguate_same_surface_and_name_by_handler():
+    rows = MODULE.coverage_rows(
+        [
+            {
+                "surface": "HTTP GET",
+                "name": "/status",
+                "handler": "StatusHandler.get_status",
+                "evidence": ["src/local_ai_hub/http_server.py:10"],
+            },
+            {
+                "surface": "HTTP GET",
+                "name": "/status",
+                "handler": "AdminHandler.get_status",
+                "evidence": ["src/local_ai_hub/admin.py:20"],
+            },
+        ],
+        task_id="T01",
+    )
+
+    assert len({row["operation_id"] for row in rows}) == 2
+    assert {row["handler"] for row in rows} == {
+        "StatusHandler.get_status",
+        "AdminHandler.get_status",
+    }
+
+
 def test_coverage_rows_preserve_refuted_evidence_status():
     rows = MODULE.coverage_rows(
         [{
@@ -509,6 +536,13 @@ def test_check_mode_without_generated_schemas_does_not_write_files(tmp_path, mon
         if name == "local_ai_hub" or name.startswith("local_ai_hub."):
             monkeypatch.delitem(sys.modules, name, raising=False)
 
+    def reject_write(*args, **kwargs):
+        pytest.fail("--check schema fallback attempted a filesystem write")
+
+    monkeypatch.setattr(Path, "write_text", reject_write)
+    monkeypatch.setattr(Path, "write_bytes", reject_write)
+    monkeypatch.setattr(Path, "mkdir", reject_write)
+
     result = MODULE.main(["--root", str(tmp_path), "--check"])
 
     assert result == 1
@@ -653,7 +687,7 @@ def test_generated_mcp_action_without_dispatch_handler_is_reported(tmp_path):
         '''from typing import Literal
 
 @mcp.tool()
-def local_ai_repo(action: Literal["search", "missing"]):
+def local_ai_repo(action: Literal["search", "missing"], detail: Literal["brief", "missing"]):
     if action == "search":
         return search()
 ''',
@@ -663,7 +697,10 @@ def local_ai_repo(action: Literal["search", "missing"]):
         "generated/schemas/local_ai_repo.json",
         json.dumps({
             "name": "local_ai_repo",
-            "parameters": {"properties": {"action": {"enum": ["search", "missing"]}}},
+            "parameters": {"properties": {
+                "action": {"enum": ["search", "missing"]},
+                "detail": {"enum": ["brief", "missing"]},
+            }},
         }),
     )
 
