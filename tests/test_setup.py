@@ -5,6 +5,7 @@ import json
 import sys
 import subprocess
 import os
+import tomllib
 import pytest
 from pathlib import Path
 
@@ -155,17 +156,69 @@ def test_config_mergers_preserve_user_content(tmp_path: Path):
     json_path = tmp_path / "settings.json"
     json_path.write_text(json.dumps({"other": 1, "mcpServers": {"user": {"command": "keep"}}}), encoding="utf-8")
     setup.json_mcp_merge(json_path, {"local-ai": {"command": "python", "args": ["hub.py"]}}, False)
+    json_first = json_path.read_text(encoding="utf-8")
     data = json.loads(json_path.read_text(encoding="utf-8"))
     assert data["other"] == 1
     assert data["mcpServers"]["user"]["command"] == "keep"
     assert data["mcpServers"]["local-ai"]["command"] == "python"
+    setup.json_mcp_merge(json_path, {"local-ai": {"command": "python", "args": ["hub.py"]}}, False)
+    assert json_path.read_text(encoding="utf-8") == json_first
 
     toml_path = tmp_path / "config.toml"
-    toml_path.write_text('[model]\nprovider="x"\n\n[mcp_servers.local-ai]\ncommand="user-managed"\n', encoding="utf-8")
+    toml_path.write_text(
+        '[model]\nprovider="x"\n\n[mcp_servers.foreign]\ncommand="keep"\n\n'
+        '[mcp_servers.local-ai]\ncommand="user-managed"\n',
+        encoding="utf-8",
+    )
     setup.codex_mcp_merge(toml_path, {"local-ai": {"command": "should-not-overwrite", "args": []}}, False)
-    text = toml_path.read_text(encoding="utf-8")
-    assert 'command="user-managed"' in text
-    assert "should-not-overwrite" not in text
+    toml_first = toml_path.read_text(encoding="utf-8")
+    data = tomllib.loads(toml_first)
+    assert data["model"]["provider"] == "x"
+    assert data["mcp_servers"]["foreign"]["command"] == "keep"
+    assert data["mcp_servers"]["local-ai"]["command"] == "user-managed"
+    assert "should-not-overwrite" not in toml_first
+    setup.codex_mcp_merge(toml_path, {"local-ai": {"command": "should-not-overwrite", "args": []}}, False)
+    assert toml_path.read_text(encoding="utf-8") == toml_first
+
+
+@pytest.mark.parametrize(
+    ("host", "manifest_format", "entry_agent"),
+    [
+        ("codex", "toml", "codex"),
+        ("claude", "json", "claude"),
+        ("gemini", "json", "gemini"),
+        ("antigravity", "antigravity", "gemini"),
+        ("cursor", "json", "cursor"),
+        ("windsurf", "json", "windsurf"),
+        ("copilot", "vscode", "copilot"),
+        ("generic", "json", "generic"),
+        ("vscode", "vscode", "generic"),
+    ],
+)
+def test_supported_host_mcp_manifests_parse(tmp_path: Path, host: str, manifest_format: str, entry_agent: str):
+    path = tmp_path / f"{host}.{'toml' if manifest_format == 'toml' else 'json'}"
+    install_dir = tmp_path / "install"
+    hub_python = tmp_path / "python"
+    cfg = {"code_intelligence": {"direct_agent_mcp": False}}
+    entries = setup.build_mcp_entries(install_dir, hub_python, None, entry_agent, cfg)
+
+    if manifest_format == "toml":
+        setup.codex_mcp_merge(path, entries, False)
+        manifest = tomllib.loads(path.read_text(encoding="utf-8"))["mcp_servers"]
+    elif manifest_format == "antigravity":
+        setup.sync_antigravity_mcp_config(path, install_dir, hub_python, None, cfg, False)
+        manifest = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+    elif manifest_format == "vscode":
+        setup.vscode_mcp_merge(path, entries, False)
+        manifest = json.loads(path.read_text(encoding="utf-8"))["servers"]
+    else:
+        setup.json_mcp_merge(path, entries, False)
+        manifest = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+
+    assert manifest["local-ai"]["env"]["LOCAL_AI_AGENT"] == entry_agent
+    if manifest_format == "vscode":
+        assert manifest["local-ai"]["type"] == "stdio"
+    assert manifest["local-ai"]["command"] == str(hub_python)
 
 
 def test_ollama_setup_skips_exclusive_llama_cpp_configuration(monkeypatch, tmp_path: Path, capsys):

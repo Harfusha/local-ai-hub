@@ -59,7 +59,9 @@ def test_release_has_compact_mcp_surface_and_tool_first_policy(tmp_path: Path):
     assert source.count("@mcp.tool()") == 8
     assert "CALL THIS FIRST before broad repository reads" in source
     assert '"mode": "full" if mode == "full" else "adaptive" if mode == "adaptive" else "fast"' in source
-    assert "CodeGraphContext" in source and "handmade grep terms" in source
+    installation = (ROOT / "docs" / "INSTALLATION.md").read_text(encoding="utf-8")
+    assert "handmade grep terms" in source
+    assert "CodeGraphContext is not part of Local AI Hub" in installation
     write_all_generated({"models": {"fast_code": "qwen2.5-coder:7b"}}, tmp_path)
     skill = (tmp_path / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
     assert "before native reads, grep" in skill
@@ -232,3 +234,32 @@ def test_update_prompt_uses_branch_safe_pull_and_generated_artifact_wording():
     assert "pull --ff-only" in prompt
     assert "checked-in/generated schemas" not in prompt
     assert "generated schemas" in prompt
+
+
+def test_public_contract_notes_match_install_update_and_generated_skill(tmp_path: Path):
+    write_all_generated({"models": {"fast_code": "qwen2.5-coder:7b"}}, tmp_path)
+    prompts = [
+        (ROOT / "docs" / "INSTALL_PROMPT.md").read_text(encoding="utf-8"),
+        (ROOT / "docs" / "UPDATE_PROMPT.md").read_text(encoding="utf-8"),
+    ]
+    generated = (tmp_path / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
+    notes = (
+        '`local_ai_rag(action="ingest_document")`',
+        '`local_ai_repo(action="pipeline")` accepts closed step objects',
+        '`local_ai_artifact(action="list")` does not require `artifact_id`',
+        '`local_ai_coord(action="pubsub_poll")` accepts `after_seq`',
+        '`local_ai_coord` bounds `max_tokens` to 0 through 100000.',
+        "Repository pipelines serialize preprocessing mutation actions with other mutating steps.",
+        "CodeGraphContext/KuzuDB is not a Local AI Hub integration or backend.",
+        "`disable_llm_card_synthesis = true` disables file-card synthesis by default.",
+    )
+
+    for note in notes:
+        assert all(note in prompt for prompt in prompts)
+        assert note in generated
+
+
+def test_feature_audit_marks_codegraph_as_removed_from_hub():
+    audit = (ROOT / "docs" / "FEATURE_AUDIT_V4.md").read_text(encoding="utf-8")
+    assert "Current status is removal from Hub" in audit
+    assert "**Removed from Hub; optional standalone CLI/MCP tool**" in audit

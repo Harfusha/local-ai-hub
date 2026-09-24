@@ -272,6 +272,45 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         routing_lines.append(f'{r_idx}. `local_ai_coord` — leases before overlapping edits; memos before repeating investigation.')
         r_idx += 1
     routing_section = "\n".join(routing_lines) if routing_lines else "*(No actions available: all tools disabled)*"
+    public_contract_lines: list[str] = []
+    if fs.rag:
+        public_contract_lines.append(
+            '- For `local_ai_rag(action="ingest_document")`, pass `content`, `title`, and `metadata`; '
+            'for `ingest_diagram`, pass `image_path`, `caption`, and `metadata`. '
+            'Raster diagrams are indexed as metadata-only; SVG text nodes carry extraction provenance.'
+        )
+    contract_notes: list[str] = []
+    if fs.status:
+        contract_notes.append(
+            '`local_ai_status.detail` uses `brief`, `cache`, `telemetry`, `full`, or `agent_state`; '
+            'action also accepts `status`, `health`, `check`, and `info` aliases.'
+        )
+    if fs.repo:
+        contract_notes.append(
+            '`local_ai_repo(action="pipeline")` accepts closed step objects with a supported action and per-step `id`/`result`; '
+            'run no more than four steps in parallel.'
+        )
+    if fs.artifacts:
+        contract_notes.append(
+            '`local_ai_artifact(action="list")` does not require `artifact_id`; `binary` is supported and binary payloads are never inlined.'
+        )
+    if fs.coord:
+        contract_notes.append(
+            '`local_ai_coord(action="pubsub_poll")` accepts `after_seq` from 0 through 2^63-1; '
+            '`local_ai_coord` bounds `max_tokens` to 0 through 100000.'
+        )
+    if fs.repo:
+        contract_notes.append(
+            'Repository pipelines serialize preprocessing mutation actions with other mutating steps.'
+        )
+    if contract_notes:
+        public_contract_lines.append("- Contract notes: " + " ".join(contract_notes))
+    public_contract_lines.extend([
+        "CodeGraphContext/KuzuDB is not a Local AI Hub integration or backend. CodeGraphContext is an optional standalone CLI/MCP tool; install and configure it directly with an agent only when independently desired.",
+        "",
+        "`disable_llm_card_synthesis = true` disables file-card synthesis by default. It does not disable module or project synthesis, and the setting can be overridden. Check the active configuration before claiming file-card synthesis is off; treat module/project synthesis and other semantic work as separate controls. Local-model work remains on-demand and advisory.",
+    ])
+    public_contract_guidance = "\n".join(public_contract_lines)
 
     # Advisory subagents section
     subagents_section = ""
@@ -398,6 +437,10 @@ Stop escalating when evidence is sufficient; reuse cached results and bounded ev
 ## Action routing
 
 {routing_section}
+
+## Public API contracts
+
+{public_contract_guidance}
 
 ## Reuse and failure protocol
 
