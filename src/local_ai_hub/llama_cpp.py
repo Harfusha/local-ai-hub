@@ -1,9 +1,8 @@
 """Optional loopback llama.cpp SYCL adapter for Ollama-shaped Hub calls.
 
-This adapter only translates inference requests for explicitly mapped models
-when an already-running local llama.cpp server is healthy and hardware/profile
-routing allows it.  It never installs or starts llama.cpp, and it has no Ollama
-fallback.
+This adapter translates inference requests for explicitly mapped models when a
+configured loopback llama.cpp server is healthy. Managed server installation
+and process lifecycle live in :mod:`llama_cpp_runtime`.
 """
 
 from __future__ import annotations
@@ -48,24 +47,9 @@ class LlamaCppRouter:
             return False
         if mode == "on":
             return True
-        if mode != "auto":
-            return False
-        hardware = self.config.get("_hardware", {})
-        hardware = hardware if isinstance(hardware, dict) else {}
-        gpus = hardware.get("gpus", [])
-        if not isinstance(gpus, list):
-            return False
-        intel = any(
-            str(item.get("vendor", "")).lower() == "intel"
-            or "intel" in str(item.get("name", "")).lower()
-            for item in gpus if isinstance(item, dict)
-        )
-        dedicated_other = any(
-            str(item.get("vendor", "")).lower() in {"amd", "nvidia"}
-            and not bool(item.get("integrated"))
-            for item in gpus if isinstance(item, dict)
-        )
-        return intel and not dedicated_other
+        # Auto mode is external-only, not hardware-gated: a loopback endpoint
+        # explicitly present in config is the operator's provider choice.
+        return mode == "auto"
 
     def hardware_enabled(self) -> bool:
         """Expose whether this adapter can serve routes on the current host."""
@@ -221,6 +205,40 @@ class LlamaCppRouter:
                 "backend": "llama.cpp-sycl",
             })
         return rows
+
+    def model_capabilities(self, model: str) -> dict[str, Any] | None:
+        """Expose Ollama-shaped capability metadata for a mapped model.
+
+        The local llama.cpp router publishes model metadata through its
+        OpenAI-compatible ``/models`` endpoint, not Ollama's ``/api/show``.
+        Keep this adapter-specific so callers can run capability preflights
+        without enabling or starting Ollama.
+        """
+        selected = self._entry(model)
+        if not selected:
+            return None
+        entry, url = selected
+        if not self._healthy(url, 0.6):
+            return None
+        alias = str(entry.get("served_model") or model)
+        row = self._model_info(url).get(alias)
+        if not isinstance(row, dict):
+            return {"error": f"model not found: {model}"}
+        architecture = row.get("architecture", {})
+        architecture = architecture if isinstance(architecture, dict) else {}
+        modalities = architecture.get("input_modalities", [])
+        modalities = modalities if isinstance(modalities, list) else []
+        lowered = {str(value).strip().lower() for value in modalities}
+        capabilities = ["completion"]
+        if lowered.intersection({"image", "video"}):
+            capabilities.append("vision")
+        if "audio" in lowered:
+            capabilities.append("audio")
+        return {
+            "model": model,
+            "capabilities": capabilities,
+            "details": {"architecture": architecture},
+        }
 
     def unload_model(self, model: str) -> bool:
         selected = self._entry(model)

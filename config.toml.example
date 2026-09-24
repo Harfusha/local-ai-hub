@@ -23,8 +23,9 @@ auto_tune = true
 # on loopback port 12438 and loads one model at a time. Auto-routing applies on
 # Intel-only systems when all model aliases are configured; otherwise Ollama runs.
 [llama_cpp]
-mode = "auto" # off | auto | on; use "on" only when these are known SYCL servers
+mode = "auto" # off | auto (external only) | on (managed install; use when Ollama is disabled)
 model_load_timeout_seconds = 600
+managed_model_filename = "hub-qwen-15.gguf"
 fallback_to_ollama = true
 
 [llama_cpp.models."qwen2.5-coder:0.5b"]
