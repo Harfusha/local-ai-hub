@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 import json
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -479,6 +480,41 @@ def test_mutation_transport_error_returns_explicit_uncertainty(tmp_path, monkeyp
     assert result["success"] is False
     assert result["outcome_unknown"] is True
     assert result["request_id"] == "t07-command-1"
+
+
+def test_client_replay_safe_coalescing_timeout_returns_owner_request_id(tmp_path, monkeypatch) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
+        encoding="utf-8",
+    )
+    client = HubClient(config_path=str(config), auto_start=False)
+    request_started = threading.Event()
+    release_request = threading.Event()
+    seen_request_ids: list[str] = []
+
+    def open_request(_method: str, _path: str, _body: bytes, headers: dict[str, str], _timeout: float) -> bytes:
+        seen_request_ids.append(headers["X-LocalAI-Request-ID"])
+        request_started.set()
+        release_request.wait(0.4)
+        return b'{"success":true}'
+
+    monkeypatch.setattr(client, "_pooled_open", open_request)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        owner = pool.submit(client.post, "/api/repo/complexity", {}, 1.0)
+        assert request_started.wait(1.0)
+        try:
+            waiter = client.post("/api/repo/complexity", {}, timeout=0.02)
+        finally:
+            release_request.set()
+        assert owner.result(timeout=1.0)["success"] is True
+
+    assert waiter["success"] is False
+    assert waiter["outcome_unknown"] is True
+    assert waiter["in_progress"] is True
+    assert waiter["retry_timeout"] is True
+    assert waiter["request_id"] == seen_request_ids[0]
+    assert len(seen_request_ids) == 1
 
 
 def test_maintenance_get_routes_are_read_only(tmp_path, monkeypatch) -> None:
