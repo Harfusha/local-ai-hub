@@ -513,6 +513,7 @@ def test_client_replay_safe_coalescing_timeout_returns_owner_request_id(tmp_path
     assert waiter["outcome_unknown"] is True
     assert waiter["in_progress"] is True
     assert waiter["retry_timeout"] is True
+    assert waiter["retryable"] is True
     assert waiter["request_id"] == seen_request_ids[0]
     assert len(seen_request_ids) == 1
 
