@@ -243,7 +243,22 @@ def test_repo_pipeline_caps_parallel_steps_at_four(tmp_path, monkeypatch: pytest
     assert len(result["step_results"]) == 6
 
 
-def test_repo_pipeline_serializes_mutating_steps(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    "mutation_action",
+    (
+        "batch_replace",
+        "ast_refactor",
+        "preprocess",
+        "preprocess_refresh",
+        "preprocess_pause",
+        "preprocess_resume",
+        "preprocess_cancel",
+        "preprocess_unregister",
+    ),
+)
+def test_repo_pipeline_serializes_mutating_steps(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, mutation_action: str
+) -> None:
     import local_ai_hub.mcp_server as mcp_server
 
     original = mcp_server._local_ai_repo_impl
@@ -270,14 +285,14 @@ def test_repo_pipeline_serializes_mutating_steps(tmp_path, monkeypatch: pytest.M
     monkeypatch.setattr(
         mcp_server.FEATURES,
         "supported_repo_actions",
-        lambda: [*supported_actions, "batch_replace"],
+        lambda: [*supported_actions, mutation_action],
     )
     result = fake_impl(
         action="pipeline",
         root=str(tmp_path),
         steps=[
-            {"action": "batch_replace"},
-            {"action": "batch_replace"},
+            {"action": mutation_action},
+            {"action": "affected_tests"},
         ],
     )
 
@@ -522,6 +537,17 @@ def test_pubsub_poll_cursor_matches_schema_and_reaches_client(monkeypatch: pytes
     monkeypatch.setattr(mcp_server, "CLIENT", FakeClient())
     mcp_server.local_ai_coord(action="pubsub_poll", after_seq=17)
     assert requests[0]["after_seq"] == 17
+
+
+def test_local_ai_coord_max_tokens_bounds_match_live_and_generated() -> None:
+    import local_ai_hub.mcp_server as mcp_server
+    from local_ai_hub.generator import generate_mcp_tool_schemas
+
+    runtime = mcp_server.mcp._tool_manager._tools["local_ai_coord"].parameters
+    generated = generate_mcp_tool_schemas({})["local_ai_coord"]["parameters"]
+    expected = {"type": "integer", "default": 0, "minimum": 0, "maximum": 100000}
+    assert _schema_shape(runtime["properties"]["max_tokens"], runtime) == expected
+    assert _schema_shape(generated["properties"]["max_tokens"], generated) == expected
 
 
 def test_pubsub_poll_rejects_out_of_range_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
