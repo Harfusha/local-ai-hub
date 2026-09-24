@@ -1627,12 +1627,14 @@ class CodeIndex:
         if not symbol or not symbol.strip():
             return {"success": False, "error": "symbol cannot be empty"}
         sym = symbol.strip()
+        escaped_sym = sym.replace("!", "!!").replace("%", "!%").replace("_", "!_")
         with self._lock, closing(self._connect()) as con:
             rows = con.execute(
                 """SELECT src, dst, kind, path, line FROM edges
-                   WHERE root=? AND kind='calls' AND (dst=? OR dst LIKE ? OR dst LIKE ?)
+                   WHERE root=? AND kind='calls'
+                     AND (dst=? OR dst LIKE ? ESCAPE '!' OR dst LIKE ? ESCAPE '!')
                    ORDER BY path, line LIMIT ?""",
-                (resolved, sym, f"%/{sym}", f"%::{sym}", limit),
+                (resolved, sym, f"%/{escaped_sym}", f"%::{escaped_sym}", limit),
             ).fetchall()
         callers = [
             {"caller": str(r["src"]), "callee": str(r["dst"]), "kind": str(r["kind"]), "path": str(r["path"]), "line": int(r["line"])}
@@ -1646,12 +1648,14 @@ class CodeIndex:
         if not symbol or not symbol.strip():
             return {"success": False, "error": "symbol cannot be empty"}
         sym = symbol.strip()
+        escaped_sym = sym.replace("!", "!!").replace("%", "!%").replace("_", "!_")
         with self._lock, closing(self._connect()) as con:
             rows = con.execute(
                 """SELECT src, dst, kind, path, line FROM edges
-                   WHERE root=? AND kind='calls' AND (src=? OR src LIKE ? OR src LIKE ?)
+                   WHERE root=? AND kind='calls'
+                     AND (src=? OR src LIKE ? ESCAPE '!' OR src LIKE ? ESCAPE '!')
                    ORDER BY path, line LIMIT ?""",
-                (resolved, sym, f"%/{sym}", f"%::{sym}", limit),
+                (resolved, sym, f"%/{escaped_sym}", f"%::{escaped_sym}", limit),
             ).fetchall()
         callees = [
             {"caller": str(r["src"]), "callee": str(r["dst"]), "kind": str(r["kind"]), "path": str(r["path"]), "line": int(r["line"])}
