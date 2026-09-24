@@ -334,14 +334,40 @@ class HubClient:
                     pass
         return None
 
-    def request(self, path: str, payload: dict[str, Any] | None = None, *, timeout: float = 30.0, replay_safe: bool = False) -> dict[str, Any]:
+    def request(
+        self,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        timeout: float = 30.0,
+        replay_safe: bool = False,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        """POST once; reuse explicit request_id only when retrying same logical operation.
+
+        replay_safe enables a transport retry with the same ID. It is safe only for
+        journaled/idempotent operations. Unknown outcomes include the ID for reconciliation.
+        """
         timeout = min(self.max_request_timeout, max(0.2, float(timeout)))
         clean_payload = payload or {}
         preflight = self._terminal_preflight(path, clean_payload)
         if preflight is not None:
             return preflight
         body = json_dumps(clean_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str).encode("utf-8")
-        request_id = f"req_{uuid.uuid4().hex[:12]}"
+        if request_id is None:
+            request_id = f"req_{uuid.uuid4().hex[:12]}"
+        elif (
+            not isinstance(request_id, str)
+            or not request_id
+            or len(request_id) > 128
+            or any(not (char.isascii() and 0x21 <= ord(char) <= 0x7E) for char in request_id)
+        ):
+            return {
+                "success": False,
+                "error": "request_id must contain 1-128 visible ASCII characters",
+                "terminal": True,
+                "retryable": False,
+            }
 
         def once(attempt_timeout: float) -> dict[str, Any]:
             headers = {
@@ -501,9 +527,21 @@ class HubClient:
         }
         return action in read_actions.get(path, set())
 
-    def post(self, path: str, payload: dict[str, Any] | None = None, timeout: float = 360.0) -> dict[str, Any]:
+    def post(
+        self,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        timeout: float = 360.0,
+        *,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        """POST once; reuse request_id after uncertainty to recover the journaled result.
+
+        Mutating endpoints are not automatically replayed. Only known read-only
+        POST routes use the transport retry path.
+        """
         replay_safe = self._post_replay_safe(path, payload)
-        return self.request(path, payload, timeout=timeout, replay_safe=replay_safe)
+        return self.request(path, payload, timeout=timeout, replay_safe=replay_safe, request_id=request_id)
 
     def status(self, detail: str = "brief", scope: str = "process") -> dict[str, Any]:
         if detail == "agent_state":
