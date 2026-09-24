@@ -31,6 +31,7 @@ from .agent_incidents import IncidentFingerprint, ToolOutcome
 from .agent_verification import VerificationReceipt
 from .task_context import build_context_request, compose_task_context
 from .agent_learning import ImprovementCandidate, SLOObservation
+from .operation_contracts import normalize_transport_error
 from .json_utils import dumps as json_dumps
 from .browser_bridge import (
     abandon_staged_capture,
@@ -1212,6 +1213,8 @@ class Handler(BaseHTTPRequestHandler):
         return 200, result
 
     def _send(self, status: int, data: Any) -> None:
+        if status >= 400:
+            data = normalize_transport_error(status, data)
         request_id = getattr(self, "_journal_request_id", None)
         if request_id and APP is not None and not getattr(self, "_journal_finished", False):
             try:
