@@ -43,7 +43,12 @@ RepoAction: TypeAlias = Literal.__getitem__(
 
 @mcp.tool()
 def local_ai_repo(action: RepoAction):
-    pass
+    if action == "search":
+        pass
+    elif action == "context":
+        pass
+    elif action == "batch_replace":
+        pass
 
 @mcp.tool(name="local_ai_status")
 def status(detail: Literal["brief", "full"]):
@@ -129,7 +134,15 @@ def inspect_command():
         "generated/schemas/local_ai_repo.json",
         json.dumps({
             "name": "local_ai_repo",
-            "parameters": {"properties": {"action": {"enum": ["search", "context", "batch_replace"]}}},
+            "parameters": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {"enum": ["search", "context", "batch_replace"]},
+                    "query": {"type": "string", "default": ""},
+                },
+            },
+            "outputSchema": {"type": "object", "properties": {"success": {"type": "boolean"}}},
         }),
     )
     write(
@@ -140,6 +153,109 @@ def inspect_command():
             "parameters": {"properties": {"detail": {"enum": ["brief", "full"]}}},
         }),
     )
+
+
+ROOT_TASK_ID = MODULE._coverage_task_id((ROOT / "docs" / "API_COVERAGE.md").read_text(encoding="utf-8"))
+ROOT_COVERAGE_ROWS = MODULE.coverage_rows(
+    MODULE._findings(MODULE.collect_inventory(ROOT)),
+    task_id=ROOT_TASK_ID,
+)
+
+
+@pytest.mark.parametrize("row", ROOT_COVERAGE_ROWS, ids=lambda row: row["operation_id"])
+def test_operation_contract_metadata(row):
+    required_contract_fields = {
+        "request_payload",
+        "response_contract",
+        "status_codes",
+        "timeout",
+        "operation_side_effects",
+        "backend_availability",
+    }
+
+    assert row["owner"]
+    assert row["owner_task"] == ROOT_TASK_ID
+    assert row["acceptance"]
+    assert row["evidence"]
+    assert row["state"] in {"verified", "conditional", "unsupported", "removed"}
+    assert required_contract_fields <= row["contract"].keys()
+    assert row["test_ids"] == [
+        f"tests/test_surface_inventory.py::test_operation_contract_metadata[{row['operation_id']}]"
+    ]
+    assert all(row["contract"][field] not in (None, "") for field in required_contract_fields)
+    assert row["contract_gaps"]
+    assert all(gap["reason"] and gap["owner_task"] and gap["owner"] and gap["disposition"] for gap in row["contract_gaps"])
+    assert "not statically identified" not in json.dumps(row)
+    assert "not statically classified" not in json.dumps(row)
+    assert "not measured" not in json.dumps(row)
+
+
+def test_unmeasured_contract_fields_have_concrete_gate_dispositions():
+    row = MODULE.coverage_rows(
+        [{
+            "surface": "Feature gate",
+            "name": "retrieval",
+            "evidence": ["src/local_ai_hub/features.py:10"],
+            "contract": {
+                "backend_availability": "not statically identified",
+                "quality": "not measured",
+            },
+        }],
+        task_id="T01",
+    )[0]
+
+    assert "not statically identified" not in json.dumps(row)
+    assert "not measured" not in json.dumps(row)
+    gaps = {gap["field"]: gap for gap in row["contract_gaps"]}
+    assert {"backend_availability", "quality"} <= gaps.keys()
+    assert gaps["backend_availability"]["owner_task"] == "T11"
+    assert gaps["quality"]["owner_task"] == "T02"
+    assert all(
+        gap["reason"] and gap["owner"] and gap["disposition"]
+        for gap in row["contract_gaps"]
+    )
+
+
+def test_http_inventory_extracts_handler_contract_facts_without_pack_body():
+    tree = MODULE.ast.parse('''class Handler:
+    def do_POST(self):
+        if self.path == "/api/items":
+            payload = self._read_json()
+            query = {"limit": ["2"]}
+            item = payload.get("name")
+            limit = query.get("limit")
+            self._send(201, {"item": item, "limit": limit})
+        elif self.path == "/api/context/pack":
+            self._send(418, self._read_json())
+''')
+
+    routes = MODULE._extract_http(tree, "http_server.py")
+
+    assert len(routes) == 1
+    assert routes[0]["contract"]["status_codes"] == [201]
+    assert routes[0]["contract"]["body_fields"] == ["name"]
+    assert routes[0]["contract"]["query_fields"] == ["limit"]
+    assert "/api/context/pack" not in json.dumps(routes)
+
+
+def test_cli_inventory_records_parser_options_and_module_exit_values():
+    tree = MODULE.ast.parse('''import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("action", choices=["status", "clean"])
+parser.add_argument("--limit", type=int, default=4)
+def main():
+    return 0 if ready else 1
+''')
+
+    details = MODULE._extract_cli_contract(tree)
+
+    assert details["operations"] == ["clean", "status"]
+    assert details["parameters"] == [
+        {"names": ["action"], "choices": ["clean", "status"]},
+        {"names": ["--limit"], "default": 4, "type": "int"},
+    ]
+    assert details["return_codes"] == [0, 1]
+    assert details["platform_guards"] == []
 
 
 def test_inventory_extracts_surfaces_and_resolves_dynamic_route_registry(tmp_path):
@@ -313,15 +429,96 @@ def test_generated_schema_without_source_tool_is_reported(tmp_path):
     assert any("generated MCP schema local_ai_rogue" in item for item in inventory["drift"])
 
 
-def test_check_mode_detects_rendered_coverage_row_drift(tmp_path, capsys):
+def test_check_mode_detects_drift_without_writing_coverage(tmp_path, capsys, monkeypatch):
     make_repo(tmp_path)
     stale_coverage = "# API surface coverage\n\n| Surface | Name |\n|---|---|\n| stale | `row` |\n"
+    coverage_path = tmp_path / "docs" / "API_COVERAGE.md"
     write(tmp_path, "docs/API_COVERAGE.md", stale_coverage)
+    before_bytes = coverage_path.read_bytes()
+    before_mtime = coverage_path.stat().st_mtime_ns
+
+    def reject_write(*args, **kwargs):
+        pytest.fail("--check attempted a filesystem write")
+
+    monkeypatch.setattr(Path, "write_text", reject_write)
+    monkeypatch.setattr(Path, "write_bytes", reject_write)
 
     assert MODULE.main(["--root", str(tmp_path), "--check"]) == 1
     output = json.loads(capsys.readouterr().out)
     assert any("rendered coverage rows differ" in item for item in output["drift"])
-    assert (tmp_path / "docs" / "API_COVERAGE.md").read_text(encoding="utf-8") == stale_coverage
+    assert output["coverage_matches"] is False
+    assert coverage_path.read_bytes() == before_bytes
+    assert coverage_path.stat().st_mtime_ns == before_mtime
+
+
+def test_check_mode_does_not_create_missing_coverage_doc(tmp_path, capsys, monkeypatch):
+    make_repo(tmp_path)
+    coverage_path = tmp_path / "docs" / "API_COVERAGE.md"
+    assert not coverage_path.exists()
+
+    def reject_write(*args, **kwargs):
+        pytest.fail("--check attempted to create a coverage file")
+
+    monkeypatch.setattr(Path, "write_text", reject_write)
+    monkeypatch.setattr(Path, "write_bytes", reject_write)
+
+    result = MODULE.main(["--root", str(tmp_path), "--check"])
+    summary = json.loads(capsys.readouterr().out)
+
+    assert result == 1
+    assert summary["coverage_matches"] is False
+    assert any("rendered coverage rows differ" in item for item in summary["drift"])
+    assert not coverage_path.exists()
+
+
+def test_check_mode_infers_document_task_id_and_preserves_bytes(tmp_path, capsys):
+    make_repo(tmp_path)
+    task_id = "task-from-coverage-doc"
+    coverage_path = tmp_path / "docs" / "API_COVERAGE.md"
+    write(tmp_path, "docs/API_COVERAGE.md", MODULE.render_coverage(MODULE.collect_inventory(tmp_path), task_id))
+    before = coverage_path.read_bytes()
+
+    result = MODULE.main(["--root", str(tmp_path), "--check"])
+
+    assert result == 0
+    assert coverage_path.read_bytes() == before
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["coverage_matches"] is True
+    assert summary["drift"] == []
+
+
+def test_check_mode_without_generated_schemas_does_not_write_files(tmp_path, monkeypatch, capsys):
+    make_repo(tmp_path)
+    schema_dir = tmp_path / "generated" / "schemas"
+    for schema_path in schema_dir.glob("*.json"):
+        schema_path.unlink()
+    schema_dir.rmdir()
+    write(tmp_path, "src/local_ai_hub/config.py", "def load_config(path=None):\n    return {}\n")
+    write(
+        tmp_path,
+        "src/local_ai_hub/generator.py",
+        "def generate_mcp_tool_schemas(cfg):\n    return {}\n",
+    )
+    write(tmp_path, "docs/API_COVERAGE.md", "# Existing coverage\n")
+    before = {
+        path.relative_to(tmp_path): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+    for name in tuple(sys.modules):
+        if name == "local_ai_hub" or name.startswith("local_ai_hub."):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+
+    result = MODULE.main(["--root", str(tmp_path), "--check"])
+
+    assert result == 1
+    assert "rendered coverage rows differ" in capsys.readouterr().out
+    after = {
+        path.relative_to(tmp_path): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
 
 
 def test_check_and_write_doc_are_rejected_before_mutating_coverage(tmp_path, capsys):
@@ -342,9 +539,10 @@ def test_check_cli_accepts_coverage_without_writing_it():
     coverage_path = ROOT / "docs" / "API_COVERAGE.md"
     before_bytes = coverage_path.read_bytes()
     before_mtime = coverage_path.stat().st_mtime_ns
+    command = [sys.executable, "tools/surface_inventory.py", "--check"]
 
     result = subprocess.run(
-        [sys.executable, "tools/surface_inventory.py", "--check"],
+        command,
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -354,6 +552,22 @@ def test_check_cli_accepts_coverage_without_writing_it():
     assert coverage_path.read_bytes() == before_bytes
     assert coverage_path.stat().st_mtime_ns == before_mtime
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_write_doc_mode_updates_coverage(tmp_path, capsys):
+    make_repo(tmp_path)
+    task_id = "task-write-coverage-test"
+    coverage_path = tmp_path / "docs" / "API_COVERAGE.md"
+    write(tmp_path, "docs/API_COVERAGE.md", "# Stale coverage\n")
+    expected = MODULE.render_coverage(MODULE.collect_inventory(tmp_path), task_id=task_id)
+
+    result = MODULE.main(["--root", str(tmp_path), "--write-doc", "--task-id", task_id])
+
+    assert result == 0
+    assert coverage_path.read_text(encoding="utf-8") == expected
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["written"] == "docs/API_COVERAGE.md"
+    assert summary["coverage_rows"] > 0
 
 
 def test_rendered_coverage_includes_task_id_for_every_finding(tmp_path):
@@ -409,3 +623,118 @@ def test_cli_positional_action_choices_are_inventoried():
     )
 
     assert MODULE._extract_cli(tree) == ["start", "status", "stop"]
+
+
+def test_conditional_action_stays_in_inventory_when_generated_schema_hides_it(tmp_path):
+    make_repo(tmp_path)
+    schema_path = tmp_path / "generated" / "schemas" / "local_ai_repo.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema["parameters"]["properties"]["action"]["enum"] = ["search", "context"]
+    write(tmp_path, "generated/schemas/local_ai_repo.json", json.dumps(schema))
+
+    inventory = MODULE.collect_inventory(tmp_path)
+    action = next(
+        finding
+        for finding in MODULE._findings(inventory)
+        if finding["surface"] == "MCP action local_ai_repo"
+        and finding["name"] == "batch_replace"
+    )
+
+    assert "batch_replace" not in inventory["mcp_actions"]["local_ai_repo"]
+    assert action["evidence_status"] == "conditional"
+    assert "batch_replacement" in action["condition"]
+
+
+def test_generated_mcp_action_without_dispatch_handler_is_reported(tmp_path):
+    make_repo(tmp_path)
+    write(
+        tmp_path,
+        "src/local_ai_hub/mcp_server.py",
+        '''from typing import Literal
+
+@mcp.tool()
+def local_ai_repo(action: Literal["search", "missing"]):
+    if action == "search":
+        return search()
+''',
+    )
+    write(
+        tmp_path,
+        "generated/schemas/local_ai_repo.json",
+        json.dumps({
+            "name": "local_ai_repo",
+            "parameters": {"properties": {"action": {"enum": ["search", "missing"]}}},
+        }),
+    )
+
+    inventory = MODULE.collect_inventory(tmp_path)
+
+    assert any("missing MCP action handler local_ai_repo:missing" in item for item in inventory["drift"])
+
+
+def test_source_mcp_tool_without_generated_schema_is_reported(tmp_path):
+    make_repo(tmp_path)
+    write(
+        tmp_path,
+        "src/local_ai_hub/mcp_server.py",
+        '''@mcp.tool()
+def local_ai_orphan():
+    pass
+''',
+    )
+
+    inventory = MODULE.collect_inventory(tmp_path)
+
+    assert any("source MCP tool local_ai_orphan has no generated schema" in item for item in inventory["drift"])
+
+
+def test_missing_generated_manifest_is_reported(tmp_path):
+    make_repo(tmp_path)
+    (tmp_path / "docs" / "UPDATE_PROMPT.md").unlink()
+
+    inventory = MODULE.collect_inventory(tmp_path)
+
+    assert any("missing generated manifest docs/UPDATE_PROMPT.md" in item for item in inventory["drift"])
+
+
+def test_inventory_contract_rows_include_required_machine_readable_fields(tmp_path):
+    make_repo(tmp_path)
+    task_id = "task-contract-inventory"
+    inventory = MODULE.collect_inventory(tmp_path)
+
+    rows = MODULE.coverage_rows(MODULE._findings(inventory), task_id=task_id)
+    required = {
+        "operation_id",
+        "owner_task",
+        "handler",
+        "fixtures",
+        "access_classification",
+        "cache_key",
+        "tenant_scope",
+        "provenance",
+        "test_ids",
+        "benchmark_cohort",
+        "state",
+        "contract",
+    }
+    required_contract_fields = {
+        "request_payload",
+        "response_contract",
+        "status_codes",
+        "timeout",
+        "operation_side_effects",
+        "backend_availability",
+    }
+
+    assert rows
+    assert all(required <= row.keys() for row in rows)
+    assert all(required_contract_fields <= row["contract"].keys() for row in rows)
+    assert all(
+        row["contract"][field] not in (None, "")
+        for row in rows for field in required_contract_fields
+    )
+    assert all(row["owner_task"] == task_id for row in rows)
+    assert all(row["operation_id"] and row["handler"] and row["test_ids"] for row in rows)
+    contract = next(row["contract"] for row in rows if row["surface"] == "MCP tool" and row["name"] == "local_ai_repo")
+    assert contract["input_schema"]["properties"]["query"]["default"] == ""
+    assert contract["output_schema"]["properties"]["success"]["type"] == "boolean"
