@@ -78,7 +78,7 @@ class ProjectPreprocessor:
     # Local AI keeps deterministic parsing first, then performs CPU-only semantic
     # indexing before any idle-GPU card generation. This lets embeddings run even
     # while foreground model work is active instead of waiting behind GPU-idle work.
-    PHASES = ("inventory", "hash", "code_index", "deterministic", "serena", "codegraph", "lexical", "rag", "files", "modules", "project", "hot_queries", "complete")
+    PHASES = ("inventory", "hash", "code_index", "deterministic", "serena", "lexical", "rag", "files", "modules", "project", "hot_queries", "diagnostics", "complete")
 
     def __init__(self, config: dict[str, Any], services: Any, rag: Any, scheduler: Any, runtime: Any, repo_tools: Any, code_index: Any | None = None, learner: Any | None = None, deterministic: Any | None = None, telemetry: Any | None = None, background_gpu: Any | None = None, external_tools: Any | None = None):
         self.config = config
@@ -353,6 +353,14 @@ class ProjectPreprocessor:
                     card_json TEXT NOT NULL,
                     updated_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS diagnostic_baselines (
+                    root TEXT PRIMARY KEY,
+                    command TEXT NOT NULL,
+                    exit_code INTEGER NOT NULL,
+                    error_count INTEGER NOT NULL,
+                    stdout_preview TEXT NOT NULL,
+                    updated_at REAL NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS hot_query_state (
                     root TEXT NOT NULL,
                     query TEXT NOT NULL,
@@ -431,8 +439,21 @@ class ProjectPreprocessor:
                 rows = con.execute("SELECT root FROM projects").fetchall()
                 for row in rows:
                     root = str(row["root"])
-                    if self._is_internal_root(root) or self._is_ephemeral_root(root):
+                    if self._is_internal_root(root) or self._is_ephemeral_root(root) or not Path(root).is_dir():
                         con.execute("DELETE FROM projects WHERE root=?", (root,))
+                        con.execute("DELETE FROM file_refs WHERE root=?", (root,))
+                        con.execute("DELETE FROM source_index WHERE root=?", (root,))
+                        try:
+                            con.execute("DELETE FROM source_fts WHERE root=?", (root,))
+                        except sqlite3.OperationalError:
+                            pass
+                        con.execute("DELETE FROM module_cards WHERE root=?", (root,))
+                        con.execute("DELETE FROM project_cards WHERE root=?", (root,))
+                        con.execute("DELETE FROM hot_query_state WHERE root=?", (root,))
+                        con.execute("DELETE FROM task_capsules WHERE root=?", (root,))
+                        con.execute("DELETE FROM external_index_state WHERE root=?", (root,))
+                        self._forget_project_runtime(root)
+                con.execute("UPDATE projects SET status='queued' WHERE status='running'")
                 self._rebalance_processing_slots(con)
                 con.commit()
         except Exception:
@@ -463,7 +484,7 @@ class ProjectPreprocessor:
                     # Serena is the earlier phase, so it wins when both cached
                     # backend states need to be retried for the same project.
                     if backend == "serena" or root not in desired:
-                        desired[root] = "serena" if backend == "serena" else "codegraph"
+                        desired[root] = backend
                 now = time.time()
                 for root, phase in desired.items():
                     con.execute(
@@ -480,24 +501,23 @@ class ProjectPreprocessor:
 
     def _rebalance_processing_slots(self, con: sqlite3.Connection, preferred_root: str | None = None) -> None:
         """Keep all registered projects active; cap only runnable preprocessing work."""
-        running = int(con.execute(
-            "SELECT COUNT(*) FROM projects WHERE paused=0 AND status='running' AND phase<>?", (self.PHASES[-1],)
-        ).fetchone()[0] or 0)
-        slots = max(0, self.max_preprocessing_projects - running)
+        limit = self.max_preprocessing_projects
         candidates = con.execute(
             """SELECT root,status FROM projects
-               WHERE paused=0 AND phase<>? AND status IN ('queued','error','waiting')
+               WHERE paused=0 AND phase<>?
                ORDER BY CASE WHEN root=? THEN 0 ELSE 1 END,
                         force_refresh DESC,last_requested_at DESC,updated_at DESC""",
             (self.PHASES[-1], preferred_root or ""),
         ).fetchall()
         for index, row in enumerate(candidates):
             root = str(row["root"])
-            if index < slots:
-                if str(row["status"]) == "waiting":
+            cur_status = str(row["status"])
+            if index < limit:
+                if cur_status == "waiting":
                     con.execute("UPDATE projects SET status='queued',retry_after=0 WHERE root=?", (root,))
-            elif str(row["status"]) != "waiting":
-                con.execute("UPDATE projects SET status='waiting' WHERE root=?", (root,))
+            else:
+                if cur_status in ("queued", "running"):
+                    con.execute("UPDATE projects SET status='waiting' WHERE root=?", (root,))
 
     def _recover_db(self) -> None:
         """Quarantine the derived preprocessing DB and rebuild it.
@@ -525,16 +545,26 @@ class ProjectPreprocessor:
     def _is_internal_root(self, resolved: str) -> bool:
         if not bool(self.cfg.get("ignore_internal_install", True)):
             return False
-        path = Path(resolved)
-        for protected in (self.install_root, self.state_dir):
+        path = Path(resolved).resolve()
+        # State directory contains runtime databases and cache - always internal
+        try:
+            state_p = self.state_dir.resolve()
+            if path == state_p or path.is_relative_to(state_p):
+                return True
+        except (ValueError, AttributeError):
             try:
-                if path == protected or protected.is_relative_to(path) or path.is_relative_to(protected):
-                    return True
-            except (ValueError, AttributeError):
-                try:
-                    path.relative_to(protected); return True
-                except ValueError:
-                    pass
+                path.relative_to(self.state_dir); return True
+            except ValueError:
+                pass
+        try:
+            install_p = self.install_root.resolve()
+            # If the user is actively working on the local-ai-hub repo itself (it has .git or pyproject.toml)
+            if (path == install_p or path.is_relative_to(install_p)) and ((install_p / ".git").exists() or (install_p / "pyproject.toml").exists()):
+                return False
+            if path == install_p or path.is_relative_to(install_p):
+                return True
+        except (ValueError, AttributeError):
+            pass
         return False
 
     def _is_ephemeral_root(self, resolved: str) -> bool:
@@ -795,7 +825,110 @@ class ProjectPreprocessor:
             # turn foreground project registration into a failure.
             pass
 
-    def register(self, root: str, *, force: bool = False, source: str = "agent") -> dict[str, Any]:
+
+    def _seed_from_parent(self, root: str, parent_root: str) -> dict[str, int]:
+        """Inherit precomputed caches from parent repository into a worktree."""
+        stats = {"file_refs": 0, "code_index": 0, "deterministic": 0}
+        resolved = self._root(root)
+        parent_resolved = self._root(parent_root)
+        if not Path(resolved).is_dir() or not Path(parent_resolved).is_dir():
+            return stats
+        if resolved == parent_resolved:
+            return stats
+
+        now = time.time()
+        base = Path(resolved)
+
+        # 1. Seed file_refs & source_index from preprocess.sqlite3
+        try:
+            with self._db_lock, closing(self._connect()) as con:
+                p_rows = con.execute(
+                    "SELECT path, size, mtime_ns, content_hash, card_key, rag_hash FROM file_refs WHERE root=? AND needs_hash=0 AND content_hash<>''",
+                    (parent_resolved,),
+                ).fetchall()
+                candidates_to_insert = []
+                for r in p_rows:
+                    rel = str(r["path"])
+                    p_file = (base / rel).resolve(strict=False)
+                    if p_file.is_file():
+                        try:
+                            st = p_file.stat()
+                            if int(st.st_size) == int(r["size"]):
+                                candidates_to_insert.append((
+                                    resolved, rel, str(r["content_hash"]), int(st.st_size), int(st.st_mtime_ns),
+                                    0, str(r["rag_hash"] or ""), now, 1, str(r["card_key"] or ""), now,
+                                ))
+                        except OSError:
+                            continue
+                if candidates_to_insert:
+                    con.executemany(
+                        """INSERT OR REPLACE INTO file_refs(
+                            root, path, content_hash, size, mtime_ns, needs_hash,
+                            rag_hash, last_accessed_at, generation, card_key, updated_at
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                        candidates_to_insert,
+                    )
+                    con.execute(
+                        """INSERT OR IGNORE INTO source_index(root, path, content_hash, text, updated_at)
+                           SELECT ?, path, content_hash, text, ? FROM source_index WHERE root=?""",
+                        (resolved, now, parent_resolved),
+                    )
+                    con.commit()
+                    stats["file_refs"] = len(candidates_to_insert)
+        except Exception:
+            pass
+
+        # 2. Seed deterministic.sqlite3 (test_source_links, hotspots_cache)
+        if self.deterministic is not None:
+            try:
+                with closing(self.deterministic._connect()) as det_con:
+                    det_con.execute(
+                        """INSERT OR IGNORE INTO test_source_links(root, source_path, test_path, confidence, updated_at)
+                           SELECT ?, source_path, test_path, confidence, ? FROM test_source_links WHERE root=?""",
+                        (resolved, now, parent_resolved),
+                    )
+                    det_con.execute(
+                        """INSERT OR REPLACE INTO hotspots_cache(root, days, cached_at, data_json)
+                           SELECT ?, days, ?, data_json FROM hotspots_cache WHERE root=?""",
+                        (resolved, now, parent_resolved),
+                    )
+                    det_con.commit()
+                    stats["deterministic"] = 1
+            except Exception:
+                pass
+
+        # 3. Seed code-index.sqlite3 (files, symbols, refs, edges)
+        if self.code_index is not None:
+            try:
+                with closing(self.code_index._connect()) as ci_con:
+                    ci_con.execute(
+                        """INSERT OR IGNORE INTO files(root, path, content_hash, language, updated_at)
+                           SELECT ?, path, content_hash, language, ? FROM files WHERE root=?""",
+                        (resolved, now, parent_resolved),
+                    )
+                    ci_con.execute(
+                        """INSERT OR IGNORE INTO symbols(root, path, name, kind, line, end_line, container, name_path, signature, access, docstring)
+                           SELECT ?, path, name, kind, line, end_line, container, name_path, signature, access, docstring FROM symbols WHERE root=?""",
+                        (resolved, parent_resolved),
+                    )
+                    ci_con.execute(
+                        """INSERT OR IGNORE INTO refs(root, path, name, line, kind)
+                           SELECT ?, path, name, line, kind FROM refs WHERE root=?""",
+                        (resolved, parent_resolved),
+                    )
+                    ci_con.execute(
+                        """INSERT OR IGNORE INTO edges(root, src, dst, kind, path, line)
+                           SELECT ?, src, dst, kind, path, line FROM edges WHERE root=?""",
+                        (resolved, parent_resolved),
+                    )
+                    ci_con.commit()
+                    stats["code_index"] = 1
+            except Exception:
+                pass
+
+        return stats
+
+    def register(self, root: str, *, force: bool = False, source: str = "agent", is_worktree: bool = False, parent_root: str | None = None) -> dict[str, Any]:
         if not self.enabled:
             return {"success": False, "enabled": False, "error": "preprocessing disabled"}
         resolved = self._root(root)
@@ -829,15 +962,19 @@ class ProjectPreprocessor:
                     (now, now, now, str(source or "agent")[:32], resolved),
                 )
                 # A forced rebuild must not expose old backend failures while the
-                # refreshed Serena/CodeGraph runs are still queued.
+                # refreshed Serena runs are still queued.
                 con.execute("DELETE FROM external_index_state WHERE root=?", (resolved,))
             else:
                 con.execute(
-                    "UPDATE projects SET paused=0, status=CASE WHEN status IN ('paused','error') THEN 'queued' ELSE status END, last_requested_at=?, next_check_at=CASE WHEN status IN ('paused','error') THEN 0 ELSE next_check_at END, registration_source=? WHERE root=?",
+                    "UPDATE projects SET paused=0, status=CASE WHEN status IN ('paused','error','waiting') THEN 'queued' ELSE status END, last_requested_at=?, next_check_at=CASE WHEN status IN ('paused','error') THEN 0 ELSE next_check_at END, registration_source=? WHERE root=?",
                     (now, str(source or "agent")[:32], resolved),
                 )
             self._rebalance_processing_slots(con, preferred_root=resolved)
         self._write_retry(_register_tx)
+        if is_worktree or parent_root:
+            p_root = parent_root or (self._related_worktrees(resolved)[0] if self._related_worktrees(resolved) else None)
+            if p_root and p_root != resolved:
+                self._seed_from_parent(resolved, p_root)
         self._register_discovered_worktrees(resolved)
         self._wake_all()
         return self.status(resolved)
@@ -1111,7 +1248,7 @@ class ProjectPreprocessor:
                     phase_pct = round(min(100.0, (det_count / total_files) * 100), 1)
                     frac = phase_pct / 100.0
                     overall_progress = round(min(100.0, max(0.0, ((phase_index - 1 + frac) / total_phases) * 100)), 1)
-                elif phase_str in {"serena", "codegraph"}:
+                elif phase_str == "serena":
                     ext_state = external_indexes.get(phase_str, {}).get("status", "")
                     phase_pct = 100.0 if ext_state in {"ready", "unavailable", "skipped", "degraded"} else 25.0
                     frac = phase_pct / 100.0
@@ -1177,7 +1314,7 @@ class ProjectPreprocessor:
                     elif phase_str in ("hash", "code_index", "deterministic", "lexical"):
                         unit = "files/s"
                         remaining = max(0, total_files - (hashed_files if phase_str == "hash" else (ci_count if phase_str == "code_index" else (det_count if phase_str == "deterministic" else source_count))))
-                    elif phase_str in {"serena", "codegraph"}:
+                    elif phase_str == "serena":
                         unit = "index"
                         remaining = 0 if external_indexes.get(phase_str, {}).get("status") in {"ready", "unavailable", "skipped", "degraded"} else 1
                     else:
@@ -1251,10 +1388,10 @@ class ProjectPreprocessor:
                     reason = f": {ext.get('error')}" if s_st in {"unavailable", "skipped", "degraded"} and ext.get("error") else ""
                     active_detail = f"Serena LSP project indexing ({s_st}{reason})"
                 elif phase_str == "codegraph":
-                    ext = external_indexes.get("codegraph", {})
+                    ext = {}
                     cg_st = ext.get("status", "running")
                     reason = f": {ext.get('error')}" if cg_st in {"unavailable", "skipped", "degraded"} and ext.get("error") else ""
-                    active_detail = f"CodeGraph relationship graph ({cg_st}{reason})"
+                    active_detail = "Serena LSP"
                 elif phase_str == "lexical":
                     active_detail = f"FTS5 full-text indexing: {source_count}/{total_files} files ({phase_pct}%)"
                 elif phase_str == "rag":
@@ -1363,14 +1500,14 @@ class ProjectPreprocessor:
     def _next_cpu_project(self) -> sqlite3.Row | None:
         now = time.time()
         with self._db_lock, closing(self._connect()) as con:
-            # CPU/read-only phases. Serena/CodeGraph indexing runs only while foreground is idle.
+            # CPU/read-only phases. Serena indexing runs only while foreground is idle.
             self._rebalance_processing_slots(con)
             con.commit()
             row = con.execute(
                 """SELECT * FROM projects
                    WHERE paused=0 AND retry_after<=?
                      AND status IN ('queued','running','error')
-                     AND phase IN ('inventory', 'hash', 'code_index', 'deterministic', 'serena', 'codegraph', 'lexical', 'rag', 'files', 'modules', 'project', 'hot_queries')
+                     AND phase IN ('inventory', 'hash', 'code_index', 'deterministic', 'serena', 'lexical', 'rag', 'files', 'modules', 'project', 'hot_queries', 'diagnostics')
                    ORDER BY force_refresh DESC,
                             CASE status WHEN 'queued' THEN 0 WHEN 'running' THEN 1 ELSE 2 END,
                             updated_at ASC LIMIT 1""",
@@ -1613,9 +1750,7 @@ class ProjectPreprocessor:
         if phase == "deterministic":
             return self._step_deterministic(row)
         if phase == "serena":
-            return self._step_external_index(row, "serena", "codegraph")
-        if phase == "codegraph":
-            return self._step_external_index(row, "codegraph", "lexical")
+            return self._step_external_index(row, "serena", "lexical")
         if phase == "files":
             return self._step_file_card(row)
         if phase == "modules":
@@ -1624,6 +1759,8 @@ class ProjectPreprocessor:
             return self._step_project(row)
         if phase == "hot_queries":
             return self._step_hot_query(row)
+        if phase == "diagnostics":
+            return self._step_diagnostics(row)
         return self._step_complete(row)
 
     def _step_incremental_inventory(self, row: dict[str, Any], dirty_paths: set[str]) -> bool:
@@ -2364,6 +2501,14 @@ class ProjectPreprocessor:
                 self.deterministic.refresh_manifests(root)
             except Exception:
                 pass
+            try:
+                self.deterministic.precompute_test_mappings(root)
+            except Exception:
+                pass
+            try:
+                self.deterministic.find_hotspots(root, days=30, limit=20)
+            except Exception:
+                pass
             self._set_project(root, phase="serena")
             return True
 
@@ -2396,7 +2541,7 @@ class ProjectPreprocessor:
     def _step_external_index(self, row: dict[str, Any], backend: str, next_phase: str) -> bool:
         root = str(row["root"])
         intelligence_cfg = self.config.get("code_intelligence", {})
-        enabled = bool(intelligence_cfg.get(f"preprocess_{backend}", True))
+        enabled = bool(intelligence_cfg.get(f"preprocess_{backend}", True)) and bool(intelligence_cfg.get(f"{backend}_enabled", True))
         if self.external_tools is None or not enabled:
             self._set_project(root, phase=next_phase)
             return True
@@ -2409,14 +2554,15 @@ class ProjectPreprocessor:
         retry_count = 0
         with self._db_lock, closing(self._connect()) as con:
             state = con.execute(
-                "SELECT revision_hash,status,error,retry_count FROM external_index_state WHERE root=? AND backend=?",
+                "SELECT revision_hash,status,error,retry_count,updated_at FROM external_index_state WHERE root=? AND backend=?",
                 (root, backend),
             ).fetchone()
         if not force_refresh and state is not None and str(state[0]) == revision:
             prior_status = str(state[1])
             prior_error = str(state[2] or "")
             retry_count = max(0, int(state[3] or 0))
-            if prior_status in {"ready", "unavailable", "skipped"} or self._external_error_is_revision_scoped(prior_error):
+            permanent_error = self._external_error_is_revision_scoped(prior_error)
+            if prior_status in {"ready", "skipped"} or permanent_error:
                 if prior_status != "ready" and retry_count < 1 and self._external_backend_available(backend):
                     # A previous process may have timed out before the optional
                     # backend was installed/discovered. Retry it now instead of
@@ -2433,6 +2579,14 @@ class ProjectPreprocessor:
                             )
                             con.commit()
                     self._set_project(root, phase=next_phase)
+                    return True
+            if prior_status in {"degraded", "unavailable"} and retry_count > 0:
+                elapsed = max(0.0, time.time() - float(state[4] or 0.0))
+                if elapsed < self._external_retry_delay(retry_count):
+                    # External indexes are optional; advance preprocessing while
+                    # this revision's bounded transient retry is cooling down.
+                    self._set_project(root, phase=next_phase)
+                    self._record_progress(root, 1)
                     return True
         if not Path(root).is_dir():
             result = {"success": False, "skipped": True, "error": "project root is missing"}
@@ -2494,10 +2648,14 @@ class ProjectPreprocessor:
             or "no configuration file found" in normalized
             or "project configuration auto-generation failed" in normalized
             or "project root is missing" in normalized
-            or "indexing exceeded" in normalized
-            or "index exited" in normalized
             or "no module named 'codegraphcontext'" in normalized
         )
+
+    @staticmethod
+    def _external_retry_delay(retry_count: int) -> float:
+        """Exponential retry delay for transient optional-index failures, capped at 15m."""
+        exponent = min(5, max(0, int(retry_count) - 1))
+        return min(900.0, 30.0 * (2 ** exponent))
 
     def candidate_paths(self, root: str, query: str, limit: int = 32) -> list[str]:
         """Fast deterministic candidate selection; exact source verification happens later."""
@@ -2685,6 +2843,14 @@ class ProjectPreprocessor:
                         self._stats["deterministic_card_hits"] = self._stats.get("deterministic_card_hits", 0) + 1
                     progressed = True
                     continue
+
+            if bool(self.cfg.get("disable_llm_card_synthesis", True)):
+                # Skip slow local LLM card synthesis on unparsed files; store compact deterministic metadata
+                data = {"purpose": f"source file ({Path(str(item['path'])).suffix})", "symbols": [], "dependencies": [], "side_effects": [], "risks": [], "tests": [], "keywords": [Path(str(item["path"])).stem]}
+                card_key = stable_hash({"app_version": __version__, "sha": content_hash, "source": "deterministic-stub"})
+                self._store_file_card(root, item, card_key, data, "deterministic-stub")
+                progressed = True
+                continue
 
             card_key = self._content_card_key(content_hash)
 
@@ -2940,20 +3106,21 @@ class ProjectPreprocessor:
         revision = self.rag.revision("__preprocess__", workspace)
         queries = []
         if self.learner is not None:
-            try: queries.extend(self.learner.hot_queries(root, int(self.cfg.get("learned_hot_queries", 12))))
-            except Exception: pass
+            try:
+                for q in self.learner.hot_queries(root, int(self.cfg.get("learned_hot_queries", 12))):
+                    q_str = str(q).strip()
+                    if q_str and len(q_str) <= 120 and len(q_str.split()) <= 15 and "\n" not in q_str:
+                        queries.append(q_str)
+            except Exception:
+                pass
         for q in self._hot_queries():
-            if q not in queries: queries.append(q)
+            if q not in queries:
+                queries.append(q)
         with self._db_lock, closing(self._connect()) as con:
             existing = {r["query"]: r["revision_hash"] for r in con.execute("SELECT query,revision_hash FROM hot_query_state WHERE root=?", (root,)).fetchall()}
         query = next((q for q in queries if existing.get(q) != revision), None)
         if query is None:
-            completed_at = time.time()
-            interval = max(30, int(self.cfg.get("auto_recheck_seconds", 1800)))
-            self._set_project(
-                root, phase="complete", status="complete", last_complete_at=completed_at,
-                next_check_at=completed_at + interval, force_refresh=0,
-            )
+            self._set_project(root, phase="diagnostics")
             return True
         if self._yield():
             return False
@@ -2976,7 +3143,8 @@ class ProjectPreprocessor:
             with self._stats_lock:
                 self._stats["deterministic_hot_query_hits"] += 1
         else:
-            result = self.rag.search(query, "__preprocess__", workspace, top_k=int(self.cfg.get("hot_query_top_k", 8)), use_reranker=True, priority=0)
+            use_reranker = bool(self.cfg.get("hot_query_use_reranker", False))
+            result = self.rag.search(query, "__preprocess__", workspace, top_k=int(self.cfg.get("hot_query_top_k", 8)), use_reranker=use_reranker, priority=0)
             if not result.get("success"):
                 raise RuntimeError(str(result.get("error", "hot query failed")))
             hybrid = self.services._hybrid_context(root, query, "__preprocess__", workspace, int(self.cfg.get("hot_context_tokens", 1800)))
@@ -3003,6 +3171,98 @@ class ProjectPreprocessor:
             con.commit()
         with self._stats_lock:
             self._stats["hot_queries"] += 1
+        return True
+
+    def _step_diagnostics(self, row: dict[str, Any]) -> bool:
+        root = str(row["root"])
+        if not bool(self.cfg.get("idle_diagnostics_enabled", True)):
+            completed_at = time.time()
+            interval = max(30, int(self.cfg.get("auto_recheck_seconds", 1800)))
+            self._set_project(root, phase="complete", status="complete", last_complete_at=completed_at, next_check_at=completed_at + interval, force_refresh=0)
+            return True
+        if not self.scheduler.background_allowed() or self.scheduler.foreground_busy():
+            return False
+
+        profile = {}
+        try:
+            profile = self.services.repo_profile(root)
+        except Exception:
+            pass
+        validation_cmds = profile.get("validation_commands", [])
+        if not validation_cmds:
+            completed_at = time.time()
+            interval = max(30, int(self.cfg.get("auto_recheck_seconds", 1800)))
+            self._set_project(root, phase="complete", status="complete", last_complete_at=completed_at, next_check_at=completed_at + interval, force_refresh=0)
+            return True
+
+        cmd_info = validation_cmds[0]
+        cmd_str = cmd_info.get("command") if isinstance(cmd_info, dict) else str(cmd_info)
+        if not cmd_str:
+            completed_at = time.time()
+            interval = max(30, int(self.cfg.get("auto_recheck_seconds", 1800)))
+            self._set_project(root, phase="complete", status="complete", last_complete_at=completed_at, next_check_at=completed_at + interval, force_refresh=0)
+            return True
+
+        import subprocess
+        from .process_utils import hidden_run_kwargs, terminate_tree
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                cmd_str, shell=True, cwd=root,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                encoding="utf-8", errors="replace",
+                **hidden_run_kwargs(),
+            )
+            stdout, stderr = proc.communicate(timeout=15.0)
+            exit_code = proc.returncode
+            preview = (stderr or stdout or "")[:2000]
+            error_count = preview.lower().count("error")
+        except subprocess.TimeoutExpired:
+            if proc is not None:
+                terminate_tree(proc.pid)
+                try:
+                    proc.wait(timeout=2.0)
+                except Exception:
+                    pass
+            exit_code = -1
+            preview = "diagnostic timed out after 15s"
+            error_count = 1
+        except Exception as exc:
+            if proc is not None:
+                try:
+                    terminate_tree(proc.pid)
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=2.0)
+                except Exception:
+                    pass
+            exit_code = -1
+            preview = f"diagnostic failed: {exc}"
+            error_count = 1
+        finally:
+            if proc is not None:
+                if proc.stdout and not proc.stdout.closed:
+                    try:
+                        proc.stdout.close()
+                    except Exception:
+                        pass
+                if proc.stderr and not proc.stderr.closed:
+                    try:
+                        proc.stderr.close()
+                    except Exception:
+                        pass
+
+        with self._db_lock, closing(self._connect()) as con:
+            con.execute(
+                "INSERT OR REPLACE INTO diagnostic_baselines(root, command, exit_code, error_count, stdout_preview, updated_at) VALUES(?, ?, ?, ?, ?, ?)",
+                (root, cmd_str, exit_code, error_count, preview, time.time()),
+            )
+            con.commit()
+
+        completed_at = time.time()
+        interval = max(30, int(self.cfg.get("auto_recheck_seconds", 1800)))
+        self._set_project(root, phase="complete", status="complete", last_complete_at=completed_at, next_check_at=completed_at + interval, force_refresh=0)
         return True
 
     def _step_complete(self, row: dict[str, Any]) -> bool:

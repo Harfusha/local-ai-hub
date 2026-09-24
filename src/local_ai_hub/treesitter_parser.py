@@ -26,6 +26,31 @@ def _init_treesitter() -> bool:
         return bool(_PARSERS)
     _INIT_ATTEMPTED = True
 
+    try:
+        import tree_sitter_language_pack as tslp
+        mapping = {
+            "csharp": "c_sharp",
+            "typescript": "typescript",
+            "tsx": "tsx",
+            "javascript": "javascript",
+            "python": "python",
+            "go": "go",
+            "rust": "rust",
+            "java": "java",
+            "cpp": "cpp",
+        }
+        for internal_key, tslp_key in mapping.items():
+            try:
+                if tslp.has_language(tslp_key):
+                    _LANGUAGES[internal_key] = tslp.get_language(tslp_key)
+                    _PARSERS[internal_key] = tslp.get_parser(tslp_key)
+            except Exception as e:
+                logger.debug("Failed loading %s via tree_sitter_language_pack: %s", tslp_key, e)
+        if _PARSERS:
+            return True
+    except Exception as exc:
+        logger.debug("tree_sitter_language_pack unavailable: %s", exc)
+
     # The bundled native Tree-sitter wheels currently access-violate on Windows
     # with Python 3.13 while walking some Unity/Go syntax trees. All callers have
     # safe language-specific fallbacks, so keep the Hub process stable here.
@@ -295,6 +320,11 @@ def _extract_csharp(
                     "access": "public",
                     "docstring": "",
                 })
+                stack.append(name)
+                for child in node.children:
+                    visit(child)
+                stack.pop()
+                return
 
         if ntype == "property_declaration":
             name_node = node.child_by_field_name("name")
@@ -326,6 +356,13 @@ def _extract_csharp(
                         "name": leaf_name,
                         "line": node.start_point.row + 1,
                         "kind": "call",
+                    })
+                    curr_scope = "/".join(filter(None, [curr_namespace] + stack)) or "<module>"
+                    edges.append({
+                        "src": curr_scope,
+                        "dst": leaf_name,
+                        "kind": "calls",
+                        "line": node.start_point.row + 1,
                     })
 
         for child in node.children:
@@ -422,6 +459,11 @@ def _extract_js_ts(
                     "access": "public",
                     "docstring": "",
                 })
+                stack.append(name)
+                for child in node.children:
+                    visit(child)
+                stack.pop()
+                return
 
         if ntype == "call_expression":
             fn_node = node.child_by_field_name("function")
@@ -433,6 +475,12 @@ def _extract_js_ts(
                         "name": leaf_name,
                         "line": node.start_point.row + 1,
                         "kind": "call",
+                    })
+                    edges.append({
+                        "src": "/".join(stack) or "<module>",
+                        "dst": leaf_name,
+                        "kind": "calls",
+                        "line": node.start_point.row + 1,
                     })
 
         for child in node.children:
@@ -532,6 +580,11 @@ def _extract_python(
                     "access": "public" if not name.startswith("_") else "private",
                     "docstring": "",
                 })
+                stack.append(name)
+                for child in node.children:
+                    visit(child)
+                stack.pop()
+                return
 
         if ntype == "call":
             fn_node = node.child_by_field_name("function")
@@ -543,6 +596,12 @@ def _extract_python(
                         "name": leaf_name,
                         "line": node.start_point.row + 1,
                         "kind": "call",
+                    })
+                    edges.append({
+                        "src": "/".join(stack) or "<module>",
+                        "dst": leaf_name,
+                        "kind": "calls",
+                        "line": node.start_point.row + 1,
                     })
 
         for child in node.children:
@@ -559,9 +618,10 @@ def _extract_go(
     refs: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     curr_pkg = ""
+    curr_func = ""
 
     def visit(node: Any) -> None:
-        nonlocal curr_pkg
+        nonlocal curr_pkg, curr_func
         ntype = node.type
 
         if ntype == "package_clause":
@@ -625,6 +685,12 @@ def _extract_go(
                     "access": "public" if name[0].isupper() else "private",
                     "docstring": "",
                 })
+                old_func = curr_func
+                curr_func = name_path
+                for child in node.children:
+                    visit(child)
+                curr_func = old_func
+                return
 
         if ntype == "method_declaration":
             name_node = node.child_by_field_name("name")
@@ -647,6 +713,12 @@ def _extract_go(
                     "access": "public" if name[0].isupper() else "private",
                     "docstring": "",
                 })
+                old_func = curr_func
+                curr_func = name_path
+                for child in node.children:
+                    visit(child)
+                curr_func = old_func
+                return
 
         if ntype == "call_expression":
             fn_node = node.child_by_field_name("function")
@@ -658,6 +730,12 @@ def _extract_go(
                         "name": leaf_name,
                         "line": node.start_point.row + 1,
                         "kind": "call",
+                    })
+                    edges.append({
+                        "src": curr_func or "<module>",
+                        "dst": leaf_name,
+                        "kind": "calls",
+                        "line": node.start_point.row + 1,
                     })
 
         for child in node.children:
@@ -674,9 +752,10 @@ def _extract_rust(
     refs: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     curr_impl = ""
+    curr_func = ""
 
     def visit(node: Any) -> None:
-        nonlocal curr_impl
+        nonlocal curr_impl, curr_func
         ntype = node.type
 
         if ntype in ("struct_item", "enum_item", "trait_item", "type_item"):
@@ -734,6 +813,12 @@ def _extract_rust(
                     "access": "public" if "pub" in sig.split()[:2] else "private",
                     "docstring": "",
                 })
+                old_func = curr_func
+                curr_func = name_path
+                for child in node.children:
+                    visit(child)
+                curr_func = old_func
+                return
 
         if ntype in ("call_expression", "macro_invocation"):
             fn_node = node.child_by_field_name("function") or node.child_by_field_name("macro")
@@ -745,6 +830,12 @@ def _extract_rust(
                         "name": leaf_name,
                         "line": node.start_point.row + 1,
                         "kind": "call",
+                    })
+                    edges.append({
+                        "src": curr_func or "<module>",
+                        "dst": leaf_name,
+                        "kind": "calls",
+                        "line": node.start_point.row + 1,
                     })
 
         for child in node.children:

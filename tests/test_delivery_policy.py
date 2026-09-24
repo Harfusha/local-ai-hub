@@ -1,6 +1,25 @@
+import re
+from pathlib import Path
+
+from local_ai_hub.async_jobs import AsyncJobManager
 from local_ai_hub.delivery import decide_delivery
 from local_ai_hub.telemetry import TelemetryStore
 from local_ai_hub import http_server
+
+
+def test_async_delivery_docs_match_supported_actions_and_cold_start_rules():
+    docs_path = Path(__file__).resolve().parents[1] / "docs" / "MCP_AND_AGENTS.md"
+    docs = docs_path.read_text(encoding="utf-8")
+
+    action_line = re.search(r"^Durable async actions: (.+)$", docs, re.MULTILINE)
+    assert action_line is not None
+    actions = re.findall(r"`([^`]+)`", action_line.group(1))
+    assert actions == sorted(AsyncJobManager.ACTIONS)
+    assert len(actions) == len(set(actions))
+    assert "at least ten observations" in docs
+    assert "sparse history stays inline" in docs
+    assert "fewer than 5 telemetry samples" in docs
+    assert "`cold_start_review_diff`" in docs
 
 
 def test_auto_delivery_uses_async_when_observed_p95_exceeds_budget():

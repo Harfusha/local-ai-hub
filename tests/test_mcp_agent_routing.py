@@ -188,15 +188,13 @@ def test_dynamic_descriptions_make_first_choice_routing_explicit() -> None:
     assert "Mutations never cache or single-flight" in descriptions["command"]
 
 
-def test_mcp_descriptions_require_semantic_handoff_before_cloud_reasoning() -> None:
+def test_mcp_descriptions_support_on_demand_semantic_delegation() -> None:
     descriptions = local_ai_mcp._desc_task() + local_ai_mcp._desc_repo()
     normalized = descriptions.lower()
 
-    assert "semantic handoff is mandatory" in normalized
-    assert "before cloud reasoning" in normalized
-    assert "report the bypass" in normalized
+    assert "semantic delegation is on-demand" in normalized
+    assert "never blocked by mandatory local handoffs" in normalized
     assert "local_ai_task" in descriptions
-    assert "semantic handoff" in normalized
 
 
 def test_disabled_local_task_description_does_not_claim_mandatory_local_execution(monkeypatch) -> None:
@@ -206,6 +204,7 @@ def test_disabled_local_task_description_does_not_claim_mandatory_local_executio
     description = local_ai_mcp._desc_task()
 
     assert "must call `local_ai_task` before cloud reasoning" not in description
+    assert "mandatory local handoffs" not in description
     assert "mandatory local execution" not in description
 
 
@@ -219,8 +218,7 @@ def test_disabled_descriptions_omit_local_routing_without_models(monkeypatch, le
     descriptions = local_ai_mcp._desc_task() + local_ai_mcp._desc_repo()
 
     assert "local_ai_task" not in descriptions
-    assert "semantic handoff" not in descriptions.lower()
-    assert "bypass" not in descriptions.lower()
+    assert "semantic delegation is on-demand" not in descriptions.lower()
     assert "deterministic/indexed" in descriptions
 
 
@@ -234,8 +232,8 @@ def test_enabled_descriptions_preserve_local_routing_contract(monkeypatch, lean)
     normalized = descriptions.lower()
 
     assert "local_ai_task" in descriptions
-    assert "semantic handoff is mandatory" in normalized
-    assert "before cloud reasoning" in normalized
+    assert "semantic delegation is on-demand" in normalized
+    assert "never blocked by mandatory local handoffs" in normalized
 
 
 @pytest.mark.parametrize("lean", [True, False])
@@ -248,8 +246,8 @@ def test_status_disabled_descriptions_omit_unavailable_bypass_tool(monkeypatch, 
     descriptions = local_ai_mcp._desc_task() + local_ai_mcp._desc_repo()
     normalized = descriptions.lower()
 
-    assert "semantic handoff is mandatory" in normalized
-    assert "before cloud reasoning" in normalized
+    assert "semantic delegation is on-demand" in normalized
+    assert "never blocked by mandatory local handoffs" in normalized
     assert "local_ai_status" not in descriptions
 
 

@@ -48,6 +48,16 @@ def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(parsed, maximum))
 
 
+def _budget_int(value: Any, name: str) -> int:
+    """Parse an integer budget without bool coercion or fractional truncation."""
+    if isinstance(value, bool) or not (
+        isinstance(value, int)
+        or isinstance(value, str) and re.fullmatch(r"[+-]?\d+", value.strip())
+    ):
+        raise ValueError(f"work order {name} budget must be an integer")
+    return int(value)
+
+
 def _permission_map(value: Any) -> dict[str, bool]:
     defaults = {
         "read": True,
@@ -216,12 +226,16 @@ def _stable_toposort_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return a stable dependency order and reject cyclic planner output.
 
     Planner JSON is untrusted model output. Forward references are valid DAG edges,
-    unknown references are discarded, and ties retain planner order for deterministic
-    execution. Cycles fail closed instead of silently dropping dependencies.
+    but duplicate IDs, self-edges, unknown references and cycles fail closed. Ties
+    retain planner order for deterministic execution.
     """
     if not steps:
         return []
     ids = [str(step.get("id", "")) for step in steps]
+    if any(not sid.strip() for sid in ids):
+        raise ValueError("planner returned an empty step id")
+    if len(ids) != len(set(ids)):
+        raise ValueError("planner returned duplicate planner step ids")
     id_set = set(ids)
     order = {sid: i for i, sid in enumerate(ids)}
     by_id = {str(step.get("id", "")): step for step in steps}
@@ -229,7 +243,17 @@ def _stable_toposort_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     followers: dict[str, list[str]] = {sid: [] for sid in ids}
     for step in steps:
         sid = str(step.get("id", ""))
-        normalized = {str(dep) for dep in step.get("depends_on", []) if str(dep) in id_set and str(dep) != sid}
+        raw_dependencies = step.get("depends_on", [])
+        if not isinstance(raw_dependencies, list):
+            raise ValueError(f"planner step {sid} dependencies must be a list")
+        normalized = {str(dep).strip() for dep in raw_dependencies}
+        if any(not dep for dep in normalized):
+            raise ValueError(f"planner step {sid} contains an empty dependency")
+        unknown = normalized - id_set
+        if unknown:
+            raise ValueError(f"planner returned unknown step dependencies: {', '.join(sorted(unknown)[:8])}")
+        if sid in normalized:
+            raise ValueError(f"planner returned a self dependency for step {sid}")
         step["depends_on"] = sorted(normalized, key=lambda dep: order[dep])
         deps[sid] = set(normalized)
         for dep in normalized:
@@ -684,7 +708,21 @@ class WorkOrchestrator:
         return self.services.delegate_repo({"root": root, "task": task, "context": context, "max_tokens": max_tokens, "complexity": "auto"}, tenant)
 
     def _plan(self, tenant: str, root: str, task: str, payload: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-        acceptance = payload.get("acceptance_criteria") or []
+        acceptance = _string_list(payload.get("acceptance_criteria"), limit=24, item_chars=2000)
+        if not acceptance:
+            raise ValueError("work order requires explicit acceptance criteria")
+        budget = payload.get("budget")
+        if budget is None:
+            budget = {}
+        if not isinstance(budget, dict):
+            raise ValueError("work order budget must be an object")
+        hard_max_steps = min(self.max_steps, 16)
+        requested_max_steps = _budget_int(budget.get("max_steps", hard_max_steps), "max_steps")
+        if requested_max_steps < 1 or requested_max_steps > hard_max_steps:
+            raise ValueError(f"work order max_steps must be between 1 and {hard_max_steps}")
+        requested_max_tokens = _budget_int(budget.get("max_tokens", 1400), "max_tokens")
+        if requested_max_tokens < 128 or requested_max_tokens > 1400:
+            raise ValueError("work order max_tokens must be between 128 and 1400")
         prompt = (
             "PLAN A CODING WORK ORDER. Return STRICT JSON only: "
             '{"summary":"...","needs_agent":false,"question":"","steps":[{"id":"s1","kind":"inspect|edit|validate|review|integrate","task":"...","depends_on":[],"acceptance":["..."]}],"validation_commands":[]}.'
@@ -694,7 +732,7 @@ class WorkOrchestrator:
             f"CONSTRAINTS:\n{json_dumps(payload.get('constraints') or [], ensure_ascii=False)}"
             + (f"\nAGENT ANSWER TO PRIOR BLOCKER:\n{str(payload.get('agent_answer',''))[:8000]}" if payload.get("agent_answer") else "")
         )
-        res = self._ask(tenant, root, prompt, json_dumps(context, ensure_ascii=False)[:14000], 1400)
+        res = self._ask(tenant, root, prompt, json_dumps(context, ensure_ascii=False)[:14000], requested_max_tokens)
         parsed = _json_object(str(res.get("text", ""))) if isinstance(res, dict) and res.get("success", True) else None
         if not parsed or not isinstance(parsed.get("steps"), list):
             parsed = {"summary": task[:240], "needs_agent": False, "question": "", "steps": [
@@ -703,28 +741,52 @@ class WorkOrchestrator:
                 {"id": "s3", "kind": "validate", "task": "Run the smallest relevant validation commands", "depends_on": ["s2"], "acceptance": acceptance},
                 {"id": "s4", "kind": "review", "task": "Review the integrated change against the original task", "depends_on": ["s3"], "acceptance": acceptance},
             ], "validation_commands": []}
+        raw_steps = parsed.get("steps", [])
+        if len(raw_steps) > requested_max_steps:
+            raise ValueError(f"planner returned more than the {requested_max_steps} step budget")
         cleaned=[]; seen=set()
-        for i, raw in enumerate(parsed.get("steps", [])[: int(payload["budget"]["max_steps"])]):
+        for i, raw in enumerate(raw_steps):
             if not isinstance(raw, dict):
-                continue
-            base_sid = str(raw.get("id") or f"s{i+1}").strip()[:40] or f"s{i+1}"
-            sid = base_sid
-            suffix = 2
-            while sid in seen:
-                suffix_text = f"-{suffix}"
-                sid = base_sid[: max(1, 40 - len(suffix_text))] + suffix_text
-                suffix += 1
+                raise ValueError("planner returned a non-object step")
+            sid = str(raw.get("id") or "").strip()[:40]
+            if not sid:
+                raise ValueError("planner returned an empty step id")
+            if sid in seen:
+                raise ValueError("planner returned duplicate planner step ids")
             seen.add(sid)
             kind=str(raw.get("kind", "inspect")).strip().lower()
             if kind not in {"inspect","edit","validate","review","integrate"}:
-                kind="inspect"
-            deps=_string_list(raw.get("depends_on"), limit=self.max_steps, item_chars=40)
+                raise ValueError(f"planner returned unknown planner step kind: {kind[:40]}")
+            raw_dependencies = raw.get("depends_on", [])
+            if not isinstance(raw_dependencies, list):
+                raise ValueError(f"planner step {sid} dependencies must be a list")
+            if any(not isinstance(dep, str) or not dep.strip() for dep in raw_dependencies):
+                raise ValueError(f"planner step {sid} contains an invalid dependency")
+            deps = [dep.strip() for dep in raw_dependencies]
             step_task=str(raw.get("task", "")).strip()[:2000] or f"{kind} work-order evidence"
+            step_acceptance = _string_list(raw.get("acceptance"), limit=12, item_chars=2000) or acceptance[:12]
             cleaned.append({
                 "id":sid, "kind":kind, "task":step_task, "depends_on":deps,
-                "acceptance":_string_list(raw.get("acceptance"), limit=12, item_chars=2000),
+                "acceptance":step_acceptance,
                 "state":"pending",
             })
+        def declared_limit(name: str, default: int) -> int:
+            limit = _budget_int(budget.get(name, default), name)
+            if limit < 0 or limit > requested_max_steps:
+                raise ValueError(f"work order {name} must be between 0 and {requested_max_steps}")
+            return limit
+
+        max_edit_steps = declared_limit("max_edits", requested_max_steps)
+        if sum(step["kind"] == "edit" for step in cleaned) > max_edit_steps:
+            raise ValueError(f"planner returned more than the {max_edit_steps} edit-step budget")
+        raw_commands = parsed.get("validation_commands", [])
+        if not isinstance(raw_commands, list) or any(not isinstance(command, str) or not command.strip() for command in raw_commands):
+            raise ValueError("planner validation_commands must be a list of non-empty strings")
+        max_commands = declared_limit("max_commands", requested_max_steps)
+        if len(raw_commands) > max_commands:
+            raise ValueError(f"planner returned more than the {max_commands} command budget")
+        parsed["validation_commands"] = [command.strip() for command in raw_commands]
+        parsed["acceptance_criteria"] = acceptance
         parsed["steps"] = _stable_toposort_steps(cleaned) if cleaned else [{"id":"s1","kind":"inspect","task":task,"depends_on":[],"acceptance":acceptance,"state":"pending"}]
         return parsed
 

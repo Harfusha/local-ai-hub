@@ -230,6 +230,48 @@ def test_conversation_store_evicts_oldest_inactive_at_capacity() -> None:
     assert c4.conversation_id in store._items
 
 
+def test_service_marks_expired_conversations_terminal_and_running_ones_retryable() -> None:
+    from local_ai_hub.conversations import ConversationStore
+    from local_ai_hub.services import LocalAIServices
+
+    now = [100.0]
+    store = ConversationStore(idle_ttl_seconds=5, clock=lambda: now[0])
+    services = object.__new__(LocalAIServices)
+    services.conversations = store
+
+    expired = store.start("tenant-a", {"model": "fast"})
+    now[0] += 6
+    expired_result = services.continue_conversation(
+        {"conversation_id": expired.conversation_id, "task": "follow-up"}, "tenant-a"
+    )
+
+    assert expired_result == {
+        "success": False,
+        "conversation_id": expired.conversation_id,
+        "error": "conversation not found",
+        "terminal": True,
+        "retryable": False,
+        "in_progress": False,
+    }
+
+    running = store.start("tenant-a", {"model": "fast"})
+    reserved, error = store.reserve(running.conversation_id, "tenant-a")
+    assert reserved is running
+    assert error == ""
+    running_result = services.continue_conversation(
+        {"conversation_id": running.conversation_id, "task": "competing follow-up"}, "tenant-a"
+    )
+
+    assert running_result == {
+        "success": False,
+        "conversation_id": running.conversation_id,
+        "error": "conversation is already running",
+        "terminal": False,
+        "retryable": True,
+        "in_progress": True,
+    }
+
+
 def test_services_aborts_active_conversation_on_exception() -> None:
     import pytest
     from local_ai_hub.conversations import ConversationStore

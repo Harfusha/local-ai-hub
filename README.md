@@ -2,7 +2,7 @@
 
 Local AI Hub **4.0.0** is a local, deterministic-first tool and inference layer for coding agents such as Codex, Claude Code, Gemini CLI, Cursor, Windsurf, VS Code/Copilot and other MCP clients. Its purpose is to keep repetitive repository discovery, code-relationship analysis, validation, retrieval and bounded local reasoning off the cloud agent's context while sharing the resulting work across agents.
 
-The public interface is intentionally small: **8 MCP tools**. Serena and CodeGraphContext are managed behind that surface by default, so agents gain language-aware symbols and graph relationships without paying for two additional MCP schemas on every turn.
+The public interface is intentionally small: **8 MCP tools**. Serena is managed behind that surface by default (with CodeGraphContext recommended as an optional standalone optimization tool for repositories with deep call hierarchies), so agents gain language-aware symbols without paying for additional MCP schemas on every turn.
 
 Local AI Hub 4.0 uses one current runtime contract across packaging, HTTP, MCP, telemetry, caches and dashboard state. Token efficiency is accounted end-to-end at the MCP boundary: gross repository/context/output avoidance is measured separately from tool-call and tool-response protocol cost, producing a signed net cloud-token delta. Deterministic/indexed retrieval, context/diff/outline compaction and artifact-backed projection contribute to cloud savings only when an explicit measured baseline exists; diagnostic candidate sizes are not proof that a cloud agent would have read the same payload. Local cache/single-flight reuse is reported separately as local-compute avoidance, and tool-catalog schema exposure is shown as a separate conservative scenario.
 
@@ -11,7 +11,7 @@ Local AI Hub 4.0 uses one current runtime contract across packaging, HTTP, MCP, 
 - deterministic repository facts, symbols, references, manifests, routes, tests and risk signals;
 - default adaptive repository context packs before non-trivial planning, edit, review or test, with reuse-first candidates, evidence IDs, guarded override reasons and bounded deterministic/local-model composition;
 - managed **Serena** semantic-symbol indexing/querying;
-- managed **CodeGraphContext** call/dependency/impact graph indexing/querying;
+- optional per-repo **CodeGraphContext** recommendation for deep call/dependency graphs in complex projects;
 - checkpointed background preprocessing that warms built-in indexes, Serena, CodeGraph, RAG and compact project cards;
 - read-only local-model explorer/worker/critic tools that can use the same Serena/CodeGraph/index/RAG layers;
 - durable whole-task orchestration with dependency planning, transactional edits, validation, whole-task verification and compact/lazy handoff;
@@ -48,7 +48,7 @@ Local AI Hub is engineered to maximize **Quality**, **Speed**, and **Token Econo
 | **Deterministic Code Intelligence** (`local_ai_repo`) | AST parsing, FQN symbol indexing, route & ORM extraction across PHP, JS/TS, Python, C#, HTML, CSS | **100% exact facts**: Eliminates LLM hallucinations for imports, symbol definitions, routes, and DB relationships. | **Sub-millisecond**: Zero network latency; index hits in <5ms vs waiting 5–15s for cloud agent file reads. | **85–95% input token reduction**: Injects targeted symbol cards/fact summaries instead of full 500+ line files. |
 | **Adaptive Context Guard** (`local_ai_repo(action="context")`) | Phase/focus/preload-aware bounded pack with reuse candidates, evidence IDs, revision/delta metadata and guarded approvals | Deterministic/indexed evidence stays authoritative; local models rank/compress structured evidence only | Compact default packs before planning, edit, review and test; raw model/debug fields stay opt-in | Avoids duplicate discovery and unsupported repository claims while preserving legacy fast/full callers |
 | **Token Economy Suite** (`tokcount`, `trim-run`, `repo-map`, `rg`, `fd`, `ast-grep`, `jq`) | Dedicated CLI tools & wrappers installed into PATH; ANSI stripping, head/tail log truncation, AST outline search | **Eliminates prompt pollution**: Prevents "Lost in the Middle" attention degradation caused by noisy logs and raw file dumps. | **Dramatically faster TTFT**: Cloud models generate answers in seconds when context stays bounded (<15k tokens). | **70–98% output token savings**: Caps bloated build/test logs and API JSON responses to only actionable lines. |
-| **Unified 8-Tool MCP Surface** (Managed Serena & CodeGraph) | Serena (LSP) and CodeGraph (call/dependency graph) run under `local_ai_repo` without separate schemas | **Deep graph reasoning**: Agent queries blast-radius impact and cross-file callers before modifying code. | **Pre-indexed & warm**: External tool processes run persistently; no cold-start timeouts during agent turns. | **Saves ~1,500 schema tokens/turn**: Avoids exposing multiple heavy tool schemas on every single agent interaction. |
+| **Unified 8-Tool MCP Surface** (Managed Serena) | Serena (LSP) runs under `local_ai_repo` without separate schemas; CodeGraphContext is recommended per-repo | **Deep symbol & graph reasoning**: Agent queries symbols, impact, and cross-file callers before modifying code. | **Pre-indexed & warm**: External tool processes run persistently; no cold-start timeouts during agent turns. | **Saves ~1,500 schema tokens/turn**: Avoids exposing multiple heavy tool schemas on every single agent interaction. |
 | **Agent Operating System** (`local_ai_coord`) | Durable execution state, scoped KV memory, negative knowledge incidents, verification receipts, path leases | **Prevents repeated mistakes**: Negative knowledge prevents retrying broken patterns; receipts enforce true test verification. | **Instant resumption**: Restores task state and active memory without re-discovering repository facts. | **Bounded context compilation**: Assembles exact token-budgeted memory slices, preventing runaway session context bloat. |
 | **Single-Flight Command Broker** (`local_ai_command`) | Deduplicated test/lint execution, SHA256 caching, ANSI removal, verification receipt generation | **Deterministic verification**: Guarantees identical execution conditions; prevents flaky duplicate runs. | **Instant cache returns (0ms)**: Subsequent test/lint runs in the same workspace state return cached results immediately. | **Avoids 5k–25k rerun tokens**: Keeps massive compiler errors or test suites from repeating across agent iterations. |
 | **Optional Local Inference** (`local_ai_task`) | Profile-aware tiers: integrated uses 0.5B preprocessing, 1.5B fast, 3B involved, 7B hard, and Qwen3-VL 4B vision; balanced uses 1.5B preprocessing, 3B fast, 7B ordinary/hard, and 9B extreme/vision through an already-configured local backend | **Advisory second opinion**: Local models review diffs and draft AST fixes without cloud context contamination; deterministic evidence remains authoritative. | **Local concurrency**: Local generation runs in parallel with cloud agent high-level planning. | **100% free (0 cloud tokens)**: Offloads routine microtasks, file summaries, and formatting repairs completely off cloud bills. |
@@ -173,13 +173,13 @@ local_ai_work(
 
 Large plans, step logs, diffs and verifier details stay in local artifacts and are fetched only when requested. Work orders are durable, cancellable and resumable; edits use repository-relative patch validation, path leases and an external rollback journal rather than manipulating Git history. Default permissions allow bounded workspace edits/tests/builds but do not grant network access, Git commit or push.
 
-## Serena + CodeGraph preprocessing
+## Serena preprocessing & optional CodeGraph
 
-The preprocessor uses durable phases:
+Serena is managed in an isolated environment for language-aware symbol discovery. CodeGraphContext is unbundled from the Hub core; for large codebases requiring deep call/dependency graphs, install CodeGraphContext directly in the target repository or configure it as a standalone per-repo MCP server. Local AI Hub falls back cleanly to built-in AST indexing when CodeGraphContext is not installed.
 
-`inventory → hash → code_index → deterministic → serena → codegraph → lexical → rag → files → modules → project → hot_queries → complete`
+`inventory → hash → code_index → deterministic → serena → lexical → rag → files → modules → project → hot_queries → complete`
 
-External indexes are revision-tracked. If Serena/CodeGraph is missing, fails, or exceeds a configured timeout, that phase becomes skipped/degraded and preprocessing continues. The hub never waits indefinitely for an external tool. Interactive queries also use timeout-bounded persistent MCP subprocesses with stderr draining, process-tree termination and circuit cooldowns.
+External indexes are revision-tracked. If Serena is missing, fails, or exceeds a configured timeout, that phase becomes skipped/degraded and preprocessing continues. The hub never waits indefinitely for an external tool. Interactive queries also use timeout-bounded persistent MCP subprocesses with stderr draining, process-tree termination and circuit cooldowns.
 
 ## Local-model tools
 
@@ -230,7 +230,7 @@ Savings sources are intentionally deduplicated: overlapping input-side transform
 
 Dashboard: `http://127.0.0.1:11435/dashboard`
 
-It shows hub/Ollama state, Agent OS tasks/memory records, selected hardware profile, CPU/RAM/graphics, scheduler/model activity, preprocessing progress including Serena/CodeGraph phases, code-intelligence backend status, cache/token-saving counters and metadata-only activity/error telemetry.
+It shows hub/Ollama state, Agent OS tasks/memory records, selected hardware profile, CPU/RAM/graphics, scheduler/model activity, preprocessing progress including Serena, code-intelligence backend status, cache/token-saving counters and metadata-only activity/error telemetry.
 
 ```bash
 python tools/doctor.py

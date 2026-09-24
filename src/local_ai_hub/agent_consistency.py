@@ -15,6 +15,7 @@ import threading
 import time
 import unicodedata
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -47,6 +48,56 @@ _HTTP_ENDPOINT = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE)\s+([/A-Za-z0-9_{}:$.
 _FIELD = re.compile(r"\b([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w<>\[\]| ]*)(?=[,;}\n]|$)")
 _MEMORY_SECRET_RE = re.compile(r"(?i)\b(api[_-]?key|token|password|secret|authorization|credential)\s*([=:])\s*[^\s,;]+")
 _MEMORY_PROMPT_RE = re.compile(r"(?is)\bprompt\s*([=:])\s*.*$")
+
+
+class ContextPhase(str, Enum):
+    PLAN = "plan"
+    DISCOVER = "discover"
+    EDIT = "edit"
+    IMPLEMENTATION = "implementation"
+    REVIEW = "review"
+    TEST = "test"
+    HANDOFF = "handoff"
+
+
+_PHASE_ALIASES: dict[str, str] = {
+    "discovery": "discover",
+    "research": "discover",
+    "inspect": "discover",
+    "investigate": "discover",
+    "explore": "discover",
+    "analyze": "discover",
+    "analysis": "discover",
+    "planning": "plan",
+    "implement": "implementation",
+    "execution": "implementation",
+    "execute": "implementation",
+    "act": "implementation",
+    "verify": "test",
+    "verification": "test",
+    "testing": "test",
+    "tests": "test",
+    "validate": "test",
+    "validation": "test",
+    "reviewing": "review",
+    "code_review": "review",
+    "delivery": "handoff",
+    "hand_off": "handoff",
+}
+
+
+def normalize_context_phase(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("phase must be a string")
+    normalized = value.strip().lower()
+    if not normalized:
+        return ""
+    normalized = _PHASE_ALIASES.get(normalized, normalized)
+    try:
+        return ContextPhase(normalized).value
+    except ValueError as exc:
+        accepted = ", ".join(item.value for item in ContextPhase)
+        raise ValueError(f"phase must be one of: {accepted}") from exc
 
 
 def _text(value: Any, limit: int = _MAX_TEXT) -> str:
@@ -223,6 +274,7 @@ class ConsistencyRequest:
     staged: bool = False
     tenant: str = ""
     memory_revision: str = ""
+    session_id: str = ""
     override_reason: str = ""
     approval: str | bool = ""
 
@@ -230,7 +282,7 @@ class ConsistencyRequest:
         object.__setattr__(self, "root", _text(self.root, 400))
         object.__setattr__(self, "task_id", _text(self.task_id, 160))
         object.__setattr__(self, "query", _text(self.query, 800))
-        object.__setattr__(self, "phase", _text(self.phase, 80))
+        object.__setattr__(self, "phase", normalize_context_phase(self.phase))
         object.__setattr__(self, "focus", _tuple(self.focus, 16))
         object.__setattr__(self, "workspace", _text(self.workspace, 160))
         object.__setattr__(self, "preload_profile", _text(self.preload_profile, 120))
@@ -240,6 +292,7 @@ class ConsistencyRequest:
         object.__setattr__(self, "staged", _safe_bool(self.staged))
         object.__setattr__(self, "tenant", _text(self.tenant, 160))
         object.__setattr__(self, "memory_revision", _text(self.memory_revision, 200))
+        object.__setattr__(self, "session_id", _text(self.session_id, 160))
         object.__setattr__(self, "override_reason", _text(self.override_reason, 500))
         if not isinstance(self.approval, bool):
             object.__setattr__(self, "approval", _text(self.approval, 240))
@@ -250,7 +303,7 @@ class ConsistencyRequest:
             "phase": self.phase, "focus": list(self.focus), "workspace": self.workspace,
             "preload_profile": self.preload_profile, "token_budget": self.token_budget,
             "changed_paths": list(self.changed_paths), "base": self.base, "staged": self.staged,
-            "tenant": self.tenant, "memory_revision": self.memory_revision,
+            "tenant": self.tenant, "memory_revision": self.memory_revision, "session_id": self.session_id,
             "override_reason": self.override_reason, "approval": self.approval,
         }
 
@@ -675,6 +728,7 @@ class AgentConsistencyGuard:
         *,
         criterion: str = "",
         passed: bool = True,
+        verifier: Any | None = None,
         evidence_ids: Iterable[str] = (),
         repository_revision: str = "",
         path_refs: Iterable[str] = (),
@@ -686,6 +740,11 @@ class AgentConsistencyGuard:
         details: Mapping[str, Any] | None = None,
     ) -> Any:
         evidence_ids = tuple(_bounded_sequence(evidence_ids, 24))
+        if verifier is not None:
+            try:
+                passed = bool(verifier())
+            except Exception:
+                passed = False
         path_refs = tuple(_bounded_sequence(path_refs, 24))
         request_obj = self._request_from_metadata(request, root=root, task_id=task_id, phase=phase, changed_paths=path_refs)
         saved = self._record_memory(
@@ -749,7 +808,10 @@ class AgentConsistencyGuard:
         if isinstance(contract, GoalContract):
             return contract
         if isinstance(contract, Mapping):
-            return GoalContract.from_dict(contract)
+            try:
+                return GoalContract.from_dict(contract)
+            except ValueError:
+                pass
         # Guarded context can be requested for a lifecycle phase before a
         # durable task exists.  Keep that request valid without inventing
         # repository facts; derive a bounded synthetic goal from caller intent.

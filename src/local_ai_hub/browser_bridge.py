@@ -18,6 +18,8 @@ from collections.abc import Callable, Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
+from .artifacts import ArtifactBatchCancelled
+
 
 CAPTURE_ERROR_STATUSES = {
     "unsupported": 501,
@@ -678,41 +680,34 @@ def capture_to_artifacts(
         if cancel_check and cancel_check():
             return _result_error("capture_cancelled", "capture was cancelled before artifact write", status=409)
         screenshot, mime = _screenshot_bytes(value["screenshot"], max_bytes=int(_setting(config, "max_screenshot_bytes")))
-        dom_id = artifacts.put_json(dict(value["dom"]), tenant, "browser-dom")
-        if cancel_check and cancel_check():
-            return _result_error("capture_cancelled", "capture was cancelled during artifact write", status=409)
-        accessibility_id = artifacts.put_json(dict(value.get("accessibility", {})), tenant, "browser-accessibility")
-        if cancel_check and cancel_check():
-            return _result_error("capture_cancelled", "capture was cancelled during artifact write", status=409)
-        styles_id = artifacts.put_json(dict(value.get("computed_styles", {})), tenant, "browser-computed-styles")
-        if cancel_check and cancel_check():
-            return _result_error("capture_cancelled", "capture was cancelled during artifact write", status=409)
-        runtime_id = artifacts.put_json(_safe_runtime(value.get("runtime", {})), tenant, "browser-runtime")
-        if cancel_check and cancel_check():
-            return _result_error("capture_cancelled", "capture was cancelled during artifact write", status=409)
-        screenshot_id = artifacts.put_bytes(screenshot, tenant, "browser-screenshot", mime)
-        bundle = {
-            "version": 1,
-            "source": "current-tab",
-            "tab_id": str(value["tab_id"]),
-            "page": {"url": _safe_url(value.get("url")), "title": str(value.get("title", ""))[:512]},
-            "provenance": {
-                "captured_at": _safe_capture_timestamp(value.get("captured_at"))
-                or datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-                "target_origin": _capture_identity(value["capture_identity"]["initial"])["target_origin"],
-                "document_token": _capture_identity(value["capture_identity"]["initial"])["document_token"],
-                "document_state_token": _capture_identity(value["capture_identity"]["initial"])["document_state_token"],
-            },
-            "screenshot": {"artifact_id": screenshot_id, "mime_type": mime},
-            "dom": {"artifact_id": dom_id, "format": "live-dom", "redaction": "none"},
-            "accessibility": {"artifact_id": accessibility_id, "format": "accessibility-snapshot"},
-            "computed_styles": {"artifact_id": styles_id, "format": "computed-styles"},
-            "runtime": {"artifact_id": runtime_id, "format": "runtime-refs"},
-            "viewport": dict(value.get("viewport", {})) if isinstance(value.get("viewport"), Mapping) else {},
-        }
-        if cancel_check and cancel_check():
-            return _result_error("capture_cancelled", "capture was cancelled before bundle write", status=409)
-        bundle_id = artifacts.put_json(bundle, tenant, "frontend-review-bundle")
+        with artifacts.batch(tenant, cancel_check=cancel_check) as batch:
+            dom_id = batch.put_json(dict(value["dom"]), "browser-dom")
+            accessibility_id = batch.put_json(dict(value.get("accessibility", {})), "browser-accessibility")
+            styles_id = batch.put_json(dict(value.get("computed_styles", {})), "browser-computed-styles")
+            runtime_id = batch.put_json(_safe_runtime(value.get("runtime", {})), "browser-runtime")
+            screenshot_id = batch.put_bytes(screenshot, "browser-screenshot", mime)
+            bundle = {
+                "version": 1,
+                "source": "current-tab",
+                "tab_id": str(value["tab_id"]),
+                "page": {"url": _safe_url(value.get("url")), "title": str(value.get("title", ""))[:512]},
+                "provenance": {
+                    "captured_at": _safe_capture_timestamp(value.get("captured_at"))
+                    or datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                    "target_origin": _capture_identity(value["capture_identity"]["initial"])["target_origin"],
+                    "document_token": _capture_identity(value["capture_identity"]["initial"])["document_token"],
+                    "document_state_token": _capture_identity(value["capture_identity"]["initial"])["document_state_token"],
+                },
+                "screenshot": {"artifact_id": screenshot_id, "mime_type": mime},
+                "dom": {"artifact_id": dom_id, "format": "live-dom", "redaction": "none"},
+                "accessibility": {"artifact_id": accessibility_id, "format": "accessibility-snapshot"},
+                "computed_styles": {"artifact_id": styles_id, "format": "computed-styles"},
+                "runtime": {"artifact_id": runtime_id, "format": "runtime-refs"},
+                "viewport": dict(value.get("viewport", {})) if isinstance(value.get("viewport"), Mapping) else {},
+            }
+            bundle_id = batch.put_json(bundle, "frontend-review-bundle")
+    except ArtifactBatchCancelled:
+        return _result_error("capture_cancelled", "capture was cancelled during artifact write", status=409)
     except Exception as exc:
         return _result_error("artifact_store_error", "browser capture artifact storage failed; retry the request", status=503)
     return {

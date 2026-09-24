@@ -113,28 +113,96 @@ def test_planner_dag_is_stably_toposorted_and_cycles_fail_closed():
             {"id": "b", "depends_on": ["a"]},
         ])
 
+    with pytest.raises(ValueError, match="unknown step dependencies"):
+        _stable_toposort_steps([{"id": "edit", "depends_on": ["missing"]}])
 
-def test_planner_sanitizes_duplicate_ids_and_non_list_edges(tmp_path):
+    with pytest.raises(ValueError, match="self dependency"):
+        _stable_toposort_steps([{"id": "edit", "depends_on": ["edit"]}])
+
+    with pytest.raises(ValueError, match="duplicate planner step ids"):
+        _stable_toposort_steps([{"id": "edit", "depends_on": []}, {"id": "edit", "depends_on": []}])
+
+
+def test_planner_rejects_unknown_step_kind_and_missing_acceptance(tmp_path):
+    class UnknownKindServices(FakeServices):
+        def delegate_repo(self, args, tenant):
+            return {"success": True, "text": json.dumps({
+                "summary": "unknown planner kind",
+                "steps": [{"id": "s1", "kind": "unknown", "task": "inspect", "depends_on": [], "acceptance": []}],
+            })}
+
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", UnknownKindServices(""), None, FakeLeases(), FakeArtifacts())
+    try:
+        with pytest.raises(ValueError, match="explicit acceptance criteria"):
+            wo._plan("tenant", str(tmp_path), "inspect", {"budget": {"max_steps": 16}, "acceptance_criteria": []}, {})
+        with pytest.raises(ValueError, match="unknown planner step kind"):
+            wo._plan("tenant", str(tmp_path), "inspect", {"budget": {"max_steps": 16}, "acceptance_criteria": ["inspect result"]}, {})
+    finally:
+        wo.close()
+
+
+def test_planner_enforces_edit_and_command_budgets_and_retains_acceptance(tmp_path):
+    class BudgetPlanServices(FakeServices):
+        def delegate_repo(self, args, tenant):
+            return {"success": True, "text": json.dumps({
+                "summary": "bounded plan",
+                "steps": [
+                    {"id": "inspect", "kind": "inspect", "task": "inspect", "depends_on": [], "acceptance": []},
+                    {"id": "edit", "kind": "edit", "task": "edit", "depends_on": ["inspect"], "acceptance": []},
+                ],
+                "validation_commands": ["python -m pytest -q"],
+            })}
+
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", BudgetPlanServices(""), None, FakeLeases(), FakeArtifacts())
+    try:
+        base = {"budget": {"max_steps": 2, "max_edits": 0, "max_commands": 1}, "acceptance_criteria": ["result remains correct"]}
+        for name, value in (
+            ("max_steps", True), ("max_steps", 1.5),
+            ("max_tokens", True), ("max_tokens", 1.5),
+            ("max_edits", True), ("max_edits", 1.5),
+            ("max_commands", True), ("max_commands", 1.5),
+        ):
+            invalid_budget = {"budget": {"max_steps": 2, "max_edits": 1, "max_commands": 1, "max_tokens": 1400}, "acceptance_criteria": ["result remains correct"]}
+            invalid_budget["budget"][name] = value
+            with pytest.raises(ValueError, match=f"{name} budget must be an integer"):
+                wo._plan("tenant", str(tmp_path), "bounded change", invalid_budget, {})
+
+        with pytest.raises(ValueError, match="edit-step budget"):
+            wo._plan("tenant", str(tmp_path), "bounded change", base, {})
+
+        command_limited = {"budget": {"max_steps": 2, "max_edits": 1, "max_commands": 0}, "acceptance_criteria": ["result remains correct"]}
+        with pytest.raises(ValueError, match="command budget"):
+            wo._plan("tenant", str(tmp_path), "bounded change", command_limited, {})
+
+        step_limited = {"budget": {"max_steps": 1}, "acceptance_criteria": ["result remains correct"]}
+        with pytest.raises(ValueError, match="more than the 1 step budget"):
+            wo._plan("tenant", str(tmp_path), "bounded change", step_limited, {})
+
+        accepted = {"budget": {"max_steps": 2, "max_edits": 1, "max_commands": 1}, "acceptance_criteria": ["result remains correct"]}
+        plan = wo._plan("tenant", str(tmp_path), "bounded change", accepted, {})
+        assert plan["acceptance_criteria"] == ["result remains correct"]
+        assert all(step["acceptance"] == ["result remains correct"] for step in plan["steps"])
+        assert plan["validation_commands"] == ["python -m pytest -q"]
+    finally:
+        wo.close()
+
+
+def test_planner_rejects_duplicate_ids_instead_of_sanitizing(tmp_path):
     class OddPlanServices(FakeServices):
         def delegate_repo(self, args, tenant):
             return {"success": True, "text": json.dumps({
                 "summary": "odd planner output",
                 "steps": [
-                    {"id": "dup", "kind": "inspect", "task": "first", "depends_on": "dup", "acceptance": "not-a-list"},
+                    {"id": "dup", "kind": "inspect", "task": "first", "depends_on": [], "acceptance": "not-a-list"},
                     {"id": "dup", "kind": "review", "task": "second", "depends_on": [], "acceptance": []},
                     {"id": "   ", "kind": "unknown", "task": "", "depends_on": [], "acceptance": []},
                 ],
             })}
     wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", OddPlanServices(""), None, FakeLeases(), FakeArtifacts())
     try:
-        payload = {"budget": {"max_steps": 16}, "acceptance_criteria": [], "constraints": []}
-        plan = wo._plan("tenant", str(tmp_path), "inspect", payload, {})
-        ids = [step["id"] for step in plan["steps"]]
-        assert len(ids) == len(set(ids)) == 3
-        assert all(step["depends_on"] == [] for step in plan["steps"])
-        assert all(isinstance(step["acceptance"], list) for step in plan["steps"])
-        assert plan["steps"][-1]["kind"] == "inspect"
-        assert plan["steps"][-1]["task"]
+        payload = {"budget": {"max_steps": 16}, "acceptance_criteria": ["keep explicit acceptance"], "constraints": []}
+        with pytest.raises(ValueError, match="duplicate planner step ids"):
+            wo._plan("tenant", str(tmp_path), "inspect", payload, {})
     finally:
         wo.close()
 

@@ -200,7 +200,10 @@ class OllamaRuntime:
                 router = getattr(self, "llama_cpp", None)
                 return {"version": "llama.cpp SYCL"} if router is not None and router.is_online() else {"error": "llama.cpp SYCL router unavailable"}
             if endpoint == "/api/tags":
-                return {"models": [{"name": model} for model in self.llama_cpp.available_models()]}
+                models = self._online_llama_cpp_models()
+                if models is None:
+                    return {"error": "llama.cpp SYCL router unavailable"}
+                return {"models": [{"name": model} for model in models]}
             if endpoint == "/api/ps":
                 return {"models": [
                     {"name": row["name"], "model": row["name"], "context_length": row.get("context_length", 0), "size": 0, "size_vram": 0, "details": {"quantization_level": row.get("quantization", "GGUF")}}
@@ -769,6 +772,19 @@ class OllamaRuntime:
             return "llama.cpp SYCL"
         return self._meta_cache.get("version")
 
+    def _online_llama_cpp_models(self) -> list[str] | None:
+        router = getattr(self, "llama_cpp", None)
+        is_online = getattr(router, "is_online", None)
+        available_models = getattr(router, "available_models", None)
+        if not callable(is_online) or not callable(available_models):
+            return None
+        try:
+            if not is_online():
+                return None
+            return [str(model) for model in available_models() if str(model).strip()]
+        except Exception:
+            return None
+
     def installed_models(self) -> list[str]:
         now = time.monotonic()
         if now - self._meta_cache_at.get("installed", 0) < 5.0 and "installed" in self._meta_cache:
@@ -779,8 +795,8 @@ class OllamaRuntime:
             self._meta_cache["installed"] = models
             self._meta_cache_at["installed"] = now
             return models
-        llama_models = self.llama_cpp.available_models()
-        if llama_models:
+        llama_models = self._online_llama_cpp_models()
+        if llama_models is not None:
             self._meta_cache["installed"] = llama_models
             self._meta_cache_at["installed"] = now
             return llama_models

@@ -16,12 +16,31 @@ from .process_utils import canonical_root
 
 def _norm_rel(value: str, root: str = "") -> str:
     raw = str(value or "").strip()
-    if root and (raw.startswith(("/", "\\")) or PureWindowsPath(raw).is_absolute() or bool(PureWindowsPath(raw).drive)):
-        try:
-            rel = Path(raw).resolve().relative_to(Path(root).resolve())
-            raw = str(rel)
-        except Exception:
-            pass
+    is_abs = raw.startswith(("/", "\\")) or PureWindowsPath(raw).is_absolute() or bool(PureWindowsPath(raw).drive)
+    if is_abs:
+        if root:
+            try:
+                rel = Path(raw).resolve().relative_to(Path(root).resolve())
+                raw = str(rel)
+                is_abs = False
+            except Exception:
+                pass
+        if is_abs:
+            try:
+                candidate = Path(raw).resolve()
+                for parent in candidate.parents:
+                    if any((parent / marker).exists() for marker in (".git", "pyproject.toml", "package.json", "Cargo.toml", ".local-ai")):
+                        raw = str(candidate.relative_to(parent))
+                        is_abs = False
+                        break
+            except Exception:
+                pass
+        if is_abs:
+            try:
+                candidate = Path(raw)
+                raw = candidate.name or str(candidate)
+            except Exception:
+                pass
     if raw.startswith(("/", "\\")):
         raise ValueError(f"lease path must be repository-relative: {value}")
     wp = PureWindowsPath(raw)
@@ -105,6 +124,17 @@ class ScopeLeaseStore:
     def claim(self, tenant: str, root: str, paths: list[str], ttl_seconds: int = 900, purpose: str = "agent edit") -> dict[str, Any]:
         if not paths:
             return {"success": False, "error": "paths must not be empty"}
+        if (not root or root == ".") and paths:
+            first_abs = next((str(p) for p in paths if PureWindowsPath(str(p)).is_absolute() or Path(str(p)).is_absolute() or bool(PureWindowsPath(str(p)).drive)), None)
+            if first_abs:
+                try:
+                    candidate = Path(first_abs).resolve()
+                    for parent in [candidate.parent, *candidate.parents]:
+                        if any((parent / marker).exists() for marker in (".git", "pyproject.toml", "package.json", "Cargo.toml", ".local-ai")):
+                            root = str(parent)
+                            break
+                except Exception:
+                    pass
         root_path, root_id = self._root(root)
         rels = sorted({_norm_rel(str(p), root=root_path) for p in paths})
         now = time.time()

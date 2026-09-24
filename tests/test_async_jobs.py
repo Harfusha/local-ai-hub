@@ -280,3 +280,160 @@ def test_close_releases_workers_and_rejects_new_jobs(tmp_path):
         "terminal": True,
         "retryable": False,
     }
+
+
+def test_terminal_status_and_result_flags_are_consistent(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+    try:
+        submitted = manager.submit("tenant-a", "reason", {"task": "terminal flags"})
+        assert manager.wait("tenant-a", submitted["job_id"], 3)["state"] == "done"
+
+        status = manager.status("tenant-a", submitted["job_id"])
+        result = manager.result("tenant-a", submitted["job_id"])
+
+        assert status["terminal"] is True
+        assert status["in_progress"] is False
+        assert status["retryable"] is False
+        assert result["terminal"] is True
+        assert result["retryable"] is False
+    finally:
+        manager.close()
+
+
+def test_cancelling_queued_job_is_idempotent(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+    try:
+        submitted = manager.submit("tenant-a", "reason", {"task": "cancel twice"}, dispatch_delay_seconds=30)
+
+        first = manager.cancel("tenant-a", submitted["job_id"])
+        second = manager.cancel("tenant-a", submitted["job_id"])
+
+        assert first["success"] is True
+        assert second["success"] is True
+        assert first["state"] == second["state"] == "cancelled"
+        assert first["terminal"] is second["terminal"] is True
+        assert manager.status("tenant-a", submitted["job_id"])["state"] == "cancelled"
+    finally:
+        manager.close()
+
+
+def test_expired_result_matches_expired_status(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+    try:
+        submitted = manager.submit("tenant-a", "reason", {"task": "expiry parity"})
+        assert manager.wait("tenant-a", submitted["job_id"], 3)["state"] == "done"
+        with closing(manager._connect()) as con:
+            con.execute("UPDATE async_jobs SET expires_at=? WHERE job_id=?", (time.time() - 1, submitted["job_id"]))
+            con.commit()
+
+        status = manager.status("tenant-a", submitted["job_id"])
+        result = manager.result("tenant-a", submitted["job_id"])
+
+        assert status["state"] == result["state"] == "expired"
+        assert status["terminal"] is result["terminal"] is True
+        assert status["retryable"] is result["retryable"] is False
+    finally:
+        manager.close()
+
+
+def test_expired_running_job_with_cancel_request_reconciles_as_cancelled(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+    now = time.time()
+    with closing(manager._connect()) as con:
+        con.execute(
+            "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,lease_until,attempts,cancel_requested,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,'running',?,?,?,?,?,?)",
+            ("cancelled-on-restart", "tenant-a", "reason", "restart-hash", '{"task":"do not rerun"}', now - 1, 1, 1, now, now, now + 600),
+        )
+        con.commit()
+    manager.close()
+
+    reopened, scheduler = _manager(tmp_path)
+    try:
+        assert reopened.recover() == 0
+        status = reopened.status("tenant-a", "cancelled-on-restart")
+
+        assert status["state"] == "cancelled"
+        assert status["terminal"] is True
+        assert status["retryable"] is False
+        assert scheduler.calls == []
+        assert reopened.recover() == 0
+    finally:
+        reopened.close()
+
+
+def test_recovery_wakes_real_waiter_blocked_on_cancellation(tmp_path):
+    class ObservedEvent(threading.Event):
+        def __init__(self):
+            super().__init__()
+            self.entered_wait = threading.Event()
+
+        def wait(self, timeout=None):
+            self.entered_wait.set()
+            return super().wait(timeout)
+
+    manager, _scheduler = _manager(tmp_path)
+    try:
+        now = time.time()
+        job_id = "cancelled-while-waiting"
+        with closing(manager._connect()) as con:
+            con.execute(
+                "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,lease_until,attempts,cancel_requested,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,'running',?,?,?,?,?,?)",
+                (job_id, "tenant-a", "reason", "waiting-hash", '{"task":"wait for recovery"}', now - 1, 1, 1, now, now, now + 600),
+            )
+            con.commit()
+
+        event = ObservedEvent()
+        manager._events[job_id] = event
+        waited = []
+        waiter = threading.Thread(target=lambda: waited.append(manager.wait("tenant-a", job_id, 30)), daemon=True)
+        waiter.start()
+
+        assert event.entered_wait.wait(1)
+        assert waiter.is_alive()
+        assert manager.recover() == 0
+        waiter.join(1)
+
+        assert not waiter.is_alive()
+        assert waited[0]["state"] == "cancelled"
+        assert waited[0]["terminal"] is True
+        assert waited[0]["retryable"] is False
+    finally:
+        manager.close()
+
+
+def test_tick_keeps_cancelled_job_cancelled_after_execution_lease_expires(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+    try:
+        now = time.time()
+        with closing(manager._connect()) as con:
+            con.execute(
+                "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,lease_until,attempts,cancel_requested,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,'running',?,?,?,?,?,?)",
+                ("cancelled-lease", "tenant-a", "reason", "lease-hash", '{"task":"must stay cancelled"}', now - 1, 1, 1, now, now, now + 600),
+            )
+            con.commit()
+
+        manager.tick()
+
+        status = manager.status("tenant-a", "cancelled-lease")
+        result = manager.result("tenant-a", "cancelled-lease")
+        assert status["state"] == result["state"] == "cancelled"
+        assert status["terminal"] is result["terminal"] is True
+        assert status["retryable"] is result["retryable"] is False
+    finally:
+        manager.close()
+
+
+def test_wait_timeout_leaves_job_active_and_reports_timeout_budget(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+    try:
+        submitted = manager.submit("tenant-a", "reason", {"task": "still queued"}, dispatch_delay_seconds=30)
+
+        waited = manager.wait("tenant-a", submitted["job_id"], 1)
+
+        assert waited["wait_timeout_seconds"] == 1
+        assert waited["state"] == "queued"
+        assert waited["terminal"] is False
+        assert waited["retryable"] is True
+        assert manager.status("tenant-a", submitted["job_id"])["state"] == "queued"
+    finally:
+        manager.close()

@@ -76,8 +76,6 @@ class FeatureSet:
         # Code-intelligence backends
         self.code_intelligence: bool = self.repo and bool(feat.get("code_intelligence", True)) and bool(ci.get("enabled", True))
         self.serena: bool = self.code_intelligence and bool(ci.get("serena_enabled", True))
-        self.codegraph: bool = self.code_intelligence and bool(ci.get("codegraph_enabled", True))
-
         # Preprocessing & Subagents & Agent OS & Dashboard
         self.preprocessing: bool = self.repo and bool(feat.get("preprocessing", True)) and bool(prep.get("enabled", True))
         self.subagents: bool = self.tasks and bool(feat.get("subagents", True)) and bool(sub.get("enabled", True))
@@ -114,8 +112,8 @@ class FeatureSet:
     # ------------------------------------------------------------------
 
     def has_semantic(self) -> bool:
-        """True if at least one semantic backend (Serena or CodeGraph) is on."""
-        return self.serena or self.codegraph
+        """True if semantic backend (Serena) is on."""
+        return self.serena
 
     def has_any_model(self) -> bool:
         """True if any local-model execution is possible."""
@@ -176,10 +174,9 @@ class FeatureSet:
             actions.append("batch_replace")
         if self.serena:
             actions.append("semantic")
-        if self.codegraph:
-            actions.append("graph")
         if self.has_semantic():
             actions.append("intelligence")
+        actions.append("pipeline")
         if self.preprocessing:
             actions.extend([
                 "preprocess", "preprocess_status", "preprocess_refresh",
@@ -257,12 +254,8 @@ class FeatureSet:
 
     def semantic_hint(self) -> str:
         """Short label for the semantic action(s) available."""
-        if self.serena and self.codegraph:
-            return "semantic/graph"
         if self.serena:
             return "semantic"
-        if self.codegraph:
-            return "graph"
         return ""
 
     def cheapest_path_hint(self) -> str:
@@ -304,14 +297,9 @@ class FeatureSet:
     def specialized_trigger_lines(self) -> list[str]:
         """Feature-specific routes that are easy to miss from the compact tool names."""
         lines: list[str] = []
-        if self.code_intelligence and (self.serena or self.codegraph):
-            backends = []
-            if self.serena:
-                backends.append("Serena symbol navigation")
-            if self.codegraph:
-                backends.append("CodeGraph relationship/call-graph analysis")
+        if self.code_intelligence and self.serena:
             lines.append(
-                f"- symbol or code-relationship questions: `local_ai_repo` semantic/graph actions ({'; '.join(backends)}); indexed fallback remains available"
+                "- symbol or code-relationship questions: `local_ai_repo` semantic actions (Serena symbol navigation); indexed fallback remains available"
             )
         if self.status and self.agent_os:
             lines.append("- Agent OS task and incident state: `local_ai_status(detail=\"agent_state\")`")

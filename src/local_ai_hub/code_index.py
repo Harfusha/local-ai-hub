@@ -5,10 +5,12 @@ from .json_utils import dumps as json_dumps
 import ast
 import copy
 import json
+import os
 import re
 import sqlite3
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -580,7 +582,8 @@ class CodeIndex:
 
     def update_files_batch(self, root: str, items: list[str] | list[tuple[str, str]]) -> dict[str, Any]:
         """Batch-process files with one read phase and one SQLite write transaction."""
-        base = Path(canonical_root(root))
+        c_root = canonical_root(root)
+        base = Path(c_root)
         normalized: list[tuple[str, str | None]] = []
         for item in items:
             if isinstance(item, (tuple, list)) and len(item) >= 2:
@@ -591,7 +594,7 @@ class CodeIndex:
             return {"success": True, "files_processed": 0, "cached": 0, "symbols": 0, "refs": 0, "edges": 0}
 
         with self._lock, closing(self._connect()) as con:
-            existing = dict(con.execute("SELECT path,content_hash FROM files WHERE root=?", (str(base),)).fetchall())
+            existing = dict(con.execute("SELECT path,content_hash FROM files WHERE root=?", (c_root,)).fetchall())
 
         candidates: list[tuple[str, str, str, list[str]]] = []
         cached = 0
@@ -649,18 +652,31 @@ class CodeIndex:
         parse_blob_rows: list[tuple[Any, ...]] = []
         paths_to_clean: list[tuple[str, str]] = []
         now = time.time()
-        for path, content_hash, lang, lines in candidates:
+        def _parse_candidate(cand: tuple[str, str, str, list[str]]):
+            path, content_hash, lang, lines = cand
             parsed = blob_map.get((content_hash, lang))
             if parsed is None:
                 syms, refs, edges = self._parse_file_content("\n".join(lines), lang)
-                parse_blob_rows.append((content_hash, __version__, lang, json_dumps({"symbols": syms, "refs": refs, "edges": edges}, ensure_ascii=False, separators=(",", ":")), now))
+                row_blob = (content_hash, __version__, lang, json_dumps({"symbols": syms, "refs": refs, "edges": edges}, ensure_ascii=False, separators=(",", ":")), now)
             else:
                 syms, refs, edges = parsed
-            paths_to_clean.append((str(base), path))
-            files_to_insert.append((str(base), path, content_hash, lang, now))
-            syms_to_insert.extend((str(base), path, x["name"], x["kind"], x["line"], x["end_line"], x.get("container", ""), x.get("name_path", x["name"]), x.get("signature", ""), x.get("access", "public"), x.get("docstring", "")) for x in syms)
-            refs_to_insert.extend((str(base), path, x["name"], x["line"], x.get("kind", "call")) for x in refs)
-            edges_to_insert.extend((str(base), x["src"], x["dst"], x.get("kind", "reference"), path, x["line"]) for x in edges)
+                row_blob = None
+            return path, content_hash, lang, syms, refs, edges, row_blob
+
+        if len(candidates) > 4:
+            with ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 4), thread_name_prefix="code-index-worker") as pool:
+                parsed_candidates = list(pool.map(_parse_candidate, candidates))
+        else:
+            parsed_candidates = [_parse_candidate(c) for c in candidates]
+
+        for path, content_hash, lang, syms, refs, edges, row_blob in parsed_candidates:
+            if row_blob is not None:
+                parse_blob_rows.append(row_blob)
+            paths_to_clean.append((c_root, path))
+            files_to_insert.append((c_root, path, content_hash, lang, now))
+            syms_to_insert.extend((c_root, path, x["name"], x["kind"], x["line"], x["end_line"], x.get("container", ""), x.get("name_path", x["name"]), x.get("signature", ""), x.get("access", "public"), x.get("docstring", "")) for x in syms)
+            refs_to_insert.extend((c_root, path, x["name"], x["line"], x.get("kind", "call")) for x in refs)
+            edges_to_insert.extend((c_root, x["src"], x["dst"], x.get("kind", "reference"), path, x["line"]) for x in edges)
 
         if files_to_insert:
             with self._lock, closing(self._connect()) as con:
@@ -676,7 +692,7 @@ class CodeIndex:
                 con.executemany("INSERT INTO refs(root,path,name,line,kind) VALUES(?,?,?,?,?)", refs_to_insert)
                 con.executemany("INSERT INTO edges(root,src,dst,kind,path,line) VALUES(?,?,?,?,?,?)", edges_to_insert)
                 con.commit()
-        self._status_cache.pop(str(base), None)
+        self._status_cache.pop(c_root, None)
         return {"success": True, "files_processed": len(files_to_insert), "cached": cached, "symbols": len(syms_to_insert), "refs": len(refs_to_insert), "edges": len(edges_to_insert), "parse_blob_hits": len(candidates) - len(parse_blob_rows)}
 
     @staticmethod
@@ -1332,3 +1348,41 @@ class CodeIndex:
             return res
         except sqlite3.DatabaseError as exc:
             return {"success": False, "healthy": False, "error": str(exc)}
+
+    def find_callers(self, root: str, symbol: str, limit: int = 50) -> dict[str, Any]:
+        """Find all call sites and references to a symbol across repository AST."""
+        resolved = canonical_root(root)
+        if not symbol or not symbol.strip():
+            return {"success": False, "error": "symbol cannot be empty"}
+        sym = symbol.strip()
+        with self._lock, closing(self._connect()) as con:
+            rows = con.execute(
+                """SELECT src, dst, kind, path, line FROM edges
+                   WHERE root=? AND (dst=? OR dst LIKE ?)
+                   ORDER BY path, line LIMIT ?""",
+                (resolved, sym, f"%/{sym}", limit),
+            ).fetchall()
+        callers = [
+            {"caller": str(r["src"]), "callee": str(r["dst"]), "kind": str(r["kind"]), "path": str(r["path"]), "line": int(r["line"])}
+            for r in rows
+        ]
+        return {"success": True, "symbol": sym, "callers": callers, "count": len(callers), "root": resolved}
+
+    def find_callees(self, root: str, symbol: str, limit: int = 50) -> dict[str, Any]:
+        """Find all functions/methods called by a symbol."""
+        resolved = canonical_root(root)
+        if not symbol or not symbol.strip():
+            return {"success": False, "error": "symbol cannot be empty"}
+        sym = symbol.strip()
+        with self._lock, closing(self._connect()) as con:
+            rows = con.execute(
+                """SELECT src, dst, kind, path, line FROM edges
+                   WHERE root=? AND (src=? OR src LIKE ?)
+                   ORDER BY path, line LIMIT ?""",
+                (resolved, sym, f"%/{sym}", limit),
+            ).fetchall()
+        callees = [
+            {"caller": str(r["src"]), "callee": str(r["dst"]), "kind": str(r["kind"]), "path": str(r["path"]), "line": int(r["line"])}
+            for r in rows
+        ]
+        return {"success": True, "symbol": sym, "callees": callees, "count": len(callees), "root": resolved}

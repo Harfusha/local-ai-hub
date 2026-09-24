@@ -3,6 +3,7 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import hashlib
+import heapq
 import json
 import math
 import os
@@ -24,6 +25,14 @@ from .process_utils import canonical_root
 
 import re
 from functools import lru_cache
+
+
+_MAX_RERANK_CANDIDATES = 512
+
+
+def _reverse_text_order(value: str) -> tuple[int, ...]:
+    """Heap key where lexically smaller text has higher semantic rank."""
+    return tuple(-ord(char) for char in value) + (1,)
 
 
 def _canonical_fragment_text(text: str) -> str:
@@ -77,6 +86,27 @@ def _python_ast_chunks(text: str, size: int | Any = 4500, overlap: int | Any = 4
     sz = size if isinstance(size, int) else 4500
     ov = overlap if isinstance(overlap, int) else 450
     return store._python_ast_chunks(text, sz, ov)
+
+
+def _serialize_embedding(vector: Any) -> bytes | str | None:
+    try:
+        values = [float(value) for value in vector]
+        if values and not any(value != 0.0 for value in values):
+            return None
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not values or not all(math.isfinite(value) for value in values) or not any(value != 0.0 for value in values):
+        return None
+    try:
+        import numpy as np
+        packed = np.asarray(values, dtype=np.float32)
+        if not np.isfinite(packed).all() or float(np.linalg.norm(packed)) <= 1e-9:
+            return None
+        return sqlite3.Binary(packed.tobytes())
+    except ImportError:
+        return json_dumps(values, separators=(",", ":"))
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 class RAGStore:
@@ -184,6 +214,7 @@ class RAGStore:
                     content_hash TEXT NOT NULL,
                     text TEXT NOT NULL,
                     embedding TEXT NOT NULL,
+                    embedding_space TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY (tenant, workspace, path, chunk_no)
                 )"""
             )
@@ -477,6 +508,35 @@ class RAGStore:
     def _scope_key(self, tenant: str) -> str:
         return tenant if self.scope == "tenant" else "*"
 
+    def _embedding_space_id(self, result: dict[str, Any] | None = None) -> str:
+        if isinstance(result, dict) and result.get("embedding_space_id"):
+            return str(result["embedding_space_id"])
+        service_space = getattr(self.services, "space_id", None)
+        if service_space:
+            return str(service_space)
+        embedder = getattr(self.services, "embeddings", None)
+        identity_factory = getattr(embedder, "embedding_space_id", None)
+        if callable(identity_factory):
+            return str(identity_factory())
+        models = self.config.get("models", {})
+        backend = str((result or {}).get("backend") or models.get("embedding_backend", "unknown"))
+        model = str((result or {}).get("model") or models.get("embedding", "unknown"))
+        normalized = models.get("embedding_normalized")
+        if normalized is None and backend in {"sentence-transformers", "openvino"}:
+            normalized = True
+        elif normalized is None and backend == "ollama":
+            normalized = False
+        payload = {
+            "backend": backend,
+            "model": model,
+            "digest": models.get("embedding_digest") or models.get("model_digest"),
+            "revision": models.get("embedding_revision") or models.get("model_revision"),
+            "dimension": models.get("embedding_dimension"),
+            "normalized": normalized,
+            "service_instance": id(self.services),
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
     def index(self, root: str, tenant: str, workspace: str | None = None) -> dict[str, Any]:
         resolved_root = str(Path(root).resolve())
         resolved_workspace = workspace or self.workspace_id(resolved_root)
@@ -510,6 +570,11 @@ class RAGStore:
                 "coalesced": True,
             }
 
+        result: dict[str, Any] = {
+            "success": False,
+            "error": "RAG indexing cancelled before publish completed",
+            "retryable": True,
+        }
         try:
             with self._get_workspace_lock(resolved_workspace):
                 result = self._index_locked(resolved_root, tenant, resolved_workspace)
@@ -528,6 +593,7 @@ class RAGStore:
             return {"success": False, "error": f"root directory does not exist: {root_path}"}
         workspace = workspace or self.workspace_id(str(root_path))
         scope_key = self._scope_key(tenant)
+        embedding_space = self._embedding_space_id()
 
         with closing(self._connect()) as con:
             old_files_rows = con.execute(
@@ -535,11 +601,14 @@ class RAGStore:
                 (scope_key, workspace),
             ).fetchall()
             old_chunk_rows = con.execute(
-                "SELECT path,chunk_no,content_hash,embedding FROM chunks WHERE tenant=? AND workspace=?",
+                "SELECT path,chunk_no,content_hash,embedding,embedding_space FROM chunks WHERE tenant=? AND workspace=?",
                 (scope_key, workspace),
             ).fetchall()
         old_files = {r[0]: {"mtime_ns": int(r[1]), "size": int(r[2]), "content_hash": r[3]} for r in old_files_rows}
-        old_chunks = {(r[0], int(r[1]), r[2]): r[3] for r in old_chunk_rows}
+        old_chunks = {
+            (r[0], int(r[1]), r[2]): r[3]
+            for r in old_chunk_rows if str(r[4] or "") == embedding_space
+        }
 
         current_meta: dict[str, tuple[Path, int, int]] = {}
         metadata_scanned = 0
@@ -607,6 +676,7 @@ class RAGStore:
                     "hash": chunk_hash,
                     "embedding": old_chunks.get((rel, chunk_seq, chunk_hash)),
                 }
+                record["embedding_space"] = embedding_space if record["embedding"] is not None else ""
                 chunk_seq += 1
                 idx = len(changed_records)
                 changed_records.append(record)
@@ -628,8 +698,8 @@ class RAGStore:
                     batch_h = missing_hashes[i:i + 500]
                     placeholders = ",".join("?" for _ in batch_h)
                     rows = con.execute(
-                        f"SELECT content_hash, embedding FROM chunks WHERE tenant=? AND content_hash IN ({placeholders})",
-                        (scope_key, *batch_h),
+                        f"SELECT content_hash, embedding FROM chunks WHERE tenant=? AND (embedding_space=? OR embedding_space='' OR embedding_space IS NULL) AND content_hash IN ({placeholders})",
+                        (scope_key, embedding_space, *batch_h),
                     ).fetchall()
                     for r in rows:
                         if r[0] and r[1] and str(r[0]) not in global_chunks:
@@ -642,6 +712,7 @@ class RAGStore:
                     if chash in global_chunks:
                         for idx in indices:
                             changed_records[idx]["embedding"] = global_chunks[chash]
+                            changed_records[idx]["embedding_space"] = embedding_space
                         reused_chunks += len(indices)
                     else:
                         first_idx = indices[0]
@@ -665,14 +736,14 @@ class RAGStore:
             vectors = vectors_result.get("embeddings", [])
             if len(vectors) != len(changed_indices):
                 return {"success": False, "error": f"embedding count mismatch: {len(vectors)} != {len(changed_indices)}"}
+            embedding_space = self._embedding_space_id(vectors_result)
             for idx, vector in zip(changed_indices, vectors):
-                try:
-                    import numpy as np
-                    embedding = sqlite3.Binary(np.array(vector, dtype=np.float32).tobytes())
-                except Exception:
-                    embedding = json_dumps(vector, separators=(",", ":"))
+                embedding = _serialize_embedding(vector)
+                if embedding is None:
+                    return {"success": False, "error": "embedding backend returned an invalid vector"}
                 for duplicate_idx in pending_by_hash[str(changed_records[idx]["hash"])]:
                     changed_records[duplicate_idx]["embedding"] = embedding
+                    changed_records[duplicate_idx]["embedding_space"] = embedding_space
 
         # One transaction publishes all changed/deleted file state atomically.
         # The embed phase is intentionally outside this retry: a transient writer
@@ -689,9 +760,9 @@ class RAGStore:
                     except Exception:
                         pass
                 con.executemany(
-                    "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) VALUES(?,?,?,?,?,?,?)",
+                    "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
                     [
-                        (scope_key, workspace, r["path"], r["chunk_no"], r["hash"], r["text"], r["embedding"])
+                        (scope_key, workspace, r["path"], r["chunk_no"], r["hash"], r["text"], r["embedding"], r["embedding_space"])
                         for r in changed_records
                     ],
                 )
@@ -788,6 +859,7 @@ class RAGStore:
         paths: list[str],
         should_yield: Any | None = None,
         content_overrides: dict[str, str] | None = None,
+        deleted_paths: list[str] | None = None,
     ) -> dict[str, Any]:
         """Index only explicitly dirty paths supplied by Local AI preprocessing.
 
@@ -797,6 +869,7 @@ class RAGStore:
         if not root_path.is_dir():
             return {"success": False, "error": f"root directory does not exist: {root_path}"}
         scope_key = self._scope_key(tenant)
+        embedding_space = self._embedding_space_id()
         processed_paths: list[str] = []
         embedded_chunks = 0
         reused_chunks = 0
@@ -833,14 +906,15 @@ class RAGStore:
                 except Exception:
                     continue
 
-            if not file_data:
+            deleted_unique = sorted({str(p).replace("\\", "/") for p in (deleted_paths or []) if str(p).strip()})
+            if not file_data and not deleted_unique:
                 return {
                     "success": True, "workspace": workspace, "preempted": False,
                     "processed_paths": [], "embedded_chunks": 0, "reused_chunks": 0,
                 }
 
             # 2. Bulk load existing chunks
-            all_rels = [f["rel"] for f in file_data]
+            all_rels = sorted({f["rel"] for f in file_data} | set(deleted_unique))
             old_chunks: dict[tuple[str, int, str], str] = {}
             with closing(self._connect()) as con:
                 # Load in chunks of 500
@@ -848,11 +922,12 @@ class RAGStore:
                     batch_rels = all_rels[i:i+500]
                     placeholders = ",".join("?" for _ in batch_rels)
                     rows = con.execute(
-                        f"SELECT path,chunk_no,content_hash,embedding FROM chunks WHERE tenant=? AND workspace=? AND path IN ({placeholders})",
+                        f"SELECT path,chunk_no,content_hash,embedding,embedding_space FROM chunks WHERE tenant=? AND workspace=? AND path IN ({placeholders})",
                         (scope_key, workspace, *batch_rels),
                     ).fetchall()
                     for r in rows:
-                        old_chunks[(str(r[0]), int(r[1]), str(r[2]))] = r[3]
+                        if not r[4] or str(r[4] or "") == embedding_space:
+                            old_chunks[(str(r[0]), int(r[1]), str(r[2]))] = r[3]
 
             # 3. Build records and identify missing embeddings
             all_missing_texts: list[str] = []
@@ -864,7 +939,10 @@ class RAGStore:
                 for chunk_no, chunk in enumerate(item["chunks"]):
                     chash = _fragment_hash(chunk)
                     embedding = old_chunks.get((rel, chunk_no, chash))
-                    records.append({"chunk_no": chunk_no, "text": chunk, "hash": chash, "embedding": embedding})
+                    records.append({
+                        "chunk_no": chunk_no, "text": chunk, "hash": chash, "embedding": embedding,
+                        "embedding_space": embedding_space if embedding is not None else "",
+                    })
                     if embedding is None:
                         all_missing_texts.append(chunk)
                         missing_pointers.append((f_idx, len(records) - 1))
@@ -881,8 +959,8 @@ class RAGStore:
                         batch_h = missing_hashes[i:i + 500]
                         placeholders = ",".join("?" for _ in batch_h)
                         rows = con.execute(
-                            f"SELECT content_hash, embedding FROM chunks WHERE tenant=? AND content_hash IN ({placeholders})",
-                            (scope_key, *batch_h),
+                            f"SELECT content_hash, embedding FROM chunks WHERE tenant=? AND (embedding_space=? OR embedding_space='' OR embedding_space IS NULL) AND content_hash IN ({placeholders})",
+                            (scope_key, embedding_space, *batch_h),
                         ).fetchall()
                         for r in rows:
                             if r[0] and r[1] and str(r[0]) not in global_chunks:
@@ -895,6 +973,7 @@ class RAGStore:
                         chash = file_data[f_idx]["records"][rec_idx]["hash"]
                         if chash in global_chunks:
                             file_data[f_idx]["records"][rec_idx]["embedding"] = global_chunks[chash]
+                            file_data[f_idx]["records"][rec_idx]["embedding_space"] = embedding_space
                             reused_chunks += 1
                         else:
                             still_missing_texts.append(text)
@@ -923,13 +1002,21 @@ class RAGStore:
                 vectors = vectors_result.get("embeddings", [])
                 if len(vectors) != len(all_missing_texts):
                     return {"success": False, "error": "embedding count mismatch during background RAG path step"}
+                embedding_space = self._embedding_space_id(vectors_result)
                 for (f_idx, rec_idx), vector in zip(missing_pointers, vectors):
-                    try:
-                        import numpy as np
-                        file_data[f_idx]["records"][rec_idx]["embedding"] = sqlite3.Binary(np.array(vector, dtype=np.float32).tobytes())
-                    except Exception:
-                        file_data[f_idx]["records"][rec_idx]["embedding"] = json_dumps(vector, separators=(",", ":"))
+                    embedding = _serialize_embedding(vector)
+                    if embedding is None:
+                        return {"success": False, "error": "embedding backend returned an invalid vector"}
+                    file_data[f_idx]["records"][rec_idx]["embedding"] = embedding
+                    file_data[f_idx]["records"][rec_idx]["embedding_space"] = embedding_space
                 embedded_chunks += len(all_missing_texts)
+
+            if callable(should_yield) and should_yield():
+                return {
+                    "success": True, "workspace": workspace, "preempted": True,
+                    "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
+                    "reused_chunks": reused_chunks,
+                }
 
             # 5. Bulk SQLite transaction
             chunks_to_insert: list[tuple[Any, ...]] = []
@@ -938,7 +1025,7 @@ class RAGStore:
                 rel = item["rel"]
                 stat = item["stat"]
                 for r in item["records"]:
-                    chunks_to_insert.append((scope_key, workspace, rel, r["chunk_no"], r["hash"], r["text"], r["embedding"]))
+                    chunks_to_insert.append((scope_key, workspace, rel, r["chunk_no"], r["hash"], r["text"], r["embedding"], r["embedding_space"]))
                 files_to_insert.append((scope_key, workspace, rel, int(stat.st_mtime_ns), int(stat.st_size), item["file_hash"]))
                 processed_paths.append(rel)
 
@@ -954,7 +1041,7 @@ class RAGStore:
                     except Exception:
                         pass
                 con.executemany(
-                    "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) VALUES(?,?,?,?,?,?,?)",
+                    "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
                     chunks_to_insert,
                 )
                 try:
@@ -995,6 +1082,7 @@ class RAGStore:
         workspace = workspace or self.workspace_id(str(root_path))
         with self._get_workspace_lock(workspace):
             scope_key = self._scope_key(tenant)
+            embedding_space = self._embedding_space_id()
             if callable(should_yield) and should_yield():
                 return {"success": True, "workspace": workspace, "preempted": True, "done": False, "processed_files": 0}
 
@@ -1004,11 +1092,14 @@ class RAGStore:
                     (scope_key, workspace),
                 ).fetchall()
                 old_chunk_rows = con.execute(
-                    "SELECT path,chunk_no,content_hash,embedding FROM chunks WHERE tenant=? AND workspace=?",
+                    "SELECT path,chunk_no,content_hash,embedding,embedding_space FROM chunks WHERE tenant=? AND workspace=?",
                     (scope_key, workspace),
                 ).fetchall()
             old_files = {r[0]: {"mtime_ns": int(r[1]), "size": int(r[2]), "content_hash": r[3]} for r in old_rows}
-            old_chunks = {(r[0], int(r[1]), r[2]): r[3] for r in old_chunk_rows}
+            old_chunks = {
+                (r[0], int(r[1]), r[2]): r[3]
+                for r in old_chunk_rows if str(r[4] or "") == embedding_space
+            }
 
             current_meta: dict[str, tuple[Path, int, int]] = {}
             for path in self._iter_files(root_path):
@@ -1026,21 +1117,32 @@ class RAGStore:
             changed_all.sort()
             selected = changed_all[: max(1, int(max_files))]
 
-            # Deletions are cheap and safe to publish immediately.
-            if deleted:
-                with closing(self._connect()) as con:
-                    for rel in deleted:
-                        con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
-                        con.execute("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
-                        try:
-                            con.execute("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
-                        except Exception:
-                            pass
-                    con.commit()
+            pending = sorted(set(changed_all) | set(deleted))
+            selected = pending[: max(1, int(max_files))]
+            selected_changed = [rel for rel in selected if rel in current_meta]
+            selected_deleted = [rel for rel in selected if rel in deleted]
+            staged = self.index_paths_step(
+                str(root_path), tenant, workspace, selected_changed,
+                should_yield=should_yield, deleted_paths=selected_deleted,
+            )
+            if not staged.get("success"):
+                return staged
+            remaining = max(0, len(pending) - len(selected))
+            return {
+                "success": True, "workspace": workspace,
+                "preempted": bool(staged.get("preempted", False)),
+                "done": remaining == 0 and not staged.get("preempted", False),
+                "processed_files": len(staged.get("processed_paths", [])) + len(selected_deleted),
+                "remaining_changed_files": remaining,
+                "deleted_files": len(selected_deleted),
+                "embedded_chunks": staged.get("embedded_chunks", 0),
+                "reused_chunks": staged.get("reused_chunks", 0),
+            }
 
             processed = 0
             embedded_chunks = 0
             reused_chunks = 0
+            pending_writes: list[tuple[str, int, int, str, list[dict[str, Any]]]] = []
             for rel in selected:
                 if callable(should_yield) and should_yield():
                     return {
@@ -1061,7 +1163,10 @@ class RAGStore:
                 for chunk_no, chunk in enumerate(self._chunks(text, path=rel)):
                     chash = _fragment_hash(chunk)
                     embedding = old_chunks.get((rel, chunk_no, chash))
-                    rec = {"chunk_no": chunk_no, "text": chunk, "hash": chash, "embedding": embedding}
+                    rec = {
+                        "chunk_no": chunk_no, "text": chunk, "hash": chash, "embedding": embedding,
+                        "embedding_space": embedding_space if embedding is not None else "",
+                    }
                     records.append(rec)
                     if embedding is None:
                         missing_idx.append(len(records) - 1)
@@ -1077,8 +1182,8 @@ class RAGStore:
                             batch_h = missing_hashes[i:i + 500]
                             placeholders = ",".join("?" for _ in batch_h)
                             rows = con.execute(
-                                f"SELECT content_hash, embedding FROM chunks WHERE tenant=? AND content_hash IN ({placeholders})",
-                                (scope_key, *batch_h),
+                                f"SELECT content_hash, embedding FROM chunks WHERE tenant=? AND (embedding_space=? OR embedding_space='' OR embedding_space IS NULL) AND content_hash IN ({placeholders})",
+                                (scope_key, embedding_space, *batch_h),
                             ).fetchall()
                             for r in rows:
                                 if r[0] and r[1] and str(r[0]) not in global_chunks:
@@ -1091,6 +1196,7 @@ class RAGStore:
                             chash = records[idx]["hash"]
                             if chash in global_chunks:
                                 records[idx]["embedding"] = global_chunks[chash]
+                                records[idx]["embedding_space"] = embedding_space
                                 reused_chunks += 1
                             else:
                                 still_idx.append(idx)
@@ -1119,24 +1225,48 @@ class RAGStore:
                     vectors = vectors_result.get("embeddings", [])
                     if len(vectors) != len(missing_idx):
                         return {"success": False, "error": "embedding count mismatch during background RAG step"}
+                    embedding_space = self._embedding_space_id(vectors_result)
                     for idx, vector in zip(missing_idx, vectors):
-                        try:
-                            import numpy as np
-                            records[idx]["embedding"] = sqlite3.Binary(np.array(vector, dtype=np.float32).tobytes())
-                        except Exception:
-                            records[idx]["embedding"] = json_dumps(vector, separators=(",", ":"))
+                        embedding = _serialize_embedding(vector)
+                        if embedding is None:
+                            return {"success": False, "error": "embedding backend returned an invalid vector"}
+                        records[idx]["embedding"] = embedding
+                        records[idx]["embedding_space"] = embedding_space
                     embedded_chunks += len(missing_idx)
 
-                with closing(self._connect()) as con:
+                if callable(should_yield) and should_yield():
+                    return {
+                        "success": True, "workspace": workspace, "preempted": True, "done": False,
+                        "processed_files": processed, "remaining_changed_files": len(changed_all) - processed,
+                        "deleted_files": len(deleted), "embedded_chunks": embedded_chunks, "reused_chunks": reused_chunks,
+                    }
+                pending_writes.append((rel, mtime_ns, size, file_hash, records))
+                processed += 1
+
+            remaining = max(0, len(changed_all) - processed)
+            if callable(should_yield) and should_yield():
+                return {
+                    "success": True, "workspace": workspace, "preempted": True, "done": False,
+                    "processed_files": 0, "remaining_changed_files": len(changed_all),
+                    "deleted_files": len(deleted), "embedded_chunks": embedded_chunks, "reused_chunks": reused_chunks,
+                }
+
+            # Publish deletions and completed files as one snapshot. A preemption
+            # above leaves the previous workspace state intact.
+            with self._get_workspace_lock(workspace), closing(self._connect()) as con:
+                con.execute("BEGIN IMMEDIATE")
+                replace_paths = [*deleted, *(item[0] for item in pending_writes)]
+                for rel in replace_paths:
                     con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
                     con.execute("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
                     try:
                         con.execute("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
                     except Exception:
                         pass
+                for rel, mtime_ns, size, file_hash, records in pending_writes:
                     con.executemany(
-                        "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) VALUES(?,?,?,?,?,?,?)",
-                        [(scope_key, workspace, rel, r["chunk_no"], r["hash"], r["text"], r["embedding"]) for r in records],
+                        "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
+                        [(scope_key, workspace, rel, r["chunk_no"], r["hash"], r["text"], r["embedding"], r["embedding_space"]) for r in records],
                     )
                     try:
                         con.executemany(
@@ -1149,10 +1279,7 @@ class RAGStore:
                         "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
                         (scope_key, workspace, rel, mtime_ns, size, file_hash),
                     )
-                    con.commit()
-                processed += 1
-
-            remaining = max(0, len(changed_all) - processed)
+                con.commit()
             return {
                 "success": True, "workspace": workspace, "preempted": False, "done": remaining == 0,
                 "processed_files": processed, "remaining_changed_files": remaining,
@@ -1167,10 +1294,13 @@ class RAGStore:
     def _cosine(a: list[float], b: list[float]) -> float:
         if len(a) != len(b):
             return 0.0
+        if not all(math.isfinite(value) for value in (*a, *b)):
+            return 0.0
         dot = RAGStore._dot(a, b)
         na = math.sqrt(RAGStore._dot(a, a))
         nb = math.sqrt(RAGStore._dot(b, b))
-        return dot / (na * nb) if na and nb else 0.0
+        score = dot / (na * nb) if na and nb else 0.0
+        return score if math.isfinite(score) else 0.0
 
     def revision(self, tenant: str, workspace: str) -> str:
         scope_key = self._scope_key(tenant)
@@ -1314,6 +1444,23 @@ class RAGStore:
             query_result = self.services.embed([query], tenant, priority=priority, query=True)
         except Exception as exc:
             query_result = {"success": False, "error": str(exc)}
+        if query_result.get("success"):
+            embeddings = query_result.get("embeddings")
+            try:
+                if not isinstance(embeddings, (list, tuple)) or not embeddings:
+                    raise TypeError("embedding result has no query vector")
+                query_vector = [float(value) for value in embeddings[0]]
+                valid_query_vector = (
+                    bool(query_vector)
+                    and all(math.isfinite(value) for value in query_vector)
+                )
+                if valid_query_vector:
+                    query_norm = math.sqrt(sum(value * value for value in query_vector))
+                    valid_query_vector = math.isfinite(query_norm) and query_norm > 1e-9
+            except (IndexError, KeyError, TypeError, ValueError, OverflowError):
+                valid_query_vector = False
+            if not valid_query_vector:
+                query_result = {**query_result, "success": False, "error": "invalid_query_embedding"}
         if not query_result.get("success"):
             candidates = self._search_fts_candidates(query, tenant, workspace, max(16, top_k * 2), scope_path)
             if not candidates:
@@ -1337,88 +1484,141 @@ class RAGStore:
                 "reason": str(query_result.get("error", "embedder_unavailable")),
             }
         query_vec = query_result["embeddings"][0]
+        fallbacks: list[str] = []
+        if query_result.get("degraded"):
+            fallbacks.append(str(query_result.get("fallback") or "embedding_backend"))
 
-        with closing(self._connect()) as con:
-            if scope_path:
-                norm_scope = scope_path.replace("\\", "/").rstrip("/")
-                rows = con.execute(
-                    "SELECT path, chunk_no, embedding, content_hash FROM chunks WHERE tenant=? AND workspace=? AND (path=? OR path LIKE ? || '/%')",
-                    (scope_key, workspace, norm_scope, norm_scope),
-                ).fetchall()
-            else:
-                rows = con.execute(
-                    "SELECT path, chunk_no, embedding, content_hash FROM chunks WHERE tenant=? AND workspace=?",
-                    (scope_key, workspace),
-                ).fetchall()
-
-        if not rows:
-            return {"success": True, "workspace": workspace, "results": [], "warning": "workspace has no matching indexed chunks"}
-
-        # SIMD-vectorized cosine similarity via NumPy
+        rag_cfg = self.config.get("rag", {})
+        candidate_limit = min(_MAX_RERANK_CANDIDATES, max(16, int(rag_cfg.get("rerank_candidates", 16))))
+        batch_size = min(2048, max(32, int(rag_cfg.get("search_batch_size", 512))))
+        best: list[tuple[float, tuple[int, ...], int, tuple[int, ...], dict[str, Any]]] = []
+        rows_seen = 0
         try:
             import numpy as np
-            q = np.array(query_vec, dtype=np.float32)
+        except Exception:
+            np = None
+
+        if np is not None:
+            q = np.asarray(query_vec, dtype=np.float32).reshape(-1)
+            dimension = int(q.size)
             q_norm = float(np.linalg.norm(q))
             if q_norm > 1e-9:
                 q = q / q_norm
+            else:
+                q = np.zeros(dimension, dtype=np.float32)
 
-            vec_list = []
-            for r in rows:
-                raw_v = r[2]
-                if isinstance(raw_v, (bytes, memoryview)):
-                    vec_list.append(np.frombuffer(raw_v, dtype=np.float32))
-                elif isinstance(raw_v, str):
-                    try:
-                        vec_list.append(np.array(json.loads(raw_v), dtype=np.float32))
-                    except Exception:
-                        vec_list.append(np.zeros(len(query_vec), dtype=np.float32))
+        def offer(row: Any, score: float) -> None:
+            score = float(score)
+            if not math.isfinite(score):
+                score = 0.0
+            item = {
+                "path": row[0], "chunk_no": row[1], "content_hash": row[3],
+                "embedding_score": score,
+            }
+            entry = (
+                score,
+                _reverse_text_order(str(row[0])),
+                -int(row[1]),
+                _reverse_text_order(str(row[3] or "")),
+                item,
+            )
+            if len(best) < candidate_limit:
+                heapq.heappush(best, entry)
+            elif entry[:4] > best[0][:4]:
+                heapq.heapreplace(best, entry)
+
+        with closing(self._connect()) as con:
+            # Keep one read snapshot across keyset batches, but close each SQL
+            # cursor before vector parsing/scoring so the statement VM is idle.
+            con.execute("BEGIN")
+            norm_scope = scope_path.replace("\\", "/").rstrip("/") if scope_path else None
+            last_path: str | None = None
+            last_chunk_no: int | None = None
+            while True:
+                predicates = ["tenant=?", "workspace=?"]
+                params: list[Any] = [scope_key, workspace]
+                if norm_scope is not None:
+                    predicates.append("(path=? OR path LIKE ? || '/%')")
+                    params.extend((norm_scope, norm_scope))
+                if last_path is not None:
+                    predicates.append("(path>? OR (path=? AND chunk_no>?))")
+                    params.extend((last_path, last_path, last_chunk_no))
+                cursor = con.execute(
+                    "SELECT path, chunk_no, embedding, content_hash FROM chunks WHERE "
+                    + " AND ".join(predicates)
+                    + " ORDER BY path, chunk_no LIMIT ?",
+                    (*params, batch_size),
+                )
+                try:
+                    batch = cursor.fetchmany(batch_size)
+                finally:
+                    cursor.close()
+                if not batch:
+                    break
+                rows_seen += len(batch)
+                last_path, last_chunk_no = str(batch[-1][0]), int(batch[-1][1])
+
+                if np is not None:
+                    if all(isinstance(row[2], (bytes, memoryview)) and len(row[2]) == dimension * 4 for row in batch):
+                        packed = b"".join(bytes(row[2]) for row in batch)
+                        matrix = np.frombuffer(packed, dtype=np.float32).reshape(len(batch), dimension)
+                    else:
+                        matrix = np.zeros((len(batch), dimension), dtype=np.float32)
+                        for index, row in enumerate(batch):
+                            raw = row[2]
+                            try:
+                                if isinstance(raw, (bytes, memoryview)):
+                                    vector = np.frombuffer(raw, dtype=np.float32)
+                                elif isinstance(raw, str):
+                                    vector = np.asarray(json.loads(raw), dtype=np.float32).reshape(-1)
+                                else:
+                                    continue
+                                if vector.size == dimension:
+                                    matrix[index] = vector
+                            except (TypeError, ValueError, OverflowError, json.JSONDecodeError):
+                                continue
+                    norms = np.linalg.norm(matrix, axis=1)
+                    scores = np.zeros(len(batch), dtype=np.float32)
+                    valid = np.isfinite(norms) & (norms > 1e-9)
+                    if q_norm > 1e-9 and valid.any():
+                        dot_scores = np.dot(matrix, q)
+                        scores[valid] = dot_scores[valid] / norms[valid]
+                    scores = np.where(np.isfinite(scores), scores, 0.0)
+                    path_keys = np.asarray([str(row[0]) for row in batch], dtype=np.str_)
+                    chunk_keys = np.fromiter((int(row[1]) for row in batch), dtype=np.int64, count=len(batch))
+                    hash_keys = np.asarray([str(row[3] or "") for row in batch], dtype=np.str_)
+                    local_order = np.lexsort((hash_keys, chunk_keys, path_keys, -scores))[:candidate_limit]
+                    for index in local_order:
+                        offer(batch[index], float(scores[index]))
                 else:
-                    vec_list.append(np.zeros(len(query_vec), dtype=np.float32))
+                    import struct
 
-            mat = np.vstack(vec_list)
-            norms = np.linalg.norm(mat, axis=1, keepdims=True)
-            norms[norms < 1e-9] = 1.0
-            normed_mat = mat / norms
+                    for index, row in enumerate(batch):
+                        raw = row[2]
+                        try:
+                            if isinstance(raw, (bytes, memoryview)) and len(raw) % 4 == 0:
+                                vector = struct.unpack(f"{len(raw) // 4}f", raw)
+                            elif isinstance(raw, str):
+                                vector = [float(value) for value in json.loads(raw)]
+                            else:
+                                vector = []
+                            score = self._cosine(query_vec, vector) if len(vector) == len(query_vec) else 0.0
+                        except (TypeError, ValueError, OverflowError, struct.error, json.JSONDecodeError):
+                            score = 0.0
+                        offer(row, score)
 
-            scores = np.dot(normed_mat, q)
-            top_n = min(len(rows), max(16, int(self.config.get("rag", {}).get("rerank_candidates", 16))))
-            top_indices = np.argpartition(scores, -top_n)[-top_n:]
-            top_indices = top_indices[np.argsort(-scores[top_indices])]
+        if rows_seen == 0:
+            return {"success": True, "workspace": workspace, "results": [], "warning": "workspace has no matching indexed chunks"}
 
-            candidates = [
-                {
-                    "path": rows[idx][0],
-                    "chunk_no": rows[idx][1],
-                    "content_hash": rows[idx][3],
-                    "embedding_score": float(scores[idx]),
-                }
-                for idx in top_indices
-            ]
-        except Exception:
-            def _parse_vec(v: Any) -> list[float]:
-                if isinstance(v, (bytes, memoryview)):
-                    try:
-                        import numpy as np
-                        return np.frombuffer(v, dtype=np.float32).tolist()
-                    except Exception:
-                        import struct
-                        return list(struct.unpack(f"{len(v)//4}f", v))
-                elif isinstance(v, str):
-                    try:
-                        return [float(x) for x in json.loads(v)]
-                    except Exception:
-                        return [0.0] * len(query_vec)
-                return [0.0] * len(query_vec)
-
-            scored = [
-                {
-                    "path": row[0], "chunk_no": row[1], "content_hash": row[3],
-                    "embedding_score": self._cosine(query_vec, _parse_vec(row[2])),
-                }
-                for row in rows
-            ]
-            scored.sort(key=lambda item: item["embedding_score"], reverse=True)
-            candidates = scored[: int(self.config.get("rag", {}).get("rerank_candidates", 16))]
+        candidates = [
+            entry[4]
+            for entry in sorted(
+                best,
+                key=lambda item: (
+                    -item[0], str(item[4]["path"]), int(item[4]["chunk_no"]), str(item[4]["content_hash"] or "")
+                ),
+            )
+        ]
 
         # Hybrid search: combine vector candidates with FTS5 keyword hits via Reciprocal Rank Fusion (RRF)
         fts_candidates = self._search_fts_candidates(query, tenant, workspace, 16, scope_path)
@@ -1445,8 +1645,14 @@ class RAGStore:
                     item["embedding_score"] = 0.0
                     combined[ckey] = item
 
-            candidates = sorted(combined.values(), key=lambda x: x.get("rrf_score", 0.0), reverse=True)
-            candidates = candidates[:max(16, int(self.config.get("rag", {}).get("rerank_candidates", 16)))]
+            candidates = sorted(
+                combined.values(),
+                key=lambda item: (
+                    -float(item.get("rrf_score", 0.0)), str(item.get("path", "")),
+                    int(item.get("chunk_no", 0)), str(item.get("content_hash", "")),
+                ),
+            )
+            candidates = candidates[:candidate_limit]
 
         # Hydrate text for winning candidates from DB
         needed_map: dict[tuple[str, int], list[dict[str, Any]]] = {}
@@ -1465,6 +1671,8 @@ class RAGStore:
                         c["text"] = chunk_text
 
         reranked = False
+        reranker_failed = False
+        heuristic_fallback = False
         if use_reranker and candidates:
             if self.config.get("features", {}).get("reranker", True) and hasattr(self, "reranker") and self.reranker:
                 try:
@@ -1477,8 +1685,10 @@ class RAGStore:
                             ordered.append(base)
                         candidates = ordered
                         reranked = True
+                    else:
+                        reranker_failed = True
                 except Exception:
-                    pass
+                    reranker_failed = True
 
             if not reranked:
                 q_terms = [t.lower() for t in re.findall(r"\w+", query) if len(t) > 1]
@@ -1494,9 +1704,14 @@ class RAGStore:
                                 h_score *= 1.5
                         if len(q_terms) >= 2 and all(t in txt for t in q_terms[:2]):
                             h_score *= 1.2
-                        c["heuristic_rerank_score"] = round(h_score, 4)
-                    candidates = sorted(candidates, key=lambda x: x.get("heuristic_rerank_score", 0.0), reverse=True)
-                    reranked = True
+                    c["heuristic_rerank_score"] = round(h_score, 4)
+                candidates = sorted(candidates, key=lambda x: x.get("heuristic_rerank_score", 0.0), reverse=True)
+                heuristic_fallback = True
+
+        if heuristic_fallback:
+            fallbacks.append("heuristic_rerank")
+        elif reranker_failed:
+            fallbacks.append("reranker")
 
         graphrag_enriched = False
         try:
@@ -1533,6 +1748,9 @@ class RAGStore:
             "success": True,
             "workspace": workspace,
             "reranked": reranked,
+            "degraded": bool(fallbacks),
+            "fallback": fallbacks[0] if fallbacks else None,
+            "fallbacks": fallbacks,
             "hybrid": is_hybrid,
             "graphrag_enriched": graphrag_enriched,
             "results": candidates[:top_k],
@@ -1586,6 +1804,7 @@ class RAGStore:
                 "text": ch_text,
                 "hash": _fragment_hash(ch_text),
                 "embedding": None,
+                "embedding_space": "",
             })
 
         if self.services is not None:
@@ -1593,17 +1812,18 @@ class RAGStore:
                 vec_res = self.services.embed([r["text"] for r in records], tenant, priority=2, query=False)
                 if isinstance(vec_res, dict) and vec_res.get("success"):
                     for idx, vec in enumerate(vec_res.get("embeddings", [])):
-                        try:
-                            import numpy as np
-                            records[idx]["embedding"] = sqlite3.Binary(np.array(vec, dtype=np.float32).tobytes())
-                        except Exception:
-                            records[idx]["embedding"] = json_dumps(vec, separators=(",", ":"))
+                        if idx >= len(records):
+                            break
+                        embedding = _serialize_embedding(vec)
+                        if embedding is not None:
+                            records[idx]["embedding"] = embedding
+                            records[idx]["embedding_space"] = self._embedding_space_id(vec_res)
             except Exception:
                 pass
 
         for r in records:
             if r["embedding"] is None:
-                r["embedding"] = sqlite3.Binary(b"\x00" * 32)
+                r["embedding"] = ""
 
         with self._get_workspace_lock(clean_ws), closing(self._connect()) as con:
             con.execute("BEGIN IMMEDIATE")
@@ -1620,8 +1840,8 @@ class RAGStore:
                 (scope_key, clean_ws, doc_path, now_ns, len(clean_text.encode("utf-8")), _fragment_hash(clean_text)),
             )
             con.executemany(
-                "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) VALUES(?,?,?,?,?,?,?)",
-                [(scope_key, clean_ws, doc_path, r["chunk_no"], r["hash"], r["text"], r["embedding"]) for r in records],
+                "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
+                [(scope_key, clean_ws, doc_path, r["chunk_no"], r["hash"], r["text"], r["embedding"], r["embedding_space"]) for r in records],
             )
             try:
                 con.executemany(
@@ -1637,7 +1857,7 @@ class RAGStore:
             "workspace": clean_ws,
             "document_title": doc_title,
             "chunks_ingested": len(records),
-            "embedded": any(r["embedding"] is not None for r in records),
+            "embedded": any(bool(r["embedding_space"]) for r in records),
         }
 
     def ingest_diagram(

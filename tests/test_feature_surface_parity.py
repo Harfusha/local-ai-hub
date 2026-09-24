@@ -60,9 +60,8 @@ def test_enabled_agent_os_and_tool_actions_are_discoverable():
     workflows_reference = references["workflows.md"].lower()
     assert "semantic generation" in tools_reference
     assert "exact facts, symbols, diff and tests" in tools_reference
-    assert "preserves one bounded local pass" in tools_reference
-    assert "semantic handoff is mandatory" in tools_reference
-    assert "before cloud reasoning" in tools_reference
+    assert "semantic delegation is on-demand" in tools_reference
+    assert "never blocked by mandatory local handoffs" in tools_reference
     assert 'local_ai_task(action="delegate")' in workflows_reference
     assert 'local_ai_task(action="explore")' in workflows_reference
     assert 'local_ai_task(action="reason")' in workflows_reference

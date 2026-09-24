@@ -43,9 +43,6 @@ def build_global_policy(cfg: dict[str, Any]) -> str:
 # always built via build_global_policy(cfg) at setup time.
 _DEFAULT_POLICY_CFG: dict[str, Any] = {}
 GLOBAL_POLICY = build_global_policy(_DEFAULT_POLICY_CFG)
-
-
-
 def log(message: str) -> None:
     print(f"[local-ai-hub] {message}")
 
@@ -188,7 +185,7 @@ def json_mcp_merge(path: Path, servers: dict[str, dict[str, Any]], backup_enable
 
 
 def prune_direct_code_intelligence(
-    path: Path, serena: Path | None, codegraph: Path | None, backup_enabled: bool,
+    path: Path, serena: Path | None, backup_enabled: bool,
 ) -> None:
     """Remove only stale Hub-generated direct backend entries from a JSON MCP manifest."""
     if not path.exists():
@@ -201,7 +198,7 @@ def prune_direct_code_intelligence(
         raise RuntimeError(f"Cannot parse JSON config {path}: {exc}") from exc
 
     container = data["mcpServers"]
-    expected = {"serena": serena, "codegraph": codegraph}
+    expected = {"serena": serena}
     removed = False
     for name, executable in expected.items():
         entry = container.get(name)
@@ -222,14 +219,13 @@ def sync_antigravity_mcp_config(
     install_dir: Path,
     hub_python: Path,
     serena: Path | None,
-    codegraph: Path | None,
     cfg: dict[str, Any],
     backup_enabled: bool,
 ) -> None:
     """Keep Antigravity's global MCP manifest aligned with the Hub-only default."""
-    json_mcp_merge(path, build_mcp_entries(install_dir, hub_python, serena, codegraph, "gemini", cfg), backup_enabled)
+    json_mcp_merge(path, build_mcp_entries(install_dir, hub_python, serena, "gemini", cfg), backup_enabled)
     if not bool(cfg.get("code_intelligence", {}).get("direct_agent_mcp", False)):
-        prune_direct_code_intelligence(path, serena, codegraph, backup_enabled)
+        prune_direct_code_intelligence(path, serena, backup_enabled)
 
 
 def vscode_mcp_merge(path: Path, servers: dict[str, dict[str, Any]], backup_enabled: bool) -> None:
@@ -452,7 +448,7 @@ def persist_token_economy_path(
     return profile
 
 
-def build_mcp_entries(install_dir: Path, hub_python: Path, serena: Path | None, codegraph: Path | None, agent: str, cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def build_mcp_entries(install_dir: Path, hub_python: Path, serena: Path | None, agent: str, cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
     entries: dict[str, dict[str, Any]] = {
         "local-ai": {
             "command": str(hub_python),
@@ -472,8 +468,6 @@ def build_mcp_entries(install_dir: Path, hub_python: Path, serena: Path | None, 
     if serena is not None and cfg.get("code_intelligence", {}).get("serena_enabled", True):
         context = {"codex": "codex", "claude": "claude-code", "gemini": "gemini"}.get(agent, "ide-assistant")
         entries["serena"] = {"command": str(serena), "args": ["start-mcp-server", "--context", context, "--project-from-cwd", "--open-web-dashboard", "false"]}
-    if codegraph is not None and cfg.get("code_intelligence", {}).get("codegraph_enabled", True):
-        entries["codegraph"] = {"command": str(codegraph), "args": ["mcp", "start"]}
     return entries
 
 
@@ -579,8 +573,8 @@ def pull_ollama_models(cfg: dict[str, Any]) -> None:
             log(f"WARNING: model pull did not complete: {model}")
 
 
-def write_generated_agent_manifests(install_dir: Path, hub_python: Path, serena: Path | None, codegraph: Path | None, cfg: dict[str, Any]) -> None:
-    write_all_generated(cfg, install_dir, hub_python, serena, codegraph)
+def write_generated_agent_manifests(install_dir: Path, hub_python: Path, serena: Path | None, cfg: dict[str, Any]) -> None:
+    write_all_generated(cfg, install_dir, hub_python, serena)
     log(f"Dynamic skill, manifests, and schemas generated: {install_dir / 'generated'}")
 
 
@@ -588,14 +582,13 @@ def configure_agents(
     install_dir: Path,
     hub_python: Path,
     serena: Path | None,
-    codegraph: Path | None,
     cfg: dict[str, Any],
     *,
     include_companion: bool = True,
 ) -> None:
     backup_enabled = bool(cfg.get("setup", {}).get("backup_existing_configs", True))
     agents_cfg = cfg.get("agents", {})
-    write_all_generated(cfg, install_dir, hub_python, serena, codegraph)
+    write_all_generated(cfg, install_dir, hub_python, serena)
     if agents_cfg.get("agent_skills_standard", True):
         install_agent_skills(install_dir, Path.home() / ".agents" / "skills", include_companion=include_companion)
     if agents_cfg.get("codex", True):
@@ -606,7 +599,7 @@ def configure_agents(
             merge_global_policy(doc, backup_enabled, cfg=cfg)
             merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
         codex_mcp_merge(
-            codex_home / "config.toml", build_mcp_entries(install_dir, hub_python, serena, codegraph, "codex", cfg), backup_enabled,
+            codex_home / "config.toml", build_mcp_entries(install_dir, hub_python, serena, "codex", cfg), backup_enabled,
             startup_timeout=int(cfg.get("client", {}).get("startup_wait_seconds", 15)) + 15,
             tool_timeout=int(cfg.get("mcp", {}).get("host_tool_timeout_seconds", 900)),
         )
@@ -616,7 +609,7 @@ def configure_agents(
             doc = Path.home() / ".claude" / "CLAUDE.md"
             merge_global_policy(doc, backup_enabled, cfg=cfg)
             merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
-        json_mcp_merge(Path.home() / ".claude.json", build_mcp_entries(install_dir, hub_python, serena, codegraph, "claude", cfg), backup_enabled)
+        json_mcp_merge(Path.home() / ".claude.json", build_mcp_entries(install_dir, hub_python, serena, "claude", cfg), backup_enabled)
     if agents_cfg.get("gemini", True):
         install_agent_skills(install_dir, Path.home() / ".gemini" / "skills", include_companion=include_companion)
         install_agent_skills(install_dir, Path.home() / ".gemini" / "config" / "skills", include_companion=include_companion)
@@ -624,10 +617,10 @@ def configure_agents(
             doc = Path.home() / ".gemini" / "GEMINI.md"
             merge_global_policy(doc, backup_enabled, cfg=cfg)
             merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
-        json_mcp_merge(Path.home() / ".gemini" / "settings.json", build_mcp_entries(install_dir, hub_python, serena, codegraph, "gemini", cfg), backup_enabled)
+        json_mcp_merge(Path.home() / ".gemini" / "settings.json", build_mcp_entries(install_dir, hub_python, serena, "gemini", cfg), backup_enabled)
         sync_antigravity_mcp_config(
             Path.home() / ".gemini" / "config" / "mcp_config.json",
-            install_dir, hub_python, serena, codegraph, cfg, backup_enabled,
+            install_dir, hub_python, serena, cfg, backup_enabled,
         )
         antigravity_mcp = Path.home() / ".gemini" / "antigravity" / "mcp" / "local-ai"
         if antigravity_mcp.exists():
@@ -638,23 +631,23 @@ def configure_agents(
     # Additional major MCP hosts. Their tool descriptions always carry the same
     # tool-first policy even when the host has no global skill format.
     if agents_cfg.get("cursor", True):
-        json_mcp_merge(Path.home() / ".cursor" / "mcp.json", build_mcp_entries(install_dir, hub_python, serena, codegraph, "cursor", cfg), backup_enabled)
+        json_mcp_merge(Path.home() / ".cursor" / "mcp.json", build_mcp_entries(install_dir, hub_python, serena, "cursor", cfg), backup_enabled)
     if agents_cfg.get("windsurf", True):
-        json_mcp_merge(Path.home() / ".codeium" / "windsurf" / "mcp_config.json", build_mcp_entries(install_dir, hub_python, serena, codegraph, "windsurf", cfg), backup_enabled)
+        json_mcp_merge(Path.home() / ".codeium" / "windsurf" / "mcp_config.json", build_mcp_entries(install_dir, hub_python, serena, "windsurf", cfg), backup_enabled)
     if agents_cfg.get("copilot", True):
-        vscode_mcp_merge(Path.home() / ".copilot" / "mcp-config.json", build_mcp_entries(install_dir, hub_python, serena, codegraph, "copilot", cfg), backup_enabled)
+        vscode_mcp_merge(Path.home() / ".copilot" / "mcp-config.json", build_mcp_entries(install_dir, hub_python, serena, "copilot", cfg), backup_enabled)
 
     # Escape hatch for any MCP host/build whose config path differs from
     # the common defaults above. Users provide explicit paths, so setup never guesses
     # at vendor-specific locations or overwrites unrelated files.
-    generic_entries = build_mcp_entries(install_dir, hub_python, serena, codegraph, "generic", cfg)
+    generic_entries = build_mcp_entries(install_dir, hub_python, serena, "generic", cfg)
     for raw in agents_cfg.get("extra_mcp_json_paths", []) or []:
         if str(raw).strip():
             json_mcp_merge(expand(str(raw)), generic_entries, backup_enabled)
     for raw in agents_cfg.get("extra_vscode_mcp_paths", []) or []:
         if str(raw).strip():
             vscode_mcp_merge(expand(str(raw)), generic_entries, backup_enabled)
-    write_generated_agent_manifests(install_dir, hub_python, serena, codegraph, cfg)
+    write_generated_agent_manifests(install_dir, hub_python, serena, cfg)
 
 
 
@@ -686,7 +679,7 @@ def main() -> int:
     parser.add_argument("--profile", choices=["auto", "cpu", "integrated", "low", "balanced", "high", "max"])
     parser.add_argument("--skip-model-pull", action="store_true")
     parser.add_argument("--skip-local-nlp-preload", action="store_true")
-    parser.add_argument("--skip-tools", action="store_true", help="Do not install Serena/CodeGraphContext")
+    parser.add_argument("--skip-tools", action="store_true", help="Do not install Serena")
     parser.add_argument("--skip-agent-config", action="store_true")
     parser.add_argument("--skip-service", action="store_true")
     parser.add_argument("--skip-ollama-install", action="store_true")
@@ -705,7 +698,7 @@ def main() -> int:
         if install_dir.resolve() != SOURCE_ROOT.resolve():
             write_all_generated(cfg, install_dir, hub_python)
         if not args.skip_agent_config and bool(cfg.get("setup", {}).get("install_agent_configs", True)):
-            configure_agents(install_dir, hub_python, None, None, cfg, include_companion=include_companion)
+            configure_agents(install_dir, hub_python, None, cfg, include_companion=include_companion)
         log("Skill, agent instructions, and MCP artifacts successfully generated.")
         return 0
 
@@ -748,14 +741,11 @@ def main() -> int:
         install_token_economy_suite(install_dir, hub_python, allow_external_tools=True)
 
     serena: Path | None = None
-    codegraph: Path | None = None
     setup_cfg = cfg.get("setup", {})
     if not args.skip_tools and bool(setup_cfg.get("install_optional_tools", True)):
         intelligence = cfg.get("code_intelligence", {})
         if intelligence.get("serena_enabled", True):
             serena = install_tool_env(install_dir, "serena", str(cfg.get("tools", {}).get("serena_package", "serena-agent==1.7.0")), ["serena"])
-        if intelligence.get("codegraph_enabled", True):
-            codegraph = install_tool_env(install_dir, "codegraph", str(cfg.get("tools", {}).get("codegraph_package", "codegraphcontext[gcf]==0.6.8")), ["cgc", "codegraphcontext"])
 
     features = cfg.get("features", {})
     model_cfg = cfg.get("models", {})
@@ -809,9 +799,9 @@ def main() -> int:
         install_requirements(hub_python, install_dir / "requirements-local-nlp.txt", optional=True)
 
     if not args.skip_agent_config and bool(setup_cfg.get("install_agent_configs", True)):
-        configure_agents(install_dir, hub_python, serena, codegraph, cfg, include_companion=include_companion)
+        configure_agents(install_dir, hub_python, serena, cfg, include_companion=include_companion)
     else:
-        write_generated_agent_manifests(install_dir, hub_python, serena, codegraph, cfg)
+        write_generated_agent_manifests(install_dir, hub_python, serena, cfg)
 
     if os.name == "nt":
         has_nvidia = any(str(g.get("vendor", "")).lower() == "nvidia" for g in detected_gpus if isinstance(g, dict))

@@ -231,6 +231,7 @@ def test_unchanged_context_delta_reuses_revision_and_keeps_pack_useful():
 def test_legacy_context_validation_allows_omitted_guard_fields():
     assert mcp_mod._validate_context_pack_inputs(
         task_id="",
+        session_id="",
         phase="",
         focus=None,
         preload_profile="",
@@ -244,6 +245,15 @@ def test_legacy_context_validation_allows_omitted_guard_fields():
         max_tokens=512,
         token_budget=0,
     ) is None
+
+    invalid_phase = mcp_mod._validate_context_pack_inputs(
+        task_id="", session_id="", phase="invented-phase", focus=None,
+        preload_profile="", changed_paths=None, base="HEAD", staged=False,
+        guarded=True, since_hash="", approval="", override_reason="",
+        max_tokens=512, token_budget=0,
+    )
+    assert invalid_phase["success"] is False
+    assert invalid_phase["status_code"] == 400
 
 
 def test_mcp_server_client_root_normalization(monkeypatch):

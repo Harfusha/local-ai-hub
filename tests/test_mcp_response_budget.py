@@ -30,6 +30,44 @@ def test_existing_tools_expose_response_budget_options() -> None:
         assert {"max_response_tokens", "response_profile", "reuse_key"} <= names
 
 
+def test_command_rollback_scope_reaches_api_payload(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_post(path: str, payload: dict[str, object], timeout: float):
+        captured.update(path=path, payload=payload, timeout=timeout)
+        return {"success": True}
+
+    monkeypatch.setattr(mcp_server.FEATURES, "commands", True)
+    monkeypatch.setattr(mcp_server, "_client_root", lambda value: value)
+    monkeypatch.setattr(mcp_server, "_timeout", lambda _kind: 60)
+    monkeypatch.setattr(mcp_server.CLIENT, "post", fake_post)
+    monkeypatch.setattr(mcp_server, "_compact", lambda value, _tool: value)
+
+    result = mcp_server.local_ai_command(
+        action="run",
+        command="pytest -q",
+        cwd=str(tmp_path),
+        rollback_on_failure=True,
+        paths=["owned.py", "new-output.txt"],
+    )
+
+    assert result == {"success": True}
+    assert captured["path"] == "/api/command"
+    assert captured["payload"]["paths"] == ["owned.py", "new-output.txt"]
+
+
+def test_command_rollback_rejects_non_run_action_before_dispatch(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_server.FEATURES, "commands", True)
+
+    result = mcp_server.local_ai_command(
+        action="speculative_lint",
+        rollback_on_failure=True,
+        paths=["owned.py"],
+    )
+
+    assert result["rollback_unsupported_action"] is True
+
+
 def test_telemetry_status_projection_keeps_slow_paths_and_omits_bulk_report() -> None:
     report = {
         "success": True,
@@ -74,6 +112,7 @@ def test_context_projection_keeps_actual_context_text_after_budget() -> None:
     assert result["context"] == "deterministic facts about logs"
     assert result["contract"]["goal"] == "inspect logs"
     assert result["evidence_ids"] == ["E1"]
+    assert json_tokens(result) <= 220
 
 
 def test_mcp_compact_applies_aggregate_budget(monkeypatch) -> None:

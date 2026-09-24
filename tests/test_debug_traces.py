@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 
+from local_ai_hub import http_server
 from local_ai_hub.debug_traces import DebugTraceStore
 
 
@@ -171,3 +172,26 @@ def test_model_request_promotes_model_to_trace_summary(tmp_path):
     DebugTraceObserver(store, trace_id).model_request({"model": "qwen2.5-coder:7b", "messages": []})
 
     assert store.detail(trace_id)["session"]["model"] == "qwen2.5-coder:7b"
+
+
+def test_missing_debug_trace_detail_returns_not_found(monkeypatch):
+    class DebugTraces:
+        TERMINAL_STATES = set()
+
+        def detail(self, trace_id, *, since_seq):
+            return {"success": False, "error": "trace not found"}
+
+    class App:
+        debug_traces = DebugTraces()
+
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/debug-traces/missing-trace"
+    handler._begin_trace = lambda path: None
+    handler._require_authorized = lambda: True
+    responses = []
+    handler._send = lambda status, data: responses.append((status, data))
+    monkeypatch.setattr(http_server, "APP", App())
+
+    handler.do_GET()
+
+    assert responses == [(404, {"success": False, "error": "trace not found"})]

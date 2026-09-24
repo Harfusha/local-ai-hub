@@ -718,6 +718,59 @@ def test_guard_records_unknown_and_validation_receipt(repository: Path):
     assert verification.completion(request.task_id).receipts[0].evidence_id == "ev-tests"
 
 
+def test_record_validation_verifier_exception_records_failure_without_passed_receipt(repository: Path):
+    state = AgentStateStore(repository.parent / "guard-verifier-exception.sqlite3")
+    memory = MemoryStore(state)
+    verification = VerificationStore(state)
+    guard = AgentConsistencyGuard(memory_store=memory, verification_store=verification)
+    request = _request(repository)
+
+    def verifier() -> bool:
+        raise RuntimeError("verifier crashed")
+
+    validation = guard.record_validation(
+        request, criterion="tests", verifier=verifier, evidence_ids=("ev-tests",)
+    )
+
+    assert validation is not None and validation.value["passed"] is False
+    assert not any(receipt.passed for receipt in verification.completion(request.task_id).receipts)
+
+
+def test_record_validation_verifier_false_records_failure_without_passed_receipt(repository: Path):
+    state = AgentStateStore(repository.parent / "guard-verifier-fail.sqlite3")
+    memory = MemoryStore(state)
+    verification = VerificationStore(state)
+    guard = AgentConsistencyGuard(memory_store=memory, verification_store=verification)
+    request = _request(repository)
+
+    validation = guard.record_validation(
+        request, criterion="tests", verifier=lambda: False, evidence_ids=("ev-tests",)
+    )
+
+    assert validation is not None and validation.value["passed"] is False
+    assert not any(receipt.passed for receipt in verification.completion(request.task_id).receipts)
+
+
+def test_record_validation_verifier_true_records_matching_passed_receipt(repository: Path):
+    state = AgentStateStore(repository.parent / "guard-verifier-pass.sqlite3")
+    memory = MemoryStore(state)
+    verification = VerificationStore(state)
+    guard = AgentConsistencyGuard(memory_store=memory, verification_store=verification)
+    request = _request(repository)
+
+    validation = guard.record_validation(
+        request, criterion="tests", verifier=lambda: True, evidence_ids=("ev-tests",)
+    )
+
+    assert validation is not None and validation.value["passed"] is True
+    receipts = verification.completion(request.task_id).receipts
+    assert len(receipts) == 1
+    assert receipts[0].passed is True
+    assert receipts[0].task_id == request.task_id
+    assert receipts[0].criterion == "tests"
+    assert receipts[0].evidence_id == "ev-tests"
+
+
 def test_guard_metrics_store_categories_without_raw_prompt_or_source(repository: Path):
     guard = _guard(repository)
     guard.record_metric("reuse_candidates", 2)
