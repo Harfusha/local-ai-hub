@@ -1119,7 +1119,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "command": {"type": "string", "default": ""},
                     "ttl_seconds": {"type": "integer", "default": 0},
                     "after_seq": {"type": "integer", "minimum": 0, "maximum": MAX_EVENT_SEQUENCE, "default": 0},
-                    "max_tokens": {"type": "integer", "default": 0},
+                    "max_tokens": {"type": "integer", "minimum": 0, "maximum": 100000, "default": 0},
                     "task": {"type": "string", "default": ""},
                     "contract": {"type": "object"},
                     "checkpoint": {"type": "object"},
