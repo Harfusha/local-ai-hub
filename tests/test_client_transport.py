@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -363,25 +364,29 @@ def test_different_replay_safe_payloads_do_not_coalesce(tmp_path, monkeypatch):
     assert len(set(request_ids)) == 2
 
 
-def test_coord_pubsub_poll_uses_after_seq(tmp_path, monkeypatch):
+def test_coord_pubsub_poll_uses_since_timestamp_in_json_body(tmp_path, monkeypatch):
     client = _client(tmp_path)
     captured = {}
 
-    def capture_post(path, payload, **_kwargs):
-        captured.update({"path": path, **payload})
-        return {"success": True}
+    def capture_open(method, path, body, _headers, _timeout):
+        captured.update({"method": method, "path": path, "body": json.loads(body.decode("utf-8"))})
+        return b'{"success":true}'
 
-    monkeypatch.setattr(client, "post", capture_post)
+    monkeypatch.setattr(client, "_terminal_preflight", lambda *_args: None)
+    monkeypatch.setattr(client, "_pooled_open", capture_open)
 
-    result = client.coord("pubsub_poll", root="repo", topic="updates", after_seq=17)
+    result = client.coord("pubsub_poll", root="repo", topic="updates", since_timestamp=1700000000.25)
 
     assert result["success"] is True
     assert captured == {
+        "method": "POST",
         "path": "/api/coord/pubsub_poll",
-        "root": "repo",
-        "topic": "updates",
-        "after_seq": 17,
-        "limit": 50,
+        "body": {
+            "root": "repo",
+            "topic": "updates",
+            "since_timestamp": 1700000000.25,
+            "limit": 50,
+        },
     }
 
 

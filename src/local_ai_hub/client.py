@@ -654,7 +654,7 @@ class HubClient:
             return self.post("/api/coord/pubsub_poll", {
                 "root": kwargs.get("root", "."),
                 "topic": kwargs.get("topic") or kwargs.get("key", "default"),
-                "after_seq": int(kwargs.get("after_seq", 0)),
+                "since_timestamp": float(kwargs.get("since_timestamp", 0.0)),
                 "limit": int(kwargs.get("limit", 50)),
             })
         if act == "simulate_merge":
