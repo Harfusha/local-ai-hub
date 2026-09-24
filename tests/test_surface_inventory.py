@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import builtins
 import importlib.util
+import io
 import json
+import os
 import subprocess
 import sys
+from importlib import import_module
 from pathlib import Path
 
 import pytest
@@ -514,44 +518,95 @@ def test_check_mode_infers_document_task_id_and_preserves_bytes(tmp_path, capsys
     assert summary["drift"] == []
 
 
-def test_check_mode_without_generated_schemas_does_not_write_files(tmp_path, monkeypatch, capsys):
+def test_check_mode_with_real_schema_generator_does_not_write_files(tmp_path, monkeypatch, capsys):
     make_repo(tmp_path)
     schema_dir = tmp_path / "generated" / "schemas"
     for schema_path in schema_dir.glob("*.json"):
         schema_path.unlink()
     schema_dir.rmdir()
-    write(tmp_path, "src/local_ai_hub/config.py", "def load_config(path=None):\n    return {}\n")
+    state_dir = tmp_path / "isolated-state"
     write(
         tmp_path,
-        "src/local_ai_hub/generator.py",
-        "def generate_mcp_tool_schemas(cfg):\n    return {}\n",
+        "config.toml",
+        f'[server]\nstate_dir = "{state_dir.as_posix()}"\n[hardware]\nauto_tune = false\n',
     )
     write(tmp_path, "docs/API_COVERAGE.md", "# Existing coverage\n")
-    before = {
-        path.relative_to(tmp_path): path.read_bytes()
-        for path in tmp_path.rglob("*")
-        if path.is_file()
-    }
+    monkeypatch.syspath_prepend(str(ROOT / "src"))
     for name in tuple(sys.modules):
         if name == "local_ai_hub" or name.startswith("local_ai_hub."):
             monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    hardware = import_module("local_ai_hub.hardware")
+    monkeypatch.setattr(hardware, "detect_hardware", lambda profile="auto": {"profile": profile})
+    generator = import_module("local_ai_hub.generator")
+    real_schema_generator = generator.generate_mcp_tool_schemas
+    generated_schema_counts = []
+
+    def track_schema_generation(cfg):
+        schemas = real_schema_generator(cfg)
+        generated_schema_counts.append(len(schemas))
+        return schemas
+
+    monkeypatch.setattr(generator, "generate_mcp_tool_schemas", track_schema_generation)
+
+    def snapshot_tree():
+        snapshot = {}
+        for path in (tmp_path, *tmp_path.rglob("*")):
+            stat = path.stat()
+            relative = path.relative_to(tmp_path)
+            if path.is_dir():
+                snapshot[relative] = ("directory", stat.st_mtime_ns)
+            else:
+                snapshot[relative] = ("file", stat.st_mtime_ns, stat.st_size, path.read_bytes())
+        return snapshot
+
+    before = snapshot_tree()
 
     def reject_write(*args, **kwargs):
-        pytest.fail("--check schema fallback attempted a filesystem write")
+        pytest.fail("--check schema fallback attempted a filesystem mutation")
+
+    original_builtin_open = builtins.open
+    original_io_open = io.open
+    original_os_open = os.open
+
+    def guarded_open(open_fn):
+        def open_without_writes(file, mode="r", *args, **kwargs):
+            if any(flag in mode for flag in "wax+"):
+                reject_write(file, mode)
+            return open_fn(file, mode, *args, **kwargs)
+        return open_without_writes
+
+    def guarded_os_open(file, flags, *args, **kwargs):
+        write_flags = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+        if flags & write_flags and os.fspath(file) != os.devnull:
+            reject_write(file, flags)
+        return original_os_open(file, flags, *args, **kwargs)
 
     monkeypatch.setattr(Path, "write_text", reject_write)
     monkeypatch.setattr(Path, "write_bytes", reject_write)
     monkeypatch.setattr(Path, "mkdir", reject_write)
+    monkeypatch.setattr(Path, "touch", reject_write)
+    monkeypatch.setattr(Path, "unlink", reject_write)
+    monkeypatch.setattr(Path, "rmdir", reject_write)
+    monkeypatch.setattr(builtins, "open", guarded_open(original_builtin_open))
+    monkeypatch.setattr(io, "open", guarded_open(original_io_open))
+    monkeypatch.setattr(os, "open", guarded_os_open)
+    for name in ("mkdir", "makedirs", "replace", "rename", "remove", "unlink", "rmdir"):
+        monkeypatch.setattr(os, name, reject_write)
 
     result = MODULE.main(["--root", str(tmp_path), "--check"])
+    summary = json.loads(capsys.readouterr().out)
 
     assert result == 1
-    assert "rendered coverage rows differ" in capsys.readouterr().out
-    after = {
-        path.relative_to(tmp_path): path.read_bytes()
-        for path in tmp_path.rglob("*")
-        if path.is_file()
-    }
+    assert "local_ai_hub.generator" in sys.modules
+    assert (
+        Path(sys.modules["local_ai_hub.generator"].__file__).resolve()
+        == ROOT / "src" / "local_ai_hub" / "generator.py"
+    )
+    assert generated_schema_counts and generated_schema_counts[0] > 0
+    assert summary["success"] is False
+    assert summary["coverage_rows"] > 0
+    after = snapshot_tree()
     assert after == before
 
 
@@ -700,6 +755,36 @@ def local_ai_repo(action: Literal["search", "missing"], detail: Literal["brief",
             "parameters": {"properties": {
                 "action": {"enum": ["search", "missing"]},
                 "detail": {"enum": ["brief", "missing"]},
+            }},
+        }),
+    )
+
+    inventory = MODULE.collect_inventory(tmp_path)
+
+    assert any("missing MCP action handler local_ai_repo:missing" in item for item in inventory["drift"])
+
+
+def test_generic_return_does_not_handle_unmatched_generated_mcp_action(tmp_path):
+    make_repo(tmp_path)
+    write(
+        tmp_path,
+        "src/local_ai_hub/mcp_server.py",
+        '''from typing import Literal
+
+@mcp.tool()
+def local_ai_repo(action: str):
+    if action == "search":
+        return search()
+    return None
+''',
+    )
+    write(
+        tmp_path,
+        "generated/schemas/local_ai_repo.json",
+        json.dumps({
+            "name": "local_ai_repo",
+            "parameters": {"properties": {
+                "action": {"enum": ["search", "missing"]},
             }},
         }),
     )
