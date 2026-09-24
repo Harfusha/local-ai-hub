@@ -16,35 +16,31 @@ from .process_utils import canonical_root
 
 def _norm_rel(value: str, root: str = "") -> str:
     raw = str(value or "").strip()
-    is_abs = raw.startswith(("/", "\\")) or PureWindowsPath(raw).is_absolute() or bool(PureWindowsPath(raw).drive)
-    if is_abs:
-        if root:
-            try:
-                rel = Path(raw).resolve().relative_to(Path(root).resolve())
-                raw = str(rel)
-                is_abs = False
-            except Exception:
-                pass
-        if is_abs:
-            try:
-                candidate = Path(raw).resolve()
-                for parent in candidate.parents:
-                    if any((parent / marker).exists() for marker in (".git", "pyproject.toml", "package.json", "Cargo.toml", ".local-ai")):
-                        raw = str(candidate.relative_to(parent))
-                        is_abs = False
-                        break
-            except Exception:
-                pass
-        if is_abs:
-            try:
-                candidate = Path(raw)
-                raw = candidate.name or str(candidate)
-            except Exception:
-                pass
-    if raw.startswith(("/", "\\")):
-        raise ValueError(f"lease path must be repository-relative: {value}")
     wp = PureWindowsPath(raw)
-    if wp.is_absolute() or bool(wp.drive):
+    win_rooted = wp.is_absolute() or bool(wp.drive) or raw.startswith("\\")
+    if win_rooted:
+        root_wp = PureWindowsPath(root)
+        if not wp.is_absolute() or not root_wp.is_absolute():
+            raise ValueError(f"lease path must be repository-relative: {value}")
+        try:
+            relative = wp.relative_to(root_wp)
+        except ValueError as exc:
+            raise ValueError(f"lease path must be repository-relative: {value}") from exc
+        if os.name == "nt":
+            try:
+                Path(raw).resolve().relative_to(Path(root).resolve())
+            except (OSError, ValueError) as exc:
+                raise ValueError(f"lease path must be repository-relative: {value}") from exc
+        raw = str(relative)
+    elif raw.startswith("/"):
+        root_wp = PureWindowsPath(root)
+        if not root or root_wp.drive or root.startswith("\\"):
+            raise ValueError(f"lease path must be repository-relative: {value}")
+        try:
+            raw = str(Path(raw).resolve().relative_to(Path(root).resolve()))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"lease path must be repository-relative: {value}") from exc
+    elif Path(raw).is_absolute():
         raise ValueError(f"lease path must be repository-relative: {value}")
     normalized = raw.replace("\\", "/").strip("/")
     path = PurePosixPath(normalized or ".")
@@ -117,7 +113,11 @@ class ScopeLeaseStore:
 
     @staticmethod
     def _root(root: str) -> tuple[str, str]:
-        resolved = canonical_root(root)
+        windows_root = PureWindowsPath(str(root))
+        if os.name != "nt" and windows_root.is_absolute():
+            resolved = str(windows_root)
+        else:
+            resolved = canonical_root(root)
         root_id = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:20]
         return resolved, root_id
 
@@ -239,14 +239,15 @@ class ScopeLeaseStore:
                 con.execute("BEGIN IMMEDIATE")
                 paths_released: list[str] = []
                 if lease_id:
-                    p_rows = con.execute("SELECT path FROM leases WHERE lease_id=?", (lease_id,)).fetchall()
+                    p_rows = con.execute(
+                        "SELECT path FROM leases WHERE lease_id=? AND tenant=?",
+                        (lease_id, tenant),
+                    ).fetchall()
                     paths_released = [r[0] for r in p_rows]
-                    if tenant in {"http-default", "system", "admin", "*"}:
-                        cur = con.execute("DELETE FROM leases WHERE lease_id=?", (lease_id,))
-                    else:
-                        cur = con.execute("DELETE FROM leases WHERE lease_id=? AND (tenant=? OR tenant='http-default')", (lease_id, tenant))
-                        if (cur.rowcount or 0) == 0 and not tenant:
-                            cur = con.execute("DELETE FROM leases WHERE lease_id=?", (lease_id,))
+                    cur = con.execute(
+                        "DELETE FROM leases WHERE lease_id=? AND tenant=?",
+                        (lease_id, tenant),
+                    )
                 else:
                     cur = con.execute("DELETE FROM leases WHERE tenant=?", (tenant,))
                 count = int(cur.rowcount or 0)
@@ -274,30 +275,17 @@ class ScopeLeaseStore:
         def write() -> dict[str, Any]:
             with closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
-                if tenant in {"http-default", "system", "admin", "*"}:
-                    rows = con.execute(
-                        "SELECT path FROM leases WHERE lease_id=? AND expires_at>?",
-                        (lease_id, now),
-                    ).fetchall()
-                    if not rows:
-                        con.execute("ROLLBACK")
-                        return {"success": False, "error": "lease not found or expired"}
-                    con.execute(
-                        "UPDATE leases SET expires_at=? WHERE lease_id=?",
-                        (new_expires, lease_id),
-                    )
-                else:
-                    rows = con.execute(
-                        "SELECT path FROM leases WHERE lease_id=? AND (tenant=? OR tenant='http-default') AND expires_at>?",
-                        (lease_id, tenant, now),
-                    ).fetchall()
-                    if not rows:
-                        con.execute("ROLLBACK")
-                        return {"success": False, "error": "lease not found, expired, or belongs to another tenant"}
-                    con.execute(
-                        "UPDATE leases SET expires_at=? WHERE lease_id=? AND (tenant=? OR tenant='http-default')",
-                        (new_expires, lease_id, tenant),
-                    )
+                rows = con.execute(
+                    "SELECT path FROM leases WHERE lease_id=? AND tenant=? AND expires_at>?",
+                    (lease_id, tenant, now),
+                ).fetchall()
+                if not rows:
+                    con.execute("ROLLBACK")
+                    return {"success": False, "error": "lease not found, expired, or belongs to another tenant"}
+                con.execute(
+                    "UPDATE leases SET expires_at=? WHERE lease_id=? AND tenant=?",
+                    (new_expires, lease_id, tenant),
+                )
                 con.execute("COMMIT")
                 paths = [r[0] for r in rows]
                 return {"success": True, "lease_id": lease_id, "expires_at": new_expires, "paths": paths}
