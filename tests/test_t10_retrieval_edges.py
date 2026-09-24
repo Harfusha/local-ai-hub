@@ -66,7 +66,7 @@ def test_code_index_call_queries_filter_non_call_edges_and_match_rust_paths(tmp_
         ("Thing::caller", "Thing::target", "calls")
     ]
 
-@pytest.mark.parametrize("wildcard", ["_", "%"])
+@pytest.mark.parametrize("wildcard", ["_", "%", "!"])
 def test_call_queries_treat_like_metacharacters_as_literal_suffixes(tmp_path, wildcard) -> None:
     root = tmp_path / "repo"
     root.mkdir()
