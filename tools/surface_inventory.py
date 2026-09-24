@@ -303,6 +303,9 @@ def _generated_mcp_schemas(root: Path) -> tuple[dict[str, dict[str, Any]], dict[
         from local_ai_hub.config import load_config
         from local_ai_hub.generator import generate_mcp_tool_schemas
 
+        # This --check fallback must stay read-only: load_config reads files and
+        # generate_mcp_tool_schemas returns an in-memory mapping. Never call
+        # write_all_generated here; that separate generator persists artifacts.
         config_path = root / "config.toml"
         cfg = load_config(str(config_path)) if config_path.is_file() else load_config()
         generated = generate_mcp_tool_schemas(cfg)
@@ -880,7 +883,7 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
                 for action in variants.get(parameter, []):
                     handled = action in source_tool.get("dispatch_actions", []) or any(
                         action.startswith(prefix) for prefix in source_tool.get("dispatch_prefixes", [])
-                    ) or source_tool.get("delegated_dispatch") or source_tool.get("default_handler") or action in variants.get("detail", [])
+                    ) or source_tool.get("delegated_dispatch") or source_tool.get("default_handler")
                     if parameter == "action" and not handled:
                         drift.append(f"missing MCP action handler {name}:{action}")
 
@@ -1134,12 +1137,28 @@ def coverage_rows(findings: list[dict[str, Any]], task_id: str | None = None) ->
     reproduction = "python tools/surface_inventory.py --check"
     if task_id:
         reproduction += f" --task-id {task_id}"
+    operation_key_counts: dict[tuple[str, str], int] = {}
+    for finding in findings:
+        key = (finding["surface"], finding["name"])
+        operation_key_counts[key] = operation_key_counts.get(key, 0) + 1
+    used_operation_ids: set[str] = set()
     for finding in findings:
         condition = finding.get("condition")
         evidence = finding.get("evidence", [])
         evidence_status = finding.get("evidence_status") or ("conditional" if condition else "confirmed")
         owner = finding.get("owner") or (evidence[0].split(":", 1)[0] if evidence else "surface inventory")
-        operation_id = "op-" + hashlib.sha256(f"{finding['surface']}:{finding['name']}".encode("utf-8")).hexdigest()[:12]
+        operation_seed = f"{finding['surface']}:{finding['name']}"
+        if operation_key_counts[(finding["surface"], finding["name"])] > 1:
+            handler_identity = finding.get("handler") or owner or (evidence[0] if evidence else finding["name"])
+            operation_seed += f":{handler_identity}"
+        operation_id = "op-" + hashlib.sha256(operation_seed.encode("utf-8")).hexdigest()[:12]
+        duplicate_index = 1
+        while operation_id in used_operation_ids:
+            duplicate_index += 1
+            duplicate_seed = f"{operation_seed}:duplicate-{duplicate_index}"
+            operation_id = "op-" + hashlib.sha256(duplicate_seed.encode("utf-8")).hexdigest()[:12]
+        used_operation_ids.add(operation_id)
+        metadata_only = not finding.get("test_ids")
         test_ids = finding.get("test_ids") or [
             f"tests/test_surface_inventory.py::test_operation_contract_metadata[{operation_id}]"
         ]
@@ -1162,6 +1181,11 @@ def coverage_rows(findings: list[dict[str, Any]], task_id: str | None = None) ->
             "tenant_scope": _normalize_unverified(finding.get("tenant_scope") or "not statically identified", "tenant_scope"),
             "provenance": finding.get("provenance") or evidence,
             "test_ids": test_ids,
+            "test_coverage": finding.get("test_coverage") or (
+                "metadata only; operation behavior unverified"
+                if metadata_only
+                else "linked tests; operation behavior unverified"
+            ),
             "benchmark_cohort": _normalize_unverified(finding.get("benchmark_cohort") or "not measured", "benchmark_cohort"),
             "state": finding.get("state") or {"confirmed": "verified", "conditional": "conditional", "refuted": "unsupported"}.get(evidence_status, "unsupported"),
             "contract": contract,
@@ -1439,14 +1463,14 @@ def render_coverage(inventory: dict[str, Any], task_id: str | None = None) -> st
     header_cells = ["Surface", "Name", "Evidence status", "Owner", "Acceptance", "Reproduction", "Evidence"]
     header_cells.extend([
         "Operation ID", "State", "Owner task", "Handler", "Contract", "Contract gaps", "Fixtures",
-        "Access classification", "Cache key", "Tenant scope", "Provenance", "Test IDs", "Benchmark cohort",
+        "Access classification", "Cache key", "Tenant scope", "Provenance", "Test IDs", "Test coverage", "Benchmark cohort",
     ])
     if task_id:
         header_cells.append("Task ID")
     lines = [
         "# API surface coverage",
         "",
-        "Deterministic source inventory. Evidence status is confirmed, conditional, or refuted; runtime behavior is unverified.",
+        "Deterministic source inventory. Evidence status is confirmed, conditional, or refuted; runtime behavior is unverified. `test_operation_contract_metadata` checks inventory metadata only.",
         f"Reproduce with `{check_command}`.",
         "",
         "| " + " | ".join(header_cells) + " |",
@@ -1473,6 +1497,7 @@ def render_coverage(inventory: dict[str, Any], task_id: str | None = None) -> st
             f"`{row['tenant_scope']}`",
             json.dumps(row["provenance"], separators=(",", ":")),
             json.dumps(row["test_ids"], separators=(",", ":")),
+            row["test_coverage"],
             row["benchmark_cohort"],
         ]
         if task_id:
