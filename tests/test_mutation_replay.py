@@ -716,6 +716,8 @@ def test_http_retry_after_response_loss_publishes_one_durable_event(tmp_path, mo
         payload_fingerprint=journal.fingerprint_payload(original_payload),
     )
     assert stored["response"] == lost_response[0][1]
+
+
 def test_post_rejects_malformed_request_id_before_mutation_dispatch(tmp_path, monkeypatch) -> None:
     journal = RecoveryJournal(tmp_path)
     submitted: list[dict[str, Any]] = []
