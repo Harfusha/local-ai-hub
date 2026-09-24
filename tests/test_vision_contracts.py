@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from local_ai_hub.vision_contracts import (
@@ -81,12 +83,32 @@ def test_vision_result_accepts_fenced_json_and_clamps_confidence() -> None:
         "```json\n"
         '{"summary":"bad CTA","findings":[{"id":"f1",'
         '"severity":"high","category":"layout","problem":"below fold",'
-        '"confidence":1.8}]}'
+        '"confidence":1.8,"evidence":["CTA is below the visible fold"]}]}'
         "\n```"
     )
 
     assert result.findings[0].finding_id == "f1"
     assert result.findings[0].confidence == 1.0
+
+
+def test_vision_result_rejects_empty_findings_without_summary() -> None:
+    result = parse_vision_result('{"findings":[]}')
+
+    assert result.terminal is True
+    assert result.error["code"] == "malformed_vision_output"
+    assert "summary" in result.error["message"]
+
+
+def test_vision_result_rejects_findings_without_image_or_dom_evidence() -> None:
+    result = parse_vision_result(
+        '{"summary":"bad CTA","findings":[{"id":"f1",'
+        '"severity":"high","category":"layout","problem":"below fold",'
+        '"confidence":0.8,"evidence":[]}]}'
+    )
+
+    assert result.terminal is True
+    assert result.error["code"] == "malformed_vision_output"
+    assert "evidence" in result.error["message"]
 
 
 def test_dom_vision_result_preserves_observation_hypothesis_uncertainty() -> None:
@@ -118,6 +140,7 @@ def test_dom_vision_result_rejects_missing_observation_contract(missing: str) ->
         "hypothesized": "hydration rule hides CTA",
         "uncertainty": ["runtime state not captured"],
         "confidence": 0.8,
+        "evidence": ["computed style"],
     }
     del finding[missing]
 
@@ -153,6 +176,7 @@ def test_vision_result_rejects_missing_required_finding_fields(missing: str) -> 
         "category": "layout",
         "problem": "below fold",
         "confidence": 0.5,
+        "evidence": ["CTA appears below the visible fold"],
     }
     del finding[missing]
 
@@ -165,7 +189,8 @@ def test_vision_result_rejects_missing_required_finding_fields(missing: str) -> 
 def test_vision_result_clamps_confidence_at_zero() -> None:
     result = parse_vision_result(
         '{"summary":"bad","findings":[{"id":"f1","severity":"low",'
-        '"category":"layout","problem":"bad","confidence":-0.5}]}'
+        '"category":"layout","problem":"bad","confidence":-0.5,'
+        '"evidence":["visible layout issue"]}]}'
     )
 
     assert result.findings[0].confidence == 0.0
@@ -180,6 +205,52 @@ def test_vision_result_rejects_non_finite_confidence(confidence: str) -> None:
 
     assert result.terminal is True
     assert result.error["code"] == "malformed_vision_output"
+
+
+@pytest.mark.parametrize("confidence", ['"0.8"', "true"])
+def test_vision_result_rejects_non_numeric_confidence(confidence: str) -> None:
+    result = parse_vision_result(
+        '{"summary":"bad","findings":[{"id":"f1","severity":"low",'
+        '"category":"layout","problem":"bad","confidence":' + confidence +
+        ',"evidence":["visible layout issue"]}]}'
+    )
+
+    assert result.terminal is True
+    assert result.error["code"] == "malformed_vision_output"
+    assert "confidence" in result.error["message"]
+
+
+@pytest.mark.parametrize(("field", "value"), [("id", 4), ("problem", 404)])
+def test_vision_result_rejects_non_string_required_text(
+    field: str, value: int
+) -> None:
+    finding = {
+        "id": "f1",
+        "severity": "low",
+        "category": "layout",
+        "problem": "bad",
+        "confidence": 0.5,
+        "evidence": ["visible layout issue"],
+    }
+    finding[field] = value
+    result = parse_vision_result(json.dumps({"summary": "review", "findings": [finding]}))
+
+    assert result.terminal is True
+    assert result.error["code"] == "malformed_vision_output"
+    assert field in result.error["message"]
+
+
+@pytest.mark.parametrize("coordinate", ['"0.25"', "true"])
+def test_vision_result_requires_numeric_bbox_coordinates(coordinate: str) -> None:
+    result = parse_vision_result(
+        '{"summary":"bad","findings":[{"id":"f1","severity":"low",'
+        '"category":"layout","problem":"bad","confidence":0.5,'
+        '"evidence":["visible layout issue"],"bbox":[' + coordinate + ',0.1,0.2,0.3]}]}'
+    )
+
+    assert result.terminal is True
+    assert result.error["code"] == "malformed_vision_output"
+    assert "bbox coordinates" in result.error["message"]
 
 
 def test_vision_result_rejects_non_finite_bbox_coordinates() -> None:
@@ -232,7 +303,8 @@ def test_vision_result_rejects_string_sequence_fields(field: str) -> None:
 def test_vision_result_rejects_unknown_severity() -> None:
     result = parse_vision_result(
         '{"summary":"bad","findings":[{"id":"f1","severity":"urgent",'
-        '"category":"layout","problem":"bad","confidence":0.5}]}'
+        '"category":"layout","problem":"bad","confidence":0.5,'
+        '"evidence":["visible layout issue"]}]}'
     )
 
     assert result.terminal is True
@@ -243,7 +315,8 @@ def test_vision_result_rejects_unknown_severity() -> None:
 def test_vision_result_rejects_unknown_category_as_terminal_failure() -> None:
     result = parse_vision_result(
         '{"summary":"bad","findings":[{"id":"f1","severity":"high",'
-        '"category":"content", "problem":"bad","confidence":0.5}]}'
+        '"category":"content", "problem":"bad","confidence":0.5,'
+        '"evidence":["visible content issue"]}]}'
     )
 
     assert result.terminal is True
@@ -282,6 +355,18 @@ def test_coder_packet_keeps_referenced_dom_ancestors_and_bounded_runtime() -> No
     ]
     assert packet["runtime"]["console"] == ["error", "error"]
     assert packet["repo"] == {"files": ["src/Checkout.tsx"]}
+
+
+def test_coder_packet_rejects_findings_that_reference_missing_dom_elements() -> None:
+    packet = build_coder_packet(
+        prompt="Review checkout",
+        findings=[{"id": "f1", "element_ids": ["invented-button"]}],
+        dom={"elements": [{"element_id": "real-button", "tag": "button"}]},
+    )
+
+    assert packet["terminal"] is True
+    assert packet["error"]["code"] == "malformed_coder_context"
+    assert "invented-button" in packet["error"]["message"]
 
 
 def test_coder_packet_bounds_runtime_dict_keys_and_nested_lists() -> None:

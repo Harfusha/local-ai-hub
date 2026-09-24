@@ -214,6 +214,26 @@ async function captureCurrentTab(tab) {
   try {
     const staged = await post("/api/browser/capture/stage", stagedPayload);
     if (!staged.success) return staged;
+    const beforeCommit = await currentTabState(tab);
+    if (beforeCommit.status !== "ok" || !tabUrlMatches(beforeCommit.tab, finalIdentity)) {
+      await abandonCapture(capability, tab, origin, requestId);
+      return {success: false, error_code: beforeCommit.status === "ok" ? "target_changed" : beforeCommit.status, fallback: false};
+    }
+    let commitIdentity;
+    try {
+      commitIdentity = await timed(
+        chrome.tabs.sendMessage(tab.id, {type: "LOCAL_AI_VERIFY_CURRENT_TAB"}),
+        CAPTURE_TIMEOUT_MS,
+      );
+    } catch (error) {
+      await abandonCapture(capability, tab, origin, requestId);
+      return {success: false, error_code: isTimeout(error) ? "timeout" : "target_changed", fallback: false};
+    }
+    const currentIdentity = boundedIdentity(commitIdentity);
+    if (!commitIdentity || commitIdentity.success !== true || !sameIdentity(finalIdentity, currentIdentity)) {
+      await abandonCapture(capability, tab, origin, requestId);
+      return {success: false, error_code: commitIdentity && commitIdentity.error_code || "target_changed", fallback: false};
+    }
     const committed = await post("/api/browser/capture/commit", {
       capability,
       origin,

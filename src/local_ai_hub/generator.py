@@ -69,14 +69,17 @@ def _actions_note(actions: list[str]) -> str:
 def context_pack_guidance() -> str:
     """Compact contract for the guarded repository-context operation."""
     return (
-        ' `local_ai_repo(action="context")` is the default adaptive context pack before non-trivial '
-        "planning, edit, review or test. Reuse existing evidence and reuse candidates first; require "
-        "evidence IDs for every factual claim. Deterministic/indexed evidence is authoritative; local "
-        "models may rank, select, or compress structured evidence only and must not invent repository "
-        "facts. Guarded scope or drift overrides require an explicit `override_reason` and approval when "
-        "requested. Omit raw model/debug fields unless explicitly requested through `extra_fields`; "
-        "responses remain compact; aggregate response budget defaults to approximately 3200 tokens. "
-        "Omitting guarded fields preserves legacy `mode=fast|full` behavior."
+        ' CALL `local_ai_repo(action="context")` FIRST for every non-trivial repository task, before native '
+        "reads, grep, planning, edit, review or test. Its adaptive orchestrator fuses deterministic and "
+        "indexed evidence with Serena, CodeGraphContext, bounded lexical search and RAG when available; "
+        "it deduplicates, rewards cross-backend agreement, preserves file diversity and degrades per backend. "
+        "Send the task/context, not a handmade list of grep terms. Reuse existing evidence and reuse candidates "
+        "first; require evidence IDs for every factual claim. Deterministic/indexed evidence is authoritative; "
+        "local models may rank, select, or compress structured evidence only and must not invent repository facts. "
+        "Guarded scope or drift overrides require an explicit `override_reason` and approval when requested. "
+        "Omit raw model/debug fields unless explicitly requested through `extra_fields`; responses remain compact; "
+        "aggregate response budget defaults to approximately 3200 tokens. Omitting guarded fields preserves legacy "
+        "`mode=fast|full` behavior. This is the default adaptive context pack."
     )
 
 
@@ -583,10 +586,11 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     repo_task_first = ""
     if fs.repo:
         prep_call = ' On the first task for that root call `local_ai_repo(action="preprocess", root=ABS_ROOT)` exactly once, then continue immediately; preprocessing is asynchronous, so never poll/wait/force-refresh it.' if fs.preprocessing else ""
-        cmd_gate = ' `local_ai_command` alone is never sufficient for a repository task. The first useful Hub operation must be `local_ai_repo` (preprocess plus the cheapest applicable deterministic/code-index/search/context action); use the command broker only for commands, after repository evidence exists.' if fs.commands else ""
+        cmd_gate = ' `local_ai_command` alone is never sufficient for a repository task. After one-time preprocess, the first useful Hub operation must be `local_ai_repo(action="context", mode="adaptive")`; use the command broker only for commands after grounded repository evidence exists.' if fs.commands else ""
         repo_task_first = (
             "\nFor every non-trivial repository task, use Local AI Hub before broad native discovery or repeatable validation."
             f" Keep one stable absolute project root.{prep_call}\n"
+            ' Then call `local_ai_repo(action="context", mode="adaptive")` as the first useful operation; it is the quality-first retrieval gate and accepts the task/context directly.\n'
             f"\nAdoption gate:{cmd_gate}"
             ' For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence'
             " and before native edits. After edits, use the applicable indexed impact/review/security/evidence action before final validation.\n"
@@ -636,9 +640,8 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         "- Do not run parallel duplicate commands or scopes. Tool labels are not evidence;"
         " preserve exact action, arguments, result, and ownership in the audit record.\n"
         f"{repo_task_first}\n"
-        f"Cheapest path: {fs.cheapest_path_hint()}.\n"
-        " Stop escalating as soon as a cheaper layer provides enough evidence."
-        " Do not fan out overlapping retrieval layers in parallel for the same question."
+        "Adaptive retrieval path: call `local_ai_repo(action=\"context\", mode=\"adaptive\")` first; it runs bounded deterministic/indexed, structural, lexical and RAG retrieval, fuses agreement and diversity, and degrades optional backends independently."
+        " Stop escalating when evidence is sufficient; reuse cached results and bounded evidence. Do not fan out duplicate native retrieval layers or translate the task into a long grep-term list."
         " Before native `find`/`rg`/`grep`/recursive glob/tree or opening more than two files for discovery, use that hub path first."
         " Reuse fresh evidence IDs, artifact slices, memos and cache hits;\n"
         " do not repeat the same hub action with the same root/query while repository state is unchanged.\n\n"

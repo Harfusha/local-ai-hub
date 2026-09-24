@@ -547,6 +547,7 @@ class AffinityScheduler:
                         self._inflight_jobs.pop(selected.id, None)
                         if selected.background:
                             self._inflight_background = max(0, self._inflight_background - 1)
+                        self._active_dispatched = max(0, self._active_dispatched - 1)
                         current = self._inflight_by_tenant.get(selected.tenant, 1) - 1
                         if current <= 0:
                             self._inflight_by_tenant.pop(selected.tenant, None)

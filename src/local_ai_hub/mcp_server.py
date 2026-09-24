@@ -305,7 +305,7 @@ def _desc_repo() -> str:
             " Native fallback requires terminal=true and retryable=false."
         )
     if LEAN_SCHEMAS:
-        return "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. `context` is the default adaptive context pack before non-trivial planning, edit, review or test; it accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields stay omitted unless requested through extra_fields. Omit guarded fields to preserve legacy fast/full behavior. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
+        return "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. CALL `context` first for every non-trivial repository task: its adaptive orchestrator fuses deterministic/indexed evidence, Serena, CodeGraphContext, bounded lexical search, and RAG, then returns grounded diverse context. Send the task/context rather than handmade grep terms. It accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields stay omitted unless requested through extra_fields. Omit guarded fields to preserve legacy fast/full behavior. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
     semantic_hint = ""
     if FEATURES.has_semantic():
         semantic_hint = f" -> {FEATURES.semantic_hint()} for relationships"
@@ -315,10 +315,12 @@ def _desc_repo() -> str:
     rag_hint = " -> RAG" if FEATURES.rag else ""
     return (
         "Primary bounded repository worker for repository navigation, symbols, and impact."
-        " CALL THIS BEFORE broad repository reads/searches for any non-trivial repo task. MANDATORY GATE."
+        " CALL THIS FIRST before broad repository reads/searches for any non-trivial repo task. MANDATORY GATE."
+        f" Use the adaptive context orchestrator: deterministic, code_index, Serena, CodeGraphContext, bounded lexical search, and RAG are fused when available;"
+        " agreement is ranked, paths are deduplicated/diversified, and optional local models only rerank/compress grounded evidence."
         f" Use deterministic, code_index/search,{' ' + FEATURES.semantic_hint() + ',' if FEATURES.has_semantic() else ''}"
         " context and solve for bounded evidence and implementation support."
-        " `context` is the default adaptive context pack before non-trivial planning, edit, review or test; reuse existing evidence and reuse candidates first, require evidence IDs, treat deterministic/indexed evidence as authoritative, and limit local models to ranking/compression of structured evidence. Guarded overrides require `override_reason` and approval when requested. Raw model/debug fields stay omitted unless requested through `extra_fields`; omitting guarded fields preserves legacy fast/full behavior."
+        " `context` is the default adaptive context pack before non-trivial planning, edit, review or test; send the task/context, not handmade grep terms. Reuse existing evidence and reuse candidates first, require evidence IDs, and treat deterministic/indexed evidence as authoritative. Guarded overrides require `override_reason` and approval when requested. Raw model/debug fields stay omitted unless requested through `extra_fields`; omitting guarded fields preserves legacy fast/full behavior."
         " For implementation, diagnosis, refactoring or complex review, call `solve` after evidence and before native edits."
         f"{' When generating, use `' + FEATURES.fast_model + '` for quick tasks, `' + FEATURES.smart_model + '` for complex work, and `' + FEATURES.reasoning_model + '` for hardest reasoning.' if local_enabled else ''}"
         " `review_diff` and `security_audit` are targeted local checks."
@@ -328,8 +330,8 @@ def _desc_repo() -> str:
         " Local AI Hub does not route or manage those agents."
         " On first use of a stable absolute root call action=preprocess exactly once and continue immediately;"
         " never poll/wait/force-refresh preprocessing."
-        f" Cheapest sufficient path for repository evidence: deterministic -> code_index/search{semantic_hint} -> context/solve{rag_hint}; semantic generation, reasoning, review, independent second opinions and compression use `local_ai_task` after any needed evidence;"
-        " STOP as soon as a cheaper layer is sufficient and never fan out overlapping retrieval layers for the same question."
+        f" Retrieval path: context first for quality; it fans out only bounded independent backends, fuses their ranked paths, and stops optional layers on timeout/degradation. Semantic generation, reasoning, review, independent second opinions and compression use `local_ai_task` after evidence;"
+        " never fan out duplicate native searches or manually translate a task into a long grep-term list."
         " Reuse fresh evidence/artifact slices and never repeat an identical root/query/action while repo state is unchanged."
         " `in_progress` means another owner is doing identical work; retryable/429/503 means back off;"
         " degraded/stale means verify only the affected slice."
@@ -551,7 +553,7 @@ _GUARDED_CONTEXT_TOP_LEVEL = frozenset({
 _GUARDED_CONTEXT_PACK = frozenset({
     "contract", "reuse_candidates", "mappings", "warnings", "evidence", "repo_revision", "changed_paths",
     "stale", "context_id", "phase", "focus", "preload_profile", "memory_revision", "model_warnings",
-    "delta_from", "since_hash",
+    "delta_from", "since_hash", "unchanged", "reuse_pointer",
 })
 _GUARDED_RAW_FIELDS = frozenset({
     "raw", "prompt", "model_debug", "raw_model_output", "raw_output", "model_output", "model_response",
@@ -1553,6 +1555,7 @@ def _context_input_error(message: str) -> dict[str, Any]:
 def _validate_context_pack_inputs(
     *,
     task_id: Any,
+    session_id: Any,
     phase: Any,
     focus: Any,
     preload_profile: Any,
@@ -1569,11 +1572,16 @@ def _validate_context_pack_inputs(
     if not isinstance(guarded, bool):
         return _context_input_error("guarded must be boolean")
     for name, value in (
-        ("task_id", task_id), ("phase", phase), ("preload_profile", preload_profile),
+        ("task_id", task_id), ("session_id", session_id), ("phase", phase), ("preload_profile", preload_profile),
         ("base", base), ("since_hash", since_hash), ("override_reason", override_reason),
     ):
         if not isinstance(value, str):
             return _context_input_error(f"{name} must be string")
+    from .agent_consistency import normalize_context_phase
+    try:
+        normalize_context_phase(phase)
+    except ValueError as exc:
+        return _context_input_error(str(exc))
     for name, value, limit in (("focus", focus, 16), ("changed_paths", changed_paths, 64)):
         if value is not None:
             if not isinstance(value, list):
@@ -1638,7 +1646,7 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
     authoritative: dict[str, Any] = {}
     for key in (
         "context_id", "warnings", "repo_revision", "changed_paths", "stale",
-        "delta_from", "since_hash",
+        "delta_from", "since_hash", "unchanged", "reuse_pointer",
     ):
         if key in pack:
             authoritative[key] = pack[key]
@@ -1663,7 +1671,7 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
     # Preserve actual deterministic context, not only its provenance pointer.
     # Without this, the final budget pass could return IDs/status while silently
     # dropping the context text needed by the next bounded agent step.
-    for key in ("context", "query", "context_source", "estimated_tokens", "contract"):
+    for key in ("context", "query", "context_source", "estimated_tokens", "contract", "retrieval"):
         if key in safe_value and key not in authoritative:
             authoritative[key] = safe_value[key]
     for key, item in authoritative.items():
@@ -1822,20 +1830,22 @@ def _local_ai_repo_impl(
         return _compact(CLIENT.post("/api/repo/deterministic", {"root": root, "query": query or task, "limit": 30}, timeout=_timeout("quick")), "context")
     if action == "context":
         validation = _validate_context_pack_inputs(
-            task_id=task_id, phase=phase, focus=focus, preload_profile=preload_profile,
+            task_id=task_id, session_id=session_id, phase=phase, focus=focus, preload_profile=preload_profile,
             changed_paths=changed_paths, base=base, staged=staged, guarded=guarded,
             since_hash=since_hash, approval=approval, override_reason=override_reason,
             max_tokens=max_tokens, token_budget=token_budget,
         )
         if validation is not None:
             return validation
-        guarded_requested = bool(guarded) or bool(str(task_id).strip()) or bool(str(phase).strip())
+        guarded_requested = bool(guarded) or bool(str(task_id).strip()) or bool(str(phase).strip()) or bool(str(session_id).strip())
         configured_tokens = CFG.get("token_saving", {}).get("default_repo_context_tokens", 3200)
         effective_tokens = token_budget or max_tokens or configured_tokens
         payload: dict[str, Any] = {
             "root": root, "query": query or task, "workspace": workspace or None,
             "max_tokens": effective_tokens,
-            "mode": "full" if mode == "full" else "fast",
+            # Preserve adaptive as the quality-first multi-backend context path.
+            # Do not silently downgrade the public default to deterministic-fast.
+            "mode": "full" if mode == "full" else "adaptive" if mode == "adaptive" else "fast",
         }
         if guarded_requested:
             payload.update({
@@ -1852,6 +1862,8 @@ def _local_ai_repo_impl(
                 "override_reason": override_reason,
                 "token_budget": effective_tokens,
             })
+            if session_id:
+                payload["session_id"] = session_id
         raw = CLIENT.post("/api/context/pack", payload, timeout=_timeout("context"))
         return _context_pack_projection(raw, extra_fields=extra_fields)
     if action == "route":
@@ -2247,7 +2259,7 @@ def local_ai_command(
     response_profile: str = "",
     reuse_key: str = "",
 ) -> dict[str, Any]:
-    """Bounded command broker for the main agent. MANDATORY for repeatable test/lint/typecheck/static-analysis/build/read-only commands whenever possible. Shared safe CLI broker. Actions: run, cancel, classify, discover, stats, repair_loop, auto_fix, run_affected, format, patch_and_verify, speculative_lint. Optional auto_fix=true or action=repair_loop runs autonomous self-healing test loop with safe rollback on failure. Speculative lint is disabled by default; explicit opt-in submits a read-only debounced job limited to caller-supplied changed paths and supports status/cancel through lint_action. Action patch_and_verify applies a unified diff, verifies with test command, and rolls back cleanly on error. Optional snapshot=true or rollback_on_failure=true captures git state and automatically reverts dirty changes if validation commands fail. Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts. Optional stream=true or stream_id streams real-time stdout/stderr lines as command.log SSE events. Results are keyed by command + bounded repo state and duplicate runs coalesce across agents. Reuse fresh results. If run returns in_progress=true, DO NOT start the command natively or with force; continue independent work and retry later so the owner can populate the cache. Cancel a concurrent mutation only with its opaque execution_id from stats or run results. force=true is exceptional recovery/admin behavior, never a retry button. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
+    """Bounded command broker. Set snapshot=true to record a best-effort Git snapshot. For action=run only, rollback_on_failure=true requires paths to list the flat, relative files directly under cwd that may be restored or removed; missing/unsafe paths reject execution. It cannot be combined with auto_fix. Rollback preserves all files outside that explicit scope. Other command and streaming behavior remains bounded and tenant-scoped. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
     if not FEATURES.commands:
         return {"success": False, "unsupported": True, "error": "local_ai_command is disabled in configuration"}
     action = _resolve_action("command", action)
@@ -2261,6 +2273,14 @@ def local_ai_command(
     effective_command_timeout = max(1, min(requested_timeout, max(1, int(host_timeout) - 30)))
     if action not in CommandAction.__args__:
         return _invalid_action("local_ai_command", action, tuple(CommandAction.__args__), "Use this broker for bounded commands; keep peer-agent orchestration in Codex.")
+    if rollback_on_failure and (action != "run" or auto_fix):
+        return {
+            "success": False,
+            "error": "rollback_on_failure is supported only for direct run actions",
+            "rollback_unsupported_action": True,
+            "terminal": True,
+            "retryable": False,
+        }
     if action == "speculative_lint":
         payload = {
             "action": str(lint_action or "submit").strip().lower().replace("-", "_"),
@@ -2276,7 +2296,10 @@ def local_ai_command(
         return _compact(CLIENT.post("/api/command/mock_server", {
             "action": sub_act, "root": eff_cwd, "port": port_val, "spec_path": criterion or None,
         }, timeout=host_timeout), "command")
-    paths_payload = [command] if (action == "format" and command and not command.startswith("-")) else None
+    paths_payload = (
+        paths if rollback_on_failure else
+        ([command] if (action == "format" and command and not command.startswith("-")) else None)
+    )
     return _compact(CLIENT.post("/api/command", {
         "action": action, "command": command, "cwd": eff_cwd, "root": eff_cwd,
         "timeout": effective_command_timeout, "force": force,

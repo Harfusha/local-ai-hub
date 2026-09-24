@@ -2409,14 +2409,15 @@ class ProjectPreprocessor:
         retry_count = 0
         with self._db_lock, closing(self._connect()) as con:
             state = con.execute(
-                "SELECT revision_hash,status,error,retry_count FROM external_index_state WHERE root=? AND backend=?",
+                "SELECT revision_hash,status,error,retry_count,updated_at FROM external_index_state WHERE root=? AND backend=?",
                 (root, backend),
             ).fetchone()
         if not force_refresh and state is not None and str(state[0]) == revision:
             prior_status = str(state[1])
             prior_error = str(state[2] or "")
             retry_count = max(0, int(state[3] or 0))
-            if prior_status in {"ready", "unavailable", "skipped"} or self._external_error_is_revision_scoped(prior_error):
+            permanent_error = self._external_error_is_revision_scoped(prior_error)
+            if prior_status in {"ready", "skipped"} or permanent_error:
                 if prior_status != "ready" and retry_count < 1 and self._external_backend_available(backend):
                     # A previous process may have timed out before the optional
                     # backend was installed/discovered. Retry it now instead of
@@ -2433,6 +2434,14 @@ class ProjectPreprocessor:
                             )
                             con.commit()
                     self._set_project(root, phase=next_phase)
+                    return True
+            if prior_status in {"degraded", "unavailable"} and retry_count > 0:
+                elapsed = max(0.0, time.time() - float(state[4] or 0.0))
+                if elapsed < self._external_retry_delay(retry_count):
+                    # External indexes are optional; advance preprocessing while
+                    # this revision's bounded transient retry is cooling down.
+                    self._set_project(root, phase=next_phase)
+                    self._record_progress(root, 1)
                     return True
         if not Path(root).is_dir():
             result = {"success": False, "skipped": True, "error": "project root is missing"}
@@ -2494,10 +2503,14 @@ class ProjectPreprocessor:
             or "no configuration file found" in normalized
             or "project configuration auto-generation failed" in normalized
             or "project root is missing" in normalized
-            or "indexing exceeded" in normalized
-            or "index exited" in normalized
             or "no module named 'codegraphcontext'" in normalized
         )
+
+    @staticmethod
+    def _external_retry_delay(retry_count: int) -> float:
+        """Exponential retry delay for transient optional-index failures, capped at 15m."""
+        exponent = min(5, max(0, int(retry_count) - 1))
+        return min(900.0, 30.0 * (2 ** exponent))
 
     def candidate_paths(self, root: str, query: str, limit: int = 32) -> list[str]:
         """Fast deterministic candidate selection; exact source verification happens later."""

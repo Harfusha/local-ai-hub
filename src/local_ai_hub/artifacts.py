@@ -31,6 +31,129 @@ class ArtifactTransportError(ValueError):
         self.message = message
 
 
+class ArtifactBatchCancelled(RuntimeError):
+    """Raised when a caller cancels an artifact batch before commit."""
+
+
+class _ArtifactBatch:
+    def __init__(self, store: "ArtifactStore", tenant: str, cancel_check=None):
+        self._store = store
+        self._tenant = str(tenant)
+        self._tenant_identity = store._tenant_identity(self._tenant)
+        self._cancel_check = cancel_check
+        self._connection: sqlite3.Connection | None = None
+
+    def __enter__(self) -> "_ArtifactBatch":
+        def _begin() -> None:
+            connection = self._store._connect()
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+            except BaseException:
+                connection.close()
+                raise
+            self._connection = connection
+
+        retry_busy(_begin, retries=4)
+        try:
+            self._store._purge(self._connection)
+            self._check_cancelled()
+            return self
+        except BaseException:
+            self._rollback_and_close()
+            raise
+
+    def __exit__(self, exc_type, exc, traceback) -> bool:
+        connection = self._connection
+        if connection is None:
+            return False
+        try:
+            if exc_type is None:
+                self._check_cancelled()
+                connection.commit()
+            else:
+                connection.rollback()
+        except BaseException:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+            self._connection = None
+        return False
+
+    def _rollback_and_close(self) -> None:
+        connection = self._connection
+        if connection is not None:
+            try:
+                if connection.in_transaction:
+                    connection.rollback()
+            finally:
+                connection.close()
+                self._connection = None
+
+    def _check_cancelled(self) -> None:
+        if self._cancel_check is not None and self._cancel_check():
+            raise ArtifactBatchCancelled("artifact batch cancelled")
+
+    def put(self, text: str, kind: str) -> str:
+        if self._connection is None:
+            raise RuntimeError("artifact batch is not active")
+        self._check_cancelled()
+        digest = hashlib.sha256((kind + "\0" + text).encode("utf-8")).hexdigest()[:24]
+        artifact_id = self._store._scoped_artifact_id(self._connection, f"art_{digest}", self._tenant_identity)
+        self._connection.execute(
+            f"INSERT OR REPLACE INTO {self._store._table}(artifact_id, created_at, tenant, tenant_identity, kind, text) VALUES(?,?,?,?,?,?)",
+            (artifact_id, time.time(), self._tenant_identity, self._tenant_identity, kind, text),
+        )
+        return artifact_id
+
+    def put_json(self, value: dict[str, Any], kind: str) -> str:
+        if not isinstance(value, dict):
+            raise ArtifactTransportError("invalid_json", "JSON artifact must be an object")
+        text = json_dumps(value, ensure_ascii=False, sort_keys=True)
+        if len(text.encode("utf-8")) > self._store.max_json_bytes:
+            raise ArtifactTransportError("artifact_too_large", "JSON artifact size exceeds configured limit")
+        return self.put(text, kind)
+
+    def put_bytes(self, data: bytes, kind: str, mime_type: str) -> str:
+        if self._connection is None:
+            raise RuntimeError("artifact batch is not active")
+        self._check_cancelled()
+        if not isinstance(data, bytes):
+            raise ArtifactTransportError("invalid_bytes", "artifact bytes must be bytes")
+        normalized_mime = str(mime_type or "").strip().lower()
+        if not normalized_mime.startswith("image/"):
+            raise ArtifactTransportError("invalid_mime_type", "image MIME type required")
+        if len(data) > self._store.max_binary_bytes:
+            raise ArtifactTransportError("artifact_too_large", "artifact size exceeds configured limit")
+
+        checksum = hashlib.sha256(data).hexdigest()
+        base_id = "art_" + hashlib.sha256(
+            (str(kind) + "\0" + normalized_mime + "\0" + checksum).encode("utf-8")
+        ).hexdigest()[:24]
+        artifact_id = self._store._scoped_artifact_id(self._connection, base_id, self._tenant_identity)
+        identity = {
+            "artifact_id": artifact_id,
+            "kind": str(kind),
+            "mime_type": normalized_mime,
+            "encoding": "base64",
+            "size_bytes": len(data),
+            "checksum": checksum,
+        }
+        self._connection.execute(
+            f"""INSERT OR REPLACE INTO {self._store._table}(
+                artifact_id, created_at, tenant, tenant_identity, kind, text, mime_type,
+                encoding, blob, size_bytes, checksum, identity_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                artifact_id, time.time(), self._tenant_identity, self._tenant_identity,
+                str(kind), "", normalized_mime, "base64", sqlite3.Binary(data), len(data), checksum,
+                json_dumps(identity, ensure_ascii=False),
+            ),
+        )
+        return artifact_id
+
+
 class ArtifactStore:
     """Stores verbose local outputs outside the agent context and returns compact references."""
 
@@ -216,24 +339,13 @@ class ArtifactStore:
             return base_id
         return f"{base_id}_{tenant_identity}"
 
+    def batch(self, tenant: str, *, cancel_check=None) -> _ArtifactBatch:
+        """Write a related artifact set in one transaction, including its final bundle."""
+        return _ArtifactBatch(self, tenant, cancel_check=cancel_check)
+
     def put(self, text: str, tenant: str, kind: str) -> str:
-        digest = hashlib.sha256((kind + "\0" + text).encode("utf-8")).hexdigest()[:24]
-        artifact_id = f"art_{digest}"
-        tenant_identity = self._tenant_identity(tenant)
-        stored_id = artifact_id
-        def _do_put() -> None:
-            nonlocal stored_id
-            with closing(self._connect()) as con:
-                self._purge(con)
-                scoped_id = self._scoped_artifact_id(con, artifact_id, tenant_identity)
-                con.execute(
-                    f"INSERT OR REPLACE INTO {self._table}(artifact_id, created_at, tenant, tenant_identity, kind, text) VALUES(?,?,?,?,?,?)",
-                    (scoped_id, time.time(), tenant_identity, tenant_identity, kind, text),
-                )
-                stored_id = scoped_id
-                con.commit()
-        retry_busy(_do_put, retries=4)
-        return stored_id
+        with self.batch(tenant) as batch:
+            return batch.put(text, kind)
 
     def put_bytes(
         self,
@@ -243,69 +355,13 @@ class ArtifactStore:
         mime_type: str,
     ) -> str:
         """Store complete image bytes without interpreting or truncating them."""
-        if not isinstance(data, bytes):
-            raise ArtifactTransportError("invalid_bytes", "artifact bytes must be bytes")
-        normalized_mime = str(mime_type or "").strip().lower()
-        if not normalized_mime.startswith("image/"):
-            raise ArtifactTransportError("invalid_mime_type", "image MIME type required")
-        if len(data) > self.max_binary_bytes:
-            raise ArtifactTransportError("artifact_too_large", "artifact size exceeds configured limit")
-
-        checksum = hashlib.sha256(data).hexdigest()
-        base_artifact_id = "art_" + hashlib.sha256(
-            (str(kind) + "\0" + normalized_mime + "\0" + checksum).encode("utf-8")
-        ).hexdigest()[:24]
-        encoding = "base64"
-        identity = {
-            "artifact_id": base_artifact_id,
-            "kind": str(kind),
-            "mime_type": normalized_mime,
-            "encoding": encoding,
-            "size_bytes": len(data),
-            "checksum": checksum,
-        }
-        tenant_identity = self._tenant_identity(tenant)
-
-        artifact_id = ""
-        def _do_put() -> None:
-            nonlocal artifact_id
-            with closing(self._connect()) as con:
-                self._purge(con)
-                artifact_id = self._scoped_artifact_id(con, base_artifact_id, tenant_identity)
-                identity["artifact_id"] = artifact_id
-                con.execute(
-                    f"""INSERT OR REPLACE INTO {self._table}(
-                        artifact_id, created_at, tenant, tenant_identity, kind, text, mime_type,
-                        encoding, blob, size_bytes, checksum, identity_json
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (
-                        artifact_id,
-                        time.time(),
-                        tenant_identity,
-                        tenant_identity,
-                        str(kind),
-                        "",
-                        normalized_mime,
-                        encoding,
-                        sqlite3.Binary(data),
-                        len(data),
-                        checksum,
-                        json_dumps(identity, ensure_ascii=False),
-                    ),
-                )
-                con.commit()
-
-        retry_busy(_do_put, retries=4)
-        return artifact_id
+        with self.batch(tenant) as batch:
+            return batch.put_bytes(data, kind, mime_type)
 
     def put_json(self, value: dict[str, Any], tenant: str, kind: str) -> str:
         """Store a bounded JSON artifact, preserving full DOM payload semantics."""
-        if not isinstance(value, dict):
-            raise ArtifactTransportError("invalid_json", "JSON artifact must be an object")
-        text = json_dumps(value, ensure_ascii=False, sort_keys=True)
-        if len(text.encode("utf-8")) > self.max_json_bytes:
-            raise ArtifactTransportError("artifact_too_large", "JSON artifact size exceeds configured limit")
-        return self.put(text, tenant, kind)
+        with self.batch(tenant) as batch:
+            return batch.put_json(value, kind)
 
     @staticmethod
     def _binary_failure(message: str) -> dict[str, Any]:

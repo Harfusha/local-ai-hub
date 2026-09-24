@@ -43,6 +43,11 @@ def build_global_policy(cfg: dict[str, Any]) -> str:
 # always built via build_global_policy(cfg) at setup time.
 _DEFAULT_POLICY_CFG: dict[str, Any] = {}
 GLOBAL_POLICY = build_global_policy(_DEFAULT_POLICY_CFG)
+CODEGRAPH_PACKAGE_DEFAULT = "codegraphcontext[gcf]==0.6.13"
+
+
+def configured_codegraph_package(cfg: dict[str, Any]) -> str:
+    return str(cfg.get("tools", {}).get("codegraph_package", CODEGRAPH_PACKAGE_DEFAULT))
 
 
 
@@ -755,7 +760,7 @@ def main() -> int:
         if intelligence.get("serena_enabled", True):
             serena = install_tool_env(install_dir, "serena", str(cfg.get("tools", {}).get("serena_package", "serena-agent==1.7.0")), ["serena"])
         if intelligence.get("codegraph_enabled", True):
-            codegraph = install_tool_env(install_dir, "codegraph", str(cfg.get("tools", {}).get("codegraph_package", "codegraphcontext[gcf]==0.6.8")), ["cgc", "codegraphcontext"])
+            codegraph = install_tool_env(install_dir, "codegraph", configured_codegraph_package(cfg), ["cgc", "codegraphcontext"])
 
     features = cfg.get("features", {})
     model_cfg = cfg.get("models", {})

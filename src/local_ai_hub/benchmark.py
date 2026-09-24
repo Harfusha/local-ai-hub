@@ -51,9 +51,11 @@ class HardwareBenchmarkRunner:
         t0 = time.perf_counter()
         first_token_time: float | None = None
         tokens_count = 0
+        token_count_estimated = True
         response_text = ""
         thinking_chars = 0
         generation_duration_ns: int | None = None
+        load_duration_ns: int | None = None
         streaming = False
 
         try:
@@ -69,20 +71,25 @@ class HardwareBenchmarkRunner:
                 ):
                     if isinstance(chunk, dict) and chunk.get("error"):
                         return {"success": False, "model": target_model, "error": str(chunk["error"])}
-                    now = time.perf_counter()
-                    if first_token_time is None:
-                        first_token_time = now
                     if isinstance(chunk, dict):
+                        load_duration = chunk.get("load_duration")
+                        if isinstance(load_duration, (int, float)) and math.isfinite(load_duration) and load_duration >= 0:
+                            load_duration_ns = int(load_duration)
+                        eval_count = chunk.get("eval_count")
+                        if isinstance(eval_count, (int, float)) and math.isfinite(eval_count) and eval_count > 0:
+                            tokens_count = int(eval_count)
+                            token_count_estimated = False
+                        eval_duration = chunk.get("eval_duration")
+                        if isinstance(eval_duration, (int, float)) and math.isfinite(eval_duration) and eval_duration > 0:
+                            generation_duration_ns = int(eval_duration)
                         visible = str(chunk.get("response", chunk.get("text", "")) or "")
                         response_text += visible
                         thinking_chars += len(str(chunk.get("thinking", "") or ""))
-                        if visible:
-                            tokens_count += 1
                     else:
                         visible = str(chunk or "")
                         response_text += visible
-                        if visible:
-                            tokens_count += 1
+                    if visible and first_token_time is None:
+                        first_token_time = time.perf_counter()
                 if not response_text and thinking_chars:
                     return {
                         "success": False,
@@ -104,9 +111,11 @@ class HardwareBenchmarkRunner:
                 response_text = str(res.get("response", res.get("text", "")) or "")
                 thinking_chars = len(str(res.get("thinking", "") or ""))
                 tokens_count = int(res.get("eval_count", 0) or 0)
-                if tokens_count <= 0:
-                    tokens_count = len(response_text.split())
+                token_count_estimated = tokens_count <= 0
                 generation_duration_ns = int(res.get("eval_duration", 0) or 0) or None
+                load_duration = res.get("load_duration")
+                if isinstance(load_duration, (int, float)) and math.isfinite(load_duration) and load_duration >= 0:
+                    load_duration_ns = int(load_duration)
                 if not response_text:
                     return {
                         "success": False,
@@ -128,6 +137,9 @@ class HardwareBenchmarkRunner:
                 "measurement_warning": "thinking_only_output" if thinking_chars else "empty_visible_output",
                 "thinking_chars": thinking_chars,
             }
+        if tokens_count <= 0:
+            tokens_count = len(response_text.split())
+            token_count_estimated = True
 
         t_end = time.perf_counter()
 
@@ -161,10 +173,18 @@ class HardwareBenchmarkRunner:
             "timestamp": time.time(),
             "model": target_model,
             "tokens_generated": tokens_count,
+            "token_count_estimated": token_count_estimated,
+            "whitespace_token_estimate": tokens_count if token_count_estimated else None,
+            "token_count_method": (
+                "whitespace_token_estimate_not_model_tokenization"
+                if token_count_estimated
+                else "backend_eval_count"
+            ),
             "ttft_ms": ttft_ms,
             "tokens_per_second": tps,
             "hardware_score": score,
             "generation_duration_ms": round(gen_duration * 1000, 2),
+            "load_duration_ms": round(load_duration_ns / 1_000_000, 2) if load_duration_ns is not None else None,
             "output_chars": len(response_text),
             "streaming": streaming,
             "initial_vram": initial_vram,

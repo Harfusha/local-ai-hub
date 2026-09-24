@@ -260,6 +260,12 @@ def parse_vision_result(
                 return _terminal_error(
                     "finding missing required fields: " + ", ".join(missing)
                 )
+            for field_name in ("id", "problem"):
+                value = item.get(field_name)
+                if not isinstance(value, str) or not value.strip():
+                    return _terminal_error(
+                        f"finding {field_name} must be a non-empty string"
+                    )
             severity = item.get("severity")
             category = item.get("category")
             if severity not in SEVERITIES:
@@ -269,13 +275,21 @@ def parse_vision_result(
             for field_name in ("observed", "hypothesized"):
                 if field_name in item and not isinstance(item[field_name], str):
                     return _terminal_error(f"{field_name} must be a string")
-            confidence = float(item.get("confidence", 0.0))
+            raw_confidence = item.get("confidence", 0.0)
+            if isinstance(raw_confidence, bool) or not isinstance(raw_confidence, (int, float)):
+                return _terminal_error("confidence must be a number")
+            confidence = float(raw_confidence)
             if not math.isfinite(confidence):
                 return _terminal_error("confidence must be finite")
             bbox = item.get("bbox")
             if bbox is not None:
                 if not isinstance(bbox, list) or len(bbox) != 4:
                     return _terminal_error("bbox must contain four values")
+                if any(
+                    isinstance(value, bool) or not isinstance(value, (int, float))
+                    for value in bbox
+                ):
+                    return _terminal_error("bbox coordinates must be numbers")
                 bbox = tuple(float(value) for value in bbox)
                 if not all(math.isfinite(value) for value in bbox):
                     return _terminal_error("bbox coordinates must be finite")
@@ -285,6 +299,10 @@ def parse_vision_result(
                     isinstance(entry, str) for entry in value
                 ):
                     return _terminal_error(f"{field_name} must be a list of strings")
+            if not any(entry.strip() for entry in item.get("evidence", [])):
+                return _terminal_error(
+                    "finding must cite at least one image or DOM evidence item"
+                )
             findings.append(
                 VisionFinding(
                     finding_id=str(item.get("id", "")),
@@ -315,8 +333,14 @@ def parse_vision_result(
             return _terminal_error(f"{field_name} must be a list of strings")
         optional_lists[field_name] = tuple(value)
 
+    summary = payload.get("summary", "")
+    if not isinstance(summary, str):
+        return _terminal_error("summary must be a string")
+    if not findings and not summary.strip():
+        return _terminal_error("empty findings require a non-empty summary")
+
     return VisionParseResult(
-        summary=str(payload.get("summary", "")),
+        summary=summary,
         findings=tuple(findings),
         unknowns=optional_lists["unknowns"],
         recommended_checks=optional_lists["recommended_checks"],
@@ -428,6 +452,13 @@ def build_coder_packet(
         else:
             return _coder_error("findings must contain valid element_ids lists")
         referenced.update(str(element_id) for element_id in ids)
+
+    missing_ids = sorted(referenced.difference(by_id))
+    if missing_ids:
+        missing_summary = ", ".join(missing_ids[:10])
+        return _coder_error(
+            f"findings reference DOM element ids absent from evidence: {missing_summary}"
+        )
 
     kept = set(referenced)
     pending = list(referenced)

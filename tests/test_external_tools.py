@@ -10,6 +10,68 @@ import pytest
 from local_ai_hub.external_tools import ExternalCodeIntelligence, MCPStdioClient
 
 
+def test_serena_index_uses_upstream_per_file_timeout(monkeypatch, tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    cfg = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "code_intelligence": {"enabled": True, "serena_enabled": True, "codegraph_enabled": False},
+    }
+    ext = ExternalCodeIntelligence(cfg, telemetry=None)
+    captured = []
+    monkeypatch.setattr(ext, "_resolve_command", lambda backend: "serena.exe" if backend == "serena" else None)
+    monkeypatch.setattr(
+        ext,
+        "_run_index",
+        lambda backend, argv, project, env=None: captured.append(argv) or {"success": True},
+    )
+
+    result = ext.index("serena", str(root))
+
+    assert result["success"] is True
+    timeout_index = captured[0].index("--timeout")
+    assert captured[0][timeout_index + 1] == "10"
+
+
+def test_codegraph_query_fails_after_bounded_operation_lock_wait(monkeypatch, tmp_path: Path):
+    import threading
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    ext = ExternalCodeIntelligence(
+        {
+            "server": {"state_dir": str(tmp_path / "state")},
+            "code_intelligence": {
+                "enabled": True,
+                "serena_enabled": False,
+                "codegraph_enabled": True,
+                "query_timeout_seconds": 0.02,
+            },
+        },
+        telemetry=None,
+    )
+    monkeypatch.setattr(ext, "_query_codegraph_locked", lambda *_args: {"success": True})
+    results = []
+    finished = threading.Event()
+
+    def query():
+        try:
+            results.append(ext.query_codegraph(str(root), "calls", "sample"))
+        finally:
+            finished.set()
+
+    with ext._backend_operation("codegraph", str(root)):
+        worker = threading.Thread(target=query)
+        worker.start()
+        bounded_wait = finished.wait(0.5)
+    worker.join(1)
+
+    assert bounded_wait is True
+    assert worker.is_alive() is False
+    assert results[0]["success"] is False
+    assert "timed out" in results[0]["error"].lower()
+
+
 FAKE_MCP = r'''
 import json, sys, time
 TOOLS = [
@@ -87,7 +149,7 @@ def test_codegraph_sessions_are_isolated_per_project(monkeypatch, tmp_path: Path
         assert len(_FakeClient.instances) == 2
         assert {Path(x.cwd) for x in _FakeClient.instances} == set(roots)
         assert {Path(x.env["CGC_ALLOWED_ROOTS"]) for x in _FakeClient.instances} == set(roots)
-        assert {x.env["CGC_OUTPUT_FORMAT"] for x in _FakeClient.instances} == {"gcf"}
+        assert {x.env["CGC_OUTPUT_FORMAT"] for x in _FakeClient.instances} == {"json"}
         assert {x.env["PYTHONIOENCODING"] for x in _FakeClient.instances} == {"utf-8"}
         assert {x.env["PYTHONUTF8"] for x in _FakeClient.instances} == {"1"}
         db_paths = {Path(x.env["CGC_RUNTIME_DB_PATH"]) for x in _FakeClient.instances}
@@ -124,6 +186,168 @@ def test_codegraph_relationships_use_supported_query_type(monkeypatch, tmp_path:
 
     assert result["success"] is True
     assert result["result"]["arguments"]["query_type"] == "module_deps"
+
+
+def test_codegraph_calls_alias_maps_to_supported_find_callees(monkeypatch, tmp_path: Path):
+    import local_ai_hub.external_tools as mod
+    _FakeClient.instances = []
+    monkeypatch.setattr(mod, "MCPStdioClient", _FakeClient)
+    root = tmp_path / "repo"
+    root.mkdir()
+    cfg = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "code_intelligence": {"enabled": True, "codegraph_enabled": True, "serena_enabled": False, "codegraph_command": sys.executable},
+        "tools": {},
+    }
+    ext = ExternalCodeIntelligence(cfg, telemetry=None)
+    try:
+        result = ext.query_codegraph(str(root), "calls", query="target")
+    finally:
+        ext.close()
+
+    assert result["success"] is True
+    assert result["result"]["arguments"]["query_type"] == "find_callees"
+
+
+def test_codegraph_nested_query_error_is_not_reported_as_success(monkeypatch, tmp_path: Path):
+    import local_ai_hub.external_tools as mod
+    _FakeClient.instances = []
+    monkeypatch.setattr(mod, "MCPStdioClient", _FakeClient)
+    monkeypatch.setattr(
+        _FakeClient,
+        "call_tool",
+        lambda self, name, arguments, timeout=None: {
+            "success": True,
+            "structured": {
+                "query_type": arguments.get("query_type"),
+                "results": {"error": "Unknown query type: callees", "supported_types": ["find_callees"]},
+            },
+        },
+    )
+    root = tmp_path / "repo"
+    root.mkdir()
+    cfg = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "code_intelligence": {"enabled": True, "codegraph_enabled": True, "serena_enabled": False, "codegraph_command": sys.executable},
+        "tools": {},
+    }
+    ext = ExternalCodeIntelligence(cfg, telemetry=None)
+    try:
+        result = ext.query_codegraph(str(root), "calls", query="target")
+    finally:
+        ext.close()
+
+    assert result["success"] is False
+    assert "Unknown query type" in result["error"]
+
+
+def test_fresh_codegraph_index_finds_known_python_callee(tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    source = root / "sample.py"
+    source.write_text("def callee():\n    return 1\n\ndef caller():\n    return callee()\n", encoding="utf-8")
+    ext = ExternalCodeIntelligence(
+        {
+            "server": {"state_dir": str(tmp_path / "state")},
+            "code_intelligence": {"enabled": True, "codegraph_enabled": True, "serena_enabled": False},
+        },
+        telemetry=None,
+    )
+    if not ext.backend_available("codegraph"):
+        ext.close()
+        pytest.skip("CodeGraphContext is not installed")
+    try:
+        indexed = ext.index("codegraph", str(root))
+        result = ext.query_codegraph(str(root), "calls", query="caller", path="sample.py")
+    finally:
+        ext.close()
+
+    assert indexed["success"] is True
+    assert result["success"] is True
+    assert "callee" in repr(result)
+
+
+def test_serena_tool_error_is_counted_as_backend_failure(monkeypatch, tmp_path: Path):
+    cfg = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "code_intelligence": {"enabled": True, "serena_enabled": True, "codegraph_enabled": False},
+    }
+    ext = ExternalCodeIntelligence(cfg, telemetry=None)
+
+    class RejectedSerenaClient:
+        def tool_names(self):
+            return {"search_for_pattern"}
+
+        def call_tool(self, name, arguments, timeout=None):
+            return {"success": False, "error": "Serena tool execution failed"}
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    monkeypatch.setattr(ext, "_serena_session", lambda _root: RejectedSerenaClient())
+    try:
+        result = ext.query_serena(str(root), "search", query="needle")
+    finally:
+        ext.close()
+
+    assert result["success"] is False
+    assert ext.query_failures == 1
+
+
+def test_serena_structured_tool_error_is_counted_as_backend_failure(monkeypatch, tmp_path: Path):
+    cfg = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "code_intelligence": {"enabled": True, "serena_enabled": True, "codegraph_enabled": False},
+    }
+    ext = ExternalCodeIntelligence(cfg, telemetry=None)
+
+    class RejectedSerenaClient:
+        def tool_names(self):
+            return {"search_for_pattern"}
+
+        def call_tool(self, name, arguments, timeout=None):
+            return {"success": True, "structured": {"success": False, "error": "Serena index unavailable"}}
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    monkeypatch.setattr(ext, "_serena_session", lambda _root: RejectedSerenaClient())
+    try:
+        result = ext.query_serena(str(root), "search", query="needle")
+    finally:
+        ext.close()
+
+    assert result["success"] is False
+    assert ext.query_failures == 1
+
+
+def test_codegraph_search_structured_error_is_not_reported_as_success(monkeypatch, tmp_path: Path):
+    import local_ai_hub.external_tools as mod
+    _FakeClient.instances = []
+    monkeypatch.setattr(mod, "MCPStdioClient", _FakeClient)
+    monkeypatch.setattr(
+        _FakeClient,
+        "call_tool",
+        lambda self, name, arguments, timeout=None: {
+            "success": True,
+            "structured": {"success": False, "error": "CodeGraph database unavailable"},
+        },
+    )
+    root = tmp_path / "repo"
+    root.mkdir()
+    ext = ExternalCodeIntelligence(
+        {
+            "server": {"state_dir": str(tmp_path / "state")},
+            "code_intelligence": {"enabled": True, "codegraph_enabled": True, "serena_enabled": False, "codegraph_command": sys.executable},
+            "tools": {},
+        },
+        telemetry=None,
+    )
+    try:
+        result = ext.query_codegraph(str(root), "search", query="needle")
+    finally:
+        ext.close()
+
+    assert result["success"] is False
+    assert "CodeGraph database unavailable" in result["error"]
 
 
 def test_serena_index_supplies_noninteractive_dominant_language(monkeypatch, tmp_path: Path):
@@ -242,7 +466,7 @@ def test_transient_circuit_is_isolated_to_failed_root(tmp_path: Path):
         ext.close()
 
 
-def test_revision_scoped_index_timeout_is_skipped_without_failure_telemetry(tmp_path: Path):
+def test_index_timeout_is_counted_as_retryable_failure(tmp_path: Path):
     class Telemetry:
         def __init__(self):
             self.errors = []
@@ -264,13 +488,25 @@ def test_revision_scoped_index_timeout_is_skipped_without_failure_telemetry(tmp_
     ext = ExternalCodeIntelligence(cfg, telemetry=telemetry)
     try:
         ext._record_failure("serena", TimeoutError("serena indexing exceeded 30 seconds"), operation="index", root=str(root))
-        assert ext.status()["serena"]["failures"] == 0
-        assert ext._allowed("serena", str(root)) is True
+        assert ext.status()["serena"]["failures"] == 1
+        assert ext._allowed("serena", str(root)) is False
     finally:
         ext.close()
 
-    assert telemetry.errors == []
-    assert telemetry.system == [(("code_intelligence:serena:index_skipped",), {"success": True, "degraded": True})]
+    assert len(telemetry.errors) == 1
+    assert telemetry.errors[0][1]["retryable"] is True
+
+
+def test_missing_index_timeout_uses_packaged_slow_device_budget(tmp_path: Path):
+    cfg = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "code_intelligence": {"enabled": True},
+    }
+    ext = ExternalCodeIntelligence(cfg, telemetry=None)
+    try:
+        assert ext.index_timeout == 1200.0
+    finally:
+        ext.close()
 
 
 def test_root_session_reset_clears_that_roots_circuit(tmp_path: Path):
@@ -288,3 +524,150 @@ def test_root_session_reset_clears_that_roots_circuit(tmp_path: Path):
         assert ext._allowed("serena", str(root)) is True
     finally:
         ext.close()
+
+
+def test_serena_search_uses_available_symbol_tool_when_pattern_tool_missing(monkeypatch, tmp_path: Path):
+    import local_ai_hub.external_tools as mod
+
+    class SerenaClient(_FakeClient):
+        calls = []
+
+        def tool_names(self):
+            return {"find_symbol"}
+
+        def call_tool(self, name, arguments, timeout=None):
+            self.calls.append((name, arguments))
+            if name not in self.tool_names():
+                raise RuntimeError(f"MCP tool not available: {name}")
+            return {"success": True, "result": {"symbols": []}}
+
+    SerenaClient.instances = []
+    SerenaClient.calls = []
+    monkeypatch.setattr(mod, "MCPStdioClient", SerenaClient)
+    root = tmp_path / "repo"
+    root.mkdir()
+    ext = ExternalCodeIntelligence({
+        "server": {"state_dir": str(tmp_path / "state")},
+        "code_intelligence": {"enabled": True, "serena_enabled": True, "codegraph_enabled": False, "serena_command": sys.executable},
+    })
+    try:
+        result = ext.query_serena(str(root), "search", query="RouteHandler")
+    finally:
+        ext.close()
+
+    assert result["success"] is True
+    assert SerenaClient.calls == [("find_symbol", {"name_path_pattern": "RouteHandler", "relative_path": None, "max_answer_chars": ext.max_output_chars, "depth": 1, "include_body": False, "substring_matching": True})]
+
+
+def test_codegraph_index_closes_cached_session_before_rebuilding(monkeypatch, tmp_path: Path):
+    import local_ai_hub.external_tools as mod
+
+    _FakeClient.instances = []
+    monkeypatch.setattr(mod, "MCPStdioClient", _FakeClient)
+    root = tmp_path / "repo"
+    root.mkdir()
+    cfg = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "code_intelligence": {"enabled": True, "serena_enabled": False, "codegraph_enabled": True, "codegraph_command": sys.executable},
+    }
+    ext = ExternalCodeIntelligence(cfg)
+    session = ext._codegraph_client(str(root))
+    observed = []
+
+    def index_after_session_release(backend, argv, project, env=None):
+        observed.append((session.closed, backend, str(project)))
+        return {"success": True}
+
+    monkeypatch.setattr(ext, "_run_index", index_after_session_release)
+    try:
+        result = ext.index("codegraph", str(root))
+    finally:
+        ext.close()
+
+    assert result["success"] is True
+    assert observed == [(True, "codegraph", str(root))]
+
+
+def test_managed_context_intelligence_defaults_expose_needed_tools(tmp_path: Path):
+    from local_ai_hub.config import load_config
+
+    cfg = load_config()
+    ext = ExternalCodeIntelligence(cfg)
+    try:
+        env = ext._codegraph_env(str(tmp_path))
+        assert env["CGC_OUTPUT_FORMAT"] == "json"
+        assert cfg["code_intelligence"]["serena_context"] == "codex"
+    finally:
+        ext.close()
+
+
+def test_codegraph_query_normalizes_windows_repository_filter(monkeypatch, tmp_path: Path):
+    import local_ai_hub.external_tools as mod
+
+    class RecordingClient(_FakeClient):
+        calls = []
+
+        def call_tool(self, name, arguments, timeout=None):
+            self.calls.append((name, arguments))
+            return super().call_tool(name, arguments, timeout)
+
+    RecordingClient.instances = []
+    RecordingClient.calls = []
+    monkeypatch.setattr(mod, "MCPStdioClient", RecordingClient)
+    root = tmp_path / "repo"
+    root.mkdir()
+    ext = ExternalCodeIntelligence({
+        "server": {"state_dir": str(tmp_path / "state")},
+        "code_intelligence": {"enabled": True, "serena_enabled": False, "codegraph_enabled": True, "codegraph_command": sys.executable},
+    })
+    try:
+        result = ext.query_codegraph(str(root), "search", query="needle")
+    finally:
+        ext.close()
+
+    assert result["success"] is True
+    assert RecordingClient.calls[0][1]["repo_path"] == root.resolve().as_posix()
+
+
+def test_codegraph_query_waits_while_same_repository_is_indexing(monkeypatch, tmp_path: Path):
+    import threading
+    import local_ai_hub.external_tools as mod
+
+    _FakeClient.instances = []
+    monkeypatch.setattr(mod, "MCPStdioClient", _FakeClient)
+    root = tmp_path / "repo"
+    root.mkdir()
+    ext = ExternalCodeIntelligence({
+        "server": {"state_dir": str(tmp_path / "state")},
+        "code_intelligence": {"enabled": True, "serena_enabled": False, "codegraph_enabled": True, "codegraph_command": sys.executable},
+    })
+    ext._codegraph_client(str(root))
+    indexing = threading.Event()
+    release_index = threading.Event()
+    query_started = threading.Event()
+    query_finished = threading.Event()
+    monkeypatch.setattr(ext, "_run_index", lambda *_args, **_kwargs: indexing.set() or release_index.wait(2) or {"success": True})
+
+    index_thread = threading.Thread(target=lambda: ext.index("codegraph", str(root)))
+    index_thread.start()
+    assert indexing.wait(1)
+
+    def query():
+        query_started.set()
+        ext.query_codegraph(str(root), "search", query="needle")
+        query_finished.set()
+
+    query_thread = threading.Thread(target=query)
+    query_thread.start()
+    try:
+        assert query_started.wait(1)
+        assert query_finished.wait(0.1) is False
+    finally:
+        release_index.set()
+        index_thread.join(2)
+        query_thread.join(2)
+        ext.close()
+
+    assert not index_thread.is_alive()
+    assert not query_thread.is_alive()
+    assert query_finished.is_set()

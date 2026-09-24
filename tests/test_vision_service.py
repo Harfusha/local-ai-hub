@@ -176,6 +176,7 @@ def test_vision_resolves_network_artifact_with_console_ref_for_tenant(tmp_path: 
                         "hypothesized": "backend response blocks render",
                         "uncertainty": ["response body not captured"],
                         "confidence": 0.7,
+                        "evidence": ["captured network request /api/items"],
                     }
                 ],
             }
@@ -269,6 +270,7 @@ def test_vision_returns_structured_findings_and_raw_artifact(tmp_path: Path) -> 
                         "category": "layout",
                         "problem": "CTA overlaps footer",
                         "confidence": 0.9,
+                        "evidence": ["CTA bounding box overlaps footer"],
                     }
                 ],
             }
@@ -281,6 +283,33 @@ def test_vision_returns_structured_findings_and_raw_artifact(tmp_path: Path) -> 
     assert result["review"]["findings"][0]["finding_id"] == "f-1"
     assert result["raw_output_artifact_id"] == "art_vision_raw"
     services.artifacts.put.assert_called_once()
+
+
+def test_vision_rejects_findings_without_cited_evidence(tmp_path: Path) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    runtime.request.return_value = {
+        "response": json.dumps(
+            {
+                "summary": "bad CTA",
+                "findings": [
+                    {
+                        "id": "f-1",
+                        "severity": "high",
+                        "category": "layout",
+                        "problem": "CTA overlaps footer",
+                        "confidence": 0.9,
+                        "evidence": [],
+                    }
+                ],
+            }
+        )
+    }
+
+    result = services.vision({"image": str(image), "prompt": "Review UI"}, "t")
+
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert "evidence" in result["error"]["message"]
 
 
 def test_malformed_vision_output_is_terminal_structured_failure(tmp_path: Path) -> None:

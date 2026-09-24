@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import ctypes
+import ntpath
 import os
+import posixpath
+import sys
 import threading
 from pathlib import Path, PureWindowsPath
 import signal
@@ -12,6 +16,106 @@ from typing import Any, Sequence
 
 
 _LOW_PRIORITY_VALUES = {"idle", "below_normal", "normal"}
+_POST_TERMINATION_DRAIN_SECONDS = 0.5
+
+
+class _FILETIME(ctypes.Structure):
+    _fields_ = [("dwLowDateTime", ctypes.c_uint32), ("dwHighDateTime", ctypes.c_uint32)]
+
+
+def _linux_process_starttime(pid: int) -> int:
+    stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+    # comm is parenthesized but may itself contain spaces or closing parens.
+    end_comm = stat.rfind(")")
+    if end_comm < 0 or int(stat[: stat.find(" ")]) != pid:
+        raise ValueError("invalid proc stat")
+    fields = stat[end_comm + 1 :].split()  # starts at field 3 (state)
+    if len(fields) <= 19:
+        raise ValueError("incomplete proc stat")
+    return int(fields[19])  # field 22: starttime, in clock ticks after boot
+
+
+def _windows_process_identity(pid: int) -> dict[str, Any] | None:
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.GetProcessTimes.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_FILETIME),
+        ctypes.POINTER(_FILETIME),
+        ctypes.POINTER(_FILETIME),
+        ctypes.POINTER(_FILETIME),
+    ]
+    kernel32.GetProcessTimes.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        creation = _FILETIME()
+        exit_time = _FILETIME()
+        kernel = _FILETIME()
+        user = _FILETIME()
+        if not kernel32.GetProcessTimes(
+            handle,
+            ctypes.byref(creation),
+            ctypes.byref(exit_time),
+            ctypes.byref(kernel),
+            ctypes.byref(user),
+        ):
+            return None
+        buffer = ctypes.create_unicode_buffer(32768)
+        size = wintypes.DWORD(len(buffer))
+        if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+            return None
+        executable = ntpath.normcase(ntpath.normpath(buffer.value))
+        if not executable:
+            return None
+        creation_identity = (int(creation.dwHighDateTime) << 32) | int(creation.dwLowDateTime)
+        return {
+            "pid": pid,
+            "executable": executable,
+            "creation_identity": creation_identity,
+            "creation_identity_type": "windows_creation_filetime_100ns",
+        }
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def process_identity(pid: int) -> dict[str, Any] | None:
+    """Return metadata-only PID identity, or None when it cannot be proven."""
+    if isinstance(pid, bool) or not isinstance(pid, int) or not 0 < pid <= 0xFFFFFFFF:
+        return None
+    try:
+        if os.name == "nt":
+            return _windows_process_identity(pid)
+        if sys.platform != "linux":
+            return None
+
+        starttime_before = _linux_process_starttime(pid)
+        executable = os.readlink(f"/proc/{pid}/exe")
+        starttime_after = _linux_process_starttime(pid)
+        if starttime_before != starttime_after or not executable.startswith("/"):
+            return None
+        return {
+            "pid": pid,
+            "executable": posixpath.normpath(executable),
+            "creation_identity": starttime_before,
+            "creation_identity_type": "linux_proc_starttime_ticks",
+        }
+    except (OSError, ValueError, TypeError, OverflowError, AttributeError):
+        return None
 
 
 def _normalise_priority(priority: str | None) -> str | None:
@@ -175,7 +279,9 @@ def process_executable(pid: int) -> str | None:
         return None
 
 
-def terminate_tree(pid: int, *, grace_seconds: float = 5.0) -> bool:
+def terminate_tree(
+    pid: int, *, process_group: int | None = None, grace_seconds: float = 5.0
+) -> bool:
     if pid <= 0:
         return True
     if os.name == "nt":
@@ -201,37 +307,262 @@ def terminate_tree(pid: int, *, grace_seconds: float = 5.0) -> bool:
             return cp.returncode in {0, 128}
         except Exception:
             return not pid_alive(pid)
+    group_id = pid if process_group in (None, 0) else int(process_group)
+
+    def group_alive() -> bool:
+        try:
+            os.killpg(group_id, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return pid_alive(pid)
+
     try:
         # Runtime children are started in their own sessions. Prefer the group, then
         # fall back to the process itself for older/recovered installations.
         try:
-            os.killpg(pid, signal.SIGTERM)
+            os.killpg(group_id, signal.SIGTERM)
         except OSError:
             os.kill(pid, signal.SIGTERM)
         deadline = time.monotonic() + max(0.1, grace_seconds)
         while time.monotonic() < deadline:
-            if not pid_alive(pid):
+            if not group_alive():
                 return True
             time.sleep(0.05)
         try:
-            os.killpg(pid, signal.SIGKILL)
+            os.killpg(group_id, signal.SIGKILL)
         except OSError:
             try:
                 os.kill(pid, signal.SIGKILL)
             except OSError:
                 pass
-        return not pid_alive(pid)
+        return not group_alive()
     except OSError:
         return True
+
+
+def _resume_suspended_process(process: subprocess.Popen[Any]) -> bool:
+    """Resume suspended Windows process thread after Job Object assignment."""
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class THREADENTRY32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ThreadID", wintypes.DWORD),
+                ("th32OwnerProcessID", wintypes.DWORD),
+                ("tpBasePri", wintypes.LONG),
+                ("tpDeltaPri", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(THREADENTRY32)]
+        kernel32.Thread32First.restype = wintypes.BOOL
+        kernel32.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(THREADENTRY32)]
+        kernel32.Thread32Next.restype = wintypes.BOOL
+        kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenThread.restype = wintypes.HANDLE
+        kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+        kernel32.ResumeThread.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        snapshot = kernel32.CreateToolhelp32Snapshot(0x00000004, 0)
+        snapshot_value = snapshot if isinstance(snapshot, int) else snapshot.value
+        if not snapshot_value or snapshot_value == ctypes.c_void_p(-1).value:
+            return False
+        try:
+            entry = THREADENTRY32()
+            entry.dwSize = ctypes.sizeof(entry)
+            found = kernel32.Thread32First(snapshot, ctypes.byref(entry))
+            while found:
+                if int(entry.th32OwnerProcessID) == int(process.pid):
+                    thread_handle = kernel32.OpenThread(
+                        0x0002, False, int(entry.th32ThreadID)
+                    )  # THREAD_SUSPEND_RESUME
+                    if not thread_handle:
+                        return False
+                    try:
+                        return int(kernel32.ResumeThread(thread_handle)) == 1
+                    finally:
+                        kernel32.CloseHandle(thread_handle)
+                entry.dwSize = ctypes.sizeof(entry)
+                found = kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+            return False
+        finally:
+            kernel32.CloseHandle(snapshot)
+    except Exception:
+        return False
+
+
+def _release_process_job(process: subprocess.Popen[Any]) -> bool:
+    """Close the owned kill-on-close Job Object, killing any remaining children."""
+    job_handle = getattr(process, "_local_ai_job_handle", None)
+    if not job_handle:
+        return True
+    for _ in range(2):
+        if close_job_object(job_handle):
+            process._local_ai_job_handle = None
+            return True
+        terminate_job_object(job_handle)
+        if close_job_object(job_handle):
+            process._local_ai_job_handle = None
+            return True
+    return False
 
 
 def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
     opts = dict(kwargs)
     text = bool(opts.get("text", False))
-    for key, value in hidden_run_kwargs(text=text).items():
+    for key, value in hidden_run_kwargs(text=text, new_group=True).items():
         opts.setdefault(key, value)
     timeout = opts.pop("timeout", 60.0)
-    return subprocess.run([str(x) for x in argv], timeout=timeout, **opts)
+    check = bool(opts.pop("check", False))
+    input_data = opts.pop("input", None)
+    capture_output = bool(opts.pop("capture_output", False))
+    if input_data is not None:
+        if opts.get("stdin") is not None:
+            raise ValueError("stdin and input arguments may not both be used.")
+        opts["stdin"] = subprocess.PIPE
+    if capture_output:
+        if opts.get("stdout") is not None or opts.get("stderr") is not None:
+            raise ValueError("stdout and stderr arguments may not be used with capture_output.")
+        opts["stdout"] = subprocess.PIPE
+        opts["stderr"] = subprocess.PIPE
+
+    job_handle = None
+    if os.name == "nt":
+        required_flags = windows_creationflags(new_group=True)
+        job_handle = create_job_object_kill_on_close()
+        if not job_handle:
+            raise OSError("Unable to create a kill-on-close Windows Job Object")
+        opts["creationflags"] = (
+            int(opts.get("creationflags", 0)) | required_flags | 0x00000004
+        )  # CREATE_SUSPENDED prevents child creation before job assignment.
+    else:
+        # Keep explicit session ownership, but isolate the group unless the caller
+        # selected one so timeout cleanup can still terminate this child's descendants.
+        if "start_new_session" not in opts and "process_group" not in opts:
+            opts["start_new_session"] = True
+        elif opts.get("start_new_session") is False and "process_group" not in opts:
+            opts["process_group"] = 0
+
+    command = [str(x) for x in argv]
+    process: subprocess.Popen[Any] | None = None
+    try:
+        process = subprocess.Popen(command, **opts)
+        if job_handle:
+            process._local_ai_job_handle = job_handle
+            if not assign_process_to_job(job_handle, process.pid):
+                raise OSError("Unable to assign suspended process to Windows Job Object")
+            if not _resume_suspended_process(process):
+                raise OSError("Unable to resume suspended Windows process")
+    except BaseException:
+        if process is not None:
+            try:
+                process.kill()
+            except OSError:
+                pass
+            try:
+                process.wait(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            _release_process_job(process)
+        elif job_handle:
+            close_job_object(job_handle)
+        raise
+    try:
+        stdout, stderr = process.communicate(input=input_data, timeout=timeout)
+    except subprocess.TimeoutExpired as timeout_error:
+        process_group = None
+        if os.name != "nt":
+            requested_group = opts.get("process_group")
+            if requested_group is not None:
+                process_group = process.pid if int(requested_group) == 0 else int(requested_group)
+            elif opts.get("start_new_session"):
+                process_group = process.pid
+        stdout, stderr = _terminate_and_drain(process, process_group=process_group)
+        raise subprocess.TimeoutExpired(
+            command,
+            timeout,
+            output=stdout if stdout is not None else timeout_error.output,
+            stderr=stderr if stderr is not None else timeout_error.stderr,
+        ) from None
+    except BaseException:
+        _terminate_and_drain(process)
+        raise
+
+    returncode = process.wait()
+    if job_handle and not _release_process_job(process):
+        _terminate_and_drain(process)
+        if getattr(process, "_local_ai_job_handle", None):
+            raise OSError("Unable to close Windows Job Object after process completion")
+    completed = subprocess.CompletedProcess(command, returncode, stdout, stderr)
+    if check and returncode:
+        raise subprocess.CalledProcessError(returncode, command, stdout, stderr)
+    return completed
+
+
+def _terminate_and_drain(
+    process: subprocess.Popen[Any], *, process_group: int | None = None
+) -> tuple[Any, Any]:
+    cleanup_kwargs = {"process_group": process_group} if process_group is not None else {}
+    job_handle = getattr(process, "_local_ai_job_handle", None)
+    if job_handle:
+        if not _release_process_job(process):
+            try:
+                terminate_tree(process.pid, **cleanup_kwargs)
+            except Exception:
+                pass
+    else:
+        try:
+            terminate_tree(process.pid, **cleanup_kwargs)
+        except Exception:
+            pass
+    try:
+        if process.poll() is None:
+            process.kill()
+    except OSError:
+        pass
+
+    try:
+        return process.communicate(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+    except subprocess.TimeoutExpired as drain_error:
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        return drain_error.output, drain_error.stderr
+    except Exception:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        return None, None
 
 
 def _find_listening_pid_win32(port: int) -> int | None:
@@ -403,6 +734,8 @@ def _job_kernel32() -> Any:
         ("SetInformationJobObject", [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD], wintypes.BOOL),
         ("OpenProcess", [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE),
         ("AssignProcessToJobObject", [wintypes.HANDLE, wintypes.HANDLE], wintypes.BOOL),
+        ("TerminateJobObject", [wintypes.HANDLE, wintypes.UINT], wintypes.BOOL),
+        ("ResumeThread", [wintypes.HANDLE], wintypes.DWORD),
         ("CloseHandle", [wintypes.HANDLE], wintypes.BOOL),
     ):
         fn = getattr(kernel32, name)
@@ -756,5 +1089,15 @@ def close_job_object(job_handle: Any) -> bool:
         return False
     try:
         return bool(_job_kernel32().CloseHandle(job_handle))
+    except Exception:
+        return False
+
+
+def terminate_job_object(job_handle: Any) -> bool:
+    """Force-terminate all processes currently owned by a Windows Job Object."""
+    if os.name != "nt" or not job_handle:
+        return False
+    try:
+        return bool(_job_kernel32().TerminateJobObject(job_handle, 1))
     except Exception:
         return False

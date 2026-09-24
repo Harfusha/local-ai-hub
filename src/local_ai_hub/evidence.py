@@ -66,7 +66,7 @@ class EvidenceStore:
 
     def put(self, root: str, item: dict[str, Any]) -> str | None:
         path = str(item.get("path", ""))
-        text = str(item.get("text", ""))
+        text = str(item.get("text") or item.get("raw") or item.get("content") or "")
         file_hash = str(item.get("file_sha256") or item.get("content_hash") or "")
         if not path or not text or not file_hash:
             return None
@@ -98,7 +98,7 @@ class EvidenceStore:
         for item in items:
             clone = dict(item)
             path = str(item.get("path", ""))
-            text = str(item.get("text", ""))
+            text = str(item.get("text") or item.get("raw") or item.get("content") or "")
             file_hash = str(item.get("file_sha256") or item.get("content_hash") or "")
             if not path or not text or not file_hash:
                 out.append(clone)

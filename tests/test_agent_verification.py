@@ -5,7 +5,7 @@ import pytest
 
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import ScopeContext
-from local_ai_hub.agent_tasks import GoalContract, TaskStore
+from local_ai_hub.agent_tasks import CompletionGateError, GoalContract, TaskStore
 from local_ai_hub.agent_verification import (
     ChangeIntent,
     CompletionResult,
@@ -90,6 +90,124 @@ def test_verification_receipts_require_task_and_criterion(task_id: str, criterio
         VerificationReceipt.create(task_id, criterion)
 
 
+def test_passed_verification_receipt_requires_evidence_id():
+    with pytest.raises(ValueError, match="evidence_id"):
+        VerificationReceipt.create("task-proof", "tests", evidence_id=" ")
+
+
+def test_completion_rejects_receipt_missing_from_store(stores: tuple[TaskStore, VerificationStore]):
+    task_store, _ = stores
+    task_store.create(
+        GoalContract(goal="missing receipt", acceptance_criteria=("tests",)),
+        ScopeContext(task_id="task-missing"),
+        task_id="task-missing",
+    )
+    task_store.add_verification_receipt("task-missing", "tests", "missing-row")
+
+    with pytest.raises(CompletionGateError, match="missing-row"):
+        task_store.complete("task-missing")
+
+
+@pytest.mark.parametrize(
+    ("receipt_task_id", "receipt_criterion"),
+    [("other-task", "tests"), ("task-mismatch", "lint")],
+)
+def test_completion_rejects_receipt_with_mismatched_identity(
+    stores: tuple[TaskStore, VerificationStore],
+    receipt_task_id: str,
+    receipt_criterion: str,
+):
+    task_store, verif_store = stores
+    task_store.create(
+        GoalContract(goal="identity check", acceptance_criteria=("tests",)),
+        ScopeContext(task_id="task-mismatch"),
+        task_id="task-mismatch",
+    )
+    receipt = receipt_for(receipt_task_id, receipt_criterion)
+    verif_store.record(receipt)
+    task_store.add_verification_receipt("task-mismatch", "tests", receipt.receipt_id)
+
+    with pytest.raises(CompletionGateError, match="task-mismatch|criterion"):
+        task_store.complete("task-mismatch")
+
+
+def test_completion_fails_closed_and_preserves_receipt_lookup_error(
+    stores: tuple[TaskStore, VerificationStore], monkeypatch: pytest.MonkeyPatch
+):
+    task_store, _ = stores
+    task_store.create(
+        GoalContract(goal="database failure", acceptance_criteria=("tests",)),
+        ScopeContext(task_id="task-db-error"),
+        task_id="task-db-error",
+    )
+    task_store.add_verification_receipt("task-db-error", "tests", "receipt-db-error")
+
+    from local_ai_hub.sqlite_support import connect_sqlite
+
+    class FailingReceiptLookup:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def execute(self, query, *args, **kwargs):
+            if "agent_verification_receipts" in query:
+                raise RuntimeError("receipt database unavailable")
+            return self.connection.execute(query, *args, **kwargs)
+
+        def close(self):
+            self.connection.close()
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+    def fail_lookup(*args, **kwargs):
+        return FailingReceiptLookup(connect_sqlite(*args, **kwargs))
+
+    monkeypatch.setattr("local_ai_hub.agent_tasks.connect_sqlite", fail_lookup)
+    with pytest.raises(CompletionGateError, match="receipt-db-error") as error:
+        task_store.complete("task-db-error")
+
+    assert isinstance(error.value.__cause__, RuntimeError)
+    assert "receipt database unavailable" in str(error.value.__cause__)
+
+
+def test_failed_receipt_storage_cannot_satisfy_completion(
+    stores: tuple[TaskStore, VerificationStore], monkeypatch: pytest.MonkeyPatch
+):
+    task_store, verif_store = stores
+    task_store.create(
+        GoalContract(goal="storage failure", acceptance_criteria=("tests",)),
+        ScopeContext(task_id="task-store-error"),
+        task_id="task-store-error",
+    )
+
+    def fail_store(*args, **kwargs):
+        raise RuntimeError("receipt write failed")
+
+    monkeypatch.setattr("local_ai_hub.agent_verification.connect_sqlite", fail_store)
+    with pytest.raises(RuntimeError, match="receipt write failed"):
+        verif_store.record(receipt_for("task-store-error", "tests"))
+    monkeypatch.undo()
+
+    with pytest.raises(CompletionGateError, match="tests"):
+        task_store.complete("task-store-error")
+
+
+def test_valid_receipt_allows_task_completion(stores: tuple[TaskStore, VerificationStore]):
+    task_store, verif_store = stores
+    task_store.create(
+        GoalContract(goal="valid proof", acceptance_criteria=("tests",)),
+        ScopeContext(task_id="task-valid"),
+        task_id="task-valid",
+    )
+    receipt = receipt_for("task-valid", "tests")
+    verif_store.record(receipt)
+
+    completed = task_store.complete("task-valid")
+
+    assert completed.status.value == "completed"
+    assert completed.verification_receipts["tests"] == receipt.receipt_id
+
+
 def test_verification_store_prunes_legacy_invalid_receipts(tmp_path: Path):
     state_store = AgentStateStore(tmp_path / "legacy.sqlite3")
     VerificationStore(state_store)
@@ -124,7 +242,8 @@ def test_current_revision_rejects_fresh_receipt_from_other_revision(stores: tupl
         task_id="revision-task",
     )
     verif_store.record(VerificationReceipt.create(
-        "revision-task", "tests", repository_revision="old-revision", expires_at=100.0,
+        "revision-task", "tests", evidence_id="ev-old-revision",
+        repository_revision="old-revision", expires_at=100.0,
     ))
 
     result = verif_store.completion("revision-task", now=50.0, current_revision="new-revision")

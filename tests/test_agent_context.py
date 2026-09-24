@@ -33,6 +33,7 @@ def compiler(tmp_path: Path) -> ContextCompiler:
             task_id="task-1",
             criterion="tests",
             passed=True,
+            evidence_id="E_agent_context_fixture",
             details={"output": "all passed"},
         )
     )
