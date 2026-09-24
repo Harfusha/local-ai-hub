@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -107,6 +109,15 @@ def test_recovery_journal_replays_the_same_payload_after_response_loss(tmp_path)
     assert retry["response"] == {"success": True, "checkpoint_id": "cp-1"}
 
 
+def test_begin_requires_identity_and_payload(tmp_path) -> None:
+    journal = RecoveryJournal(tmp_path)
+
+    with pytest.raises(TypeError):
+        journal.begin("req-required", "tenant", "/api/work-orders", payload={"action": "submit"})
+    with pytest.raises(TypeError):
+        journal.begin("req-required", "tenant", "/api/work-orders", identity="agent-a")
+
+
 def test_recovery_journal_conflicts_when_request_payload_changes(tmp_path) -> None:
     journal = RecoveryJournal(tmp_path)
     journal.begin("req-1", "tenant", "/api/tasks/checkpoint", identity="agent-a", payload={"state": "done"})
@@ -145,6 +156,64 @@ def test_wait_for_preserves_unknown_after_process_interruption(tmp_path) -> None
     assert result is not None
     assert result["state"] == "abandoned"
     assert result["outcome_unknown"] is True
+
+
+def test_lookup_requires_identity_and_payload_fingerprint(tmp_path) -> None:
+    journal = RecoveryJournal(tmp_path)
+    payload = {"action": "submit"}
+    journal.begin("req-identity", "tenant", "/api/work-orders", identity="agent-a", payload=payload)
+    journal.finish("req-identity", True, response={"secret": "stored"})
+    fingerprint = journal.fingerprint_payload(payload)
+
+    with pytest.raises(TypeError):
+        journal.lookup("req-identity", "tenant", "/api/work-orders", payload_fingerprint=fingerprint)
+    with pytest.raises(TypeError):
+        journal.lookup("req-identity", "tenant", "/api/work-orders", identity="agent-a")
+
+    assert journal.lookup(
+        "req-identity", "tenant", "/api/work-orders", identity="agent-b", payload_fingerprint=fingerprint
+    )["state"] == "conflict"
+    assert journal.lookup(
+        "req-identity", "tenant", "/api/work-orders", identity="agent-a", payload_fingerprint="different"
+    )["state"] == "conflict"
+
+
+def test_wait_for_requires_identity_and_payload_fingerprint(tmp_path) -> None:
+    journal = RecoveryJournal(tmp_path)
+    payload = {"action": "submit"}
+    journal.begin("req-wait-identity", "tenant", "/api/work-orders", identity="agent-a", payload=payload)
+    fingerprint = journal.fingerprint_payload(payload)
+
+    with pytest.raises(TypeError):
+        journal.wait_for("req-wait-identity", "tenant", "/api/work-orders", timeout_seconds=0, payload_fingerprint=fingerprint)
+    with pytest.raises(TypeError):
+        journal.wait_for("req-wait-identity", "tenant", "/api/work-orders", timeout_seconds=0, identity="agent-a")
+
+    journal.finish("req-wait-identity", True, response={"secret": "stored"})
+    identity_mismatch = journal.wait_for(
+        "req-wait-identity", "tenant", "/api/work-orders", timeout_seconds=0,
+        identity="agent-b", payload_fingerprint=fingerprint,
+    )
+    payload_mismatch = journal.wait_for(
+        "req-wait-identity", "tenant", "/api/work-orders", timeout_seconds=0,
+        identity="agent-a", payload_fingerprint="different",
+    )
+    assert identity_mismatch == {"state": "conflict"}
+    assert payload_mismatch == {"state": "conflict"}
+
+
+def test_trusted_lookup_metadata_never_returns_stored_response(tmp_path) -> None:
+    journal = RecoveryJournal(tmp_path)
+    payload = {"action": "submit"}
+    journal.begin("req-trace-metadata", "tenant", "/api/work-orders", identity="agent-a", payload=payload)
+    journal.finish("req-trace-metadata", True, response={"secret": "stored"})
+
+    metadata = journal.lookup_metadata(
+        "req-trace-metadata", "tenant", "/api/work-orders", identity="agent-a"
+    )
+
+    assert metadata["state"] == "done"
+    assert "response" not in metadata
 
 
 @pytest.mark.parametrize(
@@ -354,6 +423,45 @@ def test_client_allows_explicit_retry_with_the_same_request_id(tmp_path, monkeyp
     assert seen_request_ids == ["t07-checkpoint-1", "t07-checkpoint-1"]
 
 
+@pytest.mark.parametrize("request_id", ["", "bad request", "bad\nid", "café"])
+def test_client_rejects_malformed_request_id_before_network(tmp_path, monkeypatch, request_id: str) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
+        encoding="utf-8",
+    )
+    client = HubClient(config_path=str(config), auto_start=False)
+    sent: list[str] = []
+    monkeypatch.setattr(client, "_pooled_open", lambda *_args, **_kwargs: sent.append("sent") or b'{"success":true}')
+
+    result = client.post("/api/tasks/checkpoint", {"task_id": "task-1"}, request_id=request_id)
+
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+    assert sent == []
+
+
+def test_client_accepts_visible_ascii_request_id(tmp_path, monkeypatch) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
+        encoding="utf-8",
+    )
+    client = HubClient(config_path=str(config), auto_start=False)
+    seen_request_ids: list[str] = []
+
+    def open_request(_method: str, _path: str, _body: bytes, headers: dict[str, str], _timeout: float) -> bytes:
+        seen_request_ids.append(headers["X-LocalAI-Request-ID"])
+        return b'{"success":true}'
+
+    monkeypatch.setattr(client, "_pooled_open", open_request)
+    result = client.post("/api/tasks/checkpoint", {"task_id": "task-1"}, request_id="checkpoint!one")
+
+    assert result == {"success": True}
+    assert seen_request_ids == ["checkpoint!one"]
+
+
 def test_mutation_transport_error_returns_explicit_uncertainty(tmp_path, monkeypatch) -> None:
     config = tmp_path / "config.toml"
     config.write_text(
@@ -444,6 +552,7 @@ def test_post_journal_failure_prevents_mutation_dispatch(monkeypatch) -> None:
 def test_http_retry_replays_outcome_and_rejects_changed_payload(tmp_path, monkeypatch) -> None:
     journal = RecoveryJournal(tmp_path)
     payload_box: dict[str, dict[str, Any]] = {"value": {"action": "submit", "work_id": "work-1"}}
+    original_payload = dict(payload_box["value"])
     submitted: list[dict[str, Any]] = []
     app = SimpleNamespace(
         config={},
@@ -484,6 +593,93 @@ def test_http_retry_replays_outcome_and_rejects_changed_payload(tmp_path, monkey
     assert submitted == [{"action": "submit", "work_id": "work-1"}]
     assert [status for status, _data in responses] == [200, 200, 409]
     assert responses[1][1] == responses[0][1]
+    original = journal.lookup(
+        "req-1",
+        "tenant",
+        "/api/work-orders",
+        identity="agent-a",
+        payload_fingerprint=journal.fingerprint_payload(original_payload),
+    )
+    changed = journal.lookup(
+        "req-1",
+        "tenant",
+        "/api/work-orders",
+        identity="agent-a",
+        payload_fingerprint=journal.fingerprint_payload(payload_box["value"]),
+    )
+    assert original["response"] == responses[0][1]
+    assert changed == {"state": "conflict", "error": "request id already belongs to a different identity, operation, or payload"}
+
+
+def test_post_rejects_malformed_request_id_before_mutation_dispatch(tmp_path, monkeypatch) -> None:
+    journal = RecoveryJournal(tmp_path)
+    submitted: list[dict[str, Any]] = []
+    app = SimpleNamespace(
+        config={"observability": {"exclude_http_paths": ["/api/work-orders"]}},
+        recovery=journal,
+        work_orchestrator=SimpleNamespace(
+            enabled=True,
+            submit=lambda _tenant, payload: submitted.append(payload) or {"success": True},
+        ),
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
+    monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
+    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
+    monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: {"action": "submit", "work_id": "work-1"})
+    monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
+    responses: list[tuple[int, dict[str, Any]]] = []
+    monkeypatch.setattr(http_server.Handler, "_send", lambda self, status, data, **_kwargs: responses.append((status, data)))
+    handler = object.__new__(http_server.Handler)
+    handler.path = "/api/work-orders"
+    handler.headers = {"Content-Type": "application/json", "X-LocalAI-Request-ID": "bad request id"}
+
+    try:
+        http_server.Handler.do_POST(handler)
+    finally:
+        if getattr(handler, "_trace_context_token", None) is not None:
+            handler._close_trace_context()
+
+    assert submitted == []
+    assert responses[0][0] == 400
+    with closing(journal._connect()) as con:
+        assert con.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == 0
+
+
+def test_send_normalizes_http_error_before_journaling_and_serializing(monkeypatch) -> None:
+    finished: list[dict[str, Any]] = []
+
+    class _Recovery:
+        def finish(self, _request_id, success, detail, *, status_code, response):
+            finished.append({"success": success, "detail": detail, "status_code": status_code, "response": response})
+
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(recovery=_Recovery()))
+    monkeypatch.setattr(http_server.Handler, "_finish_debug_trace", lambda self, _status, _data: None)
+    monkeypatch.setattr(http_server.Handler, "_common_headers", lambda self, **_kwargs: None)
+    monkeypatch.setattr(http_server.Handler, "send_response", lambda self, _status: None)
+    monkeypatch.setattr(http_server.Handler, "send_header", lambda self, _name, _value: None)
+    monkeypatch.setattr(http_server.Handler, "end_headers", lambda self: None)
+    handler = object.__new__(http_server.Handler)
+    handler._journal_request_id = "req-send-error"
+    handler._journal_finished = False
+    handler._telemetry_finished = True
+    handler._debug_trace_finished = True
+    handler.path = "/api/work-orders"
+    handler.wfile = BytesIO()
+
+    http_server.Handler._send(handler, 503, {"error": "retry later"})
+
+    expected = {
+        "error": "retry later",
+        "success": False,
+        "status_code": 503,
+        "retryable": True,
+        "terminal": False,
+    }
+    assert finished[0]["success"] is False
+    assert finished[0]["status_code"] == 503
+    assert finished[0]["response"] == expected
+    assert json.loads(handler.wfile.getvalue().decode("utf-8")) == expected
 
 
 @pytest.mark.parametrize(
@@ -673,4 +869,10 @@ def test_confirmed_restart_request_is_not_replayed(tmp_path, monkeypatch) -> Non
     assert responses[0][0] == 200
     assert responses[1][0] == 409
     assert responses[1][1]["in_progress"] is True
-    assert journal.lookup("req-restart-once", "tenant", "/api/control", identity="agent-a")["state"] == "running"
+    assert journal.lookup(
+        "req-restart-once",
+        "tenant",
+        "/api/control",
+        identity="agent-a",
+        payload_fingerprint=journal.fingerprint_payload({"action": "restart_hub"}),
+    )["state"] == "running"

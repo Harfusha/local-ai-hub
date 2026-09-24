@@ -181,8 +181,8 @@ class RecoveryJournal:
         tenant: str,
         action: str,
         *,
-        identity: str = "",
-        payload: Any = None,
+        identity: str,
+        payload: Any,
     ) -> dict[str, Any]:
         """Atomically claim a request ID or return its recorded outcome."""
         request_id = self.validate_request_id(request_id)
@@ -266,8 +266,8 @@ class RecoveryJournal:
         tenant: str,
         action: str,
         *,
-        identity: str | None = None,
-        payload_fingerprint: str | None = None,
+        identity: str,
+        payload_fingerprint: str,
     ) -> dict[str, Any] | None:
         request_id = self.validate_request_id(request_id)
         with self._lock, closing(self._connect()) as con:
@@ -277,11 +277,36 @@ class RecoveryJournal:
             ).fetchone()
         if not row:
             return None
-        if row[0] != tenant or row[2] != action or (identity is not None and row[1] != identity) or (payload_fingerprint is not None and row[3] != payload_fingerprint):
+        if row[0] != tenant or row[1] != identity or row[2] != action or row[3] != payload_fingerprint:
             return {"state": "conflict", "error": "request id already belongs to a different identity, operation, or payload"}
         response = self._decode_response(str(row[6] or ""))
         result = {"state": row[4], "status_code": int(row[5] or 0), "response": response, "updated_at": float(row[7])}
         if row[4] == "abandoned" or (row[4] in {"done", "failed"} and response is None):
+            result["outcome_unknown"] = True
+        return result
+
+    def lookup_metadata(
+        self,
+        request_id: str,
+        tenant: str,
+        action: str,
+        *,
+        identity: str,
+    ) -> dict[str, Any] | None:
+        """Return journal state without response data for trusted trace reconciliation."""
+        request_id = self.validate_request_id(request_id)
+        with self._lock, closing(self._connect()) as con:
+            row = con.execute(
+                "SELECT tenant,identity,action,state,status_code,response_json,updated_at FROM requests WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+        if not row:
+            return None
+        if row[0] != tenant or row[1] != identity or row[2] != action:
+            return {"state": "conflict", "error": "request id already belongs to a different identity or operation"}
+        state = str(row[3])
+        result = {"state": state, "status_code": int(row[4] or 0), "updated_at": float(row[6])}
+        if state == "abandoned" or (state in {"done", "failed"} and not row[5]):
             result["outcome_unknown"] = True
         return result
 
@@ -292,8 +317,8 @@ class RecoveryJournal:
         action: str,
         *,
         timeout_seconds: float,
-        identity: str | None = None,
-        payload_fingerprint: str | None = None,
+        identity: str,
+        payload_fingerprint: str,
     ) -> dict[str, Any] | None:
         """Wait briefly for active duplicate work, never re-executing it."""
         request_id = self.validate_request_id(request_id)
