@@ -269,14 +269,17 @@ def test_post_malformed_response_returns_explicit_unknown_outcome(tmp_path, monk
     assert "private payload" not in repr(result)
 
 
-def test_client_coalescing_timeout_returns_structured_result(tmp_path, monkeypatch):
+def test_client_coalescing_timeout_returns_owner_request_metadata(tmp_path, monkeypatch):
     client = _client(tmp_path)
     request_started = threading.Event()
     release_request = threading.Event()
+    request_ids = []
 
-    def pooled_open(*_args, **_kwargs):
-        request_started.set()
-        release_request.wait(1)
+    def pooled_open(_method, _path, _body, headers, _timeout):
+        request_ids.append(headers["X-LocalAI-Request-ID"])
+        if len(request_ids) == 1:
+            request_started.set()
+            release_request.wait(timeout=1)
         return b'{"success":true}'
 
     monkeypatch.setattr(client, "_pooled_open", pooled_open)
@@ -285,18 +288,129 @@ def test_client_coalescing_timeout_returns_structured_result(tmp_path, monkeypat
         target=lambda: owner_results.append(client.post("/api/repo/complexity", {}, timeout=1))
     )
     owner.start()
-    assert request_started.wait(1)
+    assert request_started.wait(timeout=1)
     try:
         result = client.post("/api/repo/complexity", {}, timeout=0.2)
     finally:
         release_request.set()
-        owner.join(1)
+        owner.join(timeout=1)
 
     assert not owner.is_alive()
     assert owner_results[0]["success"] is True
     assert result["success"] is False
+    assert result["outcome_unknown"] is True
+    assert result["in_progress"] is True
     assert result["retry_timeout"] is True
-    assert result["request_id"].startswith("req_")
+    assert result["request_id"] == request_ids[0]
+
+
+def test_safe_post_decode_failure_after_replay_is_uncertain(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    request_ids = []
+
+    def pooled_open(_method, _path, _body, headers, _timeout):
+        request_ids.append(headers["X-LocalAI-Request-ID"])
+        if len(request_ids) == 1:
+            raise URLError("connection lost")
+        return b'{"success":true,"value":'
+
+    monkeypatch.setattr(client, "_pooled_open", pooled_open)
+
+    result = client.request("/api/repo/complexity", {"root": "repo"}, replay_safe=True)
+
+    assert len(request_ids) == 2
+    assert len(set(request_ids)) == 1
+    assert result["outcome_unknown"] is True
+    assert result["request_id"] == request_ids[0]
+    assert result["retried"] is True
+
+
+def test_different_replay_safe_payloads_do_not_coalesce(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    first_started = threading.Event()
+    second_started = threading.Event()
+    release_first = threading.Event()
+    request_ids = []
+    request_lock = threading.Lock()
+
+    def pooled_open(_method, _path, _body, headers, _timeout):
+        with request_lock:
+            request_ids.append(headers["X-LocalAI-Request-ID"])
+            call_number = len(request_ids)
+        if call_number == 1:
+            first_started.set()
+            release_first.wait(timeout=2)
+        else:
+            second_started.set()
+        return b'{"success":true}'
+
+    monkeypatch.setattr(client, "_pooled_open", pooled_open)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(client.request, "/api/repo/complexity", {"root": "repo-a"}, replay_safe=True)
+        assert first_started.wait(timeout=1)
+        second = pool.submit(client.request, "/api/repo/complexity", {"root": "repo-b"}, replay_safe=True)
+        try:
+            assert second_started.wait(timeout=1)
+        finally:
+            release_first.set()
+        first_result = first.result(timeout=1)
+        second_result = second.result(timeout=1)
+
+    assert first_result["success"] is True
+    assert second_result["success"] is True
+    assert len(request_ids) == 2
+    assert len(set(request_ids)) == 2
+
+
+def test_coord_pubsub_poll_uses_after_seq(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    captured = {}
+
+    def capture_post(path, payload, **_kwargs):
+        captured.update({"path": path, **payload})
+        return {"success": True}
+
+    monkeypatch.setattr(client, "post", capture_post)
+
+    result = client.coord("pubsub_poll", root="repo", topic="updates", after_seq=17)
+
+    assert result["success"] is True
+    assert captured == {
+        "path": "/api/coord/pubsub_poll",
+        "root": "repo",
+        "topic": "updates",
+        "after_seq": 17,
+        "limit": 50,
+    }
+
+
+def test_coord_worktree_release_keeps_physical_id_separate_from_lease(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    captured = {}
+
+    def capture_post(path, payload, **_kwargs):
+        captured.update({"path": path, **payload})
+        return {"success": True}
+
+    monkeypatch.setattr(client, "post", capture_post)
+
+    result = client.coord(
+        "worktree_release",
+        root="repo",
+        lease_id="logical-lease",
+        worktree_id="physical-worktree",
+    )
+
+    assert result["success"] is True
+    assert captured == {
+        "path": "/api/coord/worktree_release",
+        "root": "repo",
+        "worktree_path": "",
+        "delete_branch": True,
+        "branch": None,
+        "worktree_id": "physical-worktree",
+    }
 
 
 def test_stream_events_sends_client_identity_and_caps_timeout(tmp_path, monkeypatch):
