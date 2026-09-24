@@ -536,31 +536,20 @@ def test_check_mode_with_real_schema_generator_does_not_write_files(tmp_path, mo
         if name == "local_ai_hub" or name.startswith("local_ai_hub."):
             monkeypatch.delitem(sys.modules, name, raising=False)
     monkeypatch.setattr(sys, "dont_write_bytecode", True)
-    hardware = import_module("local_ai_hub.hardware")
-    monkeypatch.setattr(hardware, "detect_hardware", lambda profile="auto": {"profile": profile})
-    generator = import_module("local_ai_hub.generator")
-    real_schema_generator = generator.generate_mcp_tool_schemas
-    generated_schema_counts = []
 
-    def track_schema_generation(cfg):
-        schemas = real_schema_generator(cfg)
-        generated_schema_counts.append(len(schemas))
-        return schemas
-
-    monkeypatch.setattr(generator, "generate_mcp_tool_schemas", track_schema_generation)
-
-    def snapshot_tree():
+    def snapshot_tree(root):
         snapshot = {}
-        for path in (tmp_path, *tmp_path.rglob("*")):
+        for path in (root, *root.rglob("*")):
             stat = path.stat()
-            relative = path.relative_to(tmp_path)
+            relative = path.relative_to(root)
             if path.is_dir():
                 snapshot[relative] = ("directory", stat.st_mtime_ns)
             else:
                 snapshot[relative] = ("file", stat.st_mtime_ns, stat.st_size, path.read_bytes())
         return snapshot
 
-    before = snapshot_tree()
+    scoped_roots = (tmp_path, ROOT / "src" / "local_ai_hub")
+    before = {root: snapshot_tree(root) for root in scoped_roots}
 
     def reject_write(*args, **kwargs):
         pytest.fail("--check schema fallback attempted a filesystem mutation")
@@ -594,6 +583,19 @@ def test_check_mode_with_real_schema_generator_does_not_write_files(tmp_path, mo
     for name in ("mkdir", "makedirs", "replace", "rename", "remove", "unlink", "rmdir"):
         monkeypatch.setattr(os, name, reject_write)
 
+    hardware = import_module("local_ai_hub.hardware")
+    monkeypatch.setattr(hardware, "detect_hardware", lambda profile="auto": {"profile": profile})
+    generator = import_module("local_ai_hub.generator")
+    real_schema_generator = generator.generate_mcp_tool_schemas
+    generated_schema_counts = []
+
+    def track_schema_generation(cfg):
+        schemas = real_schema_generator(cfg)
+        generated_schema_counts.append(len(schemas))
+        return schemas
+
+    monkeypatch.setattr(generator, "generate_mcp_tool_schemas", track_schema_generation)
+
     result = MODULE.main(["--root", str(tmp_path), "--check"])
     summary = json.loads(capsys.readouterr().out)
 
@@ -606,7 +608,7 @@ def test_check_mode_with_real_schema_generator_does_not_write_files(tmp_path, mo
     assert generated_schema_counts and generated_schema_counts[0] > 0
     assert summary["success"] is False
     assert summary["coverage_rows"] > 0
-    after = snapshot_tree()
+    after = {root: snapshot_tree(root) for root in scoped_roots}
     assert after == before
 
 
@@ -764,7 +766,7 @@ def local_ai_repo(action: Literal["search", "missing"], detail: Literal["brief",
     assert any("missing MCP action handler local_ai_repo:missing" in item for item in inventory["drift"])
 
 
-def test_generic_return_does_not_handle_unmatched_generated_mcp_action(tmp_path):
+def test_generic_truthy_return_does_not_handle_unmatched_generated_mcp_action(tmp_path):
     make_repo(tmp_path)
     write(
         tmp_path,
@@ -772,10 +774,10 @@ def test_generic_return_does_not_handle_unmatched_generated_mcp_action(tmp_path)
         '''from typing import Literal
 
 @mcp.tool()
-def local_ai_repo(action: str):
+def local_ai_repo(action: Literal["search", "missing"]):
     if action == "search":
         return search()
-    return None
+    return {"ok": True}
 ''',
     )
     write(
