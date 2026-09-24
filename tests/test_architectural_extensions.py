@@ -9,7 +9,7 @@ from urllib.error import HTTPError
 
 import pytest
 
-from local_ai_hub.agent_events import SwarmPubSub
+from local_ai_hub.agent_events import AgentStateStore, SwarmPubSub
 from local_ai_hub.commands import CommandBroker, _BoundedStreamBuffer, _redact_secrets
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.process_utils import (
@@ -81,8 +81,8 @@ def test_secret_redaction_and_bounded_buffer():
     assert "***" in val
 
 
-def test_swarm_pubsub_lifecycle_and_ttl():
-    pubsub = SwarmPubSub(max_age_seconds=1.0)
+def test_swarm_pubsub_lifecycle_and_ttl(tmp_path: Path):
+    pubsub = SwarmPubSub(AgentStateStore(tmp_path / "agent_state.sqlite3"), max_age_seconds=1.0)
     topic = "agent_events_test"
 
     sub_id, q = pubsub.subscribe(topic, maxsize=10)
@@ -97,7 +97,7 @@ def test_swarm_pubsub_lifecycle_and_ttl():
     assert msg["payload"]["task"] == "solve_gap"
 
     # Test polling
-    poll_res = pubsub.poll(topic, since_timestamp=0.0)
+    poll_res = pubsub.poll(topic, after_seq=0)
     assert poll_res["success"] is True
     assert poll_res["count"] >= 1
 
