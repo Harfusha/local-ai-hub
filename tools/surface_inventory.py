@@ -87,20 +87,67 @@ def _annotation_literals(node: ast.AST) -> set[str]:
     return values
 
 
-def _dispatch_literals(functions: list[ast.FunctionDef | ast.AsyncFunctionDef], parameter: str) -> set[str]:
+def _type_alias_literals(tree: ast.Module) -> dict[str, set[str]]:
+    aliases: dict[str, set[str]] = {}
+    for _ in range(len(tree.body)):
+        for node in tree.body:
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
+                targets = [node.target]
+                value = node.value
+            elif isinstance(node, ast.Assign):
+                targets = [target for target in node.targets if isinstance(target, ast.Name)]
+                value = node.value
+            else:
+                continue
+            values = _annotation_literals(value)
+            if not values:
+                values = _literal_strings(value)
+                for child in ast.walk(value):
+                    if isinstance(child, ast.Name):
+                        values.update(aliases.get(child.id, set()))
+            for target in targets:
+                if values:
+                    aliases[target.id] = values
+    return aliases
+
+
+def _annotation_values(node: ast.AST, type_aliases: dict[str, set[str]]) -> set[str]:
+    values = _annotation_literals(node)
+    if not values and isinstance(node, ast.Name):
+        values.update(type_aliases.get(node.id, set()))
+    return values
+
+
+def _dispatch_literals(
+    functions: list[ast.FunctionDef | ast.AsyncFunctionDef],
+    parameter: str,
+    type_aliases: dict[str, set[str]],
+) -> set[str]:
     actions: set[str] = set()
     for function in functions:
+        action_aliases = {
+            target.id
+            for node in ast.walk(function)
+            if isinstance(node, (ast.Assign, ast.AnnAssign))
+            and node.value is not None
+            and any(isinstance(child, ast.Name) and child.id == parameter for child in ast.walk(node.value))
+            for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+            if isinstance(target, ast.Name)
+        }
         for node in ast.walk(function):
             if isinstance(node, ast.Compare):
                 parts = [node.left, *node.comparators]
                 for index, part in enumerate(parts):
-                    if isinstance(part, ast.Name) and part.id == parameter:
-                        actions.update(
-                            value
-                            for other in parts[:index] + parts[index + 1 :]
-                            for value in _literal_strings(other)
-                        )
-            elif isinstance(node, ast.Match) and isinstance(node.subject, ast.Name) and node.subject.id == parameter:
+                    if isinstance(part, ast.Name) and (part.id == parameter or part.id in action_aliases):
+                        for other in parts[:index] + parts[index + 1 :]:
+                            actions.update(_literal_strings(other))
+                            if isinstance(other, ast.Attribute) and other.attr == "__args__" and isinstance(other.value, ast.Name):
+                                actions.update(type_aliases.get(other.value.id, set()))
+            elif (
+                isinstance(node, ast.Match)
+                and isinstance(node.subject, ast.Name)
+                and (node.subject.id == parameter or node.subject.id in action_aliases)
+            ):
                 for case in node.cases:
                     actions.update(_literal_strings(case.pattern))
     return actions
@@ -114,7 +161,7 @@ def _mcp_action_handlers(
         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
     if "action" not in {item.arg for item in function.args.args}:
-        return {"actions": [], "prefixes": [], "symbols": [function.name], "delegated": False, "default_handler": False, "targets": []}
+        return {"actions": [], "default_actions": [], "prefixes": [], "symbols": [function.name], "delegated": False, "targets": []}
 
     handlers = [function]
     symbols = [function.name]
@@ -123,6 +170,7 @@ def _mcp_action_handlers(
     prefixes: set[str] = set()
     targets: set[str] = set()
     action_payload = False
+    type_aliases = _type_alias_literals(tree)
     while pending:
         current = pending.pop()
         current_nodes = list(ast.walk(current))
@@ -150,11 +198,24 @@ def _mcp_action_handlers(
                 handlers.append(target)
                 symbols.append(target_name)
                 pending.append(target)
+    dispatch_actions = _dispatch_literals(handlers, "action", type_aliases)
+    dispatch_actions.update(_dispatch_literals(handlers, "detail", type_aliases))
+    action_parameter = next(arg for arg in function.args.args if arg.arg == "action")
+    declared_actions = _annotation_values(action_parameter.annotation, type_aliases) if action_parameter.annotation else set()
+    has_explicit_fallback = any(
+        isinstance(statement, ast.Return)
+        and statement.value is not None
+        and not (isinstance(statement.value, ast.Constant) and statement.value.value is None)
+        for statement in function.body
+    )
+    # Fallthrough only covers source-declared values with a concrete result;
+    # a generic `return None` does not prove dispatch for any action.
+    default_actions = (declared_actions - dispatch_actions) if has_explicit_fallback else set()
     return {
-        "actions": sorted(_dispatch_literals(handlers, "action")),
+        "actions": sorted(dispatch_actions),
+        "default_actions": sorted(default_actions),
         "prefixes": sorted(prefixes),
         "symbols": sorted(symbols),
-        "default_handler": any(isinstance(statement, ast.Return) for fn in handlers for statement in fn.body),
         "delegated": action_payload and bool(
             targets or any(
                 _call_name(node.func) == "coord"
@@ -216,9 +277,9 @@ def _extract_mcp(tree: ast.Module, path: str) -> tuple[list[dict[str, Any]], dic
             "handler": node.name,
             "handler_symbols": handler_analysis["symbols"],
             "dispatch_actions": handler_analysis["actions"],
+            "default_actions": handler_analysis["default_actions"],
             "dispatch_prefixes": handler_analysis["prefixes"],
             "delegated_dispatch": handler_analysis["delegated"],
-            "default_handler": handler_analysis["default_handler"],
             "http_targets": handler_analysis["targets"],
             "registration_condition": " and ".join(reversed(registration_conditions)) or None,
             "evidence": f"{path}:{node.lineno}",
@@ -883,7 +944,7 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
                 for action in variants.get(parameter, []):
                     handled = action in source_tool.get("dispatch_actions", []) or any(
                         action.startswith(prefix) for prefix in source_tool.get("dispatch_prefixes", [])
-                    ) or source_tool.get("delegated_dispatch") or source_tool.get("default_handler")
+                    ) or source_tool.get("delegated_dispatch") or action in source_tool.get("default_actions", [])
                     if parameter == "action" and not handled:
                         drift.append(f"missing MCP action handler {name}:{action}")
 
