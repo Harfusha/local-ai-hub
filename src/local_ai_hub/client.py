@@ -27,6 +27,12 @@ _DETACHED_CHILDREN_LOCK = threading.Lock()
 _DETACHED_CHILDREN: list[subprocess.Popen[Any]] = []
 
 
+class _SingleflightTimeout(TimeoutError):
+    def __init__(self, request_id: str) -> None:
+        super().__init__("coalesced hub request timed out")
+        self.request_id = request_id
+
+
 def _retain_detached_child(process: subprocess.Popen[Any]) -> None:
     """Keep intentionally detached hub children alive for later polling/reaping."""
     with _DETACHED_CHILDREN_LOCK:
@@ -155,11 +161,11 @@ class HubClient:
             result["retried"] = True
         return result
 
-    def _singleflight(self, key: str, timeout: float, execute: Any) -> dict[str, Any]:
+    def _singleflight(self, key: str, timeout: float, execute: Any, request_id: str = "") -> dict[str, Any]:
         with self._flight_lock:
             flight = self._flights.get(key)
             if flight is None:
-                flight = {"event": threading.Event(), "result": None, "error": None}
+                flight = {"event": threading.Event(), "result": None, "error": None, "request_id": request_id}
                 self._flights[key] = flight
                 owner = True
             else:
@@ -177,7 +183,7 @@ class HubClient:
                 raise flight["error"]
             return flight["result"]
         if not flight["event"].wait(timeout):
-            raise TimeoutError("coalesced hub request timed out")
+            raise _SingleflightTimeout(str(flight.get("request_id") or request_id))
         if flight["error"] is not None:
             raise flight["error"]
         result = copy.deepcopy(flight["result"])
@@ -433,14 +439,17 @@ class HubClient:
 
         key = f"POST|{self.tenant}|{self.agent}|{path}|{body.decode('utf-8')}"
         try:
-            return self._singleflight(key, timeout, execute)
-        except TimeoutError:
+            return self._singleflight(key, timeout, execute, request_id)
+        except TimeoutError as exc:
             return {
                 "success": False,
                 "error": "coalesced request timed out before result was available",
                 "retry_timeout": True,
                 "coalesced": True,
-                "request_id": request_id,
+                "in_progress": True,
+                "retryable": True,
+                "outcome_unknown": True,
+                "request_id": getattr(exc, "request_id", request_id),
             }
 
     def get(self, path: str, timeout: float = 15.0) -> dict[str, Any]:
@@ -484,14 +493,14 @@ class HubClient:
 
         key = f"GET|{self.tenant}|{self.agent}|{path}"
         try:
-            return self._singleflight(key, timeout, execute)
-        except TimeoutError:
+            return self._singleflight(key, timeout, execute, request_id)
+        except TimeoutError as exc:
             return {
                 "success": False,
                 "error": "coalesced request timed out before result was available",
                 "retry_timeout": True,
                 "coalesced": True,
-                "request_id": request_id,
+                "request_id": getattr(exc, "request_id", request_id),
             }
 
     @staticmethod
