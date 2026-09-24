@@ -12,6 +12,7 @@ import sqlite3
 from contextlib import closing
 
 from local_ai_hub import http_server
+from local_ai_hub.agent_events import AgentStateStore, SwarmPubSub
 from local_ai_hub.client import HubClient
 from local_ai_hub.commands import CommandBroker
 from local_ai_hub.rag import RAGStore
@@ -646,6 +647,75 @@ def test_http_retry_replays_outcome_and_rejects_changed_payload(tmp_path, monkey
     )
     assert original["response"] == responses[0][1]
     assert changed == {"state": "conflict", "error": "request id already belongs to a different identity, operation, or payload"}
+
+
+def test_http_retry_after_response_loss_publishes_one_durable_event(tmp_path, monkeypatch) -> None:
+    journal = RecoveryJournal(tmp_path / "recovery")
+    state_store = AgentStateStore(tmp_path / "agent-state.sqlite3")
+    pubsub = SwarmPubSub(state_store)
+    payload_box: dict[str, dict[str, Any]] = {
+        "value": {"topic": "t07-idempotence", "message": {"operation_id": "publish-1"}, "sender": "agent-a"}
+    }
+    original_payload = dict(payload_box["value"])
+    app = SimpleNamespace(
+        config={},
+        recovery=journal,
+        services=SimpleNamespace(pubsub_publish=pubsub.publish),
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-publish-1"))
+    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
+    monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
+    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
+    monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: dict(payload_box["value"]))
+    monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
+    lost_response: list[tuple[int, dict[str, Any]]] = []
+    responses: list[tuple[int, dict[str, Any]]] = []
+
+    def respond(self, status: int, data: dict[str, Any], headers: Any = None) -> None:
+        if not getattr(self, "_journal_finished", False):
+            journal.finish(self._journal_request_id, status < 400, status_code=status, response=data)
+            self._journal_finished = True
+            if not lost_response:
+                lost_response.append((status, dict(data)))
+                return  # Simulate a disconnect after the durable mutation and journal commit.
+        responses.append((status, dict(data)))
+
+    monkeypatch.setattr(http_server.Handler, "_send", respond)
+
+    def request() -> None:
+        handler = object.__new__(http_server.Handler)
+        handler.path = "/api/coord/pubsub_publish"
+        handler.headers = {"Content-Type": "application/json"}
+        http_server.Handler.do_POST(handler)
+
+    request()  # Mutation commits; response is lost.
+    request()  # Same request ID replays the stored response.
+    payload_box["value"] = {"topic": "t07-idempotence", "message": {"operation_id": "publish-2"}, "sender": "agent-a"}
+    request()  # Changed payload conflicts before dispatch.
+
+    with closing(sqlite3.connect(state_store.db_path)) as con:
+        durable_events = con.execute(
+            "SELECT seq, payload FROM agent_events WHERE stream_id = ? ORDER BY seq",
+            ("pubsub:t07-idempotence",),
+        ).fetchall()
+    assert len(durable_events) == 1
+    assert durable_events[0][0] == 1
+    assert json.loads(durable_events[0][1]) == {
+        "sender": "agent-a",
+        "message": {"operation_id": "publish-1"},
+    }
+    assert [status for status, _data in responses] == [200, 409]
+    assert responses[0] == lost_response[0]
+    assert responses[1][1]["success"] is False
+    stored = journal.lookup(
+        "req-publish-1",
+        "tenant",
+        "/api/coord/pubsub_publish",
+        identity="agent-a",
+        payload_fingerprint=journal.fingerprint_payload(original_payload),
+    )
+    assert stored["response"] == lost_response[0][1]
 
 
 def test_post_rejects_malformed_request_id_before_mutation_dispatch(tmp_path, monkeypatch) -> None:
