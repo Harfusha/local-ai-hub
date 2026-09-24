@@ -120,6 +120,7 @@ Recipes (guidance, not gates):
 - Recipe — Change: gather indexed evidence, use `local_ai_repo(action="solve")` before edits, claim `local_ai_coord` leases for overlapping paths, then run indexed impact/review before validation.
 - Recipe — Validate: route repeatable commands through `local_ai_command`, reuse cached results, use `review_diff` or `security_audit` when relevant.
 - Recipe — Retrieve: use `local_ai_rag` only after deterministic/indexed paths are exhausted.
+- For `local_ai_rag(action="ingest_document")`, pass `content`, `title`, and `metadata`; for `ingest_diagram`, pass `image_path`, `caption`, and `metadata`. Raster diagrams are indexed as metadata-only; SVG text nodes carry extraction provenance.
 - A recipe step may be skipped when irrelevant; one bounded fallback is allowed when Hub is unavailable.
 
 Delegation is the default for any task with useful bounded independent work.

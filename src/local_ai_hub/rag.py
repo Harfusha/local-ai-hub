@@ -28,6 +28,7 @@ from functools import lru_cache
 
 
 _MAX_RERANK_CANDIDATES = 512
+_INDEX_EMBED_BATCH_SIZE = 64
 
 
 def _reverse_text_order(value: str) -> tuple[int, ...]:
@@ -205,6 +206,22 @@ class RAGStore:
             initialize_wal(con)
             if not quick_sanity_check(con):
                 raise sqlite3.DatabaseError("rag sanity check failed")
+            legacy_schema_reset = False
+            existing_chunks = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunks'"
+            ).fetchone()
+            if existing_chunks is not None:
+                chunk_columns = {
+                    str(row[1]) for row in con.execute("PRAGMA table_info(chunks)").fetchall()
+                }
+                if "embedding_space" not in chunk_columns:
+                    # RAG tables are disposable derived state. Rebuild the snapshot
+                    # instead of mutating an incompatible legacy schema in place.
+                    con.execute("DROP TABLE IF EXISTS chunk_fts")
+                    con.execute("DROP TABLE IF EXISTS chunks")
+                    con.execute("DROP TABLE IF EXISTS files")
+                    con.execute("DROP TABLE IF EXISTS rag_meta")
+                    legacy_schema_reset = True
             con.execute(
                 """CREATE TABLE IF NOT EXISTS chunks (
                     tenant TEXT NOT NULL,
@@ -249,9 +266,10 @@ class RAGStore:
             )
             previous = con.execute("SELECT value FROM rag_meta WHERE key='index_fingerprint'").fetchone()
             current = self.index_fingerprint
+            self.index_reset = legacy_schema_reset
             if previous is None:
                 existing = int(con.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
-                self.index_reset = existing > 0
+                self.index_reset = self.index_reset or existing > 0
                 if existing:
                     con.execute("DELETE FROM chunks")
                     con.execute("DELETE FROM files")
@@ -639,7 +657,6 @@ class RAGStore:
         read_files = 0
         reused_chunks = 0
         changed_indices: list[int] = []
-        changed_texts: list[str] = []
         rag_cfg = self.config.get("rag", {})
         dedup_near_duplicates = bool(rag_cfg.get("dedup_near_duplicates", True))
         max_hamming = int(rag_cfg.get("near_duplicate_max_hamming", 4))
@@ -682,11 +699,10 @@ class RAGStore:
                 changed_records.append(record)
                 if record["embedding"] is None:
                     changed_indices.append(idx)
-                    changed_texts.append(chunk)
                 else:
                     reused_chunks += 1
 
-        if changed_texts:
+        if changed_indices:
             # Cross-workspace chunk reuse check
             pending_by_hash: dict[str, list[int]] = {}
             for idx in changed_indices:
@@ -707,7 +723,6 @@ class RAGStore:
 
             if global_chunks:
                 still_indices: list[int] = []
-                still_texts: list[str] = []
                 for chash, indices in pending_by_hash.items():
                     if chash in global_chunks:
                         for idx in indices:
@@ -717,16 +732,15 @@ class RAGStore:
                     else:
                         first_idx = indices[0]
                         still_indices.append(first_idx)
-                        still_texts.append(str(changed_records[first_idx]["text"]))
                 changed_indices = still_indices
-                changed_texts = still_texts
             else:
                 changed_indices = [indices[0] for indices in pending_by_hash.values()]
-                changed_texts = [str(changed_records[idx]["text"]) for idx in changed_indices]
 
-        if changed_texts:
+        for offset in range(0, len(changed_indices), _INDEX_EMBED_BATCH_SIZE):
+            batch_indices = changed_indices[offset:offset + _INDEX_EMBED_BATCH_SIZE]
+            batch_texts = [str(changed_records[idx]["text"]) for idx in batch_indices]
             try:
-                vectors_result = self.services.embed(changed_texts, tenant, priority=2, query=False)
+                vectors_result = self.services.embed(batch_texts, tenant, priority=2, query=False)
             except (TimeoutError, QueueFullError) as exc:
                 return {"success": False, "retryable": True, "error": f"embedder busy or timed out: {exc}"}
             except Exception as exc:
@@ -734,16 +748,16 @@ class RAGStore:
             if not isinstance(vectors_result, dict) or not vectors_result.get("success"):
                 return vectors_result if isinstance(vectors_result, dict) else {"success": False, "error": "embed failed"}
             vectors = vectors_result.get("embeddings", [])
-            if len(vectors) != len(changed_indices):
-                return {"success": False, "error": f"embedding count mismatch: {len(vectors)} != {len(changed_indices)}"}
-            embedding_space = self._embedding_space_id(vectors_result)
-            for idx, vector in zip(changed_indices, vectors):
+            if len(vectors) != len(batch_indices):
+                return {"success": False, "error": f"embedding count mismatch: {len(vectors)} != {len(batch_indices)}"}
+            batch_embedding_space = self._embedding_space_id(vectors_result)
+            for idx, vector in zip(batch_indices, vectors):
                 embedding = _serialize_embedding(vector)
                 if embedding is None:
                     return {"success": False, "error": "embedding backend returned an invalid vector"}
                 for duplicate_idx in pending_by_hash[str(changed_records[idx]["hash"])]:
                     changed_records[duplicate_idx]["embedding"] = embedding
-                    changed_records[duplicate_idx]["embedding_space"] = embedding_space
+                    changed_records[duplicate_idx]["embedding_space"] = batch_embedding_space
 
         # One transaction publishes all changed/deleted file state atomically.
         # The embed phase is intentionally outside this retry: a transient writer
@@ -930,7 +944,6 @@ class RAGStore:
                             old_chunks[(str(r[0]), int(r[1]), str(r[2]))] = r[3]
 
             # 3. Build records and identify missing embeddings
-            all_missing_texts: list[str] = []
             missing_pointers: list[tuple[int, int]] = []  # (file_idx, record_idx)
 
             for f_idx, item in enumerate(file_data):
@@ -944,14 +957,13 @@ class RAGStore:
                         "embedding_space": embedding_space if embedding is not None else "",
                     })
                     if embedding is None:
-                        all_missing_texts.append(chunk)
                         missing_pointers.append((f_idx, len(records) - 1))
                     else:
                         reused_chunks += 1
                 item["records"] = records
 
             # 4. Cross-workspace / cross-worktree instant chunk embedding reuse
-            if all_missing_texts:
+            if missing_pointers:
                 missing_hashes = [file_data[f_idx]["records"][rec_idx]["hash"] for f_idx, rec_idx in missing_pointers]
                 global_chunks: dict[str, Any] = {}
                 with closing(self._connect()) as con:
@@ -967,49 +979,55 @@ class RAGStore:
                                 global_chunks[str(r[0])] = r[1]
 
                 if global_chunks:
-                    still_missing_texts: list[str] = []
                     still_missing_pointers: list[tuple[int, int]] = []
-                    for (f_idx, rec_idx), text in zip(missing_pointers, all_missing_texts):
+                    for f_idx, rec_idx in missing_pointers:
                         chash = file_data[f_idx]["records"][rec_idx]["hash"]
                         if chash in global_chunks:
                             file_data[f_idx]["records"][rec_idx]["embedding"] = global_chunks[chash]
                             file_data[f_idx]["records"][rec_idx]["embedding_space"] = embedding_space
                             reused_chunks += 1
                         else:
-                            still_missing_texts.append(text)
                             still_missing_pointers.append((f_idx, rec_idx))
-                    all_missing_texts = still_missing_texts
                     missing_pointers = still_missing_pointers
 
-            # 5. Single bulk embedding call for truly novel chunks
-            if all_missing_texts:
+            # 5. Embed bounded batches before the single atomic publish.
+            if missing_pointers:
                 if callable(should_yield) and should_yield():
                     return {
                         "success": True, "workspace": workspace, "preempted": True,
                         "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
                         "reused_chunks": reused_chunks,
                     }
-                try:
-                    vectors_result = self.services.embed(all_missing_texts, tenant, priority=0, query=False, background=True)
-                except (TimeoutError, QueueFullError) as exc:
-                    return {
-                        "success": True, "workspace": workspace, "preempted": True,
-                        "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
-                        "reused_chunks": reused_chunks, "note": f"embedder busy or timed out: {exc}",
-                    }
-                if not vectors_result.get("success"):
-                    return vectors_result
-                vectors = vectors_result.get("embeddings", [])
-                if len(vectors) != len(all_missing_texts):
-                    return {"success": False, "error": "embedding count mismatch during background RAG path step"}
-                embedding_space = self._embedding_space_id(vectors_result)
-                for (f_idx, rec_idx), vector in zip(missing_pointers, vectors):
-                    embedding = _serialize_embedding(vector)
-                    if embedding is None:
-                        return {"success": False, "error": "embedding backend returned an invalid vector"}
-                    file_data[f_idx]["records"][rec_idx]["embedding"] = embedding
-                    file_data[f_idx]["records"][rec_idx]["embedding_space"] = embedding_space
-                embedded_chunks += len(all_missing_texts)
+                for offset in range(0, len(missing_pointers), _INDEX_EMBED_BATCH_SIZE):
+                    if offset and callable(should_yield) and should_yield():
+                        return {
+                            "success": True, "workspace": workspace, "preempted": True,
+                            "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
+                            "reused_chunks": reused_chunks,
+                        }
+                    batch_pointers = missing_pointers[offset:offset + _INDEX_EMBED_BATCH_SIZE]
+                    batch_texts = [str(file_data[f_idx]["records"][rec_idx]["text"]) for f_idx, rec_idx in batch_pointers]
+                    try:
+                        vectors_result = self.services.embed(batch_texts, tenant, priority=0, query=False, background=True)
+                    except (TimeoutError, QueueFullError) as exc:
+                        return {
+                            "success": True, "workspace": workspace, "preempted": True,
+                            "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
+                            "reused_chunks": reused_chunks, "note": f"embedder busy or timed out: {exc}",
+                        }
+                    if not isinstance(vectors_result, dict) or not vectors_result.get("success"):
+                        return vectors_result if isinstance(vectors_result, dict) else {"success": False, "error": "embed failed"}
+                    vectors = vectors_result.get("embeddings", [])
+                    if len(vectors) != len(batch_pointers):
+                        return {"success": False, "error": "embedding count mismatch during background RAG path step"}
+                    batch_embedding_space = self._embedding_space_id(vectors_result)
+                    for (f_idx, rec_idx), vector in zip(batch_pointers, vectors):
+                        embedding = _serialize_embedding(vector)
+                        if embedding is None:
+                            return {"success": False, "error": "embedding backend returned an invalid vector"}
+                        file_data[f_idx]["records"][rec_idx]["embedding"] = embedding
+                        file_data[f_idx]["records"][rec_idx]["embedding_space"] = batch_embedding_space
+                    embedded_chunks += len(batch_pointers)
 
             if callable(should_yield) and should_yield():
                 return {
@@ -1704,7 +1722,7 @@ class RAGStore:
                                 h_score *= 1.5
                         if len(q_terms) >= 2 and all(t in txt for t in q_terms[:2]):
                             h_score *= 1.2
-                    c["heuristic_rerank_score"] = round(h_score, 4)
+                        c["heuristic_rerank_score"] = round(h_score, 4)
                 candidates = sorted(candidates, key=lambda x: x.get("heuristic_rerank_score", 0.0), reverse=True)
                 heuristic_fallback = True
 
@@ -1767,12 +1785,16 @@ class RAGStore:
 
     def docset_index(self, name: str, root: str, tenant: str = "docset") -> dict[str, Any]:
         """Index an offline library or API documentation directory under a named docset workspace."""
-        clean_name = str(name).strip().lower().replace(" ", "_")
+        clean_name = str(name or "").strip().lower().replace(" ", "_")
+        if not clean_name:
+            return {"success": False, "error": "docset name is required"}
         return self.index(root, tenant, workspace=f"docset:{clean_name}")
 
     def docset_search(self, name: str, query: str, tenant: str = "docset", top_k: int = 8, use_reranker: bool = True) -> dict[str, Any]:
         """Search an indexed offline library or API docset."""
-        clean_name = str(name).strip().lower().replace(" ", "_")
+        clean_name = str(name or "").strip().lower().replace(" ", "_")
+        if not clean_name:
+            return {"success": False, "error": "docset name is required"}
         return self.search(query, tenant, f"docset:{clean_name}", top_k=top_k, use_reranker=use_reranker)
 
     def ingest_document(
@@ -1789,13 +1811,20 @@ class RAGStore:
             return {"success": False, "error": "content is required"}
 
         clean_ws = str(workspace or "default").strip()
-        doc_title = str(title or (metadata.get("title") if isinstance(metadata, dict) else "")).strip() or f"doc_{_fragment_hash(clean_text)[:8]}"
+        doc_metadata = metadata if isinstance(metadata, dict) else {}
+        doc_title = str(title or "").strip() or str(doc_metadata.get("title") or "").strip() or f"doc_{_fragment_hash(clean_text)[:8]}"
         doc_path = f"doc:{doc_title}"
         scope_key = self._scope_key(tenant)
 
-        raw_chunks = self._text_chunks(clean_text, size=1000, overlap=100)
+        index_parts = [f"Title: {doc_title}"]
+        if doc_metadata:
+            index_parts.append(f"Metadata: {json_dumps(doc_metadata, sort_keys=True, default=str)}")
+        index_parts.append(f"Content:\n{clean_text}")
+        indexed_text = "\n".join(index_parts)
+
+        raw_chunks = self._text_chunks(indexed_text, size=1000, overlap=100)
         if not raw_chunks:
-            raw_chunks = [clean_text[:1000]]
+            raw_chunks = [indexed_text[:1000]]
 
         records: list[dict[str, Any]] = []
         for i, ch_text in enumerate(raw_chunks):
@@ -1808,18 +1837,30 @@ class RAGStore:
             })
 
         if self.services is not None:
-            try:
-                vec_res = self.services.embed([r["text"] for r in records], tenant, priority=2, query=False)
-                if isinstance(vec_res, dict) and vec_res.get("success"):
-                    for idx, vec in enumerate(vec_res.get("embeddings", [])):
-                        if idx >= len(records):
-                            break
-                        embedding = _serialize_embedding(vec)
+            for offset in range(0, len(records), _INDEX_EMBED_BATCH_SIZE):
+                batch_records = records[offset:offset + _INDEX_EMBED_BATCH_SIZE]
+                try:
+                    vec_res = self.services.embed(
+                        [record["text"] for record in batch_records],
+                        tenant,
+                        priority=2,
+                        query=False,
+                    )
+                    if not isinstance(vec_res, dict) or not vec_res.get("success"):
+                        break
+                    vectors = vec_res.get("embeddings", [])
+                    if len(vectors) > len(batch_records):
+                        break
+                    embedding_space = self._embedding_space_id(vec_res)
+                    for record, vector in zip(batch_records, vectors):
+                        embedding = _serialize_embedding(vector)
                         if embedding is not None:
-                            records[idx]["embedding"] = embedding
-                            records[idx]["embedding_space"] = self._embedding_space_id(vec_res)
-            except Exception:
-                pass
+                            record["embedding"] = embedding
+                            record["embedding_space"] = embedding_space
+                    if len(vectors) < len(batch_records):
+                        break
+                except Exception:
+                    break
 
         for r in records:
             if r["embedding"] is None:
@@ -1837,7 +1878,7 @@ class RAGStore:
             now_ns = time.time_ns()
             con.execute(
                 "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
-                (scope_key, clean_ws, doc_path, now_ns, len(clean_text.encode("utf-8")), _fragment_hash(clean_text)),
+                (scope_key, clean_ws, doc_path, now_ns, len(indexed_text.encode("utf-8")), _fragment_hash(indexed_text)),
             )
             con.executemany(
                 "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
@@ -1852,12 +1893,17 @@ class RAGStore:
                 pass
             con.commit()
 
+        embedded_chunks = sum(bool(r["embedding_space"]) for r in records)
+        embedded = embedded_chunks == len(records)
         return {
             "success": True,
             "workspace": clean_ws,
             "document_title": doc_title,
             "chunks_ingested": len(records),
-            "embedded": any(bool(r["embedding_space"]) for r in records),
+            "embedded": embedded,
+            "embedded_chunks": embedded_chunks,
+            "embedding_status": "embedded" if embedded else "degraded",
+            "degraded": not embedded,
         }
 
     def ingest_diagram(
@@ -1881,18 +1927,18 @@ class RAGStore:
         doc_title = f"diagram_{p_img.stem}"
 
         diagram_text = ""
+        svg_text_nodes: list[str] = []
         if suffix == ".svg":
             try:
                 raw_svg = p_img.read_text(encoding="utf-8", errors="replace")
                 texts = re.findall(r"<text[^>]*>(.*?)</text>", raw_svg, re.DOTALL | re.I)
-                diagram_text = f"SVG Diagram: {p_img.name}\nCaption: {caption}\nText nodes:\n" + "\n".join(t.strip() for t in texts if t.strip())
+                svg_text_nodes = [t.strip() for t in texts if t.strip()]
+                diagram_text = f"SVG Diagram: {p_img.name}\nCaption: {caption}\nText nodes:\n" + "\n".join(svg_text_nodes)
             except Exception:
                 diagram_text = f"SVG Diagram: {p_img.name}\nCaption: {caption}"
         else:
             file_size_kb = round(p_img.stat().st_size / 1024, 1)
             diagram_text = f"Architectural Diagram / Visual Asset: {p_img.name}\nFormat: {suffix.lstrip('.')}\nSize: {file_size_kb} KB\nCaption: {caption}\nFile path: {str(p_img)}"
-            if metadata:
-                diagram_text += f"\nMetadata: {json_dumps(metadata, ensure_ascii=False)}"
 
         res = self.ingest_document(
             workspace=clean_ws,
@@ -1904,4 +1950,6 @@ class RAGStore:
         if isinstance(res, dict):
             res["diagram_indexed"] = True
             res["image_path"] = str(p_img)
+            res["diagram_content_mode"] = "svg_text_nodes" if svg_text_nodes else "metadata_only"
+            res["vision_or_ocr_used"] = False
         return res

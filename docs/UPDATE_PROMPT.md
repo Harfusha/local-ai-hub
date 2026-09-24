@@ -100,6 +100,7 @@ Locate active agent instruction files in this repository (`AGENTS.md`, `CLAUDE.m
 - Ensure the refreshed policy retains this trigger verbatim:
   - Before any repository task, load and follow the `token-economizer` skill when it is installed; this trigger applies even under deadline pressure.
 - Use `local_ai_rag` for semantic retrieval only after deterministic and indexed repository evidence is insufficient.
+- For `local_ai_rag(action="ingest_document")`, pass `content`, `title`, and `metadata`; for `ingest_diagram`, pass `image_path`, `caption`, and `metadata`. Raster diagrams are indexed as metadata-only; SVG text nodes carry extraction provenance.
 - Preserve the `trim-run` safety boundary: only its bundled token tools and read-only search CLIs may be launched; use `local_ai_command` for tests/builds and arbitrary validation commands.
 - For durable work, require one `local_ai_coord(action="task_create")` contract, phase changes through `local_ai_coord(action="task_checkpoint")`, and one bounded wait instead of status polling loops.
 - For every non-trivial repository task, after one-time preprocess make `local_ai_repo(action="context", mode="adaptive")` the first useful operation. It accepts the task/context directly and fuses deterministic/indexed evidence, CodeIndex, Serena, bounded lexical search and RAG; it ranks cross-backend agreement, deduplicates, preserves file diversity and degrades optional backends independently. Do not send a hand-built grep-term list or start native search first.

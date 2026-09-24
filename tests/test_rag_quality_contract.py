@@ -98,6 +98,70 @@ def test_vector_search_streams_rows_and_keeps_golden_relevance(tmp_path, monkeyp
     assert [row["chunk_no"] for row in result["results"][:3]] == [2, 3, 1]
 
 
+def test_golden_corpus_keeps_relevant_credentials_above_realistic_distractors(tmp_path):
+    store = _store(tmp_path, dimension=3)
+    tenant, workspace = "tenant", "credential-golden-corpus"
+    relevant = [
+        (
+            "runbooks/credential-rotation.md",
+            "Credential rotation runbook: rotate service credentials every 30 days.",
+            [1.0, 0.0, 0.0],
+        ),
+        (
+            "security/api-key-rollover.md",
+            "API key rollover procedure deploys replacement credentials before revoking old keys.",
+            [0.99, 0.12, 0.0],
+        ),
+        (
+            "operations/token-expiry.md",
+            "Rotate authentication tokens before expiry and verify each service account.",
+            [0.97, 0.22, 0.0],
+        ),
+        (
+            "database/secret-renewal.md",
+            "Database secret renewal schedule includes rotation, validation, and rollback.",
+            [0.95, 0.31, 0.0],
+        ),
+        (
+            "audit/credential-review.md",
+            "Credential rotation audit records owner, interval, and successful rollout.",
+            [0.92, 0.39, 0.0],
+        ),
+        (
+            "identity/service-token-guide.md",
+            "Service token guide explains staged credential replacement and rotation.",
+            [0.89, 0.46, 0.0],
+        ),
+    ]
+    corpus = list(relevant)
+    corpus.extend(
+        (
+            f"reference/topic-{index:02d}.md",
+            f"Reference notes for unrelated topic {index}: geography, cooking, music, and weather.",
+            [0.02, 1.0, 0.0],
+        )
+        for index in range(58)
+    )
+    _insert_vectors(store, tenant, workspace, np.asarray([row[2] for row in corpus], dtype=np.float32))
+
+    with closing(store._connect()) as con:
+        for index, (path, content, _vector) in enumerate(corpus):
+            con.execute(
+                "UPDATE chunks SET path=?,chunk_no=0,content_hash=?,text=? "
+                "WHERE tenant=? AND workspace=? AND content_hash=?",
+                (path, f"golden-{index}", content, store._scope_key(tenant), workspace, f"hash-{index}"),
+            )
+        con.commit()
+
+    result = store._search_uncached("weekly credential rotation", tenant, workspace, top_k=4, use_reranker=False)
+
+    assert result["success"] is True
+    result_paths = [row["path"] for row in result["results"]]
+    assert len(result_paths) == 4
+    assert result_paths[0] == relevant[0][0]
+    assert set(result_paths) <= {row[0] for row in relevant}
+
+
 def test_python_cosine_fallback_rejects_non_finite_vectors():
     assert RAGStore._cosine([float("nan"), 1.0], [1.0, 0.0]) == 0.0
     assert RAGStore._cosine([float("inf"), 1.0], [1.0, 0.0]) == 0.0
@@ -316,30 +380,47 @@ def test_retrieval_latency_and_peak_memory_baseline(tmp_path, capsys):
     tenant, workspace = "benchmark-tenant", "benchmark-workspace"
     metrics = []
     for count in (1024, 8192, 16384):
-        store = _store(tmp_path / str(count), dimension)
         rng = np.random.default_rng(41)
         vectors = rng.standard_normal((count, dimension), dtype=np.float32)
         vectors[0] = 0.0
         vectors[0, 0] = 1.0
-        _insert_vectors(store, tenant, workspace, vectors)
+        for batch_size in (128, 512):
+            store = _store(tmp_path / f"{count}-{batch_size}", dimension)
+            store.config["rag"]["search_batch_size"] = batch_size
+            _insert_vectors(store, tenant, workspace, vectors)
 
-        samples_ms = []
-        peak_bytes = 0
-        for _ in range(3):
-            tracemalloc.start()
-            started = time.perf_counter()
-            result = store._search_uncached("benchmark query", tenant, workspace, top_k=8, use_reranker=False)
-            samples_ms.append((time.perf_counter() - started) * 1000.0)
-            _, sample_peak = tracemalloc.get_traced_memory()
-            tracemalloc.stop()
-            peak_bytes = max(peak_bytes, sample_peak)
-            assert result["success"] is True
-            assert result["results"][0]["chunk_no"] == 0
-        metrics.append({
-            "chunks": count,
-            "median_ms": round(float(np.median(samples_ms)), 3),
-            "peak_traced_mib": round(peak_bytes / (1024 * 1024), 3),
-        })
+            samples_ms = []
+            peak_bytes = 0
+            for _ in range(3):
+                tracemalloc.start()
+                started = time.perf_counter()
+                result = store._search_uncached("benchmark query", tenant, workspace, top_k=8, use_reranker=False)
+                samples_ms.append((time.perf_counter() - started) * 1000.0)
+                _, sample_peak = tracemalloc.get_traced_memory()
+                tracemalloc.stop()
+                peak_bytes = max(peak_bytes, sample_peak)
+                assert result["success"] is True
+                assert result["results"][0]["chunk_no"] == 0
+            median_ms = float(np.median(samples_ms))
+            metrics.append({
+                "chunks": count,
+                "search_batch_size": batch_size,
+                "median_ms": round(median_ms, 3),
+                "chunks_per_second": round(count * 1000.0 / max(median_ms, 1e-9), 2),
+                "peak_traced_mib": round(peak_bytes / (1024 * 1024), 3),
+                "vector_batch_buffer_mib": round(batch_size * dimension * 4 / (1024 * 1024), 3),
+            })
 
     print("RAG_BENCHMARK=" + json.dumps(metrics, sort_keys=True))
-    assert len(metrics) == 3
+    assert len(metrics) == 6
+    peak_by_size_and_batch = {
+        (int(row["chunks"]), int(row["search_batch_size"])): float(row["peak_traced_mib"])
+        for row in metrics
+    }
+    for batch_size in (128, 512):
+        small_peak = peak_by_size_and_batch[(1024, batch_size)]
+        large_peak = peak_by_size_and_batch[(16384, batch_size)]
+        assert large_peak <= small_peak + 1.5, (
+            f"peak traced memory scaled with corpus size for batch {batch_size}: "
+            f"{small_peak:.3f} MiB -> {large_peak:.3f} MiB"
+        )

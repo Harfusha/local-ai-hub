@@ -2250,8 +2250,13 @@ def local_ai_rag(
     max_response_tokens: int = 0,
     response_profile: str = "",
     reuse_key: str = "",
+    content: str = "",
+    title: str = "",
+    metadata: dict[str, Any] | None = None,
+    image_path: str = "",
+    caption: str = "",
 ) -> dict[str, Any]:
-    """Fallback semantic retrieval after deterministic and indexed repository evidence. Search defaults workspace to the explicit repository root. Use when: cheaper indexed paths are insufficient. Skip when: deterministic or indexed evidence already answers the question."""
+    """Fallback semantic retrieval after deterministic and indexed repository evidence. Search defaults workspace to the explicit repository root. For document ingestion pass content, title, and metadata; for diagram ingestion pass image_path, caption, and metadata. Raster diagrams are indexed as metadata-only; SVG text nodes are indexed with their extraction provenance. Use when: cheaper indexed paths are insufficient. Skip when: deterministic or indexed evidence already answers the question."""
     if not FEATURES.rag:
         return {"success": False, "unsupported": True, "error": "RAG backend is disabled (features.rag=false in config.toml)"}
     action = action.strip().lower().replace("-", "_")
@@ -2275,13 +2280,17 @@ def local_ai_rag(
         }))
     if action == "ingest_document":
         return _compact(CLIENT.post("/api/rag/ingest_document", {
-            "workspace": workspace or "default", "content": query or root,
+            "workspace": workspace or "default",
+            "content": content or query or root,
+            "title": title,
+            "metadata": metadata if isinstance(metadata, dict) else None,
         }, timeout=_timeout("quick")), "status")
     if action == "ingest_diagram":
         return _compact(CLIENT.post("/api/rag/ingest_diagram", {
             "workspace": workspace or "default",
-            "image_path": query or root,
-            "caption": (extra_fields[0] if extra_fields else ""),
+            "image_path": image_path or query or root,
+            "caption": caption or (extra_fields[0] if extra_fields else ""),
+            "metadata": metadata if isinstance(metadata, dict) else None,
         }, timeout=_timeout("quick")), "status")
     return _invalid_action("local_ai_rag", action, tuple(RagAction.__args__), "Use RAG only when cheaper Local AI Hub evidence is insufficient.")
 
