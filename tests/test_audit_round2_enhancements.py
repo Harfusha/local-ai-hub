@@ -128,6 +128,7 @@ def test_task_completion_gate_checks_receipt_freshness(tmp_path: Path):
         task_id=task.task_id,
         criterion="all_passed",
         passed=True,
+        evidence_id="ev_expired",
         expires_at=time.time() - 100.0,
     )
     verif_store.record(expired_rcpt)

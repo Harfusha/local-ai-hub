@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 from collections import Counter, OrderedDict
+from queue import Empty, Queue
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -16,7 +17,7 @@ from typing import Any, Iterable, Mapping
 
 from .budget import chars_for_tokens, estimate_tokens
 from .normalizer import tokenize_query_terms
-from .process_utils import canonical_root, hidden_run_kwargs
+from .process_utils import canonical_root, hidden_run_kwargs, terminate_tree
 
 
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_./:-]{1,80}")
@@ -86,10 +87,24 @@ class RepositoryTools:
             ".gitlab-ci.yml", ".gitlab-ci.yaml", "azure-pipelines.yml", "azure-pipelines.yaml",
             "pytest.ini", "tox.ini", "phpunit.xml", "phpunit.xml.dist", "phpstan.neon", "phpstan.neon.dist",
         ])}
-        self.ignore_dirs = {str(name).lower() for name in rag.get("ignore_dirs", [])}
+        default_ignore_dirs = {
+            ".git", ".svn", ".hg", ".idea", ".vscode", ".venv", "venv", "node_modules",
+            "vendor", "dist", "build", "bin", "obj", "coverage", ".next", ".cache",
+            "library", "temp", "logs", "usersettings", "packagestore", "memorycaptures", "builds",
+                ".serena", ".local-ai-hub",
+        }
+        self.ignore_dirs = {str(name).lower() for name in rag.get("ignore_dirs", [])} | default_ignore_dirs
+        self.ignore_extensions = {str(x).lower() for x in rag.get("ignore_extensions", [
+            ".meta", ".asset", ".prefab", ".mat", ".unity", ".anim", ".controller",
+            ".overridecontroller", ".physicmaterial", ".physicsmaterial2d", ".guiskin",
+            ".mask", ".cubemap", ".flare", ".fontsettings", ".terrainlayer",
+            ".mesh", ".fbx", ".obj", ".blend", ".tga", ".psd", ".png", ".jpg", ".jpeg",
+            ".wav", ".mp3", ".ogg", ".shadergraph", ".shadersubgraph"
+        ])}
         self.max_file_bytes = int(rag.get("max_file_bytes", 2_000_000))
         self.max_files = int(search.get("max_files", 8000))
         self.max_hits = int(search.get("max_hits", 80))
+        self.max_search_terms = max(4, int(search.get("max_terms", 12)))
         self.snippet_lines = int(search.get("snippet_lines", 5))
         self.max_snippets_per_file = int(search.get("max_snippets_per_file", 3))
         self.prefer_git = bool(search.get("prefer_git_files", True))
@@ -243,6 +258,8 @@ class RepositoryTools:
 
                 for name in filenames:
                     p = Path(dirpath) / name
+                    if p.suffix.lower() in self.ignore_extensions:
+                        continue
                     if self.extensions and p.suffix.lower() not in self.extensions and p.name.lower() not in self.special_filenames:
                         continue
                     candidates.append(p)
@@ -262,6 +279,8 @@ class RepositoryTools:
             # External code-intelligence tools create project-local metadata that
             # must never feed back into Local AI Hub's own repository inventory.
             if any(part.lower() in self.ignore_dirs for part in relative.parts[:-1]):
+                continue
+            if path.suffix.lower() in self.ignore_extensions:
                 continue
             if self.extensions and path.suffix.lower() not in self.extensions and path.name.lower() not in self.special_filenames:
                 continue
@@ -664,9 +683,58 @@ class RepositoryTools:
             }
         return snapshot
 
-    @staticmethod
-    def _terms(query: str) -> list[str]:
-        return [t.lower() for t in tokenize_query_terms(query, min_len=2, max_terms=20)]
+    _GENERIC_SEARCH_WORDS = frozenset({
+        "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "into", "is", "it",
+        "of", "on", "or", "the", "to", "with", "implement", "implementation", "implementing", "missing",
+        "change", "changes", "fix", "fixing", "add", "added", "update", "updated", "make", "ensure", "support",
+    })
+
+    def search_terms(self, query: str) -> list[str]:
+        """Return high-signal lexical anchors without flattening compounds."""
+        raw = tokenize_query_terms(query, min_len=2, max_terms=32)
+        compounds = [term.lower() for term in raw if any(char in term for char in ("-", ":", "/", ".", "_"))]
+        compound_parts = {
+            part
+            for compound in compounds
+            for part in re.split(r"[-:/. _]+", compound)
+            if len(part) >= 3
+        }
+        terms: list[str] = []
+        seen: set[str] = set()
+        for term in raw:
+            lowered = term.lower()
+            if lowered in self._GENERIC_SEARCH_WORDS:
+                continue
+            if lowered in compound_parts and lowered not in compounds:
+                continue
+            if len(lowered) < 3 or lowered in seen:
+                continue
+            seen.add(lowered)
+            terms.append(lowered)
+            if len(terms) >= self.max_search_terms:
+                break
+        return terms
+
+    def _terms(self, query: str) -> list[str]:
+        return self.search_terms(query)
+
+    def _git_grep_pathspecs(self) -> list[str]:
+        includes = [f"*{extension}" for extension in sorted(self.extensions) if extension.startswith(".")]
+        includes.extend(name for name in sorted(self.special_filenames) if "/" not in name and "\\" not in name)
+        if not includes:
+            includes = [":(top)**"]
+        excludes = [f":(exclude){name}/**" for name in sorted(self.ignore_dirs) if name]
+        return [*includes, *excludes]
+
+    def _git_grep_command(self, base: Path, terms: list[str], max_matches: int) -> list[str]:
+        cmd = [
+            "git", "-C", str(base), "grep", "-n", "-I", "-i", "--no-color", "--full-name",
+            "-m", str(max(1, min(8, self.max_snippets_per_file * 2))),
+        ]
+        for term in terms[: self.max_search_terms]:
+            cmd.extend(["-e", term])
+        cmd.extend(["--", *self._git_grep_pathspecs()])
+        return cmd
 
     def _ripgrep_candidates(self, base: Path, terms: list[str], max_matches: int) -> tuple[list[tuple[str, int]] | None, bool]:
         if not self._rg or not terms:
@@ -726,30 +794,55 @@ class RepositoryTools:
             if time.monotonic() < self._git_grep_slow_until.get(key, 0.0):
                 self._git_stats["grep_cooldown_skips"] += 1
                 return None, False
-        cmd = ["git", "-C", str(base), "grep", "-n", "-I", "-i", "--no-color", "--full-name"]
-        for term in terms[:12]:
-            cmd.extend(["-e", term])
-        cmd.append("--")
+        cmd = self._git_grep_command(base, terms, max_matches)
         try:
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=self.git_grep_timeout,
-                check=False, encoding="utf-8", errors="replace",
-                **hidden_run_kwargs(),
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                **hidden_run_kwargs(text=True),
             )
-        except subprocess.TimeoutExpired:
-            with self._git_files_lock:
-                self._git_stats["grep_timeouts"] += 1
-                self._git_grep_slow_until[key] = time.monotonic() + self.git_files_slow_cooldown
-            return None, True
         except OSError:
             return None, True
-        if proc.returncode not in {0, 1}:
-            return None, True
+
+        lines: Queue[tuple[str, str | None]] = Queue()
+
+        def drain_stdout() -> None:
+            try:
+                if proc.stdout is not None:
+                    for line in proc.stdout:
+                        lines.put(("line", line))
+            finally:
+                lines.put(("eof", None))
+
+        reader = threading.Thread(target=drain_stdout, name="git-grep-reader", daemon=True)
+        reader.start()
         with self._git_files_lock:
             self._git_grep_slow_until.pop(key, None)
         out: list[tuple[str, int]] = []
         seen: set[tuple[str, int]] = set()
-        for raw in proc.stdout.splitlines():
+        capped = False
+        deadline = time.monotonic() + self.git_grep_timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                with self._git_files_lock:
+                    self._git_stats["grep_timeouts"] += 1
+                    self._git_grep_slow_until[key] = time.monotonic() + self.git_files_slow_cooldown
+                terminate_tree(proc.pid, grace_seconds=1.0)
+                reader.join(timeout=1.0)
+                if proc.stdout is not None:
+                    proc.stdout.close()
+                return None, True
+            try:
+                kind, raw = lines.get(timeout=min(0.2, remaining))
+            except Empty:
+                continue
+            if kind == "eof":
+                break
+            if raw is None:
+                continue
             parts = raw.split(":", 2)
             if len(parts) < 2:
                 continue
@@ -765,7 +858,19 @@ class RepositoryTools:
                 continue
             seen.add(match_key); out.append(match_key)
             if len(out) >= max_matches:
+                capped = True
+                terminate_tree(proc.pid, grace_seconds=1.0)
                 break
+        if proc.poll() is None:
+            try:
+                proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                terminate_tree(proc.pid, grace_seconds=1.0)
+        reader.join(timeout=1.0)
+        if proc.stdout is not None:
+            proc.stdout.close()
+        if not capped and proc.returncode not in {0, 1}:
+            return None, True
         return out, False
 
     def search(self, root: str, query: str, top_k: int = 12, context_lines: int | None = None) -> dict[str, Any]:
@@ -1317,7 +1422,7 @@ class RepositoryTools:
     ) -> dict[str, Any]:
         """Cheap generic change-impact/test targeting without invoking an LLM.
 
-        This is deliberately heuristic. Serena/CodeGraph remain the preferred source
+        This is deliberately heuristic. Serena remains the preferred source
         for exact symbol relationships; this fallback is available everywhere and is
         useful before spending cloud context.
         """
@@ -1448,7 +1553,7 @@ class RepositoryTools:
             "suggested_tests": suggested_tests,
             "risk": {"score": score, "level": level, "reasons": reasons},
             "diff_sha256": diff.get("diff_sha256"),
-            "note": "Heuristic fallback; use Serena/CodeGraph for exact symbol relationships when available.",
+            "note": "Heuristic fallback; use Serena for exact symbol relationships when available.",
         }
 
 

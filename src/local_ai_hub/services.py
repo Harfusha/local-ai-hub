@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import asdict
 from contextlib import closing, contextmanager
 from pathlib import Path
@@ -61,6 +62,16 @@ from .agent_context import ContextCompiler, ContextRequest
 from .agent_events import AgentStateStore
 from .semantic_quality import assess_semantic_result
 from .prompt_contracts import build_prompt
+from .retrieval import fuse_ranked_paths
+
+
+# Keep optional context workers bounded across concurrent requests. Each backend
+# gets its own single-worker lane for Serena
+# or RAG, and timed-out work cannot cause a new thread per incoming request.
+_CONTEXT_BACKEND_POOLS = {
+    name: ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"context-{name}")
+    for name in ("serena", "rag")
+}
 
 
 def is_retryable_local_backend_error(value: Any) -> bool:
@@ -632,10 +643,10 @@ class LocalAIServices:
             return "", False
         try:
             state = store.get(request.task_id)
-        except Exception:
-            return "", False
+        except Exception as exc:
+            raise RuntimeError("context task state could not be read") from exc
         if state is None:
-            return "", False
+            raise RuntimeError("context task state is missing")
         status = getattr(getattr(state, "status", None), "value", getattr(state, "status", ""))
         boundary = tuple(item for item in warnings if item.requires_approval or item.severity.lower() in {"boundary", "high", "high-risk"})
         checkpoint_data = getattr(getattr(state, "checkpoint", None), "state_data", {}) or {}
@@ -666,20 +677,20 @@ class LocalAIServices:
                     actor="consistency_guard",
                     idempotency_key=f"guard-checkpoint:{request.task_id}:{revision}",
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                raise RuntimeError("context guard checkpoint could not be persisted") from exc
         elif approved and status == "waiting":
             try:
                 store.resume(request.task_id, actor="consistency_guard", idempotency_key=f"guard-resume:{request.task_id}:{revision}")
-            except Exception:
-                pass
+            except Exception as exc:
+                raise RuntimeError("context guard resume could not be persisted") from exc
         try:
             refreshed = store.get(request.task_id)
             refreshed_status = getattr(getattr(refreshed, "status", None), "value", getattr(refreshed, "status", ""))
             refreshed_status = str(refreshed_status)
             return refreshed_status, bool(refreshed_status.lower() == "waiting" or (boundary and not approved))
-        except Exception:
-            return str(status), bool(boundary and not approved)
+        except Exception as exc:
+            raise RuntimeError("refreshed context task state could not be read") from exc
 
     def _guard_stop_code(self, request: ConsistencyRequest, boundary: bool) -> str:
         """Return terminal stop code when high-risk delivery lacks Agent OS state."""
@@ -3118,6 +3129,10 @@ class LocalAIServices:
         return self.deterministic_operation("resolve-imports", root, params, lambda: self.deterministic.resolve_imports(root, symbols, language))
 
     def callers(self, root: str, symbol: str, limit: int = 50) -> dict[str, Any]:
+        if self.code_index is not None:
+            ci_res = self.code_index.find_callers(root, symbol, limit)
+            if ci_res.get("success") and ci_res.get("count", 0) > 0:
+                return ci_res
         return self.deterministic_operation("callers", root, {"symbol": symbol, "limit": limit}, lambda: self.deterministic.find_callers(root, symbol, limit))
 
     def dead_code(self, root: str, limit: int = 200) -> dict[str, Any]:
@@ -3406,12 +3421,7 @@ class LocalAIServices:
                 try:
                     value = value(request.root)
                 except TypeError:
-                    try:
-                        value = value()
-                    except Exception:
-                        value = ""
-                except Exception:
-                    value = ""
+                    value = value()
             if value:
                 return str(value)[:200]
         return ""
@@ -3511,7 +3521,7 @@ class LocalAIServices:
             focus = [self._adaptive_label(item, 80) for item in tuple(getattr(request, "focus", ()) or ())[:16]]
             model_focus = ["focus-" + hashlib.sha256(item.encode("utf-8", "replace")).hexdigest()[:12] for item in focus if item]
             phase = self._adaptive_label(request.phase, 80)
-            if phase.casefold() not in {"plan", "edit", "implementation", "review", "test", "handoff"}:
+            if phase.casefold() not in {"plan", "discover", "edit", "implementation", "review", "test", "handoff"}:
                 phase = "other"
             preload_profile = self._adaptive_label(request.preload_profile, 120)
             if preload_profile.casefold() not in {"", "default", "plan", "edit", "review", "test", "handoff"}:
@@ -3528,10 +3538,23 @@ class LocalAIServices:
             }
             params = {
                 "repository_revision": str(revision)[:200],
+                "task_id": request.task_id,
+                "session_id": request.session_id,
                 "phase": self._adaptive_label(request.phase, 80),
                 "memory_revision": str(memory_revision)[:200],
                 "focus": tuple(focus),
                 "preload_profile": self._adaptive_label(request.preload_profile, 120),
+                "changed_paths": tuple(request.changed_paths),
+                "query": self._adaptive_label(request.query, 800),
+                "retrieval_config_revision": stable_hash({
+                    "search": getattr(self, "config", {}).get("search", {}),
+                    "features": getattr(self, "config", {}).get("features", {}),
+                    "preprocessing": getattr(self, "config", {}).get("preprocessing", {}),
+                    "rag": getattr(self, "config", {}).get("rag", {}),
+                    "retrieval": getattr(self, "config", {}).get("retrieval", {}),
+                    "external_tools": getattr(self, "config", {}).get("external_tools", {}),
+                    "code_intelligence": getattr(self, "config", {}).get("code_intelligence", {}),
+                }),
                 "evidence_ids": tuple(str(item["evidence_id"])[:200] for item in structured),
             }
 
@@ -3602,18 +3625,97 @@ class LocalAIServices:
         """Build deterministic context plus bounded, soft consistency findings."""
         if not isinstance(request, ConsistencyRequest):
             raise TypeError("guarded context request must be ConsistencyRequest")
-        if mode == "full":
-            base = self._hybrid_context(request.root, request.query, request.tenant, request.workspace or None, request.token_budget)
+        try:
+            memory_revision = self._adaptive_memory_revision(request)
+        except Exception as exc:
+            return {
+                "success": False, "terminal": True, "retryable": False,
+                "stop_code": "context_memory_revision_unavailable",
+                "error": f"context memory revision unavailable: {type(exc).__name__}",
+                "context": "", "evidence": [],
+            }
+        retrieval_config = {
+            "search": getattr(self, "config", {}).get("search", {}),
+            "features": getattr(self, "config", {}).get("features", {}),
+            "preprocessing": getattr(self, "config", {}).get("preprocessing", {}),
+            "rag": getattr(self, "config", {}).get("rag", {}),
+            "retrieval": getattr(self, "config", {}).get("retrieval", {}),
+            "external_tools": getattr(self, "config", {}).get("external_tools", {}),
+            "code_intelligence": getattr(self, "config", {}).get("code_intelligence", {}),
+        }
+        retrieval_config_revision = stable_hash(retrieval_config)
+        context_cache_identity = {
+            "mode": mode,
+            "task_id": request.task_id,
+            "session_id": request.session_id,
+            "tenant": request.tenant,
+            "workspace": request.workspace,
+            "phase": request.phase,
+            "query": request.query,
+            "focus": request.focus,
+            "changed_paths": request.changed_paths,
+            "preload_profile": request.preload_profile,
+            "token_budget": request.token_budget,
+            "base": request.base,
+            "staged": request.staged,
+            "memory_revision": memory_revision,
+            "retrieval_config_revision": retrieval_config_revision,
+            "since_hash": since_hash,
+            "approval": request.approval,
+            "override_reason": request.override_reason,
+        }
+        if mode in {"full", "adaptive"}:
+            base = self._hybrid_context(
+                request.root,
+                request.query,
+                request.tenant,
+                request.workspace or None,
+                request.token_budget,
+                quality_first=mode == "adaptive",
+                context_identity=context_cache_identity,
+            )
         else:
             base = self.fast_context(request.root, request.query, request.token_budget)
         if not isinstance(base, dict):
             base = {"success": False, "context": "", "evidence": []}
         else:
             base = dict(base)
+        raw_evidence = base.get("evidence")
+        if isinstance(raw_evidence, list):
+            normalized_evidence = []
+            for item in raw_evidence:
+                if not isinstance(item, dict):
+                    continue
+                evidence_item = dict(item)
+                if not evidence_item.get("evidence_id"):
+                    text_value = evidence_item.get("text", evidence_item.get("content", ""))
+                    evidence_item["evidence_id"] = "local-" + stable_hash({
+                        "root": canonical_root(request.root),
+                        "path": evidence_item.get("path", ""),
+                        "symbol": evidence_item.get("symbol", ""),
+                        "start_line": evidence_item.get("start_line", evidence_item.get("line", 0)),
+                        "end_line": evidence_item.get("end_line", evidence_item.get("start_line", evidence_item.get("line", 0))),
+                        "content_hash": evidence_item.get("content_hash") or stable_hash(str(text_value)),
+                        "revision": evidence_item.get("repository_revision", evidence_item.get("revision", "")),
+                    })[:24]
+                normalized_evidence.append(evidence_item)
+            base["evidence"] = normalized_evidence
         base, preload_warnings = self._apply_context_preloads(request, base)
         guard = self.consistency_guard
         if guard is None:
-            return {**base, "guarded": False, "context_pack": AdaptiveContextPack(warnings=preload_warnings).to_dict()}
+            context_id = stable_hash({
+                "root": canonical_root(request.root),
+                "repository_revision": base.get("repo_revision", base.get("revision", "")),
+                **context_cache_identity,
+                "evidence_ids": tuple(str(item.get("evidence_id") or "") for item in base.get("evidence", ()) if isinstance(item, dict)),
+                "retrieval_revision": (base.get("retrieval") or {}).get("rag_revision", "") if isinstance(base.get("retrieval"), dict) else "",
+            })[:24]
+            pack = AdaptiveContextPack(
+                context_id=context_id, phase=request.phase, focus=request.focus,
+                changed_paths=tuple(request.changed_paths), preload_profile=request.preload_profile,
+                memory_revision=memory_revision, warnings=preload_warnings,
+            ).to_dict()
+            return {**base, "guarded": False, "context_id": context_id, "context_pack": pack}
 
         revision = ""
         try:
@@ -3670,8 +3772,20 @@ class LocalAIServices:
                 "task_status": "",
                 "waiting": False,
             }
-        memory_revision = self._adaptive_memory_revision(request)
         relevance = self._adaptive_relevance(request, evidence, revision, memory_revision)
+        retrieval_report = dict(base.get("retrieval") or {})
+        backend_states = dict(retrieval_report.get("backend_states") or {})
+        model_state = (
+            "used" if isinstance(relevance, dict) and relevance.get("success")
+            else "skipped" if isinstance(relevance, dict) and relevance.get("degraded_reason") == "no_authoritative_evidence"
+            else "degraded"
+        )
+        backend_states["local_model"] = model_state
+        retrieval_report["backend_states"] = dict(sorted(backend_states.items()))
+        retrieval_report["used_backends"] = sorted(name for name, state in backend_states.items() if state == "used")
+        retrieval_report["skipped_backends"] = sorted(name for name, state in backend_states.items() if state == "skipped")
+        retrieval_report["degraded_backends"] = sorted(name for name, state in backend_states.items() if state == "degraded")
+        base["retrieval"] = retrieval_report
         metric = getattr(guard, "record_metric", None)
         if callable(metric):
             if since_hash and since_hash == revision:
@@ -3694,7 +3808,14 @@ class LocalAIServices:
             repo_revision=revision,
             changed_paths=changed_paths,
             stale=False,
-            context_id=hashlib.sha256(f"{request.root}:{revision}:{request.task_id}:{request.phase}:{request.query}".encode("utf-8", "replace")).hexdigest()[:24],
+            context_id=stable_hash({
+                "root": canonical_root(request.root),
+                "repository_revision": revision,
+                "changed_paths": changed_paths,
+                **context_cache_identity,
+                "evidence_ids": tuple(str(item.get("evidence_id") or "") for item in evidence if isinstance(item, dict)),
+                "retrieval_revision": (base.get("retrieval") or {}).get("rag_revision", "") if isinstance(base.get("retrieval"), dict) else "",
+            })[:24],
             phase=request.phase,
             focus=request.focus,
             preload_profile=request.preload_profile,
@@ -3702,9 +3823,24 @@ class LocalAIServices:
             model_warnings=model_warnings,
         )
         pack_data = pack.to_dict()
+        unchanged = bool(since_hash and since_hash == revision)
         ordinary = any(not (item.requires_approval or item.severity.lower() in {"boundary", "high", "high-risk"}) for item in warnings)
         decision_recorded, decision_persisted = self._guard_decision(request, revision, reason=request.override_reason, approval=request.approval)
-        task_status, waiting = self._guard_task_state(request, warnings, revision)
+        if (str(request.override_reason or "").strip() or self._guard_truthy(request.approval)) and not decision_persisted:
+            return {
+                **base, "success": False, "terminal": True, "retryable": False,
+                "stop_code": "context_decision_persistence_failed",
+                "error": "context decision could not be persisted", "context": "", "evidence": [],
+            }
+        try:
+            task_status, waiting = self._guard_task_state(request, warnings, revision)
+        except Exception as exc:
+            return {
+                **base, "success": False, "terminal": True, "retryable": False,
+                "stop_code": "context_task_state_unavailable",
+                "error": f"context task state unavailable: {type(exc).__name__}",
+                "context": "", "evidence": [],
+            }
         approved = self._guard_truthy(request.approval) or self._guard_existing_approval(request)
         if str(task_status).lower() == "waiting":
             approved = False
@@ -3734,6 +3870,8 @@ class LocalAIServices:
             "model_degraded": bool(not isinstance(relevance, dict) or not relevance.get("success")),
             "model_degraded_reason": str(relevance.get("degraded_reason", ""))[:120] if isinstance(relevance, dict) else "relevance_error",
             "repo_revision": revision,
+            "unchanged": unchanged,
+            "reuse_pointer": pack.context_id if unchanged else "",
             "memory_revision": memory_revision,
             "changed_paths": list(changed_paths),
             "since_hash": str(since_hash)[:200],
@@ -3777,7 +3915,17 @@ class LocalAIServices:
             }
         return packed
 
-    def _hybrid_context(self, root: str, query: str, tenant: str, workspace: str | None, max_tokens: int) -> dict[str, Any]:
+    def _hybrid_context(
+        self,
+        root: str,
+        query: str,
+        tenant: str,
+        workspace: str | None,
+        max_tokens: int,
+        *,
+        quality_first: bool = False,
+        context_identity: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         resolved_root = Path(root).expanduser().resolve(strict=False)
         if not resolved_root.is_dir():
             return {
@@ -3791,10 +3939,9 @@ class LocalAIServices:
                 "context": "",
                 "evidence": [],
             }
-        # Local AI enforced deterministic-first fast path. This lives below the MCP/skill
-        # layer so even a client that directly asks for context/delegation avoids
-        # embeddings/reranking when parser/index evidence is already sufficient.
-        if self.deterministic is not None:
+        # Explicit fast mode remains deterministic-only. Adaptive mode intentionally
+        # bypasses this early return so independent backends can cross-check the pack.
+        if self.deterministic is not None and not quality_first:
             try:
                 det = self.deterministic_query(root, query, 30)
                 dcfg = self.config.get("deterministic", {})
@@ -3821,13 +3968,40 @@ class LocalAIServices:
                     return packed
             except Exception:
                 pass
-        rag_revision = self.rag.revision(tenant, workspace or self.rag.workspace_id(root)) if self.rag is not None else None
-        result = self._repo_cached(
-            "hybrid-context", root,
-            {"query": query, "workspace": workspace, "max_tokens": max_tokens, "rag_revision": rag_revision},
-            lambda: self._hybrid_context_uncached(root, query, tenant, workspace, max_tokens),
+        rag_enabled = self.rag is not None and self.config.get("features", {}).get("rag", True)
+        try:
+            rag_revision = self.rag.revision(tenant, workspace or self.rag.workspace_id(root)) if rag_enabled else None
+            rag_revision_available = not rag_enabled or bool(str(rag_revision or "").strip())
+        except Exception:
+            # RAG is optional. Its revision store failing must not prevent the
+            # deterministic and lexical context path from serving the request.
+            rag_revision = None
+            rag_revision_available = not rag_enabled
+        compute = lambda: self._hybrid_context_uncached(
+            root, query, tenant, workspace, max_tokens, quality_first=quality_first,
+            rag_revision=str(rag_revision or ""), rag_revision_available=rag_revision_available,
         )
-        if isinstance(result, dict): result.setdefault("context_source", "hybrid")
+        if rag_enabled and not rag_revision_available:
+            result = compute()
+            if isinstance(result, dict):
+                result["workspace_cache"] = {"hit": False, "coalesced": False, "degraded": True, "stale": False, "kind": "rag-revision-unavailable"}
+                result["cache_hit"] = False
+                result["coalesced"] = False
+                result["cache_layer"] = "workspace-bypassed"
+        else:
+            result = self._repo_cached(
+                "hybrid-context", root,
+                {
+                    "query": query,
+                    "workspace": workspace,
+                    "max_tokens": max_tokens,
+                    "rag_revision": rag_revision,
+                    "quality_first": quality_first,
+                    "context_identity": context_identity or {},
+                },
+                compute,
+            )
+        if isinstance(result, dict): result.setdefault("context_source", "adaptive-hybrid" if quality_first else "hybrid")
         return result
 
     @staticmethod
@@ -3840,77 +4014,299 @@ class LocalAIServices:
             scores[item] = scores.get(item, 0.0) + 1.0 / (k + rank + 1)
         return sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
-    def _hybrid_context_uncached(self, root: str, query: str, tenant: str, workspace: str | None, max_tokens: int) -> dict[str, Any]:
+    @staticmethod
+    def _external_candidate_paths(root: str, payload: Any) -> list[str]:
+        """Extract safe, existing repository-relative paths from backend payloads."""
+        root_path = Path(root).resolve(strict=False)
+        path_keys = {"path", "relative_path", "file_path", "filename", "module_path", "source_path"}
+        found: list[str] = []
+        visited = 0
+
+        def visit(value: Any) -> None:
+            nonlocal visited
+            if visited >= 500:
+                return
+            visited += 1
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    if str(key).lower() in path_keys and isinstance(item, (str, Path)):
+                        candidate = Path(str(item)).expanduser()
+                        if not candidate.is_absolute():
+                            candidate = root_path / candidate
+                        try:
+                            resolved = candidate.resolve(strict=False)
+                            resolved.relative_to(root_path)
+                            if resolved.is_file():
+                                relative = resolved.relative_to(root_path).as_posix()
+                                if relative not in found:
+                                    found.append(relative)
+                        except (OSError, ValueError):
+                            pass
+                    else:
+                        visit(item)
+            elif isinstance(value, (list, tuple)):
+                for item in value:
+                    visit(item)
+
+        visit(payload)
+        return found
+
+    def _external_context_candidates(self, root: str, query: str) -> tuple[dict[str, list[str]], list[str], dict[str, str]]:
+        """Query optional structural backends concurrently; degrade per backend."""
+        groups: dict[str, list[str]] = {}
+        warnings: list[str] = []
+        states: dict[str, str] = {}
+        external = getattr(self, "external_tools", None)
+        if external is None:
+            return groups, warnings, {"serena": "skipped"}
+        try:
+            terms = list(self.repo_tools.search_terms(query))[:8]
+        except Exception:
+            terms = []
+        anchor_query = (terms[0] if terms else str(query)[:80]).strip()
+        if not anchor_query:
+            return groups, warnings, {"serena": "skipped"}
+
+        def run(backend: str) -> tuple[str, list[str], str | None]:
+            try:
+                call_kwargs: dict[str, Any] = {"backend": backend, "action": "search", "limit": 12}
+                try:
+                    import inspect
+                    if "timeout" in inspect.signature(external.query).parameters:
+                        call_kwargs["timeout"] = timeout
+                except Exception:
+                    pass
+                response = external.query(root, anchor_query, **call_kwargs)
+                if not isinstance(response, dict):
+                    return backend, [], f"{backend} malformed response"
+                if response.get("success") is False:
+                    return backend, [], f"{backend} unavailable"
+                result_keys = ("result", "results", "data", "matches", "items", "paths", "symbols")
+                result_key = next((key for key in result_keys if key in response), None)
+                payload = response.get(result_key) if result_key else None
+                if result_key is None or not isinstance(payload, (dict, list, tuple)):
+                    return backend, [], f"{backend} malformed response"
+                return backend, self._external_candidate_paths(root, response), None
+            except Exception as exc:
+                return backend, [], f"{backend} degraded: {type(exc).__name__}"
+
+        search_cfg = getattr(self, "config", {}).get("search", {})
+        configured_timeout = search_cfg.get("context_backend_timeout_seconds")
+        timeout = configured_timeout if configured_timeout is not None else 3.0
+        try:
+            timeout = max(0.05, min(float(timeout), 120.0))
+        except (TypeError, ValueError):
+            timeout = 3.0
+        futures = {
+            _CONTEXT_BACKEND_POOLS[backend].submit(run, backend): backend
+            for backend in ("serena",)
+        }
+        done, pending = wait(futures, timeout=timeout)
+        for future in done:
+            backend = futures[future]
+            try:
+                backend, paths, warning = future.result()
+            except Exception as exc:
+                paths, warning = [], f"{backend} degraded: {type(exc).__name__}"
+            states[backend] = "degraded" if warning else "used"
+            if paths:
+                groups[backend] = paths
+            if warning:
+                warnings.append(warning)
+        for future in pending:
+            backend = futures[future]
+            future.cancel()
+            states[backend] = "degraded"
+            warnings.append(f"{backend} timeout")
+        # Cancellation is best-effort for a running thread. The persistent
+        # per-backend lane bounds stragglers without delaying this request.
+        return groups, warnings, states
+
+    def _hybrid_context_uncached(
+        self,
+        root: str,
+        query: str,
+        tenant: str,
+        workspace: str | None,
+        max_tokens: int,
+        *,
+        quality_first: bool = False,
+        rag_revision: str = "",
+        rag_revision_available: bool = True,
+    ) -> dict[str, Any]:
+        started_at = time.perf_counter()
         if self.learner is not None:
             try: self.learner.record(root, query)
             except Exception: pass
         target_workspace = workspace
+        rag_setup_error: str | None = None
         if self.rag is not None and self.config.get("features", {}).get("rag", True) and not target_workspace:
-            candidate = self.rag.workspace_id(root)
-            known = {item["workspace"] for item in self.rag.list_workspaces(tenant)}
-            if candidate in known:
-                target_workspace = candidate
+            try:
+                candidate = self.rag.workspace_id(root)
+                known = {
+                    str(item.get("workspace", ""))
+                    for item in self.rag.list_workspaces(tenant)
+                    if isinstance(item, dict)
+                }
+                if candidate in known:
+                    target_workspace = candidate
+            except Exception as exc:
+                rag_setup_error = f"rag workspace unavailable: {type(exc).__name__}"
 
         search_cfg = self.config.get("search", {})
+        rag_configured = self.rag is not None and self.config.get("features", {}).get("rag", True)
+        retrieval_warnings: list[str] = [rag_setup_error] if rag_setup_error else []
+        if rag_configured and not rag_revision_available:
+            retrieval_warnings.append("rag revision unavailable; cache bypassed")
+        rag_pool = None
+        rag_future = None
+        if rag_configured and target_workspace and query.strip():
+            rag_pool = _CONTEXT_BACKEND_POOLS["rag"]
+            rag_future = rag_pool.submit(
+                self.rag.search, query, tenant, target_workspace,
+                top_k=10, use_reranker=True,
+            )
         semantic_fraction = max(0.0, min(float(search_cfg.get("semantic_fraction", 0.35)), 0.7))
         lexical_tokens = max_tokens if not target_workspace else max(512, int(max_tokens * (1.0 - semantic_fraction)))
         # Local AI: preprocessed deterministic/semantic cards narrow the lexical scan to likely files.
         # This is an optimization hint only; if cards are absent or select nothing,
         # the full lexical search remains the correctness fallback.
         candidate_paths: list[str] = []
+        path_groups: dict[str, list[str]] = {}
+        backend_states: dict[str, str] = {}
         # Prioritize files explicitly named in the query/task (e.g. AGENTS.md, src/main.py)
         root_path = Path(root)
+        explicit_paths: list[str] = []
         for token in query.split():
             clean_tok = token.strip("`'\"(),:;[]{}*")
             if clean_tok and ("." in clean_tok or "/" in clean_tok or "\\" in clean_tok):
                 try:
                     rel_p = clean_tok.replace("\\", "/").lstrip("./")
-                    if (root_path / rel_p).exists() and rel_p not in candidate_paths:
-                        candidate_paths.append(rel_p)
+                    if (root_path / rel_p).exists() and rel_p not in explicit_paths:
+                        explicit_paths.append(rel_p)
                 except Exception:
                     pass
+        if explicit_paths:
+            path_groups["explicit"] = explicit_paths
         if self.deterministic is not None:
-            try: candidate_paths.extend(self.deterministic.related_paths(root, query, limit=28))
-            except Exception: pass
+            try:
+                path_groups["deterministic"] = list(self.deterministic.related_paths(root, query, limit=28))
+                backend_states["deterministic"] = "used"
+            except Exception as exc:
+                backend_states["deterministic"] = "degraded"
+                retrieval_warnings.append(f"deterministic degraded: {type(exc).__name__}")
+        else:
+            backend_states["deterministic"] = "skipped"
         if self.code_index is not None:
             try:
-                for p in self.code_index.related_paths(root, query, limit=24):
-                    if p not in candidate_paths: candidate_paths.append(p)
-            except Exception: pass
+                path_groups["code_index"] = list(self.code_index.related_paths(root, query, limit=24))
+                backend_states["code_index"] = "used"
+            except Exception as exc:
+                backend_states["code_index"] = "degraded"
+                retrieval_warnings.append(f"code_index degraded: {type(exc).__name__}")
+        else:
+            backend_states["code_index"] = "skipped"
         if self.preprocessor is not None:
             try:
-                for p in self.preprocessor.candidate_paths(
+                path_groups["preprocessor"] = list(self.preprocessor.candidate_paths(
                     root, query, limit=max(12, int(self.config.get("preprocessing", {}).get("lookup_file_cards", 5)) * 4)
-                ):
-                    if p not in candidate_paths: candidate_paths.append(p)
+                ))
+                backend_states["preprocessor"] = "used"
             except Exception:
                 # Keep already-resolved deterministic/code-index candidates. One
                 # optional preprocessing failure must not force a full repository scan.
-                pass
-        if candidate_paths:
-            candidate_paths = list(dict.fromkeys(candidate_paths))
-            lexical = self.repo_tools.context_pack_paths(
-                root, query, candidate_paths, max_tokens=lexical_tokens,
-                top_k=int(search_cfg.get("context_top_k", 14)),
-            )
-            # If the targeted cards produce no exact evidence, fall back to the
-            # complete lexical scan. Cards accelerate; they never become a completeness gate.
-            if lexical.get("success") and not lexical.get("evidence"):
+                backend_states["preprocessor"] = "degraded"
+                retrieval_warnings.append("preprocessor degraded")
+        else:
+            backend_states["preprocessor"] = "skipped"
+        if quality_first:
+            external_groups, external_warnings, external_states = self._external_context_candidates(root, query)
+            path_groups.update(external_groups)
+            backend_states.update(external_states)
+            retrieval_warnings.extend(external_warnings)
+        else:
+            backend_states.update({"serena": "skipped", "rag": "skipped"})
+        fused_candidates = fuse_ranked_paths(path_groups, limit=64, max_per_path=2)
+        candidate_paths = [path for path, _score in fused_candidates]
+        try:
+            if candidate_paths:
+                candidate_paths = list(dict.fromkeys(candidate_paths))
+                lexical = self.repo_tools.context_pack_paths(
+                    root, query, candidate_paths, max_tokens=lexical_tokens,
+                    top_k=int(search_cfg.get("context_top_k", 14)),
+                )
+                # If targeted cards return no exact evidence, do one completeness scan.
+                if isinstance(lexical, dict) and lexical.get("success") and not lexical.get("evidence"):
+                    lexical = self.repo_tools.context_pack(
+                        root, query, max_tokens=lexical_tokens,
+                        top_k=int(search_cfg.get("context_top_k", 14)),
+                    )
+            else:
                 lexical = self.repo_tools.context_pack(
                     root, query, max_tokens=lexical_tokens,
                     top_k=int(search_cfg.get("context_top_k", 14)),
                 )
-        else:
-            lexical = self.repo_tools.context_pack(
-                root, query, max_tokens=lexical_tokens,
-                top_k=int(search_cfg.get("context_top_k", 14)),
-            )
+        except Exception as exc:
+            lexical = {"success": False, "error": f"lexical backend degraded: {type(exc).__name__}"}
+        if not isinstance(lexical, dict) or not isinstance(lexical.get("evidence", []), list):
+            lexical = {"success": False, "error": "lexical backend malformed response"}
         if not lexical.get("success"):
-            return lexical
+            if not quality_first:
+                return lexical
+            backend_states["lexical"] = "degraded"
+            retrieval_warnings.append(str(lexical.get("error", "lexical backend unavailable"))[:240])
+            lexical = {
+                "success": True,
+                "root": str(root_path),
+                "context": "",
+                "evidence": [],
+                "scanned_files": 0,
+            }
+        else:
+            backend_states["lexical"] = "used"
         evidence = list(lexical.get("evidence", []))
+        path_groups["lexical"] = [str(item.get("path")) for item in evidence if item.get("path")]
+        fused_evidence = fuse_ranked_paths(path_groups, limit=max(24, len(evidence)), max_per_path=2)
+        evidence_rank = {path: rank for rank, (path, _score) in enumerate(fused_evidence)}
+        evidence.sort(key=lambda item: (evidence_rank.get(str(item.get("path", "")), 999), str(item.get("path", ""))))
         if self.evidence_store is not None:
-            try: evidence = self.evidence_store.put_many(str(lexical.get("root", root)), evidence)
-            except Exception: pass
+            try:
+                stored_evidence = self.evidence_store.put_many(str(lexical.get("root", root)), evidence)
+            except Exception as exc:
+                return {
+                    "success": False, "terminal": True, "retryable": False,
+                    "stop_code": "context_evidence_persistence_failed",
+                    "error": f"context evidence persistence failed: {type(exc).__name__}",
+                    "root": str(root), "query": query, "context": "", "evidence": [],
+                }
+            if not isinstance(stored_evidence, (list, tuple)) or any(
+                not isinstance(item, dict) or not str(item.get("evidence_id") or "").strip()
+                for item in stored_evidence
+            ):
+                return {
+                    "success": False, "terminal": True, "retryable": False,
+                    "stop_code": "context_evidence_receipt_incomplete",
+                    "error": "context evidence receipt is missing or incomplete",
+                    "root": str(root), "query": query, "context": "", "evidence": [],
+                }
+            evidence = list(stored_evidence)
+        else:
+            traceable: list[dict[str, Any]] = []
+            for item in evidence:
+                if not isinstance(item, dict):
+                    continue
+                traced = dict(item)
+                if not str(traced.get("evidence_id") or "").strip():
+                    traced["evidence_id"] = "local-" + stable_hash({
+                        "root": canonical_root(str(lexical.get("root", root))),
+                        "path": str(traced.get("path") or ""),
+                        "symbol": str(traced.get("symbol") or ""),
+                        "start_line": traced.get("start_line", 0),
+                        "end_line": traced.get("end_line", 0),
+                        "content_hash": traced.get("content_hash") or stable_hash(str(traced.get("text") or "")),
+                    })[:24]
+                traceable.append(traced)
+            evidence = traceable
         context = str(lexical.get("context", ""))
         semantic_used = False
         per_path: dict[str, int] = {}
@@ -3919,16 +4315,65 @@ class LocalAIServices:
             per_path[path] = per_path.get(path, 0) + 1
         max_per_file = max(1, int(search_cfg.get("max_snippets_per_file", 3)))
 
-        if self.rag is not None and target_workspace:
+        if rag_future is not None and rag_pool is not None:
+            try:
+                configured_rag_timeout = search_cfg.get("context_rag_timeout_seconds", 3.0)
+                rag_timeout = max(0.05, min(float(configured_rag_timeout), 120.0))
+            except (TypeError, ValueError):
+                rag_timeout = 3.0
+            rag_done, rag_pending = wait((rag_future,), timeout=rag_timeout)
+            if rag_pending:
+                rag_future.cancel()
+                rr = None
+                backend_states["rag"] = "degraded"
+                retrieval_warnings.append("rag timeout")
+            else:
+                try:
+                    rr = rag_future.result()
+                except Exception as exc:
+                    rr = None
+                    backend_states["rag"] = "degraded"
+                    retrieval_warnings.append(f"rag degraded: {type(exc).__name__}")
+        else:
+            rr = None
+            if rag_setup_error:
+                backend_states["rag"] = "degraded"
+            else:
+                backend_states["rag"] = "skipped"
+        if rag_future is not None:
             from .token_router import strip_boilerplate
-            rr = self.rag.search(query, tenant, target_workspace, top_k=10, use_reranker=True)
-            if rr.get("success") and rr.get("results"):
+            if isinstance(rr, dict) and rr.get("success") and isinstance(rr.get("results"), list):
+                raw_results = rr["results"]
+                sorted_results_input = []
+                malformed_results = False
+                for item in raw_results:
+                    if not isinstance(item, dict) or not str(item.get("path") or "").strip():
+                        malformed_results = True
+                        continue
+                    try:
+                        chunk_no = int(item.get("chunk_no", 0))
+                    except (TypeError, ValueError, OverflowError):
+                        malformed_results = True
+                        continue
+                    if not isinstance(item.get("text", ""), str):
+                        malformed_results = True
+                        continue
+                    sorted_results_input.append({**item, "chunk_no": chunk_no})
+                if malformed_results:
+                    backend_states["rag"] = "degraded"
+                    retrieval_warnings.append("rag malformed result entries")
+                elif backend_states.get("rag") != "degraded" and rag_revision_available:
+                    backend_states["rag"] = "used"
+                elif not rag_revision_available:
+                    backend_states["rag"] = "degraded"
                 # RRF candidate ordering
                 lex_paths = [str(e.get("path")) for e in evidence if e.get("path")]
-                vec_paths = [str(r.get("path")) for r in rr["results"] if r.get("path")]
-                fused_order = [p for p, _ in self._rrf_fuse(lex_paths, vec_paths)]
+                vec_paths = [str(r.get("path")) for r in sorted_results_input]
+                path_groups["lexical"] = lex_paths
+                path_groups["rag"] = vec_paths
+                fused_order = [p for p, _score in fuse_ranked_paths(path_groups, limit=64, max_per_path=2)]
                 fused_rank = {p: i for i, p in enumerate(fused_order)}
-                sorted_results = sorted(rr["results"], key=lambda item: fused_rank.get(str(item.get("path", "")), 999))
+                sorted_results = sorted(sorted_results_input, key=lambda item: fused_rank.get(str(item.get("path", "")), 999))
                 remaining = max(0, chars_for_tokens(max_tokens) - len(context))
                 seen_chunks: set[tuple[str, int]] = set()
                 for item in sorted_results:
@@ -3949,17 +4394,52 @@ class LocalAIServices:
                     remaining -= len(rendered)
                     per_path[path] = per_path.get(path, 0) + 1
                     semantic_used = True
-                    evidence.append({
+                    rag_evidence = {
+                        "evidence_id": str(item.get("evidence_id") or "rag-" + stable_hash({"root": str(root_path), "path": path, "chunk_no": chunk_no, "content_hash": item.get("content_hash"), "revision": item.get("revision")})[:24]),
                         "path": path, "chunk_no": chunk_no, "semantic": True,
+                        "revision": str(item.get("revision") or item.get("repository_revision") or item.get("content_hash") or "")[:200],
                         "content_hash": item.get("content_hash"),
-                    })
+                    }
+                    for field in ("symbol", "start_line", "end_line", "repository_revision"):
+                        if field in item:
+                            rag_evidence[field] = item[field]
+                    evidence.append(rag_evidence)
                     if remaining <= 0:
                         break
+            elif backend_states.get("rag") != "degraded":
+                backend_states["rag"] = "degraded" if rr is not None else "skipped"
+                if backend_states["rag"] == "degraded":
+                    retrieval_warnings.append("rag unavailable or malformed response")
+        else:
+            backend_states["rag"] = "degraded" if rag_setup_error or (rag_configured and not rag_revision_available) else "skipped"
+        evidence_paths = [str(item.get("path") or "") for item in evidence if isinstance(item, dict) and item.get("path")]
+        path_backend_counts: dict[str, int] = {}
+        for backend_paths in path_groups.values():
+            for candidate in set(backend_paths):
+                path_backend_counts[candidate] = path_backend_counts.get(candidate, 0) + 1
         return {
             "success": True, "root": lexical["root"], "query": query, "context": context,
             "evidence": evidence, "estimated_tokens": estimate_tokens(context),
             "scanned_files": lexical.get("scanned_files", 0), "semantic_used": semantic_used,
             "context_budget_tokens": max_tokens,
+            "retrieval": {
+                "quality_first": bool(quality_first),
+                "rag_revision": str(rag_revision)[:200],
+                "backends": sorted(path_groups),
+                "used_backends": sorted(name for name, state in backend_states.items() if state == "used"),
+                "skipped_backends": sorted(name for name, state in backend_states.items() if state == "skipped"),
+                "degraded_backends": sorted(name for name, state in backend_states.items() if state == "degraded"),
+                "backend_states": dict(sorted(backend_states.items())),
+                "warnings": list(dict.fromkeys(retrieval_warnings))[:8],
+                "fused_paths": [path for path, _score in fuse_ranked_paths(path_groups, limit=24, max_per_path=2)],
+                "quality": {
+                    "candidate_count": len(candidate_paths),
+                    "evidence_count": len(evidence),
+                    "file_coverage": len(set(evidence_paths)),
+                    "cross_backend_agreement_count": sum(1 for count in path_backend_counts.values() if count > 1),
+                },
+                "latency_ms": round((time.perf_counter() - started_at) * 1000, 3),
+            },
         }
 
     def delegate_repo(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
@@ -4685,7 +5165,11 @@ class LocalAIServices:
         action = str(args.get("action", "status")).strip().lower().replace("-", "_")
         root = str(args.get("root", "."))
         if action in {"start", "register", "preprocess"}:
-            return self.preprocessor.register(root, source="agent")
+            return self.preprocessor.register(
+                root, source="agent",
+                is_worktree=bool(args.get("is_worktree", False)),
+                parent_root=args.get("parent_root") or None,
+            )
         if action in {"refresh", "force_refresh"}:
             return self.preprocessor.refresh(root)
         if action == "pause":
@@ -4710,6 +5194,14 @@ class LocalAIServices:
         if self.commands is None:
             return {"success": False, "error": "command broker unavailable"}
         action = str(args.get("action", "run")).strip().lower().replace("-", "_")
+        if bool(args.get("rollback_on_failure", False)) and (action != "run" or bool(args.get("auto_fix", False))):
+            return {
+                "success": False,
+                "error": "rollback_on_failure is supported only for direct run actions",
+                "rollback_unsupported_action": True,
+                "terminal": True,
+                "retryable": False,
+            }
 
         stream_id = str(args.get("stream_id") or (f"cmd:{args.get('task_id')}" if args.get("task_id") else "") or (f"cmd:{tenant}" if args.get("stream") else ""))
         log_callback = None
@@ -4767,6 +5259,7 @@ class LocalAIServices:
                 log_callback=log_callback,
                 snapshot=bool(args.get("snapshot", False)),
                 rollback_on_failure=bool(args.get("rollback_on_failure", False)),
+                rollback_paths=args.get("paths") if isinstance(args.get("paths"), list) else None,
             )
         if action == "run_affected":
             root = str(args.get("cwd", args.get("root", ".")))
@@ -5054,7 +5547,13 @@ class LocalAIServices:
         for i, _model, item in prepared:
             item = dict(item)
             item.setdefault("priority", default_priority)
-            results[i] = self.delegate(item, tenant)
+            try:
+                results[i] = self.delegate(item, tenant)
+            except Exception as exc:
+                results[i] = {
+                    "success": False,
+                    "error": f"batch item failed ({type(exc).__name__})",
+                }
         return {"success": all(r.get("success", False) for r in results.values()), "results": [results[i] for i in range(len(results))]}
 
     def optimize_databases(self) -> dict[str, Any]:

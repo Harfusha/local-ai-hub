@@ -201,6 +201,17 @@ class DeterministicEngine:
               content_hash TEXT NOT NULL,analyzer_version TEXT NOT NULL,filename TEXT NOT NULL,deps_json TEXT NOT NULL,scripts_json TEXT NOT NULL,updated_at REAL NOT NULL,
               PRIMARY KEY(content_hash,analyzer_version,filename));
             CREATE INDEX IF NOT EXISTS idx_manifest_blobs_updated ON manifest_blobs(updated_at);
+
+            CREATE TABLE IF NOT EXISTS test_source_links(
+              root TEXT NOT NULL, source_path TEXT NOT NULL, test_path TEXT NOT NULL,
+              confidence REAL NOT NULL DEFAULT 1.0, updated_at REAL NOT NULL,
+              PRIMARY KEY(root, source_path, test_path));
+            CREATE INDEX IF NOT EXISTS idx_test_source_links_src ON test_source_links(root, source_path);
+            CREATE INDEX IF NOT EXISTS idx_test_source_links_test ON test_source_links(root, test_path);
+
+            CREATE TABLE IF NOT EXISTS hotspots_cache(
+              root TEXT NOT NULL, days INTEGER NOT NULL, cached_at REAL NOT NULL,
+              data_json TEXT NOT NULL, PRIMARY KEY(root, days));
             """
         )
         try:
@@ -208,6 +219,70 @@ class DeterministicEngine:
         except sqlite3.OperationalError:
             pass
         
+    def record_test_source_links(self, root: str, links: list[tuple[str, str, float]]) -> None:
+        if not links:
+            return
+        resolved = str(self._root(root))
+        now = time.time()
+        with self._lock, closing(self._connect()) as con:
+            con.executemany(
+                "INSERT OR REPLACE INTO test_source_links(root, source_path, test_path, confidence, updated_at) VALUES(?, ?, ?, ?, ?)",
+                [(resolved, src.replace("\\", "/"), test.replace("\\", "/"), float(conf), now) for src, test, conf in links],
+            )
+            con.commit()
+
+    def get_test_source_links(self, root: str, source_paths: list[str]) -> list[str]:
+        if not source_paths:
+            return []
+        resolved = str(self._root(root))
+        norm_sources = [p.replace("\\", "/").lstrip("./") for p in source_paths if p]
+        if not norm_sources:
+            return []
+        placeholders = ",".join("?" for _ in norm_sources)
+        basenames = [Path(p).name for p in norm_sources]
+        b_placeholders = ",".join("?" for _ in basenames)
+        with self._lock, closing(self._connect()) as con:
+            rows = con.execute(
+                f"SELECT DISTINCT test_path FROM test_source_links WHERE root=? AND (source_path IN ({placeholders}) OR source_path IN ({b_placeholders}))",
+                (resolved, *norm_sources, *basenames),
+            ).fetchall()
+        return [str(r[0]) for r in rows]
+
+    def precompute_test_mappings(self, root: str) -> int:
+        """Scan repository files and precompute bidirectional source-to-test links into SQLite."""
+        resolved = str(self._root(root))
+        try:
+            inv = self.repo_tools.file_inventory(resolved, include_hashes=False)
+            files = [str(x["path"]).replace("\\", "/") for x in inv.get("files", [])]
+        except Exception:
+            return 0
+        if not files:
+            return 0
+
+        test_files: list[str] = []
+        source_by_stem: dict[str, list[str]] = defaultdict(list)
+        for p in files:
+            p_lower = p.lower()
+            stem = Path(p).stem.lower()
+            if any(marker in p_lower for marker in ("/test/", "/tests/", "_test.", ".test.", "_spec.", ".spec.", "test_")) or stem.endswith("tests") or stem.endswith("test"):
+                test_files.append(p)
+            else:
+                source_by_stem[stem].append(p)
+
+        links: list[tuple[str, str, float]] = []
+        for t in test_files:
+            t_stem = Path(t).stem.lower()
+            clean_stem = re.sub(r"^(test_|tests_)|(_test|_tests|\.test|\.spec|tests|test)$", "", t_stem)
+            if not clean_stem:
+                continue
+            candidates = source_by_stem.get(clean_stem, [])
+            for c in candidates:
+                links.append((c, t, 1.0))
+                links.append((Path(c).name, t, 0.95))
+
+        self.record_test_source_links(resolved, links)
+        return len(links)
+
     def _init_db(self) -> None:
         try:
             with self._lock, closing(self._connect()) as con:
@@ -3643,6 +3718,19 @@ class DeterministicEngine:
         resolved = self._root(root)
         git_exe = shutil.which("git") or "git"
 
+        with self._lock, closing(self._connect()) as con:
+            row = con.execute("SELECT cached_at, data_json FROM hotspots_cache WHERE root=? AND days=?", (str(resolved), int(days))).fetchone()
+            if row and (time.time() - float(row[0])) < 1800.0:
+                try:
+                    data = json.loads(str(row[1]))
+                    if isinstance(data, dict) and data.get("success"):
+                        data["hotspots"] = data.get("hotspots", [])[:limit]
+                        data["count"] = len(data["hotspots"])
+                        data["cached"] = True
+                        return data
+                except Exception:
+                    pass
+
         churn_counts: dict[str, int] = defaultdict(int)
         try:
             res = subprocess.run(
@@ -3703,13 +3791,23 @@ class DeterministicEngine:
 
         hotspots.sort(key=lambda x: x["hotspot_score"], reverse=True)
         hotspots = hotspots[:limit]
-        return {
+        res_data = {
             "success": True,
             "root": resolved,
             "days": days,
             "count": len(hotspots),
             "hotspots": hotspots,
         }
+        try:
+            with self._lock, closing(self._connect()) as con:
+                con.execute(
+                    "INSERT OR REPLACE INTO hotspots_cache(root, days, cached_at, data_json) VALUES(?, ?, ?, ?)",
+                    (str(resolved), int(days), time.time(), json_dumps(res_data)),
+                )
+                con.commit()
+        except Exception:
+            pass
+        return res_data
 
     def generate_tests_for_diff(
         self,
@@ -4121,6 +4219,8 @@ def test_{sym}_regression_edge_cases():
             }
 
         test_paths_set: set[str] = set()
+        for t_linked in self.get_test_source_links(str(resolved_root), norm_changed):
+            test_paths_set.add(t_linked)
         for p in norm_changed:
             p_lower = p.lower()
             if "test" in p_lower or "spec" in p_lower:

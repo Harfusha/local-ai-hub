@@ -28,6 +28,9 @@ class VerificationReceipt:
     passed: bool = True
     details: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "passed", self.passed is True)
+
     @classmethod
     def create(
         cls,
@@ -47,18 +50,21 @@ class VerificationReceipt:
             raise ValueError("verification receipt requires task_id")
         if not criterion_text:
             raise ValueError("verification receipt requires criterion")
+        evidence_key = str(evidence_id or "").strip()
+        if passed and not evidence_key:
+            raise ValueError("passed verification receipt requires evidence_id")
         now = time.time()
         return cls(
             receipt_id=f"rcpt_{uuid.uuid4().hex[:12]}",
             task_id=task_key,
             criterion=criterion_text,
             change_intent_id=change_intent_id,
-            evidence_id=evidence_id,
+            evidence_id=evidence_key,
             command_id=command_id,
             repository_revision=repository_revision,
             observed_at=now,
             expires_at=expires_at,
-            passed=bool(passed),
+            passed=passed,
             details=dict(details or {}),
         )
 
@@ -96,7 +102,7 @@ class VerificationReceipt:
             repository_revision=str(data.get("repository_revision", "")),
             observed_at=float(data.get("observed_at", 0.0)),
             expires_at=float(data["expires_at"]) if data.get("expires_at") is not None else None,
-            passed=bool(data.get("passed", True)),
+            passed=data.get("passed", True),
             details=dict(data.get("details") or {}),
         )
 
@@ -431,6 +437,8 @@ class VerificationStore:
             raise ValueError("verification receipt requires task_id")
         if not str(receipt.criterion or "").strip():
             raise ValueError("verification receipt requires criterion")
+        if receipt.passed and not str(receipt.evidence_id or "").strip():
+            raise ValueError("passed verification receipt requires evidence_id")
         self._init_tables()
         event = AgentEvent.create(
             stream_id=f"verification:{receipt.task_id}",
@@ -665,7 +673,7 @@ class VerificationStore:
 
         for crit in target_criteria:
             rcpt = latest_by_criterion.get(crit)
-            if not rcpt or not rcpt.passed:
+            if not rcpt or not rcpt.passed or not str(rcpt.evidence_id or "").strip():
                 unsatisfied.append(crit)
             elif not rcpt.is_fresh(current_time):
                 stale.append(crit)

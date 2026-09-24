@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 import json
+import math
 import threading
 import urllib.error
 import urllib.request
@@ -67,14 +68,82 @@ class EmbeddingModel:
             return None
         vector = cached.get("vector")
         dimension = cached.get("dimension")
-        if not isinstance(vector, list) or not isinstance(dimension, int) or dimension != len(vector):
+        if not isinstance(vector, list) or not isinstance(dimension, int) or isinstance(dimension, bool) or dimension != len(vector):
             return None
         if expected_dimension is not None and dimension != expected_dimension:
             return None
         try:
-            return [float(value) for value in vector]
-        except (TypeError, ValueError):
+            converted = [float(value) for value in vector]
+        except (OverflowError, TypeError, ValueError):
             return None
+        if not converted or not all(math.isfinite(value) for value in converted):
+            return None
+        if not any(value != 0.0 for value in converted):
+            return None
+        return converted
+
+    def _configured_embedding_dimension(self) -> int | None:
+        models = self.config.get("models", {})
+        cpu_cfg = self.config.get("cpu_retrieval", {})
+        for value in (models.get("embedding_dimension"), cpu_cfg.get("embedding_dimension")):
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                return value
+        return None
+
+    def _embedding_normalized(self, identity: str | None = None) -> bool | None:
+        if identity and identity.startswith("ollama:"):
+            return False
+        provider = identity.split(":", 1)[0] if identity else self.backend
+        if provider in {"sentence-transformers", "openvino"}:
+            return True
+        if provider == "ollama":
+            return False
+        return None
+
+    def _embedding_cache_key(self, identity: str, query: bool, text: str) -> str:
+        model_name = self._ollama_model_name if identity.startswith("ollama:") else self._loaded_model_name
+        models = self.config.get("models", {})
+        model_digest = (
+            getattr(self, "_loaded_model_digest", None)
+            or getattr(getattr(self, "_model", None), "digest", None)
+            or models.get("embedding_digest")
+            or models.get("model_digest")
+        )
+        model_revision = (
+            getattr(self, "_loaded_model_revision", None)
+            or getattr(getattr(self, "_model", None), "revision", None)
+            or models.get("embedding_revision")
+            or models.get("model_revision")
+        )
+        return stable_hash({
+            "space": stable_hash({
+                "identity": identity,
+                "provider": identity.split(":", 1)[0],
+                "model": model_name,
+                "digest": model_digest,
+                "revision": model_revision,
+                "dimension": self._configured_embedding_dimension(),
+                "normalized": self._embedding_normalized(identity),
+            }),
+            "query": query,
+            "text": text,
+        })
+
+    def embedding_space_id(self, identity: str | None = None) -> str:
+        selected = identity or self._active_cache_identity or f"configured:{self.backend}:{self.device}:{self.model_name}"
+        return self._embedding_cache_key(selected, False, "")
+
+    def _encode_request_key(self, texts: list[str], query: bool) -> str:
+        identity = self._active_cache_identity or f"configured:{self.backend}:{self.device}:{self.model_name}"
+        return stable_hash(
+            {
+                "identity": identity,
+                "dimension": self._configured_embedding_dimension(),
+                "normalized": self._embedding_normalized(identity),
+                "query": query,
+                "texts": [str(text).replace("\r\n", "\n") for text in texts],
+            }
+        )
 
     def _candidate_specs(self, *, ollama_fallback: bool = False) -> list[tuple[str, str]]:
         if ollama_fallback:
@@ -315,12 +384,24 @@ class EmbeddingModel:
         return None
 
     def encode(self, texts: list[str], query: bool = False, priority: int = 3) -> dict[str, Any]:
+        request_key = self._encode_request_key(texts, query)
+        result, _coalesced = self.flight_group.do(
+            request_key,
+            lambda: self._encode_uncached(texts, query=query, priority=priority),
+        )
+        output = dict(result)
+        if isinstance(output.get("embeddings"), list):
+            output["embeddings"] = [list(vector) if isinstance(vector, (list, tuple)) else vector for vector in output["embeddings"]]
+        return output
+
+    def _encode_uncached(self, texts: list[str], query: bool = False, priority: int = 3) -> dict[str, Any]:
         if not texts:
             return {"success": True, "model": self.model_name, "backend": self.backend, "embeddings": []}
 
         vectors: list[list[float] | None] = [None] * len(texts)
         missing_texts: list[str] = []
         missing_groups: list[list[int]] = []
+        cached_items: list[tuple[int, str]] = []
         pending_by_key: dict[str, int] = {}
         cache_hits = 0
         cache_identity = self._active_cache_identity
@@ -336,21 +417,25 @@ class EmbeddingModel:
                 self._active_cache_identity = f"ollama:{self._ollama_model_name}"
             cache_identity = self._active_cache_identity
         used_backend = self.active_backend or self.backend
+        backend_fallback = False
         for i, text in enumerate(texts):
             clean_text = str(text).replace("\r\n", "\n")
-            key = stable_hash({"identity": cache_identity, "query": query, "text": clean_text}) if cache_identity else ""
+            key = self._embedding_cache_key(cache_identity, query, clean_text) if cache_identity else ""
             cached = self.cache.get(key) if self.cache_enabled and key else None
-            cached_vector = self._valid_cached_vector(cached, cache_identity, self._active_embedding_dimension) if cache_identity else None
-            if cached_vector is not None:
-                        self.cache.set(
-                            key,
-                            {"identity": cache_identity, "dimension": len(cached_vector), "vector": cached_vector},
-                        )
+            if cached is None and self.cache_enabled and cache_identity:
+                legacy_key = stable_hash({"identity": cache_identity, "query": query, "text": clean_text})
+                cached = self.cache.get(legacy_key)
+            # Runtime dimension is shared mutable state. Concurrent requests may
+            # finish on different backends, so only use configured dimension when
+            # validating an entry before this request has produced its own vector.
+            expected_dimension = self._configured_embedding_dimension()
+            cached_vector = self._valid_cached_vector(cached, cache_identity, expected_dimension) if cache_identity else None
             if cached_vector is not None:
                 vectors[i] = cached_vector
                 if self._active_embedding_dimension is None:
                     self._active_embedding_dimension = len(cached_vector)
                 self._memory_hits += 1
+                cached_items.append((i, text))
                 cache_hits += 1
                 continue
             # The same content is common across worktrees and generated/copied
@@ -366,6 +451,8 @@ class EmbeddingModel:
                 missing_groups[group_index].append(i)
 
         batch_deduplicated = sum(len(group) - 1 for group in missing_groups)
+        recomputed_cached = 0
+        response_cache_identity = cache_identity
 
         if missing_texts:
             computed_vectors: list[list[float]] | None = None
@@ -420,6 +507,7 @@ class EmbeddingModel:
                     if failed or len(all_st_vectors) != len(missing_texts):
                         return {"success": False, "error": self._load_error or "embedding model disabled", "model": self.model_name}
                     computed_vectors = all_st_vectors
+                    backend_fallback = self.backend in ("auto", "ollama")
                     break
                 if computed_vectors is None:
                     return {"success": False, "error": self._load_error or "embedding accelerator repeatedly changed", "model": self.model_name}
@@ -427,21 +515,79 @@ class EmbeddingModel:
             # 3. Store in vectors and persist to cache
             model_identity = self._ollama_model_name if used_backend == "ollama" else self._loaded_model_name
             if used_backend == "ollama":
-                self._active_cache_identity = f"ollama:{model_identity}"
+                result_cache_identity = f"ollama:{model_identity}"
             else:
-                self._active_cache_identity = f"{used_backend}:{self.active_device or self.device}:{model_identity}"
-            dimensions = {len(vector) for vector in computed_vectors if isinstance(vector, list)}
+                result_cache_identity = f"{used_backend}:{self.active_device or self.device}:{model_identity}"
+            self._active_cache_identity = result_cache_identity
+            if len(computed_vectors) != len(missing_texts) or any(
+                not isinstance(vector, list) for vector in computed_vectors
+            ):
+                return {"success": False, "error": "embedding backend returned incomplete vectors", "model": self.model_name}
+            dimensions = {len(vector) for vector in computed_vectors}
             if len(dimensions) != 1 or 0 in dimensions:
                 return {"success": False, "error": "embedding backend returned inconsistent vector dimensions", "model": self.model_name}
-            self._active_embedding_dimension = dimensions.pop()
+            try:
+                computed_vectors = [[float(value) for value in vector] for vector in computed_vectors]
+            except (OverflowError, TypeError, ValueError):
+                return {"success": False, "error": "embedding backend returned an invalid vector", "model": self.model_name}
+            if any(
+                not vector
+                or not all(math.isfinite(value) for value in vector)
+                or not any(value != 0.0 for value in vector)
+                for vector in computed_vectors
+            ):
+                return {"success": False, "error": "embedding backend returned an invalid vector", "model": self.model_name}
+            if any(not vector or not all(math.isfinite(value) for value in vector) for vector in computed_vectors):
+                return {"success": False, "error": "embedding backend returned an invalid vector", "model": self.model_name}
+            result_dimension = dimensions.pop()
+            self._active_embedding_dimension = result_dimension
+
+            if result_cache_identity != cache_identity and cached_items:
+                cached_groups: dict[str, list[int]] = {}
+                for index, text in cached_items:
+                    clean_text = str(text).replace("\r\n", "\n")
+                    cached_groups.setdefault(clean_text, []).append(index)
+                cached_texts = list(cached_groups)
+                cached_vectors: list[list[float]] = []
+                for start in range(0, len(cached_texts), self.batch_size):
+                    batch = cached_texts[start:start + self.batch_size]
+                    encoded, active = self._encode_st_batch(batch, query=query, priority=priority)
+                    active_identity = f"{active}:{self.active_device or self.device}:{self._loaded_model_name}"
+                    if encoded is None or len(encoded) != len(batch) or active_identity != result_cache_identity:
+                        return {"success": False, "error": "embedding backend changed while reconciling cached vectors", "model": self.model_name}
+                    for vector in encoded:
+                        try:
+                            clean_vector = [float(value) for value in vector]
+                        except (OverflowError, TypeError, ValueError):
+                            return {"success": False, "error": "embedding backend returned an invalid cached replacement", "model": self.model_name}
+                        if (
+                            len(clean_vector) != result_dimension
+                            or not clean_vector
+                            or not all(math.isfinite(value) for value in clean_vector)
+                            or not any(value != 0.0 for value in clean_vector)
+                        ):
+                            return {"success": False, "error": "embedding backend returned an invalid cached replacement", "model": self.model_name}
+                        cached_vectors.append(clean_vector)
+                for text, vector in zip(cached_texts, cached_vectors):
+                    for index in cached_groups[text]:
+                        vectors[index] = vector
+                    if self.cache_enabled:
+                        key = self._embedding_cache_key(result_cache_identity, query, text)
+                        self.cache.set(key, {"identity": result_cache_identity, "dimension": result_dimension, "vector": vector})
+                recomputed_cached = len(cached_texts)
+                batch_deduplicated += sum(len(indices) - 1 for indices in cached_groups.values())
+                cache_hits = 0
+            response_cache_identity = result_cache_identity
+
             for indices, text, vector in zip(missing_groups, missing_texts, computed_vectors):
                 for idx in indices:
                     vectors[idx] = vector
                 if self.cache_enabled:
                     clean_text = str(text).replace("\r\n", "\n")
-                    key = stable_hash({"identity": self._active_cache_identity, "query": query, "text": clean_text})
-                    self.cache.set(key, {"identity": self._active_cache_identity, "dimension": self._active_embedding_dimension, "vector": vector})
+                    key = self._embedding_cache_key(result_cache_identity, query, clean_text)
+                    self.cache.set(key, {"identity": result_cache_identity, "dimension": result_dimension, "vector": vector})
                 self._computed += 1
+            self._computed += recomputed_cached
             self._batch_deduplicated += batch_deduplicated
 
         return {
@@ -449,10 +595,13 @@ class EmbeddingModel:
             "model": self.model_name,
             "backend": used_backend,
             "device": self.active_device or self.device,
+            "embedding_space_id": self.embedding_space_id(response_cache_identity),
+            "degraded": backend_fallback,
+            "fallback": used_backend if backend_fallback else None,
             "embeddings": vectors,
             "cache_hits": cache_hits,
-            "computed": len(missing_texts),
-            "unique_computed": len(missing_texts),
+            "computed": len(missing_texts) + recomputed_cached,
+            "unique_computed": len(missing_texts) + recomputed_cached,
             "batch_deduplicated": batch_deduplicated,
         }
 

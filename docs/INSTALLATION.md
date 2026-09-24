@@ -11,7 +11,7 @@
 Tell your AI assistant:
 > **"Install Local AI Hub"** *(or "Nainstaluj local ai hub", or run `install.ps1` on Windows / `./install.sh` on macOS/Linux)*
 
-The bootstrap delegates to `tools/setup.py`, creates the user installation/state directories, installs core dependencies, provisions the **Token Economy Suite** (`tokcount`, `trim-run`, `repo-map`, `tiktoken`, `grep-ast`, `files-to-prompt`), registers its CLI directory in the user's persistent `PATH`, probes and installs external CLI helpers (`ripgrep` / `rg`, `fd`, `ast-grep`, `repomix`, `jq`), installs Serena and CodeGraphContext in isolated environments, configures selected coding agents (Codex, Claude, Gemini, Cursor, Windsurf, and VS Code/Copilot), deploys agent skills, and installs the user service/supervisor. Ollama is installed or pulled only when all explicit opt-ins are true: `[ollama].enabled = true`, `server.auto_start_ollama = true`, and `llama_cpp.fallback_to_ollama = true`. The default is disabled. llama.cpp is optional too: setup never downloads or installs it; `llama_cpp.mode = "auto"` only probes an already-running, hardware-appropriate endpoint. If that endpoint is absent, the Hub does not install Ollama as a fallback. Set `[features].vision = false` to remove vision from generated MCP schemas, instructions, capabilities, runtime routing, and setup model pulls. Open a new terminal after setup for the PATH change to take effect.
+The bootstrap delegates to `tools/setup.py`, creates the user installation/state directories, installs core dependencies, provisions the **Token Economy Suite** (`tokcount`, `trim-run`, `repo-map`, `tiktoken`, `grep-ast`, `files-to-prompt`), registers its CLI directory in the user's persistent `PATH`, probes and installs external CLI helpers (`ripgrep` / `rg`, `fd`, `ast-grep`, `repomix`, `jq`), installs Serena in an isolated environment, configures selected coding agents (Codex, Claude, Gemini, Cursor, Windsurf, and VS Code/Copilot), deploys agent skills, and installs the user service/supervisor. Ollama is installed or pulled only when all explicit opt-ins are true: `[ollama].enabled = true`, `server.auto_start_ollama = true`, and `llama_cpp.fallback_to_ollama = true`. The default is disabled. llama.cpp is optional too: setup never downloads or installs it; `llama_cpp.mode = "auto"` only probes an already-running, hardware-appropriate endpoint. If that endpoint is absent, the Hub does not install Ollama as a fallback. Set `[features].vision = false` to remove vision from generated MCP schemas, instructions, capabilities, runtime routing, and setup model pulls. Open a new terminal after setup for the PATH change to take effect.
 
 When `[ollama].enabled = false` (the default), neither setup nor the supervisor installs, starts, pulls, or probes Ollama. Do not run `ollama serve` manually. Enable Ollama only as an explicit policy change; otherwise use deterministic Hub operations and an already-running llama.cpp endpoint only when the hardware-gated profile actually needs it.
 
@@ -26,7 +26,31 @@ For LLM generation on an Intel iGPU, install and configure the llama.cpp SYCL ro
 On a supported Intel Core Ultra system, `--profile auto` can select `integrated`. Setup installs `requirements-openvino.txt` only when the active model configuration requests an OpenVINO embedding/reranker backend, or detected Intel NPU/iGPU policy enables it, including an Intel GPU selected by the `integrated` profile, subject to `features.install_openvino_dependencies`, `openvino.enabled`, and `openvino.auto_install`. `features.install_openvino_dependencies` permits that conditional install; it is not an unconditional install switch. NVIDIA-only systems keep SentenceTransformers/Torch retrieval and do not need OpenVINO. The OpenVINO runtime and vendor NPU/GPU drivers are separate concerns: if the driver does not expose `NPU`/`GPU`, Local AI Hub reports that state and falls back to CPU instead of failing startup. Use `python tools/doctor.py` to see the detected hardware, OpenVINO devices and active/fallback backend.
 
 Use `--profile integrated` to force the conservative shared-memory profile on a machine whose firmware/driver metadata prevents reliable auto-detection.
-
+ 
+## Optional: CodeGraphContext for Repository Optimization
+ 
+CodeGraphContext was decoupled from the core Local AI Hub runtime to keep Hub lightweight, fast, and free of heavy graph database dependencies.
+ 
+For complex or large codebases with deep call hierarchies, installing CodeGraphContext directly in the target repository or environment is recommended as an optional optimization tool:
+ 
+- **Benefits**: Deep call graphs, caller/callee tracing, blast-radius impact analysis, and dead code detection.
+- **Standalone installation**:
+  ```bash
+  pip install "codegraphcontext[gcf]==0.6.8"
+  ```
+- **Direct Agent MCP configuration** (e.g. in `.cursor/mcp.json`, `claude_desktop_config.json`, or Codex configuration):
+  ```json
+  {
+    "mcpServers": {
+      "codegraph": {
+        "command": "codegraphcontext",
+        "args": ["mcp", "start"]
+      }
+    }
+  }
+  ```
+- **Fallback Behavior**: Local AI Hub gracefully falls back to built-in AST code-indexing and symbol analysis when CodeGraphContext is absent, so repositories can adopt it independently without affecting core Hub operations.
+ 
 ## Python package
 
 For development/package installation use `pip install .` or `pip install ".[token-economy]"`. CLI tools `tokcount`, `trim-run`, `repo-map`, and `local-ai-hub` are registered automatically. `local-ai-hub --config /path/config.toml` starts the service.

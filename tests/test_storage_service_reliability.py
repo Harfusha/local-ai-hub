@@ -125,6 +125,7 @@ def test_verification_store_indexes_and_retry(tmp_path: Path):
         task_id="t-123",
         criterion="test_pass",
         passed=True,
+        evidence_id="ev_test",
     )
     vstore.record(rcpt)
 
@@ -229,6 +230,28 @@ def test_task_store_lock_and_retry(tmp_path: Path):
 
     after_reap = tstore.get(task.task_id)
     assert after_reap.status == TaskStatus.ABANDONED
+
+    # Stale task filtering test
+    stale_task = tstore.create(
+        contract=GoalContract(goal="stale goal", acceptance_criteria=("crit2",)),
+        context=ScopeContext(repository_id="repo1"),
+    )
+    tstore.transition(stale_task.task_id, TaskStatus.ACTIVE, reason="activate", actor="agent", idempotency_key="act_2")
+    con = sqlite3.connect(tstore.state_store.db_path)
+    try:
+        con.execute("UPDATE agent_tasks_projection SET heartbeat_expires_at = ? WHERE task_id = ?", (time.time() - 10.0, stale_task.task_id))
+        con.commit()
+    finally:
+        con.close()
+
+    stale_fetched = tstore.get(stale_task.task_id)
+    assert stale_fetched is not None
+    assert stale_fetched.is_stale is True
+    assert stale_fetched.to_dict()["stale"] is True
+    assert stale_fetched.to_dict()["stale_reason"] == "heartbeat_expired"
+
+    assert stale_task.task_id not in [t.task_id for t in tstore.list_tasks()]
+    assert stale_task.task_id in [t.task_id for t in tstore.list_tasks(include_stale=True)]
 
 
 def test_blackboard_store_retry(tmp_path: Path):

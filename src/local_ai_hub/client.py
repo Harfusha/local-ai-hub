@@ -113,10 +113,6 @@ class HubClient:
         return conn
 
     def _pooled_open(self, method: str, path: str, body: bytes | None, headers: dict[str, str], timeout: float) -> bytes:
-        is_reused = False
-        conn = getattr(self._transport_local, "connection", None)
-        if conn is not None and getattr(conn, "sock", None) is not None:
-            is_reused = True
         try:
             conn = self._connection(timeout)
             conn.request(method, path, body=body, headers=headers)
@@ -124,18 +120,7 @@ class HubClient:
             raw = response.read()
         except (OSError, http.client.HTTPException):
             self._drop_connection()
-            if is_reused:
-                # Stale pooled keep-alive socket was closed by server idle timeout; retry once on fresh connection.
-                try:
-                    conn = self._connection(timeout)
-                    conn.request(method, path, body=body, headers=headers)
-                    response = conn.getresponse()
-                    raw = response.read()
-                except (OSError, http.client.HTTPException):
-                    self._drop_connection()
-                    raise
-            else:
-                raise
+            raise
         if bool(getattr(response, "will_close", False)):
             self._drop_connection()
         if int(response.status) >= 400:
@@ -157,6 +142,18 @@ class HubClient:
             return {"success": False, "error": str(parsed), "status_code": exc.code, "request_id": request_id}
         except Exception:
             return {"success": False, "error": f"HTTP {exc.code}: {exc.reason}", "status_code": exc.code, "request_id": request_id}
+
+    @staticmethod
+    def _uncertain_response(request_id: str, *, retried: bool = False) -> dict[str, Any]:
+        result = {
+            "success": False,
+            "error": "request outcome is unknown after a transport failure",
+            "outcome_unknown": True,
+            "request_id": request_id,
+        }
+        if retried:
+            result["retried"] = True
+        return result
 
     def _singleflight(self, key: str, timeout: float, execute: Any) -> dict[str, Any]:
         with self._flight_lock:
@@ -187,10 +184,13 @@ class HubClient:
         if isinstance(result, dict): result["coalesced"] = True
         return result
 
-    def _online(self) -> bool:
+    def _online(self, timeout: float | None = None) -> bool:
         try:
+            health_timeout = self.health_timeout if timeout is None else min(self.health_timeout, max(0.0, timeout))
+            if health_timeout <= 0:
+                return False
             headers = {"X-LocalAI-Token": self.api_token} if self.api_token else {}
-            with urlopen(Request(f"{self.base_url}/health", headers=headers), timeout=self.health_timeout) as response:
+            with urlopen(Request(f"{self.base_url}/health", headers=headers), timeout=health_timeout) as response:
                 return response.status == 200
         except HTTPError as exc:
             # 503 from the bounded HTTP admission gate proves the singleton is alive
@@ -199,8 +199,14 @@ class HubClient:
         except Exception:
             return False
 
-    def ensure_server(self) -> bool:
-        if self._online():
+    def ensure_server(self, timeout: float | None = None) -> bool:
+        budget = self.startup_wait if timeout is None else min(self.startup_wait, max(0.0, float(timeout)))
+        deadline = time.monotonic() + budget
+
+        def remaining() -> float:
+            return max(0.0, deadline - time.monotonic())
+
+        if self._online(remaining()):
             return True
         config_path = self.config["_config_path"]
         state_dir = Path(self.config["server"]["state_dir"])
@@ -253,9 +259,9 @@ class HubClient:
                     except OSError:
                         pass
                     continue
-                deadline = time.monotonic() + self.startup_wait
-                while time.monotonic() < deadline:
-                    if self._online():
+                lock_deadline = min(deadline, time.monotonic() + self.startup_wait)
+                while time.monotonic() < lock_deadline:
+                    if self._online(remaining()):
                         return True
                     if not _live_start_lock(lock_path, self.start_lock_stale):
                         try:
@@ -263,9 +269,9 @@ class HubClient:
                         except OSError:
                             pass
                         break
-                    time.sleep(self.startup_poll)
+                    time.sleep(min(self.startup_poll, max(0.0, lock_deadline - time.monotonic())))
                 else:
-                    return self._online()
+                    return self._online(remaining())
                 continue
             except OSError:
                 if acquired_lock:
@@ -276,10 +282,12 @@ class HubClient:
                 continue
 
         if not owner:
-            return self._online()
+            return self._online(remaining())
         try:
-            if self._online():
+            if self._online(remaining()):
                 return True
+            if remaining() <= 0:
+                return False
             env = os.environ.copy()
             env["LOCAL_AI_CONFIG"] = config_path
             src_dir = str(Path(__file__).resolve().parents[1])
@@ -299,12 +307,11 @@ class HubClient:
                 kwargs["start_new_session"] = True
             process = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
             _retain_detached_child(process)
-            deadline = time.monotonic() + self.startup_wait
-            while time.monotonic() < deadline:
-                if self._online():
+            while remaining() > 0:
+                if self._online(remaining()):
                     return True
-                time.sleep(self.startup_poll)
-            return self._online()
+                time.sleep(min(self.startup_poll, remaining()))
+            return self._online(remaining())
         finally:
             lock_path.unlink(missing_ok=True)
 
@@ -327,7 +334,7 @@ class HubClient:
                     pass
         return None
 
-    def request(self, path: str, payload: dict[str, Any] | None = None, *, timeout: float = 30.0, replay_safe: bool = True) -> dict[str, Any]:
+    def request(self, path: str, payload: dict[str, Any] | None = None, *, timeout: float = 30.0, replay_safe: bool = False) -> dict[str, Any]:
         timeout = min(self.max_request_timeout, max(0.2, float(timeout)))
         clean_payload = payload or {}
         preflight = self._terminal_preflight(path, clean_payload)
@@ -336,21 +343,31 @@ class HubClient:
         body = json_dumps(clean_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str).encode("utf-8")
         request_id = f"req_{uuid.uuid4().hex[:12]}"
 
-        def once() -> dict[str, Any]:
+        def once(attempt_timeout: float) -> dict[str, Any]:
             headers = {
                 "Content-Type": "application/json", "X-LocalAI-Tenant": self.tenant,
                 "X-LocalAI-Agent": self.agent, "X-LocalAI-Request-ID": request_id,
             }
             if self.api_token:
                 headers["X-LocalAI-Token"] = self.api_token
-            return json.loads(self._pooled_open("POST", path, body, headers, timeout).decode("utf-8"))
+            return json.loads(self._pooled_open("POST", path, body, headers, attempt_timeout).decode("utf-8"))
 
         def execute() -> dict[str, Any]:
             duplicate_deadline = time.monotonic() + timeout
             try:
                 while True:
+                    remaining = duplicate_deadline - time.monotonic()
+                    if remaining <= 0:
+                        return {
+                            "success": False,
+                            "error": "retry deadline exceeded while request remains in progress",
+                            "retryable": True,
+                            "in_progress": True,
+                            "retry_timeout": True,
+                            "request_id": request_id,
+                        }
                     try:
-                        return once()
+                        return once(min(timeout, remaining))
                     except HTTPError as exc:
                         result = self._error_response(exc, request_id)
                         if not (result.get("in_progress") and result.get("retryable")):
@@ -365,21 +382,40 @@ class HubClient:
                 return self._error_response(exc, request_id)
             except (URLError, OSError, http.client.HTTPException) as exc:
                 self._drop_connection()
-                # A local hub can disappear between ensure_server() and the response,
-                # or a pooled keep-alive socket may be closed by the server idle timeout.
-                # Replay-safe work retries once with a fresh connection for journal reuse.
+                # Only callers that explicitly classify this POST as replay safe may retry.
                 if replay_safe:
-                    server_ready = self.ensure_server() if self.auto_start else True
+                    remaining = duplicate_deadline - time.monotonic()
+                    server_ready = self.ensure_server(timeout=remaining) if self.auto_start and remaining > 0 else not self.auto_start
                     if server_ready:
-                        try: return once()
+                        remaining = duplicate_deadline - time.monotonic()
+                        if remaining <= 0:
+                            return self._uncertain_response(request_id)
+                        try: return once(remaining)
                         except HTTPError as retry_http: return self._error_response(retry_http, request_id)
+                        except (URLError, OSError, http.client.HTTPException):
+                            self._drop_connection()
+                            return self._uncertain_response(request_id, retried=True)
                         except Exception as retry_exc: return {"success": False, "error": str(retry_exc), "request_id": request_id, "retried": True}
-                return {"success": False, "error": str(exc), "request_id": request_id}
+                return self._uncertain_response(request_id)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return self._uncertain_response(request_id)
             except Exception as exc:
                 return {"success": False, "error": str(exc), "request_id": request_id}
 
+        if not replay_safe:
+            return execute()
+
         key = f"POST|{self.tenant}|{self.agent}|{path}|{body.decode('utf-8')}"
-        return self._singleflight(key, timeout, execute)
+        try:
+            return self._singleflight(key, timeout, execute)
+        except TimeoutError:
+            return {
+                "success": False,
+                "error": "coalesced request timed out before result was available",
+                "retry_timeout": True,
+                "coalesced": True,
+                "request_id": request_id,
+            }
 
     def get(self, path: str, timeout: float = 15.0) -> dict[str, Any]:
         timeout = min(self.max_request_timeout, max(0.2, float(timeout)))
@@ -392,49 +428,81 @@ class HubClient:
         if self.api_token:
             headers["X-LocalAI-Token"] = self.api_token
 
-        def once() -> dict[str, Any]:
-            result = json.loads(self._pooled_open("GET", path, None, headers, timeout).decode("utf-8"))
+        def once(attempt_timeout: float) -> dict[str, Any]:
+            result = json.loads(self._pooled_open("GET", path, None, headers, attempt_timeout).decode("utf-8"))
             return result if isinstance(result, dict) else {"success": False, "error": "invalid JSON response"}
 
         def execute() -> dict[str, Any]:
+            deadline = time.monotonic() + timeout
             try:
-                return once()
+                return once(timeout)
             except HTTPError as exc:
                 return self._error_response(exc, request_id)
             except (URLError, OSError, http.client.HTTPException) as exc:
                 self._drop_connection()
-                server_ready = self.ensure_server() if self.auto_start else True
+                remaining = deadline - time.monotonic()
+                server_ready = self.ensure_server(timeout=remaining) if self.auto_start and remaining > 0 else not self.auto_start
                 if server_ready:
-                    try: return once()
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return self._uncertain_response(request_id)
+                    try: return once(remaining)
                     except HTTPError as retry_http: return self._error_response(retry_http, request_id)
+                    except (URLError, OSError, http.client.HTTPException):
+                        self._drop_connection()
+                        return self._uncertain_response(request_id, retried=True)
                     except Exception as retry_exc: return {"success": False, "error": str(retry_exc), "request_id": request_id, "retried": True}
-                return {"success": False, "error": str(exc), "request_id": request_id}
+                return self._uncertain_response(request_id)
             except Exception as exc:
                 return {"success": False, "error": str(exc), "request_id": request_id}
 
         key = f"GET|{self.tenant}|{self.agent}|{path}"
-        return self._singleflight(key, timeout, execute)
+        try:
+            return self._singleflight(key, timeout, execute)
+        except TimeoutError:
+            return {
+                "success": False,
+                "error": "coalesced request timed out before result was available",
+                "retry_timeout": True,
+                "coalesced": True,
+                "request_id": request_id,
+            }
+
+    @staticmethod
+    def _post_replay_safe(path: str, payload: dict[str, Any] | None) -> bool:
+        """Fail closed: only known read-only POST endpoints may be replayed."""
+        path = path.lower().split("?", 1)[0]
+        if path in {
+            "/api/memory/get",
+            "/api/memory/search",
+            "/api/repo/circular_dependencies",
+            "/api/repo/complexity",
+            "/api/repo/api_spec",
+            "/api/repo/dependency_slice",
+            "/api/repo/migration_drift",
+            "/api/repo/package_audit",
+            "/api/repo/generate_tests_for_diff",
+            "/api/repo/cross_repo_contract",
+            "/api/repo/hotspots",
+            "/api/git/diff",
+            "/api/git/history_search",
+            "/api/agent-state/context",
+        }:
+            return True
+        if path == "/api/repo/generate_types":
+            return not bool((payload or {}).get("write_stub"))
+        action = str((payload or {}).get("action", "")).strip().lower()
+        read_actions = {
+            "/api/agent-state/tasks": {"get", "list", "count"},
+            "/api/agent-state/memory": {"get", "find", "relation_find", "relation_traverse"},
+            "/api/agent-state/blackboard": {"get", "list"},
+            "/api/agent-state/incidents": {"find"},
+            "/api/agent-state/verification": {"completion"},
+        }
+        return action in read_actions.get(path, set())
 
     def post(self, path: str, payload: dict[str, Any] | None = None, timeout: float = 360.0) -> dict[str, Any]:
-        p = path.lower()
-        is_mutating = (
-            p == "/api/command"
-            or p.startswith("/api/leases/")
-            or p in {"/api/memory/put", "/api/memory/delete"}
-            or p.startswith("/api/maintenance/")
-            or (
-                p.startswith("/api/agent-state/")
-                and not (
-                    p == "/api/agent-state/context"
-                    or (p == "/api/agent-state/tasks" and isinstance(payload, dict) and payload.get("action") in {"get", "list", "count"})
-                    or (p == "/api/agent-state/memory" and isinstance(payload, dict) and payload.get("action") in {"get", "find", "relation_find", "relation_traverse"})
-                    or (p == "/api/agent-state/blackboard" and isinstance(payload, dict) and payload.get("action") in {"get", "list"})
-                    or (p == "/api/agent-state/incidents" and isinstance(payload, dict) and payload.get("action") in {"find", "decision"})
-                    or (p == "/api/agent-state/verification" and isinstance(payload, dict) and payload.get("action") in {"completion"})
-                )
-            )
-        )
-        replay_safe = not is_mutating
+        replay_safe = self._post_replay_safe(path, payload)
         return self.request(path, payload, timeout=timeout, replay_safe=replay_safe)
 
     def status(self, detail: str = "brief", scope: str = "process") -> dict[str, Any]:
@@ -666,7 +734,7 @@ class HubClient:
     def continue_conversation(self, conversation_id: str, prompt: str, model: str | None = None, system: str | None = None, max_tokens: int | None = None, temperature: float | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "conversation_id": conversation_id,
-            "prompt": prompt,
+            "task": prompt,
         }
         if model:
             payload["model"] = model
@@ -696,9 +764,23 @@ class HubClient:
         qs = ("?" + "&".join(params)) if params else ""
         return self.get(f"/api/agent-state/events{qs}")
 
-    def stream_events(self, stream_id: str = "", kind: str = "", after_seq: int = 0, timeout: float = 30.0):
+    def stream_events(
+        self,
+        stream_id: str = "",
+        kind: str = "",
+        after_seq: int = 0,
+        timeout: float = 30.0,
+        *,
+        cancel_event: threading.Event | None = None,
+    ):
         """Yield parsed SSE events (event_type, data_dict) from /api/agent-state/events/stream."""
         import urllib.parse
+        requested_timeout = max(0.0, float(timeout))
+        stream_timeout = min(self.max_request_timeout, requested_timeout)
+        transport_timeout = min(
+            self.max_request_timeout,
+            max(0.2, stream_timeout + 5.0 if stream_timeout > 0 else 60.0),
+        )
         params = []
         if stream_id:
             params.append(f"stream_id={urllib.parse.quote(stream_id)}")
@@ -706,33 +788,81 @@ class HubClient:
             params.append(f"kind={urllib.parse.quote(kind)}")
         if after_seq > 0:
             params.append(f"after_seq={after_seq}")
-        if timeout > 0:
-            params.append(f"timeout={timeout}")
+        if stream_timeout > 0:
+            params.append(f"timeout={stream_timeout:g}")
         qs = ("?" + "&".join(params)) if params else ""
         url = f"{self.base_url}/api/agent-state/events/stream{qs}"
-        req = Request(url, headers={"Authorization": f"Bearer {self.api_token}"} if self.api_token else {})
-        with urlopen(req, timeout=timeout + 5.0 if timeout > 0 else 60.0) as resp:
-            cur_event = ""
-            cur_data = []
-            for raw_line in resp:
-                line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
-                if not line:
-                    if cur_data:
-                        data_str = "\n".join(cur_data)
-                        try:
-                            parsed_data = json.loads(data_str)
-                        except Exception:
-                            parsed_data = {"raw": data_str}
-                        yield cur_event or "message", parsed_data
-                    cur_event = ""
-                    cur_data = []
-                    continue
-                if line.startswith(":"):
-                    continue
-                if line.startswith("event:"):
-                    cur_event = line[len("event:"):].strip()
-                elif line.startswith("data:"):
-                    cur_data.append(line[len("data:"):].strip())
+        request_id = f"req_{uuid.uuid4().hex[:12]}"
+        headers = {
+            "X-LocalAI-Tenant": self.tenant,
+            "X-LocalAI-Agent": self.agent,
+            "X-LocalAI-Request-ID": request_id,
+        }
+        if self.api_token:
+            headers["X-LocalAI-Token"] = self.api_token
+            headers["Authorization"] = f"Bearer {self.api_token}"
+        req = Request(url, headers=headers)
+        monitor_stopped = threading.Event()
+        deadline_expired = threading.Event()
+        watcher = None
+        try:
+            if cancel_event is not None and cancel_event.is_set():
+                return
+            response = urlopen(req, timeout=transport_timeout)
+            with response as resp:
+                def close_on_interrupt() -> None:
+                    deadline = time.monotonic() + transport_timeout
+                    while not monitor_stopped.is_set():
+                        if cancel_event is not None and cancel_event.is_set():
+                            try: resp.close()
+                            except Exception: pass
+                            return
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            if not monitor_stopped.is_set():
+                                deadline_expired.set()
+                                try: resp.close()
+                                except Exception: pass
+                            return
+                        monitor_stopped.wait(min(0.05, remaining))
+
+                watcher = threading.Thread(target=close_on_interrupt, daemon=True)
+                watcher.start()
+                cur_event = ""
+                cur_data = []
+                for raw_line in resp:
+                    if cancel_event is not None and cancel_event.is_set():
+                        return
+                    line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+                    if not line:
+                        if cur_data:
+                            data_str = "\n".join(cur_data)
+                            try:
+                                parsed_data = json.loads(data_str)
+                            except Exception:
+                                parsed_data = {"raw": data_str}
+                            yield cur_event or "message", parsed_data
+                        cur_event = ""
+                        cur_data = []
+                        continue
+                    if line.startswith(":"):
+                        continue
+                    if line.startswith("event:"):
+                        cur_event = line[len("event:"):].strip()
+                    elif line.startswith("data:"):
+                        cur_data.append(line[len("data:"):].strip())
+        except HTTPError:
+            raise
+        except (URLError, OSError, http.client.HTTPException):
+            if cancel_event is None or not cancel_event.is_set():
+                result = self._uncertain_response(request_id)
+                if deadline_expired.is_set():
+                    result["retry_timeout"] = True
+                yield "error", result
+        finally:
+            monitor_stopped.set()
+            if watcher is not None:
+                watcher.join(timeout=0.1)
 
     def circular_dependencies(self, root: str = ".", language: str = "python") -> dict[str, Any]:
         return self.post("/api/repo/circular_dependencies", {"root": root, "language": language})

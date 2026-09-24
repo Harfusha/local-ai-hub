@@ -738,6 +738,9 @@ class TelemetryStore:
         """
         if not isinstance(event, dict):
             return
+        tool_name = event.get("tool")
+        if isinstance(tool_name, str) and tool_name[:160] == "local_ai_telemetry":
+            return
         breakdown = event.get("savings_breakdown") if isinstance(event.get("savings_breakdown"), dict) else {}
         clean_breakdown_json = _clean_savings_breakdown(breakdown)
         clean_breakdown = json.loads(clean_breakdown_json) if clean_breakdown_json else {}

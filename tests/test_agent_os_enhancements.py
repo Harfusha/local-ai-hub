@@ -282,6 +282,7 @@ def test_task_store_auto_complete_and_fail(tmp_path: Path):
     state_dir.mkdir(parents=True, exist_ok=True)
     state_store = AgentStateStore(state_dir / "agent_state.sqlite3", enabled=True)
     task_store = TaskStore(state_store)
+    verif_store = VerificationStore(state_store, task_store=task_store)
     mem_store = MemoryStore(state_store)
 
     # 1. Auto complete without criteria: PLANNED -> ACTIVE -> VERIFYING -> COMPLETED
@@ -310,7 +311,9 @@ def test_task_store_auto_complete_and_fail(tmp_path: Path):
     assert task_store.get("t-2").status == TaskStatus.VERIFYING
 
     # Add receipt and complete
-    task_store.add_verification_receipt("t-2", "criterion 1", "receipt-abc")
+    rcpt = VerificationReceipt.create(task_id="t-2", criterion="criterion 1", passed=True, evidence_id="ev_t2")
+    verif_store.record(rcpt)
+    task_store.add_verification_receipt("t-2", "criterion 1", rcpt.receipt_id)
     c2 = task_store.complete("t-2")
     assert c2.status == TaskStatus.COMPLETED
 

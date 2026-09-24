@@ -898,10 +898,11 @@ class IncidentStore:
                 err_cls = str(r[2] or "")
                 aff = str(r[10] or "") if len(r) > 10 else ""
                 if q_norm:
-                    q_words = [w for w in q_norm.replace("/", " ").replace("\\", " ").replace(".", " ").split() if len(w) >= 3]
+                    _STOPWORDS = {"python", "python3", "pytest", "tests", "test", "pip", "node", "npm", "pnpm", "yarn", "cargo", "bash", "sh", "run", "exec", "status", "list", "true", "false", "none"}
+                    q_words = [w for w in q_norm.replace("/", " ").replace("\\", " ").replace(".", " ").split() if len(w) >= 3 and w not in _STOPWORDS]
                     matched = (
                         q_norm in rc.lower() or q_norm in fix.lower() or q_norm in msg.lower() or q_norm in err_cls.lower() or
-                        any(w in rc.lower() or w in fix.lower() or w in msg.lower() or w in aff.lower() for w in q_words)
+                        (bool(q_words) and any(w in rc.lower() or w in fix.lower() or w in msg.lower() or w in aff.lower() for w in q_words))
                     )
                     if not matched:
                         continue

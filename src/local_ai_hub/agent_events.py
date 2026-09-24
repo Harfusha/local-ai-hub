@@ -131,6 +131,13 @@ class AgentStateStore:
         self._initialized = False
         self._subscribers: list[queue.Queue[AgentEvent]] = []
         self._subscribers_lock = threading.Lock()
+        self._dropped_event_count = 0
+        self._drop_count_lock = threading.Lock()
+
+    @property
+    def dropped_event_count(self) -> int:
+        with self._drop_count_lock:
+            return self._dropped_event_count
 
     def _ensure_schema(self) -> None:
         if self._initialized or not self.enabled:
@@ -305,6 +312,9 @@ class AgentStateStore:
                     q.get_nowait()
                 except Exception:
                     pass
+                else:
+                    with self._drop_count_lock:
+                        self._dropped_event_count += 1
                 try:
                     q.put_nowait(event)
                 except Exception:

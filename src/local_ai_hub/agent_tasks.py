@@ -25,6 +25,10 @@ class InvalidTransitionError(ValueError):
     """Raised when an illegal task state transition is attempted."""
 
 
+class ConcurrentTaskUpdateError(RuntimeError):
+    """Raised when a task projection changed after a transition read it."""
+
+
 class TaskStatus(str, Enum):
     DRAFT = "draft"
     PLANNED = "planned"
@@ -103,8 +107,22 @@ class GoalContract:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> GoalContract:
+        goal_val = str(
+            data.get("goal")
+            or data.get("title")
+            or data.get("description")
+            or data.get("summary")
+            or data.get("intent")
+            or data.get("task")
+            or data.get("name")
+            or ""
+        ).strip()
+        if not goal_val:
+            crit = data.get("acceptance_criteria")
+            if crit and isinstance(crit, (list, tuple)) and len(crit) > 0:
+                goal_val = f"Complete task: {crit[0]}"
         return cls(
-            goal=str(data.get("goal", "")),
+            goal=goal_val,
             acceptance_criteria=tuple(data.get("acceptance_criteria") or ()),
             scope=AgentScope.parse(data.get("scope", AgentScope.TASK.value)),
             non_goals=tuple(data.get("non_goals") or ()),
@@ -159,12 +177,16 @@ class TaskState:
     checkpoint: TaskCheckpoint = field(default_factory=TaskCheckpoint)
     verification_receipts: dict[str, str] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
-        stale = bool(
+    @property
+    def is_stale(self) -> bool:
+        return bool(
             self.heartbeat_expires_at > 0
             and self.heartbeat_expires_at < time.time()
-            and self.status not in {TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.FAILED}
+            and self.status not in {TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.ABANDONED}
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        stale = self.is_stale
         return {
             "task_id": self.task_id,
             "status": self.status.value,
@@ -319,9 +341,7 @@ class TaskStore:
             idempotency_key=idempotency_key or f"create_{t_id}",
             actor=actor,
         )
-        self.state_store.append(event)
-        self._save_projection(initial_state)
-        return initial_state
+        return self._commit_create(initial_state, event)
 
     def get(self, task_id: str) -> TaskState | None:
         if not self._db_path_available():
@@ -344,39 +364,39 @@ class TaskStore:
             return None
         return self._row_to_state(row)
 
-    def list_tasks(self, status: TaskStatus | None = None, limit: int = 100) -> list[TaskState]:
+    def list_tasks(self, status: TaskStatus | None = None, limit: int = 100, include_stale: bool = False) -> list[TaskState]:
         if not self._db_path_available():
             return []
         self._init_projection_table()
+        now = time.time()
         def _fetch_tasks() -> list[Any]:
             with closing(connect_sqlite(self.state_store.db_path)) as con:
+                where_clauses: list[str] = []
+                params: list[Any] = []
                 if status is not None:
-                    cur = con.execute(
-                        """
-                        SELECT task_id, status, owner, lease_id, contract, context, checkpoint, receipts,
-                               heartbeat_expires_at, created_at, updated_at
-                        FROM agent_tasks_projection
-                        WHERE status = ?
-                        ORDER BY updated_at DESC
-                        LIMIT ?
-                        """,
-                        (status.value, max(1, int(limit))),
-                    )
-                else:
-                    cur = con.execute(
-                        """
-                        SELECT task_id, status, owner, lease_id, contract, context, checkpoint, receipts,
-                               heartbeat_expires_at, created_at, updated_at
-                        FROM agent_tasks_projection
-                        ORDER BY updated_at DESC
-                        LIMIT ?
-                        """,
-                        (max(1, int(limit)),),
-                    )
+                    where_clauses.append("status = ?")
+                    params.append(status.value)
+                if not include_stale:
+                    where_clauses.append("NOT (heartbeat_expires_at > 0 AND heartbeat_expires_at < ?)")
+                    params.append(now)
+                where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+                sql = f"""
+                    SELECT task_id, status, owner, lease_id, contract, context, checkpoint, receipts,
+                           heartbeat_expires_at, created_at, updated_at
+                    FROM agent_tasks_projection
+                    {where_sql}
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                """
+                params.append(max(1, int(limit)))
+                cur = con.execute(sql, tuple(params))
                 return cur.fetchall()
 
         rows = retry_busy(_fetch_tasks, retries=5, base_delay_seconds=0.02)
-        return [self._row_to_state(row) for row in rows]
+        tasks = [self._row_to_state(row) for row in rows]
+        if not include_stale:
+            tasks = [t for t in tasks if not t.is_stale]
+        return tasks[:max(1, int(limit))]
 
     def count(self, status: TaskStatus | None = None) -> int:
         if not self._db_path_available():
@@ -396,6 +416,8 @@ class TaskStore:
         current = self.get(task_id)
         if not current:
             raise KeyError(f"Task {task_id} not found")
+        if current.verification_receipts.get(criterion) == receipt_id:
+            return current
         new_receipts = dict(current.verification_receipts)
         new_receipts[criterion] = receipt_id
         now = time.time()
@@ -419,9 +441,7 @@ class TaskStore:
             idempotency_key=f"ver_{task_id}_{criterion}_{receipt_id}",
             actor="verifier",
         )
-        self.state_store.append(event)
-        self._save_projection(updated)
-        return updated
+        return self._commit_update(current, updated, event)
 
     def transition(
         self,
@@ -453,27 +473,50 @@ class TaskStore:
                         f"Cannot transition to COMPLETED: criterion '{criterion}' has no verified receipt"
                     )
                 rcpt_id = current.verification_receipts[criterion]
-                if self.state_store.enabled and self.state_store.db_path.exists():
-                    try:
-                        with closing(connect_sqlite(self.state_store.db_path)) as con:
-                            row = con.execute(
-                                "SELECT passed, expires_at FROM agent_verification_receipts WHERE receipt_id = ?",
-                                (rcpt_id,),
-                            ).fetchone()
-                            if row is not None:
-                                passed, expires_at = bool(row[0]), row[1]
-                                if not passed:
-                                    raise CompletionGateError(
-                                        f"Cannot transition to COMPLETED: receipt '{rcpt_id}' for criterion '{criterion}' is marked failed"
-                                    )
-                                if expires_at is not None and float(expires_at) < now_check:
-                                    raise CompletionGateError(
-                                        f"Cannot transition to COMPLETED: receipt '{rcpt_id}' for criterion '{criterion}' is expired (stale)"
-                                    )
-                    except CompletionGateError:
-                        raise
-                    except Exception:
-                        pass
+                if not self.state_store.enabled or not self.state_store.db_path.exists():
+                    raise CompletionGateError(
+                        f"Cannot transition to COMPLETED: receipt '{rcpt_id}' for criterion '{criterion}' cannot be validated because verification storage is unavailable"
+                    )
+                try:
+                    with closing(connect_sqlite(self.state_store.db_path)) as con:
+                        row = con.execute(
+                            """
+                            SELECT task_id, criterion, evidence_id, passed, expires_at
+                            FROM agent_verification_receipts WHERE receipt_id = ?
+                            """,
+                            (rcpt_id,),
+                        ).fetchone()
+                    if row is None:
+                        raise CompletionGateError(
+                            f"Cannot transition to COMPLETED: receipt '{rcpt_id}' for criterion '{criterion}' is missing from verification storage"
+                        )
+                    receipt_task_id, receipt_criterion, evidence_id, passed, expires_at = row
+                    if receipt_task_id != task_id:
+                        raise CompletionGateError(
+                            f"Cannot transition to COMPLETED: receipt '{rcpt_id}' belongs to task '{receipt_task_id}', expected '{task_id}'"
+                        )
+                    if receipt_criterion != criterion:
+                        raise CompletionGateError(
+                            f"Cannot transition to COMPLETED: receipt '{rcpt_id}' belongs to criterion '{receipt_criterion}', expected '{criterion}'"
+                        )
+                    if not str(evidence_id or "").strip():
+                        raise CompletionGateError(
+                            f"Cannot transition to COMPLETED: receipt '{rcpt_id}' for criterion '{criterion}' has no evidence_id"
+                        )
+                    if not bool(passed):
+                        raise CompletionGateError(
+                            f"Cannot transition to COMPLETED: receipt '{rcpt_id}' for criterion '{criterion}' is marked failed"
+                        )
+                    if expires_at is not None and float(expires_at) < now_check:
+                        raise CompletionGateError(
+                            f"Cannot transition to COMPLETED: receipt '{rcpt_id}' for criterion '{criterion}' is expired (stale)"
+                        )
+                except CompletionGateError:
+                    raise
+                except Exception as exc:
+                    raise CompletionGateError(
+                        f"Cannot transition to COMPLETED: could not validate receipt '{rcpt_id}' for criterion '{criterion}': {exc}"
+                    ) from exc
 
         now = time.time()
         heartbeat = (
@@ -503,9 +546,7 @@ class TaskStore:
             idempotency_key=idempotency_key,
             actor=actor,
         )
-        self.state_store.append(event)
-        self._save_projection(updated)
-        return updated
+        return self._commit_update(current, updated, event)
 
     def complete(
         self,
@@ -598,9 +639,7 @@ class TaskStore:
                 idempotency_key=idempotency_key,
                 actor=actor,
             )
-            self.state_store.append(event)
-            self._save_projection(updated)
-            return updated
+            return self._commit_update(current, updated, event)
         raise InvalidTransitionError(
             f"Cannot fail task {task_id} from {current.status.value}"
         )
@@ -674,9 +713,7 @@ class TaskStore:
             idempotency_key=idempotency_key or f"chk_{task_id}_{time.time_ns()}",
             actor=actor,
         )
-        self.state_store.append(event)
-        self._save_projection(updated)
-        return updated
+        return self._commit_update(current, updated, event)
 
     def rollback(
         self,
@@ -738,9 +775,7 @@ class TaskStore:
             idempotency_key=idempotency_key or f"rb_{task_id}_{int(now)}",
             actor=actor,
         )
-        self.state_store.append(event)
-        self._save_projection(updated)
-        return updated
+        return self._commit_update(current, updated, event)
 
     def resume(self, task_id: str, *, actor: str = "agent", idempotency_key: str = "") -> TaskState:
         return self.transition(
@@ -788,9 +823,7 @@ class TaskStore:
             idempotency_key=idempotency_key or f"hb_{task_id}_{int(now)}",
             actor=actor,
         )
-        self.state_store.append(event)
-        self._save_projection(updated)
-        return updated
+        return self._commit_update(current, updated, event)
 
     def cleanup_worktree(self, task_id: str, delete_branch: bool = True) -> dict[str, Any]:
         task = self.get(task_id)
@@ -907,6 +940,210 @@ class TaskStore:
                 con.close()
 
         retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
+
+    def _commit_create(self, state: TaskState, event: AgentEvent) -> TaskState:
+        """Atomically create initial projection and task.created event."""
+        if not self.state_store.enabled:
+            return state
+        self._init_projection_table()
+        payload = json_dumps(event.payload, separators=(",", ":"))
+        payload_bytes = payload.encode("utf-8")
+        if len(payload_bytes) > self.state_store.max_payload_bytes:
+            raise ValueError(
+                f"payload exceeds maximum allowed {self.state_store.max_payload_bytes} bytes (got {len(payload_bytes)})"
+            )
+        context = json_dumps({
+            "repository_id": state.context.repository_id,
+            "clone_id": state.context.clone_id,
+            "worktree_id": state.context.worktree_id,
+            "branch": state.context.branch,
+            "task_id": state.context.task_id,
+            "session_id": state.context.session_id,
+        })
+
+        def _do_commit() -> None:
+            con = connect_sqlite(self.state_store.db_path, isolation_level=None, timeout_seconds=0.25)
+            try:
+                con.execute("BEGIN IMMEDIATE")
+                seq_row = con.execute(
+                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_events WHERE stream_id = ?",
+                    (event.stream_id,),
+                ).fetchone()
+                seq = int(seq_row[0]) if seq_row else 1
+                con.execute(
+                    """
+                    INSERT INTO agent_tasks_projection (
+                        task_id, status, owner, lease_id, contract, context, checkpoint, receipts,
+                        heartbeat_expires_at, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        state.task_id,
+                        state.status.value,
+                        state.owner,
+                        state.lease_id,
+                        json_dumps(state.contract.to_dict()),
+                        context,
+                        json_dumps(state.checkpoint.to_dict()),
+                        json_dumps(state.verification_receipts),
+                        state.heartbeat_expires_at,
+                        state.created_at,
+                        state.updated_at,
+                    ),
+                )
+                con.execute(
+                    """
+                    INSERT INTO agent_events (
+                        stream_id, seq, event_id, kind, payload, idempotency_key,
+                        correlation_id, actor, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event.stream_id,
+                        seq,
+                        event.event_id,
+                        event.kind,
+                        payload,
+                        event.idempotency_key,
+                        event.correlation_id,
+                        event.actor,
+                        event.created_at,
+                    ),
+                )
+                con.execute("COMMIT")
+            except Exception:
+                try:
+                    con.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+            finally:
+                con.close()
+            self.state_store._publish(event.with_seq(seq))
+
+        retry_busy(_do_commit, retries=5, base_delay_seconds=0.02)
+        return state
+
+    def _commit_update(
+        self,
+        current: TaskState,
+        updated: TaskState,
+        event: AgentEvent,
+    ) -> TaskState:
+        """Atomically compare task version, append event, and update projection."""
+        if not self._db_path_available():
+            raise RuntimeError("agent task storage is unavailable")
+        payload = json_dumps(event.payload, separators=(",", ":"))
+        payload_bytes = payload.encode("utf-8")
+        if len(payload_bytes) > self.state_store.max_payload_bytes:
+            raise ValueError(
+                f"payload exceeds maximum allowed {self.state_store.max_payload_bytes} bytes (got {len(payload_bytes)})"
+            )
+
+        context = json_dumps({
+            "repository_id": updated.context.repository_id,
+            "clone_id": updated.context.clone_id,
+            "worktree_id": updated.context.worktree_id,
+            "branch": updated.context.branch,
+            "task_id": updated.context.task_id,
+            "session_id": updated.context.session_id,
+        })
+        expected_context = json_dumps({
+            "repository_id": current.context.repository_id,
+            "clone_id": current.context.clone_id,
+            "worktree_id": current.context.worktree_id,
+            "branch": current.context.branch,
+            "task_id": current.context.task_id,
+            "session_id": current.context.session_id,
+        })
+        values = (
+            updated.status.value,
+            updated.owner,
+            updated.lease_id,
+            json_dumps(updated.contract.to_dict()),
+            context,
+            json_dumps(updated.checkpoint.to_dict()),
+            json_dumps(updated.verification_receipts),
+            updated.heartbeat_expires_at,
+            updated.updated_at,
+        )
+        expected_values = (
+            current.task_id,
+            current.status.value,
+            current.owner,
+            current.lease_id,
+            json_dumps(current.contract.to_dict()),
+            expected_context,
+            json_dumps(current.checkpoint.to_dict()),
+            json_dumps(current.verification_receipts),
+            current.heartbeat_expires_at,
+            current.updated_at,
+        )
+
+        def _do_commit() -> None:
+            con = connect_sqlite(self.state_store.db_path, isolation_level=None, timeout_seconds=0.25)
+            try:
+                con.execute("BEGIN IMMEDIATE")
+                con.execute(
+                    """
+                    UPDATE agent_tasks_projection SET
+                        status = ?, owner = ?, lease_id = ?, contract = ?, context = ?, checkpoint = ?,
+                        receipts = ?, heartbeat_expires_at = ?, updated_at = ?
+                    WHERE task_id = ? AND status = ? AND owner = ? AND lease_id = ? AND contract = ?
+                      AND context = ? AND checkpoint = ? AND receipts = ? AND heartbeat_expires_at = ?
+                      AND updated_at = ?
+                    """,
+                    (*values, *expected_values),
+                )
+                if con.execute("SELECT changes()").fetchone()[0] != 1:
+                    raise ConcurrentTaskUpdateError(
+                        f"Task {current.task_id} changed during transition; reload and retry"
+                    )
+                if event.idempotency_key:
+                    existing_ev = con.execute(
+                        "SELECT seq FROM agent_events WHERE stream_id = ? AND idempotency_key = ?",
+                        (event.stream_id, event.idempotency_key),
+                    ).fetchone()
+                    if existing_ev:
+                        con.execute("COMMIT")
+                        return
+                seq_row = con.execute(
+                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_events WHERE stream_id = ?",
+                    (event.stream_id,),
+                ).fetchone()
+                seq = int(seq_row[0]) if seq_row else 1
+                con.execute(
+                    """
+                    INSERT INTO agent_events (
+                        stream_id, seq, event_id, kind, payload, idempotency_key,
+                        correlation_id, actor, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event.stream_id,
+                        seq,
+                        event.event_id,
+                        event.kind,
+                        payload,
+                        event.idempotency_key,
+                        event.correlation_id,
+                        event.actor,
+                        event.created_at,
+                    ),
+                )
+                con.execute("COMMIT")
+            except Exception:
+                try:
+                    con.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+            finally:
+                con.close()
+            self.state_store._publish(event.with_seq(seq))
+
+        retry_busy(_do_commit, retries=5, base_delay_seconds=0.02)
+        return updated
 
     def _row_to_state(self, row: tuple[Any, ...]) -> TaskState:
         (

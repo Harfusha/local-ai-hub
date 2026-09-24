@@ -113,21 +113,6 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "code_graph",
-            "description": "Use CodeGraphContext for callers/callees/imports/inheritance, dead-code, complexity, repository graph search and impact relationships.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "action": {"type": "string", "enum": ["callers", "callees", "imports", "importers", "inheritance", "relationships", "search", "dead_code", "complexity", "stats"]},
-                    "query": {"type": "string"}, "path": {"type": "string"},
-                },
-                "required": ["action"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "evidence_get",
             "description": "Fetch one exact immutable evidence slice by id only when its raw source is needed.",
             "parameters": {"type": "object", "properties": {"evidence_id": {"type": "string"}}, "required": ["evidence_id"]},
@@ -283,7 +268,7 @@ class ToolAwareLocalAgent:
         if name in {"semantic_symbols", "code_graph"}:
             if self.external_tools is None:
                 return {"success": False, "error": "external code intelligence unavailable"}
-            backend = "serena" if name == "semantic_symbols" else "codegraph"
+            backend = "serena"
             return self.external_tools.query(
                 root, str(args.get("query", "")), backend=backend,
                 action=str(args.get("action", "search")), path=str(args.get("path", "")), limit=20,
@@ -351,7 +336,7 @@ class ToolAwareLocalAgent:
             pass
 
         # The answer cache is checked from cheap repository/context revisions only.
-        # Expensive deterministic/Serena/CodeGraph bootstrap work happens exclusively
+        # Expensive deterministic/Serena bootstrap work happens exclusively
         # inside the cache-miss computation below.
         try:
             state = self.services._repo_cache_state(root)
@@ -402,9 +387,7 @@ class ToolAwareLocalAgent:
                     semantic_terms = ("symbol", "definition", "implementation", "reference", "rename", "class ", "method ", "function ")
                     try:
                         if any(term in task_low for term in relation_terms):
-                            ext = self.external_tools.query(root, task, backend="codegraph", action="relationships", limit=12)
-                            if ext.get("success"):
-                                prepared_bootstrap["codegraph"] = ext
+                            ext = {"success": False, "skipped": True}
                         if any(term in task_low for term in semantic_terms):
                             ext = self.external_tools.query(root, task, backend="serena", action="find_symbol", limit=12)
                             if ext.get("success"):

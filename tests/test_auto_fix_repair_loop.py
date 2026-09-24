@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -80,6 +81,16 @@ def test_repair_loop_successful_fix(temp_dir: Path):
     assert res.get("verification_receipt") is not None
     assert res["verification_receipt"]["passed"] is True
     assert res["verification_receipt"]["task_id"] == "task-heal-1"
+    evidence = broker.artifacts.get(
+        res["verification_receipt"]["evidence_id"], tenant="tenant-1"
+    )
+    assert evidence["success"] is True
+    assert evidence["kind"] == "command_validation"
+    evidence_data = json.loads(evidence["text"])
+    assert evidence_data["schema"] == "local-ai-command-validation/v1"
+    assert evidence_data["exit_code"] == 0
+    assert "stdout" not in evidence_data and "stderr" not in evidence_data
+    assert "self.assertEqual" not in evidence["text"]
     assert "self.assertEqual(1, 1)" in test_file.read_text(encoding="utf-8")
 
 

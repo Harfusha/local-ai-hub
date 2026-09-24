@@ -115,7 +115,7 @@ def test_e2e_completion_gate_enforcement(tmp_path: Path):
         app.agent_tasks.transition(t.task_id, TaskStatus.COMPLETED, reason="premature", actor="agent", idempotency_key="g-fail")
 
     # Record first receipt
-    r1 = VerificationReceipt.create(task_id=t.task_id, criterion="tests_pass", passed=True)
+    r1 = VerificationReceipt.create(task_id=t.task_id, criterion="tests_pass", passed=True, evidence_id="ev_test")
     app.agent_verification.record(r1)
 
     # Still missing lint_pass
@@ -123,7 +123,7 @@ def test_e2e_completion_gate_enforcement(tmp_path: Path):
         app.agent_tasks.transition(t.task_id, TaskStatus.COMPLETED, reason="still missing", actor="agent", idempotency_key="g-fail2")
 
     # Record second receipt
-    r2 = VerificationReceipt.create(task_id=t.task_id, criterion="lint_pass", passed=True)
+    r2 = VerificationReceipt.create(task_id=t.task_id, criterion="lint_pass", passed=True, evidence_id="ev_lint")
     app.agent_verification.record(r2)
 
     # Now completion succeeds

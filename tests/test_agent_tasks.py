@@ -15,6 +15,7 @@ from local_ai_hub.agent_tasks import (
     TaskStatus,
     TaskStore,
 )
+from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
 from local_ai_hub.sqlite_support import connect_sqlite
 
 
@@ -86,8 +87,10 @@ def test_completed_succeeds_when_verified(store: TaskStore):
     task = store.create(contract_with_criteria("tests"), task_context())
     store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="a")
     store.transition(task.task_id, TaskStatus.VERIFYING, reason="ready", actor="agent", idempotency_key="v")
-    # attach verified receipt
-    store.add_verification_receipt(task.task_id, "tests", "receipt-1")
+    # Completion requires durable verification evidence, not projection-only receipt IDs.
+    VerificationStore(store.state_store, task_store=store).record(
+        VerificationReceipt.create(task.task_id, "tests", evidence_id="ev-tests")
+    )
     completed = store.transition(task.task_id, TaskStatus.COMPLETED, reason="all passed", actor="agent", idempotency_key="c")
     assert completed.status == TaskStatus.COMPLETED
 

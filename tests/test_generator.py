@@ -128,19 +128,18 @@ class TestSkillReferences:
         assert "local_ai_command" not in refs["tools.md"]
         assert "preprocessing.md" not in refs
 
-    def test_references_require_semantic_handoff_before_cloud_reasoning(self):
+    def test_references_semantic_delegation_on_demand(self):
         refs = generate_skill_references({})
         skill = generate_skill_markdown({})
 
         for generated in (skill, refs["workflows.md"]):
             normalized = generated.lower()
-            assert "semantic handoff is mandatory" in normalized
+            assert "semantic delegation is on-demand" in normalized
             assert "after deterministic/indexed evidence" in normalized
-            assert "before cloud reasoning" in normalized
-            assert "cloud agent integrates" in normalized
-            assert "local_ai_status" in generated
+            assert "never blocked by mandatory local handoffs" in normalized
+        assert "local_ai_status" in skill
 
-    def test_references_gate_status_bypass_wording(self):
+    def test_references_gate_status_wording(self):
         cfg = {"features": {"status": False}}
         refs = generate_skill_references(cfg)
         skill = generate_skill_markdown(cfg)
@@ -148,10 +147,9 @@ class TestSkillReferences:
 
         for generated in (skill, refs["tools.md"], refs["workflows.md"], policy):
             normalized = generated.lower()
-            assert "semantic handoff is mandatory" in normalized
-            assert "before cloud reasoning" in normalized
+            assert "semantic delegation is on-demand" in normalized
+            assert "never blocked by mandatory local handoffs" in normalized
             assert "local_ai_status" not in generated
-            assert "permitted bypass" in normalized
 
     @pytest.mark.parametrize(
         "cfg",
@@ -166,14 +164,14 @@ class TestSkillReferences:
         for generated in (refs["tools.md"], refs["workflows.md"]):
             normalized = generated.lower()
             assert "deterministic/indexed evidence only" in normalized
-            assert "semantic handoff is mandatory" not in normalized
+            assert "semantic delegation is on-demand" not in normalized
             assert "local_ai_task" not in generated
 
     def test_references_include_semantic_handoff_in_tools_card_when_enabled(self):
         refs = generate_skill_references({})
 
-        assert "semantic handoff is mandatory" in refs["tools.md"].lower()
-        assert "before cloud reasoning" in refs["tools.md"].lower()
+        assert "semantic delegation is on-demand" in refs["tools.md"].lower()
+        assert "never blocked by mandatory local handoffs" in refs["tools.md"].lower()
 
 
 class TestGlobalPolicyGeneration:
@@ -200,21 +198,19 @@ class TestGlobalPolicyGeneration:
         assert "rolls back write failures" in policy
         assert "no auto-commit" in policy
 
-    def test_policy_requires_semantic_handoff_before_cloud_reasoning(self):
+    def test_policy_semantic_delegation_on_demand(self):
         policy = generate_global_policy({})
         normalized = policy.lower()
 
-        assert "semantic handoff is mandatory" in normalized
-        assert "before cloud reasoning" in normalized
-        assert "report the bypass" in normalized
+        assert "semantic delegation is on-demand" in normalized
+        assert "never blocked by mandatory local handoffs" in normalized
         assert "local_ai_task" in policy
-        assert "semantic handoff" in normalized
 
     def test_disabled_local_tasks_do_not_claim_mandatory_local_execution(self):
         policy = generate_global_policy({"features": {"tasks": False}})
 
         assert "local_ai_task" not in policy
-        assert "must call `local_ai_task` before cloud reasoning" not in policy
+        assert "mandatory local handoffs" not in policy
         assert "mandatory local execution" not in policy
 
 
@@ -261,7 +257,6 @@ class TestMcpSchemasGeneration:
         schemas_full = generate_mcp_tool_schemas({})
         repo_actions_full = schemas_full["local_ai_repo"]["parameters"]["properties"]["action"]["enum"]
         assert "semantic" in repo_actions_full
-        assert "graph" in repo_actions_full
         assert "preprocess" in repo_actions_full
         assert "verify_receipt" in repo_actions_full
 
@@ -271,7 +266,6 @@ class TestMcpSchemasGeneration:
         })
         repo_actions_trimmed = schemas_trimmed["local_ai_repo"]["parameters"]["properties"]["action"]["enum"]
         assert "semantic" not in repo_actions_trimmed
-        assert "graph" not in repo_actions_trimmed
         assert "preprocess" not in repo_actions_trimmed
         assert "verify_receipt" not in repo_actions_trimmed
         assert "solve" in repo_actions_trimmed
@@ -296,15 +290,15 @@ class TestMcpSchemasGeneration:
 
         for name in ("local_ai_repo", "local_ai_task"):
             normalized = schemas[name]["description"].lower()
-            assert "semantic handoff is mandatory" in normalized
-            assert "before cloud reasoning" in normalized
+            assert "semantic delegation is on-demand" in normalized
+            assert "never blocked by mandatory local handoffs" in normalized
 
     def test_schema_handoff_contract_respects_status_gate(self):
         schemas = generate_mcp_tool_schemas({"features": {"status": False}})
 
         for name in ("local_ai_repo", "local_ai_task"):
             description = schemas[name]["description"]
-            assert "semantic handoff is mandatory" in description.lower()
+            assert "semantic delegation is on-demand" in description.lower()
             assert "local_ai_status" not in description
 
     @pytest.mark.parametrize(
@@ -319,7 +313,7 @@ class TestMcpSchemasGeneration:
 
         normalized = schemas["local_ai_repo"]["description"].lower()
         assert "deterministic/indexed evidence only" in normalized
-        assert "semantic handoff is mandatory" not in normalized
+        assert "semantic delegation is on-demand" not in normalized
         assert "local_ai_task" not in schemas["local_ai_repo"]["description"]
 
 

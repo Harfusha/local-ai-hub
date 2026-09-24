@@ -543,7 +543,7 @@ tbody tr.click:hover{background:#162338}
     <div style="padding:14px">
       <div class="dash-group"><div class="group-title">Hardware &amp; Engine</div><div class="kv" style="padding:0;margin-bottom:12px"><div>Hardware profile</div><div><select id="cfgProfile" style="background:#172233;color:var(--fg);border:1px solid #2e405a;border-radius:6px;padding:6px 10px"><option>auto</option><option>cpu</option><option>integrated</option><option>low</option><option>balanced</option><option>high</option><option>max</option></select></div></div></div>
       <div class="dash-group"><div class="group-title">Core MCP Tools</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgFeatStatus"> status (local_ai_status)</label><label><input type="checkbox" id="cfgFeatRepo"> repo (local_ai_repo)</label><label><input type="checkbox" id="cfgFeatTasks"> tasks (local_ai_task &amp; Ollama)</label><label><input type="checkbox" id="cfgFeatRag"> rag (local_ai_rag)</label><label><input type="checkbox" id="cfgFeatCommands"> commands (local_ai_command)</label><label><input type="checkbox" id="cfgFeatCoord"> coord (local_ai_coord)</label><label><input type="checkbox" id="cfgFeatArtifacts"> artifacts (local_ai_artifact)</label></div></div>
-      <div class="dash-group"><div class="group-title">Code Intelligence &amp; Indexing</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgPreprocess"> Preprocessing enabled</label><label><input type="checkbox" id="cfgIntel"> Managed code intelligence</label><label><input type="checkbox" id="cfgSerena"> Serena backend</label><label><input type="checkbox" id="cfgCodegraph"> CodeGraphContext backend</label></div></div>
+      <div class="dash-group"><div class="group-title">Code Intelligence &amp; Indexing</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgPreprocess"> Preprocessing enabled</label><label><input type="checkbox" id="cfgIntel"> Managed code intelligence</label><label><input type="checkbox" id="cfgSerena"> Serena backend</label></div></div>
       <div class="dash-group"><div class="group-title">Advanced Subsystems</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgFeatSubagents"> Subagents (Ollama workers)</label><label><input type="checkbox" id="cfgFeatAgentOs"> Agent OS (durable memory/receipts)</label><label><input type="checkbox" id="cfgFeatDashboard"> Web Dashboard</label></div></div>
       <div class="tiny muted" style="margin:4px 0 7px">Scope and impact: saves only dashboard-managed overrides. Restart applies changes; reset removes only those overrides.</div><div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:6px"><button class="btn ok" id="cfgSave">Save overrides (restart required)</button><button class="btn" id="cfgReload">Reload view</button><button class="btn warn" id="cfgReset">Reset dashboard overrides</button><span class="tiny" id="cfgStatus"></span></div>
     </div>
@@ -770,6 +770,55 @@ let statusPollInFlight=false,hasLiveStatus=false;
 let sloScope=$('sloScope')?$('sloScope').value:'1h';
 if($('sloScope')) $('sloScope').onchange=()=>{sloScope=$('sloScope').value;pollStatus()};
 if($('saveToken')) $('saveToken').onclick=()=>{if($('apiToken'))saveToken($('apiToken').value);pollStatus()};
+
+function createDashboardStatusPoller(poll,options={}){
+  const baseDelay=Math.max(1,Number(options.baseDelay)||5000);
+  const maxDelay=Math.max(baseDelay,Number(options.maxDelay)||60000);
+  const maxFailures=Math.max(1,Math.ceil(Math.log2(maxDelay/baseDelay))+1);
+  const isVisible=options.isVisible||(()=>document.visibilityState!=='hidden');
+  const setTimer=options.setTimer||((fn,delay)=>setTimeout(fn,delay));
+  const clearTimer=options.clearTimer||((id)=>clearTimeout(id));
+  const random=options.random||Math.random;
+  let timer=null,started=false,running=false,pending=false,visible=true,generation=0,failures=0;
+  const current=token=>started&&visible&&isVisible()&&generation===token;
+  function clear(){if(timer!==null){clearTimer(timer);timer=null}}
+  function schedule(delay){clear();if(started&&visible&&isVisible())timer=setTimer(()=>{timer=null;void run()},delay)}
+  async function run(){
+    if(!started||!visible||!isVisible())return;
+    if(running){pending=true;return}
+    running=true;
+    const token=generation;
+    let succeeded=false;
+    try{succeeded=await poll(()=>current(token))!==false}catch{}
+    finally{
+      running=false;
+      if(current(token)){
+        pending=false;
+        failures=succeeded?0:Math.min(failures+1,maxFailures);
+        const backoff=Math.min(maxDelay,baseDelay*2**Math.max(0,failures-1));
+        const sample=Math.min(0.999999,Math.max(0,Number(random())||0));
+        schedule(Math.min(maxDelay,Math.round(backoff*(0.8+sample*0.4))));
+      }else if(pending&&started&&visible&&isVisible()){
+        pending=false;
+        schedule(0);
+      }
+    }
+  }
+  return{
+    start(){if(started)return;started=true;visible=isVisible();generation++;schedule(0)},
+    setVisible(next){visible=Boolean(next)&&isVisible();generation++;if(visible)schedule(0);else{pending=false;clear()}},
+    stop(){started=false;visible=false;pending=false;generation++;clear()}
+  };
+}
+
+let lastDashboardStatusSnapshot=null;
+let hardwareRefreshPending=false;
+function shouldRefreshDashboardStatus(status){
+  const snapshot=JSON.stringify(status);
+  if(snapshot===lastDashboardStatusSnapshot)return false;
+  lastDashboardStatusSnapshot=snapshot;
+  return true;
+}
 
 async function apiFetch(path,opts={}){
   opts={...opts};const h=new Headers(opts.headers||{});if(apiToken)h.set('X-LocalAI-Token',apiToken);opts.headers=h;
@@ -1299,7 +1348,7 @@ async function openGitDiffModal(defaultRoot,defaultPath,defaultStaged){
 if($('cmdGitDiffBtn'))$('cmdGitDiffBtn').onclick=()=>openGitDiffModal($('cmdRoot')?.value?.trim());
 
 if($('intelRediscover'))$('intelRediscover').onclick=async()=>{if($('intelControlStatus'))$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'rediscover'});if($('intelControlStatus'))$('intelControlStatus').textContent=r.success?'rediscovery complete':'error: '+(r.error||'failed');pollStatus()};
-if($('intelReset'))$('intelReset').onclick=async()=>{if(!confirm('Reset all managed Serena/CodeGraph MCP sessions?'))return;if($('intelControlStatus'))$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'reset',backend:'all'});if($('intelControlStatus'))$('intelControlStatus').textContent=r.success?'sessions reset':'error: '+(r.error||'failed');pollStatus()};
+if($('intelReset'))$('intelReset').onclick=async()=>{if(!confirm('Reset all managed Serena MCP sessions?'))return;if($('intelControlStatus'))$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'reset',backend:'all'});if($('intelControlStatus'))$('intelControlStatus').textContent=r.success?'sessions reset':'error: '+(r.error||'failed');pollStatus()};
 
 async function loadArchGraph(){
   try{
@@ -4472,7 +4521,7 @@ async function loadConfigView(){
     $('cfgPreprocess').checked=c.preprocessing?.enabled!==false&&feat.preprocessing!==false;
     $('cfgIntel').checked=c.code_intelligence?.enabled!==false&&feat.code_intelligence!==false;
     $('cfgSerena').checked=!!c.code_intelligence?.serena_enabled;
-    $('cfgCodegraph').checked=!!c.code_intelligence?.codegraph_enabled;
+    
     if($('cfgFeatStatus'))$('cfgFeatStatus').checked=feat.status!==false;
     if($('cfgFeatRepo'))$('cfgFeatRepo').checked=feat.repo!==false;
     if($('cfgFeatTasks'))$('cfgFeatTasks').checked=feat.tasks!==false;
@@ -4495,7 +4544,7 @@ $('cfgSave').onclick=async()=>{
     'preprocessing.enabled':$('cfgPreprocess').checked,
     'code_intelligence.enabled':$('cfgIntel').checked,
     'code_intelligence.serena_enabled':$('cfgSerena').checked,
-    'code_intelligence.codegraph_enabled':$('cfgCodegraph').checked,
+    
     'features.status':$('cfgFeatStatus')?$('cfgFeatStatus').checked:true,
     'features.repo':$('cfgFeatRepo')?$('cfgFeatRepo').checked:true,
     'features.tasks':$('cfgFeatTasks')?$('cfgFeatTasks').checked:true,
@@ -4574,7 +4623,7 @@ const PHASES = [
   {id:'code_index', name:'AST Symbols', icon:'🌲', desc:'Symbol & callgraph extraction'},
   {id:'deterministic', name:'Declarative Facts', icon:'📋', desc:'Routes, models & configs'},
   {id:'serena', name:'Serena', icon:'S', desc:'Semantic/LSP project index'},
-  {id:'codegraph', name:'CodeGraph', icon:'G', desc:'Repository relationship graph'},
+  
   {id:'lexical', name:'Full-Text Search', icon:'🔍', desc:'FTS5 lexical keyword index'},
   {id:'rag', name:'Vector RAG', icon:'🧠', desc:'768-dim CPU code embeddings'},
   {id:'files', name:'Semantic Cards', icon:'📄', desc:'cached semantic context cards'},
@@ -5059,14 +5108,26 @@ async function probeHealth(){
     if(r.ok&&!hasLiveStatus){$('conn').textContent='online';$('conn').className='pill ok'}
   }catch(e){if(!hasLiveStatus){$('conn').textContent='offline';$('conn').className='pill bad-t'}}
 }
-async function pollStatus(){
-  if(statusPollInFlight)return;
+async function pollStatus(isCurrent=()=>document.visibilityState!=='hidden'){
+  if(document.visibilityState==='hidden'||!isCurrent())return false;
+  if(statusPollInFlight)return true;
   statusPollInFlight=true;
+  const controller=typeof AbortController==='function'?new AbortController():null;
+  statusPollAbortController=controller;
+  const current=()=>document.visibilityState!=='hidden'&&isCurrent();
   try{
-    const r=await apiFetch('/api/live/status?light=1&scope='+sloScope,{cache:'no-store'}),s=await r.json();
-    render(s);hasLiveStatus=true;$('conn').textContent='live';$('conn').className='pill ok';$('updated').textContent='updated '+new Date().toLocaleTimeString();
-    try{
-      const gr=await apiFetch('/api/hardware/system',{cache:'no-store'});
+    const opts={cache:'no-store'};if(controller)opts.signal=controller.signal;
+    const r=await apiFetch('/api/live/status?light=1&scope='+sloScope,opts);
+    if(!current())return false;
+    const s=await r.json();
+    if(!current())return false;
+    const changed=shouldRefreshDashboardStatus(s);
+    if(changed)render(s);
+    hasLiveStatus=true;$('conn').textContent='live';$('conn').className='pill ok';if(changed)$('updated').textContent='updated '+new Date().toLocaleTimeString();
+    if(changed||hardwareRefreshPending)try{
+      const hardwareOpts={cache:'no-store'};if(controller)hardwareOpts.signal=controller.signal;
+      const gr=await apiFetch('/api/hardware/system',hardwareOpts);
+      if(!current())return false;
       if(gr.ok){
         const sys=await gr.json(), g=sys.gpu||{}, ram=sys.ram||{};
         const pct=value=>value==null||!Number.isFinite(Number(value))?null:Math.max(0,Math.min(100,Number(value)));
@@ -5085,11 +5146,24 @@ async function pollStatus(){
         const vram=g.available?(g.vram_total_mb&&!g.integrated?` · VRAM ${Math.round(g.vram_used_mb||0)} / ${Math.round(g.vram_total_mb)} MB`:g.unified_memory_mb?` · Unified memory ${Math.round(g.unified_memory_mb)} MB`:g.integrated?' · shared-memory iGPU':''):'';
         const accel=npus.length?` · NPU ${npus[0].runtime_available?'ready':'detected'}`:(ov.some(x=>x.kind==='gpu')?' · OpenVINO GPU ready':'');
         $('sysSub').textContent=`RAM ${ram.used_gb||0} / ${ram.total_gb||0} GB (${ramPct}%)${vram}${accel}`;
+        hardwareRefreshPending=false;
+      }else{
+        hardwareRefreshPending=true;
       }
-    }catch{}
-  }catch(e){console.error('dashboard status refresh failed',e);if(last&&lastOverviewReceivedAt)renderOverviewHealth(last,lastOverviewReceivedAt);$('conn').textContent=hasLiveStatus?'stale':'offline';$('conn').className=hasLiveStatus?'pill warn-t':'pill bad-t'}
-  finally{statusPollInFlight=false}
+    }catch{hardwareRefreshPending=true}
+    return true;
+  }catch(e){
+    if(!current())return false;
+    console.error('dashboard status refresh failed',e);if(last&&lastOverviewReceivedAt)renderOverviewHealth(last,lastOverviewReceivedAt);$('conn').textContent=hasLiveStatus?'stale':'offline';$('conn').className=hasLiveStatus?'pill warn-t':'pill bad-t';return false;
+  }finally{statusPollInFlight=false;if(statusPollAbortController===controller)statusPollAbortController=null}
 }
+const statusPoller=createDashboardStatusPoller(isCurrent=>pollStatus(isCurrent));
+document.addEventListener('visibilitychange',()=>{
+  const visible=document.visibilityState!=='hidden';
+  statusPoller.setVisible(visible);
+  if(!visible&&statusPollAbortController)statusPollAbortController.abort();
+});
+statusPoller.start();
 let liveEvents=[],eventsPollInFlight=false,tracesPollInFlight=false;
 function eventSeverity(event){
   if(event?.success===false||/fail|error|crash|reject/i.test([event?.kind,event?.event_type,event?.status].join(' ')))return 'failure';

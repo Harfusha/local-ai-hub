@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import subprocess
 import threading
 import tomllib
 from pathlib import Path
@@ -79,6 +80,9 @@ class ArtifactSink:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object, str, str | None]] = []
 
+    def batch(self, tenant: str, *, cancel_check=None):
+        return _ArtifactSinkBatch(self, tenant)
+
     def put_bytes(self, value: bytes, tenant: str, kind: str, mime_type: str) -> str:
         self.calls.append(("bytes", value, tenant, mime_type))
         return f"{tenant}:screenshot"
@@ -86,6 +90,24 @@ class ArtifactSink:
     def put_json(self, value: dict, tenant: str, kind: str) -> str:
         self.calls.append((kind, value, tenant, None))
         return f"{tenant}:{kind}"
+
+
+class _ArtifactSinkBatch:
+    def __init__(self, sink: ArtifactSink, tenant: str):
+        self._sink = sink
+        self._tenant = tenant
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def put_json(self, value: dict, kind: str) -> str:
+        return self._sink.put_json(value, self._tenant, kind)
+
+    def put_bytes(self, value: bytes, kind: str, mime_type: str) -> str:
+        return self._sink.put_bytes(value, self._tenant, kind, mime_type)
 
 
 def test_capture_capability_is_single_use_and_tab_bound() -> None:
@@ -335,6 +357,73 @@ def test_expired_staged_capture_is_cleaned_without_artifact_commit(monkeypatch: 
     )
     assert late_commit["success"] is False
     assert sink.calls == []
+
+
+def test_partial_artifact_failure_is_terminal_and_not_reported_as_success() -> None:
+    class FailingSink(ArtifactSink):
+        def put_json(self, value: dict, tenant: str, kind: str) -> str:
+            if kind == "browser-computed-styles":
+                self.calls.append((kind, value, tenant, None))
+                raise OSError("fixture artifact failure")
+            return super().put_json(value, tenant, kind)
+
+    sink = FailingSink()
+    capability = issue_capture_capability(
+        config(), origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7, window_id=3
+    )
+    payload = capture_payload()
+    payload["request_id"] = "partial-artifact-failure"
+    assert stage_capture(capability, payload, tenant="tenant-a", config=config())["success"] is True
+    request = {
+        "origin": "chrome-extension://fixture",
+        "tab_id": 7,
+        "window_id": 3,
+        "request_id": "partial-artifact-failure",
+    }
+
+    failed = commit_staged_capture(capability, request, artifacts=sink, tenant="tenant-a", config=config())
+    writes_after_failure = len(sink.calls)
+    replay = commit_staged_capture(capability, request, artifacts=sink, tenant="tenant-a", config=config())
+
+    assert failed["success"] is False
+    assert failed["error_code"] == "artifact_store_error"
+    assert replay == failed
+    assert len(sink.calls) == writes_after_failure
+    assert not any(call[0] == "frontend-review-bundle" for call in sink.calls)
+
+
+def run_browser_background_case(case: str) -> dict:
+    root = Path(__file__).parents[1]
+    result = subprocess.run(
+        [
+            "node",
+            str(root / "tests/test_browser_bridge_background.js"),
+            str(root / "browser_bridge/background.js"),
+            case,
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_extension_abandons_stage_when_tab_or_document_changes_before_commit() -> None:
+    for change_kind in ("navigation", "same-url-state"):
+        assert run_browser_background_case(change_kind) == {
+            "success": True,
+            "case": f"{change_kind}-after-stage-abandons",
+        }
+
+
+def test_extension_reports_and_abandons_partial_artifact_commit_failure() -> None:
+    assert run_browser_background_case("artifact-failure") == {
+        "success": True,
+        "case": "artifact-failure-reported-and-abandoned",
+    }
 
 
 def test_packaged_browser_bridge_defaults_match_source_defaults() -> None:

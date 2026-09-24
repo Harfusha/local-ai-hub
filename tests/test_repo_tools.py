@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from local_ai_hub.config import load_config
+import local_ai_hub.repo_tools as repo_tools_module
 from local_ai_hub.repo_tools import RepositoryTools
 
 
@@ -268,12 +269,32 @@ def test_search_returns_bounded_retryable_result_after_accelerator_timeouts(tmp_
     tools = RepositoryTools(_cfg(tmp_path))
     tools._rg = "rg"
 
-    calls = {"n": 0}
+    calls = {"n": 0, "popen": 0, "killed": 0}
     def fake_run(*args, **kwargs):
         calls["n"] += 1
         raise subprocess.TimeoutExpired(args[0], 0.1)
 
+    class TimeoutProcess:
+        pid = 987654
+        stdout = io.StringIO("")
+        returncode = None
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("git", timeout)
+
+    def fake_popen(*args, **kwargs):
+        calls["popen"] += 1
+        return TimeoutProcess()
+
+    def fake_terminate_tree(_pid, grace_seconds=1.0):
+        calls["killed"] += 1
+
     monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(repo_tools_module, "terminate_tree", fake_terminate_tree)
     monkeypatch.setattr(tools, "iter_files", lambda *_args: (_ for _ in ()).throw(AssertionError("unbounded scan")))
 
     result = tools.search(str(repo), "needle")
@@ -281,4 +302,6 @@ def test_search_returns_bounded_retryable_result_after_accelerator_timeouts(tmp_
     assert result["success"] is False
     assert result["retryable"] is True
     assert result["error"] == "bounded search accelerators timed out or failed"
-    assert calls["n"] == 2
+    assert calls["n"] == 1
+    assert calls["popen"] == 1
+    assert calls["killed"] == 1

@@ -405,6 +405,11 @@ repo_result_max_entries = 20000
 rag_search_ttl_seconds = 86400
 rag_search_max_entries = 10000
 
+[agent_policy]
+enabled = true
+deny_unknown_auxiliary_actions = true
+allow_developer_authorized_mutations = true
+
 [commands]
 # Shared safe CLI broker. Read/validation/build commands are repo-state cached and single-flight across agents.
 enabled = true
@@ -464,6 +469,9 @@ max_files = 8000
 max_hits = 80
 snippet_lines = 5
 context_top_k = 14
+# Bounded timeout for optional background code intelligence backends (e.g. Serena) during adaptive context pack
+context_backend_timeout_seconds = 3.0
+context_rag_timeout_seconds = 3.0
 
 [observability]
 # Raw per-request/per-inference events are short-lived; compact daily rollups survive longer.
@@ -486,31 +494,26 @@ queue_size = 5000
 
 [tools]
 serena_package = "serena-agent==1.7.0"
-codegraph_package = "codegraphcontext[gcf]==0.6.8"
 
 [code_intelligence]
-# Serena and CodeGraphContext are managed behind the hub so agents see one compact MCP surface.
+# Serena are managed behind the hub so agents see one compact MCP surface.
 enabled = true
 serena_enabled = true
-codegraph_enabled = true
 preprocess_serena = true
-preprocess_codegraph = true
 # Set explicit executable paths only when auto-discovery is insufficient.
 serena_command = ""
-codegraph_command = ""
-serena_context = "ide-assistant"
-codegraph_output_format = "gcf"
-# Skip oversized tracked exports during CodeGraph indexing; source files remain indexed.
-codegraph_max_file_size_mb = 5
-startup_timeout_seconds = 45
-query_timeout_seconds = 20
+serena_context = "codex"
+# Skip oversized tracked exports during Serena indexing; source files remain indexed.
+startup_timeout_seconds = 60
+query_timeout_seconds = 60
+soft_timeout_seconds = 4.0
 index_timeout_seconds = 1200
 max_output_chars = 9000
 failure_threshold = 2
 cooldown_seconds = 60
-max_sessions_per_backend = 8
-session_idle_ttl_seconds = 900
-# Optional escape hatch: expose Serena/CodeGraph directly to cloud agents as extra MCP servers.
+max_sessions_per_backend = 16
+session_idle_ttl_seconds = 3600
+# Optional escape hatch: expose Serena directly to cloud agents as extra MCP servers.
 # Default false saves tool-schema tokens and routes usage through Local AI Hub.
 direct_agent_mcp = false
 
@@ -531,7 +534,7 @@ rag = true # semantic retrieval fallback (local_ai_rag)
 commands = true # safe command execution broker (local_ai_command)
 coord = true # coordination leases, memos, task contracts (local_ai_coord)
 artifacts = true # compact responses & evidence slicing (local_ai_artifact)
-code_intelligence = true # Serena / CodeGraphContext backends
+code_intelligence = true # Serena / Serena backends
 preprocessing = true # background idle project warmup
 subagents = true # advisory local profiles (qwen-explorer, etc.)
 agent_os = true # durable execution: tasks, verification receipts, memory
@@ -563,7 +566,7 @@ extensions = [
 ignore_dirs = [
   ".git", ".svn", ".hg", ".idea", ".vscode", ".venv", "venv", "node_modules",
   "vendor", "dist", "build", "bin", "obj", "coverage", ".next", ".cache",
-  ".serena", ".codegraphcontext", ".local-ai-hub", "tool-envs", "site-packages", "__pycache__",
+  ".serena", ".local-ai-hub", "tool-envs", "site-packages", "__pycache__",
   ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox", ".eggs", "htmlcov",
   "target", "out", ".terraform", ".turbo", ".parcel-cache",
   "Library", "Temp", "Logs", "UserSettings"
@@ -571,7 +574,7 @@ ignore_dirs = [
 
 
 [mcp]
-# One compact public MCP surface; Serena/CodeGraph stay behind it by default.
+# One compact public MCP surface; Serena stay behind it by default.
 compact_max_text_chars = 6000
 compact_max_evidence = 16
 
@@ -579,11 +582,11 @@ compact_max_evidence = 16
 # Aggregate agent-facing budgets are enforced after semantic projection. Exact
 # source/log detail remains available through local_ai_artifact.
 enabled = true
-default_tokens = 4800
-max_tokens = 12000
+default_tokens = 6400
+max_tokens = 16000
 reuse_cache_size = 256
 ledger_size = 512
-tool_tokens = { local_ai_status = 900, local_ai_task = 3000, local_ai_repo = 2200, local_ai_rag = 1800, local_ai_command = 1200, local_ai_coord = 1600, local_ai_artifact = 2200, local_ai_work = 2200 }
+tool_tokens = { local_ai_status = 1200, local_ai_task = 4000, local_ai_repo = 4000, local_ai_rag = 3000, local_ai_command = 2000, local_ai_coord = 2500, local_ai_artifact = 4000, local_ai_work = 4000 }
 # MCP calls are intentionally bounded. Preprocessing is asynchronous, so no normal
 # foreground tool should need an unbounded multi-hour socket wait.
 quick_timeout_seconds = 180
@@ -773,7 +776,7 @@ major_change_ratio = 0.15
 major_change_files = 60
 major_change_ratio_min_files = 12
 hash_files_per_step = 256
-rag_files_per_step = 16
+rag_files_per_step = 128
 # Skip embeddings for declarative files fully represented by deterministic parsers.
 skip_rag_for_deterministic_declarative = true
 compact_lexical_for_deterministic_declarative = true
@@ -785,6 +788,8 @@ code_index_files_per_step = 256
 deterministic_files_per_step = 256
 # Most simple/source/test/config cards are built from parsers instead of Ollama.
 prefer_deterministic_cards = true
+disable_llm_card_synthesis = true
+idle_diagnostics_enabled = true
 # Aggregate deterministic file cards into module/project cards before considering Ollama enrichment.
 prefer_deterministic_modules = true
 deterministic_module_confidence = 0.84
