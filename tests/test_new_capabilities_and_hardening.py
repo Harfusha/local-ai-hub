@@ -384,15 +384,15 @@ def test_10_sqlite_schema_inspect_and_explain(tmp_path: Path):
     assert len(res_explain["plan"]) >= 1
 
 
-def test_11_swarm_pubsub():
-    bus = SwarmPubSub()
+def test_11_swarm_pubsub(tmp_path: Path):
+    bus = SwarmPubSub(AgentStateStore(tmp_path / "agent_state.sqlite3"))
     topic = "planning_updates"
 
     res_pub = bus.publish(topic, {"status": "in_progress", "step": 1}, sender="agent_alpha")
     assert res_pub["success"] is True
     assert res_pub["topic"] == topic
 
-    res_poll = bus.poll(topic, since_timestamp=0.0)
+    res_poll = bus.poll(topic, after_seq=0)
     assert res_poll["success"] is True
     assert res_poll["count"] == 1
     assert res_poll["messages"][0]["sender"] == "agent_alpha"

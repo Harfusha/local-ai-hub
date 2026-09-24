@@ -19,10 +19,77 @@ from local_ai_hub.agent_consistency import (
     ContractMapping,
     GuardWarning,
     ReuseCandidate,
+    _PHASE_ALIASES,
+    normalize_context_phase,
 )
 from local_ai_hub.agent_tasks import GoalContract
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.telemetry import TelemetryStore
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected"),
+    [
+        ("discovery", "discover"),
+        ("research", "discover"),
+        ("inspect", "discover"),
+        ("investigate", "discover"),
+        ("explore", "discover"),
+        ("analyze", "discover"),
+        ("analysis", "discover"),
+        ("planning", "plan"),
+        ("implement", "implementation"),
+        ("implementation", "implementation"),
+        ("execute", "implementation"),
+        ("execution", "implementation"),
+        ("act", "implementation"),
+        ("verify", "test"),
+        ("verification", "test"),
+        ("testing", "test"),
+        ("tests", "test"),
+        ("validate", "test"),
+        ("validation", "test"),
+        ("reviewing", "review"),
+        ("code_review", "review"),
+        ("delivery", "handoff"),
+        ("hand_off", "handoff"),
+    ],
+)
+def test_normalize_context_phase_aliases(phase: str, expected: str) -> None:
+    assert normalize_context_phase(phase) == expected
+
+
+@pytest.mark.parametrize(
+    "phase", ["plan", "discover", "edit", "implementation", "review", "test", "handoff"]
+)
+def test_normalize_context_phase_accepts_canonical_values(phase: str) -> None:
+    assert normalize_context_phase(phase) == phase
+
+
+@pytest.mark.parametrize("phase", sorted(_PHASE_ALIASES))
+def test_phase_alias_is_canonical_when_serialized_and_persisted(
+    repository: Path, phase: str
+) -> None:
+    state = AgentStateStore(repository.parent / "phase-alias-state.sqlite3")
+    memory = MemoryStore(state)
+    guard = AgentConsistencyGuard(memory_store=memory)
+    expected = normalize_context_phase(phase)
+    request = _request(repository, phase=phase)
+
+    assert request.phase == expected
+    assert request.to_dict()["phase"] == expected
+    restored = ConsistencyRequest(**request.to_dict())
+    assert restored.phase == expected
+
+    saved = guard.record_unknown(
+        request,
+        claim=f"phase alias {phase} remains canonical",
+        evidence_ids=(f"ev-phase-alias-{phase}",),
+        stable_key=f"phase-alias-persistence:{phase}",
+    )
+    loaded = memory.get(saved.record_id)
+    assert loaded is not None
+    assert loaded.provenance["phase"] == expected
 
 
 def _cfg(tmp_path: Path):
