@@ -31,14 +31,16 @@ class DebugTraceStore:
     def __init__(self, config: dict[str, Any]):
         cfg = config.get("debug_traces") or config.get("observability", {}).get("debug_traces", {})
         self.enabled = bool(cfg.get("enabled", True))
-        self.terminal_ttl_seconds = max(1.0, float(cfg.get("terminal_ttl_seconds", config.get("async_jobs", {}).get("result_ttl_seconds", 259200))))
-        self.max_bytes = max(1024, int(cfg.get("max_bytes", 268435456)))
-        self.max_sessions = max(1, int(cfg.get("max_sessions", 1000)))
-        self.max_events_per_session = max(2, int(cfg.get("max_events_per_session", 20000)))
-        self.max_event_bytes = max(256, int(cfg.get("max_event_bytes", 4 * 1024 * 1024)))
-        self.max_session_text_bytes = max(1024, int(cfg.get("max_session_text_bytes", 64 * 1024 * 1024)))
-        self.cleanup_batch_size = max(1, int(cfg.get("cleanup_batch_size", 50)))
-        self.max_list_limit = max(1, int(cfg.get("max_list_limit", 200)))
+        self.terminal_ttl_seconds = max(1.0, min(365 * 86400.0, float(cfg.get("terminal_ttl_seconds", config.get("async_jobs", {}).get("result_ttl_seconds", 259200)))))
+        self.max_bytes = max(1024, min(1024 * 1024 * 1024, int(cfg.get("max_bytes", 268435456))))
+        self.max_sessions = max(1, min(10000, int(cfg.get("max_sessions", 1000))))
+        self.max_events_per_session = max(2, min(100000, int(cfg.get("max_events_per_session", 20000))))
+        self.max_event_bytes = max(256, min(16 * 1024 * 1024, int(cfg.get("max_event_bytes", 4 * 1024 * 1024))))
+        self.max_session_text_bytes = max(1024, min(256 * 1024 * 1024, int(cfg.get("max_session_text_bytes", 64 * 1024 * 1024))))
+        self.cleanup_batch_size = max(1, min(1000, int(cfg.get("cleanup_batch_size", 50))))
+        self.max_list_limit = max(1, min(500, int(cfg.get("max_list_limit", 200))))
+        self.max_detail_events = max(1, min(500, int(cfg.get("max_detail_events", 100))))
+        self.max_detail_response_bytes = max(4096, min(16 * 1024 * 1024, int(cfg.get("max_detail_response_bytes", 1024 * 1024))))
         self.path = Path(config["server"]["state_dir"]) / "debug_traces.sqlite3"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -350,33 +352,131 @@ class DebugTraceStore:
             preview = preview[:160]
         return " · ".join(part for part in (operation, preview) if part)
 
-    def detail(self, trace_id: str, *, since_seq: int = 0) -> dict[str, Any]:
+    def detail(self, trace_id: str, *, since_seq: int = 0, limit: int = 100, full_payload: bool = False) -> dict[str, Any]:
+        trace_id = str(trace_id or "")[:160]
         if not trace_id:
             return {"success": False, "error": "trace not found", "terminal": True}
         try:
+            cursor = max(0, int(since_seq))
+        except (TypeError, ValueError, OverflowError):
+            cursor = 0
+        try:
+            bounded_limit = max(1, min(self.max_detail_events, int(limit)))
+        except (TypeError, ValueError, OverflowError):
+            bounded_limit = min(100, self.max_detail_events)
+        event_preview_chars = max(128, min(16384, self.max_detail_response_bytes // max(4, bounded_limit * 4)))
+        session_preview_chars = max(128, min(512 * 1024, self.max_detail_response_bytes // 16))
+        if full_payload:
+            event_preview_chars = max(event_preview_chars, min(512 * 1024, self.max_detail_response_bytes // max(2, bounded_limit * 2)))
+            session_preview_chars = max(session_preview_chars, min(512 * 1024, self.max_detail_response_bytes // 8))
+        try:
             with closing(self._connect()) as con:
                 con.row_factory = sqlite3.Row
-                row = con.execute("SELECT * FROM traces WHERE trace_id=?", (trace_id,)).fetchone()
+                row = con.execute(
+                    """SELECT trace_id,kind,tenant,agent,action,source,model,request_id,async_job_id,scheduler_job_id,state,
+                              substr(request_json,1,?) AS request_json, substr(effective_payload_json,1,?) AS effective_payload_json,
+                              substr(output_text,1,?) AS output_text, substr(response_json,1,?) AS response_json,
+                              substr(error,1,256) AS error,text_bytes,created_at,updated_at,finished_at,expires_at,
+                              length(request_json) AS request_bytes,length(effective_payload_json) AS effective_payload_bytes,
+                              length(output_text) AS output_bytes,length(response_json) AS response_bytes
+                       FROM traces WHERE trace_id=?""",
+                    (session_preview_chars, session_preview_chars, session_preview_chars, session_preview_chars, trace_id),
+                ).fetchone()
                 if not row:
                     return {"success": False, "error": "trace not found", "trace_id": trace_id, "terminal": True}
-                events = [dict(event) for event in con.execute("SELECT seq,created_at,event_type,payload_json FROM trace_events WHERE trace_id=? AND seq>? ORDER BY seq ASC", (trace_id, max(0, int(since_seq))))]
-                for event in events:
-                    event["payload"] = self._decode(event.pop("payload_json"), {})
-                thinking_rows = con.execute("SELECT payload_json FROM trace_events WHERE trace_id=? AND event_type=? ORDER BY seq ASC", (trace_id, "thinking")).fetchall()
-                thinking_parts = []
-                for thinking_row in thinking_rows:
-                    payload = self._decode(thinking_row[0], {})
-                    if isinstance(payload, dict):
-                        thinking_parts.append(str(payload.get("text") or ""))
+                event_rows = con.execute(
+                    """SELECT seq,created_at,event_type,substr(payload_json,1,?),length(payload_json)
+                       FROM trace_events WHERE trace_id=? AND seq>? ORDER BY seq ASC LIMIT ?""",
+                    (event_preview_chars, trace_id, cursor, bounded_limit + 1),
+                ).fetchall()
+                has_more = len(event_rows) > bounded_limit
+                events = []
+                event_truncated = False
+                for event_row in event_rows[:bounded_limit]:
+                    raw_payload = str(event_row[3] or "")
+                    payload_size = int(event_row[4] or 0)
+                    payload = self._decode(raw_payload, {}) if payload_size <= event_preview_chars else {"truncated": True, "preview": raw_payload}
+                    event_truncated = event_truncated or payload_size > event_preview_chars
+                    events.append({"seq": int(event_row[0]), "created_at": float(event_row[1]), "event_type": str(event_row[2]), "payload": payload})
+                thinking_char_cap = max(64, min(4096, self.max_detail_response_bytes // max(64, self.max_detail_events * 8)))
+                thinking_rows = con.execute(
+                    """SELECT CASE WHEN json_valid(payload_json) THEN substr(json_extract(payload_json,'$.text'),1,?) ELSE '' END
+                       FROM trace_events WHERE trace_id=? AND event_type=? ORDER BY seq ASC LIMIT ?""",
+                    (thinking_char_cap, trace_id, "thinking", self.max_detail_events + 1),
+                ).fetchall()
+                thinking_parts = [str(thinking_row[0] or "") for thinking_row in thinking_rows[:self.max_detail_events]]
                 session = self._session(row)
+                length_columns = {"request": "request_bytes", "effective_payload": "effective_payload_bytes", "output": "output_bytes", "response": "response_bytes"}
+                session_truncated = False
+                for key, length_key in length_columns.items():
+                    if int(row[length_key] or 0) > session_preview_chars:
+                        raw_column = {"request": "request_json", "effective_payload": "effective_payload_json", "output": "output_text", "response": "response_json"}[key]
+                        session[key] = {"truncated": True, "preview": str(row[raw_column] or "")}
+                        session_truncated = True
+                    session.pop(length_key, None)
                 session["thinking"] = "".join(thinking_parts)[: self.max_session_text_bytes]
-                return {"success": True, "session": session, "events": events, "next_seq": events[-1]["seq"] if events else max(0, int(since_seq)), "terminal": session["state"] in self.TERMINAL_STATES}
+                thinking_truncated = len(thinking_rows) > self.max_detail_events or any(len(part) >= thinking_char_cap for part in thinking_parts)
+                result = {
+                    "success": True, "session": session, "events": events,
+                    "next_seq": events[-1]["seq"] if events else cursor,
+                    "has_more": has_more or len(thinking_rows) > self.max_detail_events,
+                    "truncated": event_truncated or session_truncated or thinking_truncated,
+                    "payload_truncated": event_truncated or session_truncated or thinking_truncated,
+                    "full_payload_requested": bool(full_payload),
+                    "terminal": session["state"] in self.TERMINAL_STATES,
+                }
+                last_selected_seq = int(event_rows[min(len(event_rows), bounded_limit) - 1][0]) if event_rows else cursor
+
+                def response_size() -> int:
+                    result["response_bytes"] = 0
+                    for _ in range(4):
+                        measured = len(self._encode(result).encode("utf-8"))
+                        if result["response_bytes"] == measured:
+                            return measured
+                        result["response_bytes"] = measured
+                    return len(self._encode(result).encode("utf-8"))
+
+                response_limit = max(1024, self.max_detail_response_bytes - 512)
+
+                while response_size() > response_limit and events:
+                    events.pop()
+                    result["has_more"] = True
+                    result["truncated"] = True
+                    result["next_seq"] = events[-1]["seq"] if events else cursor
+                if response_size() > response_limit:
+                    for key in ("request", "effective_payload", "response", "output", "thinking"):
+                        value = session.get(key)
+                        if value:
+                            session[key] = {"truncated": True, "preview": self._encode(value)[:32]}
+                            result["truncated"] = True
+                            result["payload_truncated"] = True
+                            if response_size() <= response_limit:
+                                break
+                if response_size() > response_limit:
+                    result["events"] = []
+                    result["has_more"] = bool(result["has_more"] or has_more)
+                    result["next_seq"] = last_selected_seq
+                    result["truncated"] = True
+                    result["session"] = {
+                        key: str(session.get(key, ""))[:256]
+                        for key in ("trace_id", "kind", "state", "tenant", "agent", "action", "source", "model", "request_id")
+                        if session.get(key) is not None
+                    }
+                    result["payload_truncated"] = True
+                response_size()
+                return result
         except sqlite3.Error:
             return {"success": False, "error": "trace store unavailable", "trace_id": trace_id, "retryable": True}
 
     def list(self, *, kind: str = "", state: str = "", agent: str = "", model: str = "", limit: int = 50, offset: int = 0) -> dict[str, Any]:
-        limit = min(self.max_list_limit, max(1, int(limit)))
-        offset = max(0, int(offset))
+        try:
+            limit = min(self.max_list_limit, max(1, int(limit)))
+        except (TypeError, ValueError, OverflowError):
+            limit = min(50, self.max_list_limit)
+        try:
+            offset = max(0, int(offset))
+        except (TypeError, ValueError, OverflowError):
+            offset = 0
         where: list[str] = []
         values: list[Any] = []
         for column, value in (("kind", kind), ("state", state), ("agent", agent), ("model", model)):

@@ -178,7 +178,7 @@ def test_missing_debug_trace_detail_returns_not_found(monkeypatch):
     class DebugTraces:
         TERMINAL_STATES = set()
 
-        def detail(self, trace_id, *, since_seq):
+        def detail(self, trace_id, *, since_seq, limit=100, full_payload=False):
             return {"success": False, "error": "trace not found"}
 
     class App:
@@ -186,8 +186,10 @@ def test_missing_debug_trace_detail_returns_not_found(monkeypatch):
 
     handler = http_server.Handler.__new__(http_server.Handler)
     handler.path = "/api/debug-traces/missing-trace"
+    handler.command = "GET"
     handler._begin_trace = lambda path: None
     handler._require_authorized = lambda: True
+    handler._authorization_succeeded = True
     responses = []
     handler._send = lambda status, data: responses.append((status, data))
     monkeypatch.setattr(http_server, "APP", App())

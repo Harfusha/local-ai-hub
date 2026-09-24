@@ -97,6 +97,27 @@ def test_poll_failures_use_jittered_exponential_backoff_with_a_hard_cap() -> Non
     )
 
 
+def test_unchanged_status_slows_polling_and_changed_status_resets_interval() -> None:
+    _run_polling_javascript(
+        """
+        const assert = require('node:assert/strict');
+        let nextId = 0, timers = new Map();
+        const outcomes = [{changed: true}, {changed: false}, {changed: false}, {changed: true}];
+        const poller = createDashboardStatusPoller(async () => outcomes.shift(), {
+          isVisible: () => true, random: () => 0.5,
+          setTimer: (fn, delay) => { const id = ++nextId; timers.set(id, {fn, delay}); return id; },
+          clearTimer: id => timers.delete(id), baseDelay: 100, maxDelay: 400,
+        });
+        const fire = async () => { const [id, timer] = timers.entries().next().value; timers.delete(id); timer.fn(); await new Promise(r => setImmediate(r)); };
+        poller.start(); await fire(); assert.equal([...timers.values()][0].delay, 100);
+        await fire(); assert.equal([...timers.values()][0].delay, 200);
+        await fire(); assert.equal([...timers.values()][0].delay, 400);
+        await fire(); assert.equal([...timers.values()][0].delay, 100);
+        poller.stop();
+        """
+    )
+
+
 def test_repeated_status_payload_does_not_trigger_redundant_render_work() -> None:
     _run_polling_javascript(
         """

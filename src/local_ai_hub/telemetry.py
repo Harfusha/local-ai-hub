@@ -1217,7 +1217,11 @@ class TelemetryStore:
             return int(self._stats["processed"]) >= target
 
     def _cutoff(self, days: int) -> float:
-        return time.time() - max(1, int(days)) * 86400
+        try:
+            bounded_days = max(1, min(int(days), 3650))
+        except (TypeError, ValueError, OverflowError):
+            bounded_days = 30
+        return time.time() - bounded_days * 86400
 
     def _scope_cutoff(self, days: int, scope: str) -> tuple[float, str]:
         normalized = str(scope or "window").strip().lower()
@@ -1914,20 +1918,32 @@ class TelemetryStore:
         values = [float(row[0] or 0.0) for row in rows]
         return {"samples": len(values), "p95_duration_ms": _percentile(values, 0.95)}
 
-    def get_timeline(self, limit: int = 100, *, _flush: bool = True) -> list[dict[str, Any]]:
-        """Return chronological timeline of agent operations for session replay and visualization."""
+    def get_timeline_page(self, limit: int = 100, *, before_id: int | None = None, _flush: bool = True) -> dict[str, Any]:
+        """Return a recent chronological page, with a cursor for older events."""
         if not self.enabled:
-            return []
+            return {"timeline": [], "next_cursor": None, "has_more": False}
         if _flush:
             self.flush(0.2)
-        limit = max(1, min(int(limit), 500))
+        try:
+            limit = max(1, min(int(limit), 500))
+        except (TypeError, ValueError, OverflowError):
+            limit = 100
+        try:
+            cursor = max(0, int(before_id)) if before_id is not None else None
+        except (TypeError, ValueError, OverflowError):
+            cursor = None
         with closing(self._connect()) as con:
-            rows = con.execute(
-                """SELECT id, created_at, event_type, tenant, agent, action, duration_ms, success,
+            sql = """SELECT id, created_at, event_type, tenant, agent, action, duration_ms, success,
                           avoided_cloud_tokens, error_type
-                   FROM events ORDER BY id ASC LIMIT ?""", (limit,)
-            ).fetchall()
-        return [
+                   FROM events"""
+            values: tuple[Any, ...] = ()
+            if cursor is not None:
+                sql += " WHERE id < ?"
+                values = (cursor,)
+            rows = con.execute(sql + " ORDER BY id DESC LIMIT ?", (*values, limit + 1)).fetchall()
+        has_more = len(rows) > limit
+        page_rows = list(reversed(rows[:limit]))
+        timeline = [
             {
                 "id": int(r[0]),
                 "timestamp": float(r[1]),
@@ -1940,8 +1956,17 @@ class TelemetryStore:
                 "net_tokens_saved": int(r[8] or 0),
                 "error_type": str(r[9] or ""),
             }
-            for r in rows
+            for r in page_rows
         ]
+        return {
+            "timeline": timeline,
+            "next_cursor": int(page_rows[0][0]) if has_more and page_rows else None,
+            "has_more": has_more,
+        }
+
+    def get_timeline(self, limit: int = 100, *, _flush: bool = True) -> list[dict[str, Any]]:
+        """Return the most recent chronological telemetry rows."""
+        return self.get_timeline_page(limit, _flush=_flush)["timeline"]
 
     def close(self) -> None:
         if not self.enabled:
