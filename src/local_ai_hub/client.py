@@ -24,6 +24,12 @@ from .config import load_config
 from .operation_contracts import normalize_transport_error
 
 
+class _SingleflightTimeout(TimeoutError):
+    def __init__(self, request_id: str) -> None:
+        super().__init__("coalesced hub request timed out")
+        self.request_id = request_id
+
+
 _DETACHED_CHILDREN_LOCK = threading.Lock()
 _DETACHED_CHILDREN: list[subprocess.Popen[Any]] = []
 
@@ -157,11 +163,11 @@ class HubClient:
             result["retried"] = True
         return result
 
-    def _singleflight(self, key: str, timeout: float, execute: Any) -> dict[str, Any]:
+    def _singleflight(self, key: str, timeout: float, execute: Any, request_id: str = "") -> dict[str, Any]:
         with self._flight_lock:
             flight = self._flights.get(key)
             if flight is None:
-                flight = {"event": threading.Event(), "result": None, "error": None}
+                flight = {"event": threading.Event(), "result": None, "error": None, "request_id": request_id}
                 self._flights[key] = flight
                 owner = True
             else:
@@ -179,7 +185,7 @@ class HubClient:
                 raise flight["error"]
             return flight["result"]
         if not flight["event"].wait(timeout):
-            raise TimeoutError("coalesced hub request timed out")
+            raise _SingleflightTimeout(str(flight.get("request_id") or request_id))
         if flight["error"] is not None:
             raise flight["error"]
         result = copy.deepcopy(flight["result"])
@@ -352,7 +358,15 @@ class HubClient:
             }
             if self.api_token:
                 headers["X-LocalAI-Token"] = self.api_token
-            return json.loads(self._pooled_open("POST", path, body, headers, attempt_timeout).decode("utf-8"))
+            result = json.loads(self._pooled_open("POST", path, body, headers, attempt_timeout).decode("utf-8"))
+            if isinstance(result, dict):
+                return result
+            return {
+                "success": False,
+                "error": "invalid JSON response",
+                "outcome_unknown": True,
+                "request_id": request_id,
+            }
 
         def execute() -> dict[str, Any]:
             duplicate_deadline = time.monotonic() + timeout
@@ -397,6 +411,8 @@ class HubClient:
                         except (URLError, OSError, http.client.HTTPException):
                             self._drop_connection()
                             return self._uncertain_response(request_id, retried=True)
+                        except (UnicodeDecodeError, json.JSONDecodeError):
+                            return self._uncertain_response(request_id, retried=True)
                         except Exception as retry_exc: return {"success": False, "error": str(retry_exc), "request_id": request_id, "retried": True}
                 return self._uncertain_response(request_id)
             except (UnicodeDecodeError, json.JSONDecodeError):
@@ -409,14 +425,16 @@ class HubClient:
 
         key = f"POST|{self.tenant}|{self.agent}|{path}|{body.decode('utf-8')}"
         try:
-            return self._singleflight(key, timeout, execute)
-        except TimeoutError:
+            return self._singleflight(key, timeout, execute, request_id)
+        except TimeoutError as exc:
             return {
                 "success": False,
                 "error": "coalesced request timed out before result was available",
+                "outcome_unknown": True,
+                "in_progress": True,
                 "retry_timeout": True,
                 "coalesced": True,
-                "request_id": request_id,
+                "request_id": getattr(exc, "request_id", request_id),
             }
 
     def get(self, path: str, timeout: float = 15.0) -> dict[str, Any]:
@@ -460,14 +478,16 @@ class HubClient:
 
         key = f"GET|{self.tenant}|{self.agent}|{path}"
         try:
-            return self._singleflight(key, timeout, execute)
-        except TimeoutError:
+            return self._singleflight(key, timeout, execute, request_id)
+        except TimeoutError as exc:
             return {
                 "success": False,
                 "error": "coalesced request timed out before result was available",
+                "outcome_unknown": True,
+                "in_progress": True,
                 "retry_timeout": True,
                 "coalesced": True,
-                "request_id": request_id,
+                "request_id": getattr(exc, "request_id", request_id),
             }
 
     @staticmethod
@@ -618,9 +638,10 @@ class HubClient:
         if act in {"worktree_release"}:
             return self.post("/api/coord/worktree_release", {
                 "root": kwargs.get("root", "."),
-                "worktree_path": kwargs.get("worktree_path") or kwargs.get("value") or kwargs.get("lease_id") or "",
+                "worktree_path": kwargs.get("worktree_path") or kwargs.get("value") or "",
                 "delete_branch": kwargs.get("delete_branch", True),
                 "branch": kwargs.get("branch") or kwargs.get("key") or kwargs.get("task_id"),
+                "worktree_id": kwargs.get("worktree_id", ""),
             })
         if act == "pubsub_publish":
             return self.post("/api/coord/pubsub_publish", {
@@ -633,7 +654,7 @@ class HubClient:
             return self.post("/api/coord/pubsub_poll", {
                 "root": kwargs.get("root", "."),
                 "topic": kwargs.get("topic") or kwargs.get("key", "default"),
-                "since_timestamp": float(kwargs.get("since_timestamp", 0.0)),
+                "after_seq": int(kwargs.get("after_seq", 0)),
                 "limit": int(kwargs.get("limit", 50)),
             })
         if act == "simulate_merge":
