@@ -65,10 +65,12 @@ cloud_fallback_enabled = false
 cloud_provider = ""
 
 [llama_cpp]
-# On Intel-only systems, use the loopback SYCL model router when ready.
-# The adapter is optional and never installs or starts a model server.
-mode = "auto" # off | auto | on (on is an explicit manual override)
+# `auto` discovers an existing loopback llama.cpp server without downloading.
+# `on` explicitly selects managed llama.cpp; setup pins and provisions runtime/model.
+# Ollama wins whenever [ollama].enabled is true.
+mode = "auto" # off | auto (external only) | on (managed llama.cpp)
 model_load_timeout_seconds = 600
+managed_model_filename = "hub-qwen-15.gguf"
 fallback_to_ollama = false
 
 [llama_cpp.models."qwen2.5-coder:1.5b"]

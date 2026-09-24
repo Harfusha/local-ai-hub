@@ -35,7 +35,7 @@ class RepetitionWatchdogStreamingTests(unittest.TestCase):
 
     def test_non_streaming_request_rejects_and_stops_repetitive_output(self):
         runtime = object.__new__(OllamaRuntime)
-        runtime.config = {"ollama": {"request_attempts": 1}}
+        runtime.config = {"ollama": {"enabled": True, "request_attempts": 1}}
         runtime.base_url = "http://ollama/"
         runtime.timeout = 1.0
         response = StreamingResponse(["text ", "text ", "text ", "text ", "unused output"])
@@ -55,7 +55,7 @@ class RepetitionWatchdogStreamingTests(unittest.TestCase):
 
     def test_interruptible_request_rejects_repetitive_output(self):
         runtime = object.__new__(OllamaRuntime)
-        runtime.config = {"ollama": {"request_attempts": 1}}
+        runtime.config = {"ollama": {"enabled": True, "request_attempts": 1}}
         runtime.base_url = "http://ollama/"
         runtime.timeout = 1.0
         response = StreamingResponse(["text ", "text ", "text ", "text ", "unused output"])
