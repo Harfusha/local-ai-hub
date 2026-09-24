@@ -2,6 +2,8 @@
 
 Audit target: branch `codex/v4.0-hardening`, current checkout, 2026-09-21.
 
+Historical snapshot: the CodeGraphContext source/test row and live probe below describe that 2026-09-21 checkout only. They are not evidence of current behavior; use current installation guidance and installed-instance/runtime checks for present availability.
+
 Scope: `FEATURES.md`, `README.md`, current `docs/` documentation, MCP declarations and
 routing in `src/local_ai_hub/mcp_server.py`, feature projection in
 `src/local_ai_hub/features.py` and `src/local_ai_hub/generator.py`, packaged

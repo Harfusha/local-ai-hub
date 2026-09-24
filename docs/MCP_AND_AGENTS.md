@@ -2,14 +2,16 @@
 
 Local AI Hub exposes eight compact MCP tools instead of mirroring every internal endpoint. The same hub process, deterministic indexes, preprocess artifacts, command cache and local-model caches are shared by Codex, Claude Code, Gemini CLI, Cursor, Windsurf, VS Code/Copilot and generic MCP clients.
 
+The generated MCP, HTTP, client and CLI surface inventory with contract and evidence states is in [API surface coverage](API_COVERAGE.md).
+
 ## Whole-task orchestration
 
 `local_ai_work` is the one high-level orchestration boundary. Use `submit` for a closed repository task that the Hub can plan, edit, validate and verify end-to-end. Use `status`/`wait` for bounded progress checks, `get` with `response_profile`/`return_fields` for projected handoff data, `cancel` to stop work, and `continue` only after a `needs_agent` decision. Detailed plans, step evidence and logs remain artifact-backed by default.
 
 
-## Mandatory local-first gate
+## Hub-first evidence and cloud-agent autonomy
 
-The main agent remains the orchestrator, planner, integrator and final owner. Delegation is the default for useful bounded independent work after indexed evidence. Use `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` for semantic generation, exploration, reasoning, review, independent second opinions and semantic compression; use deterministic/indexed tools for exact facts, symbols, diff and tests. Native Codex subagents are reserved for explicit Codex-subagent requests or Codex-only capabilities. Codex controls scope, write access, workspace/worktree, timeout, cancellation and integration. Never duplicate the same scope across agents.
+The cloud agent remains the orchestrator, planner, integrator and final owner. It may reason, plan and code directly. Local-model calls are on-demand and advisory; use `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` for bounded semantic work when it adds value, after deterministic/indexed evidence. Generated text does not replace exact facts, symbols, diff or test evidence. Native Codex subagents are for explicit Codex-subagent requests or Codex-only capabilities. Codex controls their scope, write access, workspace/worktree, timeout, cancellation and integration. Never duplicate the same scope across agents.
 
 For every non-trivial repository task, agents should start preprocessing the stable absolute project root once with `local_ai_repo(action="preprocess", root=...)` and continue immediately. Preprocessing is opportunistic: never poll or wait for it.
 
@@ -25,9 +27,20 @@ Use `local_ai_repo(action="context")` as the default adaptive context pack befor
 
 When generation is needed, use `qwen2.5-coder:1.5b` for quick work, `qwen2.5-coder:3b` for ordinary work, `qwen2.5-coder:7b` for hard reasoning, and `qwen3.5:9b` for extreme reasoning in the balanced profile; reserve `qwen2.5-coder:0.5b` for preprocessing. Deterministic/indexed evidence still runs first.
 
-Exact source should be fetched through `E…` evidence or artifact slices only when inspection/editing requires it. Fresh hub discovery and command results should not be repeated natively. `force=true` and `preprocess_refresh` are exceptional controls, not retry mechanisms.
+Use `E…` evidence or artifact slices for exact source, and bounded native reads such as `view_file` for a known path and required slice. Keep recursive search, broad globs and command validation behind Hub-first retrieval and the bounded fallback rules. Fresh Hub discovery and command results should not be repeated natively. `force=true` and `preprocess_refresh` are exceptional controls, not retry mechanisms.
 
 If Serena is unavailable, the hub degrades to built-in indexes. Treat response state as a protocol: cache/coalesced results should be reused; `in_progress=true` means another owner is doing identical work; HTTP 429/retryable 503 means back off and do independent work; degraded/stale evidence should trigger verification of only the affected path or evidence slice. A non-retryable failure permits one cheaper/native fallback. If the hub itself is unavailable, perform one bounded health/retry check and then use native tools; never loop on health, preprocessing, model startup or an optional backend, and never increase timeouts as a retry strategy.
+
+## Public operation contract notes
+
+- `local_ai_status.detail` uses `brief`, `cache`, `telemetry`, `full`, or `agent_state`; `action` also accepts the `status`, `health`, `check`, and `info` aliases.
+- `local_ai_repo(action="pipeline")` accepts closed step objects with a supported action and per-step `id`/`result`; run no more than four steps in parallel.
+- `local_ai_artifact(action="list")` does not require `artifact_id`; `binary` is supported and binary payloads are never inlined.
+- `local_ai_coord(action="pubsub_poll")` accepts `after_seq` from 0 through 2^63-1.
+
+## RAG document and diagram ingestion
+
+For `local_ai_rag(action="ingest_document")`, pass `content`, `title`, and `metadata`; for `ingest_diagram`, pass `image_path`, `caption`, and `metadata`. Raster diagrams are indexed as metadata-only; SVG text nodes carry extraction provenance.
 
 ## Cloud-agent request and delivery contract
 
@@ -41,7 +54,7 @@ For HTTP `/api/review/diff`, `delivery="auto"` with a positive `latency_budget_m
 
 For repository context, `local_ai_repo(action="context", mode="fast")` returns bounded deterministic/index context and a `continuation` for `mode="full"`. Use it when foreground p95 matters more than broad semantic recall. It runs no generation task. Repository responses expose `cache_hit`, `cache_layer="workspace"`, and `coalesced`; reuse them instead of submitting a near-identical root/revision/query request.
 
-Root-fingerprint repo cache, request coalescing, per-root external Serena/CodeGraph circuit cooldowns, and `evaluation_record` / `evaluation_report` are already shared across agents. Use opaque task IDs and cohorts for paired baseline/candidate quality, test-pass, and duration evidence; never put source or prompts into evaluation metadata. Ordinary requests may attach `evaluation: {"task_id":"opaque-id","cohort":"hub_on|hub_off","quality_pass":true,"test_pass":true}`; the hub records its measured duration automatically. Pairing still requires the corresponding other cohort.
+Root-fingerprint repo cache, request coalescing, per-root Serena circuit cooldowns, and `evaluation_record` / `evaluation_report` are already shared across agents. Use opaque task IDs and cohorts for paired baseline/candidate quality, test-pass, and duration evidence; never put source or prompts into evaluation metadata. Ordinary requests may attach `evaluation: {"task_id":"opaque-id","cohort":"hub_on|hub_off","quality_pass":true,"test_pass":true}`; the hub records its measured duration automatically. Pairing still requires the corresponding other cohort.
 
 The built-in client reuses HTTP/1.1 loopback connections per thread and coalesces simultaneous identical active requests. A coalesced response has `coalesced:true`; reuse it rather than creating another request. `in_progress:true` is not an operational failure: honor its retry hint or continue independent work. Git-only `review_diff`/`impact` calls on a non-Git root are terminal client results; switch to deterministic/code-index review rather than retrying Git.
 
@@ -59,7 +72,11 @@ For concurrent agents, use `local_ai_coord` leases before overlapping edits and 
 
 ## Ollama advisory profiles
 
-Named profiles are available through existing `local_ai_task` and `local_ai_repo` tools: `qwen-explorer` for reconnaissance and bounded interpretation, `qwen-drafter` for proposed implementation guidance, and `qwen-critic` for independent review. With a repository `root`, each profile uses Hub read-only tooling directly, in order: preprocessing/deterministic facts, code index, Serena/CodeGraph, search/RAG, evidence IDs, then bounded file slices. Profiles never write files, run commands, create worktrees, or apply proposals. Default model is `qwen2.5-coder:7b`; output mirrors task language and preserves technical tokens. Use `qwen-explorer` when the task needs semantic interpretation or exploration; skip named profiles only for pure exact facts already covered by deterministic/indexed tools.
+Named profiles are available through existing `local_ai_task` and `local_ai_repo` tools: `qwen-explorer` for reconnaissance and bounded interpretation, `qwen-drafter` for proposed implementation guidance, and `qwen-critic` for independent review. With a repository `root`, each profile uses Hub read-only tooling directly, in order: preprocessing/deterministic facts, code index, optional Serena, search/RAG, evidence IDs, then bounded file slices. Profiles never write files, run commands, create worktrees, or apply proposals. Default model is `qwen2.5-coder:7b`; output mirrors task language and preserves technical tokens. Use `qwen-explorer` when the task needs semantic interpretation or exploration; skip named profiles only for pure exact facts already covered by deterministic/indexed tools. CodeGraphContext is an optional standalone external tool configured directly with an agent; Hub profiles do not install, manage or query it.
+
+## Synthesis scope
+
+`disable_llm_card_synthesis = true` disables file-card synthesis by default. It does not disable module or project synthesis, and the setting can be overridden. Check the active configuration before claiming file-card synthesis is off; treat module/project synthesis and other semantic work as separate controls. Local-model work remains on-demand and advisory.
 
 ## Local model conversations
 
