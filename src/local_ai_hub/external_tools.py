@@ -9,14 +9,16 @@ import queue
 import shlex
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from collections import Counter, deque
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .process_utils import hidden_run_kwargs, terminate_tree
+from .process_utils import hidden_run_kwargs, run_hidden, terminate_tree
 
 
 class MCPStdioError(RuntimeError):
@@ -347,12 +349,20 @@ class ExternalCodeIntelligence:
         self.enabled = bool(self.cfg.get("enabled", True))
         self.serena_enabled = self.enabled and bool(self.cfg.get("serena_enabled", True))
         self.codegraph_enabled = self.enabled and bool(self.cfg.get("codegraph_enabled", True))
-        self.install_root = Path(__file__).resolve().parents[2]
+        configured_install_root = config.get("setup", {}).get("install_dir")
+        self.install_root = (
+            Path(configured_install_root).expanduser().resolve()
+            if configured_install_root
+            else Path(__file__).resolve().parents[2]
+        )
         self.call_timeout = float(self.cfg.get("query_timeout_seconds", 20.0))
         self.startup_timeout = float(self.cfg.get("startup_timeout_seconds", 45.0))
-        self.index_timeout = float(self.cfg.get("index_timeout_seconds", 30.0))
+        self.index_timeout = float(self.cfg.get("index_timeout_seconds", 1200.0))
         self.max_output_chars = max(1000, int(self.cfg.get("max_output_chars", 9000)))
         self._lock = threading.RLock()
+        self._operation_lock_guard = threading.Lock()
+        self._operation_locks: dict[tuple[str, str], threading.Lock] = {}
+        self._operation_lock_users: dict[tuple[str, str], int] = {}
         self._serena_sessions: dict[str, MCPStdioClient] = {}
         # CodeGraphContext sandboxes project paths to the MCP server cwd (plus
         # CGC_ALLOWED_ROOTS). Keep one process per project so every query is both
@@ -365,6 +375,21 @@ class ExternalCodeIntelligence:
         self._cooldown_until: dict[str, float] = {"serena": 0.0, "codegraph": 0.0}
         self._root_failures: dict[tuple[str, str], int] = {}
         self._root_cooldown_until: dict[tuple[str, str], float] = {}
+        self._repair_locks = {"serena": threading.Lock(), "codegraph": threading.Lock()}
+        self._backend_health: dict[str, dict[str, Any]] = {
+            name: {
+                "state": "disabled" if not getattr(self, f"{name}_enabled") else "unknown",
+                "last_failure": "",
+                "last_recovery": "",
+                "last_successful_probe": "",
+                "repair_attempts": 0,
+                "last_repair_at": 0.0,
+                "last_preflight_at": 0.0,
+            }
+            for name in ("serena", "codegraph")
+        }
+        self.repair_timeout = min(300.0, max(10.0, float(self.cfg.get("repair_timeout_seconds", 120.0))))
+        self.repair_cooldown = min(3600.0, max(30.0, float(self.cfg.get("repair_cooldown_seconds", 300.0))))
         self.failure_threshold = max(1, int(self.cfg.get("failure_threshold", 2)))
         self.cooldown_seconds = max(1.0, float(self.cfg.get("cooldown_seconds", 60.0)))
         self._serena = self._resolve_command("serena") if self.serena_enabled else None
@@ -373,6 +398,8 @@ class ExternalCodeIntelligence:
         self.index_failures = 0
         self.queries = 0
         self.query_failures = 0
+        if self.enabled and (self.serena_enabled or self.codegraph_enabled):
+            threading.Thread(target=self._startup_preflight, name="local-ai-code-intelligence-preflight", daemon=True).start()
 
     def _resolve_command(self, backend: str) -> str | None:
         explicit = str(self.cfg.get(f"{backend}_command", "") or "").strip()
@@ -487,6 +514,35 @@ class ExternalCodeIntelligence:
         self._session_access[backend][root] = time.monotonic()
         return self._prune_sessions_locked(backend)
 
+    @contextmanager
+    def _backend_operation(self, backend: str, root: str, timeout: float | None = None):
+        """Serialize operations for one embedded database, with bounded lock wait."""
+        key = (backend, root)
+        with self._operation_lock_guard:
+            operation_lock = self._operation_locks.get(key)
+            if operation_lock is None:
+                operation_lock = threading.Lock()
+                self._operation_locks[key] = operation_lock
+                self._operation_lock_users[key] = 0
+            self._operation_lock_users[key] += 1
+        wait_timeout = self.call_timeout if timeout is None else max(0.0, float(timeout))
+        acquired = False
+        try:
+            acquired = operation_lock.acquire(timeout=wait_timeout)
+            if not acquired:
+                raise TimeoutError(f"Timed out waiting for {backend} operation lock")
+            yield
+        finally:
+            if acquired:
+                operation_lock.release()
+            with self._operation_lock_guard:
+                remaining = self._operation_lock_users[key] - 1
+                if remaining:
+                    self._operation_lock_users[key] = remaining
+                else:
+                    self._operation_lock_users.pop(key, None)
+                    self._operation_locks.pop(key, None)
+
     @staticmethod
     def _close_clients(clients: list[MCPStdioClient]) -> None:
         for client in clients:
@@ -500,12 +556,25 @@ class ExternalCodeIntelligence:
             return False
         return root is None or time.monotonic() >= self._root_cooldown_until.get((backend, root), 0.0)
 
-    def _record_success(self, backend: str, *, root: str | None = None) -> None:
+    @staticmethod
+    def _timestamp() -> str:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    def _record_success(self, backend: str, *, root: str | None = None, probe: bool = False) -> None:
         if root is not None:
             self._root_failures.pop((backend, root), None)
             self._root_cooldown_until.pop((backend, root), None)
         self._failures[backend] = sum(value for (name, _root), value in self._root_failures.items() if name == backend)
         self._cooldown_until[backend] = 0.0
+        health = self._backend_health[backend]
+        health["state"] = "healthy"
+        health["last_successful_operation"] = self._timestamp()
+        if probe:
+            health["last_successful_probe"] = self._timestamp()
+            health["last_probe_success"] = True
+        health["failure_active"] = False
+        health["repair_error"] = ""
+        health["repair_blocked"] = ""
 
     @staticmethod
     def _is_revision_scoped_index_error(operation: str, message: str) -> bool:
@@ -513,8 +582,6 @@ class ExternalCodeIntelligence:
             return False
         lowered = message.lower()
         return any(marker in lowered for marker in (
-            "indexing exceeded",
-            "index exited",
             "no associated project configuration",
             "no configuration file found",
             "project configuration auto-generation failed",
@@ -523,12 +590,7 @@ class ExternalCodeIntelligence:
 
     def _record_failure(self, backend: str, exc: Exception, *, operation: str, root: str | None = None) -> None:
         message = str(exc)
-        if backend == "codegraph" and any(marker in message.lower() for marker in ("no module named 'codegraphcontext'", "no module named codegraphcontext", "cannot import name")):
-            self.codegraph_enabled = False
-            self._codegraph = None
-            self._cooldown_until[backend] = 0.0
-            self._failures[backend] = 0
-            return
+        health = self._backend_health[backend]
         key = (backend, root or "")
         if self._is_revision_scoped_index_error(operation, message):
             self._root_failures.pop(key, None)
@@ -540,15 +602,166 @@ class ExternalCodeIntelligence:
                 except Exception:
                     pass
             return
+        health["state"] = "degraded"
+        health["last_failure"] = message[:500]
+        health["last_failure_at"] = self._timestamp()
+        health["last_probe_success"] = False
+        health["failure_active"] = True
         self._root_failures[key] = self._root_failures.get(key, 0) + 1
         self._failures[backend] = sum(value for (name, _root), value in self._root_failures.items() if name == backend)
         if self._root_failures[key] >= self.failure_threshold:
             self._root_cooldown_until[key] = time.monotonic() + self.cooldown_seconds
         if self.telemetry is not None:
             try:
-                self.telemetry.record_error("code_intelligence", f"{backend}:{operation}", exc, retryable=True, recovered=True)
+                self.telemetry.record_error("code_intelligence", f"{backend}:{operation}", exc, retryable=True, recovered=False)
             except Exception:
                 pass
+
+    def _backend_enabled(self, backend: str) -> bool:
+        return self.enabled and bool(getattr(self, f"{backend}_enabled", False))
+
+    def _tool_python(self, backend: str) -> Path:
+        bindir = "Scripts" if os.name == "nt" else "bin"
+        executable = "python.exe" if os.name == "nt" else "python"
+        return self.install_root / "tool-envs" / backend / bindir / executable
+
+    def _package_spec(self, backend: str) -> tuple[str, str, str] | None:
+        tools_cfg = self.config.get("tools", {})
+        configured = str(tools_cfg.get(f"{backend}_package", "") or "").strip()
+        if configured.count("==") != 1 or any(marker in configured for marker in (";", " @ ", "*")):
+            return None
+        distribution, version = (part.strip() for part in configured.split("==", 1))
+        distribution_name = distribution.split("[", 1)[0].lower().replace("_", "-")
+        expected_name = "serena-agent" if backend == "serena" else "codegraphcontext"
+        if distribution_name != expected_name or not version or any(char in version for char in "<>!=,* "):
+            return None
+        return configured, expected_name, version
+
+    def _managed_command(self, backend: str, command: str | None) -> bool:
+        if not command:
+            return False
+        try:
+            Path(command).resolve().relative_to((self.install_root / "tool-envs" / backend).resolve())
+            return True
+        except (OSError, ValueError):
+            return False
+
+    def _installed_package_matches(self, backend: str, package_name: str, version: str) -> bool:
+        python = self._tool_python(backend)
+        if not python.is_file():
+            return False
+        try:
+            result = run_hidden(
+                [str(python), "-m", "pip", "show", package_name],
+                cwd=str(self.install_root), capture_output=True, text=True, timeout=10.0,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        if result.returncode != 0:
+            return False
+        installed = next((line.partition(":")[2].strip() for line in (result.stdout or "").splitlines() if line.lower().startswith("version:")), "")
+        return installed == version
+
+    def _repair_backend(self, backend: str, *, reason: str) -> bool:
+        if backend not in self._repair_locks or not self._backend_enabled(backend):
+            return False
+        setup_cfg = self.config.get("setup", {})
+        if not bool(setup_cfg.get("install_optional_tools", True)):
+            self._backend_health[backend].update(state="degraded", repair_blocked="optional tool installation is disabled")
+            return False
+        package = self._package_spec(backend)
+        if package is None:
+            self._backend_health[backend].update(state="degraded", repair_blocked="repair requires an exact package version pin")
+            return False
+        lock = self._repair_locks[backend]
+        if not lock.acquire(timeout=min(360.0, self.repair_timeout + 60.0)):
+            self.refresh_discovery()
+            return bool(self._serena if backend == "serena" else self._codegraph)
+        health = self._backend_health[backend]
+        try:
+            self.refresh_discovery()
+            now = time.monotonic()
+            last_attempt = float(health.get("last_repair_at", 0.0))
+            if last_attempt and now - last_attempt < self.repair_cooldown:
+                return bool(self._serena if backend == "serena" else self._codegraph)
+            health["state"] = "repairing"
+            health["repair_attempts"] = int(health.get("repair_attempts", 0)) + 1
+            health["last_repair_at"] = now
+            health["repair_reason"] = reason[:300]
+            venv = self.install_root / "tool-envs" / backend
+            python = self._tool_python(backend)
+            if not python.is_file():
+                try:
+                    created = run_hidden(
+                        [sys.executable, "-m", "venv", str(venv)],
+                        cwd=str(self.install_root), capture_output=True, text=True, timeout=60.0,
+                    )
+                except (OSError, subprocess.SubprocessError) as exc:
+                    health.update(state="degraded", repair_error=f"virtual environment creation failed ({type(exc).__name__})")
+                    return False
+                if created.returncode != 0 or not python.is_file():
+                    health.update(state="degraded", repair_error="virtual environment creation failed")
+                    return False
+            configured_package, _package_name, _version = package
+            try:
+                installed = run_hidden(
+                    [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--upgrade", "--force-reinstall", configured_package],
+                    cwd=str(self.install_root), capture_output=True, text=True, timeout=self.repair_timeout,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                health.update(state="degraded", repair_error=f"isolated package repair failed ({type(exc).__name__})")
+                return False
+            if installed.returncode != 0:
+                health.update(state="degraded", repair_error="isolated package repair failed")
+                return False
+            self.refresh_discovery()
+            command = self._serena if backend == "serena" else self._codegraph
+            if not command:
+                health.update(state="degraded", repair_error="package installed but its executable was not found")
+                return False
+            health.update(state="repair_pending_probe", repair_error="", last_recovery=self._timestamp())
+            return True
+        finally:
+            lock.release()
+
+    def _needs_package_repair(self, backend: str, exc: Exception | None) -> bool:
+        command = self._serena if backend == "serena" else self._codegraph
+        if not command or not Path(command).is_file():
+            return True
+        if exc is None:
+            return False
+        message = str(exc).lower()
+        return any(marker in message for marker in ("no module named", "cannot import name", "modulenotfounderror", "importerror"))
+
+    def _recover_backend(self, backend: str, root: str, exc: Exception) -> bool:
+        sessions = self._serena_sessions if backend == "serena" else self._codegraph_sessions
+        with self._lock:
+            session = sessions.pop(root, None)
+            self._session_access[backend].pop(root, None)
+            self._root_failures.pop((backend, root), None)
+            self._root_cooldown_until.pop((backend, root), None)
+            self._failures[backend] = sum(value for (name, _root), value in self._root_failures.items() if name == backend)
+            self._cooldown_until[backend] = 0.0
+        if session:
+            session.close()
+        self.refresh_discovery()
+        if self._needs_package_repair(backend, exc):
+            if not self._repair_backend(backend, reason=str(exc)):
+                return False
+        command = self._serena if backend == "serena" else self._codegraph
+        if command:
+            self._backend_health[backend].update(state="recovering", last_recovery=self._timestamp())
+            return True
+        return False
+
+    def _startup_preflight(self) -> None:
+        for backend in ("serena", "codegraph"):
+            if not self._backend_enabled(backend):
+                continue
+            try:
+                self.backend_available(backend)
+            except Exception as exc:
+                self._backend_health[backend].update(state="degraded", last_failure=f"startup preflight failed ({type(exc).__name__})")
 
     @staticmethod
     def _root(root: str) -> str:
@@ -565,7 +778,8 @@ class ExternalCodeIntelligence:
         ignored_dirs = set(self._CGC_BASE_IGNORE_DIRS)
         ignored_dirs.update(self._git_ignored_directory_names(root))
         return {
-            "CGC_OUTPUT_FORMAT": str(self.cfg.get("codegraph_output_format", "gcf")),
+            # The Hub consumes structured MCP evidence, not a model-facing GCF transcript.
+            "CGC_OUTPUT_FORMAT": str(self.cfg.get("codegraph_output_format", "json")),
             "CGC_ALLOWED_ROOTS": root,
             "CGC_RUNTIME_DB_TYPE": "kuzudb",
             "CGC_RUNTIME_DB_PATH": str(db_path),
@@ -606,7 +820,7 @@ class ExternalCodeIntelligence:
         language = max(counts, key=lambda name: (counts[name], name == "python"))
         return ["--language", language]
 
-    def _run_index(self, backend: str, argv: list[str], root: str, env: dict[str, str] | None = None) -> dict[str, Any]:
+    def _run_index(self, backend: str, argv: list[str], root: str, env: dict[str, str] | None = None, *, _retrying: bool = False) -> dict[str, Any]:
         started = time.perf_counter()
         kwargs: dict[str, Any] = hidden_run_kwargs(text=True, new_group=True)
         if os.name != "nt":
@@ -643,8 +857,14 @@ class ExternalCodeIntelligence:
                     proc.wait(timeout=1.0)
                 except Exception:
                     pass
+            if not _retrying and not isinstance(exc, TimeoutError) and not self._is_revision_scoped_index_error("index", str(exc)):
+                if self._recover_backend(backend, root, exc):
+                    command = self._serena if backend == "serena" else self._codegraph
+                    if command:
+                        self._record_failure(backend, exc, operation="index", root=root)
+                        return self._run_index(backend, [command, *argv[1:]], root, env=env, _retrying=True)
             msg = str(exc)
-            if not self._is_revision_scoped_index_error("index", msg) and not (backend == "codegraph" and any(m in msg.lower() for m in ("no module named", "cannot import"))):
+            if not self._is_revision_scoped_index_error("index", msg):
                 self.index_failures += 1
             self._record_failure(backend, exc, operation="index", root=root)
             return {"success": False, "backend": backend, "error": msg, "error_type": type(exc).__name__}
@@ -654,16 +874,17 @@ class ExternalCodeIntelligence:
         root = self._root(root)
         if not self.enabled:
             return {"success": False, "skipped": True, "backend": backend, "reason": "code intelligence disabled"}
-        if backend == "serena" and self.serena_enabled and not self._serena:
-            self.refresh_discovery()
-        elif backend == "codegraph" and self.codegraph_enabled and not self._codegraph:
-            self.refresh_discovery()
+        if backend in self._repair_locks and self._backend_enabled(backend):
+            self.backend_available(backend)
         if not self._allowed(backend, root):
             return {"success": False, "skipped": True, "backend": backend, "reason": "circuit cooldown"}
         if backend == "serena":
-            if not self.serena_enabled or not self._serena:
+            if not self.serena_enabled:
+                return {"success": False, "skipped": True, "backend": backend, "reason": "Serena disabled by configuration"}
+            if not self._serena:
                 return {"success": False, "skipped": True, "backend": backend, "reason": "Serena not installed"}
-            result = self._run_index("serena", [self._serena, "project", "index", root, *self._serena_language_args(root, self._git_ignored_directory_names(root)), "--log-level", "WARNING", "--timeout", "5"], root)
+            with self._backend_operation("serena", root):
+                result = self._run_index("serena", [self._serena, "project", "index", root, *self._serena_language_args(root, self._git_ignored_directory_names(root)), "--log-level", "WARNING", "--timeout", "10"], root)
             # Indexing can invalidate server-side project state. Restart the project session lazily.
             with self._lock:
                 session = self._serena_sessions.pop(root, None)
@@ -672,36 +893,54 @@ class ExternalCodeIntelligence:
                 session.close()
             return result
         if backend == "codegraph":
-            if not self.codegraph_enabled or not self._codegraph:
+            if not self.codegraph_enabled:
+                return {"success": False, "skipped": True, "backend": backend, "reason": "CodeGraph disabled by configuration"}
+            if not self._codegraph:
                 return {"success": False, "skipped": True, "backend": backend, "reason": "CodeGraphContext not installed"}
-            result = self._run_index("codegraph", [self._codegraph, "index", "--no-progress", root], root, env=self._codegraph_env(root))
-            # Re-open the graph lazily after indexing so a long-lived MCP process
-            # cannot retain a stale embedded database/context.
-            with self._lock:
-                session = self._codegraph_sessions.pop(root, None)
-                self._session_access["codegraph"].pop(root, None)
-            if session:
-                session.close()
-            return result
+            try:
+                with self._backend_operation("codegraph", root):
+                    # Release the MCP server before the CLI indexer opens the same per-root DB.
+                    with self._lock:
+                        session = self._codegraph_sessions.pop(root, None)
+                        self._session_access["codegraph"].pop(root, None)
+                    if session:
+                        session.close()
+                    return self._run_index("codegraph", [self._codegraph, "index", "--no-progress", root], root, env=self._codegraph_env(root))
+            except TimeoutError as exc:
+                return {"success": False, "skipped": True, "backend": "codegraph", "error": str(exc), "error_type": type(exc).__name__}
         return {"success": False, "error": f"unknown code-intelligence backend: {backend}"}
 
     def backend_available(self, backend: str) -> bool:
-        """Check whether an enabled backend can be launched, refreshing discovery once."""
+        """Run a cached package/command preflight and repair the managed environment if needed."""
         backend = backend.strip().lower()
-        if backend == "serena":
-            enabled = self.serena_enabled
-            command = self._serena
-        elif backend == "codegraph":
-            enabled = self.codegraph_enabled
-            command = self._codegraph
-        else:
+        if backend not in self._repair_locks:
             return False
-        if not enabled:
+        if not self._backend_enabled(backend):
+            self._backend_health[backend].update(state="disabled")
             return False
+        health = self._backend_health[backend]
+        now = time.monotonic()
+        command = self._serena if backend == "serena" else self._codegraph
+        with self._lock:
+            if now - float(health.get("last_preflight_at", 0.0)) < 300.0:
+                return bool(command)
+            health["last_preflight_at"] = now
+        self.refresh_discovery()
+        command = self._serena if backend == "serena" else self._codegraph
         if not command:
-            self.refresh_discovery()
-            command = self._serena if backend == "serena" else self._codegraph
-        return bool(command)
+            health.update(state="missing", last_failure="managed executable is missing")
+            return self._repair_backend(backend, reason="managed executable is missing")
+        if self._managed_command(backend, command):
+            package = self._package_spec(backend)
+            if package is None:
+                health.update(state="degraded", repair_blocked="repair requires an exact package version pin")
+                return True
+            _configured, package_name, version = package
+            if not self._installed_package_matches(backend, package_name, version):
+                health.update(state="version_mismatch", last_failure=f"installed {package_name} version does not match configured pin {version}")
+                return self._repair_backend(backend, reason=f"installed {package_name} version does not match configured pin {version}")
+        health.update(state="available", repair_error="", repair_blocked="")
+        return True
 
     def _serena_session(self, root: str) -> MCPStdioClient:
         root = self._root(root)
@@ -710,7 +949,7 @@ class ExternalCodeIntelligence:
         with self._lock:
             session = self._serena_sessions.get(root)
             if session is None:
-                context = str(self.cfg.get("serena_context", "ide-assistant"))
+                context = str(self.cfg.get("serena_context", "codex"))
                 session = MCPStdioClient(
                     [self._serena, "start-mcp-server", "--transport", "stdio", "--context", context, "--project", root, "--open-web-dashboard", "false", "--log-level", "WARNING"],
                     cwd=root,
@@ -741,7 +980,19 @@ class ExternalCodeIntelligence:
 
     def query_serena(self, root: str, action: str, query: str = "", path: str = "", limit: int = 20) -> dict[str, Any]:
         root = self._root(root)
-        if not self.serena_enabled or not self._serena:
+        try:
+            with self._backend_operation("serena", root):
+                return self._query_serena_locked(root, action, query, path, limit)
+        except TimeoutError as exc:
+            self.query_failures += 1
+            return {"success": False, "skipped": True, "backend": "serena", "error": str(exc), "error_type": type(exc).__name__}
+
+    def _query_serena_locked(self, root: str, action: str, query: str, path: str, limit: int, *, _retrying: bool = False) -> dict[str, Any]:
+        if not self.serena_enabled:
+            return {"success": False, "backend": "serena", "unavailable": True, "error": "Serena disabled by configuration"}
+        if not self._serena:
+            self.backend_available("serena")
+        if not self._serena:
             return {"success": False, "backend": "serena", "unavailable": True, "error": "Serena not installed"}
         if not self._allowed("serena", root):
             return {"success": False, "backend": "serena", "unavailable": True, "error": "Serena circuit cooldown"}
@@ -758,57 +1009,79 @@ class ExternalCodeIntelligence:
                     return {"success": False, "backend": "serena", "error": "path is required for precise Serena references; use CodeGraph relationships when the file is unknown"}
                 result = client.call_tool("find_referencing_symbols", {"name_path": query, "relative_path": path, "max_answer_chars": self.max_output_chars})
             elif action in {"search", "pattern"}:
-                result = client.call_tool("search_for_pattern", {"substring_pattern": query, "relative_path": path or None, "restrict_search_to_code_files": True, "max_answer_chars": self.max_output_chars})
+                if "search_for_pattern" in client.tool_names():
+                    result = client.call_tool("search_for_pattern", {"substring_pattern": query, "relative_path": path or None, "restrict_search_to_code_files": True, "max_answer_chars": self.max_output_chars})
+                else:
+                    # Some Serena contexts omit pattern search; symbol lookup remains available.
+                    result = client.call_tool("find_symbol", {"name_path_pattern": query, **common, "depth": 1, "include_body": False, "substring_matching": True})
             else:
                 result = client.call_tool("find_symbol", {"name_path_pattern": query, **common, "depth": 1, "include_body": False, "substring_matching": True})
+            self._raise_tool_error(result, "Serena")
             self.queries += 1
-            self._record_success("serena", root=root)
+            self._record_success("serena", root=root, probe=True)
             return {"backend": "serena", "action": action, **self._trim(result)}
         except Exception as exc:
             self.query_failures += 1
             self._record_failure("serena", exc, operation=action, root=root)
-            with self._lock:
-                session = self._serena_sessions.pop(root, None)
-                self._session_access["serena"].pop(root, None)
-            if session:
-                session.reset()
+            if not _retrying and self._recover_backend("serena", root, exc):
+                return self._query_serena_locked(root, action, query, path, limit, _retrying=True)
             return {"success": False, "backend": "serena", "error": str(exc), "error_type": type(exc).__name__}
 
     def query_codegraph(self, root: str, action: str, query: str = "", path: str = "", limit: int = 20) -> dict[str, Any]:
+        resolved_root = self._root(root)
+        try:
+            with self._backend_operation("codegraph", resolved_root):
+                return self._query_codegraph_locked(resolved_root, action, query, path, limit)
+        except TimeoutError as exc:
+            self.query_failures += 1
+            return {"success": False, "skipped": True, "backend": "codegraph", "error": str(exc), "error_type": type(exc).__name__}
+
+    def _query_codegraph_locked(self, root: str, action: str, query: str, path: str, limit: int, *, _retrying: bool = False) -> dict[str, Any]:
         root = self._root(root)
-        if not self.codegraph_enabled or not self._codegraph:
+        if not self.codegraph_enabled:
+            return {"success": False, "backend": "codegraph", "unavailable": True, "error": "CodeGraph disabled by configuration"}
+        if not self._codegraph:
+            self.backend_available("codegraph")
+        if not self._codegraph:
             return {"success": False, "backend": "codegraph", "unavailable": True, "error": "CodeGraphContext not installed"}
         if not self._allowed("codegraph", root):
             return {"success": False, "backend": "codegraph", "unavailable": True, "error": "CodeGraphContext circuit cooldown"}
         action = action.strip().lower().replace("-", "_")
+        repo_filter = Path(root).as_posix()
         try:
             client = self._codegraph_client(root)
             if action in {"dead_code", "dead"}:
-                result = client.call_tool("find_dead_code", {"repo_path": root, "exclude_decorated_with": []})
+                result = client.call_tool("find_dead_code", {"repo_path": repo_filter, "exclude_decorated_with": []})
             elif action in {"complexity", "cyclomatic_complexity"}:
-                result = client.call_tool("calculate_cyclomatic_complexity", {"function_name": query, "path": path or None, "repo_path": root})
+                result = client.call_tool("calculate_cyclomatic_complexity", {"function_name": query, "path": path or None, "repo_path": repo_filter})
             elif action in {"search", "find"}:
-                result = client.call_tool("find_code", {"query": query, "fuzzy_search": True, "edit_distance": 2, "repo_path": root})
+                result = client.call_tool("find_code", {"query": query, "fuzzy_search": True, "edit_distance": 2, "repo_path": repo_filter})
             elif action in {"stats", "repository_stats"}:
                 result = client.call_tool("get_repository_stats", {"repo_path": root})
             else:
                 qtype = {
-                    "callers": "callers", "callees": "callees", "calls": "callees",
-                    "imports": "imports", "importers": "importers", "inheritance": "inheritance",
-                    "hierarchy": "hierarchy", "relationships": "module_deps", "relationship": "module_deps",
-                }.get(action, action or "all")
-                result = client.call_tool("analyze_code_relationships", {"query_type": qtype, "target": query, "context": path or None, "repo_path": root})
+                    "callers": "find_callers", "callees": "find_callees", "calls": "find_callees",
+                    "imports": "module_deps", "importers": "find_importers", "inheritance": "class_hierarchy",
+                    "hierarchy": "class_hierarchy", "relationships": "module_deps", "relationship": "module_deps",
+                }.get(action, action)
+                supported_types = {
+                    "find_callers", "find_callees", "find_importers", "who_modifies", "class_hierarchy",
+                    "overrides", "call_chain", "module_deps", "variable_scope", "find_complexity",
+                }
+                if qtype not in supported_types:
+                    return {"success": False, "backend": "codegraph", "action": action,
+                            "error": f"unsupported CodeGraph relationship action: {action or '<empty>'}",
+                            "supported_types": sorted(supported_types)}
+                result = client.call_tool("analyze_code_relationships", {"query_type": qtype, "target": query, "context": path or None, "repo_path": repo_filter})
+            self._raise_tool_error(result, "CodeGraph")
             self.queries += 1
-            self._record_success("codegraph", root=root)
+            self._record_success("codegraph", root=root, probe=True)
             return {"backend": "codegraph", "action": action, **self._trim(result)}
         except Exception as exc:
             self.query_failures += 1
             self._record_failure("codegraph", exc, operation=action, root=root)
-            with self._lock:
-                session = self._codegraph_sessions.pop(root, None)
-                self._session_access["codegraph"].pop(root, None)
-            if session is not None:
-                session.reset()
+            if not _retrying and self._recover_backend("codegraph", root, exc):
+                return self._query_codegraph_locked(root, action, query, path, limit, _retrying=True)
             return {"success": False, "backend": "codegraph", "error": str(exc), "error_type": type(exc).__name__}
 
     def query(self, root: str, query: str, *, backend: str = "auto", action: str = "search", path: str = "", limit: int = 20) -> dict[str, Any]:
@@ -826,6 +1099,19 @@ class ExternalCodeIntelligence:
         if primary.get("success"):
             return primary
         return self.query_codegraph(root, "search" if action in {"find_symbol", "symbol", "search"} else action, query, path, limit)
+
+    @staticmethod
+    def _raise_tool_error(result: dict[str, Any], backend: str) -> None:
+        if not result.get("success", True):
+            raise RuntimeError(str(result.get("error") or f"{backend} tool request failed"))
+        for candidate in (result.get("structured"), result.get("result")):
+            if not isinstance(candidate, dict):
+                continue
+            if candidate.get("success") is False or candidate.get("isError") is True:
+                raise RuntimeError(str(candidate.get("error") or f"{backend} tool returned an error"))
+            nested = candidate.get("results")
+            if isinstance(nested, dict) and nested.get("error"):
+                raise RuntimeError(str(nested["error"]))
 
     def _trim(self, value: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -875,10 +1161,46 @@ class ExternalCodeIntelligence:
             serena_sessions = len(self._serena_sessions)
             codegraph_sessions = len(self._codegraph_sessions)
         self._close_clients(evicted)
+        def backend_status(name: str, command: str | None, sessions: int) -> dict[str, Any]:
+            configured_enabled = bool(self.cfg.get(f"{name}_enabled", True))
+            enabled = self._backend_enabled(name)
+            health = dict(self._backend_health[name])
+            command_available = bool(command and Path(command).is_file())
+            state = str(health.get("state") or "unknown")
+            if not enabled:
+                state = "disabled"
+            elif command_available and state in {"unknown", "missing"}:
+                state = "available"
+            reason = str(health.get("repair_error") or health.get("repair_blocked") or health.get("last_failure") or "")
+            if not configured_enabled or not self.enabled:
+                reason = "disabled by configuration"
+            elif not command_available and not reason:
+                reason = "managed executable is missing"
+            return {
+                "configured_enabled": configured_enabled,
+                "enabled": enabled,
+                "installed": command_available,
+                "command_available": command_available,
+                "command": command or "",
+                "state": state,
+                "failures": self._failures[name],
+                "cooldown": max(0.0, round(self._cooldown_until[name] - time.monotonic(), 1)),
+                "sessions": sessions,
+                "last_failure": str(health.get("last_failure") or ""),
+                "failure_active": bool(health.get("failure_active", False)),
+                "last_recovery": str(health.get("last_recovery") or ""),
+                "repair_error": str(health.get("repair_error") or ""),
+                "repair_blocked": str(health.get("repair_blocked") or ""),
+                "repair_attempts": int(health.get("repair_attempts", 0)),
+                "last_successful_probe": str(health.get("last_successful_probe") or ""),
+                "last_probe_success": health.get("last_probe_success"),
+                "last_successful_operation": str(health.get("last_successful_operation") or ""),
+                "unavailable_reason": reason,
+            }
         return {
             "enabled": self.enabled,
-            "serena": {"enabled": self.serena_enabled, "installed": bool(self._serena), "command": self._serena or "", "failures": self._failures["serena"], "cooldown": max(0.0, round(self._cooldown_until["serena"] - time.monotonic(), 1)), "sessions": serena_sessions},
-            "codegraph": {"enabled": self.codegraph_enabled, "installed": bool(self._codegraph), "command": self._codegraph or "", "failures": self._failures["codegraph"], "cooldown": max(0.0, round(self._cooldown_until["codegraph"] - time.monotonic(), 1)), "sessions": codegraph_sessions, "unavailable_reason": "codegraph installation is incomplete" if not self.codegraph_enabled and self.enabled else ""},
+            "serena": backend_status("serena", self._serena, serena_sessions),
+            "codegraph": backend_status("codegraph", self._codegraph, codegraph_sessions),
             "session_policy": {"max_per_backend": self.max_sessions, "idle_ttl_seconds": self.session_idle_ttl},
             "stats": {"index_runs": self.index_runs, "index_failures": self.index_failures, "queries": self.queries, "query_failures": self.query_failures},
         }

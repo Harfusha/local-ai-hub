@@ -8,6 +8,7 @@ import sqlite3
 import threading
 import time
 import zipfile
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +62,48 @@ from .vram_balancer import VRAMBalancer
 from .swarm import SwarmCoordinator
 from .benchmark import HardwareBenchmarkRunner
 from .work_orchestrator import WorkOrchestrator
+
+
+_STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
+_STATUS_MAX_INFLIGHT_DEPENDENCIES = 8
+
+
+def _status_dependency(callback, fallback, *, key, lock, inflight, slots):
+    """Reuse active status work and cap workers that remain stuck past their deadline."""
+    with lock:
+        entry = inflight.get(key)
+        if entry is None:
+            if not slots.acquire(blocking=False):
+                return fallback, False
+            entry = {"completed": threading.Event(), "outcome": {}}
+            inflight[key] = entry
+
+            def run() -> None:
+                try:
+                    entry["outcome"]["value"] = callback()
+                except Exception as exc:
+                    entry["outcome"]["error"] = exc
+                finally:
+                    with lock:
+                        if inflight.get(key) is entry:
+                            del inflight[key]
+                    try:
+                        slots.release()
+                    finally:
+                        entry["completed"].set()
+
+            try:
+                threading.Thread(target=run, daemon=True).start()
+            except Exception:
+                del inflight[key]
+                slots.release()
+                return fallback, False
+    if not entry["completed"].wait(max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))):
+        return fallback, False
+    outcome = entry["outcome"]
+    if "error" in outcome:
+        return fallback, False
+    return outcome.get("value", fallback), True
 
 
 def _runtime_is_available(runtime: Any) -> bool:
@@ -137,6 +180,9 @@ class LocalAIApp:
         self._live_status_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._status_full_cache: dict[str, dict[str, Any]] = {}
         self._status_full_cache_lock = threading.Lock()
+        self._status_dependency_lock = threading.Lock()
+        self._status_dependency_inflight: dict[str, dict[str, Any]] = {}
+        self._status_dependency_slots = threading.BoundedSemaphore(_STATUS_MAX_INFLIGHT_DEPENDENCIES)
 
         self.logger = configure_logging(state_dir, self.config)
         fast_runtime = OllamaRuntime(self.config)
@@ -599,51 +645,88 @@ class LocalAIApp:
         if scope not in {"process", "window"}:
             scope = "process"
         import os
-        now = time.monotonic()
+
+        def dependency(key, callback, fallback):
+            return _status_dependency(
+                callback,
+                fallback,
+                key=key,
+                lock=self._status_dependency_lock,
+                inflight=self._status_dependency_inflight,
+                slots=self._status_dependency_slots,
+            )
+
         with self._status_full_cache_lock:
+            now = time.monotonic()
             cached = self._status_full_cache.get(scope)
             if cached and now - cached["time"] < 2.0:
-                result = dict(cached["data"])
-                result["agent_state"] = self._agent_state_summary()
+                result = deepcopy(cached["data"])
+                agent_state, healthy = dependency("agent_state", self._agent_state_summary, {"enabled": False})
+                result["success"] = bool(result.get("success", True) and healthy)
+                result["agent_state"] = agent_state
                 return result
-        online = self.runtime.is_online()
-        version = None
-        installed: list[str] = []
-        loaded: list[str] = []
-        loaded_details: list[dict[str, Any]] = []
-        if online:
-            try:
-                version = self.runtime.version()
-                installed = self.runtime.installed_models()
-                loaded_details = self.runtime.loaded_model_details()
-                loaded = [str(row.get("name", "")) for row in loaded_details if row.get("name")]
-            except Exception:
-                pass
-        telemetry_summary = self.telemetry.summary(scope=scope, _flush=False)
-        res = {
-            "success": True, "hub_pid": os.getpid(), "hub_online": True, "version": __version__,
-            "ollama_online": online, "online": online, "ollama_version": version,
-            "installed_models": installed, "loaded_models": loaded, "loaded_model_details": loaded_details, "models": dict(self.config["models"]),
-            "model_execution": self.services.model_policy.summary(), "ollama_profile": self.runtime.managed_profile_status(),
-            "background_gpu": self.background_gpu.status(),
-            "scheduler": self.scheduler.status(), "generation_cache": self.services.generation_cache.stats(),
-            "semantic_cache": self.services.semantic_cache.stats(), "repo_cache": self.services.repo_cache.stats(),
-            "commands": self.commands.stats(), "repo_snapshots": self.repo_tools.snapshot_stats(),
-            "lossless_router": self.token_router.stats(), "pipeline": self.pipeline.stats(),
-            "preprocessing": self.preprocessor.stats(), "tool_agent": self.tool_agent.stats(),
-            "code_index": self.code_index.status(), "deterministic": self.deterministic.status(), "evidence_store": self.evidence.stats(),
-            "learning": self.learner.stats(), "autotune": self.tuner.stats(),
-            "circuit_breakers": self.services.breakers.status(), "recovery": self.recovery.status(limit=8),
-            "fallback_count": self.services.fallback_count, "embeddings": self.embeddings.status(),
-            "reranker": self.reranker.status(), "features": dict(self.config.get("features", {})),
-            "hardware": dict(self.config.get("_hardware", {})), "accelerators": accelerator_status(self.config),
-            "code_intelligence": self.external_tools.status(),
-            "observability": telemetry_summary, "token_saving": telemetry_summary, "debug_traces": self.debug_traces.stats(),
-        }
-        res["agent_state"] = self._agent_state_summary()
-        with self._status_full_cache_lock:
-            self._status_full_cache[scope] = {"time": now, "data": res}
-        return res
+            degraded = False
+
+            def read(key, callback, fallback):
+                nonlocal degraded
+                value, healthy = dependency(key, callback, fallback)
+                degraded = degraded or not healthy
+                return value
+
+            online = read("runtime.online", self.runtime.is_online, False)
+            version = read("runtime.version", self.runtime.version, None) if online else None
+            installed: list[str] = read("runtime.installed_models", self.runtime.installed_models, []) if online else []
+            loaded_details: list[dict[str, Any]] = read("runtime.loaded_model_details", self.runtime.loaded_model_details, []) if online else []
+            loaded = [str(row.get("name", "")) for row in loaded_details if row.get("name")]
+            telemetry_summary = read("telemetry.summary", lambda: self.telemetry.summary(scope=scope, _flush=False), {})
+            model_execution = read("model_execution", self.services.model_policy.summary, {})
+            ollama_profile = read("ollama_profile", self.runtime.managed_profile_status, {})
+            background_gpu = read("background_gpu", self.background_gpu.status, {})
+            scheduler = read("scheduler", self.scheduler.status, {})
+            generation_cache = read("generation_cache", self.services.generation_cache.stats, {})
+            semantic_cache = read("semantic_cache", self.services.semantic_cache.stats, {})
+            repo_cache = read("repo_cache", self.services.repo_cache.stats, {})
+            commands = read("commands", self.commands.stats, {})
+            repo_snapshots = read("repo_snapshots", self.repo_tools.snapshot_stats, {})
+            lossless_router = read("lossless_router", self.token_router.stats, {})
+            pipeline = read("pipeline", self.pipeline.stats, {})
+            preprocessing = read("preprocessing", self.preprocessor.stats, {})
+            tool_agent = read("tool_agent", self.tool_agent.stats, {})
+            code_index = read("code_index", self.code_index.status, {})
+            deterministic = read("deterministic", self.deterministic.status, {})
+            evidence_store = read("evidence_store", self.evidence.stats, {})
+            learning = read("learning", self.learner.stats, {})
+            autotune = read("autotune", self.tuner.stats, {})
+            circuit_breakers = read("circuit_breakers", self.services.breakers.status, {})
+            recovery = read("recovery", lambda: self.recovery.status(limit=8), {})
+            embeddings = read("embeddings", self.embeddings.status, {})
+            reranker = read("reranker", self.reranker.status, {})
+            code_intelligence = read("code_intelligence", self.external_tools.status, {})
+            debug_traces = read("debug_traces", self.debug_traces.stats, {})
+            agent_state = read("agent_state", self._agent_state_summary, {"enabled": False})
+            res = {
+                "success": not degraded, "hub_pid": os.getpid(), "hub_online": True, "version": __version__,
+                "ollama_online": online, "online": online, "ollama_version": version,
+                "installed_models": installed, "loaded_models": loaded, "loaded_model_details": loaded_details, "models": dict(self.config["models"]),
+                "model_execution": model_execution, "ollama_profile": ollama_profile,
+                "background_gpu": background_gpu,
+                "scheduler": scheduler, "generation_cache": generation_cache,
+                "semantic_cache": semantic_cache, "repo_cache": repo_cache,
+                "commands": commands, "repo_snapshots": repo_snapshots,
+                "lossless_router": lossless_router, "pipeline": pipeline,
+                "preprocessing": preprocessing, "tool_agent": tool_agent,
+                "code_index": code_index, "deterministic": deterministic, "evidence_store": evidence_store,
+                "learning": learning, "autotune": autotune,
+                "circuit_breakers": circuit_breakers, "recovery": recovery,
+                "fallback_count": self.services.fallback_count, "embeddings": embeddings,
+                "reranker": reranker, "features": dict(self.config.get("features", {})),
+                "hardware": dict(self.config.get("_hardware", {})), "accelerators": accelerator_status(self.config),
+                "code_intelligence": code_intelligence,
+                "observability": telemetry_summary, "token_saving": telemetry_summary, "debug_traces": debug_traces,
+            }
+            res["agent_state"] = agent_state
+            self._status_full_cache[scope] = {"time": time.monotonic(), "data": deepcopy(res)}
+            return deepcopy(res)
 
 
     def _headless_status(self) -> dict[str, Any]:

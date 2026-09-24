@@ -125,6 +125,7 @@ def test_verification_store_indexes_and_retry(tmp_path: Path):
         task_id="t-123",
         criterion="test_pass",
         passed=True,
+        evidence_id="ev_test",
     )
     vstore.record(rcpt)
 

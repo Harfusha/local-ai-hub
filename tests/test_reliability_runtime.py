@@ -154,14 +154,34 @@ def test_git_grep_timeout_enters_cooldown(tmp_path: Path, monkeypatch: pytest.Mo
     config = _config(tmp_path)
     repo = tmp_path / "repo"; repo.mkdir(); (repo / ".git").mkdir()
     tools = RepositoryTools(config); tools._rg = None
-    calls = {"n": 0}
-    def fake_run(*args, **kwargs):
+    calls = {"n": 0, "killed": 0}
+    class BlockingStdout:
+        def __iter__(self):
+            while True:
+                time.sleep(0.05)
+                yield ""
+        def close(self):
+            return None
+    class FakeProcess:
+        pid = 123456
+        stdout = BlockingStdout()
+        returncode = None
+        def poll(self):
+            return None
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired(["git"], timeout or 0.1)
+    def fake_popen(*args, **kwargs):
         calls["n"] += 1
-        raise subprocess.TimeoutExpired(args[0], 0.1)
-    monkeypatch.setattr(subprocess, "run", fake_run)
+        return FakeProcess()
+    def fake_terminate(*args, **kwargs):
+        calls["killed"] += 1
+        return True
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr("local_ai_hub.repo_tools.terminate_tree", fake_terminate)
     assert tools._git_grep_candidates(repo, ["needle"], 10) == (None, True)
     assert tools._git_grep_candidates(repo, ["needle"], 10) == (None, False)
     assert calls["n"] == 1
+    assert calls["killed"] == 1
     stats = tools.snapshot_stats()["git_files"]
     assert stats["grep_timeouts"] == 1
     assert stats["grep_cooldown_skips"] == 1

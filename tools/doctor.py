@@ -348,6 +348,29 @@ def format_doctor_report(rep: dict[str, Any]) -> str:
     lines.append(f"  - SentenceTransf:     {st_status}")
     lines.append("")
 
+    lines.append("Code Intelligence:")
+    code_intelligence = rt.get("code_intelligence") if isinstance(rt, dict) else None
+    if isinstance(code_intelligence, dict):
+        for backend in ("serena", "codegraph"):
+            details = code_intelligence.get(backend)
+            if not isinstance(details, dict):
+                lines.append(f"  [??] {backend:<17} Status unavailable")
+                continue
+            enabled = bool(details.get("enabled"))
+            state = str(details.get("state") or ("available" if details.get("installed") else "missing"))
+            symbol = "[--]" if not enabled else "[..]" if state == "repairing" else "[OK]" if state in {"healthy", "available", "recovering", "repair_pending_probe"} else "[ERR]"
+            line = f"  {symbol} {backend:<17} {state}; repair attempts: {details.get('repair_attempts', 0)}"
+            probe = str(details.get("last_successful_probe") or "")
+            if probe:
+                line += f"; last probe: {probe}"
+            reason = str(details.get("repair_error") or details.get("repair_blocked") or details.get("last_failure") or details.get("unavailable_reason") or "")
+            if reason:
+                line += f"; {reason[:140]}"
+            lines.append(line)
+    else:
+        lines.append("  [??] Status unavailable (Hub did not report backend diagnostics)")
+    lines.append("")
+
     lines.append("Models:")
     cfg_models = rt.get("configured_generation_models", [])
     missing = rt.get("missing_generation_models", [])

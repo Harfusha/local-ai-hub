@@ -57,6 +57,46 @@ def test_hybrid_rag_search_combines_fts_and_vector(tmp_path):
     assert search_res.get("hybrid") is True
 
 
+def test_search_marks_heuristic_rerank_as_degraded_not_model_reranked(tmp_path):
+    store = _store(tmp_path)
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "auth.py").write_text("def authenticate_token(token):\n    return token\n", encoding="utf-8")
+    assert store.index_step(str(root), "tenant", max_files=10)["success"] is True
+
+    class _FailedReranker:
+        def rerank(self, *_args, **_kwargs):
+            return {"success": False, "results": []}
+
+    store.reranker = _FailedReranker()
+    result = store.search("authenticate token", "tenant", store.workspace_id(str(root)), use_reranker=True)
+
+    assert result["reranked"] is False
+    assert result["degraded"] is True
+    assert result["fallback"] == "heuristic_rerank"
+
+
+def test_search_propagates_embedding_backend_fallback_status(tmp_path):
+    store = _store(tmp_path)
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "auth.py").write_text("def authenticate_token(token):\n    return token\n", encoding="utf-8")
+    assert store.index_step(str(root), "tenant", max_files=10)["success"] is True
+
+    original_embed = store.services.embed
+
+    def _fallback_embed(texts, tenant, **kwargs):
+        result = original_embed(texts, tenant, **kwargs)
+        result.update({"degraded": True, "fallback": "sentence-transformers"})
+        return result
+
+    store.services.embed = _fallback_embed
+    result = store.search("authenticate_token", "tenant", store.workspace_id(str(root)), use_reranker=False)
+
+    assert result["degraded"] is True
+    assert result["fallback"] == "sentence-transformers"
+
+
 def test_rag_index_retries_transient_publish_lock(tmp_path, monkeypatch):
     store = _store(tmp_path)
     root = tmp_path / "project"
@@ -90,3 +130,4 @@ def test_rag_index_retries_transient_publish_lock(tmp_path, monkeypatch):
 
     assert result["success"] is True
     assert state["begins"] == 2
+    assert len(store.services.calls) == 1

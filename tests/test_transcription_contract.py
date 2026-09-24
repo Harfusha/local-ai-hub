@@ -1,0 +1,143 @@
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+import pytest
+
+import local_ai_hub.services as services_module
+from local_ai_hub.services import LocalAIServices
+
+
+def _service() -> LocalAIServices:
+    return object.__new__(LocalAIServices)
+
+
+def test_transcribe_honors_requested_model_and_cleans_task_owned_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "sample.wav"
+    audio.write_bytes(b"test audio")
+    command: list[str] = []
+    output_directories: list[Path] = []
+
+    def fake_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        command.extend(args)
+        output_dir = Path(args[args.index("--output_dir") + 1])
+        output_directories.append(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / f"{Path(args[1]).stem}.txt").write_text("hello world", encoding="utf-8")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(services_module.shutil, "which", lambda _name: "whisper-cli")
+    monkeypatch.setattr(services_module.subprocess, "run", fake_run)
+
+    result = _service().transcribe({"audio": str(audio), "model": "base.en"}, "task-17")
+
+    assert command[command.index("--model") + 1] == "base.en"
+    assert output_directories[0] != audio.parent
+    assert not output_directories[0].exists()
+    assert not audio.with_suffix(".txt").exists()
+    assert result["success"] is True
+    assert result["model"] == "base.en"
+    assert result["text"] == "hello world"
+
+
+def test_missing_whisper_cli_does_not_report_metadata_as_transcription(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "metadata-only.wav"
+    audio.write_bytes(b"not decoded audio")
+    monkeypatch.setattr(services_module.shutil, "which", lambda _name: None)
+
+    result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
+
+    assert result["success"] is False
+    assert not result.get("text")
+    assert result.get("degraded") is True or result.get("error")
+
+
+def test_whisper_binary_removed_after_lookup_reports_cli_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "race.wav"
+    audio.write_bytes(b"audio")
+    monkeypatch.setattr(services_module.shutil, "which", lambda _name: "whisper")
+
+    def binary_removed(*_args: object, **_kwargs: object) -> None:
+        raise FileNotFoundError(2, "No such file or directory", "whisper")
+
+    monkeypatch.setattr(services_module.subprocess, "run", binary_removed)
+
+    result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
+
+    assert result["success"] is False
+    assert result["reason"] == "cli_missing"
+    assert result["degraded"] is True
+    assert not result.get("text")
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ["nonzero", "timeout"],
+)
+def test_whisper_process_failure_never_returns_successful_transcript(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+) -> None:
+    audio = tmp_path / "broken.wav"
+    audio.write_bytes(b"invalid audio")
+
+    def fake_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if outcome == "timeout":
+            raise subprocess.TimeoutExpired(args, timeout=60)
+        return subprocess.CompletedProcess(args, 2, stdout="", stderr="decoder failed")
+
+    monkeypatch.setattr(services_module.shutil, "which", lambda _name: "whisper-cli")
+    monkeypatch.setattr(services_module.subprocess, "run", fake_run)
+
+    result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
+
+    assert result["success"] is False
+    assert not result.get("text")
+    assert result.get("error") or result.get("reason")
+
+
+def test_empty_whisper_output_is_not_a_successful_transcription(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "silent.wav"
+    audio.write_bytes(b"audio")
+    monkeypatch.setattr(services_module.shutil, "which", lambda _name: "whisper-cli")
+    monkeypatch.setattr(
+        services_module.subprocess,
+        "run",
+        lambda args, **_kwargs: subprocess.CompletedProcess(args, 0, stdout="", stderr=""),
+    )
+
+    result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
+
+    assert result["success"] is False
+    assert not result.get("text")
+
+
+def test_cancellation_cleans_task_owned_whisper_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "cancelled.wav"
+    audio.write_bytes(b"audio")
+    output_directories: list[Path] = []
+
+    def cancel(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        output_directories.append(Path(args[args.index("--output_dir") + 1]))
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(services_module.shutil, "which", lambda _name: "whisper-cli")
+    monkeypatch.setattr(services_module.subprocess, "run", cancel)
+
+    with pytest.raises(KeyboardInterrupt):
+        _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
+
+    assert output_directories
+    assert not output_directories[0].exists()

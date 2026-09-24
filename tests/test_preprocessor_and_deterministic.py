@@ -435,8 +435,22 @@ def test_external_index_failure_degrades_and_advances_preprocessing(tmp_path: Pa
             ).fetchone()
         assert state[0] == "degraded"
         assert state[1] == "RuntimeError: serena unavailable"
+
+
     finally:
         pre.close()
+
+
+def test_external_index_timeout_is_retryable_for_unchanged_revision():
+    assert not ProjectPreprocessor._external_error_is_revision_scoped(
+        "TimeoutError: serena indexing exceeded 30s"
+    )
+    assert not ProjectPreprocessor._external_error_is_revision_scoped(
+        "RuntimeError: codegraph index exited 1: temporary resource pressure"
+    )
+    assert ProjectPreprocessor._external_error_is_revision_scoped(
+        "no associated project configuration"
+    )
 
 
 def test_malformed_external_index_response_degrades_and_advances_preprocessing(tmp_path: Path):
@@ -498,7 +512,7 @@ def test_stale_external_project_configuration_is_skipped_once_per_revision(tmp_p
         pre.close()
 
 
-def test_time_bounded_external_index_is_skipped_once_per_revision(tmp_path: Path):
+def test_time_bounded_external_index_retries_after_backoff(tmp_path: Path):
     cfg = _cfg(tmp_path)
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -517,13 +531,21 @@ def test_time_bounded_external_index_is_skipped_once_per_revision(tmp_path: Path
         row = {"root": str(repo), "workspace": "test", "generation": 0}
         assert pre._step_external_index(row, "codegraph", "lexical") is True
         assert pre._step_external_index(row, "codegraph", "lexical") is True
+        assert external.calls == 1
+        with closing(pre._connect()) as con:
+            con.execute(
+                "UPDATE external_index_state SET updated_at=? WHERE root=? AND backend=?",
+                (time.time() - 3600, str(repo), "codegraph"),
+            )
+            con.commit()
+        assert pre._step_external_index(row, "codegraph", "lexical") is True
+        assert external.calls == 2
         with closing(pre._connect()) as con:
             state = con.execute(
                 "SELECT status,error FROM external_index_state WHERE root=? AND backend=?",
                 (str(repo), "codegraph"),
             ).fetchone()
-        assert external.calls == 1
-        assert state[0] == "unavailable"
+        assert state[0] == "degraded"
         assert state[1] == "codegraph indexing exceeded 30s"
     finally:
         pre.close()
@@ -650,7 +672,7 @@ def test_force_refresh_requeues_complete_project_from_inventory(tmp_path: Path):
         pre.close()
 
 
-def test_existing_timed_out_external_index_is_promoted_to_revision_scoped_skip(tmp_path: Path):
+def test_existing_timed_out_external_index_is_retried_after_restart(tmp_path: Path):
     cfg = _cfg(tmp_path)
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -680,8 +702,8 @@ def test_existing_timed_out_external_index_is_promoted_to_revision_scoped_skip(t
                 "SELECT status FROM external_index_state WHERE root=? AND backend=?",
                 (str(repo), "serena"),
             ).fetchone()
-        assert external.calls == 0
-        assert state[0] == "unavailable"
+        assert external.calls == 1
+        assert state[0] == "degraded"
     finally:
         pre.close()
 

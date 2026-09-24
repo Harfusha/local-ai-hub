@@ -35,6 +35,10 @@ The canonical envelope is the existing JSON body plus `X-LocalAI-Tenant`, `X-Loc
 
 For model-backed `local_ai_task` actions, use `delivery="sync"` when the answer must be inline (the default), `delivery="async"` when the agent can continue independently, or `delivery="auto"` with a positive `latency_budget_ms`. Auto delivery submits the existing durable, coalesced background job only after at least ten observations show endpoint p95 over that budget; sparse history stays inline rather than guessing. Retrieve a submitted job with one bounded `wait`, then `result`; never poll.
 
+Durable async actions: `batch`, `compress`, `delegate`, `reason`, `review`, `review_diff`, `route`, `second_opinion`, `speculative_lint`.
+
+For HTTP `/api/review/diff`, `delivery="auto"` with a positive `latency_budget_ms` has a cold-start exception: fewer than 5 telemetry samples selects async with reason `cold_start_review_diff`. Other auto delivery follows the measured p95 rule above.
+
 For repository context, `local_ai_repo(action="context", mode="fast")` returns bounded deterministic/index context and a `continuation` for `mode="full"`. Use it when foreground p95 matters more than broad semantic recall. It runs no generation task. Repository responses expose `cache_hit`, `cache_layer="workspace"`, and `coalesced`; reuse them instead of submitting a near-identical root/revision/query request.
 
 Root-fingerprint repo cache, request coalescing, per-root external Serena/CodeGraph circuit cooldowns, and `evaluation_record` / `evaluation_report` are already shared across agents. Use opaque task IDs and cohorts for paired baseline/candidate quality, test-pass, and duration evidence; never put source or prompts into evaluation metadata. Ordinary requests may attach `evaluation: {"task_id":"opaque-id","cohort":"hub_on|hub_off","quality_pass":true,"test_pass":true}`; the hub records its measured duration automatically. Pairing still requires the corresponding other cohort.

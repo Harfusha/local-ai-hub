@@ -46,10 +46,27 @@ class Reranker:
         self._cache_hits = 0
         self._computed = 0
 
-    def _cache_identity(self) -> str:
+    def _loaded_model_revision(self) -> str | None:
+        model = self._model
+        for candidate in (model, getattr(model, "model", None)):
+            config = getattr(candidate, "config", None)
+            revision = getattr(config, "_commit_hash", None)
+            if isinstance(revision, str) and revision.strip():
+                value = revision.strip().lower()
+                if len(value) in {40, 64} and all(char in "0123456789abcdef" for char in value):
+                    return value
+        return None
+
+    def _execution_identity(self) -> str:
         backend = self.active_backend or self.backend
         device = str(self.active_device or self.device or "cpu").strip().lower()
-        return f"{backend}:{device}:{self.model_name}"
+        revision = self._loaded_model_revision() or ""
+        return f"{backend}:{device}:{self.model_name}:{revision}"
+
+    def _cache_identity(self) -> str | None:
+        if self._loaded_model_revision() is None:
+            return None
+        return self._execution_identity()
 
     def _candidate_specs(self) -> list[tuple[str, str]]:
         if self.backend == "openvino":
@@ -154,7 +171,9 @@ class Reranker:
         # writing GPU results into NPU cache keys.
         max_restarts = max(1, len(self._candidate_specs()) + 1)
         for _restart in range(max_restarts):
-            execution_identity = self._cache_identity()
+            execution_identity = self._execution_identity()
+            cache_identity = self._cache_identity()
+            use_cache = self.cache_enabled and cache_identity is not None
             scores: list[float | None] = [None] * len(documents)
             missing_pairs: list[tuple[str, str]] = []
             missing_indices: list[int] = []
@@ -162,8 +181,8 @@ class Reranker:
             local_cache_hits = 0
 
             for i, doc in enumerate(documents):
-                key = stable_hash({"identity": execution_identity, "q": query, "d": doc})
-                cached = self.cache.get(key) if self.cache_enabled else None
+                key = stable_hash({"identity": cache_identity, "q": query, "d": doc}) if use_cache else ""
+                cached = self.cache.get(key) if use_cache else None
                 if isinstance(cached, (int, float)):
                     scores[i] = float(cached)
                     local_cache_hits += 1
@@ -180,7 +199,7 @@ class Reranker:
                     predicted = self._predict(missing_pairs[start:stop], priority=priority)
                     if predicted is None:
                         return {"success": False, "error": self._load_error or "reranker backend unavailable", "results": []}
-                    if self._cache_identity() != execution_identity:
+                    if self._execution_identity() != execution_identity:
                         switched = True
                         break
                     for idx, key, score in zip(missing_indices[start:stop], missing_keys[start:stop], predicted):
@@ -194,7 +213,7 @@ class Reranker:
             if any(score is None for score in scores):
                 return {"success": False, "error": "reranker returned incomplete scores", "results": []}
 
-            if self.cache_enabled:
+            if use_cache:
                 for key, value in pending_writes:
                     self.cache.set(key, value)
             self._cache_hits += local_cache_hits
@@ -210,6 +229,8 @@ class Reranker:
                 "success": True, "model": self.model_name, "backend": self.active_backend or self.backend,
                 "device": self.active_device or self.device, "results": ranked,
                 "cache_hits": local_cache_hits, "computed": len(pending_writes),
+                "cache_enabled": use_cache,
+                **({} if use_cache else {"cache_bypass_reason": "loaded_model_revision_unavailable"}),
             }
 
         return {"success": False, "error": "reranker accelerator repeatedly changed", "results": []}

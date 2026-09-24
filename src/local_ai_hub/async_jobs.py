@@ -416,7 +416,7 @@ class AsyncJobManager:
     def status(self, tenant: str, job_id: str) -> dict[str, Any]:
         row = self._row(tenant, job_id)
         if not row: return {"success": False, "error": "async job not found", "terminal": True, "retryable": False}
-        if float(row["expires_at"]) <= time.time() and row["state"] in {"done", "failed", "cancelled"}:
+        if float(row["expires_at"]) <= time.time() and row["state"] in {"done", "failed", "cancelled", "expired"}:
             return {"success": False, "job_id": job_id, "state": "expired", "terminal": True, "retryable": False}
         state = str(row["state"])
         result = {
@@ -428,7 +428,7 @@ class AsyncJobManager:
             "updated_at": float(row["updated_at"]),
             "queue_age_ms": max(0.0, (time.time() - float(row["created_at"])) * 1000.0),
             "in_progress": state in {"queued", "running"},
-            "terminal": state in {"failed", "cancelled", "expired"},
+            "terminal": state in {"done", "failed", "cancelled", "expired"},
             "retryable": state in {"queued", "running"},
             "next_action": "wait_or_result" if state in {"queued", "running"} else "inspect_result",
             "admission": self._admission("accepted", "capacity_available", retryable=False, queue_age_ms=(time.time() - float(row["created_at"])) * 1000.0),
@@ -458,11 +458,14 @@ class AsyncJobManager:
     def result(self, tenant: str, job_id: str) -> dict[str, Any]:
         row = self._row(tenant, job_id)
         if not row: return {"success": False, "error": "async job not found", "terminal": True, "retryable": False}
+        state = str(row["state"])
+        if state == "expired" or (float(row["expires_at"]) <= time.time() and state in {"done", "failed", "cancelled"}):
+            return {"success": False, "job_id": job_id, "state": "expired", "error": "async job result expired", "terminal": True, "retryable": False}
         if row["state"] != "done":
             return {"success": False, "job_id": job_id, "state": row["state"], "error": str(row["error"] or "async job is not complete"), "terminal": row["state"] in {"failed", "cancelled", "expired"}, "retryable": row["state"] in {"queued", "running"}}
         try: value = json.loads(str(row["result_json"]))
         except Exception: value = {"success": True}
-        return {"success": True, "job_id": job_id, "state": "done", "artifact_id": str(row["artifact_id"]), "result": value}
+        return {"success": True, "job_id": job_id, "state": "done", "artifact_id": str(row["artifact_id"]), "result": value, "terminal": True, "retryable": False}
 
     def cancel(self, tenant: str, job_id: str) -> dict[str, Any]:
         with self._lock:
@@ -474,7 +477,10 @@ class AsyncJobManager:
             if not row: return {"success": False, "error": "async job not found", "terminal": True, "retryable": False}
             state = str(row[0])
             trace_id = str(row[1] or "")
-            if state in {"done", "failed", "cancelled", "expired"}: return {"success": False, "job_id": job_id, "state": state, "error": "async job is already terminal", "terminal": True, "retryable": False}
+            if state == "cancelled":
+                admission = self._admission("accepted", "capacity_available", retryable=False)
+                return {"success": True, "job_id": job_id, "state": "cancelled", "cancel_requested": True, "terminal": True, "retryable": False, "admission": admission, "admission_state": admission["state"]}
+            if state in {"done", "failed", "expired"}: return {"success": False, "job_id": job_id, "state": state, "error": "async job is already terminal", "terminal": True, "retryable": False}
             changed = con.execute("UPDATE async_jobs SET cancel_requested=1,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,updated_at=? WHERE job_id=? AND cancel_requested=0", (time.time(), job_id)).rowcount
             con.commit()
         self._cleanup_processes(job_id)
@@ -485,19 +491,29 @@ class AsyncJobManager:
             try: self.debug_traces.finish(trace_id, state="cancelled", error="async job cancelled before execution")
             except Exception: pass
         admission = self._admission("accepted", "capacity_available", retryable=False)
-        return {"success": True, "job_id": job_id, "state": "cancelled" if state == "queued" else "running", "cancel_requested": True, "admission": admission, "admission_state": admission["state"]}
+        final_state = "cancelled" if state == "queued" else "running"
+        return {"success": True, "job_id": job_id, "state": final_state, "cancel_requested": True, "terminal": final_state == "cancelled", "retryable": final_state == "running", "admission": admission, "admission_state": admission["state"]}
 
     def recover(self) -> int:
         if self._shutdown.is_set():
             return 0
+        cancelled_ids: list[tuple[str, str]] = []
         with self._lock, closing(self._connect()) as con:
             rows = con.execute("SELECT job_id,state,attempts,cancel_requested,trace_id FROM async_jobs WHERE state IN ('queued','running')").fetchall(); ids: list[tuple[str, str]] = []
             for job_id, state, attempts, cancelled, trace_id in rows:
-                if cancelled: con.execute("UPDATE async_jobs SET state='cancelled',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id))
+                if cancelled:
+                    con.execute("UPDATE async_jobs SET state='cancelled',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id))
+                    cancelled_ids.append((str(job_id), str(trace_id or "")))
                 elif int(attempts or 0) >= self.max_attempts and state == "running": con.execute("UPDATE async_jobs SET state='failed',lease_until=0,error='async job interrupted too many times',updated_at=? WHERE job_id=?", (time.time(), job_id))
                 else:
                     con.execute("UPDATE async_jobs SET state='queued',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id)); ids.append((str(job_id), str(trace_id or "")))
             con.commit()
+        for job_id, trace_id in cancelled_ids:
+            self._event(job_id).set()
+            self._stats["cancelled"] += 1
+            if self.debug_traces is not None and trace_id:
+                try: self.debug_traces.finish(trace_id, state="cancelled", error="async job cancelled during recovery")
+                except Exception: pass
         for job_id, trace_id in ids:
             if self.debug_traces is not None and trace_id:
                 try:
@@ -520,9 +536,15 @@ class AsyncJobManager:
             for s_id, s_att, s_canc, s_tid in stuck:
                 s_attempts = int(s_att or 0)
                 if s_canc or s_attempts >= self.max_attempts:
-                    con.execute("UPDATE async_jobs SET state='failed',lease_until=0,error='async job execution lease expired',updated_at=? WHERE job_id=?", (now, str(s_id)))
-                    self._stats["failed"] += 1
-                    if s_tid and self.task_store is not None:
+                    state = "cancelled" if s_canc else "failed"
+                    error = "async job cancelled" if s_canc else "async job execution lease expired"
+                    con.execute("UPDATE async_jobs SET state=?,lease_until=0,error=?,updated_at=? WHERE job_id=?", (state, error, now, str(s_id)))
+                    self._event(str(s_id)).set()
+                    if s_canc:
+                        self._stats["cancelled"] += 1
+                    else:
+                        self._stats["failed"] += 1
+                    if not s_canc and s_tid and self.task_store is not None:
                         try:
                             self.task_store.fail(str(s_tid), reason="async job execution lease expired")
                         except Exception:

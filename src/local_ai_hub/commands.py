@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import ast
+import getpass
+import hashlib
 import json
 import os
 import re
 import ntpath
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -20,11 +24,44 @@ from typing import Any
 
 from .cache import SQLiteCache, TieredCache, stable_hash
 from .features import rollout_feature_enabled
-from .process_utils import assign_process_to_job, canonical_root, create_job_object_kill_on_close, hidden_run_kwargs, terminate_tree
+from .process_utils import (
+    _resume_suspended_process,
+    assign_process_to_job,
+    canonical_root,
+    close_job_object,
+    create_job_object_kill_on_close,
+    hidden_run_kwargs,
+    process_identity,
+    terminate_job_object,
+    terminate_tree,
+)
 from .state_paths import configured_state_dir
 from .json_utils import dumps as json_dumps
 
 _GLOBAL_WINDOWS_JOB = create_job_object_kill_on_close() if os.name == "nt" else None
+
+
+class _RecoveredDaemonProcess:
+    """Minimal poll/wait/kill facade for a daemon verified after a Hub restart."""
+
+    def __init__(self, pid: int, identity: dict[str, Any]):
+        self.pid = pid
+        self.identity = identity
+
+    def poll(self) -> int | None:
+        return None if process_identity(self.pid) == self.identity else 0
+
+    def wait(self, timeout: float | None = None) -> int:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while self.poll() is None:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(f"pid {self.pid}", timeout)
+            time.sleep(0.025)
+        return 0
+
+    def kill(self) -> None:
+        if self.poll() is None:
+            terminate_tree(self.pid, grace_seconds=0.1)
 
 _SECRET_PATTERNS = [
     re.compile(r"(?i)(--?(?:password|token|secret|api[-_]?key)\s*[= ]\s*)([^\s]+)"),
@@ -42,6 +79,421 @@ _DIAGNOSTIC_PATTERNS = [
 ]
 
 _MAX_INVOCATION_ERROR_CHARS = 256
+_MAX_ROLLBACK_PATHS = 128
+_MAX_ROLLBACK_FILE_BYTES = 16 * 1024 * 1024
+_MAX_ROLLBACK_TOTAL_BYTES = 64 * 1024 * 1024
+_MAX_ROLLBACK_METADATA_BYTES = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class RollbackFileSnapshot:
+    content: bytes | None
+    mode: int | None
+    xattrs: dict[str, bytes]
+    windows_dacl: bytes | None
+    atime_ns: int | None
+    mtime_ns: int | None
+
+
+@dataclass(frozen=True)
+class RollbackSnapshot:
+    root: Path
+    root_identity: tuple[int, int]
+    files: dict[str, RollbackFileSnapshot]
+    root_guard: int
+
+
+def _get_windows_dacl(fd: int) -> bytes:
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    get_security_info = advapi32.GetSecurityInfo
+    get_security_info.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p)]
+    get_security_info.restype = wintypes.DWORD
+    descriptor = ctypes.c_void_p()
+    status = get_security_info(msvcrt.get_osfhandle(fd), 1, 0x4, None, None, None, None, ctypes.byref(descriptor))
+    if status:
+        raise OSError(status, "cannot snapshot rollback target DACL")
+    try:
+        advapi32.GetSecurityDescriptorLength.argtypes = [ctypes.c_void_p]
+        advapi32.GetSecurityDescriptorLength.restype = wintypes.DWORD
+        length = int(advapi32.GetSecurityDescriptorLength(descriptor))
+        if length <= 0 or length > _MAX_ROLLBACK_METADATA_BYTES:
+            raise OSError("rollback target DACL exceeds metadata limit")
+        return ctypes.string_at(descriptor, length)
+    finally:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+        kernel32.LocalFree.restype = ctypes.c_void_p
+        kernel32.LocalFree(descriptor)
+
+
+def _set_windows_dacl(path: str, descriptor: bytes) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = kernel32.CreateFileW(path, 0x00040000, 0x1 | 0x2, None, 3, 0x80, None)
+    if handle == wintypes.HANDLE(-1).value:
+        raise OSError(ctypes.get_last_error(), "cannot open rollback temp file for DACL restore")
+    try:
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        advapi32.SetKernelObjectSecurity.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p]
+        advapi32.SetKernelObjectSecurity.restype = wintypes.BOOL
+        security_descriptor = ctypes.create_string_buffer(descriptor)
+        if not advapi32.SetKernelObjectSecurity(handle, 0x4, security_descriptor):
+            raise OSError(ctypes.get_last_error(), "cannot restore rollback target DACL")
+    finally:
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.CloseHandle(handle)
+
+
+def _windows_dacl_bytes(descriptor: bytes) -> bytes:
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    get_dacl = advapi32.GetSecurityDescriptorDacl
+    get_dacl.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL)]
+    get_dacl.restype = wintypes.BOOL
+    buffer = ctypes.create_string_buffer(descriptor)
+    present, dacl, defaulted = wintypes.BOOL(), ctypes.c_void_p(), wintypes.BOOL()
+    if not get_dacl(buffer, ctypes.byref(present), ctypes.byref(dacl), ctypes.byref(defaulted)):
+        raise OSError(ctypes.get_last_error(), "cannot inspect rollback DACL")
+    if not present.value:
+        return b"absent"
+    if not dacl.value:
+        return b"null"
+    header = ctypes.string_at(dacl, 4)
+    return ctypes.string_at(dacl, int.from_bytes(header[2:4], "little"))
+
+
+def _acquire_rollback_root(root: Path) -> int:
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        handle = kernel32.CreateFileW(str(root), 0x80, 0x1 | 0x2, None, 3, 0x02000000, None)
+        if handle == wintypes.HANDLE(-1).value:
+            raise OSError(ctypes.get_last_error(), "cannot lock rollback root against rename")
+        return int(handle)
+    return os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0))
+
+
+def _close_rollback_root(handle: int) -> None:
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        close_handle = ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+        if not close_handle(handle):
+            raise OSError(ctypes.get_last_error(), "cannot close rollback root handle")
+    else:
+        os.close(handle)
+
+
+def _rollback_snapshot_open_flags() -> int:
+    flags = os.O_RDONLY | (getattr(os, "O_NOFOLLOW", 0) if os.name != "nt" else getattr(os, "O_BINARY", 0))
+    if os.name != "nt":
+        flags |= getattr(os, "O_NOATIME", 0)
+    return flags
+
+
+def _restore_windows_atime(fd: int, path: Path, atime_ns: int) -> None:
+    """Restore access time through a path-pinned handle matching the snapshotted file."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class _FileTime(ctypes.Structure):
+        _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+    class _FileInfo(ctypes.Structure):
+        _fields_ = [
+            ("attributes", wintypes.DWORD),
+            ("creation", _FileTime),
+            ("access", _FileTime),
+            ("write", _FileTime),
+            ("volume", wintypes.DWORD),
+            ("size_high", wintypes.DWORD),
+            ("size_low", wintypes.DWORD),
+            ("links", wintypes.DWORD),
+            ("index_high", wintypes.DWORD),
+            ("index_low", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.POINTER(_FileInfo)]
+    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+    kernel32.SetFileTime.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(_FileTime), ctypes.POINTER(_FileTime), ctypes.POINTER(_FileTime),
+    ]
+    kernel32.SetFileTime.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.CreateFileW(
+        str(path), 0x80 | 0x100, 0x1 | 0x2, None, 3, 0x00200000, None,
+    )
+    if handle == wintypes.HANDLE(-1).value:
+        raise OSError(ctypes.get_last_error(), "cannot safely open rollback target to preserve access time")
+    try:
+        original = _FileInfo()
+        pinned = _FileInfo()
+        original_handle = msvcrt.get_osfhandle(fd)
+        if not kernel32.GetFileInformationByHandle(original_handle, ctypes.byref(original)):
+            raise OSError(ctypes.get_last_error(), "cannot inspect rollback snapshot handle")
+        if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(pinned)):
+            raise OSError(ctypes.get_last_error(), "cannot inspect pinned rollback handle")
+        original_id = (original.volume, original.index_high, original.index_low)
+        pinned_id = (pinned.volume, pinned.index_high, pinned.index_low)
+        if original_id != pinned_id:
+            raise ValueError("rollback target changed before access time preservation")
+
+        windows_epoch_ns = 11644473600 * 1_000_000_000
+        filetime_value = (int(atime_ns) + windows_epoch_ns) // 100
+        access_time = _FileTime(filetime_value & 0xFFFFFFFF, filetime_value >> 32)
+        if not kernel32.SetFileTime(handle, None, ctypes.byref(access_time), None):
+            raise OSError(ctypes.get_last_error(), "cannot restore rollback target access time")
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _wait_windows_job_empty(job_handle: Any, timeout_ms: int = 2500) -> bool:
+    """Wait until Windows signals that a daemon Job Object has no live processes."""
+    if os.name != "nt" or not job_handle:
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    return int(kernel32.WaitForSingleObject(wintypes.HANDLE(job_handle), max(0, int(timeout_ms)))) == 0
+
+
+def _stop_daemon_tree(info: dict[str, Any]) -> bool:
+    """Stop the owned daemon tree without signaling a recycled Windows PID."""
+    process = info["process"]
+    job_handle = getattr(process, "_local_ai_job_handle", None)
+    if os.name == "nt" and isinstance(job_handle, int) and not isinstance(job_handle, bool):
+        try:
+            terminate_job_object(job_handle)
+            if not _wait_windows_job_empty(job_handle):
+                return False
+            if not close_job_object(job_handle):
+                return False
+            process._local_ai_job_handle = None
+            return True
+        except Exception:
+            return False
+    if os.name == "nt":
+        expected = info.get("identity")
+        current = process_identity(int(info["pid"]))
+        if current is None:
+            return True
+        if expected and current != expected:
+            return False
+    try:
+        return bool(terminate_tree(int(info["pid"]), grace_seconds=1.5))
+    except Exception:
+        return False
+
+
+def _snapshot_rollback_scope(
+    cwd: str,
+    paths: list[str] | None,
+) -> tuple[RollbackSnapshot | None, str | None]:
+    if not paths:
+        return None, "rollback paths are required"
+    if not isinstance(paths, list) or len(paths) > _MAX_ROLLBACK_PATHS:
+        return None, "rollback paths must be a list of at most 128 files"
+    root_guard: int | None = None
+    try:
+        root = Path(cwd).resolve(strict=True)
+        if not root.is_dir():
+            return None, "rollback root must be a directory"
+        root_guard = _acquire_rollback_root(root)
+        root_stat = os.fstat(root_guard) if os.name != "nt" else root.stat()
+        state: dict[str, RollbackFileSnapshot] = {}
+        total_bytes = 0
+        for raw in paths:
+            entry_stat = None
+            if not isinstance(raw, str) or not raw or "\x00" in raw:
+                raise ValueError("rollback paths must be non-empty relative file paths")
+            portable = raw.replace("\\", "/")
+            drive, _ = ntpath.splitdrive(raw)
+            parts = portable.split("/")
+            if drive or ntpath.isabs(raw) or portable.startswith("/") or len(parts) != 1 or any(p in {"", ".", ".."} for p in parts):
+                raise ValueError(f"invalid rollback path: {raw[:160]}")
+            basename = parts[0].split(".", 1)[0].rstrip(" .").upper()
+            reserved = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10)), "COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³"}
+            if ":" in raw or raw.endswith((".", " ")) or basename in reserved:
+                raise ValueError(f"invalid platform-specific rollback path: {raw[:160]}")
+            candidate = root.joinpath(*parts)
+            if os.name != "nt":
+                try:
+                    entry_stat = os.stat(parts[0], dir_fd=root_guard, follow_symlinks=False)
+                except FileNotFoundError:
+                    entry_stat = None
+                if entry_stat is not None and stat.S_ISLNK(entry_stat.st_mode):
+                    raise ValueError(f"rollback paths cannot be symlinks: {raw[:160]}")
+            else:
+                resolved = candidate.resolve(strict=False)
+                if not resolved.is_relative_to(root) or resolved == root or os.path.normcase(str(resolved)) != os.path.normcase(str(candidate)):
+                    raise ValueError(f"rollback path escapes root: {raw[:160]}")
+            key = Path(*parts).as_posix()
+            if key in state:
+                raise ValueError(f"duplicate rollback path: {raw[:160]}")
+            if os.name != "nt":
+                pass
+            else:
+                entry_stat = candidate.stat() if candidate.exists() else None
+            if entry_stat is not None:
+                if not stat.S_ISREG(entry_stat.st_mode):
+                    raise ValueError(f"rollback path must be a regular file: {raw[:160]}")
+                if entry_stat.st_nlink > 1:
+                    raise ValueError(f"rollback does not accept multiply-linked files: {raw[:160]}")
+                size = entry_stat.st_size
+                if size > _MAX_ROLLBACK_FILE_BYTES or total_bytes + size > _MAX_ROLLBACK_TOTAL_BYTES:
+                    raise ValueError("rollback snapshot exceeds the 16 MiB per-file or 64 MiB total limit")
+                open_flags = _rollback_snapshot_open_flags()
+                fd = os.open(parts[0] if os.name != "nt" else candidate, open_flags, **({"dir_fd": root_guard} if os.name != "nt" else {}))
+                try:
+                    opened_stat = os.fstat(fd)
+                    if (opened_stat.st_dev, opened_stat.st_ino) != (entry_stat.st_dev, entry_stat.st_ino) or opened_stat.st_nlink > 1:
+                        raise ValueError(f"rollback target changed during snapshot: {raw[:160]}")
+                    with os.fdopen(fd, "rb", closefd=False) as source:
+                        content = source.read(_MAX_ROLLBACK_FILE_BYTES + 1)
+                    final_stat = os.fstat(fd)
+                    stable_fields = (opened_stat.st_size, opened_stat.st_mtime_ns, opened_stat.st_ctime_ns)
+                    final_fields = (final_stat.st_size, final_stat.st_mtime_ns, final_stat.st_ctime_ns)
+                    if len(content) > _MAX_ROLLBACK_FILE_BYTES or stable_fields != final_fields or final_stat.st_nlink > 1:
+                        raise ValueError(f"rollback target changed during snapshot: {raw[:160]}")
+                    if os.name != "nt" and not getattr(os, "O_NOATIME", 0):
+                        try:
+                            os.utime(fd, ns=(opened_stat.st_atime_ns, opened_stat.st_mtime_ns))
+                        except (OSError, TypeError, ValueError) as exc:
+                            raise ValueError("cannot preserve file access time during rollback snapshot") from exc
+                    elif os.name == "nt":
+                        _restore_windows_atime(fd, candidate, opened_stat.st_atime_ns)
+                    xattrs: dict[str, bytes] = {}
+                    metadata_size = 0
+                    if os.name != "nt" and hasattr(os, "listxattr"):
+                        for attr_name in os.listxattr(fd):
+                            attr_value = os.getxattr(fd, attr_name)
+                            metadata_size += len(attr_name.encode("utf-8", errors="surrogateescape")) + len(attr_value)
+                            if metadata_size > _MAX_ROLLBACK_METADATA_BYTES:
+                                raise ValueError("rollback extended metadata exceeds 1 MiB")
+                            xattrs[attr_name] = attr_value
+                    windows_dacl = _get_windows_dacl(fd) if os.name == "nt" else None
+                finally:
+                    os.close(fd)
+                if total_bytes + len(content) > _MAX_ROLLBACK_TOTAL_BYTES:
+                    raise ValueError("rollback snapshot exceeds the 64 MiB total limit")
+                total_bytes += len(content)
+                mode = stat.S_IMODE(entry_stat.st_mode)
+                file_snapshot = RollbackFileSnapshot(content, mode, xattrs, windows_dacl, entry_stat.st_atime_ns, entry_stat.st_mtime_ns)
+            else:
+                file_snapshot = RollbackFileSnapshot(None, None, {}, None, None, None)
+            state[key] = file_snapshot
+        return RollbackSnapshot(root, (root_stat.st_dev, root_stat.st_ino), state, root_guard), None
+    except (OSError, ValueError, TypeError) as exc:
+        if root_guard is not None:
+            try:
+                _close_rollback_root(root_guard)
+            except OSError:
+                pass
+        return None, f"cannot snapshot rollback scope: {str(exc)[:256]}"
+
+
+def _restore_rollback_scope(
+    cwd: str,
+    snapshot: RollbackSnapshot,
+) -> None:
+    root = Path(cwd).resolve(strict=True)
+    root_stat = os.fstat(snapshot.root_guard) if os.name != "nt" else root.stat()
+    if (root_stat.st_dev, root_stat.st_ino) != snapshot.root_identity or root != snapshot.root:
+        raise OSError("rollback root changed since snapshot")
+    incomplete: list[str] = []
+    for relative, file_snapshot in snapshot.files.items():
+        content, mode = file_snapshot.content, file_snapshot.mode
+        if os.name != "nt":
+            try:
+                current_stat = os.stat(relative, dir_fd=snapshot.root_guard, follow_symlinks=False)
+            except FileNotFoundError:
+                current_stat = None
+            if current_stat is not None and stat.S_ISDIR(current_stat.st_mode):
+                raise OSError(f"refusing to remove rollback directory: {relative}")
+            if current_stat is not None and (stat.S_ISLNK(current_stat.st_mode) or current_stat.st_nlink > 1):
+                incomplete.append(relative)
+            if content is None:
+                if current_stat is not None:
+                    os.unlink(relative, dir_fd=snapshot.root_guard)
+                continue
+            temp_name = f".local-ai-rollback-{uuid.uuid4().hex}"
+            fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0), 0o600, dir_fd=snapshot.root_guard)
+            try:
+                with os.fdopen(fd, "wb", closefd=False) as temp_file:
+                    temp_file.write(content)
+                    temp_file.flush()
+                    os.fsync(temp_file.fileno())
+                if mode is not None:
+                    os.fchmod(fd, mode)
+                for attr_name, attr_value in file_snapshot.xattrs.items():
+                    os.setxattr(fd, attr_name, attr_value)
+                if file_snapshot.atime_ns is not None and file_snapshot.mtime_ns is not None:
+                    os.utime(fd, ns=(file_snapshot.atime_ns, file_snapshot.mtime_ns))
+                os.replace(temp_name, relative, src_dir_fd=snapshot.root_guard, dst_dir_fd=snapshot.root_guard)
+            finally:
+                os.close(fd)
+                try:
+                    os.unlink(temp_name, dir_fd=snapshot.root_guard)
+                except FileNotFoundError:
+                    pass
+            continue
+        candidate = root / relative
+        if candidate.is_dir() and not candidate.is_symlink():
+            raise OSError(f"refusing to replace rollback directory: {relative}")
+        current_stat = candidate.stat() if candidate.exists() else None
+        if candidate.is_symlink() or (current_stat is not None and current_stat.st_nlink > 1):
+            incomplete.append(relative)
+        if content is None:
+            if candidate.exists() or candidate.is_symlink():
+                candidate.unlink()
+            continue
+        fd, temp_name = tempfile.mkstemp(prefix=".local-ai-rollback-", dir=str(candidate.parent))
+        try:
+            with os.fdopen(fd, "wb") as temp_file:
+                temp_file.write(content)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+            if mode is not None:
+                os.chmod(temp_name, mode)
+            if file_snapshot.windows_dacl is not None:
+                _set_windows_dacl(temp_name, file_snapshot.windows_dacl)
+            os.replace(temp_name, candidate)
+        finally:
+            try:
+                os.unlink(temp_name)
+            except FileNotFoundError:
+                pass
+    if incomplete:
+        names = ", ".join(incomplete[:8])
+        raise OSError(f"rollback restored declared paths but cannot verify external aliases for: {names}")
 
 
 @dataclass(frozen=True)
@@ -278,12 +730,18 @@ class CommandBroker:
         self.timeout = int(cfg.get("timeout_seconds", 1800))
         self.max_output_chars = int(cfg.get("max_output_chars", 2_000_000))
         self.inline_chars = int(cfg.get("inline_output_chars", 5000))
+        self.daemon_log_max_bytes = min(2 * 1024 * 1024, max(1024, int(cfg.get("daemon_log_max_bytes", 512 * 1024))))
+        self.daemon_ttl_seconds = min(7 * 24 * 60 * 60, max(1, int(cfg.get("daemon_ttl_seconds", 24 * 60 * 60))))
+        self.max_daemons = min(32, max(1, int(cfg.get("daemon_max_count", 16))))
+        self._daemon_owner_id = self._get_daemon_owner_id()
         self.coalesce_wait_seconds = max(1.0, float(cfg.get("coalesced_wait_seconds", 90.0)))
         self.terminate_grace_seconds = max(0.1, float(cfg.get("terminate_grace_seconds", 2.0)))
         self.post_kill_drain_seconds = max(0.1, float(cfg.get("post_kill_drain_seconds", 2.0)))
         workspace_cache = config.get("workspace_cache", {})
         self.git_snapshot_timeout = max(0.5, float(workspace_cache.get("git_status_timeout_seconds", 2.5)))
         state_dir = configured_state_dir(config)
+        self._daemon_state_dir = state_dir / "daemons"
+        self._daemon_registry_path = self._daemon_state_dir / "registry.json"
         l1_entries = int(cfg.get("l1_entries", 128))
         self.success_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite3", "command:success", int(cfg.get("success_ttl_seconds", 43200)), int(cfg.get("max_entries", 5000))), l1_entries, int(cfg.get("l1_ttl_seconds", 900)))
         self.failure_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite3", "command:failure", int(cfg.get("failure_ttl_seconds", 180)), int(cfg.get("max_failure_entries", 1000))), max(32, l1_entries // 2), min(300, int(cfg.get("l1_ttl_seconds", 900))))
@@ -305,6 +763,8 @@ class CommandBroker:
         self._active_cancel_keys: dict[str, tuple[str, str]] = {}
         self._daemons: dict[str, dict[str, Any]] = {}
         self._daemons_lock = threading.Lock()
+        self._daemon_slots = threading.BoundedSemaphore(self.max_daemons)
+        self._load_daemon_registry()
         self.incident_store: Any = None
         self.verification_store: Any = None
         self.policy_engine: Any = None
@@ -319,15 +779,396 @@ class CommandBroker:
     def set_verification_store(self, verification_store: Any) -> None:
         self.verification_store = verification_store
 
+    def _record_command_verification(
+        self,
+        result: dict[str, Any],
+        *,
+        tenant: str,
+        task_id: str,
+        criterion: str,
+        command_id: str,
+        command_digest: str,
+        repository_revision: str,
+        duration_ms: float,
+        cached: bool = False,
+    ) -> None:
+        if not result.get("success") or not task_id or self.verification_store is None:
+            return
+        try:
+            if self.artifacts is None:
+                raise RuntimeError("artifact store unavailable")
+            from .agent_verification import VerificationReceipt
+
+            proof = {
+                "kind": "command_verification",
+                "task_id": task_id,
+                "criterion": criterion,
+                "command_id": command_id,
+                "command_sha256": command_digest,
+                "exit_code": int(result.get("exit_code", 0)),
+                "repository_revision": repository_revision,
+                "duration_ms": max(0.0, float(duration_ms or 0)),
+                "cached": cached,
+            }
+            if hasattr(self.artifacts, "put_json"):
+                evidence_id = self.artifacts.put_json(proof, tenant, "command_verification")
+            elif hasattr(self.artifacts, "put"):
+                evidence_id = self.artifacts.put(json_dumps(proof), tenant, "command_verification", "application/json")
+            else:
+                evidence_id = ""
+            if not evidence_id:
+                raise RuntimeError("verification evidence was not persisted")
+            receipt = VerificationReceipt.create(
+                task_id=task_id,
+                criterion=criterion,
+                passed=True,
+                command_id=command_id,
+                evidence_id=str(evidence_id),
+                repository_revision=repository_revision,
+                details={
+                    "exit_code": proof["exit_code"],
+                    "duration_ms": proof["duration_ms"],
+                    "cached": cached,
+                },
+            )
+            self.verification_store.record(receipt)
+            result["verification_receipt"] = receipt.to_dict()
+            result["verification_evidence_id"] = str(evidence_id)
+        except Exception:
+            result["verification_receipt_warning"] = (
+                "command succeeded but durable verification evidence was unavailable"
+            )
+
     def set_error_distiller(self, error_distiller: Any) -> None:
         """Set the optional local-model fallback for unstructured command failures."""
         self.error_distiller = error_distiller
 
     @staticmethod
-    def _close_daemon_log(info: dict[str, Any]) -> None:
+    def _daemon_environment(extra: dict[str, str] | None = None) -> dict[str, str]:
+        """Inherit a minimal OS runtime environment; add only explicit, bounded overrides."""
+        key_pattern = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+        inherited_allowlist = {
+            "PATH", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT",
+            "TEMP", "TMP", "TMPDIR", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+            "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "VIRTUAL_ENV", "LANG", "LANGUAGE", "TZ",
+        }
+        result = {
+            key: value
+            for key, value in os.environ.items()
+            if key_pattern.fullmatch(key)
+            and (key.upper() in inherited_allowlist or key.upper().startswith("LC_"))
+            and isinstance(value, str)
+            and "\x00" not in value
+        }
+        if extra is None:
+            return result
+        if not isinstance(extra, dict) or len(extra) > 128:
+            raise ValueError("daemon environment must be a mapping with at most 128 entries")
+        total_bytes = 0
+        for key, value in extra.items():
+            if not isinstance(key, str) or not key_pattern.fullmatch(key):
+                raise ValueError("daemon environment contains an invalid variable name")
+            if not isinstance(value, str) or "\x00" in value:
+                raise ValueError(f"daemon environment value for {key} must be a NUL-free string")
+            total_bytes += len(key.encode("utf-8")) + len(value.encode("utf-8"))
+            if len(key) > 255 or len(value) > 32_767 or total_bytes > 64 * 1024:
+                raise ValueError("daemon environment exceeds the supported size limit")
+            if os.name == "nt":
+                for existing in list(result):
+                    if existing.casefold() == key.casefold():
+                        del result[existing]
+            result[key] = value
+        return result
+
+    @staticmethod
+    def _get_daemon_owner_id() -> str:
+        try:
+            owner = getpass.getuser()
+        except Exception:
+            owner = f"uid:{os.getuid()}" if hasattr(os, "getuid") else "local-ai-hub"
+        return hashlib.sha256(f"local-ai-daemon-owner:{owner}".encode("utf-8")).hexdigest()[:32]
+
+    @classmethod
+    def _daemon_argv(cls, command: str | Sequence[str]) -> tuple[list[str] | None, str, str | None]:
+        if isinstance(command, str):
+            if not command.strip() or len(command) > 8192:
+                return None, "", "daemon command must be a non-empty string of at most 8192 characters"
+            argv = cls._tokens(command)
+            executable = ""
+            if argv:
+                executable = (ntpath.basename(argv[0]) if os.name == "nt" else Path(argv[0]).name).casefold()
+            explicit_shells = {"sh", "bash", "dash", "zsh", "fish", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe"}
+            if cls._needs_shell(command) and executable not in explicit_shells:
+                return None, "", "daemon command contains shell syntax; implicit shell execution is not allowed"
+            label = cls._safe_label(command)
+        elif isinstance(command, Sequence) and not isinstance(command, (bytes, bytearray)):
+            if not command or len(command) > 128:
+                return None, "", "daemon argv must contain 1 to 128 arguments"
+            if any(not isinstance(arg, str) or "\x00" in arg or len(arg) > 8192 for arg in command):
+                return None, "", "daemon argv entries must be NUL-free strings of at most 8192 characters"
+            argv = list(command)
+            if not argv[0]:
+                return None, "", "daemon argv[0] must name an executable"
+            if sum(len(arg.encode("utf-8")) for arg in argv) > 32 * 1024:
+                return None, "", "daemon argv exceeds the 32 KiB size limit"
+            label = cls._safe_label(shlex.join(argv))
+        else:
+            return None, "", "daemon command must be a string or structured argv list"
+        if not argv:
+            return None, "", "daemon command could not be parsed"
+        return argv, label, None
+
+    def _schedule_daemon_expiry(self, info: dict[str, Any]) -> None:
+        previous = info.get("ttl_timer")
+        if previous is not None:
+            previous.cancel()
+        delay = max(0.0, float(info["expires_at"]) - time.time())
+        timer = threading.Timer(delay, self._expire_daemon, args=(info["daemon_id"],))
+        timer.daemon = True
+        info["ttl_timer"] = timer
+        timer.start()
+
+    def _release_daemon_slot(self, info: dict[str, Any]) -> None:
+        if not info.get("_slot_acquired") or info.get("_slot_released"):
+            return
+        info["_slot_released"] = True
+        try:
+            self._daemon_slots.release()
+        except ValueError:
+            pass
+
+    def _refresh_daemon_capacity(self) -> None:
+        now = time.time()
+        changed = False
+        with self._daemons_lock:
+            for info in self._daemons.values():
+                if info["process"].poll() is None:
+                    continue
+                reader = info.get("reader_thread")
+                if reader is not None:
+                    reader.join(timeout=0.1)
+                self._close_daemon_log(info)
+                info.setdefault("stopped_at", now)
+                self._release_daemon_slot(info)
+                changed = True
+            if changed:
+                self._persist_daemon_registry()
+
+    def _expire_daemon(self, daemon_id: str) -> None:
+        for attempt in range(3):
+            result = self.stop_daemon(daemon_id)
+            if result.get("process_tree_stopped") is True or result.get("status") == "not_found":
+                return
+            if attempt < 2:
+                time.sleep(0.25)
+        with self._daemons_lock:
+            info = self._daemons.get(daemon_id)
+            if info is not None:
+                info["ttl_stop_failed"] = True
+
+    def _watch_daemon_exit(self, daemon_id: str, process: subprocess.Popen[Any]) -> None:
+        """Reap descendants promptly when a daemon leader exits on its own."""
+        while True:
+            try:
+                process.wait(timeout=1.0)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+            except (OSError, ValueError):
+                return
+        status = self.daemon_status(daemon_id)
+        if status.get("process_tree_stopped") is not True:
+            self._expire_daemon(daemon_id)
+
+    def _load_daemon_registry(self) -> None:
+        """Reattach only live PIDs whose executable and creation identity still match."""
+        registry = self._daemon_registry_path
+        try:
+            if registry.is_symlink() or registry.stat().st_size > 256 * 1024:
+                return
+            with registry.open("r", encoding="utf-8") as stream:
+                payload = json.load(stream)
+        except (OSError, ValueError, TypeError):
+            return
+        if not isinstance(payload, dict) or payload.get("version") != 2:
+            return
+        rows = payload.get("daemons")
+        if not isinstance(rows, list):
+            return
+        expected_dir = self._daemon_state_dir.resolve(strict=False)
+        for row in rows[:50]:
+            if not isinstance(row, dict):
+                continue
+            daemon_id = row.get("daemon_id")
+            pid = row.get("pid")
+            identity = row.get("identity")
+            if (
+                not isinstance(daemon_id, str)
+                or not re.fullmatch(r"dmn_[0-9a-f]{32}", daemon_id)
+                or isinstance(pid, bool)
+                or not isinstance(pid, int)
+                or not isinstance(identity, dict)
+                or identity.get("pid") != pid
+                or row.get("owner_id") != self._daemon_owner_id
+                or process_identity(pid) != identity
+            ):
+                continue
+            if not self._daemon_slots.acquire(blocking=False):
+                try:
+                    terminate_tree(pid, grace_seconds=self.terminate_grace_seconds)
+                except Exception:
+                    pass
+                continue
+            log_path = self._daemon_state_dir / f"{daemon_id}.log"
+            try:
+                if log_path.is_symlink() or log_path.resolve(strict=False).parent != expected_dir:
+                    self._daemon_slots.release()
+                    continue
+                log_fh = log_path.open("r+b")
+                log_fh.seek(0, os.SEEK_END)
+                size = log_fh.tell()
+                log_fh.seek(max(0, size - self.daemon_log_max_bytes), os.SEEK_SET)
+                log_buffer = bytearray(log_fh.read(self.daemon_log_max_bytes))
+            except OSError:
+                self._daemon_slots.release()
+                continue
+            try:
+                started_at = float(row.get("started_at"))
+                expires_at = float(row.get("expires_at"))
+            except (TypeError, ValueError, OverflowError):
+                log_fh.close()
+                self._daemon_slots.release()
+                continue
+            if not (0 < started_at < float("inf") and started_at <= expires_at < float("inf")):
+                log_fh.close()
+                self._daemon_slots.release()
+                continue
+            name = row.get("name")
+            command = row.get("command")
+            info = {
+                "daemon_id": daemon_id,
+                "process": _RecoveredDaemonProcess(pid, identity),
+                "pid": pid,
+                "identity": identity,
+                "owner_id": self._daemon_owner_id,
+                "name": self._safe_label(name) if isinstance(name, str) else daemon_id,
+                "command": self._safe_label(command) if isinstance(command, str) else "",
+                "cwd": "",
+                "log_path": str(log_path),
+                "log_fh": log_fh,
+                "log_buffer": log_buffer,
+                "log_lock": threading.Lock(),
+                "reader_thread": None,
+                "_log_closed": False,
+                "started_at": started_at,
+                "expires_at": expires_at,
+                "_slot_acquired": True,
+                "_slot_released": False,
+            }
+            self._daemons[daemon_id] = info
+        for info in self._daemons.values():
+            try:
+                self._schedule_daemon_expiry(info)
+            except RuntimeError:
+                info["ttl_timer"] = None
+
+    def _persist_daemon_registry(self) -> bool:
+        """Atomically persist bounded, secret-redacted daemon identity metadata."""
+        try:
+            self._daemon_state_dir.mkdir(parents=True, exist_ok=True)
+            registry = self._daemon_registry_path
+            if registry.is_symlink():
+                return False
+            rows: list[dict[str, Any]] = []
+            for daemon_id, info in self._daemons.items():
+                process = info["process"]
+                if process.poll() is not None:
+                    continue
+                identity = info.get("identity")
+                if not isinstance(identity, dict) or identity.get("pid") != int(info["pid"]):
+                    continue
+                rows.append(
+                    {
+                        "daemon_id": daemon_id,
+                        "pid": int(info["pid"]),
+                        "identity": identity,
+                        "owner_id": info["owner_id"],
+                        "name": self._safe_label(str(info.get("name", daemon_id)))[:128],
+                        "command": self._safe_label(str(info.get("command", ""))),
+                        "started_at": float(info["started_at"]),
+                        "expires_at": float(info["expires_at"]),
+                    }
+                )
+                if len(rows) >= 50:
+                    break
+            payload = json.dumps({"version": 2, "daemons": rows}, ensure_ascii=True, separators=(",", ":"))
+            temp_path = registry.with_name(f"registry.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+            fd = os.open(temp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+                    stream.write(payload)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temp_path, registry)
+            except Exception:
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+                raise
+            return True
+        except (OSError, TypeError, ValueError, OverflowError):
+            return False
+
+    @staticmethod
+    def _flush_daemon_log(info: dict[str, Any]) -> None:
+        log_fh = info.get("log_fh")
+        log_buffer = info.get("log_buffer")
+        if log_fh is None or not isinstance(log_buffer, bytearray) or info.get("_log_closed"):
+            return
+        log_lock = info.get("log_lock")
+        try:
+            if log_lock is None:
+                log_fh.seek(0)
+                log_fh.truncate()
+                log_fh.write(bytes(log_buffer))
+                log_fh.flush()
+            else:
+                with log_lock:
+                    log_fh.seek(0)
+                    log_fh.truncate()
+                    log_fh.write(bytes(log_buffer))
+                    log_fh.flush()
+        except (OSError, ValueError):
+            pass
+
+    @classmethod
+    def _capture_daemon_output(cls, read_fh: Any, info: dict[str, Any], max_bytes: int) -> None:
+        try:
+            while True:
+                chunk = read_fh.read(64 * 1024)
+                if not chunk:
+                    break
+                with info["log_lock"]:
+                    buffer = info["log_buffer"]
+                    buffer.extend(chunk)
+                    if len(buffer) > max_bytes:
+                        del buffer[: len(buffer) - max_bytes]
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                read_fh.close()
+            except Exception:
+                pass
+            cls._flush_daemon_log(info)
+
+    @classmethod
+    def _close_daemon_log(cls, info: dict[str, Any]) -> None:
         """Close a daemon log handle exactly once, including natural exits."""
         if info.get("_log_closed"):
             return
+        cls._flush_daemon_log(info)
         try:
             info["log_fh"].close()
         except Exception:
@@ -1276,9 +2117,24 @@ class CommandBroker:
         sandbox: str = "local",
         docker_image: str = "python:3.11-slim",
         bypass_cache: bool = False,
+        rollback_paths: list[str] | None = None,
     ) -> dict[str, Any]:
         if not self.enabled:
             return {"success": False, "error": "command broker disabled"}
+        if rollback_on_failure and auto_fix:
+            return {"success": False, "error": "rollback_on_failure is supported only for direct run actions", "rollback_unsupported_action": True, "terminal": True, "retryable": False}
+        rollback_state: RollbackSnapshot | None = None
+        if rollback_on_failure:
+            rollback_state, scope_error = _snapshot_rollback_scope(cwd, rollback_paths)
+            if scope_error:
+                key = "rollback_scope_required" if scope_error == "rollback paths are required" else "rollback_scope_invalid"
+                return {
+                    "success": False,
+                    "error": scope_error,
+                    key: True,
+                    "terminal": True,
+                    "retryable": False,
+                }
         original_command = command
         classification = self.classify(original_command)
         is_mutating = classification.get("class") == "mutating"
@@ -1373,22 +2229,17 @@ class CommandBroker:
                 self.hits += 1
                 result = dict(cached)
                 result.update({"cache_hit": True, "coalesced": False, "classification": classification, "repo_state": state, "repository_revision": str(state.get("fingerprint", ""))})
-                if result.get("success") and task_id and self.verification_store is not None:
-                    try:
-                        from .agent_verification import VerificationReceipt
-                        rcpt = VerificationReceipt.create(
-                            task_id=task_id,
-                            criterion=criterion or f"command:{self._safe_label(command)}",
-                            passed=True,
-                            command_id=command,
-                            evidence_id=str(result.get("artifact_id") or ""),
-                            repository_revision=str(state.get("fingerprint", "")),
-                            details={"exit_code": 0, "cached": True},
-                        )
-                        self.verification_store.record(rcpt)
-                        result["verification_receipt"] = rcpt.to_dict()
-                    except Exception:
-                        pass
+                self._record_command_verification(
+                    result,
+                    tenant=tenant,
+                    task_id=task_id,
+                    criterion=criterion or f"command:{self._safe_label(command)}",
+                    command_id=f"cache_{uuid.uuid4().hex}",
+                    command_digest=hashlib.sha256(command.encode("utf-8")).hexdigest(),
+                    repository_revision=str(state.get("fingerprint", "")),
+                    duration_ms=float(result.get("duration_ms", 0) or 0),
+                    cached=True,
+                )
                 return self._compact(result, tenant, command)
 
         singleflight = not is_mutating and not bypass_cache
@@ -1435,7 +2286,7 @@ class CommandBroker:
             self._cancel_events[execution_key] = cancel_event
             self._active_cancel_keys[execution_key] = (self._cancel_key(command, cwd), tenant_identity)
         git_snapshot = None
-        if snapshot or rollback_on_failure:
+        if snapshot:
             try:
                 cp_rev = subprocess.run(
                     ["git", "rev-parse", "--is-inside-work-tree"],
@@ -1469,38 +2320,15 @@ class CommandBroker:
                     "retryable": False,
                     "target_missing": True,
                 })
-            if git_snapshot:
-                if rollback_on_failure and not result.get("success"):
-                    try:
-                        subprocess.run(
-                            ["git", "checkout", "--", "."],
-                            cwd=cwd, capture_output=True, text=True, check=False,
-                            timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
-                        )
-                        cp_cur_untracked = subprocess.run(
-                            ["git", "ls-files", "--others", "--exclude-standard"],
-                            cwd=cwd, capture_output=True, text=True, check=False,
-                            timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
-                        )
-                        current_untracked = set(cp_cur_untracked.stdout.splitlines())
-                        new_untracked = current_untracked - git_snapshot["untracked"]
-                        resolved_cwd = Path(cwd).resolve()
-                        for new_f in new_untracked:
-                            p = (Path(cwd) / new_f).resolve()
-                            try:
-                                if not p.is_relative_to(resolved_cwd) or p == resolved_cwd:
-                                    continue
-                            except (ValueError, TypeError):
-                                continue
-                            if p.is_file():
-                                p.unlink(missing_ok=True)
-                            elif p.is_dir():
-                                shutil.rmtree(p, ignore_errors=True)
-                        result["rolled_back"] = True
-                    except Exception as rb_exc:
-                        result["rollback_error"] = str(rb_exc)
-                elif snapshot:
-                    result["snapshot_taken"] = True
+            if rollback_state is not None and rollback_on_failure and not result.get("success"):
+                try:
+                    _restore_rollback_scope(cwd, rollback_state)
+                    result["rolled_back"] = True
+                except Exception as rb_exc:
+                    result["rollback_error"] = str(rb_exc)[:512]
+                    result["rolled_back"] = False
+            elif snapshot and git_snapshot:
+                result["snapshot_taken"] = True
             result["diagnostics"] = self._extract_diagnostics(result)
             if not result.get("success") and not result.get("cancelled"):
                 result["error_distillation"] = self._distill_error(result)
@@ -1561,22 +2389,16 @@ class CommandBroker:
             raw = dict(result)
             if cacheable and not result.get("cancelled"):
                 (self.success_cache if result.get("success") else self.failure_cache).set(key, raw)
-            if result.get("success") and task_id and self.verification_store is not None:
-                try:
-                    from .agent_verification import VerificationReceipt
-                    rcpt = VerificationReceipt.create(
-                        task_id=task_id,
-                        criterion=criterion or f"command:{self._safe_label(command)}",
-                        passed=True,
-                        command_id=command,
-                        evidence_id=str(result.get("artifact_id") or ""),
-                        repository_revision=str(state.get("fingerprint", "")),
-                        details={"exit_code": 0, "duration_ms": result.get("duration_ms", 0)},
-                    )
-                    self.verification_store.record(rcpt)
-                    result["verification_receipt"] = rcpt.to_dict()
-                except Exception:
-                    pass
+            self._record_command_verification(
+                result,
+                tenant=tenant,
+                task_id=task_id,
+                criterion=criterion or f"command:{self._safe_label(command)}",
+                command_id=execution_id,
+                command_digest=hashlib.sha256(command.encode("utf-8")).hexdigest(),
+                repository_revision=str(state.get("fingerprint", "")),
+                duration_ms=float(result.get("duration_ms", 0) or 0),
+            )
             if not force and not is_mutating and self._non_retryable_failure(raw):
                 raw.update({"terminal": True, "retryable": False})
                 self.suppression_cache.set(attempt_key, raw)
@@ -1589,8 +2411,21 @@ class CommandBroker:
                     self._last[key] = raw
             result.update({"cache_hit": False, "coalesced": False, "classification": classification, "repo_state": state, "repository_revision": str(state.get("fingerprint", ""))})
         except subprocess.TimeoutExpired:
-            return {"success": False, "error": "command timed out", "classification": classification, "cache_hit": False}
+            timeout_result = {"success": False, "error": "command timed out", "timed_out": True, "classification": classification, "cache_hit": False}
+            if rollback_state is not None:
+                try:
+                    _restore_rollback_scope(cwd, rollback_state)
+                    timeout_result["rolled_back"] = True
+                except Exception as rb_exc:
+                    timeout_result["rollback_error"] = str(rb_exc)[:512]
+                    timeout_result["rolled_back"] = False
+            return timeout_result
         finally:
+            if rollback_state is not None:
+                try:
+                    _close_rollback_root(rollback_state.root_guard)
+                except OSError:
+                    pass
             with self._lock:
                 if singleflight:
                     self._inflight.pop(key, None)
@@ -2017,16 +2852,39 @@ class CommandBroker:
 
                 if re_result.get("success"):
                     rcpt_dict = None
-                    if self.verification_store is not None:
+                    if task_id and self.verification_store is not None:
                         try:
-                            import uuid
                             from .agent_verification import VerificationReceipt
+                            criterion_text = criterion or f"repair:{self._safe_label(command)}"
+                            evidence_id = str(re_result.get("artifact_id") or "")
+                            if not evidence_id:
+                                evidence_id = self.artifacts.put_json(
+                                    {
+                                        "schema": "local-ai-command-validation/v1",
+                                        "task_id": task_id,
+                                        "criterion": criterion_text,
+                                        "command_label": self._safe_label(command),
+                                        "exit_code": int(re_result.get("exit_code", 0) or 0),
+                                        "duration_ms": re_result.get("duration_ms"),
+                                        "repository_revision": str(
+                                            re_result.get("repository_revision")
+                                            or re_result.get("repo_state", {}).get("fingerprint", "")
+                                        ),
+                                        "attempt": attempt,
+                                        "repaired_paths": [
+                                            str(p.relative_to(cwd_path)) for p in applied_paths
+                                        ],
+                                    },
+                                    tenant,
+                                    "command_validation",
+                                )
+                                re_result["artifact_id"] = evidence_id
                             rcpt = VerificationReceipt.create(
-                                task_id=task_id or f"repair-{uuid.uuid4().hex[:8]}",
-                                criterion=criterion or f"repair:{self._safe_label(command)}",
+                                task_id=task_id,
+                                criterion=criterion_text,
                                 passed=True,
                                 command_id=command,
-                                evidence_id=str(re_result.get("artifact_id") or ""),
+                                evidence_id=evidence_id,
                                 repository_revision=str(re_result.get("repository_revision") or re_result.get("repo_state", {}).get("fingerprint", "")),
                                 details={
                                     "exit_code": 0,
@@ -2210,50 +3068,124 @@ class CommandBroker:
 
     def spawn_daemon(
         self,
-        command: str,
+        command: str | Sequence[str],
         cwd: str,
         name: str = "",
         env: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Spawn a detached background daemon process with bounded logging and lifecycle tracking."""
+        argv, command_label, command_error = self._daemon_argv(command)
+        if command_error:
+            return {"success": False, "error": command_error}
+        if not isinstance(name, str) or len(name) > 128 or any(ord(ch) < 32 for ch in name):
+            return {"success": False, "error": "daemon name must be a control-free string of at most 128 characters"}
         resolved_cwd = Path(cwd).expanduser().resolve(strict=False)
         if not resolved_cwd.is_dir():
             return {"success": False, "error": f"working directory does not exist: {cwd}"}
+        try:
+            proc_env = self._daemon_environment(env)
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+
+        self._refresh_daemon_capacity()
+        if not self._daemon_slots.acquire(blocking=False):
+            return {"success": False, "error": "maximum active daemon count reached", "retryable": False}
 
         import uuid
-        daemon_id = f"dmn_{uuid.uuid4().hex[:8]}"
+        daemon_id = f"dmn_{uuid.uuid4().hex}"
         state_dir = configured_state_dir(self.config)
         log_dir = state_dir / "daemons"
-        log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / f"{daemon_id}.log"
-        log_fh = log_path.open("a", encoding="utf-8")
-
-        proc_env = dict(os.environ)
-        if env:
-            proc_env.update(env)
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_fh = log_path.open("w+b")
+        except OSError as exc:
+            self._daemon_slots.release()
+            return {"success": False, "error": f"could not prepare daemon log: {exc}"}
+        read_fh = None
+        write_fh = None
 
         kwargs: dict[str, Any] = {
             "cwd": str(resolved_cwd),
-            "stdout": log_fh,
+            "stdout": None,
             "stderr": subprocess.STDOUT,
             "env": proc_env,
         }
         if os.name == "nt":
             kwargs.update(hidden_run_kwargs(new_group=True))
+            kwargs["creationflags"] = int(kwargs.get("creationflags", 0)) | getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
         else:
             kwargs["start_new_session"] = True
 
-        if self._needs_shell(command):
-            argv = self._shell_argv(command)
-        else:
-            argv = self._tokens(command)
-
+        job_handle = None
+        process = None
         try:
+            if os.name == "nt":
+                job_handle = create_job_object_kill_on_close()
+                if not job_handle:
+                    raise OSError("unable to create a kill-on-close daemon Job Object")
+            read_fd, write_fd = os.pipe()
+            read_fh = os.fdopen(read_fd, "rb", buffering=0)
+            write_fh = os.fdopen(write_fd, "wb", buffering=0)
+            kwargs["stdout"] = write_fh
             process = subprocess.Popen(argv, **kwargs)
-        except OSError as exc:
+            if job_handle:
+                process._local_ai_job_handle = job_handle
+                if not assign_process_to_job(job_handle, process.pid):
+                    raise OSError("unable to assign suspended daemon to its Job Object")
+                if not _resume_suspended_process(process):
+                    raise OSError("unable to resume suspended daemon process")
+            write_fh.close()
+            write_fh = None
+        except (OSError, ValueError) as exc:
+            if process is not None:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                try:
+                    process.wait(timeout=2.0)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            if job_handle:
+                close_job_object(job_handle)
+            for handle in (read_fh, write_fh):
+                if handle is not None:
+                    try:
+                        handle.close()
+                    except OSError:
+                        pass
             log_fh.close()
+            self._daemon_slots.release()
             return {"success": False, "error": f"failed to spawn daemon: {exc}"}
 
+        started_at = time.time()
+        info = {
+            "daemon_id": daemon_id,
+            "process": process,
+            "pid": process.pid,
+            "identity": process_identity(process.pid),
+            "owner_id": self._daemon_owner_id,
+            "name": name or daemon_id,
+            "command": command_label,
+            "cwd": str(resolved_cwd),
+            "log_path": str(log_path),
+            "log_fh": log_fh,
+            "log_buffer": bytearray(),
+            "log_lock": threading.Lock(),
+            "_log_closed": False,
+            "started_at": started_at,
+            "expires_at": started_at + self.daemon_ttl_seconds,
+            "_slot_acquired": True,
+            "_slot_released": False,
+        }
+        reader = threading.Thread(
+            target=self._capture_daemon_output,
+            args=(read_fh, info, self.daemon_log_max_bytes),
+            name=f"local-ai-daemon-log-{daemon_id}",
+            daemon=True,
+        )
+        info["reader_thread"] = reader
         with self._daemons_lock:
             if len(self._daemons) > 50:
                 dead = [d for d, inf in self._daemons.items() if inf["process"].poll() is not None]
@@ -2262,17 +3194,58 @@ class CommandBroker:
                     for old_d in dead[:len(dead) - 20]:
                         self._close_daemon_log(self._daemons[old_d])
                         self._daemons.pop(old_d, None)
-            self._daemons[daemon_id] = {
-                "daemon_id": daemon_id,
-                "process": process,
-                "pid": process.pid,
-                "name": name or daemon_id,
-                "command": command,
-                "cwd": str(resolved_cwd),
-                "log_path": str(log_path),
-                "log_fh": log_fh,
-                "_log_closed": False,
-                "started_at": time.time(),
+            self._daemons[daemon_id] = info
+        try:
+            reader.start()
+        except RuntimeError as exc:
+            try:
+                _stop_daemon_tree(info)
+                process.wait(timeout=2.0)
+            except Exception:
+                pass
+            try:
+                read_fh.close()
+            except OSError:
+                pass
+            self._close_daemon_log(info)
+            with self._daemons_lock:
+                self._daemons.pop(daemon_id, None)
+            self._release_daemon_slot(info)
+            return {"success": False, "error": f"failed to start daemon log reader: {exc}"}
+        try:
+            self._schedule_daemon_expiry(info)
+        except RuntimeError as exc:
+            stopped = self.stop_daemon(daemon_id)
+            return {
+                "success": False,
+                "error": f"failed to schedule daemon TTL cleanup: {exc}",
+                "daemon_id": daemon_id if not stopped.get("success") else None,
+                "cleanup_success": bool(stopped.get("success")),
+            }
+        watcher = threading.Thread(
+            target=self._watch_daemon_exit,
+            args=(daemon_id, process),
+            name=f"local-ai-daemon-watch-{daemon_id}",
+            daemon=True,
+        )
+        info["watcher_thread"] = watcher
+        try:
+            watcher.start()
+        except RuntimeError as exc:
+            stopped = self.stop_daemon(daemon_id)
+            return {
+                "success": False,
+                "error": f"failed to start daemon lifecycle watcher: {exc}",
+                "cleanup_success": bool(stopped.get("success")),
+            }
+        with self._daemons_lock:
+            registry_saved = self._persist_daemon_registry()
+        if not registry_saved:
+            stopped = self.stop_daemon(daemon_id)
+            return {
+                "success": False,
+                "error": "daemon registry could not be written; newly started process was stopped",
+                "cleanup_success": bool(stopped.get("success")),
             }
 
         return {
@@ -2280,9 +3253,11 @@ class CommandBroker:
             "daemon_id": daemon_id,
             "pid": process.pid,
             "name": name or daemon_id,
-            "command": command,
+            "command": command_label,
             "status": "running",
             "log_path": str(log_path),
+            "owner_id": self._daemon_owner_id,
+            "ttl_seconds": self.daemon_ttl_seconds,
         }
 
     def daemon_status(self, daemon_id: str | None = None) -> dict[str, Any]:
@@ -2295,48 +3270,83 @@ class CommandBroker:
                     return {"success": False, "error": f"daemon not found: {daemon_id}"}
                 proc = info["process"]
                 alive = proc.poll() is None
+                newly_stopped = not alive and "stopped_at" not in info
                 if not alive:
-                    self._close_daemon_log(info)
-                    info.setdefault("stopped_at", now)
-                log_tail = ""
-                try:
-                    p = Path(info["log_path"])
-                    if p.exists():
-                        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
-                        log_tail = "\n".join(lines[-30:])
-                except Exception:
-                    pass
+                    tree_stopped = info.get("process_tree_stopped") is True
+                    if not tree_stopped:
+                        tree_stopped = _stop_daemon_tree(info)
+                        info["process_tree_stopped"] = tree_stopped
+                    reader = info.get("reader_thread")
+                    if reader is not None:
+                        reader.join(timeout=0.2)
+                    if reader is None or not reader.is_alive():
+                        self._close_daemon_log(info)
+                    if tree_stopped:
+                        timer = info.get("ttl_timer")
+                        if timer is not None:
+                            timer.cancel()
+                        self._release_daemon_slot(info)
+                        info.setdefault("stopped_at", now)
+                        if newly_stopped:
+                            self._persist_daemon_registry()
+                self._flush_daemon_log(info)
+                with info.get("log_lock", threading.Lock()):
+                    log_tail = bytes(info.get("log_buffer", b""))[-8192:].decode("utf-8", errors="replace")
+                log_tail = "\n".join(log_tail.splitlines()[-30:])
                 return {
                     "success": True,
                     "daemon_id": daemon_id,
                     "alive": alive,
                     "running": alive,
                     "pid": info["pid"],
-                    "status": "running" if alive else "stopped",
+                    "status": "running" if alive else ("stopped" if info.get("process_tree_stopped") is True else "cleanup_unconfirmed"),
+                    "process_tree_stopped": info.get("process_tree_stopped") is True,
                     "exit_code": proc.poll(),
                     "uptime_seconds": round(now - float(info["started_at"]), 1),
+                    "owner_id": info.get("owner_id", ""),
+                    "ttl_remaining_seconds": max(0.0, round(float(info.get("expires_at", now)) - now, 1)),
                     "name": info["name"],
-                    "command": info["command"],
+                    "command": self._safe_label(info["command"]),
                     "log_tail": log_tail,
                 }
             items = []
+            registry_changed = False
             for d_id, info in self._daemons.items():
                 proc = info["process"]
                 alive = proc.poll() is None
                 if not alive:
-                    self._close_daemon_log(info)
-                    info.setdefault("stopped_at", now)
+                    tree_stopped = info.get("process_tree_stopped") is True
+                    if not tree_stopped:
+                        tree_stopped = _stop_daemon_tree(info)
+                        info["process_tree_stopped"] = tree_stopped
+                    reader = info.get("reader_thread")
+                    if reader is not None:
+                        reader.join(timeout=0.2)
+                    if reader is None or not reader.is_alive():
+                        self._close_daemon_log(info)
+                    if tree_stopped:
+                        registry_changed = registry_changed or "stopped_at" not in info
+                        timer = info.get("ttl_timer")
+                        if timer is not None:
+                            timer.cancel()
+                        self._release_daemon_slot(info)
+                        info.setdefault("stopped_at", now)
                 items.append({
                     "daemon_id": d_id,
                     "alive": alive,
                     "running": alive,
                     "pid": info["pid"],
-                    "status": "running" if alive else "stopped",
+                    "status": "running" if alive else ("stopped" if info.get("process_tree_stopped") is True else "cleanup_unconfirmed"),
+                    "process_tree_stopped": info.get("process_tree_stopped") is True,
                     "exit_code": proc.poll(),
                     "uptime_seconds": round(now - float(info["started_at"]), 1),
+                    "owner_id": info.get("owner_id", ""),
+                    "ttl_remaining_seconds": max(0.0, round(float(info.get("expires_at", now)) - now, 1)),
                     "name": info["name"],
-                    "command": info["command"],
+                    "command": self._safe_label(info["command"]),
                 })
+            if registry_changed:
+                self._persist_daemon_registry()
             return {"success": True, "daemons": items, "count": len(items)}
 
     def stop_daemon(self, daemon_id: str) -> dict[str, Any]:
@@ -2346,11 +3356,15 @@ class CommandBroker:
             if not info:
                 return {"success": False, "error": f"daemon not found: {daemon_id}"}
             proc = info["process"]
-            if proc.poll() is None:
+            tree_stopped = info.get("process_tree_stopped") is True
+            if not tree_stopped:
                 try:
-                    terminate_tree(proc.pid, grace_seconds=1.5)
+                    # The leader may have exited while descendants remain in its
+                    # process group/tree; stop the owned tree even after leader exit.
+                    tree_stopped = _stop_daemon_tree(info)
                 except Exception:
-                    pass
+                    tree_stopped = False
+            if proc.poll() is None:
                 try:
                     proc.wait(timeout=2.0)
                 except Exception:
@@ -2359,7 +3373,42 @@ class CommandBroker:
                         proc.wait(timeout=1.0)
                     except Exception:
                         pass
+            if not tree_stopped:
+                try:
+                    tree_stopped = _stop_daemon_tree(info)
+                except Exception:
+                    tree_stopped = False
+            if proc.poll() is None:
+                return {
+                    "success": False,
+                    "daemon_id": daemon_id,
+                    "status": "running",
+                    "running": True,
+                    "alive": True,
+                    "process_tree_stopped": False,
+                    "pid": info["pid"],
+                    "error": "daemon did not stop within the bounded termination window",
+                }
+            if not tree_stopped:
+                return {
+                    "success": False,
+                    "daemon_id": daemon_id,
+                    "status": "cleanup_unconfirmed",
+                    "running": False,
+                    "alive": False,
+                    "process_tree_stopped": False,
+                    "pid": info["pid"],
+                    "error": "daemon leader stopped but process-tree cleanup could not be confirmed",
+                }
+            info["process_tree_stopped"] = True
+            timer = info.get("ttl_timer")
+            if timer is not None:
+                timer.cancel()
+            reader = info.get("reader_thread")
+            if reader is not None:
+                reader.join(timeout=2.5)
             self._close_daemon_log(info)
+            self._release_daemon_slot(info)
             info["stopped_at"] = time.time()
             if len(self._daemons) > 50:
                 dead = [d for d, inf in self._daemons.items() if inf["process"].poll() is not None]
@@ -2368,12 +3417,14 @@ class CommandBroker:
                     for old_d in dead[:len(dead) - 20]:
                         self._close_daemon_log(self._daemons[old_d])
                         self._daemons.pop(old_d, None)
+            self._persist_daemon_registry()
             return {
                 "success": True,
                 "daemon_id": daemon_id,
                 "status": "stopped",
                 "running": False,
                 "alive": False,
+                "process_tree_stopped": True,
                 "exit_code": proc.poll(),
             }
 

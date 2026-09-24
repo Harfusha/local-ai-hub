@@ -57,10 +57,12 @@ def test_release_uses_only_current_local_ai_hub_contracts():
 def test_release_has_compact_mcp_surface_and_tool_first_policy(tmp_path: Path):
     source = (ROOT / "src" / "local_ai_hub" / "mcp_server.py").read_text(encoding="utf-8")
     assert source.count("@mcp.tool()") == 8
-    assert "CALL THIS BEFORE broad repository reads" in source
+    assert "CALL THIS FIRST before broad repository reads" in source
+    assert '"mode": "full" if mode == "full" else "adaptive" if mode == "adaptive" else "fast"' in source
+    assert "CodeGraphContext" in source and "handmade grep terms" in source
     write_all_generated({"models": {"fast_code": "qwen2.5-coder:7b"}}, tmp_path)
     skill = (tmp_path / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
-    assert "before broad repository exploration" in skill
+    assert "before native reads, grep" in skill
     assert "semantic" in skill and "CodeGraphContext" in skill and "local_ai_command" in skill
 
 

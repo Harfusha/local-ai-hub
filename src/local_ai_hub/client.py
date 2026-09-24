@@ -113,10 +113,6 @@ class HubClient:
         return conn
 
     def _pooled_open(self, method: str, path: str, body: bytes | None, headers: dict[str, str], timeout: float) -> bytes:
-        is_reused = False
-        conn = getattr(self._transport_local, "connection", None)
-        if conn is not None and getattr(conn, "sock", None) is not None:
-            is_reused = True
         try:
             conn = self._connection(timeout)
             conn.request(method, path, body=body, headers=headers)
@@ -124,18 +120,7 @@ class HubClient:
             raw = response.read()
         except (OSError, http.client.HTTPException):
             self._drop_connection()
-            if is_reused:
-                # Stale pooled keep-alive socket was closed by server idle timeout; retry once on fresh connection.
-                try:
-                    conn = self._connection(timeout)
-                    conn.request(method, path, body=body, headers=headers)
-                    response = conn.getresponse()
-                    raw = response.read()
-                except (OSError, http.client.HTTPException):
-                    self._drop_connection()
-                    raise
-            else:
-                raise
+            raise
         if bool(getattr(response, "will_close", False)):
             self._drop_connection()
         if int(response.status) >= 400:
@@ -157,6 +142,18 @@ class HubClient:
             return {"success": False, "error": str(parsed), "status_code": exc.code, "request_id": request_id}
         except Exception:
             return {"success": False, "error": f"HTTP {exc.code}: {exc.reason}", "status_code": exc.code, "request_id": request_id}
+
+    @staticmethod
+    def _uncertain_response(request_id: str, *, retried: bool = False) -> dict[str, Any]:
+        result = {
+            "success": False,
+            "error": "request outcome is unknown after a transport failure",
+            "outcome_unknown": True,
+            "request_id": request_id,
+        }
+        if retried:
+            result["retried"] = True
+        return result
 
     def _singleflight(self, key: str, timeout: float, execute: Any) -> dict[str, Any]:
         with self._flight_lock:
@@ -327,7 +324,7 @@ class HubClient:
                     pass
         return None
 
-    def request(self, path: str, payload: dict[str, Any] | None = None, *, timeout: float = 30.0, replay_safe: bool = True) -> dict[str, Any]:
+    def request(self, path: str, payload: dict[str, Any] | None = None, *, timeout: float = 30.0, replay_safe: bool = False) -> dict[str, Any]:
         timeout = min(self.max_request_timeout, max(0.2, float(timeout)))
         clean_payload = payload or {}
         preflight = self._terminal_preflight(path, clean_payload)
@@ -365,18 +362,22 @@ class HubClient:
                 return self._error_response(exc, request_id)
             except (URLError, OSError, http.client.HTTPException) as exc:
                 self._drop_connection()
-                # A local hub can disappear between ensure_server() and the response,
-                # or a pooled keep-alive socket may be closed by the server idle timeout.
-                # Replay-safe work retries once with a fresh connection for journal reuse.
+                # Only callers that explicitly classify this POST as replay safe may retry.
                 if replay_safe:
                     server_ready = self.ensure_server() if self.auto_start else True
                     if server_ready:
                         try: return once()
                         except HTTPError as retry_http: return self._error_response(retry_http, request_id)
+                        except (URLError, OSError, http.client.HTTPException):
+                            self._drop_connection()
+                            return self._uncertain_response(request_id, retried=True)
                         except Exception as retry_exc: return {"success": False, "error": str(retry_exc), "request_id": request_id, "retried": True}
-                return {"success": False, "error": str(exc), "request_id": request_id}
+                return self._uncertain_response(request_id)
             except Exception as exc:
                 return {"success": False, "error": str(exc), "request_id": request_id}
+
+        if not replay_safe:
+            return execute()
 
         key = f"POST|{self.tenant}|{self.agent}|{path}|{body.decode('utf-8')}"
         return self._singleflight(key, timeout, execute)
@@ -407,8 +408,11 @@ class HubClient:
                 if server_ready:
                     try: return once()
                     except HTTPError as retry_http: return self._error_response(retry_http, request_id)
+                    except (URLError, OSError, http.client.HTTPException):
+                        self._drop_connection()
+                        return self._uncertain_response(request_id, retried=True)
                     except Exception as retry_exc: return {"success": False, "error": str(retry_exc), "request_id": request_id, "retried": True}
-                return {"success": False, "error": str(exc), "request_id": request_id}
+                return self._uncertain_response(request_id)
             except Exception as exc:
                 return {"success": False, "error": str(exc), "request_id": request_id}
 
@@ -666,7 +670,7 @@ class HubClient:
     def continue_conversation(self, conversation_id: str, prompt: str, model: str | None = None, system: str | None = None, max_tokens: int | None = None, temperature: float | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "conversation_id": conversation_id,
-            "prompt": prompt,
+            "task": prompt,
         }
         if model:
             payload["model"] = model
