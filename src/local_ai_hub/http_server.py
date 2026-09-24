@@ -32,6 +32,7 @@ from .agent_verification import VerificationReceipt
 from .task_context import build_context_request, compose_task_context
 from .agent_learning import ImprovementCandidate, SLOObservation
 from .json_utils import dumps as json_dumps
+from .operation_contracts import normalize_transport_error
 from .browser_bridge import (
     abandon_staged_capture,
     capture_failure,
@@ -752,7 +753,12 @@ class Handler(BaseHTTPRequestHandler):
         if store is None or recovery is None or not trace.get("request_id"):
             return trace
         try:
-            journal = recovery.lookup(str(trace.get("request_id")), str(trace.get("tenant", "")), str(trace.get("action", "")))
+            journal = recovery.lookup_metadata(
+                str(trace.get("request_id")),
+                str(trace.get("tenant", "")),
+                str(trace.get("action", "")),
+                identity=str(trace.get("agent", "")),
+            )
             journal_state = str((journal or {}).get("state", ""))
             if journal_state not in {"done", "failed"}:
                 return trace
@@ -1212,6 +1218,8 @@ class Handler(BaseHTTPRequestHandler):
         return 200, result
 
     def _send(self, status: int, data: Any) -> None:
+        if status >= 400:
+            data = normalize_transport_error(status, data)
         request_id = getattr(self, "_journal_request_id", None)
         if request_id and APP is not None and not getattr(self, "_journal_finished", False):
             try:
@@ -1953,6 +1961,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send(503, {"success": False, "error": "hub starting up; please retry", "status_code": 503, "retryable": True})
             return
         path = urlparse(self.path).path
+        supplied_request_id = self.headers.get("X-LocalAI-Request-ID")
+        if supplied_request_id is not None:
+            try:
+                APP.recovery.validate_request_id(supplied_request_id)
+            except (TypeError, ValueError) as exc:
+                self._journal_request_id = None
+                self._journal_finished = True
+                self._telemetry_finished = True
+                self._debug_trace_finished = True
+                self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False})
+                return
         self._begin_trace(path)
         if not self._require_authorized():
             return
@@ -2016,24 +2035,69 @@ class Handler(BaseHTTPRequestHandler):
         self._journal_request_id = str(getattr(self, "_trace_request_id", ""))
         self._journal_finished = False
         try:
-            prior = APP.recovery.lookup(self._journal_request_id, tenant, path)
-            if prior and prior.get("state") in {"done", "failed"} and prior.get("response") is not None:
+            identity = self._agent()
+            prior = APP.recovery.begin(
+                self._journal_request_id,
+                tenant,
+                path,
+                identity=identity,
+                payload=payload,
+            )
+            if prior.get("state") == "conflict":
+                self._journal_finished = True
+                self._send(409, {"success": False, "error": prior.get("error", "request id conflict"), "request_id": self._journal_request_id}); return
+            fingerprint = str(prior.get("payload_fingerprint", ""))
+            if not prior.get("claimed") and prior.get("state") in {"done", "failed"} and prior.get("response") is not None:
                 self._journal_finished = True
                 self._send(int(prior.get("status_code") or (200 if prior.get("state") == "done" else 500)), prior["response"]); return
-            if prior and prior.get("state") == "running":
+            if not prior.get("claimed") and prior.get("state") == "running":
                 wait_seconds = min(2.0, max(0.05, float(APP.config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 1.0))))
-                replay = APP.recovery.wait_for(self._journal_request_id, tenant, path, timeout_seconds=wait_seconds)
+                replay = APP.recovery.wait_for(
+                    self._journal_request_id,
+                    tenant,
+                    path,
+                    timeout_seconds=wait_seconds,
+                    identity=identity,
+                    payload_fingerprint=fingerprint,
+                )
                 if replay and replay.get("state") in {"done", "failed"} and replay.get("response") is not None:
                     self._journal_finished = True
                     self._send(int(replay.get("status_code") or (200 if replay.get("state") == "done" else 500)), replay["response"]); return
+                if replay and replay.get("state") == "conflict":
+                    self._journal_finished = True
+                    self._send(409, {"success": False, "error": replay.get("error", "request id conflict"), "request_id": self._journal_request_id}); return
+                if replay and (
+                    replay.get("state") == "abandoned"
+                    or (replay.get("state") in {"done", "failed"} and replay.get("response") is None)
+                ):
+                    self._journal_finished = True
+                    self._send(409, {
+                        "success": False,
+                        "error": "request outcome is unavailable; operation was not replayed",
+                        "outcome_unknown": True,
+                        "retryable": False,
+                        "request_id": self._journal_request_id,
+                    }); return
                 self._journal_finished = True
                 self._send(409, {"success": False, "error": "request with this id is already running", "retryable": True, "in_progress": True, "retry_after_seconds": 1, "waited_seconds": wait_seconds}); return
-            if prior and prior.get("state") == "conflict":
+            if not prior.get("claimed"):
                 self._journal_finished = True
-                self._send(409, {"success": False, "error": prior.get("error", "request id conflict")}); return
-            APP.recovery.begin(self._journal_request_id, tenant, path)
+                self._send(409, {
+                    "success": False,
+                    "error": "request outcome is unavailable; operation was not replayed",
+                    "outcome_unknown": True,
+                    "retryable": False,
+                    "request_id": self._journal_request_id,
+                }); return
         except Exception:
-            pass
+            self._journal_finished = True
+            self._send(503, {
+                "success": False,
+                "error": "request journal unavailable; operation was not started",
+                "retryable": True,
+                "outcome_unknown": False,
+                "request_id": self._journal_request_id,
+            }); return
         try:
             if path == "/api/work-orders":
                 if not getattr(APP, "work_orchestrator", None) or not APP.work_orchestrator.enabled:
