@@ -108,6 +108,11 @@ def test_speculative_draft_service(tmp_path: Path) -> None:
         "response": "def calculate():\n    return 42\n",
         "duration_ms": 120.0,
     })
+    services.commands = MagicMock()
+    services.commands.run.return_value = {"success": True, "summary": "tests passed"}
+    services.affected_tests = MagicMock(
+        return_value={"suggested_command": "pytest -q tests/test_calculator.py"}
+    )
 
     res = services.speculative_draft(
         {
@@ -122,3 +127,24 @@ def test_speculative_draft_service(tmp_path: Path) -> None:
     assert res["model"] == "qwen2.5-coder:7b"
     assert "def calculate" in res["draft"]
     assert res["verification"]["syntax_valid"] is True
+    services.affected_tests.assert_not_called()
+    services.commands.run.assert_not_called()
+
+    verified = services.speculative_draft(
+        {
+            "task": "write calculate function",
+            "file": "calc.py",
+            "root": str(tmp_path),
+            "verify_tests": True,
+        },
+        tenant="test-tenant",
+    )
+
+    services.affected_tests.assert_called_once_with(
+        str(tmp_path), changed_paths=["calc.py"]
+    )
+    services.commands.run.assert_called_once()
+    assert services.commands.run.call_args.args[0] == "pytest -q tests/test_calculator.py"
+    assert services.commands.run.call_args.args[2] == "test-tenant"
+    assert verified["verification"]["tests_passed"] is True
+    assert verified["verification"]["test_summary"] == "tests passed"
