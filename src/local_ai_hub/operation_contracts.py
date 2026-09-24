@@ -38,7 +38,18 @@ STATUS_ALIASES = ("status", "health", "check", "info")
 REPO_PHASES = ("", "plan", "edit", "review", "test", "handoff")
 MAX_REPO_PIPELINE_PARALLEL_STEPS = 4
 MAX_EVENT_SEQUENCE = (1 << 63) - 1
-REPO_PIPELINE_MUTATING_ACTIONS = frozenset({"batch_replace", "ast_refactor"})
+REPO_PIPELINE_MUTATING_ACTIONS = frozenset(
+    {
+        "batch_replace",
+        "ast_refactor",
+        "preprocess",
+        "preprocess_refresh",
+        "preprocess_pause",
+        "preprocess_resume",
+        "preprocess_cancel",
+        "preprocess_unregister",
+    }
+)
 RETRYABLE_HTTP_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 
