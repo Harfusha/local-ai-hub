@@ -14,6 +14,6 @@ The Hub does not provide hostile-user isolation for callers that share its state
 
 Repository paths, RAG/index databases and exported bundles may contain sensitive source-derived information. Telemetry intentionally excludes prompts, source and model output, but operational logs can still contain paths and error metadata.
 
-The command broker is allowlist/fail-closed and is not a general shell sandbox. The dashboard uses the same policy. External Serena/CodeGraph processes are constrained by project roots, timeouts, bounded sessions and process-tree termination.
+The command broker is allowlist/fail-closed and is not a general shell sandbox. The dashboard uses the same policy. The optional Serena process is constrained by project roots, timeouts, bounded sessions and process-tree termination.
 
 Report vulnerabilities according to `SECURITY.md`.

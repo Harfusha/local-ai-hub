@@ -548,7 +548,7 @@ def test_clean_repo_search_and_profile():
     status_res = {
         "success": True,
         "enabled": True,
-        "phases": ["inventory", "hash", "code_index", "deterministic", "serena", "codegraph", "lexical", "rag", "files", "modules", "project", "hot_queries", "complete"],
+        "phases": ["inventory", "hash", "code_index", "deterministic", "serena", "lexical", "rag", "files", "modules", "project", "hot_queries", "complete"],
     }
     projected_status = projector.project(status_res, agent="generic", task_kind="status")
     assert "phases" not in projected_status

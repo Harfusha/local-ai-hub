@@ -4846,7 +4846,7 @@ function render(s){
       {k:'commands',label:'Commands',tool:'local_ai_command',tab:'commands'},
       {k:'coord',label:'Coord',tool:'local_ai_coord',tab:'work'},
       {k:'artifacts',label:'Artifacts',tool:'local_ai_artifact',tab:'overview'},
-      {k:'code_intelligence',label:'Code intel',tool:'AST / Serena / Graph',tab:'projects'},
+      {k:'code_intelligence',label:'Code intel',tool:'AST / Serena',tab:'projects'},
       {k:'preprocessing',label:'Preprocessing',tool:'Background workers',tab:'projects'},
       {k:'subagents',label:'Subagents',tool:'Ollama workers',tab:'performance'},
       {k:'agent_os',label:'Agent OS',tool:'Durable memory/receipts',tab:'agentos'},
