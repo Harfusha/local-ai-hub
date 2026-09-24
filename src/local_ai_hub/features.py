@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .operation_contracts import disabled_tool_names, enabled_tool_names
+
 
 def rollout_feature_enabled(config: dict[str, Any], name: str) -> bool:
     """Enable a rollout capability only for an explicit TOML boolean true."""
@@ -122,34 +124,12 @@ class FeatureSet:
     @property
     def enabled_tools(self) -> list[str]:
         """List of MCP tools that are enabled in this configuration."""
-        tools: list[str] = []
-        if self.status:
-            tools.append("local_ai_status")
-        if self.repo:
-            tools.append("local_ai_repo")
-        if self.tasks and self.has_any_model():
-            tools.append("local_ai_task")
-        if self.rag:
-            tools.append("local_ai_rag")
-        if self.commands:
-            tools.append("local_ai_command")
-        if self.coord:
-            tools.append("local_ai_coord")
-        if self.artifacts:
-            tools.append("local_ai_artifact")
-        if self.work_orchestrator:
-            tools.append("local_ai_work")
-        return tools
+        return enabled_tool_names(self)
 
     @property
     def disabled_tools(self) -> list[str]:
         """List of standard MCP tools that are disabled in this configuration."""
-        all_tools = [
-            "local_ai_status", "local_ai_repo", "local_ai_task", "local_ai_rag",
-            "local_ai_command", "local_ai_coord", "local_ai_artifact", "local_ai_work",
-        ]
-        active = set(self.enabled_tools)
-        return [t for t in all_tools if t not in active]
+        return disabled_tool_names(self)
 
     def supported_repo_actions(self) -> list[str]:
         """Return list of valid local_ai_repo actions supported by active backends."""

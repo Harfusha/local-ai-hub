@@ -21,6 +21,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .config import load_config
+from .operation_contracts import normalize_transport_error
 
 
 _DETACHED_CHILDREN_LOCK = threading.Lock()
@@ -133,15 +134,16 @@ class HubClient:
         try:
             parsed = json.loads(exc.read().decode("utf-8"))
             if isinstance(parsed, dict):
-                parsed.setdefault("success", False)
-                parsed.setdefault("status_code", exc.code)
-                if exc.code in {408, 425, 429, 500, 502, 503, 504}:
-                    parsed.setdefault("retryable", True)
                 parsed.setdefault("request_id", request_id)
-                return parsed
-            return {"success": False, "error": str(parsed), "status_code": exc.code, "request_id": request_id}
+                return normalize_transport_error(exc.code, parsed)
+            return normalize_transport_error(
+                exc.code, {"error": str(parsed), "request_id": request_id}
+            )
         except Exception:
-            return {"success": False, "error": f"HTTP {exc.code}: {exc.reason}", "status_code": exc.code, "request_id": request_id}
+            return normalize_transport_error(
+                exc.code,
+                {"error": f"HTTP {exc.code}: {exc.reason}", "request_id": request_id},
+            )
 
     @staticmethod
     def _uncertain_response(request_id: str, *, retried: bool = False) -> dict[str, Any]:
