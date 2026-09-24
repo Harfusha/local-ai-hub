@@ -15,6 +15,15 @@ from pathlib import Path
 from typing import Any
 
 from local_ai_hub.features import FeatureSet
+from local_ai_hub.operation_contracts import (
+    MAX_EVENT_SEQUENCE,
+    MCP_OPERATION_CONTRACTS,
+    STATUS_ACTIONS,
+    STATUS_DETAILS,
+    enabled_tool_names,
+    operation_description,
+    repo_pipeline_step_schema,
+)
 from local_ai_hub.prompt_contracts import capability_for
 
 
@@ -813,8 +822,8 @@ def generate_mcp_configs(
 def _apply_response_budget_schema(schemas: dict[str, dict[str, Any]], cfg: dict[str, Any]) -> None:
     """Add one compact response contract to every enabled public tool."""
     fields = {
-        "max_response_tokens": {"type": "integer", "minimum": 0, "default": 0},
-        "response_profile": {"type": "string", "enum": ["minimal", "compact", "standard", "debug", "delta"], "default": "compact"},
+        "max_response_tokens": {"type": "integer", "minimum": 0, "maximum": 100000, "default": 0},
+        "response_profile": {"type": "string", "enum": ["", "minimal", "compact", "standard", "debug", "delta"], "default": ""},
         "reuse_key": {"type": "string", "default": ""},
     }
     for schema in schemas.values():
@@ -836,17 +845,23 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         status_description = "Health, queue, and token-saving status. detail: brief, cache, telemetry, full, agent_state."
         if fs.agent_os:
             status_description += " `agent_state` summarizes durable Agent OS task state."
-        status_description += _actions_note(["brief", "cache", "telemetry", "full", "agent_state"])
+        status_description += _actions_note(list(STATUS_ACTIONS))
         schemas["local_ai_status"] = {
             "name": "local_ai_status",
             "description": status_description,
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["brief", "cache", "telemetry", "full", "agent_state"], "default": ""},
-                    "detail": {"type": "string", "enum": ["brief", "cache", "telemetry", "full", "agent_state"], "default": "brief"},
+                    "action": {"type": "string", "enum": list(STATUS_ACTIONS), "default": ""},
+                    "detail": {"type": "string", "enum": list(STATUS_DETAILS), "default": "brief"},
                     "scope": {"type": "string", "enum": ["process", "window"], "default": "process"},
                     "extra_fields": {"type": "array", "items": {"type": "string"}},
+                    "adoption_signal": {"type": "string", "enum": ["", "bypassed"], "default": ""},
+                    "target_tool": {"type": "string", "default": ""},
+                    "target_action": {"type": "string", "default": ""},
+                    "max_response_tokens": {"type": "integer", "minimum": 0, "maximum": 100000, "default": 0},
+                    "response_profile": {"type": "string", "enum": ["", "minimal", "compact", "standard", "debug", "delta"], "default": ""},
+                    "reuse_key": {"type": "string", "default": ""},
                 },
             },
         }
@@ -873,7 +888,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "task_id": {"type": "string", "default": ""},
                     "include_code": {"type": "boolean", "default": False},
                     "include_tests": {"type": "boolean", "default": False},
-                    "phase": {"type": "string", "default": ""},
+                    "phase": {"type": "string", "enum": ["", "plan", "edit", "review", "test", "handoff"], "default": ""},
                     "focus": {"type": "array", "items": {"type": "string"}},
                     "preload_profile": {"type": "string", "default": ""},
                     "guarded": {"type": "boolean", "default": False},
@@ -887,16 +902,25 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "language": {"type": "string", "default": "auto"},
                     "relation": {"type": "string", "default": ""},
                     "profile": {"type": "string", "default": ""},
-                    "max_tokens": {"type": "integer", "default": 0},
-                    "token_budget": {"type": "integer", "default": 0},
+                    "max_tokens": {"type": "integer", "minimum": 0, "maximum": 100000, "default": 0},
+                    "token_budget": {"type": "integer", "minimum": 0, "maximum": 100000, "default": 0},
                     "diff": {"type": "string", "default": ""},
                     "workspace": {"type": "string", "default": ""},
                     "evidence": {"type": "array", "items": {"type": "object"}},
                     "receipt": {"type": "object"},
                     "extra_fields": {"type": "array", "items": {"type": "string"}},
                     "max_response_tokens": {"type": "integer", "default": 0},
-                    "response_profile": {"type": "string", "enum": ["minimal", "compact", "standard", "debug", "delta"], "default": "compact"},
+                    "response_profile": {"type": "string", "enum": ["", "minimal", "compact", "standard", "debug", "delta"], "default": ""},
                     "reuse_key": {"type": "string", "default": ""},
+                    "include_diagnostics": {"type": "boolean", "default": False},
+                    "clone_id": {"type": "string", "default": ""},
+                    "worktree_id": {"type": "string", "default": ""},
+                    "branch": {"type": "string", "default": ""},
+                    "repository_id": {"type": "string", "default": ""},
+                    "session_id": {"type": "string", "default": ""},
+                    "repository_revision": {"type": "string", "default": ""},
+                    "is_worktree": {"type": "boolean", "default": False},
+                    "parent_root": {"type": "string", "default": ""},
                 },
             },
         }
@@ -905,6 +929,13 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "dry_run": {"type": "boolean", "default": False},
                 "edits": {"type": "array", "items": {"type": "object"}},
             })
+        schemas["local_ai_repo"]["parameters"]["properties"]["steps"] = {
+            "type": "array",
+            "items": repo_pipeline_step_schema(
+                schemas["local_ai_repo"]["parameters"]["properties"],
+                repo_actions,
+            ),
+        }
 
     if fs.tasks and fs.has_any_model():
         task_actions = fs.supported_task_actions()
@@ -985,6 +1016,11 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "top_k": {"type": "integer", "default": 6},
                     "workspace": {"type": "string", "default": ""},
                     "extra_fields": {"type": "array", "items": {"type": "string"}},
+                    "content": {"type": "string", "default": ""},
+                    "title": {"type": "string", "default": ""},
+                    "metadata": {"type": "object"},
+                    "image_path": {"type": "string", "default": ""},
+                    "caption": {"type": "string", "default": ""},
                 },
             },
         }
@@ -1039,6 +1075,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "query": {"type": "string", "default": ""},
                     "command": {"type": "string", "default": ""},
                     "ttl_seconds": {"type": "integer", "default": 0},
+                    "after_seq": {"type": "integer", "minimum": 0, "maximum": MAX_EVENT_SEQUENCE, "default": 0},
                     "max_tokens": {"type": "integer", "default": 0},
                     "task": {"type": "string", "default": ""},
                     "contract": {"type": "object"},
@@ -1090,19 +1127,24 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "description": "Fetch one needed artifact section, exact evidence slice, or list artifacts. Actions: get, slice, list.",
             "parameters": {
                 "type": "object",
-                "required": ["artifact_id"],
                 "properties": {
                     "action": {"type": "string", "enum": ["get", "slice", "list"], "default": "get"},
                     "artifact_id": {"type": "string", "default": ""},
                     "section": {"type": "string", "default": ""},
-                    "offset": {"type": "integer", "default": 0},
-                    "max_chars": {"type": "integer", "default": 4000},
+                    "offset": {"type": "integer", "minimum": 0, "default": 0},
+                    "max_chars": {"type": "integer", "minimum": 0, "maximum": 12000, "default": 4000},
                     "extra_fields": {"type": "array", "items": {"type": "string"}},
+                    "binary": {"type": "boolean", "default": False},
                 },
             },
         }
 
     _apply_response_budget_schema(schemas, cfg)
+    contracts = {contract.name: contract for contract in MCP_OPERATION_CONTRACTS}
+    enabled = set(enabled_tool_names(fs))
+    schemas = {name: schema for name, schema in schemas.items() if name in enabled}
+    for name, schema in schemas.items():
+        schema["description"] += operation_description(contracts[name])
     return schemas
 
 
