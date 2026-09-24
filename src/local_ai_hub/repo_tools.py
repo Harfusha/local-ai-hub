@@ -1619,36 +1619,92 @@ class RepositoryTools:
             result["candidate_context_tokens_est"] = candidate_tokens
         return result
 
+    @staticmethod
+    def _context_pack_metadata(
+        search: dict[str, Any], evidence: list[dict[str, Any]], context: str,
+        *, budget_chars: int, candidate_tokens: int, truncated_snippets: int, truncated: bool,
+    ) -> dict[str, Any]:
+        results = search.get("results", []) if isinstance(search.get("results"), list) else []
+        candidate_paths = {str(item.get("path") or "") for item in results if isinstance(item, dict) and item.get("path")}
+        included_paths = {str(item.get("path") or "") for item in evidence if item.get("path")}
+        hashed_paths = {str(item.get("path") or "") for item in evidence if item.get("path") and item.get("file_sha256")}
+        coverage_complete = len(evidence) == len(results) and truncated_snippets == 0 and not truncated
+        freshness_complete = bool(included_paths) and included_paths == hashed_paths and included_paths == candidate_paths and coverage_complete
+        return {
+            "truncated": bool(truncated),
+            "coverage": {
+                "scope": "search_candidates",
+                "candidate_count": len(results),
+                "included_evidence_count": len(evidence),
+                "candidate_file_count": len(candidate_paths),
+                "included_file_count": len(included_paths),
+                "complete": coverage_complete,
+            },
+            "freshness": {
+                "scope": "included_evidence",
+                "status": "snapshot_identity_checked" if included_paths and included_paths == hashed_paths else "verification_incomplete",
+                "checked_files": len(included_paths & hashed_paths),
+                "candidate_files": len(candidate_paths),
+                "complete": freshness_complete,
+            },
+            "truncation": {
+                "budget_chars": budget_chars,
+                "candidate_count": len(results),
+                "included_evidence_count": len(evidence),
+                "truncated_snippet_count": truncated_snippets,
+                "candidate_estimated_tokens": candidate_tokens,
+                "returned_estimated_tokens": estimate_tokens(context),
+            },
+        }
+
     def context_pack_paths(self, root: str, query: str, paths: list[str], max_tokens: int = 2600, top_k: int = 10) -> dict[str, Any]:
         search = self.search_paths(root, query, paths, top_k=top_k)
         if not search.get("success"):
             return search
         budget_chars = chars_for_tokens(max_tokens)
+        results = search.get("results", []) if isinstance(search.get("results"), list) else []
         pieces: list[str] = []
         evidence: list[dict[str, Any]] = []
         used = 0
-        candidate_tokens = 0
-        for item in search.get("results", []):
+        candidate_tokens = sum(
+            estimate_tokens(f"--- {item['path']}:{item['start_line']}-{item['end_line']} score={item['score']} ---\n{item['text']}\n")
+            for item in results
+        )
+        truncated_snippets = 0
+        truncated = False
+        for index, item in enumerate(results):
             header = f"--- {item['path']}:{item['start_line']}-{item['end_line']} score={item['score']} ---\n"
             piece = header + item["text"] + "\n"
-            candidate_tokens += estimate_tokens(piece)
-            if used + len(piece) > budget_chars:
-                remaining = budget_chars - used
+            separator = 1 if pieces else 0
+            if used + separator + len(piece) > budget_chars:
+                remaining = budget_chars - used - separator
                 if remaining <= 500:
+                    truncated = True
                     break
-                piece = piece[:remaining] + "\n[snippet truncated]\n"
-            pieces.append(piece); used += len(piece)
+                marker = "\n[snippet truncated]\n"
+                piece = piece[:max(0, remaining - len(marker))] + marker
+                truncated_snippets += 1
+                truncated = True
+            pieces.append(piece)
+            used += separator + len(piece)
             ev = {k: item[k] for k in ("path", "start_line", "end_line", "score", "file_sha256")}
             ev["raw"] = item.get("text", "")
             evidence.append(ev)
             if used >= budget_chars:
+                truncated = truncated or index < len(results) - 1
                 break
         packed = "\n".join(pieces)
+        truncated = truncated or len(evidence) < len(results)
+        metadata = self._context_pack_metadata(
+            search, evidence, packed, budget_chars=budget_chars,
+            candidate_tokens=candidate_tokens, truncated_snippets=truncated_snippets,
+            truncated=truncated,
+        )
         return {
             "success": True, "root": search["root"], "query": query, "context": packed,
             "evidence": evidence, "estimated_tokens": estimate_tokens(packed),
             "original_estimated_tokens": max(candidate_tokens, estimate_tokens(packed)),
-            "scanned_files": search.get("scanned_files", 0), "targeted": True,
+            "scanned_files": search.get("scanned_files", 0), "targeted": True, **metadata,
         }
 
     def file_inventory(self, root: str, include_hashes: bool = True) -> dict[str, Any]:
@@ -1716,31 +1772,48 @@ class RepositoryTools:
         if not search.get("success"):
             return search
         budget_chars = chars_for_tokens(max_tokens)
+        results = search.get("results", []) if isinstance(search.get("results"), list) else []
         pieces: list[str] = []
         evidence: list[dict[str, Any]] = []
         used = 0
-        candidate_tokens = 0
-        for item in search.get("results", []):
+        candidate_tokens = sum(
+            estimate_tokens(f"--- {item['path']}:{item['start_line']}-{item['end_line']} score={item['score']} ---\n{item['text']}\n")
+            for item in results
+        )
+        truncated_snippets = 0
+        truncated = False
+        for index, item in enumerate(results):
             header = f"--- {item['path']}:{item['start_line']}-{item['end_line']} score={item['score']} ---\n"
             piece = header + item["text"] + "\n"
-            candidate_tokens += estimate_tokens(piece)
-            if used + len(piece) > budget_chars:
-                remaining = budget_chars - used
+            separator = 1 if pieces else 0
+            if used + separator + len(piece) > budget_chars:
+                remaining = budget_chars - used - separator
                 if remaining > 500:
-                    piece = piece[:remaining] + "\n[snippet truncated]\n"
+                    marker = "\n[snippet truncated]\n"
+                    piece = piece[:max(0, remaining - len(marker))] + marker
+                    truncated_snippets += 1
+                    truncated = True
                 else:
+                    truncated = True
                     break
             pieces.append(piece)
-            used += len(piece)
+            used += separator + len(piece)
             ev = {k: item[k] for k in ("path", "start_line", "end_line", "score", "file_sha256")}
             ev["raw"] = item.get("text", "")
             evidence.append(ev)
             if used >= budget_chars:
+                truncated = truncated or index < len(results) - 1
                 break
         packed = "\n".join(pieces)
+        truncated = truncated or len(evidence) < len(results)
+        metadata = self._context_pack_metadata(
+            search, evidence, packed, budget_chars=budget_chars,
+            candidate_tokens=candidate_tokens, truncated_snippets=truncated_snippets,
+            truncated=truncated,
+        )
         return {
             "success": True, "root": search["root"], "query": query, "context": packed,
             "evidence": evidence, "estimated_tokens": estimate_tokens(packed),
             "original_estimated_tokens": max(candidate_tokens, estimate_tokens(packed)),
-            "scanned_files": search.get("scanned_files", 0),
+            "scanned_files": search.get("scanned_files", 0), **metadata,
         }

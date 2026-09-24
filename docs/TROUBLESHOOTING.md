@@ -3,8 +3,8 @@
 ## Hub will not start
 Run `local-ai-hub --version`, then `python tools/doctor.py`. Invalid TOML now fails fast; fix the reported file/key instead of deleting state blindly. Check that the configured port is free.
 
-## Serena/CodeGraph unavailable
-Check the code-intelligence status in the dashboard, rediscover executables, then reset sessions. Setup can reinstall isolated tool environments. Deterministic/code-index/search operations should continue while these backends are degraded.
+## Serena unavailable
+Check Serena status in the dashboard, rediscover its executable, then reset its sessions. Setup can reinstall the isolated Serena environment. Built-in deterministic, AST, and search operations continue while Serena is degraded.
 
 ## Context references a deleted temp repository
 Use a stable project root. The API returns a structured stale/degraded result rather than crashing; callers should discard the obsolete root.

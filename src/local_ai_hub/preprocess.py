@@ -1387,11 +1387,6 @@ class ProjectPreprocessor:
                     s_st = ext.get("status", "running")
                     reason = f": {ext.get('error')}" if s_st in {"unavailable", "skipped", "degraded"} and ext.get("error") else ""
                     active_detail = f"Serena LSP project indexing ({s_st}{reason})"
-                elif phase_str == "codegraph":
-                    ext = {}
-                    cg_st = ext.get("status", "running")
-                    reason = f": {ext.get('error')}" if cg_st in {"unavailable", "skipped", "degraded"} and ext.get("error") else ""
-                    active_detail = "Serena LSP"
                 elif phase_str == "lexical":
                     active_detail = f"FTS5 full-text indexing: {source_count}/{total_files} files ({phase_pct}%)"
                 elif phase_str == "rag":
@@ -2545,7 +2540,7 @@ class ProjectPreprocessor:
         if self.external_tools is None or not enabled:
             self._set_project(root, phase=next_phase)
             return True
-        # External language-server/graph indexing can be CPU/RAM intensive. Never
+        # External language-server indexing can be CPU/RAM intensive. Never
         # start it while foreground inference is active; this is a background phase.
         if not self.scheduler.background_allowed() or self.scheduler.foreground_busy():
             return False
@@ -2648,7 +2643,6 @@ class ProjectPreprocessor:
             or "no configuration file found" in normalized
             or "project configuration auto-generation failed" in normalized
             or "project root is missing" in normalized
-            or "no module named 'codegraphcontext'" in normalized
         )
 
     @staticmethod

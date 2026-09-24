@@ -286,7 +286,7 @@ def _desc_repo() -> str:
             " Native fallback requires terminal=true and retryable=false."
         )
     if LEAN_SCHEMAS:
-        return "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. CALL `context` first for every non-trivial repository task: its adaptive orchestrator fuses deterministic/indexed evidence, Serena, CodeGraphContext, bounded lexical search, and RAG, then returns grounded diverse context. Send the task/context rather than handmade grep terms. It accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields stay omitted unless requested through extra_fields. Omit guarded fields to preserve legacy fast/full behavior. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
+        return "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. CALL `context` first for every non-trivial repository task: its adaptive orchestrator fuses deterministic/indexed evidence, Serena, bounded lexical search, and RAG, then returns grounded diverse context. Send the task/context rather than handmade grep terms. It accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields stay omitted unless requested through extra_fields. Omit guarded fields to preserve legacy fast/full behavior. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
     semantic_hint = ""
     if FEATURES.has_semantic():
         semantic_hint = f" -> {FEATURES.semantic_hint()} for relationships"
@@ -297,7 +297,7 @@ def _desc_repo() -> str:
     return (
         "Primary bounded repository worker for repository navigation, symbols, and impact."
         " CALL THIS FIRST before broad repository reads/searches for any non-trivial repo task. MANDATORY GATE."
-        f" Use the adaptive context orchestrator: deterministic, code_index, Serena, CodeGraphContext, bounded lexical search, and RAG are fused when available;"
+        f" Use the adaptive context orchestrator: deterministic, code_index, Serena, bounded lexical search, and RAG are fused when available;"
         " agreement is ranked, paths are deduplicated/diversified, and optional local models only rerank/compress grounded evidence."
         f" Use deterministic, code_index/search,{' ' + FEATURES.semantic_hint() + ',' if FEATURES.has_semantic() else ''}"
         " context and solve for bounded evidence and implementation support."
@@ -1744,7 +1744,7 @@ def _local_ai_repo_impl(
     """Primary bounded repository worker for the main agent.
 
     Call this before broad repository reads/searches for any non-trivial repo
-    task. Use deterministic, code-index/search, semantic/graph, context and
+    task. Use deterministic, code-index/search, semantic, context and
     solve for repository evidence and implementation support. After needed
     evidence, route semantic generation, reasoning, review, independent second
     opinions and compression to local_ai_task; use local_ai_artifact for exact
@@ -1811,9 +1811,9 @@ def _local_ai_repo_impl(
         return _compact(CLIENT.post("/api/repo/map", {"root": root, "max_symbols": 100}, timeout=_timeout("quick")), "architecture")
     if action == "code_index":
         return _compact(CLIENT.post("/api/repo/code-index", {"root": root, "query": query or task, "limit": 24, "include_code": include_code}, timeout=_timeout("quick")), "architecture")
-    if action in {"semantic", "graph", "intelligence"}:
-        backend = "serena" if action == "semantic" else "codegraph" if action == "graph" else "auto"
-        operation = relation or ("find_symbol" if backend == "serena" else "relationships" if backend == "codegraph" else "search")
+    if action in {"semantic", "intelligence"}:
+        backend = "serena" if action == "semantic" else "auto"
+        operation = relation or ("find_symbol" if backend == "serena" else "search")
         return _compact(CLIENT.post("/api/code-intelligence/query", {
             "root": root, "query": query or task, "path": path, "backend": backend, "action": operation, "limit": 24,
         }, timeout=_timeout("quick")), "architecture")

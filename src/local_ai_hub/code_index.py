@@ -29,6 +29,7 @@ GO_METHOD = re.compile(r"^\s*func\s*(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*
 TYPED_METHOD = re.compile(r"^\s*(?:(?:public|private|protected|internal|static|final|async|virtual|override|abstract|sealed|synchronized|native)\s+)*(?:[A-Za-z_$][\w.$<>,?\[\]]*\s+)+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^;{}]*)\)\s*(?:\{|=>|throws\b|where\b)")
 JS_METHOD = re.compile(r"^\s*(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*\{")
 _CONTROL_NAMES = {"if","for","while","switch","catch","return","new","throw","using","lock","foreach","typeof","sizeof","default"}
+_PARSER_ANALYZER_VERSION = f"{__version__}:call-edges-v3-parse-status"
 
 
 class CodeIndex:
@@ -487,47 +488,97 @@ class CodeIndex:
 
         return syms, refs, edges
 
-    def _parse_file_content(self, text: str, lang: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    def _parse_file_content_report(
+        self, text: str, lang: str
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+        parser_report: dict[str, Any] = {
+            "status": "unavailable", "parser": "tree_sitter",
+            "fallback_reason": "parser_unavailable", "syntax_error_count": 0,
+        }
         try:
-            from .treesitter_parser import parse_treesitter
-            ts_res = parse_treesitter(text, lang)
+            from .treesitter_parser import parse_treesitter_with_status
+            parser_report = parse_treesitter_with_status(text, lang)
+            ts_res = parser_report.get("result")
             if ts_res is not None and (ts_res[0] or ts_res[2]):
-                return ts_res
-        except Exception:
-            pass
+                diagnostic = {
+                    "status": str(parser_report.get("status") or "unknown"),
+                    "parser": str(parser_report.get("parser") or "tree_sitter"),
+                    "fallback_used": False,
+                    "syntax_error_count": int(parser_report.get("syntax_error_count", 0) or 0),
+                    "syntax_error_count_truncated": bool(parser_report.get("syntax_error_count_truncated", False)),
+                }
+                return (*ts_res, diagnostic)
+        except Exception as exc:
+            parser_report = {
+                "status": "failed", "parser": "tree_sitter",
+                "fallback_reason": "parser_error", "error_type": type(exc).__name__,
+                "syntax_error_count": 0,
+            }
 
         if lang == "python":
-            return self._parse_python(text)
+            parsed = self._parse_python(text)
         elif lang == "csharp":
-            return self._parse_csharp(text)
+            parsed = self._parse_csharp(text)
         else:
-            return self._parse_generic(text)
+            parsed = self._parse_generic(text)
+        syntax_error_count = int(parser_report.get("syntax_error_count", 0) or 0)
+        diagnostic = {
+            "status": "syntax_error" if syntax_error_count else "fallback",
+            "parser": str(parser_report.get("parser") or "tree_sitter"),
+            "fallback_used": True,
+            "fallback_reason": str(parser_report.get("fallback_reason") or "no_extracted_nodes"),
+            "syntax_error_count": syntax_error_count,
+            "syntax_error_count_truncated": bool(parser_report.get("syntax_error_count_truncated", False)),
+        }
+        if parser_report.get("error_type"):
+            diagnostic["error_type"] = str(parser_report["error_type"])
+        return (*parsed, diagnostic)
+
+    def _parse_file_content(self, text: str, lang: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        symbols, refs, edges, _diagnostic = self._parse_file_content_report(text, lang)
+        return symbols, refs, edges
 
     def _parse_blob_get(self, content_hash: str, language: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]] | None:
-        key = f"{content_hash}:{__version__}:{language}"
+        cached = self._parse_blob_get_with_report(content_hash, language)
+        return cached[0] if cached is not None else None
+
+    def _parse_blob_get_with_report(
+        self, content_hash: str, language: str
+    ) -> tuple[tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]], dict[str, Any]] | None:
+        key = f"{content_hash}:{_PARSER_ANALYZER_VERSION}:{language}"
         cached = self._parse_blob_l1.get(key)
         if cached is not None:
-            return cached
+            if len(cached) >= 4 and isinstance(cached[3], dict):
+                return (cached[0], cached[1], cached[2]), dict(cached[3])
+            return (cached[0], cached[1], cached[2]), {"status": "unknown", "parser": "unknown", "fallback_used": False}
         try:
             with self._lock, closing(self._connect()) as con:
-                row = con.execute("SELECT payload_json FROM parse_blobs WHERE content_hash=? AND analyzer_version=? AND language=?", (content_hash, __version__, language)).fetchone()
+                row = con.execute("SELECT payload_json FROM parse_blobs WHERE content_hash=? AND analyzer_version=? AND language=?", (content_hash, _PARSER_ANALYZER_VERSION, language)).fetchone()
             if row:
                 data = json.loads(str(row[0]))
                 if isinstance(data, dict):
                     res = (list(data.get("symbols", [])), list(data.get("refs", [])), list(data.get("edges", [])))
-                    self._parse_blob_l1.set(key, res)
-                    return res
+                    diagnostic = data.get("parse_outcome")
+                    if not isinstance(diagnostic, dict):
+                        diagnostic = {"status": "unknown", "parser": "unknown", "fallback_used": False}
+                    self._parse_blob_l1.set(key, (*res, dict(diagnostic)))
+                    return res, dict(diagnostic)
         except Exception:
             pass
         return None
 
-    def _parse_blob_put(self, content_hash: str, language: str, syms: list[dict[str, Any]], refs: list[dict[str, Any]], edges: list[dict[str, Any]]) -> None:
-        key = f"{content_hash}:{__version__}:{language}"
-        self._parse_blob_l1.set(key, (syms, refs, edges))
+    def _parse_blob_put(
+        self, content_hash: str, language: str,
+        syms: list[dict[str, Any]], refs: list[dict[str, Any]], edges: list[dict[str, Any]],
+        parse_outcome: dict[str, Any] | None = None,
+    ) -> None:
+        key = f"{content_hash}:{_PARSER_ANALYZER_VERSION}:{language}"
+        diagnostic = dict(parse_outcome or {"status": "unknown", "parser": "unknown", "fallback_used": False})
+        self._parse_blob_l1.set(key, (syms, refs, edges, diagnostic))
         try:
-            payload = json_dumps({"symbols": syms, "refs": refs, "edges": edges}, ensure_ascii=False, separators=(",", ":"))
+            payload = json_dumps({"symbols": syms, "refs": refs, "edges": edges, "parse_outcome": diagnostic}, ensure_ascii=False, separators=(",", ":"))
             with self._lock, closing(self._connect()) as con:
-                con.execute("INSERT OR REPLACE INTO parse_blobs(content_hash, analyzer_version, language, payload_json, updated_at) VALUES(?,?,?,?,?)", (content_hash, __version__, language, payload, time.time()))
+                con.execute("INSERT OR REPLACE INTO parse_blobs(content_hash, analyzer_version, language, payload_json, updated_at) VALUES(?,?,?,?,?)", (content_hash, _PARSER_ANALYZER_VERSION, language, payload, time.time()))
                 count = int(con.execute("SELECT COUNT(*) FROM parse_blobs").fetchone()[0])
                 if count > self.parse_blob_max:
                     con.execute("DELETE FROM parse_blobs WHERE rowid IN (SELECT rowid FROM parse_blobs ORDER BY updated_at ASC LIMIT ?)", (max(100, count - self.parse_blob_max),))
@@ -551,19 +602,23 @@ class CodeIndex:
 
         digest, lines = self.repo_tools._read_snapshot(target)
         content_hash = content_hash or digest
+        lang = self._lang(path)
         with self._lock, closing(self._connect()) as con:
             row = con.execute("SELECT content_hash FROM files WHERE root=? AND path=?", (str(base), path)).fetchone()
             if row and row[0] == content_hash:
-                return {"success": True, "cached": True, "path": path}
+                cached = self._parse_blob_get_with_report(content_hash, lang)
+                return {
+                    "success": True, "cached": True, "path": path,
+                    "parse_outcome": dict(cached[1]) if cached is not None else {"status": "unknown", "parser": "unknown"},
+                }
 
-        lang = self._lang(path)
-        parsed = self._parse_blob_get(content_hash, lang)
+        parsed = self._parse_blob_get_with_report(content_hash, lang)
         if parsed is None:
             text = "\n".join(lines)
-            syms, refs, edges = self._parse_file_content(text, lang)
-            self._parse_blob_put(content_hash, lang, syms, refs, edges)
+            syms, refs, edges, parse_outcome = self._parse_file_content_report(text, lang)
+            self._parse_blob_put(content_hash, lang, syms, refs, edges, parse_outcome)
         else:
-            syms, refs, edges = parsed
+            (syms, refs, edges), parse_outcome = parsed
 
         with self._lock, closing(self._connect()) as con:
             con.execute("BEGIN IMMEDIATE")
@@ -578,7 +633,11 @@ class CodeIndex:
             con.executemany("INSERT INTO edges(root, src, dst, kind, path, line) VALUES(?,?,?,?,?,?)", [(str(base), e["src"], e["dst"], e.get("kind", "reference"), path, e["line"]) for e in edges])
             con.commit()
 
-        return {"success": True, "cached": False, "path": path, "symbols": len(syms), "refs": len(refs), "edges": len(edges)}
+        return {
+            "success": True, "cached": False, "path": path,
+            "symbols": len(syms), "refs": len(refs), "edges": len(edges),
+            "parse_outcome": dict(parse_outcome),
+        }
 
     def update_files_batch(self, root: str, items: list[str] | list[tuple[str, str]]) -> dict[str, Any]:
         """Batch-process files with one read phase and one SQLite write transaction."""
@@ -626,7 +685,10 @@ class CodeIndex:
                 continue
             candidates.append((path, content_hash, lang, lines))
 
-        blob_map: dict[tuple[str, str], tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]] = {}
+        blob_map: dict[
+            tuple[str, str],
+            tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]],
+        ] = {}
         if candidates:
             pairs = list(dict.fromkeys((h, lang) for _, h, lang, _ in candidates))
             try:
@@ -637,11 +699,17 @@ class CodeIndex:
                     for h, lang in batch:
                         params.extend([h, lang])
                     with self._lock, closing(self._connect()) as con:
-                        rows = con.execute(f"SELECT content_hash,language,payload_json FROM parse_blobs WHERE analyzer_version=? AND ({clauses})", (__version__, *params)).fetchall()
+                        rows = con.execute(f"SELECT content_hash,language,payload_json FROM parse_blobs WHERE analyzer_version=? AND ({clauses})", (_PARSER_ANALYZER_VERSION, *params)).fetchall()
                     for row in rows:
                         data = json.loads(str(row[2]))
                         if isinstance(data, dict):
-                            blob_map[(str(row[0]), str(row[1]))] = (list(data.get("symbols", [])), list(data.get("refs", [])), list(data.get("edges", [])))
+                            diagnostic = data.get("parse_outcome")
+                            if not isinstance(diagnostic, dict):
+                                diagnostic = {"status": "unknown", "parser": "unknown", "fallback_used": False}
+                            blob_map[(str(row[0]), str(row[1]))] = (
+                                list(data.get("symbols", [])), list(data.get("refs", [])),
+                                list(data.get("edges", [])), dict(diagnostic),
+                            )
             except Exception:
                 blob_map = {}
 
@@ -651,17 +719,23 @@ class CodeIndex:
         edges_to_insert: list[tuple[Any, ...]] = []
         parse_blob_rows: list[tuple[Any, ...]] = []
         paths_to_clean: list[tuple[str, str]] = []
+        parse_counts = {"syntax_error_files": 0, "fallback_files": 0, "unavailable_files": 0, "failed_files": 0}
+        parse_diagnostics: list[dict[str, Any]] = []
         now = time.time()
         def _parse_candidate(cand: tuple[str, str, str, list[str]]):
             path, content_hash, lang, lines = cand
             parsed = blob_map.get((content_hash, lang))
             if parsed is None:
-                syms, refs, edges = self._parse_file_content("\n".join(lines), lang)
-                row_blob = (content_hash, __version__, lang, json_dumps({"symbols": syms, "refs": refs, "edges": edges}, ensure_ascii=False, separators=(",", ":")), now)
+                syms, refs, edges, diagnostic = self._parse_file_content_report("\n".join(lines), lang)
+                row_blob = (
+                    content_hash, _PARSER_ANALYZER_VERSION, lang,
+                    json_dumps({"symbols": syms, "refs": refs, "edges": edges, "parse_outcome": diagnostic}, ensure_ascii=False, separators=(",", ":")),
+                    now,
+                )
             else:
-                syms, refs, edges = parsed
+                syms, refs, edges, diagnostic = parsed
                 row_blob = None
-            return path, content_hash, lang, syms, refs, edges, row_blob
+            return path, content_hash, lang, syms, refs, edges, diagnostic, row_blob
 
         if len(candidates) > 4:
             with ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 4), thread_name_prefix="code-index-worker") as pool:
@@ -669,9 +743,30 @@ class CodeIndex:
         else:
             parsed_candidates = [_parse_candidate(c) for c in candidates]
 
-        for path, content_hash, lang, syms, refs, edges, row_blob in parsed_candidates:
+        for path, content_hash, lang, syms, refs, edges, diagnostic, row_blob in parsed_candidates:
             if row_blob is not None:
                 parse_blob_rows.append(row_blob)
+            parse_state = str(diagnostic.get("status") or "unknown")
+            if parse_state == "syntax_error":
+                parse_counts["syntax_error_files"] += 1
+            if bool(diagnostic.get("fallback_used")):
+                parse_counts["fallback_files"] += 1
+            if str(diagnostic.get("fallback_reason") or "") == "parser_unavailable":
+                parse_counts["unavailable_files"] += 1
+            if str(diagnostic.get("fallback_reason") or "") == "parser_error":
+                parse_counts["failed_files"] += 1
+            if parse_state != "ok":
+                parse_diagnostics.append({
+                    "path": path,
+                    "language": lang,
+                    "status": parse_state,
+                    "parser": str(diagnostic.get("parser") or "unknown"),
+                    "fallback_used": bool(diagnostic.get("fallback_used")),
+                    "fallback_reason": str(diagnostic.get("fallback_reason") or ""),
+                    "syntax_error_count": int(diagnostic.get("syntax_error_count", 0) or 0),
+                    "syntax_error_count_truncated": bool(diagnostic.get("syntax_error_count_truncated", False)),
+                    **({"error_type": str(diagnostic["error_type"])} if diagnostic.get("error_type") else {}),
+                })
             paths_to_clean.append((c_root, path))
             files_to_insert.append((c_root, path, content_hash, lang, now))
             syms_to_insert.extend((c_root, path, x["name"], x["kind"], x["line"], x["end_line"], x.get("container", ""), x.get("name_path", x["name"]), x.get("signature", ""), x.get("access", "public"), x.get("docstring", "")) for x in syms)
@@ -693,13 +788,130 @@ class CodeIndex:
                 con.executemany("INSERT INTO edges(root,src,dst,kind,path,line) VALUES(?,?,?,?,?,?)", edges_to_insert)
                 con.commit()
         self._status_cache.pop(c_root, None)
-        return {"success": True, "files_processed": len(files_to_insert), "cached": cached, "symbols": len(syms_to_insert), "refs": len(refs_to_insert), "edges": len(edges_to_insert), "parse_blob_hits": len(candidates) - len(parse_blob_rows)}
+        return {
+            "success": True, "files_processed": len(files_to_insert), "cached": cached,
+            "symbols": len(syms_to_insert), "refs": len(refs_to_insert), "edges": len(edges_to_insert),
+            "parse_blob_hits": len(candidates) - len(parse_blob_rows),
+            "parse_outcomes": {
+                "scope": "processed_candidates",
+                "files_processed": len(parsed_candidates),
+                **parse_counts,
+                "diagnostics": parse_diagnostics[:64],
+                "diagnostics_truncated": len(parse_diagnostics) > 64,
+            },
+        }
+
+    def _candidate_freshness(self, root: str, paths: list[str]) -> dict[str, Any]:
+        unique_paths = list(dict.fromkeys(self._norm_rel(path) for path in paths if path))
+        if not unique_paths:
+            return {"status": "no_candidates", "scope": "returned_symbol_candidates", "checked_paths": 0, "stale_paths": [], "unknown_paths": [], "complete": False}
+        resolved_root = canonical_root(root)
+        try:
+            placeholders = ",".join("?" for _ in unique_paths)
+            with self._lock, closing(self._connect()) as con:
+                rows = con.execute(
+                    f"SELECT path,content_hash FROM files WHERE root=? AND path IN ({placeholders})",
+                    (resolved_root, *unique_paths),
+                ).fetchall()
+            file_hashes = {str(row["path"]): str(row["content_hash"] or "") for row in rows}
+        except sqlite3.DatabaseError:
+            return {"status": "verification_failed", "scope": "returned_symbol_candidates", "checked_paths": 0, "stale_paths": [], "unknown_paths": unique_paths[:64], "complete": False}
+
+        reader = getattr(self.repo_tools, "_read_snapshot", None)
+        verified: list[str] = []
+        stale: list[str] = []
+        unknown: list[str] = []
+        for rel_path in unique_paths:
+            indexed_hash = file_hashes.get(rel_path)
+            if not indexed_hash:
+                unknown.append(rel_path)
+                continue
+            target = Path(resolved_root, rel_path).resolve(strict=False)
+            try:
+                target.relative_to(Path(resolved_root))
+            except ValueError:
+                unknown.append(rel_path)
+                continue
+            if not target.is_file():
+                stale.append(rel_path)
+                continue
+            if not callable(reader):
+                unknown.append(rel_path)
+                continue
+            try:
+                current_hash, _lines = reader(target)
+            except (OSError, ValueError):
+                unknown.append(rel_path)
+                continue
+            (verified if str(current_hash) == indexed_hash else stale).append(rel_path)
+        status = "stale_candidates" if stale else "verified_current_candidates" if len(verified) == len(unique_paths) else "verification_incomplete"
+        return {
+            "status": status,
+            "scope": "returned_symbol_candidates",
+            "checked_paths": len(verified) + len(stale),
+            "verified_paths": verified[:64],
+            "stale_paths": stale[:64],
+            "unknown_paths": unknown[:64],
+            "complete": False,
+        }
+
+    def _parse_outcomes_for_paths(self, root: str, paths: list[str]) -> dict[str, Any]:
+        unique_paths = list(dict.fromkeys(self._norm_rel(path) for path in paths if path))
+        counts = {"syntax_error_files": 0, "fallback_files": 0, "unavailable_files": 0, "failed_files": 0, "unknown_files": 0}
+        diagnostics: list[dict[str, Any]] = []
+        if not unique_paths:
+            return {"scope": "returned_symbol_candidates", "files_examined": 0, **counts, "diagnostics": [], "diagnostics_truncated": False, "complete": False}
+        try:
+            placeholders = ",".join("?" for _ in unique_paths)
+            with self._lock, closing(self._connect()) as con:
+                rows = con.execute(
+                    f"SELECT f.path,f.language,p.payload_json FROM files f LEFT JOIN parse_blobs p "
+                    f"ON p.content_hash=f.content_hash AND p.language=f.language AND p.analyzer_version=? "
+                    f"WHERE f.root=? AND f.path IN ({placeholders})",
+                    (_PARSER_ANALYZER_VERSION, canonical_root(root), *unique_paths),
+                ).fetchall()
+        except sqlite3.DatabaseError:
+            return {"scope": "returned_symbol_candidates", "files_examined": 0, **counts, "unknown_files": len(unique_paths), "diagnostics": [], "diagnostics_truncated": False, "complete": False}
+        for row in rows:
+            diagnostic: Any = {}
+            if row["payload_json"]:
+                try:
+                    payload = json.loads(str(row["payload_json"]))
+                    diagnostic = payload.get("parse_outcome", {}) if isinstance(payload, dict) else {}
+                except (TypeError, ValueError):
+                    diagnostic = {}
+            if not isinstance(diagnostic, dict) or not diagnostic:
+                counts["unknown_files"] += 1
+                diagnostics.append({"path": str(row["path"]), "language": str(row["language"] or "generic"), "status": "unknown"})
+                continue
+            state = str(diagnostic.get("status") or "unknown")
+            if state == "syntax_error":
+                counts["syntax_error_files"] += 1
+            if bool(diagnostic.get("fallback_used")):
+                counts["fallback_files"] += 1
+            if str(diagnostic.get("fallback_reason") or "") == "parser_unavailable":
+                counts["unavailable_files"] += 1
+            if str(diagnostic.get("fallback_reason") or "") == "parser_error":
+                counts["failed_files"] += 1
+            if state != "ok":
+                diagnostics.append({
+                    "path": str(row["path"]), "language": str(row["language"] or "generic"),
+                    "status": state, "fallback_used": bool(diagnostic.get("fallback_used")),
+                    "fallback_reason": str(diagnostic.get("fallback_reason") or ""),
+                    "syntax_error_count": int(diagnostic.get("syntax_error_count", 0) or 0),
+                    "syntax_error_count_truncated": bool(diagnostic.get("syntax_error_count_truncated", False)),
+                })
+        return {
+            "scope": "returned_symbol_candidates", "files_examined": len(rows), **counts,
+            "diagnostics": diagnostics[:64], "diagnostics_truncated": len(diagnostics) > 64,
+            "complete": len(rows) == len(unique_paths),
+        }
 
     @staticmethod
     def _query_terms(query: str) -> list[str]:
         return [t.lower() for t in tokenize_query_terms(query, min_len=2, max_terms=16)]
 
-    def query(self, root: str, query: str, limit: int = 20) -> dict[str, Any]:
+    def query(self, root: str, query: str, limit: int = 20, *, verify_freshness: bool = False) -> dict[str, Any]:
         """Search the built-in symbol index without requiring an external model.
 
         The endpoint intentionally returns compact symbol metadata. Agents can follow
@@ -707,13 +919,28 @@ class CodeIndex:
         """
         resolved_root = canonical_root(root)
         if not Path(resolved_root).is_dir():
-            return {"success": False, "root": resolved_root, "error": "root directory does not exist", "stale_root": True}
+            return {
+                "success": False, "root": resolved_root, "error": "root directory does not exist",
+                "stale_root": True, "confidence": 0.0,
+                "coverage": {"query_term_count": 0, "matched_term_count": 0, "query_term_coverage": 0.0, "complete": False, "scope": "no_candidates"},
+                "freshness": {"status": "stale_root", "scope": "repository", "checked_paths": 0, "stale_paths": [], "unknown_paths": [], "complete": False},
+                "truncated": False,
+                "truncation": {"returned_count": 0, "observed_match_count": 0, "candidate_cap_reached": False},
+                "parse_outcomes": {"scope": "no_candidates", "files_examined": 0, "syntax_error_files": 0, "fallback_files": 0, "unavailable_files": 0, "failed_files": 0, "unknown_files": 0, "complete": False},
+            }
         terms = self._query_terms(query)
         if not terms:
-            return {"success": True, "root": resolved_root, "query": query, "terms": [], "matches_count": 0, "symbols": [], "confidence": 0.0}
+            return {
+                "success": True, "root": resolved_root, "query": query, "terms": [],
+                "matches_count": 0, "returned_count": 0, "symbols": [], "confidence": 0.0,
+                "coverage": {"query_term_count": 0, "matched_term_count": 0, "query_term_coverage": 0.0, "complete": False, "scope": "indexed_symbol_candidates"},
+                "freshness": {"status": "not_checked", "scope": "returned_symbol_candidates", "checked_paths": 0, "stale_paths": [], "unknown_paths": [], "complete": False},
+                "truncated": False,
+                "parse_outcomes": {"scope": "returned_symbol_candidates", "files_examined": 0, "unknown_files": 0, "complete": False},
+            }
         limit = max(1, min(int(limit), int(self.config.get("code_index", {}).get("max_query_results", 30))))
         cache_key = stable_hash({"root": resolved_root, "terms": terms, "limit": limit})
-        cached = self._query_l1.get(cache_key)
+        cached = None if verify_freshness else self._query_l1.get(cache_key)
         if isinstance(cached, dict):
             return copy.deepcopy(cached)
 
@@ -727,9 +954,12 @@ class CodeIndex:
             "SELECT path,name,kind,line,end_line,container,name_path,signature,access,docstring "
             "FROM symbols WHERE root=? AND (" + " OR ".join(clauses) + ") LIMIT ?"
         )
-        args.append(max(limit * 12, 120))
+        candidate_limit = max(limit * 12, 120)
+        args.append(candidate_limit + 1)
         with self._lock, closing(self._connect()) as con:
-            rows = con.execute(sql, args).fetchall()
+            all_rows = con.execute(sql, args).fetchall()
+        candidate_truncated = len(all_rows) > candidate_limit
+        rows = all_rows[:candidate_limit]
 
         ranked: list[tuple[float, dict[str, Any]]] = []
         for row in rows:
@@ -738,15 +968,20 @@ class CodeIndex:
             name_path = str(row["name_path"] or "")
             haystack = " ".join((name_l, name_path.lower(), str(row["container"] or "").lower(), str(row["path"]).lower()))
             score = 0.0
+            matched_terms: list[str] = []
             for term in terms:
                 if name_l == term:
                     score += 8.0
+                    matched_terms.append(term)
                 elif name_l.startswith(term):
                     score += 5.0
+                    matched_terms.append(term)
                 elif term in name_l:
                     score += 3.0
+                    matched_terms.append(term)
                 elif term in haystack:
                     score += 1.0
+                    matched_terms.append(term)
             item = {
                 "name": name,
                 "name_path": name_path,
@@ -758,20 +993,57 @@ class CodeIndex:
                 "signature": str(row["signature"] or ""),
                 "access": str(row["access"] or "public"),
                 "score": round(score, 2),
+                "matched_terms": matched_terms,
             }
             ranked.append((score, item))
         ranked.sort(key=lambda x: (-x[0], x[1]["path"], x[1]["line"]))
         symbols = [item for _, item in ranked[:limit]]
+        matched_terms = sorted({term for item in symbols for term in item["matched_terms"]})
+        term_coverage = round(len(matched_terms) / max(1, len(terms)), 3)
+        truncated = candidate_truncated or len(ranked) > len(symbols)
+        candidate_paths = list(dict.fromkeys(str(item["path"]) for item in symbols if item.get("path")))
+        freshness = self._candidate_freshness(resolved_root, candidate_paths) if verify_freshness else {
+            "status": "not_checked", "scope": "returned_symbol_candidates", "checked_paths": 0,
+            "stale_paths": [], "unknown_paths": candidate_paths[:64], "complete": False,
+        }
+        parse_outcomes = self._parse_outcomes_for_paths(resolved_root, candidate_paths)
+        fresh_factor = 1.0 if freshness.get("status") == "verified_current_candidates" else 0.0 if freshness.get("status") == "stale_candidates" else 0.5
+        support = min(1.0, len(symbols) / 3.0)
+        confidence = round(0.65 * term_coverage + 0.20 * support + 0.15 * fresh_factor, 3) if symbols else 0.0
         out = {
             "success": True,
             "root": resolved_root,
             "query": query,
             "terms": terms,
             "matches_count": len(symbols),
+            "observed_match_count": len(ranked),
+            "returned_count": len(symbols),
             "symbols": symbols,
-            "confidence": round(min(1.0, len(symbols) * 0.1), 2) if symbols else 0.0,
+            "confidence": confidence,
+            "confidence_basis": "returned_query_term_coverage_and_candidate_freshness",
+            "coverage": {
+                "query_term_count": len(terms),
+                "matched_term_count": len(matched_terms),
+                "matched_terms": matched_terms,
+                "query_term_coverage": term_coverage,
+                "candidate_match_count": len(ranked),
+                "returned_symbol_count": len(symbols),
+                "complete": False,
+                "scope": "indexed_symbol_candidates",
+            },
+            "freshness": freshness,
+            "truncated": truncated,
+            "truncation": {
+                "result_limit": limit,
+                "returned_count": len(symbols),
+                "observed_match_count": len(ranked),
+                "candidate_cap": candidate_limit,
+                "candidate_cap_reached": candidate_truncated,
+            },
+            "parse_outcomes": parse_outcomes,
         }
-        self._query_l1.set(cache_key, out)
+        if not verify_freshness:
+            self._query_l1.set(cache_key, out)
         return out
 
     def find_symbol(
@@ -1358,9 +1630,9 @@ class CodeIndex:
         with self._lock, closing(self._connect()) as con:
             rows = con.execute(
                 """SELECT src, dst, kind, path, line FROM edges
-                   WHERE root=? AND (dst=? OR dst LIKE ?)
+                   WHERE root=? AND kind='calls' AND (dst=? OR dst LIKE ? OR dst LIKE ?)
                    ORDER BY path, line LIMIT ?""",
-                (resolved, sym, f"%/{sym}", limit),
+                (resolved, sym, f"%/{sym}", f"%::{sym}", limit),
             ).fetchall()
         callers = [
             {"caller": str(r["src"]), "callee": str(r["dst"]), "kind": str(r["kind"]), "path": str(r["path"]), "line": int(r["line"])}
@@ -1377,9 +1649,9 @@ class CodeIndex:
         with self._lock, closing(self._connect()) as con:
             rows = con.execute(
                 """SELECT src, dst, kind, path, line FROM edges
-                   WHERE root=? AND (src=? OR src LIKE ?)
+                   WHERE root=? AND kind='calls' AND (src=? OR src LIKE ? OR src LIKE ?)
                    ORDER BY path, line LIMIT ?""",
-                (resolved, sym, f"%/{sym}", limit),
+                (resolved, sym, f"%/{sym}", f"%::{sym}", limit),
             ).fetchall()
         callees = [
             {"caller": str(r["src"]), "callee": str(r["dst"]), "kind": str(r["kind"]), "path": str(r["path"]), "line": int(r["line"])}

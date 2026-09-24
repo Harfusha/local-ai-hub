@@ -21,7 +21,6 @@ class TestFeatureSetDefaults:
     def test_all_on_by_default(self):
         fs = FeatureSet({})
         assert fs.serena is True
-        assert fs.codegraph is True
         assert fs.rag is True
         assert fs.ollama is True
         assert fs.subagents is True
@@ -42,12 +41,6 @@ class TestCodeIntelligenceDisabled:
         cfg = {"code_intelligence": {"serena_enabled": False}}
         fs = FeatureSet(cfg)
         assert fs.serena is False
-        assert fs.codegraph is True
-        assert fs.has_semantic() is True
-
-    def test_both_disabled(self):
-        cfg = {"code_intelligence": {"serena_enabled": False, "codegraph_enabled": False}}
-        fs = FeatureSet(cfg)
         assert fs.has_semantic() is False
         assert fs.semantic_hint() == ""
 
@@ -55,20 +48,14 @@ class TestCodeIntelligenceDisabled:
         cfg = {"code_intelligence": {"enabled": False}}
         fs = FeatureSet(cfg)
         assert fs.serena is False
-        assert fs.codegraph is False
 
     def test_semantic_hint_serena_only(self):
-        cfg = {"code_intelligence": {"codegraph_enabled": False}}
+        cfg = {"code_intelligence": {"serena_enabled": True}}
         fs = FeatureSet(cfg)
         assert fs.semantic_hint() == "semantic"
 
-    def test_semantic_hint_codegraph_only(self):
-        cfg = {"code_intelligence": {"serena_enabled": False}}
-        fs = FeatureSet(cfg)
-        assert fs.semantic_hint() == "graph"
-
     def test_semantic_hint_both(self):
-        assert FeatureSet({}).semantic_hint() == "semantic/graph"
+        assert FeatureSet({}).semantic_hint() == "semantic"
 
 
 class TestRagDisabled:
@@ -161,7 +148,7 @@ class TestBuildGlobalPolicy:
         assert "local_ai_rag" in self.build({})
 
     def test_semantic_absent_when_no_backend(self):
-        cfg = {"code_intelligence": {"serena_enabled": False, "codegraph_enabled": False}}
+        cfg = {"code_intelligence": {"serena_enabled": False}}
         assert "semantic/graph" not in self.build(cfg)
 
     def test_model_name_custom(self):
