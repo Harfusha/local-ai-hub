@@ -3,15 +3,40 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import json
+import re
 import threading
 import time
 import uuid
 from contextlib import closing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
 
 from .agent_events import AgentEvent, AgentStateStore
 from .sqlite_support import connect_sqlite, retry_busy
+
+
+def criterion_evidence_type(criterion: str) -> str:
+    text = str(criterion or "").lower()
+    if "benchmark" in text:
+        return "benchmark"
+    if any(marker in text for marker in ("test", "pytest", "suite", "unit", "integration", "regression")):
+        return "test"
+    return "source_review"
+
+
+def classify_verification_command(command: str) -> str:
+    """Return the evidence kind a command can support, defaulting conservatively."""
+    text = str(command or "").lower()
+    if re.search(r"\b(benchmark|bench|hyperfine|pytest-benchmark)\b", text):
+        return "benchmark"
+    if re.search(
+        r"\b(pytest|py\.test|unittest|dotnet\s+test|npm\s+(?:run\s+)?test|"
+        r"pnpm\s+(?:run\s+)?test|yarn\s+(?:run\s+)?test|cargo\s+test|go\s+test|"
+        r"ctest|tox|nox|jest|vitest|mocha|phpunit|pester)\b",
+        text,
+    ) or re.search(r"\bpython(?:\d+(?:\.\d+)?)?\s+-m\s+(?:pytest|unittest)\b", text):
+        return "test"
+    return "source_review"
 
 
 @dataclass(frozen=True)
@@ -19,10 +44,13 @@ class VerificationReceipt:
     receipt_id: str
     task_id: str
     criterion: str
+    owner: str = ""
     change_intent_id: str = ""
     evidence_id: str = ""
     command_id: str = ""
     repository_revision: str = ""
+    mutation_generation: int = 0
+    evidence_type: str = "source_review"
     observed_at: float = 0.0
     expires_at: float | None = None
     passed: bool = True
@@ -30,6 +58,12 @@ class VerificationReceipt:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "passed", self.passed is True)
+        object.__setattr__(self, "owner", str(self.owner or "").strip())
+        object.__setattr__(self, "mutation_generation", int(self.mutation_generation))
+        evidence_type = str(self.evidence_type or "").strip().lower()
+        if evidence_type not in {"test", "benchmark", "source_review"}:
+            raise ValueError("verification receipt has unsupported evidence_type")
+        object.__setattr__(self, "evidence_type", evidence_type)
 
     @classmethod
     def create(
@@ -41,6 +75,9 @@ class VerificationReceipt:
         evidence_id: str = "",
         command_id: str = "",
         repository_revision: str = "",
+        owner: str = "",
+        mutation_generation: int = 0,
+        evidence_type: str | None = None,
         expires_at: float | None = None,
         details: dict[str, Any] | None = None,
     ) -> VerificationReceipt:
@@ -50,21 +87,41 @@ class VerificationReceipt:
             raise ValueError("verification receipt requires task_id")
         if not criterion_text:
             raise ValueError("verification receipt requires criterion")
+        owner_text = str(owner or "").strip()
+        passed_value = passed is True
         evidence_key = str(evidence_id or "").strip()
-        if passed and not evidence_key:
+        command_key = str(command_id or "").strip()
+        inferred_kind = criterion_evidence_type(criterion_text)
+        if inferred_kind == "source_review" and command_key:
+            inferred_kind = "test"
+        evidence_kind = str(evidence_type or inferred_kind).strip().lower()
+        if evidence_kind not in {"test", "benchmark", "source_review"}:
+            raise ValueError("verification receipt has unsupported evidence_type")
+        try:
+            generation = int(mutation_generation)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("verification receipt requires valid mutation_generation") from exc
+        if generation < 0:
+            raise ValueError("verification receipt mutation_generation must be non-negative")
+        if passed_value and not evidence_key:
             raise ValueError("passed verification receipt requires evidence_id")
+        if passed_value and evidence_kind in {"test", "benchmark"} and not command_key:
+            raise ValueError(f"passed {evidence_kind} verification receipt requires command_id")
         now = time.time()
         return cls(
             receipt_id=f"rcpt_{uuid.uuid4().hex[:12]}",
             task_id=task_key,
             criterion=criterion_text,
+            owner=owner_text,
             change_intent_id=change_intent_id,
             evidence_id=evidence_key,
-            command_id=command_id,
+            command_id=command_key,
             repository_revision=repository_revision,
+            mutation_generation=generation,
+            evidence_type=evidence_kind,
             observed_at=now,
             expires_at=expires_at,
-            passed=passed,
+            passed=passed_value,
             details=dict(details or {}),
         )
 
@@ -80,10 +137,13 @@ class VerificationReceipt:
             "receipt_id": self.receipt_id,
             "task_id": self.task_id,
             "criterion": self.criterion,
+            "owner": self.owner,
             "change_intent_id": self.change_intent_id,
             "evidence_id": self.evidence_id,
             "command_id": self.command_id,
             "repository_revision": self.repository_revision,
+            "mutation_generation": self.mutation_generation,
+            "evidence_type": self.evidence_type,
             "observed_at": self.observed_at,
             "expires_at": self.expires_at,
             "passed": self.passed,
@@ -96,10 +156,13 @@ class VerificationReceipt:
             receipt_id=str(data["receipt_id"]),
             task_id=str(data["task_id"]),
             criterion=str(data["criterion"]),
+            owner=str(data.get("owner", "")),
             change_intent_id=str(data.get("change_intent_id", "")),
             evidence_id=str(data.get("evidence_id", "")),
             command_id=str(data.get("command_id", "")),
             repository_revision=str(data.get("repository_revision", "")),
+            mutation_generation=int(data.get("mutation_generation", 0) or 0),
+            evidence_type=str(data.get("evidence_type", "source_review")),
             observed_at=float(data.get("observed_at", 0.0)),
             expires_at=float(data["expires_at"]) if data.get("expires_at") is not None else None,
             passed=data.get("passed", True),
@@ -313,6 +376,74 @@ class CompletionResult:
         return payload
 
 
+def evaluate_completion_receipts(
+    task_id: str,
+    required_criteria: tuple[str, ...] | list[str],
+    receipts: tuple[VerificationReceipt, ...] | list[VerificationReceipt],
+    *,
+    owner: str,
+    repository_revision: str = "",
+    mutation_generation: int = 0,
+    mapped_receipt_ids: Mapping[str, str] | None = None,
+    now: float | None = None,
+) -> CompletionResult:
+    """Apply shared receipt gates to durable tasks and work-order handoffs."""
+    criteria = tuple(str(item) for item in required_criteria if str(item).strip())
+    current_time = float(time.time() if now is None else now)
+    latest_by_criterion: dict[str, VerificationReceipt] = {}
+    for receipt in receipts:
+        if receipt.criterion not in latest_by_criterion:
+            latest_by_criterion[receipt.criterion] = receipt
+
+    satisfied: list[str] = []
+    unsatisfied: list[str] = []
+    stale: list[str] = []
+    expected_owner = str(owner or "").strip()
+    expected_revision = str(repository_revision or "").strip()
+    expected_generation = int(mutation_generation)
+    mappings = mapped_receipt_ids or {}
+
+    for criterion in criteria:
+        receipt = latest_by_criterion.get(criterion)
+        if (
+            receipt is None
+            or receipt.task_id != task_id
+            or receipt.criterion != criterion
+            or not receipt.passed
+            or not str(receipt.evidence_id or "").strip()
+        ):
+            unsatisfied.append(criterion)
+        elif not expected_owner or receipt.owner != expected_owner:
+            unsatisfied.append(criterion)
+        elif mapped_receipt_ids is not None and mappings.get(criterion) != receipt.receipt_id:
+            unsatisfied.append(criterion)
+        elif criterion_evidence_type(criterion) == "test" and (
+            receipt.evidence_type != "test" or not str(receipt.command_id or "").strip()
+        ):
+            unsatisfied.append(criterion)
+        elif criterion_evidence_type(criterion) == "benchmark" and (
+            receipt.evidence_type != "benchmark" or not str(receipt.command_id or "").strip()
+        ):
+            unsatisfied.append(criterion)
+        elif not receipt.is_fresh(current_time):
+            stale.append(criterion)
+        elif expected_revision and receipt.repository_revision != expected_revision:
+            stale.append(criterion)
+        elif receipt.mutation_generation != expected_generation:
+            stale.append(criterion)
+        else:
+            satisfied.append(criterion)
+
+    return CompletionResult(
+        task_id=task_id,
+        complete=bool(criteria) and len(satisfied) == len(criteria),
+        satisfied_criteria=tuple(satisfied),
+        unsatisfied_criteria=tuple(unsatisfied),
+        stale_criteria=tuple(stale),
+        receipts=tuple(latest_by_criterion.values()),
+    )
+
+
 class VerificationStore:
     def __init__(
         self,
@@ -325,6 +456,7 @@ class VerificationStore:
         self._lock = threading.RLock()
         self._initialized = False
         self._init_tables()
+        self._reconcile_task_outbox(raise_on_error=False)
 
     def _init_tables(self) -> None:
         if self._initialized or not self.state_store.enabled:
@@ -365,6 +497,22 @@ class VerificationStore:
                             CREATE INDEX IF NOT EXISTS idx_agent_verif_task_observed
                             ON agent_verification_receipts (task_id, observed_at DESC);
                             """
+                        )
+                        con.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS agent_verification_task_outbox (
+                                receipt_id TEXT PRIMARY KEY,
+                                task_id TEXT NOT NULL,
+                                criterion TEXT NOT NULL,
+                                status TEXT NOT NULL DEFAULT 'pending',
+                                created_at REAL NOT NULL,
+                                completed_at REAL
+                            );
+                            """
+                        )
+                        con.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_agent_verif_task_outbox_pending "
+                            "ON agent_verification_task_outbox(status, created_at)"
                         )
                         con.execute(
                             """
@@ -430,9 +578,151 @@ class VerificationStore:
             retry_busy(_prune_invalid, retries=5, base_delay_seconds=0.02)
             self._initialized = True
 
-    def record(self, receipt: VerificationReceipt) -> VerificationReceipt:
+    def _same_task_database(self) -> bool:
+        return bool(
+            self.task_store is not None
+            and self.task_store.state_store.db_path.resolve()
+            == self.state_store.db_path.resolve()
+        )
+
+    def _reconcile_task_outbox(
+        self, *, receipt_id: str = "", raise_on_error: bool = False
+    ) -> int:
+        if not self.state_store.enabled or self.task_store is None:
+            return 0
+        with self._lock:
+            def _pending() -> list[tuple[str, str, str]]:
+                with closing(connect_sqlite(self.state_store.db_path)) as con:
+                    if receipt_id:
+                        rows = con.execute(
+                            "SELECT receipt_id, task_id, criterion "
+                            "FROM agent_verification_task_outbox "
+                            "WHERE status = 'pending' AND receipt_id = ? ORDER BY created_at",
+                            (receipt_id,),
+                        ).fetchall()
+                    else:
+                        rows = con.execute(
+                            "SELECT receipt_id, task_id, criterion "
+                            "FROM agent_verification_task_outbox "
+                            "WHERE status = 'pending' ORDER BY created_at"
+                        ).fetchall()
+                    return [(str(row[0]), str(row[1]), str(row[2])) for row in rows]
+
+            rows = retry_busy(_pending, retries=5, base_delay_seconds=0.02)
+            completed = 0
+            for pending_receipt_id, task_id, criterion in rows:
+                try:
+                    self.task_store.add_verification_receipt(
+                        task_id, criterion, pending_receipt_id
+                    )
+
+                    def _mark_complete() -> int:
+                        con = connect_sqlite(
+                            self.state_store.db_path,
+                            isolation_level=None,
+                            timeout_seconds=0.25,
+                        )
+                        try:
+                            con.execute("BEGIN IMMEDIATE")
+                            cur = con.execute(
+                                "UPDATE agent_verification_task_outbox "
+                                "SET status = 'completed', completed_at = ? "
+                                "WHERE receipt_id = ? AND status = 'pending'",
+                                (time.time(), pending_receipt_id),
+                            )
+                            con.execute("COMMIT")
+                            return int(cur.rowcount)
+                        except Exception:
+                            try:
+                                con.execute("ROLLBACK")
+                            except Exception:
+                                pass
+                            raise
+                        finally:
+                            con.close()
+
+                    completed += retry_busy(
+                        _mark_complete, retries=5, base_delay_seconds=0.02
+                    )
+                except Exception:
+                    if raise_on_error:
+                        raise
+            return completed
+
+    def record_in_transaction(
+        self,
+        con: Any,
+        receipt: VerificationReceipt,
+        *,
+        event: AgentEvent | None = None,
+        update_task: bool = True,
+    ) -> list[AgentEvent]:
+        """Write receipt event/projection and optional same-store task projection atomically."""
+        if not self.state_store.enabled:
+            raise RuntimeError("verification storage is disabled")
+        if not str(receipt.task_id or "").strip():
+            raise ValueError("verification receipt requires task_id")
+        if not str(receipt.criterion or "").strip():
+            raise ValueError("verification receipt requires criterion")
+        if receipt.passed and not str(receipt.evidence_id or "").strip():
+            raise ValueError("passed verification receipt requires evidence_id")
+        if update_task and self.task_store is not None and not self._same_task_database():
+            raise ValueError("transactional task receipt projection requires a shared database")
+        event = event or AgentEvent.create(
+            stream_id=f"verification:{receipt.task_id}",
+            kind="verification.receipt_recorded",
+            payload=receipt.to_dict(),
+            idempotency_key=f"rcpt_{receipt.receipt_id}",
+            actor=receipt.owner or "verifier",
+        )
+        persisted = self.state_store._append_event_in_transaction(con, event)
+        if persisted.error or persisted.event is None:
+            raise RuntimeError(persisted.error or "verification event could not be stored")
+        stored_details = dict(receipt.details)
+        stored_details["_verification_receipt"] = {
+            "owner": receipt.owner,
+            "mutation_generation": receipt.mutation_generation,
+            "evidence_type": receipt.evidence_type,
+        }
+        con.execute(
+            """
+            INSERT INTO agent_verification_receipts (
+                receipt_id, task_id, criterion, change_intent_id, evidence_id,
+                command_id, repository_revision, observed_at, expires_at,
+                passed, details
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(receipt_id) DO UPDATE SET
+                expires_at = excluded.expires_at,
+                passed = excluded.passed,
+                details = excluded.details
+            """,
+            (
+                receipt.receipt_id, receipt.task_id, receipt.criterion,
+                receipt.change_intent_id, receipt.evidence_id, receipt.command_id,
+                receipt.repository_revision, receipt.observed_at, receipt.expires_at,
+                1 if receipt.passed else 0, json_dumps(stored_details),
+            ),
+        )
+        published: list[AgentEvent] = []
+        if not persisted.duplicate:
+            published.append(persisted.event)
+        if update_task and self.task_store is not None and receipt.passed:
+            task_event = self.task_store._add_verification_receipt_in_transaction(
+                con, receipt.task_id, receipt.criterion, receipt.receipt_id
+            )
+            if task_event is not None and not task_event[1]:
+                published.append(task_event[0])
+        return published
+
+    def record(
+        self, receipt: VerificationReceipt, *, update_task: bool = True
+    ) -> VerificationReceipt:
         if not self.state_store.enabled:
             return receipt
+        if update_task and not receipt.owner and self.task_store is not None:
+            task = self.task_store.get(receipt.task_id)
+            if task is not None and task.owner:
+                receipt = replace(receipt, owner=task.owner)
         if not str(receipt.task_id or "").strip():
             raise ValueError("verification receipt requires task_id")
         if not str(receipt.criterion or "").strip():
@@ -440,46 +730,33 @@ class VerificationStore:
         if receipt.passed and not str(receipt.evidence_id or "").strip():
             raise ValueError("passed verification receipt requires evidence_id")
         self._init_tables()
+        self._reconcile_task_outbox(raise_on_error=False)
         event = AgentEvent.create(
             stream_id=f"verification:{receipt.task_id}",
             kind="verification.receipt_recorded",
             payload=receipt.to_dict(),
             idempotency_key=f"rcpt_{receipt.receipt_id}",
-            actor="verifier",
+            actor=receipt.owner or "verifier",
         )
-        self.state_store.append(event)
+        same_task_database = bool(update_task and self._same_task_database())
 
-        def _do_save() -> None:
+        def _do_save() -> list[AgentEvent]:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
                 con.execute("BEGIN IMMEDIATE")
-                con.execute(
-                    """
-                    INSERT INTO agent_verification_receipts (
-                        receipt_id, task_id, criterion, change_intent_id, evidence_id,
-                        command_id, repository_revision, observed_at, expires_at,
-                        passed, details
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(receipt_id) DO UPDATE SET
-                        expires_at = excluded.expires_at,
-                        passed = excluded.passed,
-                        details = excluded.details
-                    """,
-                    (
-                        receipt.receipt_id,
-                        receipt.task_id,
-                        receipt.criterion,
-                        receipt.change_intent_id,
-                        receipt.evidence_id,
-                        receipt.command_id,
-                        receipt.repository_revision,
-                        receipt.observed_at,
-                        receipt.expires_at,
-                        1 if receipt.passed else 0,
-                        json_dumps(receipt.details),
-                    ),
+                published = self.record_in_transaction(
+                    con, receipt, event=event, update_task=same_task_database
                 )
+                if update_task and self.task_store is not None and receipt.passed and not same_task_database:
+                    con.execute(
+                        "INSERT INTO agent_verification_task_outbox "
+                        "(receipt_id, task_id, criterion, status, created_at) "
+                        "VALUES (?, ?, ?, 'pending', ?) "
+                        "ON CONFLICT(receipt_id) DO NOTHING",
+                        (receipt.receipt_id, receipt.task_id, receipt.criterion, time.time()),
+                    )
                 con.execute("COMMIT")
+                return published
             except Exception:
                 try:
                     con.execute("ROLLBACK")
@@ -489,23 +766,28 @@ class VerificationStore:
             finally:
                 con.close()
 
-        retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
+        published_events = retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
+        for persisted_event in published_events:
+            self.state_store._publish(persisted_event)
 
-        if self.task_store is not None and receipt.passed:
+        if update_task and self.task_store is not None and receipt.passed and not same_task_database:
             try:
-                self.task_store.add_verification_receipt(
-                    receipt.task_id,
-                    receipt.criterion,
-                    receipt.receipt_id,
-                )
-            except KeyError:
-                pass
+                self._reconcile_task_outbox(receipt_id=receipt.receipt_id, raise_on_error=True)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"verification receipt persisted; task receipt projection reconciliation required: {exc}"
+                ) from exc
 
         return receipt
 
     def record_change(self, change: ChangeIntent) -> ChangeIntent:
         if not self.state_store.enabled:
             return change
+        if self.task_store is not None:
+            try:
+                self.task_store.advance_mutation_generation(change.task_id, actor="agent")
+            except KeyError:
+                pass
         self._init_tables()
         event = AgentEvent.create(
             stream_id=f"change:{change.task_id}",
@@ -514,18 +796,21 @@ class VerificationStore:
             idempotency_key=f"chg_{change.change_id}",
             actor="agent",
         )
-        self.state_store.append(event)
 
-        def _do_save() -> None:
+        def _do_save() -> tuple[AgentEvent, bool]:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
                 con.execute("BEGIN IMMEDIATE")
+                persisted = self.state_store._append_event_in_transaction(con, event)
+                if persisted.error or persisted.event is None:
+                    raise RuntimeError(persisted.error or "change event could not be stored")
                 con.execute(
                     """
                     INSERT INTO agent_change_intents (
                         change_id, task_id, affected_paths, affected_symbols,
                         expected_impact, rollback_description, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(change_id) DO NOTHING
                     """,
                     (
                         change.change_id,
@@ -538,6 +823,7 @@ class VerificationStore:
                     ),
                 )
                 con.execute("COMMIT")
+                return persisted.event, persisted.duplicate
             except Exception:
                 try:
                     con.execute("ROLLBACK")
@@ -547,7 +833,11 @@ class VerificationStore:
             finally:
                 con.close()
 
-        retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
+        persisted_event, duplicate = retry_busy(
+            _do_save, retries=5, base_delay_seconds=0.02
+        )
+        if not duplicate:
+            self.state_store._publish(persisted_event)
         return change
 
     def record_outcome(self, outcome: OutcomeRecord) -> OutcomeRecord:
@@ -561,17 +851,20 @@ class VerificationStore:
             idempotency_key=f"outc_{outcome.outcome_id}",
             actor=outcome.actor,
         )
-        self.state_store.append(event)
 
-        def _do_save() -> None:
+        def _do_save() -> tuple[AgentEvent, bool]:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
                 con.execute("BEGIN IMMEDIATE")
+                persisted = self.state_store._append_event_in_transaction(con, event)
+                if persisted.error or persisted.event is None:
+                    raise RuntimeError(persisted.error or "outcome event could not be stored")
                 con.execute(
                     """
                     INSERT INTO agent_outcomes (
                         outcome_id, change_id, task_id, kind, actor, details, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(outcome_id) DO NOTHING
                     """,
                     (
                         outcome.outcome_id,
@@ -584,6 +877,7 @@ class VerificationStore:
                     ),
                 )
                 con.execute("COMMIT")
+                return persisted.event, persisted.duplicate
             except Exception:
                 try:
                     con.execute("ROLLBACK")
@@ -593,7 +887,11 @@ class VerificationStore:
             finally:
                 con.close()
 
-        retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
+        persisted_event, duplicate = retry_busy(
+            _do_save, retries=5, base_delay_seconds=0.02
+        )
+        if not duplicate:
+            self.state_store._publish(persisted_event)
         return outcome
 
     def completion(
@@ -605,6 +903,7 @@ class VerificationStore:
         consistency_guard: Any | None = None,
         repository_revision: str = "",
         current_revision: str = "",
+        current_mutation_generation: int | None = None,
         warnings: Any = (),
         mappings: Any = (),
         records: Any = (),
@@ -623,13 +922,24 @@ class VerificationStore:
             )
         self._init_tables()
         current_time = float(time.time() if now is None else now)
-        expected_revision = str(current_revision or repository_revision or "").strip()
-
+        task_state = None
         required_criteria: list[str] = []
         if self.task_store is not None:
-            t = self.task_store.get(task_id)
-            if t:
-                required_criteria = list(t.contract.acceptance_criteria)
+            task_state = self.task_store.get(task_id)
+            if task_state:
+                required_criteria = list(task_state.contract.acceptance_criteria)
+        state_data = task_state.checkpoint.state_data if task_state else {}
+        expected_revision = str(
+            current_revision
+            or repository_revision
+            or state_data.get("repository_revision", "")
+        ).strip()
+        expected_generation = int(
+            state_data.get("mutation_generation", 0)
+            if current_mutation_generation is None
+            else current_mutation_generation
+        )
+        expected_owner = str(task_state.owner or "").strip() if task_state else ""
 
         def _fetch_receipts() -> list[Any]:
             with closing(connect_sqlite(self.state_store.db_path)) as con:
@@ -650,44 +960,44 @@ class VerificationStore:
 
         latest_by_criterion: dict[str, VerificationReceipt] = {}
         for row in rows:
+            stored_details = json.loads(row[10]) if row[10] else {}
+            stored_details = dict(stored_details) if isinstance(stored_details, Mapping) else {}
+            receipt_metadata = stored_details.pop("_verification_receipt", {})
+            receipt_metadata = dict(receipt_metadata) if isinstance(receipt_metadata, Mapping) else {}
             r = VerificationReceipt(
                 receipt_id=row[0],
                 task_id=row[1],
                 criterion=row[2],
+                owner=str(receipt_metadata.get("owner", "")),
                 change_intent_id=row[3],
                 evidence_id=row[4],
                 command_id=row[5],
                 repository_revision=row[6],
+                mutation_generation=int(receipt_metadata.get("mutation_generation", 0) or 0),
+                evidence_type=str(receipt_metadata.get("evidence_type", "source_review")),
                 observed_at=row[7],
                 expires_at=row[8],
                 passed=bool(row[9]),
-                details=json.loads(row[10]) if row[10] else {},
+                details=stored_details,
             )
             if r.criterion not in latest_by_criterion:
                 latest_by_criterion[r.criterion] = r
 
-        target_criteria = required_criteria if required_criteria else list(latest_by_criterion.keys())
-        satisfied: list[str] = []
-        unsatisfied: list[str] = []
-        stale: list[str] = []
-
-        for crit in target_criteria:
-            rcpt = latest_by_criterion.get(crit)
-            if not rcpt or not rcpt.passed or not str(rcpt.evidence_id or "").strip():
-                unsatisfied.append(crit)
-            elif not rcpt.is_fresh(current_time):
-                stale.append(crit)
-            elif expected_revision and rcpt.repository_revision != expected_revision:
-                stale.append(crit)
-            else:
-                satisfied.append(crit)
-
-        is_complete = (
-            len(target_criteria) > 0
-            and len(unsatisfied) == 0
-            and len(stale) == 0
-            and len(satisfied) == len(target_criteria)
+        target_criteria = required_criteria
+        gated = evaluate_completion_receipts(
+            task_id,
+            target_criteria,
+            tuple(latest_by_criterion.values()),
+            owner=expected_owner,
+            repository_revision=expected_revision,
+            mutation_generation=expected_generation,
+            mapped_receipt_ids=(task_state.verification_receipts if task_state else None),
+            now=current_time,
         )
+        satisfied = list(gated.satisfied_criteria)
+        unsatisfied = list(gated.unsatisfied_criteria)
+        stale = list(gated.stale_criteria)
+        is_complete = gated.complete
 
         audit: dict[str, Any] = dict(consistency) if isinstance(consistency, Mapping) else {}
         if wants_consistency and not audit and consistency_guard is not None:

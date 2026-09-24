@@ -167,7 +167,9 @@ def test_slow_status_dependency_degrades_within_deadline_and_keeps_shape(monkeyp
     assert result["success"] is False
     assert result["ollama_online"] is False
     assert result["scheduler"] == {"state": "ready"}
-    assert "degraded" not in result
+    assert result["degraded"] is True
+    assert result["dependency_status"]["runtime.online"]["degraded"] is True
+    assert result["dependency_status"]["runtime.online"]["deadline_ms"] == 20
 
 
 def test_slow_agent_state_summary_uses_dependency_deadline(monkeypatch):
@@ -188,48 +190,57 @@ def test_slow_agent_state_summary_uses_dependency_deadline(monkeypatch):
     assert result["agent_state"] == {"enabled": False}
 
 
-def test_timed_out_agent_state_is_reused_across_status_cache_hits(monkeypatch):
-    release = threading.Event()
-    entered = threading.Event()
-    lock = threading.Lock()
-    calls = [0]
-    active = [0]
-    peak_active = [0]
-
-    def blocked_summary():
-        with lock:
-            calls[0] += 1
-            active[0] += 1
-            peak_active[0] = max(peak_active[0], active[0])
-        entered.set()
-        try:
-            release.wait(1.0)
-            return {"enabled": True}
-        finally:
-            with lock:
-                active[0] -= 1
-
+def test_cached_status_snapshot_does_not_requery_agent_state():
     app = make_app()
-    app.status()
-    app._agent_state_summary = blocked_summary
-    monkeypatch.setattr(app_module, "_STATUS_DEPENDENCY_TIMEOUT_SECONDS", 0.10)
+    first = app.status()
+    app._agent_state_summary = lambda: (_ for _ in ()).throw(AssertionError("unexpected status dependency call"))
 
-    try:
-        first = app.status()
-        assert entered.wait(0.5)
-        cached = [app.status() for _ in range(4)]
-        with lock:
-            assert calls[0] == 1
-            assert peak_active[0] == 1
-        assert first["agent_state"] == {"enabled": False}
-        assert all(item["agent_state"] == {"enabled": False} for item in cached)
-        assert len(app._status_dependency_inflight) == 1
-    finally:
-        release.set()
+    cached = app.status()
 
-    deadline = time.monotonic() + 1.0
-    while app._status_dependency_inflight and time.monotonic() < deadline:
-        time.sleep(0.005)
-    assert not app._status_dependency_inflight
-    with lock:
-        assert active[0] == 0
+    assert cached["agent_state"] == first["agent_state"]
+    assert cached["snapshot_cached"] is True
+
+
+def make_live_app(monkeypatch, runtime=None):
+    app = make_app(runtime=runtime)
+    app._live_status_cache = {}
+    app._live_status_lock = threading.Lock()
+    app.repo_state = Probe(stats={})
+    app.vram_balancer = Probe(status={})
+    app.benchmark_runner = SimpleNamespace(get_latest_summary=lambda: {"available": False})
+    app._headless_status = lambda: {"enabled": False, "supervisor": False}
+    app.telemetry.realtime_summary = lambda **kwargs: {"events": 1}
+    app._agent_state_summary = lambda: {"enabled": True}
+    monkeypatch.setattr(app_module, "accelerator_status", lambda config: {})
+    return app
+
+
+def test_live_status_cache_does_not_requery_agent_state(monkeypatch):
+    app = make_live_app(monkeypatch)
+
+    first = app.realtime_status(light=True)
+    app._agent_state_summary = lambda: (_ for _ in ()).throw(AssertionError("unexpected live status dependency call"))
+    cached = app.realtime_status(light=True)
+
+    assert cached["agent_state"] == first["agent_state"]
+    assert cached["snapshot_cached"] is True
+
+
+def test_live_status_slow_dependency_returns_degraded_within_deadline(monkeypatch):
+    runtime = RuntimeProbe()
+
+    def slow_online():
+        time.sleep(0.12)
+        return True
+
+    runtime.is_online = slow_online
+    app = make_live_app(monkeypatch, runtime=runtime)
+    monkeypatch.setattr(app_module, "_STATUS_DEPENDENCY_TIMEOUT_SECONDS", 0.02)
+
+    started = time.monotonic()
+    result = app.realtime_status(light=True)
+
+    assert time.monotonic() - started < 0.10
+    assert result["degraded"] is True
+    assert result["success"] is False
+    assert result["dependency_status"]["runtime.online"]["degraded"] is True

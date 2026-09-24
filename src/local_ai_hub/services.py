@@ -32,7 +32,7 @@ from .ollama_subagents import OllamaSubagentCatalog
 from .process_utils import canonical_root
 from .repo_tools import RepositoryTools
 from .router import ModelRouter, review_diff_complexity
-from .sqlite_support import connect_sqlite
+from .sqlite_support import connect_sqlite, is_busy_error
 from .adoption_metrics import AdoptionMetricsStore
 from .state_paths import configured_state_dir
 from .speculative_lint import normalize_changed_paths
@@ -3255,11 +3255,11 @@ class LocalAIServices:
 
     def pubsub_publish(self, topic: str, message: dict[str, Any] | str, sender: str = "agent") -> dict[str, Any]:
         from .agent_events import SwarmPubSub
-        return SwarmPubSub.get_default().publish(topic, message, sender=sender)
+        return SwarmPubSub.get_default(state_store=self.agent_state).publish(topic, message, sender=sender)
 
-    def pubsub_poll(self, topic: str, since_timestamp: float = 0.0, limit: int = 50) -> dict[str, Any]:
+    def pubsub_poll(self, topic: str, after_seq: int = 0, limit: int = 50) -> dict[str, Any]:
         from .agent_events import SwarmPubSub
-        return SwarmPubSub.get_default().poll(topic, since_timestamp=since_timestamp, limit=limit)
+        return SwarmPubSub.get_default(state_store=self.agent_state).poll(topic, after_seq=after_seq, limit=limit)
 
     def synthesize_commit(self, root: str, hint: str = "", task_id: str = "") -> dict[str, Any]:
         tasks_data: list[dict[str, Any]] = []
@@ -5568,24 +5568,41 @@ class LocalAIServices:
     def optimize_databases(self) -> dict[str, Any]:
         """Perform WAL checkpointing, page pruning and VACUUM/optimize across all SQLite stores."""
         state_dir = Path(self.config["server"]["state_dir"])
-        db_files = list(state_dir.glob("*.sqlite3"))
+        all_db_files = sorted(state_dir.glob("*.sqlite3"))
+        db_files = all_db_files[:16]
+        deadline = time.monotonic() + 20.0
         optimized = []
         bytes_freed = 0
         for db in db_files:
+            if time.monotonic() >= deadline:
+                break
             try:
                 before_size = db.stat().st_size
-                with closing(connect_sqlite(db, timeout_seconds=10.0)) as con:
-                    con.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                with closing(connect_sqlite(db, timeout_seconds=1.0)) as con:
+                    con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+                    checkpoint = con.execute("PRAGMA wal_checkpoint(TRUNCATE);").fetchone()
+                    if checkpoint and int(checkpoint[0] or 0):
+                        raise TimeoutError("database checkpoint busy")
                     con.execute("PRAGMA optimize;")
+                    con.set_progress_handler(None, 0)
                 after_size = db.stat().st_size
                 freed = max(0, before_size - after_size)
                 bytes_freed += freed
                 optimized.append({"db": db.name, "before_kb": before_size // 1024, "after_kb": after_size // 1024, "freed_kb": freed // 1024})
             except Exception as exc:
-                optimized.append({"db": db.name, "error": str(exc)})
+                optimized.append({"db": db.name, "error": type(exc).__name__, "retryable": is_busy_error(exc) or isinstance(exc, TimeoutError) or time.monotonic() >= deadline})
+                if time.monotonic() >= deadline:
+                    break
+        skipped = max(0, len(all_db_files) - len(optimized))
+        success = not skipped and all("error" not in item for item in optimized)
+        succeeded = sum("error" not in item for item in optimized)
         return {
-            "success": True,
-            "databases_optimized": len(optimized),
+            "success": success,
+            "degraded": not success,
+            "retryable": any(item.get("retryable", False) for item in optimized) or time.monotonic() >= deadline,
+            "databases_optimized": succeeded,
+            "databases_attempted": len(optimized),
+            "databases_skipped": skipped,
             "total_freed_kb": bytes_freed // 1024,
             "details": optimized,
         }
@@ -5593,28 +5610,38 @@ class LocalAIServices:
     def purge_stale_cache(self, days: int = 7) -> dict[str, Any]:
         """Purge cache entries older than N days to free disk space."""
         state_dir = Path(self.config["server"]["state_dir"])
+        days = max(1, min(3650, int(days)))
         cutoff = time.time() - (days * 86400)
         cache_db = state_dir / "cache.sqlite3"
         deleted_entries = 0
         if cache_db.is_file():
+            deadline = time.monotonic() + 3.0
             try:
-                with closing(connect_sqlite(cache_db, timeout_seconds=10.0)) as con:
+                with closing(connect_sqlite(cache_db, timeout_seconds=1.0)) as con:
+                    con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
                     cur = con.execute("DELETE FROM cache_entries WHERE accessed_at < ?", (cutoff,))
                     deleted_entries = cur.rowcount
                     con.commit()
-                    con.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                    checkpoint = con.execute("PRAGMA wal_checkpoint(TRUNCATE);").fetchone()
+                    if checkpoint and int(checkpoint[0] or 0):
+                        raise TimeoutError("database checkpoint busy")
+                    con.set_progress_handler(None, 0)
             except Exception as exc:
-                return {"success": False, "error": str(exc)}
+                timed_out = time.monotonic() >= deadline
+                busy = is_busy_error(exc) or isinstance(exc, TimeoutError)
+                return {"success": False, "degraded": True, "retryable": timed_out or busy, "error": "query time budget exceeded" if timed_out else "cache database is busy" if busy else "cache maintenance failed"}
         return {"success": True, "purged_entries": deleted_entries, "days_threshold": days}
 
     def resolve_all_errors(self) -> dict[str, Any]:
         """Acknowledge and resolve all operational failures, crashes, errors, and agent incidents."""
         telemetry_res: dict[str, Any] = {}
+        successful = True
         if self.telemetry:
             try:
                 telemetry_res = self.telemetry.resolve_errors()
             except Exception as exc:
-                telemetry_res = {"error": str(exc)}
+                telemetry_res = {"error": type(exc).__name__}
+                successful = False
 
         resolved_incidents = 0
         if self.incident_store:
@@ -5625,6 +5652,7 @@ class LocalAIServices:
                 )
             except Exception:
                 resolved_incidents = -1
+                successful = False
 
         try:
             state_dir = Path(self.config["server"]["state_dir"])
@@ -5636,10 +5664,12 @@ class LocalAIServices:
                     raw["last_error"] = ""
                     sup_status_path.write_text(json_dumps(raw, ensure_ascii=False), encoding="utf-8")
         except Exception:
-            pass
+            successful = False
 
         return {
-            "success": True,
+            "success": successful,
+            "degraded": not successful,
+            "retryable": False,
             "telemetry": telemetry_res,
             "resolved_incidents": resolved_incidents,
         }

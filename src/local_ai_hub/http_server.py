@@ -17,7 +17,8 @@ import urllib.request
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__
-from .app import LocalAIApp
+from .operation_contracts import MAX_EVENT_SEQUENCE
+from .app import LocalAIApp, _STATUS_DEPENDENCY_TIMEOUT_SECONDS, _STATUS_TOTAL_BUDGET_SECONDS, _status_dependency
 from .scheduler import ModelUnavailableError, QueueFullError
 from .debug_traces import DebugTraceObserver
 from .trace_context import reset_context, reset_observer, set_context, set_observer
@@ -50,6 +51,12 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 APP: LocalAIApp | None = None
+_DB_QUERY_TIMEOUT_SECONDS = 0.5
+_DB_QUERY_MAX_ROWS = 100
+_DB_QUERY_MAX_RESPONSE_BYTES = 256 * 1024
+_DB_QUERY_MAX_SQL_BYTES = 8192
+_HTTP_MAX_JSON_BODY_BYTES = 64 * 1024 * 1024
+_HTTP_MAX_BODY_SECONDS = 60.0
 
 # Monitoring/control reads must never appear as workload. Keep this hard safety set
 # independent of user config so a dashboard refresh cannot create immortal active jobs.
@@ -63,6 +70,20 @@ MONITOR_PATHS = {
 
 def _json_bytes(data: Any) -> bytes:
     return json_dumps(data).encode("utf-8")
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _safe_optional_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def _resolve_memory_scope(
@@ -422,6 +443,23 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
 
 class Handler(BaseHTTPRequestHandler):
     DEBUG_TRACE_REQUEST_CAPTURE_BYTES = 8 * 1024
+    _ADMIN_ACTIONS = {
+        "db.query": ({"GET", "POST"}, "/api/db/query", None),
+        "debug_traces.list": ({"GET"}, "/api/debug-traces", None),
+        "debug_traces.detail": ({"GET"}, "/api/debug-traces/", None),
+        "config.read": ({"GET"}, "/api/config", None),
+        "config.update": ({"POST"}, "/api/config/update", "update"),
+        "config.reset": ({"POST"}, "/api/config/update", "reset"),
+        "control.restart_hub": ({"POST"}, "/api/control", "restart_hub"),
+        "control.stop_service": ({"POST"}, "/api/control", "stop_service"),
+        "maintenance.optimize_db": ({"POST"}, "/api/maintenance/optimize_db", None),
+        "maintenance.purge_cache": ({"POST"}, "/api/maintenance/purge_cache", None),
+        "maintenance.resolve_errors": ({"POST"}, "/api/maintenance/resolve_errors", None),
+        "models.list": ({"GET", "POST"}, "/api/models/manage", "list"),
+        "models.pull": ({"POST"}, "/api/models/manage", "pull"),
+        "models.delete": ({"POST"}, "/api/models/manage", "delete"),
+        "bundle.import": ({"POST"}, "/api/bundle/import", None),
+    }
     _DEBUG_TRACE_SENSITIVE_KEY = re.compile(
         r"^(?:token|api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|auth[_-]?token|id[_-]?token|bearer[_-]?token|authorization|secret|password|passwd|credential|cookie|set[-_]?cookie|private[-_]?key|privatekey|passphrase|pem|ssh[-_]?key|certificate)$",
         re.IGNORECASE,
@@ -533,14 +571,12 @@ class Handler(BaseHTTPRequestHandler):
     server_version = f"LocalAIHub/{__version__}"
 
     def _handle_db_query(self, db_name: str, sql_q: str) -> dict[str, Any]:
+        started = time.perf_counter()
         sql_clean = sql_q.strip()
-        if not sql_clean.upper().startswith("SELECT"):
+        if not sql_clean.upper().startswith(("SELECT", "WITH")):
             return {"success": False, "error": "Only read-only SELECT queries are permitted."}
-        forbidden = ("INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "VACUUM", "ATTACH")
-        tokens = [t.strip().upper() for t in re.split(r"[\s,()]+", sql_clean)]
-        for f in forbidden:
-            if f in tokens:
-                return {"success": False, "error": f"Forbidden keyword in query: {f}"}
+        if len(sql_clean.encode("utf-8")) > _DB_QUERY_MAX_SQL_BYTES:
+            return {"success": False, "error": "query exceeds SQL byte limit", "truncated": True}
         if ";" in sql_clean.rstrip(";"):
             return {"success": False, "error": "Multi-statement queries are forbidden"}
 
@@ -554,44 +590,96 @@ class Handler(BaseHTTPRequestHandler):
         }
         target_db = db_map.get(db_name.lower())
         if not target_db or not target_db.is_file():
-            return {"success": False, "error": f"Database not found: {db_name}"}
+            return {"success": False, "error": "database not found", "not_found": True}
 
-        def _readonly_authorizer(action: int, *_args: str | None) -> int:
+        response_cap = max(4096, min(int(_DB_QUERY_MAX_RESPONSE_BYTES), 4 * 1024 * 1024))
+        row_cap = max(1, min(int(_DB_QUERY_MAX_ROWS), 1000))
+        deadline = time.monotonic() + max(0.001, min(float(_DB_QUERY_TIMEOUT_SECONDS), 5.0))
+        timed_out = False
+
+        def _readonly_authorizer(action: int, arg1: str | None, arg2: str | None, *_args: str | None) -> int:
             """SQLite authorizer that permits only read operations."""
-            _ALLOWED = {
+            allowed = {
                 sqlite3.SQLITE_SELECT,  # SELECT statements
                 sqlite3.SQLITE_READ,    # Reading a column
                 sqlite3.SQLITE_FUNCTION,  # Calling a function
+                getattr(sqlite3, "SQLITE_RECURSIVE", -1),  # Read-only recursive CTEs
             }
-            return sqlite3.SQLITE_OK if action in _ALLOWED else sqlite3.SQLITE_DENY
+            if action == sqlite3.SQLITE_FUNCTION:
+                safe_functions = {
+                    "abs", "avg", "coalesce", "count", "glob", "hex", "ifnull", "instr", "length",
+                    "like", "lower", "ltrim", "max", "min", "nullif", "printf", "quote", "replace",
+                    "round", "rtrim", "substr", "sum", "total", "trim", "typeof", "unicode", "upper",
+                    "json_extract", "json_type", "json_valid",
+                }
+                if str(arg2 or arg1 or "").lower() not in safe_functions:
+                    return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK if action in allowed else sqlite3.SQLITE_DENY
+
+        def _time_budget_exceeded() -> int:
+            nonlocal timed_out
+            timed_out = time.monotonic() >= deadline
+            return 1 if timed_out else 0
 
         try:
             uri = f"file:{target_db.as_posix()}?mode=ro"
-            con = sqlite3.connect(uri, uri=True, timeout=3.0)
+            con = sqlite3.connect(uri, uri=True, timeout=max(0.001, min(0.25, deadline - time.monotonic())))
             try:
+                if hasattr(con, "setlimit"):
+                    con.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, response_cap)
                 con.set_authorizer(_readonly_authorizer)
+                con.set_progress_handler(_time_budget_exceeded, 1000)
                 cur = con.cursor()
                 cur.execute(sql_clean)
                 col_names = [d[0] for d in cur.description] if cur.description else []
-                rows = cur.fetchmany(100)
-                clean_rows = []
-                for r in rows:
-                    clean_rows.append([str(item) if isinstance(item, (bytes, bytearray)) else item for item in r])
-                return {
+                result = {
                     "success": True,
                     "db": db_name,
                     "columns": col_names,
-                    "rows": clean_rows,
-                    "count": len(clean_rows),
+                    "rows": [],
+                    "count": 0,
+                    "truncated": False,
+                    "duration_ms": 0.0,
+                    "response_bytes": 0,
                 }
+
+                def measure_response() -> int:
+                    result["response_bytes"] = 0
+                    for _ in range(4):
+                        measured = len(_json_bytes(result))
+                        if result["response_bytes"] == measured:
+                            return measured
+                        result["response_bytes"] = measured
+                    return len(_json_bytes(result))
+
+                for row in cur:
+                    if time.monotonic() >= deadline:
+                        timed_out = True
+                        break
+                    if len(result["rows"]) >= row_cap:
+                        result["truncated"] = True
+                        break
+                    clean = [str(item) if isinstance(item, (bytes, bytearray, memoryview)) else item for item in row]
+                    result["rows"].append(clean)
+                    result["count"] += 1
+                    encoded_size = measure_response()
+                    if encoded_size > response_cap - 64:
+                        result["rows"].pop()
+                        result["count"] -= 1
+                        result["truncated"] = True
+                        break
+                if timed_out:
+                    return {"success": False, "degraded": True, "retryable": True, "error": "query time budget exceeded"}
+                result["duration_ms"] = round(max(0.0, (time.perf_counter() - started) * 1000), 2)
+                result["response_bytes"] = measure_response()
+                return result
             finally:
+                con.set_progress_handler(None, 0)
                 con.close()
         except sqlite3.DatabaseError as exc:
-            # Sanitize error to avoid leaking internal paths
-            msg = str(exc)
-            if state_dir.as_posix() in msg or str(state_dir) in msg:
-                msg = "query execution failed"
-            return {"success": False, "error": msg}
+            if timed_out or ("interrupt" in str(exc).lower() and time.monotonic() >= deadline):
+                return {"success": False, "degraded": True, "retryable": True, "error": "query time budget exceeded"}
+            return {"success": False, "error": "query execution failed"}
         except Exception:
             return {"success": False, "error": "query execution failed"}
 
@@ -660,6 +748,10 @@ class Handler(BaseHTTPRequestHandler):
         self._request_path = path
         self._request_started = time.perf_counter()
         self._telemetry_finished = False
+        self._authorization_succeeded = False
+        self._admin_operation = ""
+        self._admin_audited = False
+        self._admin_payload = {}
         self._trace_context_token = set_context(request_id=request_id, trace_id=trace_id, agent=self._agent(), tenant=self._tenant())
         self._debug_trace_id = ""
         self._debug_observer_token = None
@@ -885,6 +977,7 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _require_authorized(self) -> bool:
+        self._authorization_succeeded = False
         if not self._validate_host_and_origin():
             return False
         if not self._authorized():
@@ -899,7 +992,57 @@ class Handler(BaseHTTPRequestHandler):
             if not srv.check_rate_limit(tenant):
                 self._send(429, {"success": False, "error": "rate limit exceeded; slow down", "retryable": True, "retry_after_seconds": 10})
                 return False
+        self._authorization_succeeded = True
         return True
+
+    def _authorize_admin_action(self, operation: str) -> bool:
+        """Require a globally authenticated request and an exact action/method route."""
+        rule = self._ADMIN_ACTIONS.get(str(operation))
+        if rule is None or not getattr(self, "_authorization_succeeded", False):
+            self._send(403 if rule is not None else 400, {"success": False, "error": "admin action not authorized"})
+            return False
+        methods, expected_path, expected_action = rule
+        actual_path = urlparse(str(getattr(self, "path", ""))).path
+        path_matches = actual_path == expected_path
+        if expected_path.endswith("/"):
+            path_matches = actual_path.startswith(expected_path) and actual_path.count("/") == expected_path.count("/")
+        if str(getattr(self, "command", "")) not in methods:
+            self._send(405, {"success": False, "error": "method not allowed for admin action"})
+            return False
+        if not path_matches:
+            self._send(403, {"success": False, "error": "admin action does not match route"})
+            return False
+        if expected_action is not None and str(getattr(self, "command", "")) == "POST":
+            payload = getattr(self, "_admin_payload", {})
+            default_action = "update" if operation == "config.update" else "list" if operation == "models.list" else ""
+            action = str(payload.get("action", default_action)).strip().lower().replace("-", "_") if isinstance(payload, dict) else ""
+            if action != expected_action:
+                self._send(403, {"success": False, "error": "admin action does not match request"})
+                return False
+        self._admin_operation = str(operation)
+        self._admin_audited = False
+        return True
+
+    def _audit_admin_action(self, status: int, data: Any = None) -> None:
+        """Record only fixed operation and outcome metadata; never request content."""
+        if getattr(self, "_admin_audited", False):
+            return
+        operation = str(getattr(self, "_admin_operation", ""))
+        if not operation:
+            return
+        self._admin_audited = True
+        if APP is None:
+            return
+        try:
+            elapsed_ms = max(0.0, (time.perf_counter() - float(getattr(self, "_request_started", time.perf_counter()))) * 1000)
+            APP.telemetry.record_system(
+                f"admin.{operation}",
+                success=200 <= int(status) < 300,
+                duration_ms=elapsed_ms,
+                status_code=int(status),
+            )
+        except Exception:
+            pass
 
     def _content_length(self, *, limit: int) -> int:
         raw = self.headers.get("Content-Length")
@@ -925,7 +1068,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             old_timeout = self.connection.gettimeout()
             body_timeout = float(APP.config.get("server", {}).get("request_body_timeout_seconds", 15.0)) if APP is not None else 15.0
-            deadline = time.monotonic() + max(0.1, body_timeout)
+            deadline = time.monotonic() + max(0.1, min(_HTTP_MAX_BODY_SECONDS, body_timeout))
             read_once = getattr(self.rfile, "read1", None) or self.rfile.read
             # A socket timeout alone is only an *idle* timeout: a slow peer can keep
             # a handler forever by trickling one byte just before each expiry. Read in
@@ -955,7 +1098,8 @@ class Handler(BaseHTTPRequestHandler):
         return b"".join(chunks)
 
     def _read_json(self) -> dict[str, Any]:
-        limit = max(1024, int(APP.config.get("server", {}).get("max_request_body_bytes", 16 * 1024 * 1024))) if APP is not None else (16 * 1024 * 1024)
+        configured_limit = int(APP.config.get("server", {}).get("max_request_body_bytes", 16 * 1024 * 1024)) if APP is not None else (16 * 1024 * 1024)
+        limit = max(1024, min(_HTTP_MAX_JSON_BODY_BYTES, configured_limit))
         raw = self._read_body(limit=limit)
         if not raw:
             return {}
@@ -1017,6 +1161,13 @@ class Handler(BaseHTTPRequestHandler):
                 breakdown = event.get("savings_breakdown", {})
                 if not isinstance(breakdown, dict) or len(breakdown) > 16:
                     raise RequestBodyError("savings_breakdown must be an object with at most 16 entries")
+        elif path in {"/api/coord/pubsub_poll", "/api/pubsub_poll"}:
+            after_seq = payload.get("after_seq", 0)
+            if isinstance(after_seq, bool) or not isinstance(after_seq, int) or not 0 <= after_seq <= MAX_EVENT_SEQUENCE:
+                raise RequestBodyError("after_seq must be an integer between 0 and 9223372036854775807")
+            limit = payload.get("limit", 50)
+            if isinstance(limit, bool) or not isinstance(limit, int):
+                raise RequestBodyError("limit must be an integer")
         elif path == "/api/work-orders":
             action = text(payload.get("action", "submit"), "action", 32).strip().lower().replace("-", "_")
             if action not in {"submit", "status", "wait", "get", "cancel", "continue"}:
@@ -1212,6 +1363,7 @@ class Handler(BaseHTTPRequestHandler):
         return 200, result
 
     def _send(self, status: int, data: Any) -> None:
+        self._audit_admin_action(status, data)
         request_id = getattr(self, "_journal_request_id", None)
         if request_id and APP is not None and not getattr(self, "_journal_finished", False):
             try:
@@ -1452,12 +1604,29 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/status":
                 detail = str((query.get("detail") or [""])[0]).strip().lower()
                 if detail == "agent_state":
-                    tasks = APP.agent_tasks.list_tasks() if getattr(APP, "agent_tasks", None) else []
+                    dependency_status: dict[str, dict[str, Any]] = {}
+                    deadline = time.monotonic() + _STATUS_TOTAL_BUDGET_SECONDS
+
+                    def read_agent_detail(key: str, callback, fallback):
+                        timeout = min(_STATUS_DEPENDENCY_TIMEOUT_SECONDS, max(0.0, deadline - time.monotonic()))
+                        value, healthy = _status_dependency(
+                            callback, fallback, key=f"detail.agent_state.{key}",
+                            lock=APP._status_dependency_lock, inflight=APP._status_dependency_inflight,
+                            slots=APP._status_dependency_slots, timeout_seconds=timeout,
+                        )
+                        dependency_status[key] = {"deadline_ms": max(0, int(timeout * 1000)), "degraded": not healthy, "status": "ok" if healthy else "degraded"}
+                        return value
+
+                    tasks = read_agent_detail("tasks", APP.agent_tasks.list_tasks, []) if getattr(APP, "agent_tasks", None) else []
                     active_tasks = [t.task_id for t in tasks if t.status == TaskStatus.ACTIVE]
-                    incidents = APP.agent_incidents.list_incidents() if getattr(APP, "agent_incidents", None) else []
-                    candidates = APP.agent_learning.list_candidates() if getattr(APP, "agent_learning", None) else []
+                    incidents = read_agent_detail("incidents", APP.agent_incidents.list_incidents, []) if getattr(APP, "agent_incidents", None) else []
+                    candidates = read_agent_detail("candidates", APP.agent_learning.list_candidates, []) if getattr(APP, "agent_learning", None) else []
+                    degraded = any(item["degraded"] for item in dependency_status.values())
                     self._send(200, {
-                        "success": True,
+                        "success": not degraded,
+                        "degraded": degraded,
+                        "dependency_status": dependency_status,
+                        "snapshot_cached": False,
                         "enabled": bool(getattr(APP, "agent_state", None) and APP.agent_state.enabled),
                         "active_tasks": active_tasks,
                         "tasks_count": len(tasks),
@@ -1654,7 +1823,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, {"available": False}); return
                 self._send(200, APP.benchmark_runner.get_latest_summary()); return
             if path == "/api/metrics":
-                days = int((query.get("days") or [30])[0])
+                days = _safe_int((query.get("days") or [30])[0], 30)
                 scope = str((query.get("scope") or ["window"])[0])
                 self._send(200, {"success": True, "metrics": APP.telemetry.summary(days, scope=scope)}); return
             if path == "/api/adoption":
@@ -1663,37 +1832,45 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, {"success": True, "available": False}); return
                 self._send(200, {"success": True, "available": True, "adoption": store.report(days=7)}); return
             if path == "/api/telemetry/report":
-                days = int((query.get("days") or [30])[0])
+                days = _safe_int((query.get("days") or [30])[0], 30)
                 scope = str((query.get("scope") or ["window"])[0])
                 self._send(200, {"success": True, "report": APP.telemetry.report(days, scope=scope)}); return
             if path == "/api/telemetry/timeline":
-                limit = int((query.get("limit") or [100])[0])
-                self._send(200, {"success": True, "timeline": APP.telemetry.get_timeline(limit)}); return
+                limit = _safe_int((query.get("limit") or [100])[0], 100)
+                cursor_value = (query.get("before_id") or [None])[0]
+                before_id = _safe_optional_int(cursor_value) if cursor_value is not None else None
+                self._send(200, {"success": True, **APP.telemetry.get_timeline_page(limit, before_id=before_id)}); return
             if path == "/api/audit/tail":
                 limit = int((query.get("limit") or [20])[0])
                 self._send(200, {"success": True, "events": APP.telemetry.tail(limit)}); return
             if path == "/api/debug-traces":
+                if not self._authorize_admin_action("debug_traces.list"):
+                    return
                 result = APP.debug_traces.list(
                     kind=str((query.get("kind") or [""])[0]),
                     state=str((query.get("state") or [""])[0]),
                     agent=str((query.get("agent") or [""])[0]),
                     model=str((query.get("model") or [""])[0]),
-                    limit=int((query.get("limit") or [50])[0]),
-                    offset=int((query.get("offset") or [0])[0]),
+                    limit=_safe_int((query.get("limit") or [50])[0], 50),
+                    offset=_safe_int((query.get("offset") or [0])[0], 0),
                 )
                 for item in result.get("items", []):
                     self._reconcile_debug_trace(item)
                 self._send(200, result); return
             if path.startswith("/api/debug-traces/"):
+                if not self._authorize_admin_action("debug_traces.detail"):
+                    return
                 trace_id = path.rsplit("/", 1)[-1]
-                since_seq = int((query.get("since_seq") or [0])[0])
-                result = APP.debug_traces.detail(trace_id, since_seq=max(0, since_seq))
+                since_seq = _safe_int((query.get("since_seq") or [0])[0], 0)
+                detail_limit = _safe_int((query.get("limit") or [100])[0], 100)
+                full_payload = str((query.get("full") or [""])[0]).strip().lower() in {"1", "true", "yes"}
+                result = APP.debug_traces.detail(trace_id, since_seq=max(0, since_seq), limit=detail_limit, full_payload=full_payload)
                 if result.get("error") == "trace not found":
                     self._send(404, result); return
                 if result.get("success") and isinstance(result.get("session"), dict):
                     session = self._reconcile_debug_trace(result["session"])
                     result["terminal"] = session.get("state") in APP.debug_traces.TERMINAL_STATES
-                self._send(200, result); return
+                self._send(200 if result.get("success") else 503 if result.get("retryable") else 400, result); return
             if path == "/api/rag/workspaces":
                 self._send(200, {"success": True, "workspaces": APP.rag.list_workspaces(self._tenant())}); return
             if path == "/api/leases":
@@ -1768,12 +1945,19 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
             if path == "/api/db/query":
+                if not self._authorize_admin_action("db.query"):
+                    return
                 db_name = (query.get("db") or ["agent_state"])[0]
                 sql_q = (query.get("query") or ["SELECT name FROM sqlite_master WHERE type='table'"])[0]
-                self._send(200, self._handle_db_query(db_name, sql_q))
+                result = self._handle_db_query(db_name, sql_q)
+                status = 200 if result.get("success") else 404 if result.get("not_found") else 504 if result.get("degraded") else 400
+                self._send(status, result)
                 return
             if path == "/api/models/manage":
-                self._send(200, self._handle_models_list())
+                if not self._authorize_admin_action("models.list"):
+                    return
+                result = self._handle_models_list()
+                self._send(200 if result.get("success") else 503, result)
                 return
             if path == "/api/security_audit":
                 root = (query.get("root") or ["."])[0]
@@ -1792,16 +1976,27 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
             if path == "/api/maintenance/optimize_db":
-                self._send(200, APP.services.optimize_databases())
+                if not self._authorize_admin_action("maintenance.optimize_db"):
+                    return
+                result = APP.services.optimize_databases()
+                self._send(200 if result.get("success") else 503 if result.get("retryable") else 500, result)
                 return
             if path == "/api/maintenance/purge_cache":
-                days = int((query.get("days") or [7])[0])
-                self._send(200, APP.services.purge_stale_cache(days))
+                if not self._authorize_admin_action("maintenance.purge_cache"):
+                    return
+                days = max(1, min(3650, _safe_int((query.get("days") or [7])[0], 7)))
+                result = APP.services.purge_stale_cache(days)
+                self._send(200 if result.get("success") else 503 if result.get("retryable") else 500, result)
                 return
             if path == "/api/maintenance/resolve_errors":
-                self._send(200, APP.services.resolve_all_errors())
+                if not self._authorize_admin_action("maintenance.resolve_errors"):
+                    return
+                result = APP.services.resolve_all_errors()
+                self._send(200 if result.get("success") else 500, result)
                 return
             if path == "/api/config":
+                if not self._authorize_admin_action("config.read"):
+                    return
                 view = json.loads(json_dumps(APP.config, default=str))
                 if isinstance(view.get("security"), dict) and view["security"].get("api_token"):
                     view["security"]["api_token"] = "***configured***"
@@ -1958,14 +2153,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if path == "/api/bundle/import":
+            if not self._authorize_admin_action("bundle.import"):
+                return
             if content_type not in {"application/zip", "application/octet-stream"}:
                 self._send(415, {"success": False, "error": "bundle import requires raw ZIP content"}); return
             try:
-                limit = max(1024, int(APP.config.get("bundles", {}).get("max_bundle_bytes", 128 * 1024 * 1024)))
+                limit = max(1024, min(128 * 1024 * 1024, int(APP.config.get("bundles", {}).get("max_bundle_bytes", 128 * 1024 * 1024))))
                 raw_bundle = self._read_body(limit=limit)
                 query = parse_qs(urlparse(self.path).query)
                 target_root = (query.get("target_root") or [None])[0]
-                self._send(200, APP.import_bundle(raw_bundle, target_root)); return
+                result = APP.import_bundle(raw_bundle, target_root)
+                self._send(200 if result.get("success") else 400, result); return
             except RequestBodyError as exc:
                 self._send(exc.status, {"success": False, "error": str(exc)}); return
         try:
@@ -1973,6 +2171,7 @@ class Handler(BaseHTTPRequestHandler):
             self._validate_payload(path, payload)
         except RequestBodyError as exc:
             self._send(exc.status, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+        self._admin_payload = payload if isinstance(payload, dict) else {}
         if path == "/api/telemetry/tool-accounting":
             # Internal MCP reporter path: do not journal or recursively count this
             # metadata transport as an agent workload/tool call.
@@ -2055,6 +2254,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"success": False, "error": "unknown work-order action", "terminal": True}); return
             if path == "/api/config/update":
                 action = str(payload.get("action", "update")).strip().lower()
+                operation = "config.reset" if action == "reset" else "config.update" if action == "update" else ""
+                if not operation:
+                    self._send(400, {"success": False, "error": "unknown config action"}); return
+                if not self._authorize_admin_action(operation):
+                    return
                 config_path = str(APP.config.get("_config_path", ""))
                 if not config_path:
                     self._send(500, {"success": False, "error": "active config path unavailable"}); return
@@ -2093,6 +2297,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"success": True, "restart_required": True, "runtime_override_path": str(target), "settings": requested}); return
             if path == "/api/control":
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
+                operation = f"control.{action}" if action in {"restart_hub", "stop_service"} else ""
+                if not operation or not self._authorize_admin_action(operation):
+                    if operation:
+                        return
+                    self._send(400, {"success": False, "error": "unknown control action"}); return
                 state_dir = Path(APP.config["server"]["state_dir"])
                 if action == "restart_hub":
                     self._journal_finished = True; self._telemetry_finished = True
@@ -2105,8 +2314,10 @@ class Handler(BaseHTTPRequestHandler):
                         os._exit(0)
                     threading.Thread(target=_graceful_restart, daemon=True).start(); return
                 if action == "stop_service":
-                    try: (state_dir / "service.disabled").write_text(f"disabled from dashboard {time.time()}\n", encoding="utf-8")
-                    except OSError: pass
+                    try:
+                        (state_dir / "service.disabled").write_text(f"disabled from dashboard {time.time()}\n", encoding="utf-8")
+                    except OSError:
+                        self._send(500, {"success": False, "action": action, "error": "service disable request failed"}); return
                     self._journal_finished = True; self._telemetry_finished = True
                     self._send(200, {"success": True, "action": action, "message": "service disabled; supervisor will stop"})
                     def _graceful_stop():
@@ -3283,14 +3494,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, APP.services.batch_replace(root, edits if isinstance(edits, list) else [], dry_run=dry_run))
                 return
             if path == "/api/maintenance/optimize_db":
-                self._send(200, APP.services.optimize_databases())
+                if not self._authorize_admin_action("maintenance.optimize_db"):
+                    return
+                result = APP.services.optimize_databases()
+                self._send(200 if result.get("success") else 503 if result.get("retryable") else 500, result)
                 return
             if path == "/api/maintenance/purge_cache":
-                days = int(payload.get("days", 7))
-                self._send(200, APP.services.purge_stale_cache(days))
+                if not self._authorize_admin_action("maintenance.purge_cache"):
+                    return
+                days = max(1, min(3650, _safe_int(payload.get("days", 7), 7)))
+                result = APP.services.purge_stale_cache(days)
+                self._send(200 if result.get("success") else 503 if result.get("retryable") else 500, result)
                 return
             if path == "/api/maintenance/resolve_errors":
-                self._send(200, APP.services.resolve_all_errors())
+                if not self._authorize_admin_action("maintenance.resolve_errors"):
+                    return
+                result = APP.services.resolve_all_errors()
+                self._send(200 if result.get("success") else 500, result)
                 return
             if path == "/api/doctor":
                 self._send(200, APP.services.run_doctor())
@@ -3654,13 +3874,26 @@ class Handler(BaseHTTPRequestHandler):
             if path in {"/api/task/scaffold", "/api/scaffold"}:
                 self._send(200, APP.services.task_scaffold(payload, tenant)); return
             if path in {"/api/db/query"}:
-                db_name = str(payload.get("db", "agent_state"))
+                if not self._authorize_admin_action("db.query"):
+                    return
+                db_name = str(payload.get("db", payload.get("database", "agent_state")))
                 sql_q = str(payload.get("query", "SELECT name FROM sqlite_master WHERE type='table'"))
-                self._send(200, self._handle_db_query(db_name, sql_q)); return
+                result = self._handle_db_query(db_name, sql_q)
+                status = 200 if result.get("success") else 404 if result.get("not_found") else 504 if result.get("degraded") else 400
+                self._send(status, result); return
             if path in {"/api/models/manage"}:
-                action = str(payload.get("action", "list"))
+                action = str(payload.get("action", "list")).strip().lower()
                 model_name = str(payload.get("model", ""))
-                self._send(200, self._handle_models_action(action, model_name)); return
+                if action == "list":
+                    if not self._authorize_admin_action("models.list"):
+                        return
+                    self._send(200, self._handle_models_list()); return
+                if action not in {"pull", "delete"}:
+                    self._send(400, {"success": False, "error": "model action must be pull or delete"}); return
+                if not self._authorize_admin_action(f"models.{action}"):
+                    return
+                result = self._handle_models_action(action, model_name)
+                self._send(200 if result.get("success") else 502, result); return
             if path in {"/api/repo/reachability_dead_code", "/api/reachability_dead_code"}:
                 root = str(payload.get("root", "."))
                 eps = payload.get("entrypoints")
@@ -3720,8 +3953,10 @@ class Handler(BaseHTTPRequestHandler):
                 top_k = int(payload.get("top_k", 8))
                 self._send(200, APP.rag.docset_search(name, query, tenant, top_k=top_k)); return
             if path == "/api/telemetry/timeline":
-                limit = int(payload.get("limit", 100)) if isinstance(payload, dict) else 100
-                self._send(200, {"success": True, "timeline": APP.telemetry.get_timeline(limit)}); return
+                limit = _safe_int(payload.get("limit", 100), 100) if isinstance(payload, dict) else 100
+                cursor_value = payload.get("before_id") if isinstance(payload, dict) else None
+                before_id = _safe_optional_int(cursor_value) if cursor_value is not None else None
+                self._send(200, {"success": True, **APP.telemetry.get_timeline_page(limit, before_id=before_id)}); return
             if path in {"/api/task/transcribe", "/api/transcribe"}:
                 self._send(200, APP.services.transcribe(payload, tenant)); return
             if path in {"/api/repo/code_invariants", "/api/code_invariants"}:
@@ -3764,7 +3999,7 @@ class Handler(BaseHTTPRequestHandler):
             if path in {"/api/coord/pubsub_publish", "/api/pubsub_publish"}:
                 self._send(200, APP.services.pubsub_publish(str(payload.get("topic", "default")), payload.get("message", ""), sender=str(payload.get("publisher", payload.get("sender", "agent"))))); return
             if path in {"/api/coord/pubsub_poll", "/api/pubsub_poll"}:
-                self._send(200, APP.services.pubsub_poll(str(payload.get("topic", "default")), since_timestamp=float(payload.get("since_timestamp", 0.0)), limit=int(payload.get("limit", 50)))); return
+                self._send(200, APP.services.pubsub_poll(str(payload.get("topic", "default")), after_seq=payload.get("after_seq", 0), limit=payload.get("limit", 50))); return
             if path in {"/api/coord/simulate_merge", "/api/simulate_merge"}:
                 self._send(200, APP.services.simulate_merge(str(payload.get("root", ".")), str(payload.get("source_branch", "")), target_branch=str(payload.get("target_branch", "HEAD")))); return
             if path in {"/api/task/eval_suite", "/api/eval_suite"}:

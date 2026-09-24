@@ -779,7 +779,7 @@ function createDashboardStatusPoller(poll,options={}){
   const setTimer=options.setTimer||((fn,delay)=>setTimeout(fn,delay));
   const clearTimer=options.clearTimer||((id)=>clearTimeout(id));
   const random=options.random||Math.random;
-  let timer=null,started=false,running=false,pending=false,visible=true,generation=0,failures=0;
+  let timer=null,started=false,running=false,pending=false,visible=true,generation=0,failures=0,unchangedSuccesses=0;
   const current=token=>started&&visible&&isVisible()&&generation===token;
   function clear(){if(timer!==null){clearTimer(timer);timer=null}}
   function schedule(delay){clear();if(started&&visible&&isVisible())timer=setTimer(()=>{timer=null;void run()},delay)}
@@ -788,14 +788,19 @@ function createDashboardStatusPoller(poll,options={}){
     if(running){pending=true;return}
     running=true;
     const token=generation;
-    let succeeded=false;
-    try{succeeded=await poll(()=>current(token))!==false}catch{}
+    let succeeded=false,unchanged=false;
+    try{
+      const outcome=await poll(()=>current(token));
+      succeeded=outcome!==false&&!(outcome&&outcome.ok===false);
+      unchanged=succeeded&&Boolean(outcome&&outcome.changed===false);
+    }catch{}
     finally{
       running=false;
       if(current(token)){
         pending=false;
-        failures=succeeded?0:Math.min(failures+1,maxFailures);
-        const backoff=Math.min(maxDelay,baseDelay*2**Math.max(0,failures-1));
+        if(succeeded){failures=0;unchangedSuccesses=unchanged?Math.min(unchangedSuccesses+1,maxFailures):0}
+        else{failures=Math.min(failures+1,maxFailures);unchangedSuccesses=0}
+        const backoff=succeeded?Math.min(maxDelay,baseDelay*2**unchangedSuccesses):Math.min(maxDelay,baseDelay*2**Math.max(0,failures-1));
         const sample=Math.min(0.999999,Math.max(0,Number(random())||0));
         schedule(Math.min(maxDelay,Math.round(backoff*(0.8+sample*0.4))));
       }else if(pending&&started&&visible&&isVisible()){
@@ -812,6 +817,7 @@ function createDashboardStatusPoller(poll,options={}){
 }
 
 let lastDashboardStatusSnapshot=null;
+let lastDashboardStatusChanged=false;
 let hardwareRefreshPending=false;
 function shouldRefreshDashboardStatus(status){
   const snapshot=JSON.stringify(status);
@@ -1826,7 +1832,7 @@ async function runDbQuery(){
     }
     const cols=res.columns||[];
     const rows=res.rows||[];
-    if(status)status.innerHTML=`<span class="ok">✓ Returned ${rows.length} row(s) in ${res.duration_ms||0} ms ${res.truncated?'(truncated at 200 rows)':''}</span>`;
+    if(status)status.innerHTML=`<span class="ok">✓ Returned ${rows.length} row(s) in ${res.duration_ms||0} ms ${res.truncated?'(bounded by the response row/byte budget)':''}</span>`;
     if(!cols.length){
       if(thead)thead.innerHTML='';
       if(tbody)tbody.innerHTML='<tr><td class="muted" style="padding:10px">Query returned no columns.</td></tr>';
@@ -1889,7 +1895,7 @@ function clickableRow(obj,html,type='',idAttr=''){
   return `<tr class="click" data-detail="${id}" data-type="${esc(resolvedType)}" ${entityId?`data-id="${esc(entityId)}"`:''}>${html}</tr>`;
 }
 
-let traceTimer=null,activeTraceId='',traceSeq=0,traceEvents=[],traceOpenSteps=new Set(),traceView='timeline',activeTraceData=null,traceRevealRedactedDetails=false,traceOptionalDetailsOpen=false,tracePollGeneration=0,tracePollInFlight=0,traceEventTotal=0;
+let traceTimer=null,activeTraceId='',traceSeq=0,traceEvents=[],traceOpenSteps=new Set(),traceView='timeline',activeTraceData=null,traceRevealRedactedDetails=false,traceOptionalDetailsOpen=false,tracePollGeneration=0,tracePollInFlight=0,traceEventTotal=0,traceFullPayloadInFlightId='';
 const traceEventBufferLimit=200;
 function traceAppendEvents(current,incoming,eventsTotal=0){const existing=Array.isArray(current)?current:[],seen=new Set(existing.map(event=>event&&Number.isFinite(event.seq)?event.seq:null).filter(seq=>seq!==null)),fresh=(Array.isArray(incoming)?incoming:[]).filter(event=>{const seq=event&&Number.isFinite(event.seq);if(!seq)return true;if(seen.has(event.seq))return false;seen.add(event.seq);return true}),merged=existing.concat(fresh);return {events:merged.slice(-traceEventBufferLimit),eventsTotal:Math.max(Number(eventsTotal)||0,merged.length)};}
 function traceFiniteSequence(candidate,prior){return typeof candidate==='number'&&Number.isFinite(candidate)&&candidate>=prior?candidate:prior;}
@@ -2659,18 +2665,37 @@ function traceHumanTitle(model){
   if(titleEl)titleEl.textContent=traceHumanTitle(model);
   if(liveEl){liveEl.textContent=d?.terminal?'finished':'● live · updating';liveEl.className='tiny '+(d?.terminal?'ok':'trace-running');}
   const state=model.lifecycle.state,displayState=traceStatus(s),stateClass=(displayState==='failed'||displayState==='error')?'bad':(displayState==='interrupted'?'warn':(d?.terminal?'ok':'warn'));
-  const revealLabel=traceRevealRedactedDetails?'Hide unredacted details':'Reveal redacted details',revealState=traceRevealRedactedDetails?'Unredacted trace details shown locally.':'Trace details are redacted by default.';
+  const revealLabel=traceRevealRedactedDetails?'Hide unredacted details':'Reveal redacted details',revealState=traceRevealRedactedDetails?'Unredacted trace details shown locally.':'Trace details are redacted by default.',contentNotice=d?.payload_truncated?'<div class="trace-content-notice" role="note" style="padding:10px 12px;margin:8px 0;border:1px solid var(--warn);border-radius:10px;color:var(--muted);font-size:12px">Some trace content exceeds the normal response limit. Reveal requests a larger bounded page; stored trace content remains available.</div>':'';
   const header=`<div class="trace-inspector-head"><div><div class="trace-kicker">Request trace</div><strong>${esc(traceHumanTitle(model))}</strong><div class="tiny">${esc(s.action||s.source||'Trace')} · ${esc(s.agent||'unknown actor')}${s.model?` · ${esc(s.model)}`:''}</div></div><div class="trace-inspector-context"><span class="trace-project-label">${esc(model.project||'Project not recorded')}</span><span class="badge ${stateClass}">${esc(state)}</span></div></div><div class="trace-metrics"><span>${esc(model.project||'Project not recorded')}</span><button type="button" class="btn" data-trace-reveal aria-pressed="${traceRevealRedactedDetails}" aria-describedby="trace-reveal-status">${esc(revealLabel)}</button><span id="trace-reveal-status" class="tiny" aria-live="polite">${esc(revealState)}</span></div>`;
   const panels=model.panels.filter(panel=>panel.available),universalSummary=traceSummary(model,unavailableCopy),panelMarkup=panels.map(panel=>{const selected=panel.id===traceView,content=selected?panel.render():'';return `<div id="trace-panel-${esc(panel.id)}" class="trace-view" role="tabpanel" aria-labelledby="trace-tab-${esc(panel.id)}"${selected?'':' hidden'}>${content}</div>`}).join('');
    const presentationMarkup=renderTracePresentation(model),primaryMarkup=tracePrimaryFallback(presentationMarkup,panels,model);
    const optionalMarkup=`<details class="trace-optional-details" id="traceTechnicalDetails"${traceOptionalDetailsOpen?' open':''}><summary>Technical details · ${panels.length} optional views</summary><div class="trace-optional-body">${universalSummary}<nav class="trace-tabs" role="tablist" aria-label="Trace views">${panels.map(panel=>traceTab(panel.label,panel.id)).join('')}</nav>${panelMarkup}</div></details>`;
    const traceBodyEl=$('tracePageBody');
-   if(traceBodyEl){traceBodyEl.className='trace-page-body';traceBodyEl.innerHTML=`<div class="human-shell">${header}${primaryMarkup}${optionalMarkup}</div>`;}
+   if(traceBodyEl){traceBodyEl.className='trace-page-body';traceBodyEl.innerHTML=`<div class="human-shell">${header}${contentNotice}${primaryMarkup}${optionalMarkup}</div>`;}
     const restore=()=>{restoreTracePrimaryGroups($('tracePageBody'),primaryGroupsState);restoreTraceCollapsibleDetails($('tracePageBody'),collapsibleDetailsState);restoreTraceThinkingDetails($('tracePageBody'),thinkingDetailsOpen);restoreTraceScrollPositions($('tracePageBody'),scrollPositions);const nextMain=$('tracePageBody')?.closest('.trace-main');if(nextMain){nextMain.scrollTop=mainScrollTop;nextMain.scrollLeft=mainScrollLeft}};
    if(window.requestAnimationFrame)window.requestAnimationFrame(restore);else restore();
 }
 function setTraceView(view){if(!activeTraceData)return;const model=traceDisplayModel(activeTraceData);if(!model.panels.some(panel=>panel.available&&panel.id===view))return;traceView=view;renderTraceDetail(activeTraceData)}
-function toggleTraceReveal(){if(!activeTraceData)return;traceRevealRedactedDetails=!traceRevealRedactedDetails;renderTraceDetail(activeTraceData)}
+async function toggleTraceReveal(){
+  if(!activeTraceData)return;
+  const reveal=!traceRevealRedactedDetails;
+  if(reveal&&activeTraceData.payload_truncated&&!activeTraceData.full_payload_requested&&activeTraceId&&traceFullPayloadInFlightId!==activeTraceId){
+    const requestingTraceId=activeTraceId;
+    traceFullPayloadInFlightId=requestingTraceId;
+    try{
+      const r=await apiFetch('/api/debug-traces/'+encodeURIComponent(requestingTraceId)+'?since_seq=0&limit=100&full=1',{cache:'no-store'}),d=await r.json();
+      if(activeTraceId!==requestingTraceId)return;
+      if(d.success){
+        const bySeq=new Map((traceEvents||[]).map(event=>[event.seq,event]));
+        for(const event of Array.isArray(d.events)?d.events:[])bySeq.set(event.seq,event);
+        traceEvents=Array.from(bySeq.values()).sort((a,b)=>a.seq-b.seq).slice(-traceEventBufferLimit);
+        traceEventTotal=Math.max(traceEventTotal,Number(d.events_total||d.next_seq||0));
+        activeTraceData={...activeTraceData,...d,events:traceEvents,events_total:traceEventTotal};
+      }
+    }catch{}finally{if(traceFullPayloadInFlightId===requestingTraceId)traceFullPayloadInFlightId='';}
+  }
+  traceRevealRedactedDetails=reveal;renderTraceDetail(activeTraceData);
+}
 function setTraceDetailsOpen(open){const body=$('tracePageBody');if(!body)return;body.querySelectorAll('details[data-trace-collapsible],#traceTechnicalDetails').forEach(detail=>{detail.open=Boolean(open)});}
 function copyTraceFinalResponse(btn){if(!activeTraceData)return;const model=traceDisplayModel(activeTraceData);if(!traceRecorded(model.output)){if(btn){btn.textContent='No final response';setTimeout(()=>{btn.textContent='Copy final response'},1500)}return;}copyText(promptText(model.output),btn);}
 function moveTraceTab(tab,key){
@@ -5122,6 +5147,7 @@ async function pollStatus(isCurrent=()=>document.visibilityState!=='hidden'){
     const s=await r.json();
     if(!current())return false;
     const changed=shouldRefreshDashboardStatus(s);
+    lastDashboardStatusChanged=changed;
     if(changed)render(s);
     hasLiveStatus=true;$('conn').textContent='live';$('conn').className='pill ok';if(changed)$('updated').textContent='updated '+new Date().toLocaleTimeString();
     if(changed||hardwareRefreshPending)try{
@@ -5157,7 +5183,10 @@ async function pollStatus(isCurrent=()=>document.visibilityState!=='hidden'){
     console.error('dashboard status refresh failed',e);if(last&&lastOverviewReceivedAt)renderOverviewHealth(last,lastOverviewReceivedAt);$('conn').textContent=hasLiveStatus?'stale':'offline';$('conn').className=hasLiveStatus?'pill warn-t':'pill bad-t';return false;
   }finally{statusPollInFlight=false;if(statusPollAbortController===controller)statusPollAbortController=null}
 }
-const statusPoller=createDashboardStatusPoller(isCurrent=>pollStatus(isCurrent));
+const statusPoller=createDashboardStatusPoller(async isCurrent=>{
+  const succeeded=await pollStatus(isCurrent);
+  return succeeded?{changed:lastDashboardStatusChanged}:false;
+});
 document.addEventListener('visibilitychange',()=>{
   const visible=document.visibilityState!=='hidden';
   statusPoller.setVisible(visible);
