@@ -79,6 +79,45 @@ def test_client_coalesces_simultaneous_identical_requests(tmp_path, monkeypatch)
     assert sorted(bool(item.get("coalesced")) for item in results) == [False, True]
 
 
+def test_client_singleflight_cleanup_keeps_flight_visible_until_signaled(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    native_event = threading.Event
+    nested_results = []
+    calls = []
+    event_count = 0
+
+    class CallbackEvent:
+        def __init__(self, on_set=None):
+            self._event = native_event()
+            self._on_set = on_set
+
+        def set(self):
+            self._event.set()
+            if self._on_set is not None:
+                self._on_set()
+
+        def wait(self, timeout=None):
+            return self._event.wait(timeout)
+
+    def on_owner_signal():
+        nested_results.append(
+            client._singleflight("same-key", 1, lambda: calls.append("second") or {"success": True}, "second")
+        )
+
+    def make_event():
+        nonlocal event_count
+        event_count += 1
+        return CallbackEvent(on_owner_signal if event_count == 1 else None)
+
+    monkeypatch.setattr(client_module.threading, "Event", make_event)
+
+    result = client._singleflight("same-key", 1, lambda: calls.append("owner") or {"success": True}, "owner")
+
+    assert result["success"] is True
+    assert calls == ["owner"]
+    assert nested_results == [{"success": True, "coalesced": True}]
+
+
 def test_client_reconnects_on_idle_disconnect(tmp_path, monkeypatch):
     class Response:
         status = 200
@@ -250,6 +289,25 @@ def test_post_replays_allowlisted_read_only_route(tmp_path, monkeypatch):
     assert result["success"] is True
     assert len(request_ids) == 2
     assert len(set(request_ids)) == 1
+
+
+def test_get_non_object_json_response_includes_request_id(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    request_ids = []
+
+    def pooled_open(_method, _path, _body, headers, _timeout):
+        request_ids.append(headers["X-LocalAI-Request-ID"])
+        return b"[]"
+
+    monkeypatch.setattr(client, "_pooled_open", pooled_open)
+
+    result = client.get("/health")
+
+    assert result == {
+        "success": False,
+        "error": "invalid JSON response",
+        "request_id": request_ids[0],
+    }
 
 
 def test_post_malformed_response_returns_explicit_unknown_outcome(tmp_path, monkeypatch):
@@ -482,6 +540,30 @@ def test_stream_events_sends_client_identity_and_caps_timeout(tmp_path, monkeypa
     assert seen["headers"]["x-localai-request-id"].startswith("req_")
     assert seen["timeout"] <= client.max_request_timeout
     assert "timeout=5" in seen["url"]
+
+
+def test_stream_events_wraps_non_object_json_in_data_dict(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def __iter__(self):
+            return iter([
+                b'data: ["value"]\n', b"\n",
+                b"data: 7\n", b"\n",
+                b"data: true\n", b"\n",
+            ])
+
+    monkeypatch.setattr(client_module, "urlopen", lambda *_args, **_kwargs: Response())
+
+    events = list(client.stream_events(timeout=1))
+
+    assert events == [
+        ("message", {"raw": '["value"]'}),
+        ("message", {"raw": "7"}),
+        ("message", {"raw": "true"}),
+    ]
 
 
 def test_stream_events_reports_uncertain_partial_disconnect(tmp_path, monkeypatch):

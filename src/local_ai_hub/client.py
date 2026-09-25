@@ -178,9 +178,9 @@ class HubClient:
             except BaseException as exc:
                 flight["error"] = exc
             finally:
+                flight["event"].set()
                 with self._flight_lock:
                     self._flights.pop(key, None)
-                flight["event"].set()
             if flight["error"] is not None:
                 raise flight["error"]
             return flight["result"]
@@ -450,7 +450,11 @@ class HubClient:
 
         def once(attempt_timeout: float) -> dict[str, Any]:
             result = json.loads(self._pooled_open("GET", path, None, headers, attempt_timeout).decode("utf-8"))
-            return result if isinstance(result, dict) else {"success": False, "error": "invalid JSON response"}
+            return result if isinstance(result, dict) else {
+                "success": False,
+                "error": "invalid JSON response",
+                "request_id": request_id,
+            }
 
         def execute() -> dict[str, Any]:
             deadline = time.monotonic() + timeout
@@ -863,6 +867,8 @@ class HubClient:
                             try:
                                 parsed_data = json.loads(data_str)
                             except Exception:
+                                parsed_data = {"raw": data_str}
+                            if not isinstance(parsed_data, dict):
                                 parsed_data = {"raw": data_str}
                             yield cur_event or "message", parsed_data
                         cur_event = ""
