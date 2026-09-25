@@ -367,10 +367,25 @@ def test_different_replay_safe_payloads_do_not_coalesce(tmp_path, monkeypatch):
 def test_coord_pubsub_poll_uses_after_seq_in_json_body(tmp_path, monkeypatch):
     client = _client(tmp_path)
     captured = []
+    responses = []
 
     def capture_open(method, path, body, _headers, _timeout):
-        captured.append({"method": method, "path": path, "body": json.loads(body.decode("utf-8"))})
-        return b'{"success":true}'
+        request_body = json.loads(body.decode("utf-8"))
+        captured.append({"method": method, "path": path, "body": request_body})
+        after_seq = request_body["after_seq"]
+        messages = [{"seq": max(after_seq + 1, 8), "value": "update"}]
+        response = {
+            "success": True,
+            "messages": messages,
+            "after_seq": after_seq,
+            "next_seq": messages[-1]["seq"],
+            "last_seq": 24,
+            "has_more": messages[-1]["seq"] < 24,
+            "has_gap": after_seq < 7,
+            "first_retained_seq": 8,
+        }
+        responses.append(response)
+        return json.dumps(response).encode("utf-8")
 
     monkeypatch.setattr(client, "_terminal_preflight", lambda *_args: None)
     monkeypatch.setattr(client, "_pooled_open", capture_open)
@@ -380,6 +395,13 @@ def test_coord_pubsub_poll_uses_after_seq_in_json_body(tmp_path, monkeypatch):
 
     assert default_result["success"] is True
     assert explicit_result["success"] is True
+    assert [type(call["body"]["after_seq"]) for call in captured] == [int, int]
+    assert default_result == responses[0]
+    assert explicit_result == responses[1]
+    assert default_result["has_gap"] is True
+    assert explicit_result["has_gap"] is False
+    assert default_result["next_seq"] == 8
+    assert explicit_result["next_seq"] == 18
     assert captured == [
         {
             "method": "POST",
