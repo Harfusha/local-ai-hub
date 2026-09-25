@@ -64,6 +64,59 @@ def test_lowlevel_request_handler_returns_compact_minified_json(monkeypatch) -> 
     assert parsed["success"] is True
 
 
+@pytest.mark.parametrize("detail", ["cache", "full", "telemetry"])
+def test_status_detail_operations_dispatch_through_lowlevel_mcp_tool(monkeypatch, detail: str) -> None:
+    client = local_ai_mcp.HubClient(tenant="test", auto_start=False)
+    requested_paths: list[str] = []
+
+    def fake_get(path: str, timeout=None):
+        requested_paths.append(path)
+        if path == "/api/live/status?light=1&scope=process":
+            return {
+                "success": True,
+                "hub_online": True,
+                "runtime_stats": {"generation_cache": {"entries": 2}},
+                "scheduler": {},
+                "observability": {},
+            }
+        if path == "/api/capabilities":
+            return {"success": True, "capability_count": 3}
+        if path == "/api/telemetry/report?days=30&scope=process":
+            return {"success": True, "summary": {"events": 4}, "queue": {"queued": 0}}
+        raise AssertionError(f"unexpected HubClient GET path: {path}")
+
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", client)
+    monkeypatch.setattr(client, "get", fake_get)
+    request = t.CallToolRequest(
+        method="tools/call",
+        params=t.CallToolRequestParams(
+            name="local_ai_status",
+            arguments={"detail": detail},
+        ),
+    )
+
+    server_res = asyncio.run(local_ai_mcp.mcp._mcp_server.request_handlers[t.CallToolRequest](request))
+
+    assert isinstance(server_res.root, t.CallToolResult)
+    assert server_res.root.content
+    content = server_res.root.content[0]
+    assert isinstance(content, t.TextContent)
+    payload = json.loads(content.text)
+    assert payload["success"] is True
+    if detail == "cache":
+        assert payload["generation_cache"] == {"entries": 2}
+    elif detail == "full":
+        assert payload["capabilities"] == {"success": True, "capability_count": 3}
+    else:
+        assert payload["summary"]["events"] == 4
+    expected_paths = ["/api/live/status?light=1&scope=process"]
+    if detail == "full":
+        expected_paths.append("/api/capabilities")
+    elif detail == "telemetry":
+        expected_paths.append("/api/telemetry/report?days=30&scope=process")
+    assert requested_paths == expected_paths
+
+
 def _capture_client(monkeypatch, response):
     client = local_ai_mcp.HubClient(tenant="test", auto_start=False)
     calls = []

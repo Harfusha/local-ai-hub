@@ -27,7 +27,7 @@ SOURCE_FILES = {
 DYNAMIC_ROUTE_REGISTRY = (
     {
         "path": "/api/context/pack",
-        "method": "GET",
+        "method": "POST",
         "match": "exact",
         "classification": "registered_dynamic",
         "note": "Handler implementation excluded from T01 inspection.",
@@ -169,7 +169,7 @@ def _mcp_action_handlers(
         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
     if "action" not in {item.arg for item in function.args.args}:
-        return {"actions": [], "default_actions": [], "prefixes": [], "symbols": [function.name], "delegated": False, "targets": []}
+        return {"actions": [], "default_actions": [], "declared_actions": [], "prefixes": [], "symbols": [function.name], "delegated": False, "targets": []}
 
     handlers = [function]
     symbols = [function.name]
@@ -226,6 +226,7 @@ def _mcp_action_handlers(
     return {
         "actions": sorted(dispatch_actions),
         "default_actions": sorted(default_actions),
+        "declared_actions": sorted(declared_actions),
         "prefixes": sorted(prefixes),
         "symbols": sorted(symbols),
         "delegated": action_payload and bool(
@@ -290,6 +291,7 @@ def _extract_mcp(tree: ast.Module, path: str) -> tuple[list[dict[str, Any]], dic
             "handler_symbols": handler_analysis["symbols"],
             "dispatch_actions": handler_analysis["actions"],
             "default_actions": handler_analysis["default_actions"],
+            "declared_actions": handler_analysis["declared_actions"],
             "dispatch_prefixes": handler_analysis["prefixes"],
             "delegated_dispatch": handler_analysis["delegated"],
             "http_targets": handler_analysis["targets"],
@@ -339,6 +341,64 @@ def _extract_mcp(tree: ast.Module, path: str) -> tuple[list[dict[str, Any]], dic
                 conditional_actions["local_ai_repo"] = {action: gate for action in sorted(optional)}
 
     return sorted(tools, key=lambda item: item["name"]), action_aliases, conditional_actions
+
+
+def _conditional_list_action_gates(
+    tree: ast.Module, class_name: str, method_name: str
+) -> dict[str, str]:
+    """Return literal actions appended under feature-guarded branches."""
+    target = next(
+        (
+            member
+            for cls in tree.body
+            if isinstance(cls, ast.ClassDef) and cls.name == class_name
+            for member in cls.body
+            if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and member.name == method_name
+        ),
+        None,
+    )
+    if target is None:
+        return {}
+
+    gates: dict[str, str] = {}
+    for branch in (node for node in ast.walk(target) if isinstance(node, ast.If)):
+        gate = next(
+            (
+                item.attr
+                for item in ast.walk(branch.test)
+                if isinstance(item, ast.Attribute)
+                and isinstance(item.value, ast.Name)
+                and item.value.id == "self"
+            ),
+            None,
+        )
+        if not gate:
+            continue
+
+        true_actions = {
+            value
+            for statement in branch.body
+            for call in ast.walk(statement)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "append"
+            for argument in call.args
+            for value in _literal_strings(argument)
+        }
+        false_actions = {
+            value
+            for statement in branch.orelse
+            for call in ast.walk(statement)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "append"
+            for argument in call.args
+            for value in _literal_strings(argument)
+        }
+        for action in true_actions - false_actions:
+            gates[action] = gate
+    return gates
 
 
 def _generated_mcp_schemas(root: Path) -> tuple[dict[str, dict[str, Any]], dict[str, str], list[str]]:
@@ -415,6 +475,42 @@ def _route_literals(condition: ast.AST) -> tuple[set[str], bool]:
     return {value for value in paths if value.startswith("/")}, dynamic
 
 
+def _route_path_matches(condition: ast.AST, aliases: dict[str, ast.AST]) -> dict[str, bool]:
+    """Resolve literal route checks through local boolean aliases."""
+    matches: dict[str, bool] = {}
+
+    def visit(node: ast.AST, active_aliases: set[str]) -> None:
+        for child in ast.walk(node):
+            if isinstance(child, ast.Compare):
+                route_expression = any(
+                    (isinstance(part, ast.Attribute) and part.attr in {"path", "url"})
+                    or (isinstance(part, ast.Name) and part.id.lower() in {"path", "url", "route", "endpoint"})
+                    for part in ast.walk(child.left)
+                )
+                if route_expression:
+                    for value in _literal_strings(child):
+                        if value.startswith("/"):
+                            matches[value] = matches.get(value, False)
+            elif (
+                isinstance(child, ast.Call)
+                and _call_name(child.func) in {"startswith", "endswith", "match", "fullmatch"}
+                and child.args
+            ):
+                for value in _literal_strings(child.args[0]):
+                    if value.startswith("/"):
+                        matches[value] = True
+
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Name) or child.id in active_aliases:
+                continue
+            alias = aliases.get(child.id)
+            if alias is not None:
+                visit(alias, active_aliases | {child.id})
+
+    visit(condition, set())
+    return matches
+
+
 def _walk_handler_nodes(function: ast.FunctionDef | ast.AsyncFunctionDef):
     stack = list(reversed(function.body))
     while stack:
@@ -438,24 +534,60 @@ def _extract_http(tree: ast.Module, path: str) -> list[dict[str, Any]]:
             )
     for function in handlers:
         method = HTTP_METHODS[function.name]
+        route_aliases: dict[str, ast.AST] = {}
+        for node in _walk_handler_nodes(function):
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+            else:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    route_aliases[target.id] = node.value
         for branch in _walk_handler_nodes(function):
             if not isinstance(branch, ast.If):
                 continue
-            paths, is_dynamic = _route_literals(branch.test)
-            for route in paths:
+            route_matches = _route_path_matches(branch.test, route_aliases)
+            for route, is_dynamic in route_matches.items():
                 # Record route identity only. Never inspect or return pack handler body.
                 if route == "/api/context/pack":
                     continue
-                route_nodes: list[ast.AST] = []
-                pending = list(reversed(branch.body))
-                while pending:
-                    current = pending.pop()
-                    if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
-                        continue
-                    if isinstance(current, ast.If) and "/api/context/pack" in _route_literals(current.test)[0]:
-                        continue
-                    route_nodes.append(current)
-                    pending.extend(reversed(list(ast.iter_child_nodes(current))))
+                aliased_route = any(
+                    isinstance(node, ast.Name) and node.id in route_aliases
+                    for node in ast.walk(branch.test)
+                )
+                if method == "OPTIONS" and aliased_route:
+                    route_nodes = []
+                    try:
+                        branch_index = function.body.index(branch)
+                    except ValueError:
+                        branch_index = -1
+                    if branch_index >= 0:
+                        following_statements = function.body[branch_index:]
+                        for offset, statement in enumerate(following_statements):
+                            if offset and isinstance(statement, ast.If):
+                                following_routes = set(_route_path_matches(statement.test, route_aliases))
+                                if following_routes and not following_routes <= set(route_matches):
+                                    break
+                            route_nodes.extend(
+                                node
+                                for node in ast.walk(statement)
+                                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef))
+                            )
+                    else:
+                        route_nodes.extend(branch.body)
+                else:
+                    route_nodes = []
+                    pending = list(reversed(branch.body))
+                    while pending:
+                        current = pending.pop()
+                        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+                            continue
+                        if isinstance(current, ast.If) and "/api/context/pack" in _route_literals(current.test)[0]:
+                            continue
+                        route_nodes.append(current)
+                        pending.extend(reversed(list(ast.iter_child_nodes(current))))
 
                 query_fields: set[str] = set()
                 body_fields: set[str] = set()
@@ -877,12 +1009,20 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
     source_mcp_tools, mcp_action_aliases, conditional_mcp_actions = _extract_mcp(
         modules["mcp"][1], SOURCE_FILES["mcp"]
     )
+    conditional_command_actions = _conditional_list_action_gates(
+        modules["features"][1], "FeatureSet", "supported_command_actions"
+    )
+    if conditional_command_actions:
+        conditional_mcp_actions.setdefault("local_ai_command", {}).update(
+            conditional_command_actions
+        )
     source_tools_by_name = {item["name"]: item for item in source_mcp_tools}
     mcp_schemas, mcp_schema_evidence, schema_errors = _generated_mcp_schemas(root)
     mcp_tools = []
     mcp_contracts: dict[str, dict[str, Any]] = {}
     mcp_actions: dict[str, list[str]] = {}
     mcp_variants: dict[str, dict[str, list[str]]] = {}
+    mcp_schema_drift_actions: dict[str, dict[str, str]] = {}
     drift = list(schema_errors)
     for name, schema in sorted(mcp_schemas.items()):
         source_tool = source_tools_by_name.get(name)
@@ -960,6 +1100,20 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
                     if parameter == "action" and not handled:
                         drift.append(f"missing MCP action handler {name}:{action}")
 
+    for source_tool in source_mcp_tools:
+        name = source_tool["name"]
+        generated_actions = set(mcp_actions.get(name, []))
+        omitted_public_actions = set(source_tool.get("declared_actions", [])) - generated_actions
+        for action in omitted_public_actions:
+            if action in conditional_mcp_actions.get(name, {}):
+                continue
+            mcp_schema_drift_actions.setdefault(name, {})[action] = (
+                "source action omitted from generated schema; no feature gate identified"
+            )
+            drift.append(
+                f"unconditional source MCP action missing generated schema {name}:{action}"
+            )
+
     for name, source_tool in sorted(source_tools_by_name.items()):
         if name in mcp_schemas:
             continue
@@ -995,6 +1149,7 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
         "mcp_tools": mcp_tools,
         "mcp_contracts": mcp_contracts,
         "mcp_actions": mcp_actions,
+        "mcp_schema_drift_actions": mcp_schema_drift_actions,
         "mcp_variants": mcp_variants,
         "mcp_action_aliases": mcp_action_aliases,
         "conditional_mcp_actions": conditional_mcp_actions,
@@ -1110,6 +1265,681 @@ _UNVERIFIED_MARKERS = (
     "no matching", "no fixture", "no http target", "no direct", "not captured",
     "not linked", "not inferred",
 )
+
+OPERATION_ACCEPTANCE_EVIDENCE = {
+    ("HTTP OPTIONS", "/api/browser/"): {
+        "acceptance": "Loopback preflight under the browser prefix returns 204 and echoes the configured extension origin.",
+        "test_ids": [
+            "tests/test_http_vision_routes.py::test_token_auth_supports_bridge_and_review_preflight_without_wildcard_origin",
+        ],
+        "test_coverage": "Production loopback OPTIONS behavior linked for a browser bridge path; denied-origin and all subpaths remain unverified",
+    },
+    ("HTTP OPTIONS", "/api/vision/review"): {
+        "acceptance": "Loopback preflight on the exact vision review route returns 204 and advertises token headers for the configured origin.",
+        "test_ids": [
+            "tests/test_http_vision_routes.py::test_token_auth_supports_bridge_and_review_preflight_without_wildcard_origin",
+        ],
+        "test_coverage": "Production loopback OPTIONS behavior linked for exact vision review path; denied-origin and all CORS header combinations remain unverified",
+    },
+    ("HTTP POST", "/api/context/pack"): {
+        "acceptance": "Loopback HTTP tests exercise successful POST behavior and terminal failure handling.",
+        "test_ids": [
+            "tests/test_context_delivery.py::test_context_http_rejects_malformed_max_tokens_and_guard_fields",
+            "tests/test_context_delivery.py::test_context_http_preserves_terminal_pack_failure_with_and_without_task_context",
+        ],
+        "test_coverage": (
+            "focused HTTP behavior passed (2 acceptance tests); full route behavior unverified; "
+            "Hub execution dba04b9325c2475f9019431b2bdcc508; "
+            "revision 3f0946c01f6c8397f717553c59a1442463cc07cd5712bf5fa9d555771541b84f"
+        ),
+    },
+    ("HTTP POST", "/api/conversations/continue"): {
+        "acceptance": "Production HTTP route preserves transcript and conversation id on success, reports expiry as terminal, and returns retryable in-progress for a competing continuation.",
+        "test_ids": [
+            "tests/test_conversation_continue_route_contract.py::test_hub_client_continues_through_production_route_and_preserves_transcript",
+            "tests/test_conversation_continue_route_contract.py::test_expired_conversation_is_terminal_through_production_route",
+            "tests/test_conversation_continue_route_contract.py::test_competing_continuation_is_retryable_in_progress_through_production_route",
+        ],
+        "test_coverage": "Production-route loopback cases linked; generation is stubbed; execution pending; live generation quality unverified",
+    },
+    ("HTTP POST", "/api/browser/capability"): {
+        "acceptance": "Browser capability route enforces one-use capture and returns terminal errors when tab or window inputs are missing.",
+        "test_ids": ["tests/test_http_vision_routes.py::test_browser_capability_capture_and_review_routes_are_explicit_and_tenant_scoped"],
+        "test_coverage": "Fixture-backed route behavior linked; execution pending; browser extension integration unverified",
+    },
+    ("HTTP POST", "/api/browser/capture"): {
+        "acceptance": "Browser capture route rejects missing permission, tenant mismatch, and replay, then returns normalized URL and artifact id on success.",
+        "test_ids": ["tests/test_http_vision_routes.py::test_browser_capability_capture_and_review_routes_are_explicit_and_tenant_scoped"],
+        "test_coverage": "Fixture-backed permission, tenant, replay, and success cases linked; execution pending; browser extension integration unverified",
+    },
+    ("HTTP POST", "/api/vision/review"): {
+        "acceptance": "Vision review route returns the successful review result, bundle id, and tenant from the configured service.",
+        "test_ids": ["tests/test_http_vision_routes.py::test_browser_capability_capture_and_review_routes_are_explicit_and_tenant_scoped"],
+        "test_coverage": "Loopback route and tenant result assertions linked; vision service is stubbed; execution pending; model quality unverified",
+    },
+    ("HTTP POST", "/api/telemetry/tool-accounting"): {
+        "acceptance": "Tool-accounting handler returns aggregate accepted and rejected counts and omits exception details.",
+        "test_ids": ["tests/test_http_tool_accounting_rejections.py::test_tool_accounting_reports_aggregate_rejections_without_exception_details"],
+        "test_coverage": "Handler-level aggregate and redaction assertions linked; execution pending; auth, parsing, validation, and response transport are stubbed",
+    },
+    ("HTTP POST", "/api/agent-state/context"): {
+        "acceptance": "Agent-state context route composes agent and repository context and forwards scope, phase, focus, revision, and diagnostics fields.",
+        "test_ids": [
+            "tests/test_unified_task_context_transport.py::test_context_endpoint_composes_agent_and_repository_context",
+            "tests/test_agent_state_transport.py::test_http_context_transport_preserves_diagnostics_flag",
+            "tests/test_agent_state_transport.py::test_http_context_transport_forwards_scope_context",
+        ],
+        "test_coverage": "Loopback composition and request-field assertions linked; dependencies are stubbed; execution pending; live indexed Hub behavior unverified",
+    },
+    ("HTTP GET", "/api/agent-state/memory"): {
+        "acceptance": "Agent-state memory GET isolates results by task, session, repository root and id, and tenant.",
+        "test_ids": ["tests/test_agent_state_transport.py::test_http_memory_get_is_scope_and_root_isolated"],
+        "test_coverage": "Loopback scope and tenant isolation cases linked; execution pending; seeded synthetic records do not cover the full query contract",
+    },
+    ("HTTP POST", "/api/artifact/get"): {
+        "acceptance": "Binary artifact retrieval returns byte-identical PNG data for the matching tenant and conceals cross-tenant artifacts as missing or expired.",
+        "test_ids": ["tests/test_vision_artifacts.py::test_http_binary_artifact_get_returns_complete_payload"],
+        "test_coverage": "Loopback binary PNG and tenant-concealment cases linked; execution pending; other artifact types and expiry behavior unverified",
+    },
+    ("HTTP POST", "/api/agent-state/tasks"): {
+        "acceptance": "Agent-state task route accepts flat create and checkpoint payloads and returns task id and checkpoint phase.",
+        "test_ids": ["tests/test_agent_os_enhancements.py::test_http_server_flat_payload_fallbacks"],
+        "test_coverage": "Loopback flat create and checkpoint happy paths linked; execution pending; other task actions unverified",
+    },
+    ("HTTP POST", "/api/agent-state/memory"): {
+        "acceptance": "Agent-state memory route records a flat repository-scoped record and finds it by value.",
+        "test_ids": ["tests/test_agent_os_enhancements.py::test_http_server_flat_payload_fallbacks"],
+        "test_coverage": "Loopback record and find success path linked; execution pending; other memory actions and scope isolation unverified",
+    },
+    ("HTTP GET", "/api/adoption"): {
+        "acceptance": "Adoption endpoint returns aggregate metric totals and omits individual event records.",
+        "test_ids": ["tests/test_adoption_metrics.py::test_http_adoption_endpoint_returns_aggregates_only"],
+        "test_coverage": "Loopback aggregate count and event-omission assertion linked; execution pending; broader aggregation cases unverified",
+    },
+    ("HTTP POST", "/api/work-orders"): {
+        "acceptance": "Work-order route rejects a request with a missing work id before it reaches the orchestrator.",
+        "test_ids": ["tests/test_work_orchestrator.py::test_work_order_http_post_transport_routes_to_orchestrator"],
+        "test_coverage": "Missing-id negative route case linked; execution pending; valid work-order creation path unverified",
+    },
+    ("HTTP GET", "/api/debug-traces"): {
+        "acceptance": "Debug-trace list route returns a successful nonempty item list for a trace query.",
+        "test_ids": ["tests/test_reliability_core.py::test_http_auth_json_limits_security_headers_and_binary_bundle"],
+        "test_coverage": "Real Hub subprocess query and nonempty-list assertions linked; execution pending; ordering, filters, and limit semantics unverified",
+    },
+    ("HTTP GET", "/api/debug-traces/"): {
+        "acceptance": "Debug-trace detail route returns request session data and event records for a trace id.",
+        "test_ids": ["tests/test_reliability_core.py::test_http_auth_json_limits_security_headers_and_binary_bundle"],
+        "test_coverage": "Real Hub subprocess detail assertions linked; execution pending; event field semantics unverified",
+    },
+    ("HTTP POST", "/api/bundle/import"): {
+        "acceptance": "Authenticated bundle import accepts a valid digest-checked empty bundle.",
+        "test_ids": ["tests/test_reliability_core.py::test_http_auth_json_limits_security_headers_and_binary_bundle"],
+        "test_coverage": "Real Hub authenticated valid-bundle success path linked; execution pending; imported content and rejection paths unverified",
+    },
+    ("HTTP GET", "/api/status"): {
+        "acceptance": "Status route rejects unauthenticated requests and returns HTTP 200 for a valid API token.",
+        "test_ids": ["tests/test_reliability_core.py::test_http_auth_json_limits_security_headers_and_binary_bundle"],
+        "test_coverage": "Real Hub unauthenticated and valid-token cases linked; execution pending; response body and invalid-token behavior unverified",
+    },
+    ("HTTP GET", "/api/live/status"): {
+        "acceptance": "Authorized live-status route returns observability counters for active requests and recent HTTP activity.",
+        "test_ids": ["tests/test_reliability_core.py::test_http_auth_json_limits_security_headers_and_binary_bundle"],
+        "test_coverage": "Real Hub authorization and observability-shape assertions linked; execution pending; degraded-state behavior unverified",
+    },
+    ("HTTP GET", "/api/capabilities"): {
+        "acceptance": "Real-server GET smoke request returns a nonempty response with status below 500.",
+        "test_ids": ["tests/test_reliability_core.py::test_http_auth_json_limits_security_headers_and_binary_bundle"],
+        "test_coverage": "Real Hub below-500/nonempty smoke assertion linked; execution pending; 4xx/404 allowed, response schema and successful operation unverified",
+    },
+    ("HTTP GET", "/api/hardware/system"): {
+        "acceptance": "Real-server GET smoke request returns a nonempty response with status below 500.",
+        "test_ids": ["tests/test_reliability_core.py::test_http_auth_json_limits_security_headers_and_binary_bundle"],
+        "test_coverage": "Real Hub below-500/nonempty smoke assertion linked; execution pending; 4xx/404 allowed, response schema and successful operation unverified",
+    },
+    ("HTTP GET", "/api/config"): {
+        "acceptance": "Real-server GET smoke request returns a nonempty response with status below 500.",
+        "test_ids": ["tests/test_reliability_core.py::test_http_auth_json_limits_security_headers_and_binary_bundle"],
+        "test_coverage": "Real Hub below-500/nonempty smoke assertion linked; execution pending; 4xx/404 allowed, response schema and successful operation unverified",
+    },
+    ("HTTP GET", "/api/logs/tail"): {
+        "acceptance": "Real-server GET smoke request with lines=5 returns a nonempty response with status below 500.",
+        "test_ids": ["tests/test_reliability_core.py::test_http_auth_json_limits_security_headers_and_binary_bundle"],
+        "test_coverage": "Real Hub below-500/nonempty smoke assertion linked; execution pending; 4xx/404 allowed, log response and line-limit behavior unverified",
+    },
+    ("HTTP POST", "/api/config/update"): {
+        "acceptance": "Configuration update reports restart required and creates the runtime configuration file.",
+        "test_ids": ["tests/test_reliability_core.py::test_http_auth_json_limits_security_headers_and_binary_bundle"],
+        "test_coverage": "Real Hub config update and file-existence assertions linked; execution pending; persisted values and restart behavior unverified",
+    },
+    ("HTTP POST", "/api/repo/profile"): {
+        "acceptance": "Weak smoke probe only: nonempty response with status below 500; operation acceptance still needs a success or defined-error contract assertion.",
+        "test_ids": ["tests/test_reliability_core.py::test_http_auth_json_limits_security_headers_and_binary_bundle"],
+        "test_coverage": "Real-server smoke linked; execution pending; any 4xx including 404 passes, so dispatch and response contract remain unverified",
+    },
+    ("HTTP POST", "/api/repo/map"): {
+        "acceptance": "Weak smoke probe only: nonempty response with status below 500; operation acceptance still needs a success or defined-error contract assertion.",
+        "test_ids": ["tests/test_reliability_core.py::test_http_auth_json_limits_security_headers_and_binary_bundle"],
+        "test_coverage": "Real-server smoke linked; execution pending; any 4xx including 404 passes, so dispatch and response contract remain unverified",
+    },
+    ("HTTP POST", "/api/repo/code-index"): {
+        "acceptance": "Weak smoke probe only: nonempty response with status below 500; operation acceptance still needs a success or defined-error contract assertion.",
+        "test_ids": ["tests/test_reliability_core.py::test_http_auth_json_limits_security_headers_and_binary_bundle"],
+        "test_coverage": "Real-server smoke linked; execution pending; any 4xx including 404 passes, so dispatch and response contract remain unverified",
+    },
+    ("HTTP POST", "/api/repo/deterministic"): {
+        "acceptance": "Weak smoke probe only: nonempty response with status below 500; operation acceptance still needs a success or defined-error contract assertion.",
+        "test_ids": ["tests/test_reliability_core.py::test_http_auth_json_limits_security_headers_and_binary_bundle"],
+        "test_coverage": "Real-server smoke linked; execution pending; any 4xx including 404 passes, so dispatch and response contract remain unverified",
+    },
+    ("HTTP POST", "/api/search"): {
+        "acceptance": "Weak smoke probe only: nonempty response with status below 500; operation acceptance still needs a success or defined-error contract assertion.",
+        "test_ids": ["tests/test_reliability_core.py::test_http_auth_json_limits_security_headers_and_binary_bundle"],
+        "test_coverage": "Real-server smoke linked; execution pending; any 4xx including 404 passes, so dispatch and response contract remain unverified",
+    },
+    ("HTTP POST", "/api/code/ast_outline"): {
+        "acceptance": "Weak smoke probe only: nonempty response with status below 500; operation acceptance still needs a success or defined-error contract assertion.",
+        "test_ids": ["tests/test_reliability_core.py::test_http_auth_json_limits_security_headers_and_binary_bundle"],
+        "test_coverage": "Real-server smoke linked; execution pending; any 4xx including 404 passes, so dispatch and response contract remain unverified",
+    },
+    ("HTTP POST", "/api/test_matrix"): {
+        "acceptance": "Weak smoke probe only: nonempty response with status below 500; operation acceptance still needs a success or defined-error contract assertion.",
+        "test_ids": ["tests/test_reliability_core.py::test_http_auth_json_limits_security_headers_and_binary_bundle"],
+        "test_coverage": "Real-server smoke linked; execution pending; any 4xx including 404 passes, so dispatch and response contract remain unverified",
+    },
+    ("HTTP POST", "/api/security_audit"): {
+        "acceptance": "Weak smoke probe only: nonempty response with status below 500; operation acceptance still needs a success or defined-error contract assertion.",
+        "test_ids": ["tests/test_reliability_core.py::test_http_auth_json_limits_security_headers_and_binary_bundle"],
+        "test_coverage": "Real-server smoke linked; execution pending; any 4xx including 404 passes, so dispatch and response contract remain unverified",
+    },
+    ("HTTP POST", "/api/resolve_imports"): {
+        "acceptance": "Weak smoke probe only: nonempty response with status below 500; operation acceptance still needs a success or defined-error contract assertion.",
+        "test_ids": ["tests/test_reliability_core.py::test_http_auth_json_limits_security_headers_and_binary_bundle"],
+        "test_coverage": "Real-server smoke linked; execution pending; any 4xx including 404 passes, so dispatch and response contract remain unverified",
+    },
+    ("HTTP POST", "/api/preprocess"): {
+        "acceptance": "Weak smoke probe only: nonempty response with status below 500; operation acceptance still needs a success or defined-error contract assertion.",
+        "test_ids": ["tests/test_reliability_core.py::test_http_auth_json_limits_security_headers_and_binary_bundle"],
+        "test_coverage": "Real-server smoke linked; execution pending; any 4xx including 404 passes, so dispatch and response contract remain unverified",
+    },
+    ("HTTP POST", "/api/code/symbol"): {
+        "acceptance": "Request-body validator rejects an empty symbol for the code-symbol operation.",
+        "test_ids": ["tests/test_http_phase_telemetry.py::test_code_requests_reject_empty_required_inputs"],
+        "test_coverage": "Validator-only negative-input case linked; execution pending; HTTP dispatch, status, and success behavior unverified",
+    },
+    ("HTTP POST", "/api/code-intelligence/query"): {
+        "acceptance": "Request-body validator rejects an empty query for the code-intelligence operation.",
+        "test_ids": ["tests/test_http_phase_telemetry.py::test_code_requests_reject_empty_required_inputs"],
+        "test_coverage": "Validator-only negative-input case linked; execution pending; HTTP dispatch, status, and success behavior unverified",
+    },
+    ("HTTP POST", "/api/code/diagnostics"): {
+        "acceptance": "Request-body validator rejects an empty path for code diagnostics.",
+        "test_ids": ["tests/test_http_phase_telemetry.py::test_code_requests_reject_empty_required_inputs"],
+        "test_coverage": "Validator-only negative-input case linked; execution pending; HTTP dispatch, status, and success behavior unverified",
+    },
+    ("HTTP POST", "/api/command"): {
+        "acceptance": "Command route returns HTTP 200 for classify, 400 for malformed JSON, and 413 for oversized bodies.",
+        "test_ids": ["tests/test_reliability_core.py::test_http_auth_json_limits_security_headers_and_binary_bundle"],
+        "test_coverage": "Real HTTP status cases linked; execution pending; classify response contract unverified",
+    },
+    ("HTTP POST", "/api/embed"): {
+        "acceptance": "Request-body validator rejects an embedding batch of 257 texts.",
+        "test_ids": ["tests/test_deeper_hardening.py::test_api_schema_rejects_excessive_embedding_items"],
+        "test_coverage": "Validator-only oversized-batch case linked; execution pending; HTTP dispatch, auth, valid payload, and response semantics unverified",
+    },
+    ("MCP tool", "local_ai_status"): {
+        "acceptance": "FastMCP call_tool returns a successful compact status response; Hub client transport is mocked.",
+        "test_ids": [
+            "tests/test_mcp_compact_transport.py::test_mcp_call_tool_returns_compact_minified_json",
+            "tests/test_agent_state_transport.py::test_mcp_actions_dispatch_and_compact",
+        ],
+        "test_coverage": "MCP protocol behavior linked; execution pending; backend integration unverified",
+    },
+    ("MCP tool", "local_ai_repo"): {
+        "acceptance": "MCP repo handler dispatches context, search, review, batch replacement, and agent-state actions through mocked client routes.",
+        "test_ids": [
+            "tests/test_agent_state_transport.py::test_mcp_actions_dispatch_and_compact",
+            "tests/test_mcp_compact_transport.py::test_local_ai_repo_context_forwards_guarded_pack_fields",
+            "tests/test_mcp_compact_transport.py::test_local_ai_repo_context_returns_bounded_deterministic_projection",
+            "tests/test_mcp_agent_routing.py::test_successful_repo_evidence_exposes_typed_semantic_handoff",
+            "tests/test_mcp_agent_routing.py::test_local_ai_repo_forwards_explicit_batch_replace_dry_run",
+            "tests/test_mcp_agent_routing.py::test_local_ai_repo_batch_replace_does_not_use_staged_as_dry_run",
+            "tests/test_mcp_agent_routing.py::test_local_ai_repo_batch_replacements_require_explicit_edits",
+            "tests/test_mcp_agent_routing.py::test_repo_review_diff_returns_foreground_result_by_default",
+        ],
+        "test_coverage": "MCP handler behavior linked; execution pending; live Hub integration unverified",
+    },
+    ("MCP action local_ai_repo", "context"): {
+        "acceptance": "MCP repo context forwards guarded fields and returns a bounded deterministic projection.",
+        "test_ids": [
+            "tests/test_mcp_compact_transport.py::test_local_ai_repo_context_forwards_guarded_pack_fields",
+            "tests/test_mcp_compact_transport.py::test_local_ai_repo_context_returns_bounded_deterministic_projection",
+        ],
+        "test_coverage": "MCP context action behavior linked; execution pending; Hub retrieval integration unverified",
+    },
+    ("MCP action local_ai_repo", "search"): {
+        "acceptance": "MCP repo search returns successful evidence and typed semantic handoff metadata.",
+        "test_ids": ["tests/test_mcp_agent_routing.py::test_successful_repo_evidence_exposes_typed_semantic_handoff"],
+        "test_coverage": "MCP search action behavior linked; execution pending; backend quality unverified",
+    },
+    ("MCP action local_ai_repo", "batch_replace"): {
+        "acceptance": "MCP batch_replace forwards explicit edits and dry_run, does not treat staged as dry-run authorization, and rejects missing edits.",
+        "test_ids": [
+            "tests/test_mcp_agent_routing.py::test_local_ai_repo_forwards_explicit_batch_replace_dry_run",
+            "tests/test_mcp_agent_routing.py::test_local_ai_repo_batch_replace_does_not_use_staged_as_dry_run",
+            "tests/test_mcp_agent_routing.py::test_local_ai_repo_batch_replacements_require_explicit_edits",
+        ],
+        "test_coverage": "MCP request validation and forwarding cases linked; execution pending; repository mutation effects and feature-gate behavior unverified",
+    },
+    ("MCP action local_ai_repo", "review_diff"): {
+        "acceptance": "MCP repo review_diff uses the review endpoint and returns foreground results by default.",
+        "test_ids": ["tests/test_mcp_agent_routing.py::test_repo_review_diff_returns_foreground_result_by_default"],
+        "test_coverage": "Handler route and synchronous-delivery assertion linked; execution pending; review quality and backend integration unverified",
+    },
+    ("MCP action local_ai_repo", "pipeline"): {
+        "acceptance": "MCP repo pipeline runs multiple steps and returns affected-test and security-audit results.",
+        "test_ids": ["tests/test_preprocessing_overhaul.py::test_repo_pipeline_composite_action"],
+        "test_coverage": "Composite result-shape test links private implementation only; execution pending; public MCP dispatch and backend behavior unverified",
+    },
+    ("MCP tool", "local_ai_coord"): {
+        "acceptance": "MCP coordination handler dispatches task, memory, incident, context, receipt-verification, and blackboard actions through mocked clients.",
+        "test_ids": [
+            "tests/test_agent_state_transport.py::test_mcp_actions_dispatch_and_compact",
+            "tests/test_mcp_agent_routing.py::test_coord_verify_receipt_rejects_missing_identity_before_network",
+            "tests/test_mcp_agent_routing.py::test_coord_forwards_explicit_receipt_criterion_and_blackboard_identity",
+        ],
+        "test_coverage": "MCP handler behavior linked; execution pending; live Agent OS integration unverified",
+    },
+    ("MCP tool", "local_ai_task"): {
+        "acceptance": "MCP task handler dispatches candidate, evaluation, vision, continuation, exploration, named-delegate, and reason-context actions through mocked routes.",
+        "test_ids": [
+            "tests/test_agent_state_transport.py::test_mcp_actions_dispatch_and_compact",
+            "tests/test_mcp_agent_routing.py::test_eval_suite_forwards_bounded_cases_and_model",
+            "tests/test_mcp_agent_routing.py::test_local_ai_task_vision_forwards_frontend_review_context",
+            "tests/test_mcp_agent_routing.py::test_local_ai_task_forwards_continue_with_opaque_conversation_id",
+            "tests/test_mcp_agent_routing.py::test_local_ai_task_explore_uses_semantic_delegate_endpoint",
+            "tests/test_mcp_agent_routing.py::test_second_opinion_keeps_its_projection_kind",
+            "tests/test_mcp_agent_routing.py::test_named_profile_forwards_repo_root_to_existing_delegate_endpoint",
+            "tests/test_mcp_agent_routing.py::test_named_profile_requires_absolute_repository_root",
+            "tests/test_task_context_task_integration.py::test_local_ai_task_loads_unified_context_before_model_call",
+            "tests/test_task_context_task_integration.py::test_local_ai_task_uses_agent_only_context_without_repository_root",
+            "tests/test_task_context_task_integration.py::test_local_ai_task_keeps_unrelated_semantic_paths_as_advisory_warning",
+        ],
+        "test_coverage": "MCP handler behavior linked; execution pending; live task backend integration unverified",
+    },
+    ("MCP tool", "local_ai_artifact"): {
+        "acceptance": "MCP artifact get returns metadata-only binary response data through the handler.",
+        "test_ids": ["tests/test_vision_artifacts.py::test_mcp_binary_artifact_response_is_metadata_only"],
+        "test_coverage": "MCP binary response projection linked; execution pending; live artifact backend integration unverified",
+    },
+    ("MCP tool", "local_ai_command"): {
+        "acceptance": "MCP command handler returns a successful run response and rejects speculative_lint rollback before dispatch.",
+        "test_ids": [
+            "tests/test_mcp_agent_routing.py::test_artifact_and_command_success_do_not_expose_semantic_handoff",
+            "tests/test_mcp_response_budget.py::test_command_rollback_rejects_non_run_action_before_dispatch",
+        ],
+        "test_coverage": "MCP handler behavior linked; execution pending; live Hub integration unverified",
+    },
+    ("MCP action local_ai_coord", "task_create"): {
+        "acceptance": "MCP coordination task_create returns success and forwards task contract to the mocked client.",
+        "test_ids": ["tests/test_agent_state_transport.py::test_mcp_actions_dispatch_and_compact"],
+        "test_coverage": "MCP action behavior linked; execution pending; live Agent OS integration unverified",
+    },
+    ("MCP action local_ai_coord", "memory_record"): {
+        "acceptance": "MCP coordination memory_record forwards record expiry and TTL arguments to the mocked client.",
+        "test_ids": ["tests/test_agent_state_transport.py::test_mcp_actions_dispatch_and_compact"],
+        "test_coverage": "MCP action behavior linked; execution pending; live Agent OS integration unverified",
+    },
+    ("MCP action local_ai_coord", "memory_get"): {
+        "acceptance": "MCP coordination memory_get dispatches task-scoped record lookup through the mocked client.",
+        "test_ids": ["tests/test_agent_state_transport.py::test_mcp_actions_dispatch_and_compact"],
+        "test_coverage": "MCP action behavior linked; execution pending; live Agent OS integration unverified",
+    },
+    ("MCP action local_ai_coord", "incident_decision"): {
+        "acceptance": "MCP coordination incident_decision returns the mocked client result.",
+        "test_ids": ["tests/test_agent_state_transport.py::test_mcp_actions_dispatch_and_compact"],
+        "test_coverage": "MCP action behavior linked; execution pending; incident workflow unverified",
+    },
+    ("MCP action local_ai_coord", "context_compile"): {
+        "acceptance": "MCP coordination context_compile forwards repository context fields to the agent-state client route.",
+        "test_ids": ["tests/test_agent_state_transport.py::test_mcp_actions_dispatch_and_compact"],
+        "test_coverage": "MCP action behavior linked; execution pending; live Agent OS integration unverified",
+    },
+    ("MCP action local_ai_coord", "verify_receipt"): {
+        "acceptance": "MCP coordination verify_receipt rejects missing identity before network dispatch and forwards an explicit receipt criterion and blackboard identity.",
+        "test_ids": [
+            "tests/test_mcp_agent_routing.py::test_coord_verify_receipt_rejects_missing_identity_before_network",
+            "tests/test_mcp_agent_routing.py::test_coord_forwards_explicit_receipt_criterion_and_blackboard_identity",
+        ],
+        "test_coverage": "MCP validation and forwarding assertions linked; execution pending; full verifier and network integration unverified",
+    },
+    ("MCP action local_ai_coord", "blackboard_update"): {
+        "acceptance": "MCP coordination blackboard_update forwards the board id and section to the mocked client.",
+        "test_ids": ["tests/test_mcp_agent_routing.py::test_coord_forwards_explicit_receipt_criterion_and_blackboard_identity"],
+        "test_coverage": "MCP board identity forwarding assertion linked; execution pending; live blackboard behavior unverified",
+    },
+    ("MCP action local_ai_repo", "context_compile"): {
+        "acceptance": "MCP repo context_compile forwards repository context fields to the agent-state client route.",
+        "test_ids": ["tests/test_agent_state_transport.py::test_mcp_actions_dispatch_and_compact"],
+        "test_coverage": "MCP action behavior linked; execution pending; live Agent OS integration unverified",
+    },
+    ("MCP action local_ai_repo", "verify_receipt"): {
+        "acceptance": "MCP repo verify_receipt dispatches the supplied receipt to the agent-state verification route.",
+        "test_ids": ["tests/test_agent_state_transport.py::test_mcp_actions_dispatch_and_compact"],
+        "test_coverage": "MCP action behavior linked; execution pending; live verification integration unverified",
+    },
+    ("MCP action local_ai_repo", "verify_completion"): {
+        "acceptance": "MCP repo verify_completion returns the mocked agent-state completion result.",
+        "test_ids": ["tests/test_agent_state_transport.py::test_mcp_actions_dispatch_and_compact"],
+        "test_coverage": "MCP action behavior linked; execution pending; live verification integration unverified",
+    },
+    ("MCP action local_ai_task", "candidate_create"): {
+        "acceptance": "MCP task candidate_create dispatches to the learning route and returns success.",
+        "test_ids": ["tests/test_agent_state_transport.py::test_mcp_actions_dispatch_and_compact"],
+        "test_coverage": "MCP action behavior linked; execution pending; live task backend integration unverified",
+    },
+    ("MCP action local_ai_task", "candidate_promote"): {
+        "acceptance": "MCP task candidate_promote forwards candidate and approver to the mocked client.",
+        "test_ids": ["tests/test_agent_state_transport.py::test_mcp_actions_dispatch_and_compact"],
+        "test_coverage": "MCP action behavior linked; execution pending; live task backend integration unverified",
+    },
+    ("MCP action local_ai_task", "eval_suite"): {
+        "acceptance": "MCP task eval_suite forwards bounded cases and the selected model to its evaluation route.",
+        "test_ids": ["tests/test_mcp_agent_routing.py::test_eval_suite_forwards_bounded_cases_and_model"],
+        "test_coverage": "MCP action request forwarding linked; execution pending; evaluation quality and model execution unverified",
+    },
+    ("MCP action local_ai_task", "vision"): {
+        "acceptance": "MCP task vision forwards frontend review context and image or artifact identifiers to the vision route.",
+        "test_ids": ["tests/test_mcp_agent_routing.py::test_local_ai_task_vision_forwards_frontend_review_context"],
+        "test_coverage": "MCP action request forwarding linked; execution pending; live image review quality unverified",
+    },
+    ("MCP action local_ai_task", "continue"): {
+        "acceptance": "MCP task continue preserves an opaque conversation id when forwarding the continuation request.",
+        "test_ids": ["tests/test_mcp_agent_routing.py::test_local_ai_task_forwards_continue_with_opaque_conversation_id"],
+        "test_coverage": "MCP conversation id and payload forwarding linked; execution pending; conversation backend behavior unverified",
+    },
+    ("MCP action local_ai_task", "explore"): {
+        "acceptance": "MCP task explore uses the semantic delegate route and forwards task, context, and token bounds.",
+        "test_ids": ["tests/test_mcp_agent_routing.py::test_local_ai_task_explore_uses_semantic_delegate_endpoint"],
+        "test_coverage": "MCP endpoint and budget forwarding linked; execution pending; semantic result quality unverified",
+    },
+    ("MCP action local_ai_task", "second_opinion"): {
+        "acceptance": "MCP task second_opinion uses the second-opinion route and preserves the second_opinion projection kind.",
+        "test_ids": ["tests/test_mcp_agent_routing.py::test_second_opinion_keeps_its_projection_kind"],
+        "test_coverage": "MCP endpoint and projection assertions linked; execution pending; live second-opinion behavior unverified",
+    },
+    ("MCP action local_ai_task", "delegate"): {
+        "acceptance": "MCP task delegate resolves a named profile to the existing delegate endpoint and rejects a non-absolute repository root.",
+        "test_ids": [
+            "tests/test_mcp_agent_routing.py::test_named_profile_forwards_repo_root_to_existing_delegate_endpoint",
+            "tests/test_mcp_agent_routing.py::test_named_profile_requires_absolute_repository_root",
+        ],
+        "test_coverage": "MCP profile, root forwarding, and invalid-root assertions linked; execution pending; delegated backend behavior unverified",
+    },
+    ("MCP action local_ai_task", "reason"): {
+        "acceptance": "MCP task reason loads unified context before dispatch, forwards context and receipt evidence, supports agent-only context, and marks unrelated paths advisory.",
+        "test_ids": [
+            "tests/test_task_context_task_integration.py::test_local_ai_task_loads_unified_context_before_model_call",
+            "tests/test_task_context_task_integration.py::test_local_ai_task_uses_agent_only_context_without_repository_root",
+            "tests/test_task_context_task_integration.py::test_local_ai_task_keeps_unrelated_semantic_paths_as_advisory_warning",
+        ],
+        "test_coverage": "MCP context ordering, evidence forwarding, and advisory-result assertions linked; execution pending; live retrieval and model quality unverified",
+    },
+    ("MCP action local_ai_artifact", "get"): {
+        "acceptance": "MCP artifact get omits inline base64 bytes and returns a metadata-only binary artifact pointer.",
+        "test_ids": ["tests/test_vision_artifacts.py::test_mcp_binary_artifact_response_is_metadata_only"],
+        "test_coverage": "MCP binary response stripping and pointer assertions linked; execution pending; artifact retrieval integration unverified",
+    },
+    ("MCP action local_ai_command", "run"): {
+        "acceptance": "MCP command run returns a successful result through the mocked client.",
+        "test_ids": ["tests/test_mcp_agent_routing.py::test_artifact_and_command_success_do_not_expose_semantic_handoff"],
+        "test_coverage": "MCP action behavior linked; execution pending; live Hub integration unverified",
+    },
+    ("MCP action local_ai_command", "speculative_lint"): {
+        "acceptance": "MCP command rejects speculative_lint when combined with rollback before dispatch.",
+        "test_ids": ["tests/test_mcp_response_budget.py::test_command_rollback_rejects_non_run_action_before_dispatch"],
+        "test_coverage": "Unsupported-combination rejection linked; execution pending; successful speculative_lint behavior unverified",
+    },
+    ("MCP action local_ai_command", "lint_fix"): {
+        "acceptance": "CommandBroker lint_fix operation returns success for a bounded Python command.",
+        "test_ids": ["tests/test_missing_and_high_value_features.py::test_command_broker_lint_fix_and_daemon_lifecycle"],
+        "test_coverage": "CommandBroker behavior test linked; execution pending; MCP handler dispatch and wire behavior unverified",
+    },
+    ("MCP action local_ai_command", "spawn_daemon"): {
+        "acceptance": "CommandBroker spawn_daemon starts a named process and returns a daemon id.",
+        "test_ids": ["tests/test_missing_and_high_value_features.py::test_command_broker_lint_fix_and_daemon_lifecycle"],
+        "test_coverage": "CommandBroker lifecycle test linked; execution pending; MCP handler dispatch and wire behavior unverified",
+    },
+    ("MCP action local_ai_command", "daemon_status"): {
+        "acceptance": "CommandBroker daemon_status reports a running daemon before stop and a stopped daemon afterward.",
+        "test_ids": ["tests/test_missing_and_high_value_features.py::test_command_broker_lint_fix_and_daemon_lifecycle"],
+        "test_coverage": "CommandBroker lifecycle test linked; execution pending; MCP handler dispatch and wire behavior unverified",
+    },
+    ("MCP action local_ai_command", "stop_daemon"): {
+        "acceptance": "CommandBroker stop_daemon stops a spawned daemon successfully.",
+        "test_ids": ["tests/test_missing_and_high_value_features.py::test_command_broker_lint_fix_and_daemon_lifecycle"],
+        "test_coverage": "CommandBroker lifecycle test linked; execution pending; MCP handler dispatch and wire behavior unverified",
+    },
+    ("MCP action local_ai_command", "mock_server_start"): {
+        "acceptance": "CommandBroker mock_server_start starts a server from a minimal OpenAPI example.",
+        "test_ids": ["tests/test_all_categories_expanded.py::test_mock_openapi_server"],
+        "test_coverage": "CommandBroker server integration test linked; execution pending; MCP handler dispatch and wire behavior unverified",
+    },
+    ("MCP action local_ai_command", "mock_server_status"): {
+        "acceptance": "CommandBroker mock_server_status reports running state and port; generated endpoint returns a mock response.",
+        "test_ids": ["tests/test_all_categories_expanded.py::test_mock_openapi_server"],
+        "test_coverage": "CommandBroker server integration test linked; execution pending; MCP handler dispatch and wire behavior unverified",
+    },
+    ("MCP action local_ai_command", "mock_server_stop"): {
+        "acceptance": "CommandBroker mock_server_stop stops the generated mock server successfully.",
+        "test_ids": ["tests/test_all_categories_expanded.py::test_mock_openapi_server"],
+        "test_coverage": "CommandBroker server integration test linked; execution pending; MCP handler dispatch and wire behavior unverified",
+    },
+    ("MCP action local_ai_command", "webhook_replay"): {
+        "acceptance": "CommandBroker webhook_replay reports failed delivery and bounds successful and error response bodies.",
+        "test_ids": [
+            "tests/test_architectural_extensions.py::test_command_broker_webhook_replay",
+            "tests/test_architectural_extensions.py::test_command_broker_webhook_replay_bounds_response_body",
+            "tests/test_architectural_extensions.py::test_command_broker_webhook_replay_bounds_error_response_body",
+        ],
+        "test_coverage": "CommandBroker failure and bounded-response cases linked; execution pending; MCP handler dispatch and wire behavior unverified",
+    },
+    ("MCP action local_ai_coord", "task_checkpoint"): {
+        "acceptance": "HubClient coord task_checkpoint preserves next_action in persisted task checkpoint.",
+        "test_ids": ["tests/test_agent_state_transport.py::test_coord_task_checkpoint_action_preserves_existing_memo_actions"],
+        "test_coverage": "Direct HubClient route behavior linked; execution pending; MCP handler dispatch and live Agent OS integration unverified",
+    },
+    ("MCP action local_ai_coord", "memo_search"): {
+        "acceptance": "HubClient coord memo_search returns success through the memory search route.",
+        "test_ids": ["tests/test_agent_state_transport.py::test_coord_task_checkpoint_action_preserves_existing_memo_actions"],
+        "test_coverage": "Direct HubClient success assertion linked; execution pending; result content, MCP handler dispatch, and live Agent OS integration unverified",
+    },
+    ("CLI operation", "tasks"): {
+        "acceptance": "CLI task mutations complete and fail mocked tasks with requested ids; list and lookup print mocked results.",
+        "test_ids": [
+            "tests/test_agent_state_transport.py::test_hubctl_tasks_and_memory",
+            "tests/test_agent_os_enhancements.py::test_hubctl_tasks_mutation_cli",
+        ],
+        "test_coverage": "Mocked CLI output and mutation argument assertions linked; execution pending; list and lookup dispatch arguments, missing-id no-call behavior, and live Hub integration unverified",
+    },
+    ("CLI operation", "generate"): {
+        "acceptance": "CLI dispatch calls the generator with the repository root and configures agents when --install is set.",
+        "test_ids": ["tests/test_hubctl_dispatch_acceptance.py::test_hubctl_generate_dispatch_calls_generator_and_install"],
+        "test_coverage": "Main dispatch and install branch asserted with generator/setup stubs; generated output content and live installation unverified",
+    },
+    ("CLI operation", "status"): {
+        "acceptance": "CLI status dispatch reports an offline Hub as stopped and returns success.",
+        "test_ids": ["tests/test_hubctl_dispatch_acceptance.py::test_hubctl_status_dispatch_reports_offline"],
+        "test_coverage": "Main dispatch and offline output asserted with status/config stubs; online detail and live service state unverified",
+    },
+    ("CLI operation", "memory"): {
+        "acceptance": "CLI memory command prints the key from a mocked memory result.",
+        "test_ids": ["tests/test_agent_state_transport.py::test_hubctl_tasks_and_memory"],
+        "test_coverage": "Mocked CLI output assertion linked; execution pending; client filters, dispatch arguments, and live Hub lookup unverified",
+    },
+    ("CLI operation", "doctor"): {
+        "acceptance": "CLI doctor command prints component health checks from a mocked client.",
+        "test_ids": ["tests/test_agent_state_transport.py::test_hubctl_doctor_and_logs"],
+        "test_coverage": "Mocked CLI output assertion linked; execution pending; client call assertion and live health retrieval unverified",
+    },
+    ("CLI operation", "logs"): {
+        "acceptance": "CLI logs command prints log records from a mocked client.",
+        "test_ids": ["tests/test_agent_state_transport.py::test_hubctl_doctor_and_logs"],
+        "test_coverage": "Mocked CLI output assertion linked; execution pending; requested line limit, client call assertion, and live log retrieval unverified",
+    },
+    ("CLI operation", "agent-state"): {
+        "acceptance": "hubctl agent-state main-dispatch path prints the detail field from a mocked response.",
+        "test_ids": ["tests/test_agent_os_enhancements.py::test_hubctl_agent_state_and_cleanup"],
+        "test_coverage": "Mocked detail echo assertion linked; execution pending; client call cardinality, HTTP route, and live Agent State behavior unverified",
+    },
+    ("CLI operation", "cleanup"): {
+        "acceptance": "hubctl cleanup main-dispatch happy path prints the mocked cleaned count.",
+        "test_ids": ["tests/test_agent_os_enhancements.py::test_hubctl_agent_state_and_cleanup"],
+        "test_coverage": "Mocked CLI output assertion linked; execution pending; request route, payload, timeout handling, and cleanup effects unverified",
+    },
+    ("CLI operation", "watch"): {
+        "acceptance": "CLI watch dispatch starts tools/monitor.py and returns its process exit code.",
+        "test_ids": ["tests/test_hubctl_dispatch_acceptance.py::test_hubctl_watch_dispatch_calls_monitor_and_returns_status"],
+        "test_coverage": "Main dispatch and exit propagation asserted with subprocess stub; monitor behavior unverified",
+    },
+    ("CLI operation", "dashboard"): {
+        "acceptance": "CLI dashboard dispatch prints the client's dashboard URL.",
+        "test_ids": ["tests/test_hubctl_dispatch_acceptance.py::test_hubctl_dashboard_dispatch_prints_client_url"],
+        "test_coverage": "Main dispatch and URL output asserted with client stub; browser/dashboard service availability unverified",
+    },
+    ("CLI operation", "service-status"): {
+        "acceptance": "CLI service-status dispatch reads and prints supervisor status file contents.",
+        "test_ids": ["tests/test_hubctl_dispatch_acceptance.py::test_hubctl_service_status_dispatch_reads_status_file"],
+        "test_coverage": "Main dispatch and file read asserted against temporary state directory; malformed/missing file behavior unverified",
+    },
+    ("CLI operation", "clean"): {
+        "acceptance": "CLI clean dispatch forwards --ports as all_clean and prints removed directory/file counts.",
+        "test_ids": ["tests/test_hubctl_dispatch_acceptance.py::test_hubctl_clean_dispatch_forwards_full_clean_flag"],
+        "test_coverage": "Main dispatch, flag forwarding, and output asserted with cleaner stub; filesystem cleanup effects unverified",
+    },
+    ("CLI operation", "start"): {
+        "acceptance": "CLI start dispatch calls the start helper and prints its successful result.",
+        "test_ids": [
+            "tests/test_hubctl_dispatch_acceptance.py::test_hubctl_start_dispatch_calls_start_and_reports_result",
+            "tests/test_hubctl_start.py::test_managed_start_waits_for_cold_start_without_direct_spawn",
+        ],
+        "test_coverage": "Main dispatch/output and cold-start helper linked; live service startup unverified",
+    },
+    ("CLI operation", "stop"): {
+        "acceptance": "CLI stop dispatch calls the stop helper and returns failure when stopping fails.",
+        "test_ids": [
+            "tests/test_hubctl_dispatch_acceptance.py::test_hubctl_stop_dispatch_calls_stop_and_reports_failure",
+            "tests/test_hubctl_start.py::test_graceful_stop_requests_service_shutdown",
+            "tests/test_hubctl_start.py::test_graceful_stop_falls_back_when_hub_offline",
+        ],
+        "test_coverage": "Main dispatch/output and service helper cases linked; real service shutdown unverified",
+    },
+    ("CLI operation", "restart"): {
+        "acceptance": "CLI restart dispatch stops before starting and reports successful completion.",
+        "test_ids": [
+            "tests/test_hubctl_dispatch_acceptance.py::test_hubctl_restart_dispatch_stops_before_starting",
+            "tests/test_hubctl_start.py::test_managed_start_waits_for_cold_start_without_direct_spawn",
+            "tests/test_hubctl_start.py::test_graceful_stop_requests_service_shutdown",
+            "tests/test_hubctl_start.py::test_graceful_stop_falls_back_when_hub_offline",
+        ],
+        "test_coverage": "Main dispatch ordering/output and helper cases linked; live restart unverified",
+    },
+    ("MCP detail local_ai_status", "brief"): {
+        "acceptance": "MCP call path returns a successful compact JSON text response for brief status detail.",
+        "test_ids": [
+            "tests/test_mcp_compact_transport.py::test_mcp_call_tool_returns_compact_minified_json",
+            "tests/test_mcp_compact_transport.py::test_lowlevel_request_handler_returns_compact_minified_json",
+        ],
+        "test_coverage": "MCP protocol response and compact JSON assertions linked; live Hub data and other detail values unverified",
+    },
+    ("MCP detail local_ai_status", "agent_state"): {
+        "acceptance": "MCP status handler dispatches agent_state detail to the mocked HubClient status method.",
+        "test_ids": ["tests/test_agent_state_transport.py::test_mcp_actions_dispatch_and_compact"],
+        "test_coverage": "Handler dispatch and compact response asserted with mocked client; live Agent OS integration unverified",
+    },
+    ("MCP detail local_ai_status", "cache"): {
+        "acceptance": "Low-level MCP tools/call returns successful cache detail from the mocked live status response.",
+        "test_ids": ["tests/test_mcp_compact_transport.py::test_status_detail_operations_dispatch_through_lowlevel_mcp_tool[cache]"],
+        "test_coverage": "Low-level MCP request and status path assertion added; execution pending; live cache state unverified",
+    },
+    ("MCP detail local_ai_status", "full"): {
+        "acceptance": "Low-level MCP tools/call combines live status with the capabilities response for full detail.",
+        "test_ids": ["tests/test_mcp_compact_transport.py::test_status_detail_operations_dispatch_through_lowlevel_mcp_tool[full]"],
+        "test_coverage": "Low-level MCP request and capabilities path assertion added; execution pending; live runtime state unverified",
+    },
+    ("MCP detail local_ai_status", "telemetry"): {
+        "acceptance": "Low-level MCP tools/call projects the mocked telemetry response to the status detail result.",
+        "test_ids": ["tests/test_mcp_compact_transport.py::test_status_detail_operations_dispatch_through_lowlevel_mcp_tool[telemetry]"],
+        "test_coverage": "Low-level MCP request and telemetry path assertion added; execution pending; live telemetry unverified",
+    },
+    ("MCP action alias local_ai_coord", "ctx (alias for context_compile)"): {
+        "acceptance": "Alias resolver maps ctx to context_compile.",
+        "test_ids": ["tests/test_action_aliases.py::test_action_aliases_resolution"],
+        "test_coverage": "Alias resolver behavior asserted; public MCP wire dispatch through canonical action unverified",
+    },
+    ("MCP action alias local_ai_coord", "neg_rec (alias for negative_knowledge_record)"): {
+        "acceptance": "Alias resolver maps neg_rec to negative_knowledge_record.",
+        "test_ids": ["tests/test_action_aliases.py::test_action_aliases_resolution"],
+        "test_coverage": "Alias resolver behavior asserted; public MCP wire dispatch through canonical action unverified",
+    },
+    ("MCP action alias local_ai_coord", "neg_find (alias for negative_knowledge_find)"): {
+        "acceptance": "Alias resolver maps neg_find to negative_knowledge_find.",
+        "test_ids": ["tests/test_action_aliases.py::test_action_aliases_resolution"],
+        "test_coverage": "Alias resolver behavior asserted; public MCP wire dispatch through canonical action unverified",
+    },
+    ("MCP action alias local_ai_coord", "mem_put (alias for memory_record)"): {
+        "acceptance": "Alias resolver maps mem_put to memory_record.",
+        "test_ids": ["tests/test_action_aliases.py::test_action_aliases_resolution"],
+        "test_coverage": "Alias resolver behavior asserted; public MCP wire dispatch through canonical action unverified",
+    },
+    ("MCP action alias local_ai_coord", "mem_get (alias for memory_get)"): {
+        "acceptance": "Alias resolver maps mem_get to memory_get.",
+        "test_ids": ["tests/test_action_aliases.py::test_action_aliases_resolution"],
+        "test_coverage": "Alias resolver behavior asserted; public MCP wire dispatch through canonical action unverified",
+    },
+    ("MCP action alias local_ai_coord", "task_new (alias for task_create)"): {
+        "acceptance": "MCP tools/call request for task_new reaches the mocked HubClient as canonical task_create.",
+        "test_ids": [
+            "tests/test_action_aliases.py::test_mcp_protocol_call_dispatches_coord_task_new_alias",
+            "tests/test_action_aliases.py::test_action_aliases_resolution",
+        ],
+        "test_coverage": "Low-level MCP tools/call case added; execution pending; task_new is absent from the declared CoordAction literals",
+    },
+    ("MCP action alias local_ai_command", "patch (alias for patch_and_verify)"): {
+        "acceptance": "Alias resolver maps patch to patch_and_verify.",
+        "test_ids": ["tests/test_action_aliases.py::test_action_aliases_resolution"],
+        "test_coverage": "Alias resolver behavior asserted; public MCP wire dispatch through canonical action unverified",
+    },
+    ("MCP action alias local_ai_command", "fix (alias for auto_fix)"): {
+        "acceptance": "Alias resolver maps fix to auto_fix.",
+        "test_ids": ["tests/test_action_aliases.py::test_action_aliases_resolution"],
+        "test_coverage": "Alias resolver behavior asserted; public MCP wire dispatch through canonical action unverified",
+    },
+    ("MCP action alias local_ai_command", "repair (alias for repair_loop)"): {
+        "acceptance": "Alias resolver maps repair to repair_loop.",
+        "test_ids": ["tests/test_action_aliases.py::test_action_aliases_resolution"],
+        "test_coverage": "Alias resolver behavior asserted; public MCP wire dispatch through canonical action unverified",
+    },
+    ("MCP action alias local_ai_command", "fmt (alias for format)"): {
+        "acceptance": "Alias resolver maps fmt to format.",
+        "test_ids": ["tests/test_action_aliases.py::test_action_aliases_resolution"],
+        "test_coverage": "Alias resolver behavior asserted; public MCP wire dispatch through canonical action unverified",
+    },
+    ("MCP action alias local_ai_repo", "idx (alias for code_index)"): {
+        "acceptance": "Alias resolver maps idx to code_index.",
+        "test_ids": ["tests/test_action_aliases.py::test_action_aliases_resolution"],
+        "test_coverage": "Alias resolver behavior asserted; public MCP wire dispatch through canonical action unverified",
+    },
+    ("MCP action alias local_ai_repo", "review (alias for review_diff)"): {
+        "acceptance": "Alias resolver maps review to review_diff.",
+        "test_ids": ["tests/test_action_aliases.py::test_action_aliases_resolution"],
+        "test_coverage": "Alias resolver behavior asserted; public MCP wire dispatch through canonical action unverified",
+    },
+    ("MCP action alias local_ai_task", "gen (alias for delegate)"): {
+        "acceptance": "Alias resolver maps gen to delegate.",
+        "test_ids": ["tests/test_action_aliases.py::test_action_aliases_resolution"],
+        "test_coverage": "Alias resolver behavior asserted; public MCP wire dispatch through canonical action unverified",
+    },
+}
 _UNVERIFIED_TEXT = {
     "request_payload": "complete operation payload schema absent from this source; extracted fields are partial",
     "response_contract": "operation response schema absent from source; returned shape unverified",
@@ -1264,7 +2094,7 @@ def coverage_rows(findings: list[dict[str, Any]], task_id: str | None = None) ->
             "contract": contract,
             "acceptance": finding.get("acceptance") or "Inventory agrees with cited source or generated schema evidence.",
             "condition": condition,
-            "reproduction": reproduction,
+            "reproduction": finding.get("reproduction") or reproduction,
             "evidence": evidence,
         }
         row["contract_gaps"] = _contract_gaps(row)
@@ -1361,7 +2191,44 @@ def _findings(inventory: dict[str, Any]) -> list[dict[str, Any]]:
                     },
                     "acceptance": f"Generated schema advertises this action when {gate} is enabled.",
                     "evidence_status": "conditional",
-                    "evidence": [f"{SOURCE_FILES['mcp']}:RepoAction"],
+                    "evidence": [
+                        f"{SOURCE_FILES['features']}:FeatureSet.supported_command_actions",
+                        f"{SOURCE_FILES['mcp']}:{mcp_tools_by_name.get(tool_name, {}).get('handler', tool_name)}",
+                    ],
+                }
+            )
+    for tool_name, actions in inventory.get("mcp_schema_drift_actions", {}).items():
+        for action, reason in actions.items():
+            handler = mcp_tools_by_name.get(tool_name, {}).get("handler", tool_name)
+            findings.append(
+                {
+                    "surface": f"MCP action {tool_name}",
+                    "name": action,
+                    "condition": "schema/source drift; no feature gate identified",
+                    "owner": SOURCE_FILES["mcp"],
+                    "handler": handler,
+                    "contract": {
+                        "action": action,
+                        "request_payload": {
+                            "action": action,
+                            "declared_by_source": True,
+                            "generated_schema": "action omitted",
+                        },
+                        "response_contract": inventory["mcp_contracts"].get(tool_name, {}).get("output_schema", "not declared"),
+                        "status_codes": "not applicable: MCP tool protocol",
+                        "timeout": inventory["mcp_contracts"].get(tool_name, {}).get("timeout", "not statically identified"),
+                        "operation_side_effects": inventory["mcp_contracts"].get(tool_name, {}).get("operation_side_effects", "MCP action dispatch effects unverified"),
+                        "backend_availability": reason,
+                        "feature_gates": [],
+                        "input_property_schema": inventory["mcp_contracts"].get(tool_name, {}).get("input_schema", {}).get("properties", {}).get("action", {}),
+                    },
+                    "acceptance": "Source declares this action, but generated MCP schema omits it without a proven feature gate.",
+                    "evidence_status": "refuted",
+                    "evidence": [
+                        f"{SOURCE_FILES['mcp']}:{handler}",
+                        f"{SOURCE_FILES['features']}:FeatureSet.supported_repo_actions",
+                        inventory["mcp_schema_evidence"].get(tool_name, SOURCE_FILES["generator"]),
+                    ],
                 }
             )
     for tool_name, variants in inventory.get("mcp_variants", {}).items():
@@ -1525,6 +2392,14 @@ def _findings(inventory: dict[str, Any]) -> list[dict[str, Any]]:
                 "evidence": [f"src/local_ai_hub/generator.py (manifest registry: {manifest})"],
             }
         )
+    for finding in findings:
+        operation_evidence = OPERATION_ACCEPTANCE_EVIDENCE.get((finding["surface"], finding["name"]))
+        if operation_evidence:
+            finding.update(operation_evidence)
+            finding["reproduction"] = (
+                "python -B -m pytest -q -p no:cacheprovider "
+                + " ".join(operation_evidence["test_ids"])
+            )
     return findings
 
 
@@ -1543,7 +2418,7 @@ def render_coverage(inventory: dict[str, Any], task_id: str | None = None) -> st
     lines = [
         "# API surface coverage",
         "",
-        "Deterministic source inventory. Evidence status is confirmed, conditional, or refuted; runtime behavior is unverified. `test_operation_contract_metadata` checks inventory metadata only.",
+        "Deterministic source inventory. Evidence status records the source contract; per-row test coverage describes linked operation evidence. `test_operation_contract_metadata` checks inventory metadata only.",
         f"Reproduce with `{check_command}`.",
         "",
         "| " + " | ".join(header_cells) + " |",
@@ -1555,7 +2430,11 @@ def render_coverage(inventory: dict[str, Any], task_id: str | None = None) -> st
             f"`{row['name']}`",
             row["evidence_status"],
             f"`{row['owner']}`",
-            row["acceptance"],
+            (
+                row["acceptance"] + f" Condition: {row['condition']}."
+                if row.get("condition")
+                else row["acceptance"]
+            ),
             f"`{row['reproduction']}`",
             f"`{', '.join(row['evidence'])}`",
             f"`{row['operation_id']}`",
@@ -1636,7 +2515,7 @@ def main(argv: list[str] | None = None) -> int:
         coverage_matches = current_table == expected_table
         if not coverage_matches:
             inventory["drift"].append("rendered coverage rows differ from docs/API_COVERAGE.md")
-            inventory["drift"] = sorted(inventory["drift"])
+        inventory["drift"] = sorted(inventory["drift"])
         print(json.dumps({
             "success": not inventory["drift"],
             "coverage_matches": coverage_matches,

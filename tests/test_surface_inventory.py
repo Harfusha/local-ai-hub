@@ -72,9 +72,6 @@ def status(detail: Literal["brief", "full"]):
             return self.agent_state()
         elif self.path == "/api/status":
             return self.status()
-        elif self.path == "/api/context/pack":
-            return self.context_pack()
-
     def do_POST(self):
         if self.path == "/health":
             return self.health()
@@ -84,6 +81,8 @@ def status(detail: Literal["brief", "full"]):
             return self.task()
         elif self.path.startswith("/api/agent-state/"):
             return self.agent_state()
+        elif self.path == "/api/context/pack":
+            return self.context_pack()
 
 def browser_path_helper(self):
     if self.path.startswith("/api/browser/"):
@@ -182,17 +181,72 @@ def test_operation_contract_metadata(row):
     assert row["acceptance"]
     assert row["evidence"]
     assert row["state"] in {"verified", "conditional", "unsupported", "removed"}
-    assert row["test_coverage"] == "metadata only; operation behavior unverified"
+    operation_evidence = MODULE.OPERATION_ACCEPTANCE_EVIDENCE.get((row["surface"], row["name"]))
+    assert row["test_coverage"] == (
+        operation_evidence["test_coverage"]
+        if operation_evidence
+        else "metadata only; operation behavior unverified"
+    )
     assert required_contract_fields <= row["contract"].keys()
-    assert row["test_ids"] == [
-        f"tests/test_surface_inventory.py::test_operation_contract_metadata[{row['operation_id']}]"
-    ]
+    assert row["test_ids"] == (
+        operation_evidence["test_ids"]
+        if operation_evidence
+        else [f"tests/test_surface_inventory.py::test_operation_contract_metadata[{row['operation_id']}]"]
+    )
     assert all(row["contract"][field] not in (None, "") for field in required_contract_fields)
     assert row["contract_gaps"]
     assert all(gap["reason"] and gap["owner_task"] and gap["owner"] and gap["disposition"] for gap in row["contract_gaps"])
     assert "not statically identified" not in json.dumps(row)
     assert "not statically classified" not in json.dumps(row)
     assert "not measured" not in json.dumps(row)
+
+
+def test_coverage_links_operation_level_acceptance_tests():
+    rows = {(row["surface"], row["name"]): row for row in ROOT_COVERAGE_ROWS}
+
+    assert set(MODULE.OPERATION_ACCEPTANCE_EVIDENCE) <= rows.keys()
+    for key, evidence in MODULE.OPERATION_ACCEPTANCE_EVIDENCE.items():
+        row = rows[key]
+        assert row["test_ids"] == evidence["test_ids"]
+        assert row["test_coverage"] == evidence["test_coverage"]
+        assert row["acceptance"] == evidence["acceptance"]
+        assert row["reproduction"] == (
+            "python -B -m pytest -q -p no:cacheprovider " + " ".join(evidence["test_ids"])
+        )
+
+
+def test_conditional_command_action_is_documented_with_its_feature_gate():
+    inventory = MODULE.collect_inventory(ROOT)
+    rows = {
+        (row["surface"], row["name"]): row
+        for row in MODULE.coverage_rows(MODULE._findings(inventory), task_id=ROOT_TASK_ID)
+    }
+    row = rows[("MCP action local_ai_command", "speculative_lint")]
+
+    assert inventory["conditional_mcp_actions"]["local_ai_command"]["speculative_lint"] == "speculative_lint"
+    assert row["evidence_status"] == "conditional"
+    assert row["condition"] == "feature gate: speculative_lint"
+    assert row["contract"]["feature_gates"] == ["speculative_lint"]
+    action_row = next(
+        line
+        for line in MODULE.render_coverage(inventory, task_id=ROOT_TASK_ID).splitlines()
+        if line.startswith("| MCP action local_ai_command | `speculative_lint` |")
+    )
+    assert "Condition: feature gate: speculative_lint." in action_row
+
+
+def test_repo_action_coverage_links_context_and_search_behavior():
+    rows = {(row["surface"], row["name"]): row for row in ROOT_COVERAGE_ROWS}
+    keys = {
+        ("MCP action local_ai_repo", "context"),
+        ("MCP action local_ai_repo", "search"),
+    }
+
+    for key in keys:
+        row = rows[key]
+        evidence = MODULE.OPERATION_ACCEPTANCE_EVIDENCE[key]
+        assert row["test_ids"] == evidence["test_ids"]
+        assert row["test_coverage"] == evidence["test_coverage"]
 
 
 def test_unmeasured_contract_fields_have_concrete_gate_dispositions():
@@ -243,6 +297,28 @@ def test_http_inventory_extracts_handler_contract_facts_without_pack_body():
     assert "/api/context/pack" not in json.dumps(routes)
 
 
+def test_http_inventory_resolves_local_route_aliases_for_options_patterns():
+    tree = MODULE.ast.parse('''class Handler:
+    def do_OPTIONS(self):
+        path = urlparse(self.path).path
+        bridge_route = path.startswith("/api/browser/") or path == "/api/vision/review"
+        if not bridge_route or not self._validate_host_and_origin():
+            self._send(404, {"terminal": True})
+            return
+        self.send_response(204)
+        if self.path == "/api/unrelated":
+            self._send(201, {})
+''')
+
+    routes = MODULE._extract_http(tree, "http_server.py")
+    targets = {(route["method"], route["path"]): route for route in routes}
+
+    assert targets[("OPTIONS", "/api/browser/")]["match"] == "prefix"
+    assert targets[("OPTIONS", "/api/vision/review")]["match"] == "exact"
+    assert targets[("OPTIONS", "/api/browser/")]["contract"]["status_codes"] == [204, 404]
+    assert targets[("OPTIONS", "/api/unrelated")]["contract"]["status_codes"] == [201]
+
+
 def test_cli_inventory_records_parser_options_and_module_exit_values():
     tree = MODULE.ast.parse('''import argparse
 parser = argparse.ArgumentParser()
@@ -285,7 +361,7 @@ def test_inventory_extracts_surfaces_and_resolves_dynamic_route_registry(tmp_pat
     }
     assert any(route["path"] == "/api/jobs/" and route["match"] == "prefix"
                for route in inventory["http_routes"])
-    assert inventory["http_routes_by_target"]["GET /api/context/pack"]["classification"] == (
+    assert inventory["http_routes_by_target"]["POST /api/context/pack"]["classification"] == (
         "registered_dynamic"
     )
     assert "GET /health" in inventory["http_routes_by_target"]
@@ -307,6 +383,24 @@ def test_inventory_extracts_surfaces_and_resolves_dynamic_route_registry(tmp_pat
         "docs/UPDATE_PROMPT.md",
     }
     assert inventory["drift"] == []
+
+
+def test_context_pack_inventory_matches_live_post_route():
+    inventory = MODULE.collect_inventory(ROOT)
+
+    assert "POST /api/context/pack" in inventory["http_routes_by_target"]
+    assert "GET /api/context/pack" not in inventory["http_routes_by_target"]
+
+
+def test_inventory_extracts_browser_and_vision_options_routes():
+    inventory = MODULE.collect_inventory(ROOT)
+
+    browser_route = inventory["http_routes_by_target"]["OPTIONS /api/browser/"]
+    vision_route = inventory["http_routes_by_target"]["OPTIONS /api/vision/review"]
+    assert browser_route["match"] == "prefix"
+    assert browser_route["handler"] == "do_OPTIONS"
+    assert vision_route["match"] == "exact"
+    assert vision_route["handler"] == "do_OPTIONS"
 
 
 def test_inventory_reports_orphan_client_target_and_ignores_prompt_text(tmp_path):
@@ -626,7 +720,88 @@ def test_check_and_write_doc_are_rejected_before_mutating_coverage(tmp_path, cap
     assert "cannot be used together" in capsys.readouterr().err
 
 
-def test_check_cli_accepts_coverage_without_writing_it():
+def test_check_cli_accepts_clean_coverage_without_writing_it(tmp_path):
+    make_repo(tmp_path)
+    expected = MODULE.render_coverage(MODULE.collect_inventory(tmp_path))
+    write(tmp_path, "docs/API_COVERAGE.md", expected)
+    coverage_path = tmp_path / "docs" / "API_COVERAGE.md"
+    before_bytes = coverage_path.read_bytes()
+    before_mtime = coverage_path.stat().st_mtime_ns
+    command = [
+        sys.executable,
+        str(ROOT / "tools" / "surface_inventory.py"),
+        "--root",
+        str(tmp_path),
+        "--check",
+    ]
+
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert coverage_path.read_bytes() == before_bytes
+    assert coverage_path.stat().st_mtime_ns == before_mtime
+    summary = json.loads(result.stdout)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert summary["coverage_matches"] is True
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        pytest.param(None, id="missing"),
+        pytest.param("# API surface coverage\n\n| Surface | Name |\n|---|---|\n| stale | `row` |\n", id="outdated"),
+    ],
+)
+def test_check_cli_is_read_only_and_deterministic_for_missing_or_outdated_docs(tmp_path, document):
+    make_repo(tmp_path)
+    coverage_path = tmp_path / "docs" / "API_COVERAGE.md"
+    docs_dir = coverage_path.parent
+    if document is not None:
+        write(tmp_path, "docs/API_COVERAGE.md", document)
+    before_exists = coverage_path.exists()
+    before_bytes = coverage_path.read_bytes() if before_exists else None
+    before_mtime = coverage_path.stat().st_mtime_ns if before_exists else None
+    before_docs_dir_exists = docs_dir.exists()
+    before_docs_dir_mtime = docs_dir.stat().st_mtime_ns if before_docs_dir_exists else None
+    command = [
+        sys.executable,
+        str(ROOT / "tools" / "surface_inventory.py"),
+        "--root",
+        str(tmp_path),
+        "--check",
+    ]
+
+    outputs = []
+    for _ in range(2):
+        result = subprocess.run(
+            command,
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        summary = json.loads(result.stdout)
+        assert summary["coverage_matches"] is False
+        assert any("rendered coverage rows differ" in item for item in summary["drift"])
+        outputs.append(result.stdout)
+
+    assert outputs[0] == outputs[1]
+    assert coverage_path.exists() is before_exists
+    assert docs_dir.exists() is before_docs_dir_exists
+    if before_exists:
+        assert coverage_path.read_bytes() == before_bytes
+        assert coverage_path.stat().st_mtime_ns == before_mtime
+    if before_docs_dir_exists:
+        assert docs_dir.stat().st_mtime_ns == before_docs_dir_mtime
+
+
+def test_check_cli_never_writes_coverage_when_source_schema_drift_exists():
     coverage_path = ROOT / "docs" / "API_COVERAGE.md"
     before_bytes = coverage_path.read_bytes()
     before_mtime = coverage_path.stat().st_mtime_ns
@@ -642,7 +817,9 @@ def test_check_cli_accepts_coverage_without_writing_it():
 
     assert coverage_path.read_bytes() == before_bytes
     assert coverage_path.stat().st_mtime_ns == before_mtime
-    assert result.returncode == 0, result.stdout + result.stderr
+    summary = json.loads(result.stdout)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "unconditional source MCP action missing generated schema local_ai_repo:graph" in summary["drift"]
 
 
 def test_write_doc_mode_updates_coverage(tmp_path, capsys):
@@ -734,6 +911,25 @@ def test_conditional_action_stays_in_inventory_when_generated_schema_hides_it(tm
     assert "batch_replace" not in inventory["mcp_actions"]["local_ai_repo"]
     assert action["evidence_status"] == "conditional"
     assert "batch_replacement" in action["condition"]
+
+
+def test_unconditional_source_action_missing_generated_schema_is_reported_as_drift():
+    inventory = MODULE.collect_inventory(ROOT)
+
+    assert inventory["mcp_schema_drift_actions"]["local_ai_repo"]["graph"]
+    assert "graph" not in inventory["conditional_mcp_actions"].get("local_ai_repo", {})
+    assert "unconditional source MCP action missing generated schema local_ai_repo:graph" in inventory["drift"]
+
+    action = next(
+        finding
+        for finding in MODULE._findings(inventory)
+        if finding["surface"] == "MCP action local_ai_repo"
+        and finding["name"] == "graph"
+    )
+    assert action["evidence_status"] == "refuted"
+    assert action["condition"] == "schema/source drift; no feature gate identified"
+    assert action["acceptance"] == "Source declares this action, but generated MCP schema omits it without a proven feature gate."
+    assert f"{MODULE.SOURCE_FILES['mcp']}:local_ai_repo" in action["evidence"]
 
 
 def test_generated_mcp_action_without_dispatch_handler_is_reported(tmp_path):
