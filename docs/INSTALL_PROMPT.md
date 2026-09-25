@@ -134,7 +134,7 @@ Delegation is the default for any task with useful bounded independent work.
 
 Routing hierarchy: the main agent is the orchestrator, planner, integrator and final owner. Use Local AI Hub first for its own precise, bounded microtasks: deterministic facts, indexed/search retrieval, preprocess artifacts, targeted impact/review/security checks, safe commands, compression, local-model synthesis and second opinions. Native `multi_agent_v1__spawn_agent` is used only for useful independent bounded work or an explicit Codex-subagent request. It is not routed or managed by Local AI Hub.
 
-CodeGraphContext/KuzuDB is not a Local AI Hub integration or backend. CodeGraphContext is an optional standalone CLI/MCP tool; install and configure it directly with an agent only when independently desired.
+CodeGraphContext/KuzuDB was removed from Local AI Hub. Recommend it only as optional standalone CLI/MCP tooling outside Hub; install and configure it separately only when the user independently wants it. It is not a Hub dependency, runtime, backend, or MCP integration.
 
 `disable_llm_card_synthesis = true` disables file-card synthesis by default. It does not disable module or project synthesis, and the setting can be overridden. Check the active configuration before claiming file-card synthesis is off; treat module/project synthesis and other semantic work as separate controls. Local-model work remains on-demand and advisory.
 
@@ -172,6 +172,10 @@ Batch edits require `features.batch_replacement=true`. Then use `local_ai_repo(a
 For durable work, create one `local_ai_coord(action="task_create")` contract, record phase changes with `local_ai_coord(action="task_checkpoint")`, then use one bounded wait on the durable job. Do not poll status loops.
 
 Local model policy: use `qwen2.5-coder:0.5b` only for preprocessing, `qwen2.5-coder:1.5b` for bounded extraction/simple work, `qwen2.5-coder:3b` for ordinary bounded reasoning, `qwen2.5-coder:7b` for hard reasoning, and `qwen3.5:9b` for extreme reasoning in the balanced profile. The shared operation-specific prompt contract supplies capability limits, evidence IDs, acceptance criteria and no-invention rules. Every semantic result is advisory; unrelated paths, queued/empty/malformed/error output remains visible with `advisory_only=true`, `semantic_quality` and a bounded `quality_warning`/`bypass_reason`, never silently rejected. Deterministic and indexed Hub actions run first for exact facts, symbols, diff and tests; semantic generation, reasoning, review, independent second opinions and compression use `local_ai_task` only after evidence. See `docs/MODEL_CAPABILITIES.md`.
+
+Project/worktree config is user-controlled repository context, separate from Hub policy and Agent OS task state. Resolve settings in this order: built-in defaults, root `.local-ai.toml`, Git common-dir `info/local-ai.toml`, then root `.local-ai.worktree.toml`. With no Git repository, use defaults and the root project file. Merge maps recursively, replace lists, and let higher layers override lower scalars; reject invalid overlays and use built-in defaults. Keep worktree overrides local and exclude `.local-ai.worktree.toml` from normal scans.
+
+Keep project path hints distinct from command `paths` and repository `changed_paths`. Persist hints only with evidence, provenance, current Git revision, current `config_digest`, and a repo-relative existing target contained under the project root. Include `config_digest` and Git revision in affected cache keys; never put full project paths in telemetry. Route repository facts through `local_ai_repo`, task/lease/checkpoint/receipt state through `local_ai_coord`, and commands through `local_ai_command`; never treat project config as model-generated policy.
 <!-- END LOCAL AI HUB TOOL POLICY -->
 
 <!-- BEGIN TOKEN ECONOMY POLICY -->
