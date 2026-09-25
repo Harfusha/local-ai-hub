@@ -49,7 +49,7 @@ For complex or large codebases with deep call hierarchies, installing CodeGraphC
     }
   }
   ```
-- **Fallback Behavior**: Local AI Hub gracefully falls back to built-in AST code-indexing and symbol analysis when CodeGraphContext is absent, so repositories can adopt it independently without affecting core Hub operations.
+- **Integration boundary**: Local AI Hub uses its built-in AST code index and does not manage or fall back to CodeGraphContext; install and configure CodeGraphContext separately as a standalone MCP if you need it.
  
 ## Python package
 
