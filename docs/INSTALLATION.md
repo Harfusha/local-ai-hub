@@ -35,7 +35,7 @@ Install CodeGraphContext only if you want that separate tool. Use its [official 
  
 ## Python package
 
-For development/package installation use `pip install .` or `pip install ".[token-economy]"`. CLI tools `tokcount`, `trim-run`, `repo-map`, and `local-ai-hub` are registered automatically. `local-ai-hub --config /path/config.toml` starts the service.
+For development/package installation use `python -m pip install .` or `python -m pip install ".[token-economy]"`. For Python client usage, see [Python SDK](PYTHON_SDK.md). CLI tools `tokcount`, `trim-run`, `repo-map`, and `local-ai-hub` are registered automatically. `local-ai-hub --config /path/config.toml` starts the service.
 
 ## Verification
 
