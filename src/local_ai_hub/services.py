@@ -2360,42 +2360,107 @@ class LocalAIServices:
 
     def transcribe(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         """Transcribe audio recording to text via local Whisper / STT CLI or fallback."""
+        import tempfile
+
         audio_path = str(args.get("audio", args.get("audio_path", "")))
-        model = str(args.get("model") or "whisper")
+        model = str(args.get("model") or "whisper").strip() or "whisper"
+        cli_model = "tiny" if model.casefold() == "whisper" else model
 
         p = Path(audio_path).expanduser().resolve(strict=False)
         if not p.is_file():
             return {"success": False, "error": f"audio file not found: {audio_path}"}
 
         whisper_cmd = shutil.which("whisper")
-        if whisper_cmd:
-            cmd = [whisper_cmd, str(p), "--output_format", "txt", "--model", "tiny"]
-            try:
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False, **hidden_run_kwargs())
-                if proc.returncode == 0:
-                    txt_path = p.with_suffix(".txt")
-                    text = txt_path.read_text(encoding="utf-8", errors="replace") if txt_path.exists() else proc.stdout
+        if not whisper_cmd:
+            return {
+                "success": False,
+                "model": model,
+                "engine": "whisper_cli",
+                "reason": "cli_missing",
+                "error": "Local Whisper CLI is not installed in PATH.",
+                "degraded": True,
+            }
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="local-ai-whisper-") as output_dir:
+                cmd = [
+                    whisper_cmd,
+                    str(p),
+                    "--output_format",
+                    "txt",
+                    "--model",
+                    cli_model,
+                    "--output_dir",
+                    output_dir,
+                ]
+                try:
+                    proc = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                        check=False,
+                        **hidden_run_kwargs(),
+                    )
+                except FileNotFoundError as exc:
                     return {
-                        "success": True,
-                        "text": text.strip(),
-                        "audio_path": str(p),
+                        "success": False,
                         "model": model,
                         "engine": "whisper_cli",
+                        "reason": "cli_missing",
+                        "error": str(exc)[:500] or "Whisper CLI binary is no longer available.",
+                        "degraded": True,
                     }
-            except Exception:
-                pass
+                if proc.returncode != 0:
+                    detail = str(proc.stderr or "").strip()
+                    return {
+                        "success": False,
+                        "model": model,
+                        "engine": "whisper_cli",
+                        "reason": "process_failed",
+                        "returncode": proc.returncode,
+                        "error": detail[:500] or "Whisper CLI failed to transcribe the audio.",
+                    }
 
-        return {
-            "success": True,
-            "text": f"[Audio transcription registered: {p.name}]",
-            "audio_path": str(p),
-            "file_size_bytes": p.stat().st_size,
-            "format": p.suffix.lstrip("."),
-            "model": model,
-            "engine": "local_stt_fallback",
-            "degraded": True,
-            "note": "Local whisper CLI not installed in PATH; audio metadata processed.",
-        }
+                transcript_path = Path(output_dir) / f"{p.stem}.txt"
+                transcript_file = (
+                    transcript_path.read_text(encoding="utf-8", errors="replace")
+                    if transcript_path.is_file()
+                    else ""
+                ).strip()
+                transcript = transcript_file or str(proc.stdout or "").strip()
+                if not transcript:
+                    return {
+                        "success": False,
+                        "model": model,
+                        "engine": "whisper_cli",
+                        "reason": "empty_transcript",
+                        "error": "Whisper CLI returned no transcript.",
+                    }
+                return {
+                    "success": True,
+                    "text": transcript,
+                    "audio_path": str(p),
+                    "model": model,
+                    "engine": "whisper_cli",
+                }
+        except subprocess.TimeoutExpired:
+            return {
+                "success": False,
+                "model": model,
+                "engine": "whisper_cli",
+                "reason": "timeout",
+                "error": "Whisper CLI timed out before transcription completed.",
+                "retryable": True,
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "model": model,
+                "engine": "whisper_cli",
+                "reason": "process_error",
+                "error": str(exc)[:500] or "Whisper CLI failed to transcribe the audio.",
+            }
 
     def benchmark(self, tenant: str = "benchmark") -> dict[str, Any]:
         """Manual tiny benchmark used to seed the adaptive runtime cost model."""
