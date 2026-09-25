@@ -125,15 +125,10 @@ def test_hotspots_cache(mock_repo: Path, tmp_path: Path):
     assert res2.get("cached") is True
 
 
-def test_codegraph_disabled_skips_in_preprocess(mock_repo: Path, tmp_path: Path):
+def test_preprocessing_pipeline_has_no_managed_codegraph_phase(mock_repo: Path, tmp_path: Path):
     state_dir = tmp_path / "state"
     config = {
         "server": {"state_dir": str(state_dir)},
-        "code_intelligence": {
-            "enabled": True,
-            "codegraph_enabled": False,
-            "preprocess_codegraph": False,
-        },
         "preprocessing": {
             "enabled": True,
             "disable_llm_card_synthesis": True,
@@ -171,7 +166,7 @@ def test_codegraph_disabled_skips_in_preprocess(mock_repo: Path, tmp_path: Path)
     stepped = pre._step({"root": str(mock_repo), "workspace": "test", "phase": "serena"})
     assert stepped is True
 
-    # Next phase should be lexical directly (codegraph completely bypassed)
+    # Serena is the only optional managed index phase; lexical follows it directly.
     with pre._db_lock, closing(pre._connect()) as con:
         row = con.execute("SELECT phase FROM projects WHERE root=?", (str(mock_repo),)).fetchone()
         assert row["phase"] == "lexical"

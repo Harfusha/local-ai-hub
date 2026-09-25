@@ -2,7 +2,7 @@
 
 Use `tools/hubctl.py status|watch`, `tools/doctor.py`, `tools/monitor.py`, and `tools/telemetry_report.py`. `tools/doctor.py` never auto-starts the hub, so an offline result is a real diagnostic state. The service supervisor is user-scoped and should have only one persistent instance. `/health` is suitable for liveness; model availability is intentionally not a health prerequisite.
 
-If Serena or CodeGraph misbehaves, use the dashboard or `/api/code-intelligence/control` to rediscover executables or reset sessions. If derived indexes are corrupt, stop the hub, back up any needed state and remove only derived cache/index databases; they are rebuildable.
+If Serena misbehaves, use the dashboard or `/api/code-intelligence/control` to rediscover its executable or reset its sessions. Built-in deterministic and AST indexes remain available. If derived indexes are corrupt, stop the hub, back up any needed state and remove only derived cache/index databases; they are rebuildable.
 
 ## Inference provider policy
 
@@ -26,7 +26,7 @@ During a rollout, compare `scope=process` telemetry first. It is the post-restar
 
 If `/api/context/pack` dominates a cloud-agent foreground SLO, have that agent choose `mode=fast` first. The result remains deterministic and carries a continuation hint for a deliberate later `mode=full` request. Do not raise client timeouts or create parallel full-context requests.
 
-Hot-query preprocessing already warms deterministic, index and RAG capsules while idle; it cannot safely pre-generate historical model answers because prompts/output are deliberately not persisted. Repository artifacts are keyed by canonical parameters and watcher-backed root revision, while semantic reuse stays scoped to matching context identity. Use `batch_delegate` for independent local-model work and let the client coalesce identical active HTTP requests. An optional code-intelligence backend with a proven incomplete installation disables itself for that process; transient Serena/CodeGraph failures cool down only the affected root and fall back to built-in indexes. Repair the external environment before the next hub restart instead of raising retry budgets.
+Hot-query preprocessing already warms deterministic, index and RAG capsules while idle; it cannot safely pre-generate historical model answers because prompts/output are deliberately not persisted. Repository artifacts are keyed by canonical parameters and watcher-backed root revision, while semantic reuse stays scoped to matching context identity. Use `batch_delegate` for independent local-model work and let the client coalesce identical active HTTP requests. Serena failures cool down only the affected root and fall back to built-in indexes. Repair its external environment before the next hub restart instead of raising retry budgets.
 
 SQLite-backed derived stores use short busy timeouts and bounded retries. A transient `locked`/`busy` result is treated as contention and degrades to a cache miss/write drop where safe; it is not treated as database corruption. If overload or another retryable response is returned, clients should back off rather than immediately duplicating the request.
 

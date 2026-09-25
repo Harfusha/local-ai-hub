@@ -38,7 +38,33 @@ def test_codegraph_removed_from_configs_and_backends():
     assert not hasattr(feat, "codegraph")
 
     ext = ExternalCodeIntelligence({"code_intelligence": {"enabled": True}})
-    assert ext.codegraph_enabled is False
     assert ext.backend_available("codegraph") is False
-    res = ext.query_codegraph(".", "test")
-    assert res.get("skipped") is True
+    assert not hasattr(ext, "codegraph_enabled")
+    assert not hasattr(ext, "query_codegraph")
+    assert not hasattr(ext, "_codegraph_sessions")
+    res = ext.query(".", "test", backend="codegraph")
+    assert res.get("unsupported") is True
+    assert ext.index("codegraph", ".").get("unsupported") is True
+    assert "codegraph" not in ext.status()
+    assert ext.reset_sessions("codegraph").get("success") is False
+    assert not hasattr(ext, "_codegraph")
+    ext.close()
+
+
+def test_runtime_has_no_managed_codegraph_or_kuzu_references():
+    runtime = ROOT / "src" / "local_ai_hub"
+    sources = [*runtime.rglob("*.py"), runtime / "defaults.toml"]
+    offenders = []
+    for path in sources:
+        content = path.read_text(encoding="utf-8").casefold()
+        if "codegraph" in content or "kuzudb" in content:
+            offenders.append(str(path.relative_to(ROOT)))
+
+    assert offenders == []
+
+    from local_ai_hub import mcp_server
+
+    assert "graph" not in mcp_server._REPO_ACTIONS
+    assert "cross_project_graph" in mcp_server._REPO_ACTIONS
+    assert "cross_repo_graph" in mcp_server._REPO_ACTIONS
+    assert ".codegraphcontext/" in (ROOT / ".gitignore").read_text(encoding="utf-8")

@@ -108,13 +108,6 @@ vision_status_known = bool(installed) if inference_backend == "ollama" else bool
 
 mcp_file = root / "src" / "local_ai_hub" / "mcp_server.py"
 state_dir = Path(cfg.get("server", {}).get("state_dir", "~/.local-ai-hub/state")).expanduser()
-install_dir = Path(cfg.get("setup", {}).get("install_dir", "~/.local-ai-hub")).expanduser()
-codegraph_candidates = [
-    install_dir / "tool-envs" / "codegraph" / "Scripts" / "codegraphcontext.exe",
-    install_dir / "tool-envs" / "codegraph" / "Scripts" / "cgc.exe",
-    install_dir / "tool-envs" / "codegraph" / "bin" / "codegraphcontext",
-    install_dir / "tool-envs" / "codegraph" / "bin" / "cgc",
-]
 
 warnings: list[str] = []
 openvino_requested = str(models.get("embedding_backend", "")).lower() == "openvino" or str(models.get("reranker_backend", "")).lower() == "openvino"
@@ -274,7 +267,6 @@ report = {
         "background_gpu": background_gpu,
         "sentence_transformers": runtime_module_available("sentence_transformers"),
         "openvino": {"requested": openvino_requested, "installed": openvino_installed, "status": status.get("accelerators") if isinstance(status, dict) else None},
-        "codegraph_executable": next((str(p) for p in codegraph_candidates if p.exists()), None),
         "hardware": cfg.get("_hardware", {}),
         "code_intelligence": status.get("code_intelligence") if isinstance(status, dict) else None,
         "preprocessing": status.get("preprocessing") if isinstance(status, dict) else None,
@@ -370,7 +362,7 @@ def format_doctor_report(rep: dict[str, Any]) -> str:
     lines.append("Code Intelligence:")
     code_intelligence = rt.get("code_intelligence") if isinstance(rt, dict) else None
     if isinstance(code_intelligence, dict):
-        for backend in ("serena", "codegraph"):
+        for backend in ("serena",):
             details = code_intelligence.get(backend)
             if not isinstance(details, dict):
                 lines.append(f"  [??] {backend:<17} Status unavailable")
