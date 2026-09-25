@@ -16,7 +16,7 @@
 - [ ] python -m pytest -q passes
 - [ ] python tools/selftest.py passes
 - [ ] All subprocess / network calls have finite timeouts
-- [ ] Optional backends (Serena, CodeGraphContext, Ollama) fail soft when absent
+- [ ] Optional backends (Serena, Ollama) fail soft when absent
 - [ ] No new MCP tool schemas added without prior discussion
 - [ ] CHANGELOG.md updated with a brief entry (if user-visible change)
 

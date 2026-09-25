@@ -92,6 +92,37 @@ def test_call_queries_treat_like_metacharacters_as_literal_suffixes(tmp_path, wi
     assert [item["caller"] for item in callers] == ["Pkg::caller_exact"]
     assert [item["callee"] for item in callees] == ["Pkg::target_exact"]
 
+def test_call_queries_match_exact_and_qualified_symbols_case_sensitively(tmp_path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    index = CodeIndex({"server": {"state_dir": str(tmp_path / "state")}}, repo_tools=None)
+    resolved = str(root.resolve())
+    with closing(index._connect()) as con:
+        con.executemany(
+            "INSERT INTO edges(root,src,dst,kind,path,line) VALUES(?,?,?,?,?,?)",
+            [
+                (resolved, "Pkg::caller", "Pkg::target", "calls", "src/lib.rs", 1),
+                (resolved, "Pkg::Caller", "Pkg::Target", "calls", "src/lib.rs", 2),
+                (resolved, "pkg/caller", "pkg/target", "calls", "src/lib.rs", 3),
+                (resolved, "Pkg/Caller", "Pkg/Target", "calls", "src/lib.rs", 4),
+                (resolved, "caller", "target", "calls", "src/lib.rs", 5),
+                (resolved, "Caller", "Target", "calls", "src/lib.rs", 6),
+            ],
+        )
+        con.commit()
+
+    callers = index.find_callers(str(root), "target")["callers"]
+    callees = index.find_callees(str(root), "caller")["callees"]
+    expected = [
+        ("Pkg::caller", "Pkg::target"),
+        ("pkg/caller", "pkg/target"),
+        ("caller", "target"),
+    ]
+
+    assert [(item["caller"], item["callee"]) for item in callers] == expected
+    assert [(item["caller"], item["callee"]) for item in callees] == expected
+
+
 def test_missing_tree_sitter_language_returns_none(monkeypatch) -> None:
     import local_ai_hub.treesitter_parser as parser
 
