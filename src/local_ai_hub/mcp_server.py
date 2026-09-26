@@ -226,9 +226,37 @@ def _semantic_handoff_contract(enabled: bool, status_enabled: bool = True) -> st
     )
 
 
+def _async_job_lifecycle_contract() -> str:
+    return (
+        " Async status, wait, result, and cancel work with model execution disabled; wait defaults to 90 seconds and is capped by async_jobs.wait_max_seconds and the client transport budget. A timed-out wait returns current state with wait_timeout_seconds and does not cancel the job; call result after completion instead of polling."
+        " Compact lifecycle responses preserve job_id, state, artifact_id (empty until available), and expires_at (Unix timestamp seconds). Terminal job state expires at expires_at; async_jobs.result_ttl_seconds defaults to 259,200 seconds (72 hours), and artifact-store TTL must cover it."
+        " Queued cancellation immediately returns terminal cancelled. Running cancellation returns running with cancel_requested=true as acknowledgement; worker completion supplies final state."
+        " Direct HTTP lifecycle requests use POST `/api/async-jobs`: submit sends action=submit, job_action, and optional stable request_id; controls send action=status|wait|result|cancel with job_id, and wait also sends timeout_seconds. MCP exposes `local_ai_task(action=submit|status|wait|result|cancel, ...)`; `HubClient.submit_async_job`, `async_job_status`, `wait_async_job`, `async_job_result`, and `cancel_async_job` call the same HTTP path."
+    )
+
+
+def _task_delivery_contract() -> str:
+    return (
+        " Delivery: `sync` is default; `async` submits immediately on mapped HTTP routes; `auto` needs a positive `latency_budget_ms` and at least ten endpoint observations with p95 above budget, while sparse history stays inline."
+        " HTTP delivery maps `/api/delegate`, `/api/reason`, `/api/review`, `/api/review/diff`, `/api/second-opinion`, `/api/compress`, `/api/route`, and `/api/delegate/batch` to durable actions."
+        " For `delivery=auto` on `/api/review/diff`, a positive `review.max_queue_age_ms` exceeded by queue age returns a terminal 503 before cold-start handling; otherwise positive budget with fewer than five samples selects async as `cold_start_review_diff`."
+        " Direct `submit` job_action accepts `batch`, `compress`, `delegate`, `reason`, `review`, `review_diff`, `route`, `second_opinion`, or `speculative_lint`; body `request_id` is the idempotency key and `X-LocalAI-Request-ID` is a separate journal ID."
+        f"{_async_job_lifecycle_contract()}"
+        " Start synchronously with HTTP POST `/api/delegate` or `/api/reason` or MCP `local_ai_task(action=delegate|explore|reason, conversation=true, delivery=sync)`; continue via HTTP `/api/conversations/continue` (`conversation_id`, `task`, optional `context`) or MCP `local_ai_task(action=continue, conversation_id=..., task=..., context=...)`."
+        " Conversation IDs are tenant-scoped; model settings stay pinned and only one turn runs at a time. Defaults: 12 turns, prompt limit from `model_conversations.max_prompt_tokens` (fallback `token_saving.max_local_input_tokens`, default 56,000), idle/active TTLs of 900/1,800 seconds, and capacity 1,000. State is process-memory only and lost on restart."
+    )
+
+
 def _desc_task() -> str:
     local_enabled = FEATURES.tasks and FEATURES.has_any_model()
     if not local_enabled:
+        if FEATURES.async_jobs:
+            return (
+                "Local model execution is disabled on this installation. Async job lifecycle controls remain available: "
+                f"{_async_job_lifecycle_contract()} "
+                "Submit and other local-model actions require an enabled model backend."
+                f"{_actions_note(FEATURES.supported_task_actions())}"
+            )
         return (
             "Local inference is disabled on this installation for this tool."
             " Returns unsupported=true for local-model actions."
@@ -243,6 +271,7 @@ def _desc_task() -> str:
             "Command failure diagnosis remains disabled by default; never pass raw logs or open-ended coding. "
             "Local AI Hub does not route or manage native Codex agents. "
             f"{_actions_note(FEATURES.supported_task_actions())}"
+            f"{_task_delivery_contract()}"
         )
     profile_note = ""
     if FEATURES.subagents and FEATURES.subagent_profiles:
@@ -264,11 +293,8 @@ def _desc_task() -> str:
          " Local AI Hub does not route or manage native Codex subagents; those are managed directly by Codex outside Local AI Hub."
         f"{_actions_note(FEATURES.supported_task_actions())}"
         f"{_specialized_note('local_ai_task')}"
-        " `delivery=sync` preserves the foreground contract; `async` returns a durable job now;"
-        " `auto` requires a positive `latency_budget_ms` and only defers after sufficient endpoint history shows p95 above it."
+        f"{_task_delivery_contract()}"
         " Evaluation stores only opaque ids, booleans, and numeric metadata; it never stores prompts or source text."
-        " Async wait is bounded to 90 seconds; never poll loops."
-        " Start a short-lived conversation with `conversation=true` on delegate or reason, then use `continue` with its opaque `conversation_id`; conversations are sync-only and process-memory only."
         " Use when: bounded local generation, compression, review, routing, second opinion, or named advisory subagent work is needed."
         " Skip when: task is trivial, pure evidence lookup, security/privacy constrained, no useful independent scope,"
         " or Codex-owned subagent orchestration is the right owner."
@@ -517,6 +543,9 @@ _STATUS_PROTECTED_KEYS = (
     "active_model", "queued", "inflight", "cache_hits", "coalesced_waiters",
     "net_cloud_token_delta_est", "vram_pressure", "context_budget_factor",
     "summary", "window", "queue", "hotspots", "by_operation", "error_fingerprints",
+    "job_id", "trace_id", "task_id", "state", "artifact_id", "cancel_requested",
+    "expires_at", "wait_timeout_seconds", "outcome_unknown", "coalesced", "idempotent_replay",
+    "admission_state", "terminal", "retryable", "in_progress",
 )
 _REUSE_DIGESTS: OrderedDict[str, str] = OrderedDict()
 _REUSE_VALUES: OrderedDict[str, Any] = OrderedDict()
@@ -655,7 +684,15 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
     raw_value = value
     value = attach_accounting(value)
     projected = PROJECTOR.project(value, AGENT_NAME, task_kind, extra_fields=extra_fields)
-    compacted = compact_result(projected, max_text_chars=MAX_TEXT, max_evidence=MAX_EVIDENCE, extra_fields=extra_fields)
+    compact_extra_fields = extra_fields
+    if task_kind == "status":
+        compact_extra_fields = list(dict.fromkeys([*(extra_fields or ()), "job_id"]))
+    compacted = compact_result(
+        projected,
+        max_text_chars=MAX_TEXT,
+        max_evidence=MAX_EVIDENCE,
+        extra_fields=compact_extra_fields,
+    )
     requested, profile, reuse_key, enabled = _response_budget(task_kind, options)
     if enabled:
         repeated, previous = _reuse_state(reuse_key, compacted)
@@ -1251,6 +1288,7 @@ def local_ai_task(
     latency_budget_ms: float = 0.0,
     job_action: str = "reason",
     job_id: str = "",
+    request_id: str = "",
     timeout_seconds: float = 90,
     evaluation_task_id: str = "",
     evaluation_cohort: str = "",
@@ -1311,6 +1349,18 @@ def local_ai_task(
         return _compact(CLIENT.post("/api/agent-state/learning", {
             "action": "promote", "candidate_id": candidate or evaluation_task_id or task, "approver": approver or "user",
         }, timeout=_timeout("quick")), "status")
+    if action in {"status", "wait", "result", "cancel"}:
+        async_payload: dict[str, Any] = {"action": action, "job_id": job_id}
+        transport_timeout = _timeout("quick")
+        if action == "wait":
+            async_cfg = CFG.get("async_jobs", {})
+            wait_limit = max(0.0, float(async_cfg.get("wait_max_seconds", 600)))
+            client_timeout_limit = float(getattr(CLIENT, "max_request_timeout", float("inf")))
+            wait_limit = min(wait_limit, max(0.0, client_timeout_limit - transport_timeout))
+            wait_seconds = min(max(0.0, float(timeout_seconds)), wait_limit)
+            async_payload["timeout_seconds"] = wait_seconds
+            transport_timeout += wait_seconds
+        return _compact(CLIENT.post("/api/async-jobs", async_payload, timeout=transport_timeout), "status")
     if not FEATURES.tasks or not FEATURES.has_any_model():
         return {"success": False, "unsupported": True, "error": "Local model execution is disabled (features.tasks=false or no Ollama runtime configured)"}
     context, task_context_meta = _load_task_context(
@@ -1349,6 +1399,7 @@ def local_ai_task(
     if action in {"submit", "status", "wait", "result", "cancel"}:
         return _compact(CLIENT.post("/api/async-jobs", {
             "action": action, "job_action": job_action, "job_id": job_id, "timeout_seconds": timeout_seconds,
+            "request_id": request_id,
             "task": task, "context": context, "candidate": candidate, "complexity": complexity,
             "max_tokens": max_tokens, "tasks": tasks or [], "profile": profile, "root": root, "workspace": workspace,
         }, timeout=_timeout("quick")), "status")

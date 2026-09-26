@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -636,3 +637,96 @@ def test_continue_conversation_sends_task_over_real_http_and_keeps_transcript(tm
     assert "second question" in result["transcript"]
     assert server.payloads[0]["task"] == "second question"
     assert "prompt" not in server.payloads[0]
+
+
+def test_async_job_client_methods_keep_submit_identity_and_cover_wait_deadline(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    client.max_request_timeout = 100
+    calls = []
+
+    def fake_post(path, payload, timeout=360.0):
+        calls.append((path, dict(payload), timeout))
+        return {"success": True, "job_id": payload.get("job_id", "job-new")}
+
+    monkeypatch.setattr(client, "post", fake_post)
+
+    client.submit_async_job("reason", {"task": "summarize"}, request_id="stable-1", timeout=12)
+    client.async_job_status("job-1")
+    client.wait_async_job("job-1", timeout_seconds=40)
+    client.async_job_result("job-1")
+    client.cancel_async_job("job-1")
+
+    assert calls[0] == (
+        "/api/async-jobs",
+        {"task": "summarize", "action": "submit", "job_action": "reason", "request_id": "stable-1"},
+        12,
+    )
+    assert calls[1][1] == {"action": "status", "job_id": "job-1"}
+    assert calls[2][1] == {"action": "wait", "job_id": "job-1", "timeout_seconds": 40}
+    assert calls[2][2] == 70
+    assert calls[3][1] == {"action": "result", "job_id": "job-1"}
+    assert calls[4][1] == {"action": "cancel", "job_id": "job-1"}
+    assert HubClient._post_replay_safe(
+        "/api/async-jobs", {"action": "submit", "request_id": "stable-1"}
+    ) is True
+    assert HubClient._post_replay_safe(
+        "/api/async-jobs", {"action": "submit"}
+    ) is False
+
+
+def test_continue_conversation_sends_only_supported_fields(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    calls = []
+
+    def fake_post(path, payload, timeout=360.0):
+        calls.append((path, dict(payload), timeout))
+        return {"success": True, "conversation_id": payload["conversation_id"]}
+
+    monkeypatch.setattr(client, "post", fake_post)
+
+    result = client.continue_conversation(
+        "conversation-1", "follow up", context="relevant context", timeout=12
+    )
+
+    assert result == {"success": True, "conversation_id": "conversation-1"}
+    assert calls == [(
+        "/api/conversations/continue",
+        {"conversation_id": "conversation-1", "task": "follow up", "context": "relevant context"},
+        12,
+    )]
+
+
+def test_async_job_submit_replays_after_transport_disconnect_with_stable_identity(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    calls = []
+
+    def pooled_open(method, path, body, headers, _timeout):
+        calls.append({
+            "method": method,
+            "path": path,
+            "body": json.loads(body.decode("utf-8")),
+            "request_id": headers["X-LocalAI-Request-ID"],
+        })
+        if len(calls) == 1:
+            raise URLError("connection dropped after submit")
+        return b'{"success":true,"job_id":"job-1"}'
+
+    monkeypatch.setattr(client, "_pooled_open", pooled_open)
+
+    result = client.submit_async_job(
+        "reason", {"task": "resume safely"}, request_id="stable-submit", timeout=2
+    )
+
+    assert result["success"] is True
+    assert result["job_id"] == "job-1"
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
+    assert calls[0]["method"] == "POST"
+    assert calls[0]["path"] == "/api/async-jobs"
+    assert calls[0]["body"] == {
+        "task": "resume safely",
+        "action": "submit",
+        "job_action": "reason",
+        "request_id": "stable-submit",
+    }
+    assert calls[0]["request_id"].startswith("req_")

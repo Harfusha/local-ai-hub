@@ -657,3 +657,97 @@ def test_named_profile_rejects_relative_repository_root() -> None:
     assert result["success"] is False
     assert result["unsupported"] is True
     assert "absolute" in result["error"]
+
+
+def test_async_job_controls_bypass_model_execution_gate(monkeypatch):
+    from types import SimpleNamespace
+
+    captured = {}
+
+    class Client:
+        max_request_timeout = 90
+
+        def post(self, path, payload, timeout):
+            captured.update(path=path, payload=payload, timeout=timeout)
+            return {"success": True, "job_id": payload["job_id"], "state": "completed"}
+
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", Client())
+    monkeypatch.setattr(
+        local_ai_mcp, "FEATURES", SimpleNamespace(tasks=False, status=True, has_any_model=lambda: False)
+    )
+    monkeypatch.setattr(local_ai_mcp, "_compact", lambda value, _kind: value)
+
+    result = local_ai_mcp.local_ai_task(action="status", job_id="job-123")
+
+    assert result["success"] is True
+    assert captured["path"] == "/api/async-jobs"
+    assert captured["payload"] == {"action": "status", "job_id": "job-123"}
+
+
+def test_async_job_wait_transport_deadline_covers_capped_wait(monkeypatch):
+    from types import SimpleNamespace
+
+    captured = {}
+
+    class Client:
+        max_request_timeout = 90
+
+        def post(self, path, payload, timeout):
+            captured.update(path=path, payload=payload, timeout=timeout)
+            return {"success": True, "job_id": payload["job_id"], "state": "running"}
+
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", Client())
+    monkeypatch.setattr(local_ai_mcp, "FEATURES", SimpleNamespace(tasks=False, status=True, has_any_model=lambda: False))
+    monkeypatch.setattr(local_ai_mcp, "CFG", {"async_jobs": {"wait_max_seconds": 300}})
+    monkeypatch.setattr(local_ai_mcp, "_timeout", lambda _kind: 20)
+    monkeypatch.setattr(local_ai_mcp, "_compact", lambda value, _kind: value)
+
+    result = local_ai_mcp.local_ai_task(action="wait", job_id="job-123", timeout_seconds=420)
+
+    assert result["success"] is True
+    assert captured["payload"] == {
+        "action": "wait", "job_id": "job-123", "timeout_seconds": 70,
+    }
+    assert captured["timeout"] == 90
+
+
+def test_async_job_submit_forwards_body_request_id(monkeypatch):
+    captured = {}
+
+    def fake_post(path, payload, timeout):
+        captured.update(path=path, payload=payload, timeout=timeout)
+        return {"success": True, "job_id": "job-123"}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    monkeypatch.setattr(local_ai_mcp, "_load_task_context", lambda **_kwargs: ("", {"success": True}))
+    monkeypatch.setattr(local_ai_mcp, "_compact", lambda value, _kind: value)
+
+    result = local_ai_mcp.local_ai_task(
+        action="submit", job_action="review", request_id="stable-submit-1", task="review this",
+    )
+
+    assert result["success"] is True
+    assert captured["path"] == "/api/async-jobs"
+    assert captured["payload"]["request_id"] == "stable-submit-1"
+    assert captured["payload"]["job_action"] == "review"
+
+
+def test_async_job_submit_rejects_conversation_before_http(monkeypatch):
+    calls = []
+
+    def fake_post(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"success": True, "job_id": "unexpected"}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    monkeypatch.setattr(local_ai_mcp, "_load_task_context", lambda **_kwargs: ("", {"success": True}))
+    monkeypatch.setattr(local_ai_mcp, "_compact", lambda value, _kind: value)
+
+    result = local_ai_mcp.local_ai_task(
+        action="submit", job_action="delegate", conversation=True, task="start conversation",
+    )
+
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+    assert calls == []
