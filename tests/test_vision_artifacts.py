@@ -235,6 +235,104 @@ def test_legacy_migration_conflict_rolls_back_before_writing(tmp_path: Path) -> 
     assert meta_exists is None
 
 
+def test_sha256_v1_migration_rejects_artifact_owned_by_another_tenant(tmp_path: Path) -> None:
+    raw_tenant = "legacy-owner"
+    owner_identity = hashlib.sha256(raw_tenant.encode("utf-8")).hexdigest()
+    other_identity = hashlib.sha256(b"other-owner").hexdigest()
+    artifact_id = "art_sha256_conflict"
+    db_path = tmp_path / "artifacts.sqlite3"
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute(
+            "CREATE TABLE artifact_schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO artifact_schema_meta(key, value) VALUES (?, ?)",
+            ("tenant_storage", "sha256-v1"),
+        )
+        connection.execute(
+            "CREATE TABLE artifacts (artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL, tenant TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO artifacts VALUES (?, ?, ?, ?, ?)",
+            (artifact_id, 9_999_999_999, owner_identity, "text", "same payload"),
+        )
+        connection.execute(
+            """CREATE TABLE artifacts_v2 (
+                artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL, tenant TEXT NOT NULL,
+                tenant_identity TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL DEFAULT '',
+                mime_type TEXT, encoding TEXT, blob BLOB, size_bytes INTEGER, checksum TEXT,
+                identity_json TEXT
+            )"""
+        )
+        connection.execute(
+            """INSERT INTO artifacts_v2(
+                artifact_id, created_at, tenant, tenant_identity, kind, text
+            ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (artifact_id, 9_999_999_999, other_identity, other_identity, "text", "same payload"),
+        )
+        connection.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="artifact migration conflict"):
+        ArtifactStore(tmp_path)
+
+    with closing(sqlite3.connect(db_path)) as connection:
+        legacy = connection.execute(
+            "SELECT tenant, text FROM artifacts WHERE artifact_id=?", (artifact_id,)
+        ).fetchone()
+        current = connection.execute(
+            "SELECT tenant, tenant_identity, text FROM artifacts_v2 WHERE artifact_id=?", (artifact_id,)
+        ).fetchone()
+        marker = connection.execute(
+            "SELECT value FROM artifact_schema_meta WHERE key='tenant_storage'"
+        ).fetchone()
+    assert legacy == (owner_identity, "same payload")
+    assert current == (other_identity, other_identity, "same payload")
+    assert marker == ("sha256-v1",)
+
+
+def test_sha256_v1_migration_accepts_existing_row_with_matching_identity(tmp_path: Path) -> None:
+    raw_tenant = "legacy-owner"
+    owner_identity = hashlib.sha256(raw_tenant.encode("utf-8")).hexdigest()
+    artifact_id = "art_sha256_matching"
+    db_path = tmp_path / "artifacts.sqlite3"
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute(
+            "CREATE TABLE artifact_schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO artifact_schema_meta(key, value) VALUES (?, ?)",
+            ("tenant_storage", "sha256-v1"),
+        )
+        connection.execute(
+            "CREATE TABLE artifacts (artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL, tenant TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO artifacts VALUES (?, ?, ?, ?, ?)",
+            (artifact_id, 9_999_999_999, owner_identity, "text", "payload"),
+        )
+        connection.execute(
+            """CREATE TABLE artifacts_v2 (
+                artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL, tenant TEXT NOT NULL,
+                tenant_identity TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL DEFAULT '',
+                mime_type TEXT, encoding TEXT, blob BLOB, size_bytes INTEGER, checksum TEXT,
+                identity_json TEXT
+            )"""
+        )
+        connection.execute(
+            """INSERT INTO artifacts_v2(
+                artifact_id, created_at, tenant, tenant_identity, kind, text
+            ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (artifact_id, 9_999_999_999, owner_identity, owner_identity, "text", "payload"),
+        )
+        connection.commit()
+
+    store = ArtifactStore(tmp_path)
+
+    result = store.get(artifact_id, tenant=raw_tenant)
+    assert result["success"] is True
+    assert result["text"] == "payload"
+
+
 def test_concurrent_legacy_migration_creates_one_verified_backup(tmp_path: Path) -> None:
     raw_tenant = "concurrent-legacy-tenant"
     db_path = tmp_path / "artifacts.sqlite3"
