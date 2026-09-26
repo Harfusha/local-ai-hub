@@ -6,12 +6,47 @@ from pathlib import Path
 
 from local_ai_hub.project_config import (
     PathHint,
+    PathHintUsage,
     ProjectPathHintStore,
     prioritize_paths_with_hints,
     report_path_hint_outcome,
     resolve_project_context,
     validate_path_hint,
 )
+
+
+def test_path_hint_telemetry_metadata_excludes_candidate_paths() -> None:
+    usage = PathHintUsage(
+        paths=("private/customer_source.py",),
+        hint_used=True,
+        fallback_used=False,
+        hint_helped=None,
+    )
+
+    metadata = usage.telemetry_metadata()
+
+    assert metadata == {
+        "hint_used": True,
+        "fallback_used": False,
+        "hint_helped": None,
+    }
+    assert "paths" not in metadata
+    assert "private/customer_source.py" not in repr(metadata)
+
+
+def test_path_hint_telemetry_metadata_normalizes_malformed_runtime_values() -> None:
+    usage = PathHintUsage(
+        paths=(),
+        hint_used="private/hint.txt",  # type: ignore[arg-type]
+        fallback_used="private/fallback.txt",  # type: ignore[arg-type]
+        hint_helped="private/outcome.txt",  # type: ignore[arg-type]
+    )
+
+    assert usage.telemetry_metadata() == {
+        "hint_used": False,
+        "fallback_used": False,
+        "hint_helped": None,
+    }
 
 
 def test_cakephp_button_hint_prioritizes_templates_without_narrowing_results(

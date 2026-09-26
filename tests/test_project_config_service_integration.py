@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 
 import local_ai_hub.project_config as project_config
+from local_ai_hub.cache import stable_hash
 from local_ai_hub.project_config import PathHint, resolve_project_context
 from local_ai_hub.services import LocalAIServices
 
@@ -145,5 +147,23 @@ def test_run_affected_applies_project_mapping_and_path_hints_safely(
         "hint_helped": None,
     }
     assert observed["project_config_digest"] == context.config_digest
+    assert observed["path_hints_digest"] == stable_hash(
+        [
+            asdict(
+                PathHint(
+                    path="tests/requested",
+                    purpose="affected_tests",
+                    scope="run_affected",
+                )
+            ),
+            asdict(
+                PathHint(
+                    path="tests/secret",
+                    purpose="affected_tests",
+                    scope="run_affected",
+                )
+            ),
+        ]
+    )
     assert "repository_revision" not in observed
     assert "tests/requested" not in repr(observed)
