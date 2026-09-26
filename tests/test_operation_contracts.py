@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+import json
 from threading import Barrier, BrokenBarrierError, Lock
 import time
 from typing import Any
@@ -35,6 +37,135 @@ def _schema_shape(schema: dict[str, Any], root: dict[str, Any]) -> dict[str, Any
     if isinstance(schema.get("anyOf"), list):
         shape["anyOf"] = [_schema_shape(value, root) for value in schema["anyOf"]]
     return shape
+
+
+@pytest.mark.parametrize(
+    ("status_code", "payload", "expected_retryable"),
+    [
+        (400, {"error": "bad request", "detail": "preserved"}, False),
+        (429, {"error": "slow down"}, True),
+        (503, {"error": "backend unavailable", "retryable": False}, False),
+    ],
+)
+def test_normalize_transport_error_exposes_client_retry_contract(
+    status_code: int, payload: Any, expected_retryable: bool
+) -> None:
+    from local_ai_hub.operation_contracts import normalize_transport_error
+
+    result = normalize_transport_error(status_code, payload)
+
+    assert result["success"] is False
+    assert result["status_code"] == status_code
+    assert result["retryable"] is expected_retryable
+    assert result["terminal"] is not expected_retryable
+    if isinstance(payload, dict) and "detail" in payload:
+        assert result["detail"] == payload["detail"]
+
+
+def test_http_mutation_registry_journals_only_explicit_mutations() -> None:
+    from local_ai_hub.operation_contracts import http_operation_needs_replay
+
+    cases = [
+        ("POST", "/api/rag/index", {}, True),
+        ("POST", "/api/rag/ingest_document", {}, True),
+        ("POST", "/api/ingest_document", {}, True),
+        ("POST", "/api/command", {"command": "python -m pytest"}, True),
+        ("POST", "/api/command", {"command": "   "}, False),
+        ("POST", "/api/command", {}, False),
+        ("POST", "/api/command", {"command": None}, False),
+        ("POST", "/api/command", {"command": 0}, False),
+        ("POST", "/api/command", {"command": []}, False),
+        ("POST", "/api/command", {"command": {"argv": ["pytest"]}}, False),
+        ("POST", "/api/coord/pubsub_publish", {}, True),
+        ("POST", "/api/pubsub_publish", {}, True),
+        ("POST", "/api/coord/pubsub_poll", {}, False),
+        ("POST", "/api/agent-state/tasks", {"action": "checkpoint"}, True),
+        ("POST", "/api/agent-state/tasks", {"action": "complete"}, False),
+        ("POST", "/api/work-orders", {}, True),
+        ("POST", "/api/work-orders", {"action": "list"}, False),
+        ("GET", "/api/rag/index", {}, False),
+        ("POST", "/api/context/pack", {"query": "fresh context"}, False),
+    ]
+
+    for method, path, payload, expected in cases:
+        assert http_operation_needs_replay(method, path, payload) is expected, (method, path, payload)
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/rag/index", {"root": "."}),
+        ("/api/rag/ingest_document", {"content": "document"}),
+        ("/api/ingest_document", {"content": "document"}),
+        ("/api/command", {"command": "python -m pytest"}),
+        ("/api/coord/pubsub_publish", {"topic": "t03", "message": {"value": 1}}),
+        ("/api/pubsub_publish", {"topic": "t03", "message": {"value": 1}}),
+        ("/api/agent-state/tasks", {"action": "checkpoint", "task_id": "t03"}),
+        ("/api/work-orders", {}),
+        ("/api/work-orders", {"action": "submit"}),
+    ],
+)
+def test_registered_http_mutation_routes_enter_recovery_before_dispatch(
+    path: str, payload: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from local_ai_hub import http_server
+
+    class Recovery:
+        def __init__(self) -> None:
+            self.begin_calls: list[tuple[str, str, dict[str, Any]]] = []
+
+        def validate_request_id(self, _request_id: str) -> None:
+            return None
+
+        def begin(
+            self,
+            request_id: str,
+            tenant: str,
+            action: str,
+            *,
+            identity: str,
+            payload: dict[str, Any],
+        ) -> dict[str, Any]:
+            assert identity == "agent-a"
+            self.begin_calls.append((request_id, action, payload))
+            return {"claimed": False, "state": "conflict", "error": "replayed by test"}
+
+    recovery = Recovery()
+    monkeypatch.setattr(
+        http_server,
+        "APP",
+        SimpleNamespace(config={}, recovery=recovery),
+    )
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = path
+    handler.headers = {
+        "Content-Type": "application/json",
+        "X-LocalAI-Request-ID": "t03-route-recovery",
+    }
+    handler._begin_trace = lambda _path: setattr(handler, "_trace_request_id", "t03-route-recovery")
+    handler._require_authorized = lambda: True
+    handler._tenant = lambda: "tenant-a"
+    handler._agent = lambda: "agent-a"
+    handler._read_json = lambda limit=None: payload
+    handler._validate_payload = lambda _path, _payload: None
+    responses: list[tuple[int, dict[str, Any]]] = []
+    handler._send = lambda status, body: responses.append((status, body))
+
+    handler.do_POST()
+
+    assert responses == [
+        (
+            409,
+            {
+                "success": False,
+                "error": "replayed by test",
+                "request_id": "t03-route-recovery",
+            },
+        )
+    ]
+    assert recovery.begin_calls == [("t03-route-recovery", path, payload)]
 
 
 def test_repo_pipeline_schema_exposes_runtime_step_contract() -> None:
@@ -455,6 +586,187 @@ def test_mcp_backend_unavailable_preserves_retry_metadata(
     assert payload["error"] == "backend unavailable"
 
 
+def test_http_disabled_agent_state_returns_structured_403_before_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    import local_ai_hub.http_server as http_server
+
+    class DisabledTasks:
+        state_store = SimpleNamespace(enabled=False)
+
+        def list_tasks(self, **_kwargs: Any) -> list[Any]:
+            raise AssertionError("disabled HTTP task route reached the backend")
+
+    monkeypatch.setattr(
+        http_server,
+        "APP",
+        SimpleNamespace(config={}, agent_tasks=DisabledTasks()),
+    )
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/agent-state/tasks"
+    handler.headers = {}
+    handler._begin_trace = lambda _path: None
+    handler._require_authorized = lambda: True
+    responses: list[tuple[int, dict[str, Any]]] = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+
+    handler.do_GET()
+
+    assert responses == [
+        (
+            403,
+            {
+                "success": False,
+                "error": "agent_state is disabled",
+                "terminal": True,
+                "retryable": False,
+            },
+        )
+    ]
+
+
+def test_http_post_without_hub_returns_retryable_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    import local_ai_hub.http_server as http_server
+    from local_ai_hub.operation_contracts import normalize_transport_error
+
+    monkeypatch.setattr(http_server, "APP", None)
+    handler = http_server.Handler.__new__(http_server.Handler)
+    responses: list[tuple[int, dict[str, Any]]] = []
+    handler._send = lambda status, payload: responses.append(
+        (status, normalize_transport_error(status, payload))
+    )
+
+    handler.do_POST()
+
+    assert responses == [
+        (
+            503,
+            {
+                "success": False,
+                "error": "hub starting up; please retry",
+                "status_code": 503,
+                "retryable": True,
+                "terminal": False,
+            },
+        )
+    ]
+
+
+def test_http_missing_agent_task_returns_structured_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    import local_ai_hub.http_server as http_server
+    from local_ai_hub.operation_contracts import normalize_transport_error
+
+    class TaskStore:
+        state_store = SimpleNamespace(enabled=True)
+
+        def get(self, _task_id: str):
+            return None
+
+    monkeypatch.setattr(
+        http_server,
+        "APP",
+        SimpleNamespace(config={}, agent_tasks=TaskStore()),
+    )
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/agent-state/tasks?task_id=missing"
+    handler.headers = {}
+    handler._begin_trace = lambda _path: None
+    handler._require_authorized = lambda: True
+    responses: list[tuple[int, dict[str, Any]]] = []
+    handler._send = lambda status, payload: responses.append(
+        (status, normalize_transport_error(status, payload))
+    )
+
+    handler.do_GET()
+
+    assert responses == [
+        (
+            404,
+            {
+                "success": False,
+                "error": "task not found",
+                "status_code": 404,
+                "terminal": True,
+                "retryable": False,
+            },
+        )
+    ]
+
+
+def test_http_oversized_validated_payload_returns_structured_413(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    import local_ai_hub.http_server as http_server
+    from local_ai_hub.operation_contracts import normalize_transport_error
+
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={}))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/chat/completions"
+    handler.headers = {"Content-Type": "application/json"}
+    handler._begin_trace = lambda _path: None
+    handler._require_authorized = lambda: True
+    handler._read_json = lambda: {"messages": [{"role": "user", "content": "x" * 1_000_001}]}
+    handler._validate_payload = http_server.Handler._validate_payload
+    responses: list[tuple[int, dict[str, Any]]] = []
+    handler._send = lambda status, payload: responses.append(
+        (status, normalize_transport_error(status, payload))
+    )
+
+    handler.do_POST()
+
+    assert responses == [
+        (
+            413,
+            {
+                "success": False,
+                "error": "messages exceed 1000000 characters",
+                "status_code": 413,
+                "terminal": True,
+                "retryable": False,
+            },
+        )
+    ]
+
+
+def test_http_bundle_import_requires_raw_zip_content_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    import local_ai_hub.http_server as http_server
+    from local_ai_hub.operation_contracts import normalize_transport_error
+
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={}))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/bundle/import"
+    handler.headers = {"Content-Type": "application/json"}
+    handler._begin_trace = lambda _path: None
+    handler._require_authorized = lambda: True
+    responses: list[tuple[int, dict[str, Any]]] = []
+    handler._send = lambda status, payload: responses.append(
+        (status, normalize_transport_error(status, payload))
+    )
+
+    handler.do_POST()
+
+    assert responses == [
+        (
+            415,
+            {
+                "success": False,
+                "error": "bundle import requires raw ZIP content",
+                "status_code": 415,
+                "retryable": False,
+                "terminal": True,
+            },
+        )
+    ]
+
+
 def test_status_alias_schema_and_runtime_match() -> None:
     import local_ai_hub.mcp_server as mcp_server
     from local_ai_hub.generator import generate_mcp_tool_schemas
@@ -539,6 +851,370 @@ def test_pubsub_poll_cursor_matches_schema_and_reaches_client(monkeypatch: pytes
     assert requests[0]["after_seq"] == 17
 
 
+def test_pubsub_http_routes_replay_cursor_through_agent_state(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from local_ai_hub import http_server
+    from local_ai_hub import mcp_server
+    from local_ai_hub.agent_events import AgentStateStore, SwarmPubSub
+
+    monkeypatch.setattr(SwarmPubSub, "_instance", None)
+    state_store = AgentStateStore(tmp_path / "agent-state.sqlite")
+
+    class Recovery:
+        def __init__(self) -> None:
+            self.begin_paths: list[str] = []
+
+        def begin(
+            self,
+            request_id: str,
+            tenant: str,
+            action: str,
+            *,
+            identity: str,
+            payload: Any,
+        ) -> dict[str, Any]:
+            self.begin_paths.append(action)
+            return {"claimed": True, "state": "running", "payload_fingerprint": "test"}
+
+    class Services:
+        def pubsub_publish(self, topic: str, message: dict[str, Any], sender: str) -> dict[str, Any]:
+            return SwarmPubSub.get_default().publish(topic, message, sender=sender)
+
+    class App:
+        agent_state = state_store
+        recovery = Recovery()
+        services = Services()
+        config: dict[str, Any] = {}
+
+    monkeypatch.setattr(http_server, "APP", App())
+
+    def post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        handler = http_server.Handler.__new__(http_server.Handler)
+        handler.path = path
+        handler.headers = {"Content-Type": "application/json"}
+        handler._begin_trace = lambda _path: setattr(handler, "_trace_request_id", "t03-sequence-test")
+        handler._require_authorized = lambda: True
+        handler._read_json = lambda limit=None: payload
+        handler._validate_payload = lambda _path, _payload: None
+        responses: list[tuple[int, dict[str, Any]]] = []
+        handler._send = lambda status, body: responses.append((status, body))
+
+        handler.do_POST()
+        assert len(responses) == 1
+        assert responses[0][0] == 200
+        return responses[0][1]
+
+    class HttpTransport:
+        def coord(self, action: str, **kwargs: Any) -> dict[str, Any]:
+            assert action == "pubsub_poll"
+            return post(
+                "/api/coord/pubsub_poll",
+                {
+                    "topic": kwargs["topic"],
+                    "after_seq": kwargs["after_seq"],
+                    "limit": kwargs["limit"],
+                },
+            )
+
+    published = post(
+        "/api/coord/pubsub_publish",
+        {"topic": "t03-sequence", "message": {"value": 17}, "publisher": "test"},
+    )
+    monkeypatch.setattr(mcp_server, "CLIENT", HttpTransport())
+    polled = mcp_server.local_ai_coord(
+        action="pubsub_poll", key="t03-sequence", after_seq=0, ttl_seconds=50
+    )
+
+    assert published["success"] is True
+    assert polled["count"] == 1
+    assert polled["messages"][0]["seq"] == 1
+    assert polled["messages"][0]["payload"] == {"value": 17}
+    assert polled["after_seq"] == 0
+    assert polled["next_after_seq"] == 1
+    assert polled["limit"] == 50
+    assert polled["has_more"] is False
+    assert polled["gap"] is False
+    assert App.recovery.begin_paths == ["/api/coord/pubsub_publish"]
+    next_poll = post(
+        "/api/coord/pubsub_poll",
+        {"topic": "t03-sequence", "after_seq": polled["next_after_seq"], "limit": 50},
+    )
+    assert next_poll["messages"] == []
+
+
+def test_context_pack_http_post_bypasses_recovery_and_dispatches(monkeypatch: pytest.MonkeyPatch) -> None:
+    from local_ai_hub import http_server
+
+    class Recovery:
+        def __init__(self) -> None:
+            self.begin_calls = 0
+
+        def validate_request_id(self, _request_id: str) -> None:
+            return None
+
+        def begin(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            self.begin_calls += 1
+            return {"claimed": True, "state": "running"}
+
+    class Services:
+        def __init__(self) -> None:
+            self.context_calls: list[tuple[str, str, int]] = []
+
+        def fast_context(self, root: str, query: str, max_tokens: int) -> dict[str, Any]:
+            self.context_calls.append((root, query, max_tokens))
+            return {"success": True, "context": f"computed context {len(self.context_calls)}"}
+
+    class App:
+        config: dict[str, Any] = {}
+        recovery = Recovery()
+        services = Services()
+
+    payload = {"root": ".", "query": "fresh context", "mode": "fast", "max_tokens": 32}
+    monkeypatch.setattr(http_server, "APP", App())
+
+    def context_post() -> dict[str, Any]:
+        handler = http_server.Handler.__new__(http_server.Handler)
+        handler.path = "/api/context/pack"
+        handler.headers = {"Content-Type": "application/json", "X-LocalAI-Request-ID": "context-pack-test"}
+        handler._begin_trace = lambda _path: setattr(handler, "_trace_request_id", "context-pack-test")
+        handler._require_authorized = lambda: True
+        handler._read_json = lambda limit=None: payload
+        handler._validate_payload = lambda _path, _payload: None
+        responses: list[tuple[int, dict[str, Any]]] = []
+        handler._send = lambda status, body: responses.append((status, body))
+        handler.do_POST()
+        assert len(responses) == 1
+        assert responses[0][0] == 200
+        return responses[0][1]
+
+    first = context_post()
+    second = context_post()
+
+    assert first == {"success": True, "context": "computed context 1", "delivery_mode": "fast"}
+    assert second == {"success": True, "context": "computed context 2", "delivery_mode": "fast"}
+    assert App.services.context_calls == [(".", "fresh context", 32), (".", "fresh context", 32)]
+    assert App.recovery.begin_calls == 0
+
+
+@pytest.mark.parametrize("recovery_state", ["claimed", "done", "running", "conflict"])
+def test_mutating_http_post_uses_t07_recovery_contract(
+    recovery_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from local_ai_hub import http_server
+
+    request_id = "t03-journal-adapter"
+    fingerprint = "a" * 64
+    payload = {
+        "topic": "t03-replay",
+        "message": {"value": 1},
+        "publisher": "agent-a",
+        "_hub_journal": {"payload_fingerprint": "b" * 64},
+    }
+    replay_response = {"success": True, "published_id": "journaled"}
+
+    class Recovery:
+        def __init__(self) -> None:
+            self.begin_calls: list[tuple[str, str, str, str, dict[str, Any]]] = []
+            self.wait_calls: list[tuple[str, str]] = []
+            self.finish_calls: list[tuple[str, bool, int, dict[str, Any]]] = []
+
+        def validate_request_id(self, _request_id: str) -> None:
+            return None
+
+        def begin(
+            self,
+            current_id: str,
+            tenant: str,
+            action: str,
+            *,
+            identity: str,
+            payload: dict[str, Any],
+        ) -> dict[str, Any]:
+            self.begin_calls.append((current_id, tenant, action, identity, payload))
+            if recovery_state == "conflict":
+                return {"claimed": False, "state": "conflict", "error": "payload differs"}
+            if recovery_state == "claimed":
+                return {"claimed": True, "state": "running", "payload_fingerprint": fingerprint}
+            if recovery_state == "running":
+                return {
+                    "claimed": False,
+                    "state": "running",
+                    "response": None,
+                    "payload_fingerprint": fingerprint,
+                }
+            return {
+                "claimed": False,
+                "state": "done",
+                "status_code": 200,
+                "response": replay_response,
+                "payload_fingerprint": fingerprint,
+            }
+
+        def wait_for(
+            self,
+            current_id: str,
+            tenant: str,
+            action: str,
+            *,
+            timeout_seconds: float,
+            identity: str,
+            payload_fingerprint: str,
+        ) -> dict[str, Any]:
+            assert (current_id, tenant, action) == (request_id, "tenant-a", "/api/coord/pubsub_publish")
+            assert timeout_seconds > 0
+            self.wait_calls.append((identity, payload_fingerprint))
+            return {"state": "done", "status_code": 200, "response": replay_response}
+
+        def finish(
+            self,
+            current_id: str,
+            success: bool,
+            _detail: str = "",
+            *,
+            status_code: int,
+            response: dict[str, Any],
+        ) -> None:
+            self.finish_calls.append((current_id, success, status_code, response))
+
+    class Services:
+        def __init__(self) -> None:
+            self.publish_calls: list[dict[str, Any]] = []
+
+        def pubsub_publish(self, topic: str, message: dict[str, Any], sender: str) -> dict[str, Any]:
+            self.publish_calls.append({"topic": topic, "message": message, "sender": sender})
+            return {"success": True, "published_id": "fresh"}
+
+    class TraceStore:
+        def __init__(self) -> None:
+            self.requests: list[dict[str, Any]] = []
+
+        def update(self, _trace_id: str, **fields: Any) -> bool:
+            if isinstance(fields.get("request"), dict):
+                self.requests.append(dict(fields["request"]))
+            return True
+
+        def event(self, *_args: Any) -> None:
+            return None
+
+    recovery = Recovery()
+    services = Services()
+    trace_store = TraceStore()
+    monkeypatch.setattr(
+        http_server,
+        "APP",
+        SimpleNamespace(config={}, recovery=recovery, services=services, debug_traces=trace_store),
+    )
+
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/coord/pubsub_publish"
+    handler.headers = {"Content-Type": "application/json", "X-LocalAI-Request-ID": request_id}
+    handler._begin_trace = lambda _path: setattr(handler, "_trace_request_id", request_id)
+    handler._debug_trace_id = "trace-1"
+    handler._require_authorized = lambda: True
+    handler._tenant = lambda: "tenant-a"
+    handler._agent = lambda: "agent-a"
+    handler._read_json = lambda limit=None: payload
+    handler._validate_payload = lambda _path, _payload: None
+    sent_statuses: list[int] = []
+    handler.send_response = lambda status: sent_statuses.append(status)
+    handler.send_header = lambda *_args: None
+    handler.end_headers = lambda: None
+    handler._common_headers = lambda: None
+    handler._finish_debug_trace = lambda *_args, **_kwargs: None
+    handler._close_trace_context = lambda: None
+    handler._debug_trace_finished = True
+    handler._telemetry_finished = True
+    handler.wfile = io.BytesIO()
+
+    handler.do_POST()
+
+    body = json.loads(handler.wfile.getvalue())
+    assert len(sent_statuses) == 1
+    if recovery_state == "conflict":
+        assert sent_statuses == [409]
+        assert body["success"] is False
+        assert body["error"] == "payload differs"
+        assert body["request_id"] == request_id
+    else:
+        assert sent_statuses == [200]
+        expected_response = {"success": True, "published_id": "fresh"} if recovery_state == "claimed" else replay_response
+        assert body == expected_response
+    assert recovery.begin_calls == [(request_id, "tenant-a", "/api/coord/pubsub_publish", "agent-a", payload)]
+    expected_wait = [("agent-a", fingerprint)] if recovery_state == "running" else []
+    assert recovery.wait_calls == expected_wait
+    if recovery_state == "conflict":
+        assert trace_store.requests[-1].get("_hub_journal") is None
+    else:
+        assert trace_store.requests[-1]["_hub_journal"] == {"payload_fingerprint": fingerprint}
+    if recovery_state == "claimed":
+        assert services.publish_calls == [{"topic": "t03-replay", "message": {"value": 1}, "sender": "agent-a"}]
+        assert recovery.finish_calls == [(request_id, True, 200, {"success": True, "published_id": "fresh"})]
+    else:
+        assert services.publish_calls == []
+        assert recovery.finish_calls == []
+
+
+def test_mutating_http_post_uses_identity_bound_recovery_journal(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from local_ai_hub import http_server
+    from local_ai_hub.resilience import RecoveryJournal
+
+    recovery = RecoveryJournal(tmp_path, stale_seconds=30)
+
+    class Services:
+        def __init__(self) -> None:
+            self.publish_calls: list[dict[str, Any]] = []
+
+        def pubsub_publish(self, topic: str, message: Any, sender: str) -> dict[str, Any]:
+            self.publish_calls.append({"topic": topic, "message": message, "sender": sender})
+            return {"success": True, "published_id": "fresh"}
+
+    services = Services()
+    app = SimpleNamespace(
+        config={"resilience": {"singleflight_wait_timeout_seconds": 0.05}},
+        recovery=recovery,
+        services=services,
+        agent_state=None,
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    request_id = "t03-real-recovery-journal"
+    payload = {"topic": "t03-real", "message": {"value": 1}, "publisher": "agent-a"}
+
+    def post(identity: str, request_payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        handler = http_server.Handler.__new__(http_server.Handler)
+        handler.path = "/api/coord/pubsub_publish"
+        handler.headers = {
+            "Content-Type": "application/json",
+            "X-LocalAI-Request-ID": request_id,
+        }
+        handler._begin_trace = lambda _path: setattr(handler, "_trace_request_id", request_id)
+        handler._require_authorized = lambda: True
+        handler._tenant = lambda: "tenant-a"
+        handler._agent = lambda: identity
+        handler._read_json = lambda limit=None: request_payload
+        handler._validate_payload = lambda _path, _payload: None
+        responses: list[tuple[int, dict[str, Any]]] = []
+        handler._send = lambda status, body: responses.append((status, body))
+        handler.do_POST()
+        assert len(responses) == 1
+        return responses[0]
+
+    first = post("agent-a", payload)
+    duplicate = post("agent-a", payload)
+    wrong_identity = post("agent-b", payload)
+    wrong_payload = post("agent-a", {**payload, "topic": "other"})
+
+    assert first[0] == 200
+    assert duplicate[0] == 200 and duplicate[1] == first[1]
+    assert wrong_identity[0] == 409
+    assert wrong_payload[0] == 409
+    assert len(services.publish_calls) == 1
+
+
 def test_local_ai_coord_max_tokens_bounds_match_live_and_generated() -> None:
     import local_ai_hub.mcp_server as mcp_server
     from local_ai_hub.generator import generate_mcp_tool_schemas
@@ -562,6 +1238,38 @@ def test_pubsub_poll_rejects_out_of_range_cursor(monkeypatch: pytest.MonkeyPatch
     assert result["status_code"] == 400
     assert result["terminal"] is True
     assert result["retryable"] is False
+
+
+def test_http_send_applies_optional_response_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    import local_ai_hub.http_server as http_server
+
+    monkeypatch.setattr(http_server, "APP", None)
+    sent_headers: list[tuple[str, str]] = []
+    written: list[bytes] = []
+    handler = SimpleNamespace(
+        _debug_trace_finished=True,
+        _finish_debug_trace=lambda *_: None,
+        _close_trace_context=lambda: None,
+        send_response=lambda *_: None,
+        send_header=lambda name, value: sent_headers.append((name, value)),
+        _common_headers=lambda: None,
+        end_headers=lambda: None,
+        wfile=SimpleNamespace(write=written.append),
+    )
+
+    http_server.Handler._send(
+        handler,
+        405,
+        {"success": False, "error": "method not allowed"},
+        headers={"Allow": "POST"},
+    )
+
+    response = json.loads(written[0].decode("utf-8"))
+    assert ("Allow", "POST") in sent_headers
+    assert response["status_code"] == 405
+    assert response["retryable"] is False
 
 
 @pytest.mark.parametrize(
@@ -823,3 +1531,153 @@ def test_operation_registry_is_the_feature_gate_source() -> None:
         live_description = mcp_server.mcp._tool_manager._tools[contract.name].description
         assert expected in live_description
         assert expected in schemas[contract.name]["description"]
+
+
+def test_operation_registry_schema_keys_bind_to_live_and_generated_schemas() -> None:
+    import local_ai_hub.mcp_server as mcp_server
+    from local_ai_hub.generator import generate_mcp_tool_schemas
+    from local_ai_hub.operation_contracts import MCP_OPERATION_CONTRACTS, enabled_schema_keys
+
+    features = mcp_server.FEATURES
+    generated = generate_mcp_tool_schemas(mcp_server.CFG)
+    schema_keys = [contract.schema_key for contract in MCP_OPERATION_CONTRACTS]
+    assert len(schema_keys) == 8
+    assert len(set(schema_keys)) == 8
+    enabled = set(enabled_schema_keys(features))
+    assert set(generated) == enabled
+
+    manager = getattr(mcp_server.mcp, "_tool_manager", None)
+    runtime_tools = getattr(manager, "_tools", {}) if manager is not None else {}
+    runtime_keys = {
+        contract.schema_key
+        for contract in MCP_OPERATION_CONTRACTS
+        if contract.name in runtime_tools
+    }
+    assert runtime_keys == enabled
+
+    def normalize(schema):
+        if isinstance(schema, dict):
+            return {
+                key: normalize(value)
+                for key, value in schema.items()
+                if key not in {"description", "title", "$defs", "definitions"}
+            }
+        if isinstance(schema, list):
+            return [normalize(value) for value in schema]
+        return schema
+
+    for contract in MCP_OPERATION_CONTRACTS:
+        schema_key = contract.schema_key
+        live_schema = mcp_server._mcp_contract_schema(schema_key)
+        if schema_key not in enabled:
+            assert schema_key not in generated
+            assert contract.name not in runtime_tools
+            assert live_schema is None
+            continue
+
+        assert isinstance(live_schema, dict)
+        assert isinstance(live_schema.get("properties"), dict)
+        generated_parameters = generated[schema_key].get("parameters")
+        assert isinstance(generated_parameters, dict)
+        assert normalize(live_schema) == normalize(generated_parameters)
+
+
+def test_http_send_rejects_transfer_encoding_override() -> None:
+    from types import SimpleNamespace
+
+    import local_ai_hub.http_server as http_server
+
+    sent_statuses: list[int] = []
+    handler = SimpleNamespace(
+        send_response=sent_statuses.append,
+        send_header=lambda *_args: None,
+        _common_headers=lambda: None,
+        end_headers=lambda: None,
+        wfile=SimpleNamespace(write=lambda _body: None),
+    )
+
+    with pytest.raises(ValueError, match="invalid or reserved response header name"):
+        http_server.Handler._send(
+            handler,
+            200,
+            {"success": True},
+            headers={"Transfer-Encoding": "chunked"},
+        )
+
+    assert sent_statuses == []
+
+
+def test_task_list_query_is_action_scoped_and_task_create_keeps_query_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_ai_hub.mcp_server as mcp_server
+
+    calls: list[dict[str, Any]] = []
+
+    class FakeClient:
+        def coord(self, **kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            return {"success": True}
+
+    monkeypatch.setattr(mcp_server, "CLIENT", FakeClient())
+    mcp_server.local_ai_coord(action="task_list", query="  Alpha  beta  ", status="active")
+    mcp_server.local_ai_coord(action="task_list", query="")
+    mcp_server.local_ai_coord(action="task_create", task_id="task-query", query="Goal from query")
+    mcp_server.local_ai_coord(
+        action="task_create", task_id="task-explicit", task="Explicit goal", query="Ignored query"
+    )
+
+    assert calls[0]["query"] == "  Alpha  beta  "
+    assert "query" not in calls[1]
+    assert calls[2]["query"] == "Goal from query"
+    assert "query" not in calls[3]
+
+
+def test_task_list_query_is_forwarded_by_http_routes(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    import local_ai_hub.http_server as http_server
+
+    query_text = "alpha beta"
+    list_calls: list[dict[str, Any]] = []
+
+    class TaskStore:
+        state_store = SimpleNamespace(enabled=True)
+
+        def list_tasks(self, **kwargs: Any) -> list[Any]:
+            list_calls.append(kwargs)
+            return []
+
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_tasks=TaskStore(), config={}))
+
+    def handler_for(path: str):
+        handler = http_server.Handler.__new__(http_server.Handler)
+        handler.path = path
+        handler.headers = {"Content-Type": "application/json"}
+        handler._begin_trace = lambda _path: None
+        handler._require_authorized = lambda: True
+        responses: list[tuple[int, dict[str, Any]]] = []
+        handler._send = lambda status, body: responses.append((status, body))
+        return handler, responses
+
+    get_handler, get_responses = handler_for(
+        "/api/agent-state/tasks?status=active&limit=7&query=alpha+beta"
+    )
+    get_handler.do_GET()
+    assert get_responses[0][0] == 200
+    assert list_calls[-1]["query"] == query_text
+
+    post_handler, post_responses = handler_for("/api/agent-state/tasks")
+    post_handler._read_json = lambda: {
+        "action": "list", "status": "active", "limit": 7, "query": query_text
+    }
+    post_handler._validate_payload = lambda _path, _payload: None
+    post_handler.do_POST()
+    assert post_responses[0][0] == 200
+    assert list_calls[-1]["query"] == query_text
+
+    invalid_handler, invalid_responses = handler_for("/api/agent-state/tasks")
+    invalid_handler._read_json = lambda: {"action": "list", "query": {"bad": True}}
+    invalid_handler._validate_payload = lambda _path, _payload: None
+    invalid_handler.do_POST()
+    assert invalid_responses[0][0] == 400

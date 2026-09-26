@@ -381,7 +381,8 @@ def test_singleflight_waiter_returns_retryable_in_progress_quickly():
 
 def test_recovery_journal_waiter_replays_completed_owner_response(tmp_path: Path):
     journal = RecoveryJournal(tmp_path / "state")
-    journal.begin("request-1", "tenant", "/api/search")
+    payload = {"query": "test"}
+    journal.begin("request-1", "tenant", "/api/search", identity="agent-a", payload=payload)
 
     def finish() -> None:
         time.sleep(0.02)
@@ -389,10 +390,63 @@ def test_recovery_journal_waiter_replays_completed_owner_response(tmp_path: Path
 
     worker = threading.Thread(target=finish)
     worker.start()
-    result = journal.wait_for("request-1", "tenant", "/api/search", timeout_seconds=0.5)
+    result = journal.wait_for(
+        "request-1",
+        "tenant",
+        "/api/search",
+        timeout_seconds=0.5,
+        identity="agent-a",
+        payload_fingerprint=journal.fingerprint_payload(payload),
+    )
     worker.join(1)
 
     assert result == {"state": "done", "status_code": 200, "response": {"success": True, "value": "reused"}}
+
+
+def test_debug_trace_reconciliation_requires_matching_payload_fingerprint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from types import SimpleNamespace
+
+    import local_ai_hub.http_server as http_module
+
+    journal = RecoveryJournal(tmp_path / "state")
+    payload = {"command": "status"}
+    journal.begin("request-1", "tenant", "/api/command", identity="agent-a", payload=payload)
+    journal.finish("request-1", True, status_code=200, response={"success": True})
+
+    class TraceStore:
+        def __init__(self):
+            self.reconciled = []
+            self.request = {}
+            self.detail_cursors = []
+
+        def detail(self, trace_id, *, since_seq):
+            self.detail_cursors.append((trace_id, since_seq))
+            return {"success": True, "session": {"request": self.request}}
+
+        def reconcile_terminal(self, trace_id, **values):
+            self.reconciled.append((trace_id, values))
+
+    traces = TraceStore()
+    monkeypatch.setattr(http_module, "APP", SimpleNamespace(debug_traces=traces, recovery=journal))
+    traces.request = {"_hub_journal": {"payload_fingerprint": journal.fingerprint_payload({"command": "other"})}}
+    trace = {
+        "state": "running",
+        "request_id": "request-1",
+        "tenant": "tenant",
+        "agent": "agent-a",
+        "action": "/api/command",
+        "trace_id": "trace-1",
+    }
+
+    Handler._reconcile_debug_trace(None, trace)
+    assert trace["state"] == "running"
+    assert traces.reconciled == []
+
+    traces.request["_hub_journal"]["payload_fingerprint"] = journal.fingerprint_payload(payload)
+    Handler._reconcile_debug_trace(None, trace)
+    assert trace["state"] == "done"
+    assert [trace_id for trace_id, _ in traces.reconciled] == ["trace-1"]
+    assert traces.detail_cursors == [("trace-1", (1 << 63) - 1)] * 2
 
 
 def test_memory_lru_preserves_subsecond_ttl():

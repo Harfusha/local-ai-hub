@@ -20,7 +20,7 @@ from local_ai_hub.operation_contracts import (
     MCP_OPERATION_CONTRACTS,
     STATUS_ACTIONS,
     STATUS_DETAILS,
-    enabled_tool_names,
+    enabled_schema_keys,
     operation_description,
     repo_pipeline_step_schema,
 )
@@ -1140,11 +1140,11 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         }
 
     _apply_response_budget_schema(schemas, cfg)
-    contracts = {contract.name: contract for contract in MCP_OPERATION_CONTRACTS}
-    enabled = set(enabled_tool_names(fs))
-    schemas = {name: schema for name, schema in schemas.items() if name in enabled}
-    for name, schema in schemas.items():
-        schema["description"] += operation_description(contracts[name])
+    contracts = {contract.schema_key: contract for contract in MCP_OPERATION_CONTRACTS}
+    enabled = set(enabled_schema_keys(fs))
+    schemas = {schema_key: schema for schema_key, schema in schemas.items() if schema_key in enabled}
+    for schema_key, schema in schemas.items():
+        schema["description"] += operation_description(contracts[schema_key])
     return schemas
 
 

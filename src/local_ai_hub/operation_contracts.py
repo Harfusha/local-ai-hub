@@ -8,8 +8,30 @@ from typing import Any, Mapping
 
 
 @dataclass(frozen=True)
+class HttpMutationContract:
+    """One HTTP mutation whose outcome is safe and useful to replay by request ID."""
+
+    method: str
+    path: str
+    action_field: str = ""
+    action: str = ""
+    default_action: str = ""
+
+    def matches(self, method: str, path: str, payload: Mapping[str, Any]) -> bool:
+        if method.upper() != self.method or path != self.path:
+            return False
+        if not self.action_field:
+            return True
+        value = payload.get(self.action_field, self.default_action)
+        if self.action == "*":
+            return isinstance(value, str) and bool(value.strip())
+        actual = str(value).strip().lower().replace("-", "_")
+        return actual == self.action
+
+
+@dataclass(frozen=True)
 class OperationContract:
-    """Stable tool-level gate and transport metadata."""
+    """Stable tool-level schema binding, gate, and transport metadata."""
 
     name: str
     feature_gate: str
@@ -17,20 +39,58 @@ class OperationContract:
     retry: str
     timeout: str
     projection: str
+    # Key into T01's generated schemas and the MCP runtime schema catalog.
+    schema_key: str
+    http_mutations: tuple[HttpMutationContract, ...] = ()
 
 
 # The eight public tools remain the single registered MCP surface. Detailed
 # actions stay owned by FeatureSet; this table holds cross-transport contracts.
+# Journal only explicit side-effecting mutations. Unlisted POSTs, including
+# /api/context/pack, recompute fresh output and do not store compute results.
 MCP_OPERATION_CONTRACTS = (
-    OperationContract("local_ai_status", "status", "read-only", "safe", "quick", "status"),
-    OperationContract("local_ai_repo", "repo", "action-dependent", "action-dependent", "action-dependent", "action-dependent"),
-    OperationContract("local_ai_task", "tasks", "action-dependent", "action-dependent", "action-dependent", "action-dependent"),
-    OperationContract("local_ai_rag", "rag", "action-dependent", "action-dependent", "action-dependent", "action-dependent"),
-    OperationContract("local_ai_command", "commands", "action-dependent", "action-dependent", "action-dependent", "action-dependent"),
-    OperationContract("local_ai_coord", "coord", "action-dependent", "action-dependent", "action-dependent", "action-dependent"),
-    OperationContract("local_ai_artifact", "artifacts", "read-only", "safe", "quick", "artifact"),
-    OperationContract("local_ai_work", "work_orchestrator", "action-dependent", "action-dependent", "action-dependent", "action-dependent"),
+    OperationContract("local_ai_status", "status", "read-only", "safe", "quick", "status", schema_key="local_ai_status"),
+    OperationContract("local_ai_repo", "repo", "action-dependent", "action-dependent", "action-dependent", "action-dependent", schema_key="local_ai_repo"),
+    OperationContract("local_ai_task", "tasks", "action-dependent", "action-dependent", "action-dependent", "action-dependent", schema_key="local_ai_task"),
+    OperationContract(
+        "local_ai_rag", "rag", "action-dependent", "action-dependent", "action-dependent", "action-dependent",
+        schema_key="local_ai_rag",
+        http_mutations=(
+            HttpMutationContract("POST", "/api/rag/index"),
+            HttpMutationContract("POST", "/api/rag/ingest_document"),
+            HttpMutationContract("POST", "/api/ingest_document"),
+        ),
+    ),
+    OperationContract(
+        "local_ai_command", "commands", "action-dependent", "action-dependent", "action-dependent", "action-dependent",
+        schema_key="local_ai_command",
+        http_mutations=(HttpMutationContract("POST", "/api/command", action_field="command", action="*"),),
+    ),
+    OperationContract(
+        "local_ai_coord", "coord", "action-dependent", "action-dependent", "action-dependent", "action-dependent",
+        schema_key="local_ai_coord",
+        http_mutations=(
+            HttpMutationContract("POST", "/api/coord/pubsub_publish"),
+            HttpMutationContract("POST", "/api/pubsub_publish"),
+            HttpMutationContract("POST", "/api/agent-state/tasks", action_field="action", action="checkpoint"),
+        ),
+    ),
+    OperationContract("local_ai_artifact", "artifacts", "read-only", "safe", "quick", "artifact", schema_key="local_ai_artifact"),
+    OperationContract(
+        "local_ai_work", "work_orchestrator", "action-dependent", "action-dependent", "action-dependent", "action-dependent",
+        schema_key="local_ai_work",
+        http_mutations=(HttpMutationContract("POST", "/api/work-orders", action_field="action", action="submit", default_action="submit"),),
+    ),
 )
+
+
+def http_operation_needs_replay(method: str, path: str, payload: Mapping[str, Any]) -> bool:
+    """Return true only for an explicitly registered replayable HTTP mutation."""
+    return any(
+        operation.matches(method, path, payload)
+        for contract in MCP_OPERATION_CONTRACTS
+        for operation in contract.http_mutations
+    )
 
 STATUS_ACTIONS = ("", "brief", "cache", "telemetry", "full", "agent_state", "status", "health", "check", "info")
 STATUS_DETAILS = ("brief", "cache", "telemetry", "full", "agent_state")
@@ -60,6 +120,10 @@ def tool_enabled(features: Any, contract: OperationContract) -> bool:
 
 def enabled_tool_names(features: Any) -> list[str]:
     return [contract.name for contract in MCP_OPERATION_CONTRACTS if tool_enabled(features, contract)]
+
+
+def enabled_schema_keys(features: Any) -> list[str]:
+    return [contract.schema_key for contract in MCP_OPERATION_CONTRACTS if tool_enabled(features, contract)]
 
 
 def disabled_tool_names(features: Any) -> list[str]:

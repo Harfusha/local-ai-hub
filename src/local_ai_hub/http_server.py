@@ -31,7 +31,7 @@ from .agent_incidents import IncidentFingerprint, ToolOutcome
 from .agent_verification import VerificationReceipt
 from .task_context import build_context_request, compose_task_context
 from .agent_learning import ImprovementCandidate, SLOObservation
-from .operation_contracts import normalize_transport_error
+from .operation_contracts import MAX_EVENT_SEQUENCE, http_operation_needs_replay, normalize_transport_error
 from .json_utils import dumps as json_dumps
 from .browser_bridge import (
     abandon_staged_capture,
@@ -60,6 +60,10 @@ MONITOR_PATHS = {
     "/api/config", "/api/logs/tail", "/api/hardware/system", "/api/hardware/gpu",
     "/api/debug-traces",
 }
+
+SSE_REPLAY_PAGE_SIZE = 1000
+SSE_REPLAY_MAX_EVENTS = 10_000
+SSE_TIMEOUT_WRITE_RESERVE_SECONDS = 0.05
 
 
 def _json_bytes(data: Any) -> bytes:
@@ -752,8 +756,40 @@ class Handler(BaseHTTPRequestHandler):
         recovery = getattr(APP, "recovery", None) if APP is not None else None
         if store is None or recovery is None or not trace.get("request_id"):
             return trace
+        identity = str(trace.get("agent", "")).strip()
+        if not identity:
+            return trace
+
+        def trace_payload_fingerprint(request: Any) -> str | None:
+            metadata = request.get("_hub_journal") if isinstance(request, Mapping) else None
+            value = metadata.get("payload_fingerprint") if isinstance(metadata, Mapping) else None
+            if (
+                not isinstance(value, str)
+                or len(value) != 64
+                or any(char not in "0123456789abcdef" for char in value)
+            ):
+                return None
+            return value
+
+        payload_fingerprint = trace_payload_fingerprint(trace.get("request"))
+        if payload_fingerprint is None:
+            try:
+                detail = store.detail(str(trace.get("trace_id", "")), since_seq=(1 << 63) - 1)
+            except Exception:
+                return trace
+            session = detail.get("session") if isinstance(detail, Mapping) else None
+            request = session.get("request") if isinstance(session, Mapping) else None
+            payload_fingerprint = trace_payload_fingerprint(request)
+        if payload_fingerprint is None:
+            return trace
         try:
-            journal = recovery.lookup(str(trace.get("request_id")), str(trace.get("tenant", "")), str(trace.get("action", "")))
+            journal = recovery.lookup_metadata(
+                str(trace.get("request_id")),
+                str(trace.get("tenant", "")),
+                str(trace.get("action", "")),
+                identity=identity,
+                payload_fingerprint=payload_fingerprint,
+            )
             journal_state = str((journal or {}).get("state", ""))
             if journal_state not in {"done", "failed"}:
                 return trace
@@ -1212,7 +1248,27 @@ class Handler(BaseHTTPRequestHandler):
             trace_store.event(api_trace_id, "async_job_submitted", {"job_id": result.get("job_id", ""), "trace_id": result.get("trace_id", ""), "delivery": decision})
         return 200, result
 
-    def _send(self, status: int, data: Any) -> None:
+    def _send(self, status: int, data: Any, *, headers: Mapping[str, str] | None = None) -> None:
+        response_headers = headers if headers is not None else {}
+        if not isinstance(response_headers, Mapping):
+            raise TypeError("response headers must be a mapping")
+        token_punctuation = "!#$%&'*+-.^_`|~"
+        reserved_headers = {"content-type", "content-length", "connection", "transfer-encoding"}
+        for name, value in response_headers.items():
+            if (
+                not isinstance(name, str)
+                or not name.isascii()
+                or not name
+                or any(not (char.isalnum() or char in token_punctuation) for char in name)
+                or name.lower() in reserved_headers
+            ):
+                raise ValueError("invalid or reserved response header name")
+            if (
+                not isinstance(value, str)
+                or not value.isascii()
+                or any(ord(char) < 0x20 or ord(char) > 0x7E for char in value)
+            ):
+                raise ValueError("invalid response header value")
         if status >= 400:
             data = normalize_transport_error(status, data)
         request_id = getattr(self, "_journal_request_id", None)
@@ -1274,6 +1330,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Connection", "close")
             self._common_headers()
+            for name, value in response_headers.items():
+                self.send_header(name, value)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1317,6 +1375,47 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         self._close_trace_context()
 
+    def _parse_event_stream_cursor(self, query: Mapping[str, list[str]]) -> int:
+        last_event_id = self.headers.get("Last-Event-ID")
+        if last_event_id is not None and last_event_id != "":
+            raw_cursor = last_event_id
+            cursor_name = "Last-Event-ID"
+        else:
+            raw_cursor = (query.get("after_seq") or ["0"])[0]
+            cursor_name = "after_seq"
+        cursor_text = str(raw_cursor).strip()
+        if not cursor_text or not cursor_text.isascii() or not cursor_text.isdecimal():
+            raise ValueError(f"{cursor_name} must be a non-negative ASCII integer")
+        cursor = int(cursor_text)
+        if cursor > MAX_EVENT_SEQUENCE:
+            raise ValueError(f"{cursor_name} must be between 0 and {MAX_EVENT_SEQUENCE}")
+        return cursor
+
+    def _run_with_stream_write_deadline(self, deadline: float, write) -> None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("SSE stream write deadline exceeded")
+        connection = getattr(self, "connection", None)
+        gettimeout = getattr(connection, "gettimeout", None)
+        settimeout = getattr(connection, "settimeout", None)
+        if not callable(gettimeout) or not callable(settimeout):
+            write()
+            return
+        previous_timeout = gettimeout()
+        write_timeout = remaining if previous_timeout is None else min(float(previous_timeout), remaining)
+        settimeout(write_timeout)
+        try:
+            write()
+        finally:
+            settimeout(previous_timeout)
+
+    def _write_stream_bytes(self, data: bytes, deadline: float) -> None:
+        def write() -> None:
+            self.wfile.write(data)
+            self.wfile.flush()
+
+        self._run_with_stream_write_deadline(deadline, write)
+
     def _stream_agent_events(self, stream_id: str = "", kind: str = "", after_seq: int = 0, timeout: float = 0.0) -> None:
         if APP is None or not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
             self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False})
@@ -1325,20 +1424,38 @@ class Handler(BaseHTTPRequestHandler):
         # Bound maximum stream duration to prevent holding worker threads indefinitely
         app_cfg = getattr(APP, "config", {}) or {}
         max_duration = float(app_cfg.get("server", {}).get("max_stream_duration_seconds", 300.0) if isinstance(app_cfg, dict) else 300.0)
-        if timeout <= 0.0 or timeout > max_duration:
+        if not (0.0 < timeout <= max_duration):
             timeout = max_duration
+        stream_deadline = time.monotonic() + timeout
 
         try:
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Connection", "keep-alive")
-            self.send_header("X-Accel-Buffering", "no")
-            self._common_headers()
-            self.end_headers()
+            def send_stream_headers() -> None:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("X-Accel-Buffering", "no")
+                self._common_headers()
+                self.end_headers()
+
+            self._run_with_stream_write_deadline(stream_deadline, send_stream_headers)
         except OSError:
             self._finish_stream_request(False, error="client disconnected before headers")
             return
+
+        control_grace_deadline: float | None = None
+
+        def write_frame(data: bytes) -> None:
+            self._write_stream_bytes(data, stream_deadline)
+
+        def write_control_frame(data: bytes) -> None:
+            nonlocal control_grace_deadline
+            deadline = stream_deadline
+            if time.monotonic() >= stream_deadline:
+                if control_grace_deadline is None:
+                    control_grace_deadline = time.monotonic() + SSE_TIMEOUT_WRITE_RESERVE_SECONDS
+                deadline = control_grace_deadline
+            self._write_stream_bytes(data, deadline)
 
         q = APP.agent_state.subscribe(maxsize=200)
         try:
@@ -1346,33 +1463,365 @@ class Handler(BaseHTTPRequestHandler):
             # window is then either replayed or queued; duplicate queued events
             # are discarded by the sequence check below.
             last_seq = after_seq
-            if stream_id and after_seq >= 0:
-                past = APP.agent_state.events(stream_id=stream_id, after_seq=after_seq, limit=1000)
-                for ev in past:
-                    if kind and ev.kind != kind:
-                        continue
-                    last_seq = max(last_seq, ev.seq or 0)
-                    payload = json_dumps(ev.to_dict(), separators=(",", ":"))
-                    msg = f"id: {ev.seq}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
-                    try:
-                        self.wfile.write(msg)
-                        self.wfile.flush()
-                    except OSError:
-                        return
+            if stream_id:
+                def replay_page(cursor: int, limit: int) -> tuple[Mapping[str, Any], list[Any]]:
+                    event_page = getattr(APP.agent_state, "event_page", None)
+                    if callable(event_page):
+                        try:
+                            result = event_page(stream_id=stream_id, after_seq=cursor, limit=limit)
+                        except Exception:
+                            return {"_replay_unavailable": True}, []
+                        if isinstance(result, Mapping) and result.get("success") is True:
+                            page_events = result.get("events")
+                            first_retained_seq = result.get("first_retained_seq")
+                            high_water_seq = result.get("last_seq")
+                            has_more = result.get("has_more")
+                            gap_ranges = result.get("gap_ranges")
+                            metadata_valid = (
+                                isinstance(page_events, (list, tuple))
+                                and isinstance(first_retained_seq, int)
+                                and not isinstance(first_retained_seq, bool)
+                                and first_retained_seq >= 0
+                                and isinstance(high_water_seq, int)
+                                and not isinstance(high_water_seq, bool)
+                                and high_water_seq >= 0
+                                and isinstance(has_more, bool)
+                                and isinstance(gap_ranges, (list, tuple))
+                            )
+                            if metadata_valid:
+                                metadata_valid = all(
+                                    isinstance(item, Mapping)
+                                    and isinstance(item.get("missing_from_seq"), int)
+                                    and not isinstance(item.get("missing_from_seq"), bool)
+                                    and isinstance(item.get("missing_through_seq"), int)
+                                    and not isinstance(item.get("missing_through_seq"), bool)
+                                    and 0 <= item["missing_from_seq"] <= item["missing_through_seq"] <= high_water_seq
+                                    for item in gap_ranges
+                                )
+                            if metadata_valid:
+                                return result, list(page_events)[:limit]
+                        return {"_replay_unavailable": True}, []
+                    fallback_events = APP.agent_state.events(stream_id=stream_id, after_seq=cursor, limit=limit)
+                    if fallback_events or cursor <= 0:
+                        return {}, fallback_events
 
-            start_time = time.monotonic()
+                    first_page = APP.agent_state.events(stream_id=stream_id, after_seq=0, limit=1)
+                    first_retained_seq = int(first_page[0].seq or 0) if first_page else 0
+                    low = 0
+                    high = cursor
+                    while low < high:
+                        midpoint = (low + high) // 2
+                        if APP.agent_state.events(stream_id=stream_id, after_seq=midpoint, limit=1):
+                            low = midpoint + 1
+                        else:
+                            high = midpoint
+                    return {"first_retained_seq": first_retained_seq, "last_seq": high}, []
+
+                def emit_retention_gap(
+                    cursor: int,
+                    first_available_seq: int,
+                    *,
+                    missing_from_seq: int | None = None,
+                    missing_through_seq: int | None = None,
+                ) -> int:
+                    gap_start = max(cursor + 1, int(missing_from_seq) if missing_from_seq is not None else cursor + 1)
+                    checkpoint = min(
+                        first_available_seq - 1,
+                        int(missing_through_seq) if missing_through_seq is not None else first_available_seq - 1,
+                    )
+                    if gap_start > checkpoint:
+                        return cursor
+                    gap = {
+                        "after_seq": cursor,
+                        "missing_from_seq": gap_start,
+                        "missing_through_seq": checkpoint,
+                        "first_available_seq": first_available_seq,
+                        "retention_gap": True,
+                    }
+                    write_control_frame(
+                        f"id: {checkpoint}\nevent: replay_gap\ndata: {json_dumps(gap, separators=(',', ':'))}\n\n".encode("utf-8")
+                    )
+                    return checkpoint
+
+                def normalized_gap_ranges(page_info: Mapping[str, Any], cursor: int, upper: int) -> list[tuple[int, int]] | None:
+                    raw_ranges = page_info.get("gap_ranges")
+                    if not isinstance(raw_ranges, (list, tuple)):
+                        return None
+                    ranges: list[tuple[int, int]] = []
+                    for item in raw_ranges:
+                        if not isinstance(item, Mapping):
+                            continue
+                        try:
+                            missing_from = max(cursor + 1, int(item.get("missing_from_seq", 0)))
+                            missing_through = min(upper, int(item.get("missing_through_seq", 0)))
+                        except (TypeError, ValueError):
+                            continue
+                        if missing_from <= missing_through:
+                            ranges.append((missing_from, missing_through))
+                    ranges.sort()
+                    merged: list[tuple[int, int]] = []
+                    for missing_from, missing_through in ranges:
+                        if merged and missing_from <= merged[-1][1] + 1:
+                            merged[-1] = (merged[-1][0], max(merged[-1][1], missing_through))
+                        else:
+                            merged.append((missing_from, missing_through))
+                    return merged
+
+                replayed = 0
+                replay_limited = False
+                while replayed < SSE_REPLAY_MAX_EVENTS:
+                    page_limit = min(SSE_REPLAY_PAGE_SIZE, SSE_REPLAY_MAX_EVENTS - replayed)
+                    page_info, past = replay_page(last_seq, page_limit)
+                    if page_info.get("_replay_unavailable"):
+                        replay_gap = {
+                            "stream_id": stream_id,
+                            "reconnect": True,
+                            "unknown_range": True,
+                            "replay_unavailable": True,
+                        }
+                        try:
+                            write_control_frame(
+                                f"event: replay_gap\ndata: {json_dumps(replay_gap, separators=(',', ':'))}\n\n".encode("utf-8")
+                            )
+                        except OSError:
+                            return
+                        self.close_connection = True
+                        return
+                    if "last_seq" in page_info:
+                        high_water_seq = int(page_info.get("last_seq") or 0)
+                        if last_seq > high_water_seq:
+                            first_retained_seq = int(page_info.get("first_retained_seq") or 0)
+                            checkpoint = min(max(0, first_retained_seq - 1), high_water_seq) if first_retained_seq else 0
+                            cursor_reset = {
+                                "requested_after_seq": last_seq,
+                                "last_seq": high_water_seq,
+                                "resume_after_seq": checkpoint,
+                                "cursor_ahead": True,
+                            }
+                            if first_retained_seq > 1:
+                                cursor_reset.update({
+                                    "retention_gap": True,
+                                    "missing_from_seq": 1,
+                                    "missing_through_seq": min(first_retained_seq - 1, high_water_seq),
+                                    "first_available_seq": first_retained_seq,
+                                })
+                            try:
+                                write_control_frame(
+                                    f"id: {checkpoint}\nevent: replay_cursor_reset\ndata: {json_dumps(cursor_reset, separators=(',', ':'))}\n\n".encode("utf-8")
+                                )
+                            except OSError:
+                                return
+                            last_seq = checkpoint
+                            continue
+                    range_upper = int(page_info.get("last_seq") or max((int(ev.seq or 0) for ev in past), default=last_seq))
+                    pending_gap_ranges = normalized_gap_ranges(page_info, last_seq, range_upper)
+
+                    def emit_gaps_before(next_available_seq: int) -> None:
+                        nonlocal last_seq
+                        if pending_gap_ranges is None:
+                            return
+                        while pending_gap_ranges and pending_gap_ranges[0][0] < next_available_seq:
+                            missing_from, missing_through = pending_gap_ranges[0]
+                            through = min(missing_through, next_available_seq - 1)
+                            if missing_from <= through:
+                                try:
+                                    last_seq = emit_retention_gap(
+                                        last_seq,
+                                        next_available_seq,
+                                        missing_from_seq=missing_from,
+                                        missing_through_seq=through,
+                                    )
+                                except OSError:
+                                    raise
+                            if through >= missing_through:
+                                pending_gap_ranges.pop(0)
+                            else:
+                                pending_gap_ranges[0] = (through + 1, missing_through)
+
+                    def emit_trailing_gaps() -> None:
+                        nonlocal last_seq
+                        if pending_gap_ranges is None:
+                            return
+                        while pending_gap_ranges and pending_gap_ranges[0][0] <= range_upper:
+                            missing_from, missing_through = pending_gap_ranges.pop(0)
+                            through = min(missing_through, range_upper)
+                            if missing_from <= through:
+                                try:
+                                    last_seq = emit_retention_gap(
+                                        last_seq,
+                                        through + 1,
+                                        missing_from_seq=missing_from,
+                                        missing_through_seq=through,
+                                    )
+                                except OSError:
+                                    raise
+                    if not past:
+                        if pending_gap_ranges is not None:
+                            try:
+                                emit_trailing_gaps()
+                            except OSError:
+                                return
+                        first_retained_seq = int(page_info.get("first_retained_seq") or 0)
+                        page_has_gap = bool(page_info.get("has_gap") or page_info.get("gap"))
+                        if page_has_gap and first_retained_seq > last_seq + 1:
+                            try:
+                                last_seq = emit_retention_gap(last_seq, first_retained_seq)
+                            except OSError:
+                                return
+                        break
+                    past = past[:page_limit]
+                    if pending_gap_ranges is None:
+                        first_seq = int(past[0].seq or 0)
+                        first_retained_seq = int(page_info.get("first_retained_seq") or first_seq)
+                        first_available_seq = min(first_seq, first_retained_seq) if first_retained_seq > 0 else first_seq
+                        page_has_gap = bool(page_info.get("has_gap") or page_info.get("gap"))
+                        if (page_has_gap or first_seq > last_seq + 1) and first_available_seq > last_seq + 1:
+                            try:
+                                last_seq = emit_retention_gap(last_seq, first_available_seq)
+                            except OSError:
+                                return
+
+                    for ev in past:
+                        seq = int(ev.seq or 0)
+                        if seq <= last_seq:
+                            continue
+                        try:
+                            emit_gaps_before(seq)
+                        except OSError:
+                            return
+                        if seq <= last_seq:
+                            continue
+                        last_seq = seq
+                        if kind and ev.kind != kind:
+                            continue
+                        payload = json_dumps(ev.to_dict(), separators=(",", ":"))
+                        msg = f"id: {ev.seq}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
+                        try:
+                            write_frame(msg)
+                        except OSError:
+                            return
+
+                    replayed += len(past)
+                    has_more_known = "has_more" in page_info
+                    page_has_more = bool(page_info.get("has_more")) if has_more_known else len(past) >= page_limit
+                    if not page_has_more and pending_gap_ranges is not None:
+                        try:
+                            emit_trailing_gaps()
+                        except OSError:
+                            return
+                    if replayed >= SSE_REPLAY_MAX_EVENTS:
+                        if has_more_known:
+                            has_more = page_has_more
+                        else:
+                            more_info, more = replay_page(last_seq, 1)
+                            has_more = bool(more)
+                        if has_more:
+                            if not has_more_known:
+                                first_more_seq = int(more[0].seq or 0)
+                                first_retained_seq = int(more_info.get("first_retained_seq") or first_more_seq)
+                                first_available_seq = min(first_more_seq, first_retained_seq) if first_retained_seq > 0 else first_more_seq
+                                page_has_gap = bool(more_info.get("has_gap") or more_info.get("gap"))
+                                if (page_has_gap or first_more_seq > last_seq + 1) and first_available_seq > last_seq + 1:
+                                    try:
+                                        last_seq = emit_retention_gap(last_seq, first_available_seq)
+                                    except OSError:
+                                        return
+                            limit_reached = {
+                                "replay_limit": SSE_REPLAY_MAX_EVENTS,
+                                "last_seq": last_seq,
+                                "reconnect": True,
+                            }
+                            try:
+                                write_control_frame(
+                                    f"id: {last_seq}\nevent: replay_limit\ndata: {json_dumps(limit_reached, separators=(',', ':'))}\n\n".encode("utf-8")
+                                )
+                            except OSError:
+                                return
+                            replay_limited = True
+                        elif not has_more_known:
+                            first_retained_seq = int(more_info.get("first_retained_seq") or 0)
+                            page_has_gap = bool(more_info.get("has_gap") or more_info.get("gap"))
+                            if page_has_gap and first_retained_seq > last_seq + 1:
+                                try:
+                                    last_seq = emit_retention_gap(last_seq, first_retained_seq)
+                                except OSError:
+                                    return
+                        break
+                    if (has_more_known and not page_has_more) or (not has_more_known and len(past) < page_limit):
+                        break
+                if replay_limited:
+                    self.close_connection = True
+                    return
+
+            queue_deadline = stream_deadline - min(SSE_TIMEOUT_WRITE_RESERVE_SECONDS, timeout / 10.0)
             while True:
-                remaining = timeout - (time.monotonic() - start_time)
+                remaining = queue_deadline - time.monotonic()
                 if remaining <= 0:
                     try:
                         timeout_msg = f"event: stream_timeout\ndata: {{\"reconnect\":true,\"last_seq\":{last_seq}}}\n\n".encode("utf-8")
-                        self.wfile.write(timeout_msg)
-                        self.wfile.flush()
+                        write_control_frame(timeout_msg)
                     except OSError:
                         pass
                     break
                 try:
                     ev = q.get(timeout=min(1.0, remaining))
+                    if ev.kind == "agent_state.gap":
+                        loss_ranges = ev.payload.get("streams", ())
+                        if not isinstance(loss_ranges, (list, tuple)):
+                            loss_ranges = ()
+                        streams_truncated = ev.payload.get("streams_truncated") is True
+                        try:
+                            dropped_count = max(0, int(ev.payload.get("dropped_count", 0) or 0))
+                        except (TypeError, ValueError):
+                            dropped_count = 0
+                        matching_ranges = []
+                        seen_ranges = set()
+                        reported_loss_count = 0
+                        for loss_range in loss_ranges:
+                            if not isinstance(loss_range, Mapping):
+                                continue
+                            lost_stream_id = loss_range.get("stream_id")
+                            from_seq = loss_range.get("from_seq")
+                            to_seq = loss_range.get("to_seq")
+                            if not isinstance(lost_stream_id, str) or not lost_stream_id:
+                                continue
+                            if stream_id and lost_stream_id != stream_id:
+                                continue
+                            if (
+                                not isinstance(from_seq, int) or isinstance(from_seq, bool)
+                                or not isinstance(to_seq, int) or isinstance(to_seq, bool)
+                                or from_seq < 0 or to_seq < from_seq
+                            ):
+                                continue
+                            exact_range = (lost_stream_id, from_seq, to_seq)
+                            if exact_range in seen_ranges:
+                                continue
+                            seen_ranges.add(exact_range)
+                            reported_loss_count += to_seq - from_seq + 1
+                            if not stream_id or lost_stream_id == stream_id:
+                                if lost_stream_id == stream_id:
+                                    if to_seq <= last_seq:
+                                        continue
+                                    from_seq = max(from_seq, last_seq + 1)
+                                matching_ranges.append((lost_stream_id, from_seq, to_seq))
+                        if streams_truncated or dropped_count > reported_loss_count:
+                            matching_ranges.append((stream_id, None, None))
+                        for lost_stream_id, from_seq, to_seq in matching_ranges:
+                            gap = {"stream_id": lost_stream_id, "reconnect": True}
+                            if from_seq is None:
+                                gap["unknown_range"] = True
+                            else:
+                                gap["from_seq"] = from_seq
+                                gap["to_seq"] = to_seq
+                            write_frame(
+                                f"event: replay_gap\ndata: {json_dumps(gap, separators=(',', ':'))}\n\n".encode("utf-8")
+                            )
+                        if matching_ranges:
+                            self.close_connection = True
+                            return
+                        # Synthetic queue markers carry their own global sequence. They
+                        # must never advance this stream's replay cursor.
+                        continue
                     if ev.seq is not None and ev.seq <= last_seq:
                         continue
                     if stream_id and ev.stream_id != stream_id:
@@ -1383,12 +1832,10 @@ class Handler(BaseHTTPRequestHandler):
                         last_seq = max(last_seq, ev.seq)
                     payload = json_dumps(ev.to_dict(), separators=(",", ":"))
                     msg = f"id: {ev.seq or 0}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
-                    self.wfile.write(msg)
-                    self.wfile.flush()
+                    write_frame(msg)
                 except queue.Empty:
                     try:
-                        self.wfile.write(b": keep-alive\n\n")
-                        self.wfile.flush()
+                        write_frame(b": keep-alive\n\n")
                     except OSError:
                         break
         except Exception:
@@ -1490,7 +1937,11 @@ class Handler(BaseHTTPRequestHandler):
                         pass
                 limit = int((query.get("limit") or [100])[0])
                 include_stale = str((query.get("include_stale") or ["false"])[0]).lower() in ("true", "1", "yes")
-                tasks = APP.agent_tasks.list_tasks(status=status_filter, limit=limit, include_stale=include_stale)
+                task_query = (query.get("query") or [""])[0]
+                task_list_kwargs = {"status": status_filter, "limit": limit, "include_stale": include_stale}
+                if task_query:
+                    task_list_kwargs["query"] = task_query
+                tasks = APP.agent_tasks.list_tasks(**task_list_kwargs)
                 self._send(200, {"success": True, "tasks": [t.to_dict() for t in tasks]}); return
             if path == "/api/agent-state/memory":
                 if not getattr(APP, "agent_memory", None) or not APP.agent_memory.state_store.enabled:
@@ -1646,7 +2097,9 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 stream_filter = (query.get("stream_id") or [""])[0]
                 kind_filter = (query.get("kind") or [""])[0]
-                after_seq = int((query.get("after_seq") or [0])[0])
+                after_seq = self._parse_event_stream_cursor(query)
+                if after_seq and not stream_filter:
+                    raise ValueError("stream_id is required when resuming an event stream")
                 timeout = float((query.get("timeout") or [0.0])[0])
                 self._stream_agent_events(stream_id=stream_filter, kind=kind_filter, after_seq=after_seq, timeout=timeout)
                 return
@@ -1956,6 +2409,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send(503, {"success": False, "error": "hub starting up; please retry", "status_code": 503, "retryable": True})
             return
         path = urlparse(self.path).path
+        supplied_request_id = self.headers.get("X-LocalAI-Request-ID")
+        if supplied_request_id is not None:
+            try:
+                APP.recovery.validate_request_id(supplied_request_id)
+            except (TypeError, ValueError) as exc:
+                self._journal_request_id = None
+                self._journal_finished = True
+                self._telemetry_finished = True
+                self._debug_trace_finished = True
+                self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False})
+                return
         self._begin_trace(path)
         if not self._require_authorized():
             return
@@ -2005,9 +2469,11 @@ class Handler(BaseHTTPRequestHandler):
             self._redact_debug_trace()
         trace_store = getattr(APP, "debug_traces", None)
         api_trace_id = str(getattr(self, "_debug_trace_id", "") or "")
+        captured_request: dict[str, Any] | None = None
         if trace_store is not None and api_trace_id:
             if not getattr(self, "_debug_trace_redacted", False):
                 captured_request = self._safe_debug_trace_request(payload)
+                captured_request.pop("_hub_journal", None)
                 trace_store.update(api_trace_id, state="running", request=captured_request)
                 trace_store.event(
                     api_trace_id,
@@ -2016,27 +2482,77 @@ class Handler(BaseHTTPRequestHandler):
                 )
             trace_store.event(api_trace_id, "handler_started", {"action": path, "payload_keys": sorted(str(key) for key in payload)})
         tenant = self._tenant()
-        self._journal_request_id = str(getattr(self, "_trace_request_id", ""))
-        self._journal_finished = False
-        try:
-            prior = APP.recovery.lookup(self._journal_request_id, tenant, path)
-            if prior and prior.get("state") in {"done", "failed"} and prior.get("response") is not None:
-                self._journal_finished = True
-                self._send(int(prior.get("status_code") or (200 if prior.get("state") == "done" else 500)), prior["response"]); return
-            if prior and prior.get("state") == "running":
-                wait_seconds = min(2.0, max(0.05, float(APP.config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 1.0))))
-                replay = APP.recovery.wait_for(self._journal_request_id, tenant, path, timeout_seconds=wait_seconds)
-                if replay and replay.get("state") in {"done", "failed"} and replay.get("response") is not None:
+        should_journal = http_operation_needs_replay("POST", path, payload)
+        self._journal_request_id = str(getattr(self, "_trace_request_id", "")) if should_journal else None
+        self._journal_finished = not should_journal
+        if should_journal:
+            try:
+                identity = self._agent()
+                prior = APP.recovery.begin(
+                    self._journal_request_id,
+                    tenant,
+                    path,
+                    identity=identity,
+                    payload=payload,
+                )
+                if prior.get("state") == "conflict":
                     self._journal_finished = True
-                    self._send(int(replay.get("status_code") or (200 if replay.get("state") == "done" else 500)), replay["response"]); return
+                    self._send(409, {"success": False, "error": prior.get("error", "request id conflict"), "request_id": self._journal_request_id}); return
+                fingerprint = str(prior.get("payload_fingerprint", ""))
+                if captured_request is not None and len(fingerprint) == 64:
+                    captured_request["_hub_journal"] = {"payload_fingerprint": fingerprint}
+                    trace_store.update(api_trace_id, request=captured_request)
+                if not prior.get("claimed") and prior.get("state") in {"done", "failed"} and prior.get("response") is not None:
+                    self._journal_finished = True
+                    self._send(int(prior.get("status_code") or (200 if prior.get("state") == "done" else 500)), prior["response"]); return
+                if not prior.get("claimed") and prior.get("state") == "running":
+                    wait_seconds = min(2.0, max(0.05, float(APP.config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 1.0))))
+                    replay = APP.recovery.wait_for(
+                        self._journal_request_id,
+                        tenant,
+                        path,
+                        timeout_seconds=wait_seconds,
+                        identity=identity,
+                        payload_fingerprint=fingerprint,
+                    )
+                    if replay and replay.get("state") in {"done", "failed"} and replay.get("response") is not None:
+                        self._journal_finished = True
+                        self._send(int(replay.get("status_code") or (200 if replay.get("state") == "done" else 500)), replay["response"]); return
+                    if replay and replay.get("state") == "conflict":
+                        self._journal_finished = True
+                        self._send(409, {"success": False, "error": replay.get("error", "request id conflict"), "request_id": self._journal_request_id}); return
+                    if replay and (
+                        replay.get("state") == "abandoned"
+                        or (replay.get("state") in {"done", "failed"} and replay.get("response") is None)
+                    ):
+                        self._journal_finished = True
+                        self._send(409, {
+                            "success": False,
+                            "error": "request outcome is unavailable; operation was not replayed",
+                            "outcome_unknown": True,
+                            "retryable": False,
+                            "request_id": self._journal_request_id,
+                        }); return
+                    self._journal_finished = True
+                    self._send(409, {"success": False, "error": "request with this id is already running", "retryable": True, "in_progress": True, "retry_after_seconds": 1, "waited_seconds": wait_seconds}); return
+                if not prior.get("claimed"):
+                    self._journal_finished = True
+                    self._send(409, {
+                        "success": False,
+                        "error": "request outcome is unavailable; operation was not replayed",
+                        "outcome_unknown": True,
+                        "retryable": False,
+                        "request_id": self._journal_request_id,
+                    }); return
+            except Exception:
                 self._journal_finished = True
-                self._send(409, {"success": False, "error": "request with this id is already running", "retryable": True, "in_progress": True, "retry_after_seconds": 1, "waited_seconds": wait_seconds}); return
-            if prior and prior.get("state") == "conflict":
-                self._journal_finished = True
-                self._send(409, {"success": False, "error": prior.get("error", "request id conflict")}); return
-            APP.recovery.begin(self._journal_request_id, tenant, path)
-        except Exception:
-            pass
+                self._send(503, {
+                    "success": False,
+                    "error": "request journal unavailable; operation was not started",
+                    "retryable": True,
+                    "outcome_unknown": False,
+                    "request_id": self._journal_request_id,
+                }); return
         try:
             if path == "/api/work-orders":
                 if not getattr(APP, "work_orchestrator", None) or not APP.work_orchestrator.enabled:
@@ -2405,9 +2921,15 @@ class Handler(BaseHTTPRequestHandler):
                             status_filter = TaskStatus(str(payload.get("status")).strip().lower())
                         except ValueError:
                             pass
+                    task_query = payload.get("query", "")
+                    if not isinstance(task_query, str):
+                        self._send(400, {"success": False, "error": "query must be a string", "terminal": True, "retryable": False}); return
                     limit = int(payload.get("limit", 100))
                     include_stale = bool(payload.get("include_stale", False))
-                    tasks = APP.agent_tasks.list_tasks(status=status_filter, limit=limit, include_stale=include_stale)
+                    task_list_kwargs = {"status": status_filter, "limit": limit, "include_stale": include_stale}
+                    if task_query:
+                        task_list_kwargs["query"] = task_query
+                    tasks = APP.agent_tasks.list_tasks(**task_list_kwargs)
                     self._send(200, {"success": True, "tasks": [t.to_dict() for t in tasks]}); return
                 self._send(400, {"success": False, "error": f"unknown task action '{action}'", "terminal": True, "retryable": False}); return
             if path == "/api/agent-state/memory":
@@ -3765,9 +4287,59 @@ class Handler(BaseHTTPRequestHandler):
             if path in {"/api/repo/env_compat", "/api/env_compat"}:
                 self._send(200, APP.services.env_compat(str(payload.get("root", ".")))); return
             if path in {"/api/coord/pubsub_publish", "/api/pubsub_publish"}:
+                agent_state = getattr(APP, "agent_state", None)
+                if agent_state is not None and agent_state.enabled:
+                    from .agent_events import SwarmPubSub
+
+                    SwarmPubSub.get_default(agent_state)
                 self._send(200, APP.services.pubsub_publish(str(payload.get("topic", "default")), payload.get("message", ""), sender=str(payload.get("publisher", payload.get("sender", "agent"))))); return
             if path in {"/api/coord/pubsub_poll", "/api/pubsub_poll"}:
-                self._send(200, APP.services.pubsub_poll(str(payload.get("topic", "default")), since_timestamp=float(payload.get("since_timestamp", 0.0)), limit=int(payload.get("limit", 50)))); return
+                agent_state = getattr(APP, "agent_state", None)
+                if agent_state is None or not agent_state.enabled:
+                    self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
+                after_seq = payload.get("after_seq", 0)
+                if (
+                    isinstance(after_seq, bool)
+                    or not isinstance(after_seq, int)
+                    or not 0 <= after_seq <= MAX_EVENT_SEQUENCE
+                ):
+                    self._send(400, {"success": False, "error": f"after_seq must be an integer between 0 and {MAX_EVENT_SEQUENCE}", "terminal": True, "retryable": False}); return
+                limit = payload.get("limit", 50)
+                if (
+                    isinstance(limit, bool)
+                    or not isinstance(limit, int)
+                    or not 1 <= limit <= 1000
+                ):
+                    self._send(400, {"success": False, "error": "limit must be an integer between 1 and 1000", "terminal": True, "retryable": False}); return
+                topic = str(payload.get("topic", "default")).strip().lower() or "default"
+                stream_id = f"pubsub:{topic}"
+                events = agent_state.events(stream_id=stream_id, after_seq=after_seq, limit=limit + 1)
+                first_event = agent_state.events(stream_id=stream_id, after_seq=0, limit=1)
+                gap = bool(first_event and after_seq < int(first_event[0].seq or 0) - 1)
+                page = events[:limit]
+                messages = [
+                    {
+                        "id": event.event_id,
+                        "topic": topic,
+                        "sender": event.payload.get("sender", event.actor),
+                        "timestamp": event.created_at,
+                        "payload": event.payload.get("message", {}),
+                        "seq": event.seq,
+                    }
+                    for event in page
+                ]
+                next_after_seq = int(page[-1].seq or after_seq) if page else after_seq
+                self._send(200, {
+                    "success": True,
+                    "topic": topic,
+                    "count": len(messages),
+                    "messages": messages,
+                    "after_seq": after_seq,
+                    "next_after_seq": next_after_seq,
+                    "limit": limit,
+                    "has_more": len(events) > limit,
+                    "gap": gap,
+                }); return
             if path in {"/api/coord/simulate_merge", "/api/simulate_merge"}:
                 self._send(200, APP.services.simulate_merge(str(payload.get("root", ".")), str(payload.get("source_branch", "")), target_branch=str(payload.get("target_branch", "HEAD")))); return
             if path in {"/api/task/eval_suite", "/api/eval_suite"}:

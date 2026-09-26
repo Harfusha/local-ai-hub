@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -91,17 +92,34 @@ class RecoveryJournal:
     clean completion/failure. Cached deterministic stages can be reused on retry.
     """
 
+    @staticmethod
+    def validate_request_id(request_id: Any) -> str:
+        """Return a bounded visible-ASCII request ID or reject it before dispatch."""
+        if (
+            not isinstance(request_id, str)
+            or not 1 <= len(request_id) <= 128
+            or not request_id.isascii()
+            or any(ord(char) < 0x21 or ord(char) > 0x7E for char in request_id)
+        ):
+            raise ValueError("request_id must be 1-128 visible ASCII characters without whitespace")
+        return request_id
+
     def __init__(self, state_dir: Path, stale_seconds: int = 900):
         self.path = state_dir / "recovery.sqlite3"
         self.stale_seconds = max(30, int(stale_seconds))
         self._lock = threading.RLock()
         self._changed = threading.Condition(self._lock)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._journal_unavailable_marker = self.path.with_suffix(".unavailable")
+        self._journal_unavailable = self._journal_unavailable_marker.exists() or any(
+            self.path.parent.glob("recovery.corrupt-*.sqlite3")
+        )
         self._init_db()
         # A newly constructed journal belongs to a fresh hub process. No request can
         # legitimately still be executing at this point, so any prior "running" row
         # is an interrupted request rather than work to wait for.
-        self.mark_interrupted_on_startup()
+        if not self._journal_unavailable:
+            self.mark_interrupted_on_startup()
 
     def _connect(self) -> sqlite3.Connection:
         return connect_sqlite(self.path, timeout_seconds=5.0)
@@ -109,7 +127,15 @@ class RecoveryJournal:
     def _create_schema(self) -> None:
         with closing(self._connect()) as con:
             initialize_wal(con)
-            con.execute("""CREATE TABLE IF NOT EXISTS requests (request_id TEXT PRIMARY KEY,tenant TEXT NOT NULL,action TEXT NOT NULL,state TEXT NOT NULL,created_at REAL NOT NULL,updated_at REAL NOT NULL,detail TEXT NOT NULL DEFAULT '',status_code INTEGER NOT NULL DEFAULT 0,response_json TEXT NOT NULL DEFAULT '')""")
+            con.execute("""CREATE TABLE IF NOT EXISTS requests (
+                request_id TEXT PRIMARY KEY, tenant TEXT NOT NULL, identity TEXT NOT NULL,
+                action TEXT NOT NULL, payload_fingerprint TEXT NOT NULL, state TEXT NOT NULL,
+                created_at REAL NOT NULL, updated_at REAL NOT NULL, detail TEXT NOT NULL DEFAULT '',
+                status_code INTEGER NOT NULL DEFAULT 0, response_json TEXT NOT NULL DEFAULT ''
+            )""")
+            columns = {str(row[1]) for row in con.execute("PRAGMA table_info(requests)")}
+            if not {"identity", "payload_fingerprint"}.issubset(columns):
+                raise sqlite3.DatabaseError("request journal schema is incompatible with identity-bound replay")
             con.execute("CREATE INDEX IF NOT EXISTS idx_recovery_state ON requests(state, updated_at)"); con.commit()
 
     def _init_db(self) -> None:
@@ -122,29 +148,99 @@ class RecoveryJournal:
             # another process is finishing its final transaction during startup.
             if is_busy_error(exc):
                 return
-            # Request replay is an optimization; a damaged journal must never prevent hub startup.
-            try: self.path.replace(self.path.with_suffix(f".corrupt-{int(time.time())}.sqlite3"))
-            except OSError: pass
-            self._create_schema()
+            # Keep Hub startup available, but never claim a request after journal loss.
+            self._journal_unavailable = True
+            try:
+                self._journal_unavailable_marker.touch(exist_ok=True)
+            except OSError:
+                pass
+            try:
+                self.path.replace(self.path.with_suffix(f".corrupt-{int(time.time())}.sqlite3"))
+            except OSError:
+                pass
+            try:
+                self._create_schema()
+            except sqlite3.DatabaseError:
+                pass
 
-    def begin(self, request_id: str, tenant: str, action: str) -> None:
+    @staticmethod
+    def fingerprint_payload(payload: Any) -> str:
+        encoded = json_dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _decode_response(encoded: str) -> Any:
+        if not encoded:
+            return None
+        try:
+            return json.loads(encoded)
+        except Exception:
+            return None
+
+    def begin(
+        self,
+        request_id: str,
+        tenant: str,
+        action: str,
+        *,
+        identity: str,
+        payload: Any,
+    ) -> dict[str, Any]:
+        """Atomically claim a request ID or return its recorded outcome."""
+        request_id = self.validate_request_id(request_id)
+        if self._journal_unavailable:
+            raise sqlite3.DatabaseError("request journal is unavailable after data loss; refusing mutation dispatch")
         now = time.time()
+        fingerprint = self.fingerprint_payload(payload)
+        result: dict[str, Any] = {}
         with self._lock:
             def write() -> None:
+                result.clear()
                 with closing(self._connect()) as con:
-                    con.execute(
-                        """INSERT INTO requests(request_id,tenant,action,state,created_at,updated_at,detail,status_code,response_json)
-                           VALUES(?,?,?,?,?,?,?,?,?)
-                           ON CONFLICT(request_id) DO UPDATE SET
-                             tenant=excluded.tenant, action=excluded.action, state='running',
-                             created_at=excluded.created_at, updated_at=excluded.updated_at, detail='',
-                             status_code=0, response_json=''""",
-                        (request_id, tenant, action, "running", now, now, "", 0, ""),
-                    )
+                    con.execute("BEGIN IMMEDIATE")
+                    row = con.execute(
+                        "SELECT tenant,identity,action,payload_fingerprint,state,status_code,response_json,updated_at "
+                        "FROM requests WHERE request_id=?",
+                        (request_id,),
+                    ).fetchone()
+                    if row is None:
+                        con.execute(
+                            "INSERT INTO requests(request_id,tenant,identity,action,payload_fingerprint,state,created_at,updated_at,detail,status_code,response_json) "
+                            "VALUES(?,?,?,?,?,'running',?,?,?,0,'')",
+                            (request_id, tenant, identity, action, fingerprint, now, now, ""),
+                        )
+                        result.update({
+                            "claimed": True,
+                            "state": "running",
+                            "response": None,
+                            "status_code": 0,
+                            "payload_fingerprint": fingerprint,
+                        })
+                    elif row[0] != tenant or row[1] != identity or row[2] != action or row[3] != fingerprint:
+                        result.update({
+                            "claimed": False,
+                            "state": "conflict",
+                            "error": "request id already belongs to a different identity, operation, or payload",
+                        })
+                    else:
+                        response = self._decode_response(str(row[6] or ""))
+                        state = str(row[4])
+                        result.update({
+                            "claimed": False,
+                            "state": state,
+                            "status_code": int(row[5] or 0),
+                            "response": response,
+                            "updated_at": float(row[7]),
+                            "payload_fingerprint": str(row[3]),
+                        })
+                        if state == "abandoned" or (state in {"done", "failed"} and response is None):
+                            result["outcome_unknown"] = True
                     con.commit()
             retry_busy(write, retries=2)
+        return result
 
     def finish(self, request_id: str, success: bool, detail: str = "", *, status_code: int = 200, response: Any = None) -> None:
+        request_id = self.validate_request_id(request_id)
         response_json = ""
         if response is not None:
             try:
@@ -166,37 +262,86 @@ class RecoveryJournal:
             retry_busy(write, retries=2)
             self._changed.notify_all()
 
-    def lookup(self, request_id: str, tenant: str, action: str) -> dict[str, Any] | None:
+    def lookup(
+        self,
+        request_id: str,
+        tenant: str,
+        action: str,
+        *,
+        identity: str,
+        payload_fingerprint: str,
+    ) -> dict[str, Any] | None:
+        request_id = self.validate_request_id(request_id)
         with self._lock, closing(self._connect()) as con:
             row = con.execute(
-                "SELECT tenant,action,state,status_code,response_json,updated_at FROM requests WHERE request_id=?",
+                "SELECT tenant,identity,action,payload_fingerprint,state,status_code,response_json,updated_at FROM requests WHERE request_id=?",
                 (request_id,),
             ).fetchone()
         if not row:
             return None
-        if row[0] != tenant or row[1] != action:
-            return {"state": "conflict", "error": "request id already belongs to a different tenant/action"}
-        response = None
-        if row[4]:
-            try:
-                response = json.loads(row[4])
-            except Exception:
-                response = None
-        return {"state": row[2], "status_code": int(row[3] or 0), "response": response, "updated_at": float(row[5])}
+        if row[0] != tenant or row[1] != identity or row[2] != action or row[3] != payload_fingerprint:
+            return {"state": "conflict", "error": "request id already belongs to a different identity, operation, or payload"}
+        response = self._decode_response(str(row[6] or ""))
+        result = {"state": row[4], "status_code": int(row[5] or 0), "response": response, "updated_at": float(row[7])}
+        if row[4] == "abandoned" or (row[4] in {"done", "failed"} and response is None):
+            result["outcome_unknown"] = True
+        return result
 
-    def wait_for(self, request_id: str, tenant: str, action: str, *, timeout_seconds: float) -> dict[str, Any] | None:
+    def lookup_metadata(
+        self,
+        request_id: str,
+        tenant: str,
+        action: str,
+        *,
+        identity: str,
+        payload_fingerprint: str,
+    ) -> dict[str, Any] | None:
+        """Return journal state without response data after verifying request identity and payload."""
+        request_id = self.validate_request_id(request_id)
+        with self._lock, closing(self._connect()) as con:
+            row = con.execute(
+                "SELECT tenant,identity,action,payload_fingerprint,state,status_code,response_json,updated_at FROM requests WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+        if not row:
+            return None
+        if row[0] != tenant or row[1] != identity or row[2] != action or row[3] != payload_fingerprint:
+            return {"state": "conflict", "error": "request id already belongs to a different identity, operation, or payload"}
+        state = str(row[4])
+        result = {"state": state, "status_code": int(row[5] or 0), "updated_at": float(row[7])}
+        if state == "abandoned" or (state in {"done", "failed"} and not row[6]):
+            result["outcome_unknown"] = True
+        return result
+
+    def wait_for(
+        self,
+        request_id: str,
+        tenant: str,
+        action: str,
+        *,
+        timeout_seconds: float,
+        identity: str,
+        payload_fingerprint: str,
+    ) -> dict[str, Any] | None:
         """Wait briefly for active duplicate work, never re-executing it."""
+        request_id = self.validate_request_id(request_id)
         deadline = time.monotonic() + max(0.0, float(timeout_seconds))
         with self._changed:
             while True:
-                current = self.lookup(request_id, tenant, action)
+                current = self.lookup(
+                    request_id,
+                    tenant,
+                    action,
+                    identity=identity,
+                    payload_fingerprint=payload_fingerprint,
+                )
                 if current is None or current.get("state") != "running":
                     if current is None:
                         return None
-                    return {key: current.get(key) for key in ("state", "status_code", "response")}
+                    return {key: current[key] for key in ("state", "status_code", "response", "outcome_unknown") if key in current}
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    return {key: current.get(key) for key in ("state", "status_code", "response")}
+                    return {key: current[key] for key in ("state", "status_code", "response", "outcome_unknown") if key in current}
                 self._changed.wait(min(remaining, 0.05))
 
     def mark_interrupted_on_startup(self) -> int:

@@ -387,7 +387,7 @@ def _desc_command() -> str:
 
 def _desc_coord() -> str:
     if LEAN_SCHEMAS:
-        return "Agent OS coordination for task contracts, ownership, checkpoints, and verification receipts with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: claim, release, memory_record, memory_find, context_compile, task_create, task_checkpoint."
+        return "Agent OS coordination for task contracts, ownership, checkpoints, and verification receipts with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: claim, release, memory_record, memory_find, context_compile, task_create, task_checkpoint. task_list accepts an optional query; task_create uses query as a goal fallback when task is omitted."
     if FEATURES.agent_os:
         agent_os_note = (
             " For non-trivial multi-step, long-running, delegated, or acceptance-criteria work, create an Agent OS task contract first;"
@@ -2603,8 +2603,13 @@ def local_ai_coord(
             "checkpoint": checkpoint, "status": status, "reason": reason,
             "root": root, "ttl_seconds": ttl_seconds, "include_stale": include_stale,
         }
-        if action == "task_create" and task:
-            task_kwargs["task"] = task
+        if action == "task_list" and query:
+            task_kwargs["query"] = query
+        if action == "task_create":
+            if task and task.strip():
+                task_kwargs["task"] = task
+            elif query and query.strip():
+                task_kwargs["query"] = query
         return _compact(CLIENT.coord(
             **task_kwargs,
         ), "status")
@@ -2898,9 +2903,11 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools"):
         }
 
 
-def _mcp_contract_schema(tool_name: str) -> dict[str, Any] | None:
+def _mcp_contract_schema(schema_key: str) -> dict[str, Any] | None:
     manager = getattr(mcp, "_tool_manager", None)
     tools = getattr(manager, "_tools", {}) if manager is not None else {}
+    contract = next((item for item in MCP_OPERATION_CONTRACTS if item.schema_key == schema_key), None)
+    tool_name = contract.name if contract is not None else schema_key
     tool = tools.get(tool_name) if isinstance(tools, dict) else None
     raw = getattr(tool, "parameters", None)
     if not isinstance(raw, dict):
