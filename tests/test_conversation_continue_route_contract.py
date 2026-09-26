@@ -48,6 +48,81 @@ def _start_conversation(client):
     )
 
 
+def test_empty_conversation_is_rejected_through_production_route(production_hub):
+    _, client, calls = production_hub
+
+    result = client.post("/api/delegate", {"task": "  ", "conversation": True})
+
+    assert result["success"] is False
+    assert result["error"] == "task is required"
+    assert calls == []
+
+
+def test_hub_client_async_job_methods_share_production_route(production_hub):
+    app, client, _ = production_hub
+    calls = []
+
+    def submit(tenant, job_action, payload):
+        calls.append(("submit", tenant, job_action, dict(payload)))
+        return {"success": True, "job_id": "job-1"}
+
+    def status(tenant, job_id):
+        calls.append(("status", tenant, job_id))
+        return {"success": True, "job_id": job_id, "state": "running"}
+
+    def wait(tenant, job_id, timeout_seconds):
+        calls.append(("wait", tenant, job_id, timeout_seconds))
+        return {"success": True, "job_id": job_id, "state": "completed"}
+
+    def result(tenant, job_id):
+        calls.append(("result", tenant, job_id))
+        return {"success": True, "job_id": job_id, "state": "completed"}
+
+    def cancel(tenant, job_id):
+        calls.append(("cancel", tenant, job_id))
+        return {"success": True, "job_id": job_id, "state": "cancelled"}
+
+    app.async_jobs.submit = submit
+    app.async_jobs.status = status
+    app.async_jobs.wait = wait
+    app.async_jobs.result = result
+    app.async_jobs.cancel = cancel
+
+    submitted = client.submit_async_job("reason", {"task": "summarize"}, request_id="stable-submit")
+    current = client.async_job_status("job-1")
+    waited = client.wait_async_job("job-1", timeout_seconds=0.25, transport_timeout=1.0)
+    fetched = client.async_job_result("job-1")
+    cancelled = client.cancel_async_job("job-1")
+
+    assert submitted["job_id"] == "job-1"
+    assert current["state"] == "running"
+    assert waited["state"] == "completed"
+    assert fetched["state"] == "completed"
+    assert cancelled["state"] == "cancelled"
+    assert [call[0] for call in calls] == ["submit", "status", "wait", "result", "cancel"]
+    assert all(call[1] == calls[0][1] for call in calls)
+    assert calls[0][2:] == (
+        "reason",
+        {"action": "submit", "job_action": "reason", "task": "summarize", "request_id": "stable-submit"},
+    )
+    assert calls[2][2] == "job-1"
+    assert calls[2][3] == pytest.approx(0.25)
+
+
+def test_http_async_job_submit_rejects_conversation_payload(production_hub):
+    _, client, _ = production_hub
+
+    result = client.post(
+        "/api/async-jobs",
+        {"action": "submit", "job_action": "delegate", "task": "question", "conversation": True},
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "conversations require delivery=sync"
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+
+
 def test_hub_client_continues_through_production_route_and_preserves_transcript(production_hub):
     app, client, calls = production_hub
     service_payloads = []

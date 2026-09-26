@@ -71,6 +71,8 @@ class FeatureSet:
             and bool(feat.get("local_models", True))
             and (self.ollama or self.llama_cpp)
         )
+        async_jobs = cfg.get("async_jobs", {}) if isinstance(cfg.get("async_jobs", {}), dict) else {}
+        self.async_jobs: bool = bool(async_jobs.get("enabled", True))
         self.vision: bool = self.tasks and bool(feat.get("vision", True)) and bool(mdl.get("vision", "qwen3-vl:4b"))
 
         # Code-intelligence backends
@@ -127,7 +129,7 @@ class FeatureSet:
             tools.append("local_ai_status")
         if self.repo:
             tools.append("local_ai_repo")
-        if self.tasks and self.has_any_model():
+        if (self.tasks and self.has_any_model()) or self.async_jobs:
             tools.append("local_ai_task")
         if self.rag:
             tools.append("local_ai_rag")
@@ -195,14 +197,16 @@ class FeatureSet:
     def supported_task_actions(self) -> list[str]:
         """Return list of valid local_ai_task actions supported by active backends."""
         if not self.tasks or not self.has_any_model():
-            return []
+            return ["status", "wait", "result", "cancel"] if self.async_jobs else []
         actions = [
             "delegate", "explore", "reason", "continue", "review", "second_opinion", "compress",
             "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report",
-            "submit", "status", "wait", "result", "cancel", "candidate_create",
-            "candidate_promote", "speculative_draft", "transcribe",
+            "candidate_create", "candidate_promote", "speculative_draft", "transcribe",
             "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold",
         ]
+        if self.async_jobs:
+            insert_at = actions.index("candidate_create")
+            actions[insert_at:insert_at] = ["submit", "status", "wait", "result", "cancel"]
         if self.vision:
             actions.insert(actions.index("transcribe"), "vision")
         return actions
@@ -289,6 +293,8 @@ class FeatureSet:
             lines.append("- semantic retrieval after indexed paths are insufficient: `local_ai_rag`")
         if self.tasks and self.has_any_model():
             lines.append('- semantic generation, exploration, reasoning, review, second opinion and compression: `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")`')
+        elif self.async_jobs:
+            lines.append('- async job lifecycle controls: `local_ai_task(action="status"|"wait"|"result"|"cancel")`')
         if self.work_orchestrator:
             lines.append("- closed whole-task delegation with verified handoff: `local_ai_work`")
         lines.extend(self.specialized_trigger_lines())

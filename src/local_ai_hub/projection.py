@@ -174,7 +174,7 @@ class AgentProjector:
             "job_id", "prompt_budget", "semantic_similarity", "coalesced",
             "prompt_eval_duration_ns", "eval_duration_ns",
         ):
-            if key not in extra:
+            if key not in extra and not (task_kind == "status" and key in {"job_id", "coalesced"}):
                 data.pop(key, None)
 
         # Strip internal engine / plumbing metadata by default unless requested in extra_fields

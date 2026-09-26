@@ -106,7 +106,8 @@ class TestOllamaDisabled:
     def test_trigger_map_no_task_when_ollama_off(self):
         cfg = {"server": {"auto_start_ollama": False}}
         lines = FeatureSet(cfg).trigger_map_lines()
-        assert not any("local_ai_task" in line for line in lines)
+        assert any('local_ai_task(action="status"' in line for line in lines)
+        assert not any('local_ai_task(action="delegate"' in line for line in lines)
 
     def test_cheapest_path_no_model_when_ollama_off(self):
         cfg = {"server": {"auto_start_ollama": False}}
@@ -167,9 +168,20 @@ class TestBuildGlobalPolicy:
     def test_model_name_custom(self):
         assert "awesome-coder:7b" in self.build({"models": {"fast_code": "awesome-coder:7b"}})
 
-    def test_task_absent_when_ollama_off(self):
+    def test_async_controls_remain_available_when_ollama_off(self):
         cfg = {"server": {"auto_start_ollama": False}}
-        assert "local_ai_task" not in self.build(cfg)
+        fs = FeatureSet(cfg)
+        assert "local_ai_task" in self.build(cfg)
+        assert fs.supported_task_actions() == ["status", "wait", "result", "cancel"]
+
+    def test_async_actions_absent_when_async_jobs_disabled(self):
+        fs = FeatureSet({"async_jobs": {"enabled": False}})
+        actions = fs.supported_task_actions()
+        assert "submit" not in actions
+        assert "status" not in actions
+        assert "wait" not in actions
+        assert "result" not in actions
+        assert "cancel" not in actions
 
 
 class TestRoutingEngineConfigModel:
