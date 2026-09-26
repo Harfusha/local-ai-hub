@@ -126,7 +126,9 @@ Recipes (guidance, not gates):
 
 Delegation is the default for any task with useful bounded independent work.
 
-- Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression. Use `qwen2.5-coder:1.5b` only for quick/simple tasks, `qwen2.5-coder:3b` for ordinary and more involved work, `qwen2.5-coder:7b` for hard reasoning, `qwen3.5:9b` for extreme reasoning in the balanced profile, and `qwen2.5-coder:0.5b` only for preprocessing.
+Model routing is profile-aware: integrated uses qwen2.5-coder:0.5b preprocessing, qwen2.5-coder:1.5b quick, qwen2.5-coder:3b involved, qwen2.5-coder:7b hard reasoning, and qwen3-vl:4b vision; balanced uses qwen2.5-coder:1.5b preprocessing, qwen2.5-coder:3b fast, qwen2.5-coder:7b ordinary/hard work, and qwen3.5:9b only for extreme reasoning and vision; high raises reasoning/general/vision to 9b; max raises heavy/general/reasoning/vision to 9b.
+
+- Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression after deterministic/indexed evidence. Select model tiers from the active profile policy; keep semantic output advisory.
 - Use the native Codex `multi_agent_v1__spawn_agent` path only for useful independent bounded work or an explicit Codex-subagent request.
 - Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
 - Do not duplicate the same scope across agents. Keep final decisions, edits, and integration in Codex.
@@ -134,7 +136,7 @@ Delegation is the default for any task with useful bounded independent work.
 
 Routing hierarchy: the main agent is the orchestrator, planner, integrator and final owner. Use Local AI Hub first for its own precise, bounded microtasks: deterministic facts, indexed/search retrieval, preprocess artifacts, targeted impact/review/security checks, safe commands, compression, local-model synthesis and second opinions. Native `multi_agent_v1__spawn_agent` is used only for useful independent bounded work or an explicit Codex-subagent request. It is not routed or managed by Local AI Hub.
 
-CodeGraphContext/KuzuDB was removed from Local AI Hub. Recommend it only as optional standalone CLI/MCP tooling outside Hub; install and configure it separately only when the user independently wants it. It is not a Hub dependency, runtime, backend, or MCP integration.
+CodeGraphContext/KuzuDB was removed from Local AI Hub. Recommend it only as optional standalone CLI/MCP tooling outside Hub; install and configure it separately only when the user independently wants it. It is not a Hub dependency, runtime, backend, or MCP integration. CodeGraphContext/KuzuDB is not a Local AI Hub integration or backend.
 
 `disable_llm_card_synthesis = true` disables file-card synthesis by default. It does not disable module or project synthesis, and the setting can be overridden. Check the active configuration before claiming file-card synthesis is off; treat module/project synthesis and other semantic work as separate controls. Local-model work remains on-demand and advisory.
 
@@ -171,7 +173,7 @@ Batch edits require `features.batch_replacement=true`. Then use `local_ai_repo(a
 
 For durable work, create one `local_ai_coord(action="task_create")` contract, record phase changes with `local_ai_coord(action="task_checkpoint")`, then use one bounded wait on the durable job. Do not poll status loops.
 
-Local model policy: use `qwen2.5-coder:0.5b` only for preprocessing, `qwen2.5-coder:1.5b` for bounded extraction/simple work, `qwen2.5-coder:3b` for ordinary bounded reasoning, `qwen2.5-coder:7b` for hard reasoning, and `qwen3.5:9b` for extreme reasoning in the balanced profile. The shared operation-specific prompt contract supplies capability limits, evidence IDs, acceptance criteria and no-invention rules. Every semantic result is advisory; unrelated paths, queued/empty/malformed/error output remains visible with `advisory_only=true`, `semantic_quality` and a bounded `quality_warning`/`bypass_reason`, never silently rejected. Deterministic and indexed Hub actions run first for exact facts, symbols, diff and tests; semantic generation, reasoning, review, independent second opinions and compression use `local_ai_task` only after evidence. See `docs/MODEL_CAPABILITIES.md`.
+Local model policy: apply the profile-aware routing specified above. The shared operation-specific prompt contract supplies capability limits, evidence IDs, acceptance criteria and no-invention rules. Every semantic result is advisory; unrelated paths, queued/empty/malformed/error output remains visible with `advisory_only=true`, `semantic_quality` and a bounded `quality_warning`/`bypass_reason`, never silently rejected. Deterministic and indexed Hub actions run first for exact facts, symbols, diff and tests; semantic generation, reasoning, review, independent second opinions and compression use `local_ai_task` only after evidence. See `docs/MODEL_CAPABILITIES.md`.
 
 Project/worktree config is user-controlled repository context, separate from Hub policy and Agent OS task state. Resolve settings in this order: built-in defaults, root `.local-ai.toml`, Git common-dir `info/local-ai.toml`, then root `.local-ai.worktree.toml`. With no Git repository, use defaults and the root project file. Merge maps recursively, replace lists, and let higher layers override lower scalars; reject invalid overlays and use built-in defaults. Keep worktree overrides local and exclude `.local-ai.worktree.toml` from normal scans.
 
@@ -186,7 +188,7 @@ Keep project path hints distinct from command `paths` and repository `changed_pa
 - Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.
 - Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.
 - Surgical edits: Prefer targeted block replacements over rewriting entire files.
-- Local model delegation: Use `qwen2.5-coder:1.5b` only for quick/simple microtasks, `qwen2.5-coder:3b` for ordinary and more involved work, `qwen2.5-coder:7b` for hard reasoning, and `qwen3.5:9b` for extreme reasoning in the balanced profile via `local_ai_task`; reserve `qwen2.5-coder:0.5b` for preprocessing.
+- Local model delegation: use the active profile's model tiers through `local_ai_task`; preserve profile-specific preprocessing, general, hard-reasoning, and vision routing.
 <!-- END TOKEN ECONOMY POLICY -->
 ```
 

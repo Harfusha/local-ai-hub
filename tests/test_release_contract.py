@@ -259,6 +259,29 @@ def test_public_contract_notes_match_install_update_and_generated_skill(tmp_path
         assert note in generated
 
 
+def test_install_and_update_prompts_share_profile_aware_model_routing():
+    install = (ROOT / "docs" / "INSTALL_PROMPT.md").read_text(encoding="utf-8")
+    update = (ROOT / "docs" / "UPDATE_PROMPT.md").read_text(encoding="utf-8")
+    routing_line = next(
+        line for line in update.splitlines()
+        if line.startswith("Model routing is profile-aware:")
+    )
+
+    assert routing_line in install.splitlines()
+    stale_install_policies = (
+        "qwen2.5-coder:1.5b` only for quick/simple tasks",
+        "qwen2.5-coder:1.5b` for bounded extraction/simple work",
+        "qwen2.5-coder:1.5b` only for quick/simple microtasks",
+        "qwen2.5-coder:3b` for ordinary and more involved work",
+        "qwen2.5-coder:3b` for ordinary bounded reasoning",
+        "qwen2.5-coder:0.5b` only for preprocessing",
+        "qwen3.5:9b` for extreme reasoning in the balanced profile",
+    )
+    assert all(policy not in install for policy in stale_install_policies)
+    assert "high uses 1.5b/3b/7b/9b" not in update
+    assert "max uses 1.5b/3b/9b for heavy routes" not in update
+
+
 def test_feature_audit_marks_codegraph_as_removed_from_hub():
     audit = (ROOT / "docs" / "FEATURE_AUDIT_V4.md").read_text(encoding="utf-8")
     assert "Current status is removal from Hub" in audit

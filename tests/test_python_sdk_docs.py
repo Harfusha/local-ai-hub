@@ -34,3 +34,21 @@ def test_python_sdk_quickstart_matches_supported_client_surface():
     assert "status" in called_methods and callable(HubClient.status)
     assert "close" in called_methods and callable(HubClient.close)
     assert "[Python SDK](PYTHON_SDK.md)" in installation_doc
+
+
+def test_python_sdk_docs_cover_t19_workflows():
+    sdk_doc = (ROOT / "docs" / "PYTHON_SDK.md").read_text(encoding="utf-8")
+
+    for workflow in (
+        "callers(",
+        "context_pack(",
+        "verify_receipt(",
+        "continue_conversation(",
+        "cancel_job(",
+        'coord("task_resume"',
+        "get_evidence(",
+    ):
+        assert workflow in sdk_doc
+
+    assert "maps one client call to one endpoint" in sdk_doc
+    assert "terminal" in sdk_doc and "retryable" in sdk_doc
