@@ -90,7 +90,7 @@ T10 supplied current fixed weights: deterministic 1.25, code_index 1.20, serena 
 
 No valid T14/T15 task ID or adapter release is relied upon. Do not use pending `clientThreadId`s or create replacements. The adapter root must come from trusted route identity; retrieval `PathHint` never selects root. Reject absolute/drive/UNC/`..` operation paths, resolve beneath selected root, deny symlink/junction escape, and never fall back to ambient CWD.
 
-Fresh read-only task check (2026-09-26): `list_threads` contains tasks for T03/T06/T09/T10/T11/T14/T15/T16/T19; no new adapter release exists beyond T06's prior narrow `LocalAIServices.affected_tests` and `run_affected` release. T03 requested root clarification. No pending `clientThreadId` is used and no replacement is created. Hub coordination leases remain unavailable after the single bounded failure; task presence or status does not transfer ownership. Keep gated paths untouched.
+Fresh read-only task check (2026-09-26): `list_threads` contains tasks for T03/T06/T09/T10/T11/T14/T15/T16/T19; no new adapter release exists beyond T06's prior narrow `LocalAIServices.affected_tests` and `run_affected` release. No pending `clientThreadId` is used and no replacement is created. Hub coordination leases remain unavailable after the single bounded failure; task presence or status does not transfer ownership. Keep gated paths untouched.
 
 ## T21 core handoff status (2026-09-26)
 
