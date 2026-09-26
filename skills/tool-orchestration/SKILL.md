@@ -61,3 +61,9 @@ Coordinate available tools and capabilities systematically across six distinct e
 - Review unified diff of changed files (`local_ai_repo(action="review_diff")` or `git diff`).
 - Run `local_ai_repo(action="security_audit")` for secrets or injection risks.
 - Clean and commit changes with a concise, descriptive commit message.
+
+### MCP Response Economy
+- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
+- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
+- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
+- Reject `max_response_tokens` below 128; never raise the request silently.
