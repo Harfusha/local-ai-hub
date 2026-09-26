@@ -542,7 +542,7 @@ class LocalAIApp:
             scope = "process"
         now = time.monotonic()
         cache_key = f"{'light' if light else 'full'}:{scope}"
-        cache_ttl = 0.5 if light else 1.5
+        cache_ttl = 5.0 if light else 1.5
         with self._live_status_lock:
             cached = self._live_status_cache.get(cache_key)
             if cached and now - cached[0] < cache_ttl:

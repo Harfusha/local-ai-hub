@@ -341,12 +341,12 @@ T03 je závislost transportních změn T04/T05/T19. T06 předchází mutujícím
 
 **Soubory:** `src/local_ai_hub/app.py`, `telemetry.py`, `debug_traces.py`, `dashboard.py`, `http_server.py`; `tests/test_debug_traces.py`, `tests/test_http_phase_telemetry.py`, `tests/test_http_admission.py`; **nový** `tests/test_operational_api_contracts.py`.
 
-- [ ] Zrušit zbytečné status dependency calls; oddělit cached snapshot od explicitního expensive detail; každá dependency má deadline/degraded field.
-- [ ] Clamp days/limits, správná recent timeline/cursor, pagination trace detail a response size cap; not-found má konzistentní status.
-- [ ] Dashboard polling přizpůsobit visible tab, unchanged state, backoff a jitter; tam kde přínos prokáže měření využít existující SSE.
-- [ ] Accounting vrací accepted/rejected counts a důvody; load telemetry nesmí měřit sama sebe jako uživatelský workload.
-- [ ] Zachovat explicitně chtěný full-payload trace workflow; nastavit oddělené access/retention/redaction a viditelné informování. Nezaměnit trace/content stores s metadata-only telemetry.
-- [ ] DB query má read-only authorizer i time/row/byte budget. Maintenance/config/control/model manage/bundle import mají action-specific oprávnění, bounded lifecycle a audit.
+- [x] Zrušit zbytečné status dependency calls; oddělit cached snapshot od explicitního expensive detail; každá dependency má deadline/degraded field.
+- [x] Clamp days/limits, správná recent timeline/cursor, pagination trace detail a response size cap; not-found má konzistentní status.
+- [x] Dashboard polling přizpůsobit visible tab, unchanged state, backoff a jitter; tam kde přínos prokáže měření využít existující SSE.
+- [x] Accounting vrací accepted/rejected counts a důvody; load telemetry nesmí měřit sama sebe jako uživatelský workload.
+- [x] Zachovat explicitně chtěný full-payload trace workflow; nastavit oddělené access/retention/redaction a viditelné informování. Nezaměnit trace/content stores s metadata-only telemetry.
+- [x] DB query má read-only authorizer i time/row/byte budget. Maintenance/config/control/model manage/bundle import mají action-specific oprávnění, bounded lifecycle a audit.
 
 **Hotovo:** stabilní lehký status pod zátěží, bezpečně bounded admin operace, pravdivé privacy a accounting chování.
 

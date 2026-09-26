@@ -226,6 +226,20 @@ def test_live_status_cache_does_not_requery_agent_state(monkeypatch):
     assert cached["snapshot_cached"] is True
 
 
+def test_live_status_cache_covers_normal_dashboard_poll_interval(monkeypatch):
+    now = [10.0]
+    monkeypatch.setattr(app_module.time, "monotonic", lambda: now[0])
+    app = make_live_app(monkeypatch)
+
+    app.realtime_status(light=True)
+    calls_after_first_snapshot = dict(app.runtime.calls)
+    now[0] += 1.1
+    cached = app.realtime_status(light=True)
+
+    assert cached["snapshot_cached"] is True
+    assert app.runtime.calls == calls_after_first_snapshot
+
+
 def test_live_status_slow_dependency_returns_degraded_within_deadline(monkeypatch):
     runtime = RuntimeProbe()
 

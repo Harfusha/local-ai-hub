@@ -1021,7 +1021,7 @@ class Handler(BaseHTTPRequestHandler):
         if str(getattr(self, "command", "")) not in methods:
             self._send(
                 405,
-                {"success": False, "error": "method not allowed for admin action"},
+                {"success": False, "status_code": 405, "error": "method not allowed for admin action"},
                 headers={"Allow": ", ".join(sorted(methods))},
             )
             return False
@@ -1378,7 +1378,7 @@ class Handler(BaseHTTPRequestHandler):
             trace_store.event(api_trace_id, "async_job_submitted", {"job_id": result.get("job_id", ""), "trace_id": result.get("trace_id", ""), "delivery": decision})
         return 200, result
 
-    def _send(self, status: int, data: Any) -> None:
+    def _send(self, status: int, data: Any, *, headers: Mapping[str, str] | None = None) -> None:
         self._audit_admin_action(status, data)
         request_id = getattr(self, "_journal_request_id", None)
         if request_id and APP is not None and not getattr(self, "_journal_finished", False):
@@ -1439,6 +1439,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Connection", "close")
             self._common_headers()
+            for name, value in (headers or {}).items():
+                self.send_header(str(name), str(value))
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1880,7 +1882,18 @@ class Handler(BaseHTTPRequestHandler):
                 since_seq = _safe_int((query.get("since_seq") or [0])[0], 0)
                 detail_limit = _safe_int((query.get("limit") or [100])[0], 100)
                 full_payload = str((query.get("full") or [""])[0]).strip().lower() in {"1", "true", "yes"}
-                result = APP.debug_traces.detail(trace_id, since_seq=max(0, since_seq), limit=detail_limit, full_payload=full_payload)
+                content_field = str((query.get("content_field") or [""])[0])
+                content_offset = _safe_int((query.get("content_offset") or [0])[0], 0)
+                before_seq = _safe_int((query.get("before_seq") or [0])[0], 0)
+                result = APP.debug_traces.detail(
+                    trace_id,
+                    since_seq=max(0, since_seq),
+                    limit=detail_limit,
+                    full_payload=full_payload,
+                    content_field=content_field,
+                    content_offset=max(0, content_offset),
+                    before_seq=max(0, before_seq),
+                )
                 if result.get("error") == "trace not found":
                     self._send(404, result); return
                 if result.get("success") and isinstance(result.get("session"), dict):
