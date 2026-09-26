@@ -3033,9 +3033,175 @@ class LocalAIServices:
     def test_matrix(self, root: str) -> dict[str, Any]:
         return self.deterministic_operation("test-matrix", root, {}, lambda: self.deterministic.test_matrix(root))
 
-    def affected_tests(self, root: str, changed_paths: list[str] | None = None, base: str = "HEAD") -> dict[str, Any]:
-        params = {"changed_paths": sorted(changed_paths or []), "base": base}
-        return self.deterministic_operation("affected-tests", root, params, lambda: self.deterministic.affected_tests(root, changed_paths, base))
+    def affected_tests(
+        self,
+        root: str,
+        changed_paths: list[str] | None = None,
+        base: str = "HEAD",
+        path_hints: list[Any] | tuple[Any, ...] | None = None,
+    ) -> dict[str, Any]:
+        from .project_config import (
+            PathHint,
+            path_is_allowed,
+            path_matches_pattern,
+            resolve_project_context,
+        )
+
+        context = resolve_project_context(root, configured_state_dir(self.config))
+        request_hints: list[PathHint] = []
+        if isinstance(path_hints, (list, tuple)):
+            for item in path_hints[:64]:
+                if isinstance(item, PathHint):
+                    request_hints.append(item)
+                elif isinstance(item, dict):
+                    allowed_fields = {
+                        "path",
+                        "purpose",
+                        "scope",
+                        "evidence_id",
+                        "provenance",
+                        "repository_revision",
+                        "config_digest",
+                        "expires_at",
+                    }
+                    if set(item) - allowed_fields:
+                        continue
+                    try:
+                        request_hints.append(
+                            PathHint(**{
+                                key: value
+                                for key, value in item.items()
+                                if key in allowed_fields
+                            })
+                        )
+                    except TypeError:
+                        continue
+        request_hints = [
+            hint
+            for hint in request_hints
+            if isinstance(hint.path, str)
+            and isinstance(hint.purpose, str)
+            and isinstance(hint.scope, str)
+            and all(
+                value is None or isinstance(value, str)
+                for value in (
+                    hint.evidence_id,
+                    hint.provenance,
+                    hint.repository_revision,
+                    hint.config_digest,
+                    hint.expires_at,
+                )
+            )
+        ]
+        hint_digest = stable_hash([asdict(hint) for hint in request_hints])
+        params = {
+            "changed_paths": sorted(changed_paths or []),
+            "base": base,
+            "project_config_digest": context.config_digest,
+            "path_hints_digest": hint_digest,
+        }
+        result = self.deterministic_operation(
+            "affected-tests",
+            root,
+            params,
+            lambda: self.deterministic.affected_tests(root, changed_paths, base),
+        )
+        if not isinstance(result, dict) or not result.get("success", True):
+            return result
+        workspace_state = result.get("workspace_cache", {})
+        repository_revision = (
+            str(workspace_state.get("fingerprint", ""))
+            if isinstance(workspace_state, dict)
+            and not workspace_state.get("stale")
+            and not workspace_state.get("degraded")
+            else ""
+        )
+
+        candidates = [
+            path for path in result.get("test_files", []) if isinstance(path, str)
+        ]
+        changed_for_mapping = changed_paths or result.get("changed_files", [])
+        target_patterns = tuple(
+            target_pattern
+            for source_pattern, targets in context.settings.affected_tests_mapping.items()
+            if any(
+                isinstance(changed_path, str)
+                and path_matches_pattern(changed_path, source_pattern)
+                for changed_path in changed_for_mapping
+            )
+            for target_pattern in targets
+        )
+        if target_patterns:
+            matrix = self.test_matrix(root)
+            for item in matrix.get("test_files", []):
+                candidate = item.get("path") if isinstance(item, dict) else item
+                if (
+                    isinstance(candidate, str)
+                    and any(
+                        path_matches_pattern(candidate, pattern)
+                        for pattern in target_patterns
+                    )
+                ):
+                    candidates.append(candidate)
+        candidates = list(dict.fromkeys(candidates))
+        usage = context.prioritize_paths(
+            candidates,
+            purpose="affected_tests",
+            scope="run_affected",
+            repository_revision=repository_revision,
+            path_hints=tuple(request_hints),
+        )
+        allowed_tests: list[str] = []
+        for candidate in usage.paths:
+            try:
+                file_size = (Path(root) / candidate).stat().st_size
+            except OSError:
+                file_size = None
+            if path_is_allowed(
+                root,
+                candidate,
+                context.settings,
+                phase="test",
+                size_bytes=file_size,
+            ):
+                allowed_tests.append(candidate)
+
+        result = dict(result)
+        result["test_files"] = allowed_tests
+        quote_argument = (
+            (lambda value: subprocess.list2cmdline([value]))
+            if os.name == "nt"
+            else shlex.quote
+        )
+        quoted_tests = [quote_argument(path) for path in allowed_tests]
+        framework = str(result.get("framework", "unknown"))
+        if not allowed_tests:
+            suggested_command = ""
+        elif framework == "pytest":
+            suggested_command = f"pytest {' '.join(quoted_tests)}"
+        elif framework == "dotnet":
+            filters = " | ".join(
+                f"FullyQualifiedName~{Path(path).stem}" for path in allowed_tests
+            )
+            suggested_command = f"dotnet test --filter {quote_argument(filters)}"
+        elif framework == "npm":
+            suggested_command = f"npm test -- {' '.join(quoted_tests)}"
+        elif framework == "cargo":
+            suggested_command = (
+                f"cargo test {' '.join(quote_argument(Path(path).stem) for path in allowed_tests)}"
+            )
+        elif framework == "go":
+            suggested_command = f"go test {' '.join(quoted_tests)}"
+        else:
+            suggested_command = f"pytest {' '.join(quoted_tests)}"
+        result["suggested_command"] = suggested_command
+        result["project_config_digest"] = context.config_digest
+        result["path_hint_usage"] = {
+            "hint_used": usage.hint_used,
+            "fallback_used": usage.fallback_used,
+            "hint_helped": usage.hint_helped,
+        }
+        return result
 
     def repo_topology(self, root: str) -> dict[str, Any]:
         return self.deterministic_operation("repo-topology", root, {}, lambda: self.deterministic.repo_topology(root))
@@ -5272,7 +5438,11 @@ class LocalAIServices:
             )
         if action == "run_affected":
             root = str(args.get("cwd", args.get("root", ".")))
-            aff = self.affected_tests(root, changed_paths=args.get("paths"))
+            aff = self.affected_tests(
+                root,
+                changed_paths=args.get("paths"),
+                path_hints=args.get("path_hints"),
+            )
             cmd = aff.get("suggested_command", "")
             if not cmd:
                 return {
