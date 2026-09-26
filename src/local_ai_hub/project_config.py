@@ -267,6 +267,18 @@ class PathHintUsage:
     fallback_used: bool
     hint_helped: bool | None
 
+    def telemetry_metadata(self) -> dict[str, bool | None]:
+        """Return path-free fields safe for aggregate telemetry."""
+        return {
+            "hint_used": self.hint_used is True,
+            "fallback_used": self.fallback_used is True,
+            "hint_helped": (
+                self.hint_helped
+                if self.hint_helped is True or self.hint_helped is False
+                else None
+            ),
+        }
+
 
 def _git_common_dir(root: Path) -> Path | None:
     """Return Git common directory using one bounded, shell-free subprocess."""
