@@ -1,18 +1,21 @@
 from __future__ import annotations
 
-import threading
+import json
+import os
 import sqlite3
+import threading
 from contextlib import closing
 
 from local_ai_hub.rag import RAGStore, _fragment_hash
 
 
 class _Services:
-    def __init__(self, block: bool = False) -> None:
+    def __init__(self, block: bool = False, space_id: str | None = None) -> None:
         self.calls: list[list[str]] = []
         self.started = threading.Event()
         self.release = threading.Event()
         self.block = block
+        self.space_id = space_id
 
     def embed(self, texts, _tenant, **_kwargs):
         batch = list(texts)
@@ -20,7 +23,10 @@ class _Services:
         self.started.set()
         if self.block:
             assert self.release.wait(2)
-        return {"success": True, "embeddings": [[float(len(text)), 1.0] for text in batch]}
+        result = {"success": True, "embeddings": [[float(len(text)), 1.0] for text in batch]}
+        if self.space_id:
+            result["embedding_space_id"] = self.space_id
+        return result
 
 
 class _Reranker:
@@ -241,6 +247,316 @@ def test_reused_chunks_keep_original_space_when_embedder_falls_back(tmp_path):
             ).fetchall())
         assert spaces["shared.py"] == "model-a@revision-1"
         assert spaces["new.py"] == "model-b@revision-2"
+
+
+def test_configured_embedding_space_id_is_stable_across_store_instances(tmp_path):
+    first = _store(tmp_path, _Services())
+    second = _store(tmp_path, _Services())
+
+    assert first._embedding_space_id() == second._embedding_space_id()
+
+
+def test_index_fingerprint_tracks_embedding_space_configuration(tmp_path):
+    base_models = {
+        "embedding": "model-a",
+        "embedding_backend": "ollama",
+        "embedding_dimension": 2,
+        "embedding_normalized": False,
+        "embedding_digest": "digest-a",
+        "embedding_revision": "revision-a",
+    }
+
+    def make_store(state_name, models):
+        return RAGStore(
+            {
+                "server": {"state_dir": str(tmp_path / state_name)},
+                "models": models,
+                "cpu_retrieval": {},
+                "workspace_cache": {},
+                "rag": {"extensions": [".py"], "ignore_dirs": []},
+            },
+            _Services(),
+            _Reranker(),
+        )
+
+    baseline = make_store("fingerprint-base", base_models).index_fingerprint
+    changed = [
+        {"embedding_digest": "digest-b"},
+        {"embedding_revision": "revision-b"},
+        {"embedding_dimension": 3},
+        {"embedding_normalized": True},
+    ]
+
+    for index, values in enumerate(changed):
+        models = {**base_models, **values}
+        assert make_store(f"fingerprint-{index}", models).index_fingerprint != baseline
+
+
+def test_index_fingerprint_reset_clears_orphaned_fts_rows(tmp_path):
+    state_dir = tmp_path / "fingerprint-reset"
+    base_models = {
+        "embedding": "model-a",
+        "embedding_backend": "ollama",
+        "embedding_dimension": 2,
+        "embedding_digest": "digest-a",
+    }
+
+    def make_store(models):
+        return RAGStore(
+            {
+                "server": {"state_dir": str(state_dir)},
+                "models": models,
+                "cpu_retrieval": {},
+                "workspace_cache": {},
+                "rag": {"extensions": [".py"], "ignore_dirs": []},
+            },
+            _Services(),
+            _Reranker(),
+        )
+
+    first = make_store(base_models)
+    scope_key = first._scope_key("tenant")
+    with closing(first._connect()) as con:
+        con.execute(
+            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
+            (scope_key, "workspace", "old.py", 0, "hash", "old text", "[]", "model-a"),
+        )
+        con.execute(
+            "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
+            (scope_key, "workspace", "old.py", 1, 8, "hash"),
+        )
+        con.execute(
+            "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
+            (scope_key, "workspace", "old.py", 0, "old text"),
+        )
+        con.commit()
+
+    rebuilt = make_store({**base_models, "embedding_digest": "digest-b"})
+
+    assert rebuilt.index_reset is True
+    with closing(rebuilt._connect()) as con:
+        assert con.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] == 0
+        assert con.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 0
+        assert con.execute("SELECT COUNT(*) FROM chunk_fts").fetchone()[0] == 0
+
+
+def test_index_reembeds_unchanged_files_when_runtime_space_changes(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "one.py").write_text("def stable():\n    return 1\n", encoding="utf-8")
+    services = _Services(space_id="runtime-space-a")
+    store = _store(tmp_path, services)
+
+    first = store.index(str(root), "tenant")
+    assert first["success"] is True
+    first_call_count = len(services.calls)
+    services.space_id = "runtime-space-b"
+
+    rebuilt = store.index(str(root), "tenant", workspace=first["workspace"])
+
+    assert rebuilt["success"] is True
+    assert len(services.calls) > first_call_count
+    with closing(store._connect()) as con:
+        spaces = {row[0] for row in con.execute("SELECT DISTINCT embedding_space FROM chunks")}
+    assert spaces == {"runtime-space-b"}
+
+
+def test_cold_unresolved_index_reuses_persisted_workspace_space(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "one.py").write_text("def stable():\n    return 1\n", encoding="utf-8")
+    first_services = _Services(space_id="runtime-space-a")
+    first_store = _store(tmp_path, first_services)
+    first = first_store.index(str(root), "tenant")
+    second_services = _Services()
+    second_store = _store(tmp_path, second_services)
+
+    reused = second_store.index(str(root), "tenant", workspace=first["workspace"])
+
+    assert reused["success"] is True
+    assert reused["embedding_space_id"] == "runtime-space-a"
+    assert second_services.calls == []
+
+
+def test_index_step_rebuilds_only_stale_space_paths_incrementally(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "one.py").write_text("def one():\n    return 1\n", encoding="utf-8")
+    (root / "two.py").write_text("def two():\n    return 2\n", encoding="utf-8")
+    services = _Services(space_id="runtime-space-a")
+    store = _store(tmp_path, services)
+    first = store.index(str(root), "tenant")
+    services.space_id = "runtime-space-b"
+
+    step = store.index_step(str(root), "tenant", workspace=first["workspace"], max_files=1)
+
+    assert step["success"] is True
+    assert step["done"] is False
+    assert step["processed_files"] == 1
+    with closing(store._connect()) as con:
+        rows = con.execute("SELECT path, embedding_space FROM chunks ORDER BY path").fetchall()
+    spaces_by_path = {path: space for path, space in rows}
+    assert len(set(spaces_by_path.values())) == 2
+
+
+def test_search_cache_tracks_incremental_reindex_generation(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "one.py").write_text("def one():\n    return 1\n", encoding="utf-8")
+    (root / "two.py").write_text("def two():\n    return 222222\n", encoding="utf-8")
+    (root / "three.py").write_text("def three():\n    return 333333333\n", encoding="utf-8")
+    services = _Services(space_id="runtime-space-a")
+    store = _store(tmp_path, services)
+    first = store.index(str(root), "tenant")
+    services.space_id = "runtime-space-b"
+
+    initial_step = store.index_step(str(root), "tenant", workspace=first["workspace"], max_files=1)
+    assert initial_step["done"] is False
+    first_search = store.search("qzxunknown", "tenant", first["workspace"], use_reranker=False)
+    repeated_search = store.search("qzxunknown", "tenant", first["workspace"], use_reranker=False)
+    assert len(first_search["results"]) == 1
+    assert repeated_search["search_cache"]["hit"] is True
+
+    middle_step = store.index_step(str(root), "tenant", workspace=first["workspace"], max_files=1)
+    assert middle_step["done"] is False
+    middle_search = store.search("qzxunknown", "tenant", first["workspace"], use_reranker=False)
+    assert middle_search["search_cache"]["hit"] is False
+    assert len(middle_search["results"]) == 2
+
+    final_step = store.index_step(str(root), "tenant", workspace=first["workspace"], max_files=1)
+    assert final_step["done"] is True
+    rebuilt_search = store.search("qzxunknown", "tenant", first["workspace"], use_reranker=False)
+
+    assert rebuilt_search["search_cache"]["hit"] is False
+    assert len(rebuilt_search["results"]) == 3
+
+
+def test_search_rechecks_generation_after_cache_lookup(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+    source = root / "one.py"
+    source.write_text("def old_value():\n    return 1\n", encoding="utf-8")
+    store = _store(tmp_path, _Services(space_id="runtime-space-a"))
+    indexed = store.index(str(root), "tenant")
+    workspace = indexed["workspace"]
+    initial = store.search("value query", "tenant", workspace, use_reranker=False)
+    assert initial["results"][0]["text"] == "def old_value():\n    return 1\n"
+
+    source.write_text("def new_value():\n    return 2\n", encoding="utf-8")
+    original_lookup = store.search_flight.get_or_compute
+    interleaved: dict[str, object] = {}
+
+    def publish_before_lookup(key, compute):
+        staged = store.index_paths_step(str(root), "tenant", workspace, ["one.py"])
+        assert staged["success"] is True
+        raw, hit, coalesced = original_lookup(key, compute)
+        interleaved["hit"] = hit
+        return raw, hit, coalesced
+
+    monkeypatch.setattr(store.search_flight, "get_or_compute", publish_before_lookup)
+    result = store.search("value query", "tenant", workspace, use_reranker=False)
+
+    assert interleaved["hit"] is True
+    assert result["search_cache"]["hit"] is False
+    assert result["results"][0]["text"] == "def new_value():\n    return 2\n"
+
+
+def test_index_step_reindexes_explicit_same_stat_dirty_path(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    source = root / "one.py"
+    original_text = "def value():\n    return 'old'\n"
+    updated_text = "def value():\n    return 'new'\n"
+    source.write_text(original_text, encoding="utf-8")
+    store = _store(tmp_path, _Services(space_id="runtime-space-a"))
+    indexed = store.index(str(root), "tenant")
+    workspace = indexed["workspace"]
+    original_stat = source.stat()
+
+    source.write_text(updated_text, encoding="utf-8")
+    assert source.stat().st_size == original_stat.st_size
+    os.utime(source, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    unchanged = store.index_step(str(root), "tenant", workspace=workspace, max_files=1)
+    assert unchanged["processed_files"] == 0
+    with closing(store._connect()) as con:
+        rows = con.execute(
+            "SELECT text FROM chunks WHERE tenant=? AND workspace=? AND path=?",
+            (store._scope_key("tenant"), workspace, "one.py"),
+        ).fetchall()
+    assert [row[0] for row in rows] == [original_text]
+
+    updated = store.index_step(
+        str(root), "tenant", workspace=workspace, max_files=1, dirty_paths=["one.py"]
+    )
+
+    assert updated["processed_files"] == 1
+    with closing(store._connect()) as con:
+        rows = con.execute(
+            "SELECT text FROM chunks WHERE tenant=? AND workspace=? AND path=?",
+            (store._scope_key("tenant"), workspace, "one.py"),
+        ).fetchall()
+    assert [row[0] for row in rows] == [updated_text]
+
+
+def test_index_step_keeps_unpublished_paths_pending(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "one.py").write_text("def pending():\n    return 1\n", encoding="utf-8")
+    store = _store(tmp_path, _Services())
+    monkeypatch.setattr(
+        store,
+        "index_paths_step",
+        lambda *_args, **_kwargs: {
+            "success": True, "preempted": True, "processed_paths": [], "deleted_paths": []
+        },
+    )
+
+    result = store.index_step(str(root), "tenant", max_files=1)
+
+    assert result["preempted"] is True
+    assert result["done"] is False
+    assert result["remaining_changed_files"] == 1
+
+
+def test_index_step_keeps_skipped_paths_pending(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "one.py").write_text("def unreadable():\n    return 1\n", encoding="utf-8")
+    store = _store(tmp_path, _Services())
+    monkeypatch.setattr(
+        store,
+        "index_paths_step",
+        lambda *_args, **_kwargs: {
+            "success": True, "preempted": False, "processed_paths": [], "deleted_paths": []
+        },
+    )
+
+    result = store.index_step(str(root), "tenant", max_files=1)
+
+    assert result["done"] is False
+    assert result["processed_files"] == 0
+    assert result["remaining_changed_files"] == 1
+
+
+def test_legacy_unidentified_embedding_is_not_reused(tmp_path):
+    services = _Services()
+    store = _store(tmp_path, services)
+    text = "def shared_legacy():\n    return 9\n"
+    with closing(store._connect()) as con:
+        con.execute(
+            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (store._scope_key("tenant"), "legacy", "shared.py", 0, _fragment_hash(text), text, json.dumps([99.0, 99.0]), ""),
+        )
+        con.commit()
+    root = tmp_path / "target"
+    root.mkdir()
+    (root / "shared.py").write_text(text, encoding="utf-8")
+
+    result = store.index_paths_step(str(root), "tenant", "target", ["shared.py"])
+
+    assert result["success"] is True
+    assert len(services.calls) == 1
 
 
 def test_index_publish_disk_full_keeps_previous_snapshot(tmp_path, monkeypatch):

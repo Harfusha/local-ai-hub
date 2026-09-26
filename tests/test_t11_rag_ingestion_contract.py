@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import sqlite3
 import struct
 from contextlib import closing
 
@@ -39,6 +40,61 @@ def _chunk_text(store, tenant: str, workspace: str, path: str) -> str:
             (store._scope_key(tenant), workspace, path),
         ).fetchone()
     return str(row[0]) if row else ""
+
+
+def _rag_snapshot(store, tenant: str, workspace: str):
+    scope_key = store._scope_key(tenant)
+    with closing(store._connect()) as con:
+        files = con.execute(
+            "SELECT path,mtime_ns,size,content_hash FROM files WHERE tenant=? AND workspace=? ORDER BY path",
+            (scope_key, workspace),
+        ).fetchall()
+        chunks = con.execute(
+            "SELECT path,chunk_no,content_hash,text,embedding,embedding_space FROM chunks "
+            "WHERE tenant=? AND workspace=? ORDER BY path,chunk_no",
+            (scope_key, workspace),
+        ).fetchall()
+        fts = con.execute(
+            "SELECT path,chunk_no,text FROM chunk_fts WHERE tenant=? AND workspace=? ORDER BY path,chunk_no",
+            (scope_key, workspace),
+        ).fetchall()
+        embedding_space = store._stored_workspace_embedding_space(con, scope_key, workspace)
+        generation = store._workspace_index_generation(con, scope_key, workspace)
+    return files, chunks, fts, embedding_space, generation
+
+
+def _inject_sqlite_write_failure(
+    store, monkeypatch, sql_prefix, *, max_failures=1, error_message="injected sqlite write failure"
+):
+    connect = store._connect
+    state = {"attempts": 0}
+
+    class _FailingConnection:
+        def __init__(self, connection):
+            self._connection = connection
+
+        def _fail_if_requested(self, sql):
+            if str(sql).lstrip().startswith(sql_prefix):
+                state["attempts"] += 1
+                if max_failures is None or state["attempts"] <= max_failures:
+                    raise sqlite3.OperationalError(error_message)
+
+        def execute(self, sql, *args):
+            self._fail_if_requested(sql)
+            return self._connection.execute(sql, *args)
+
+        def executemany(self, sql, rows):
+            self._fail_if_requested(sql)
+            return self._connection.executemany(sql, rows)
+
+        def close(self):
+            self._connection.close()
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+    monkeypatch.setattr(store, "_connect", lambda: _FailingConnection(connect()))
+    return state
 
 
 def test_document_ingest_indexes_title_and_metadata(tmp_path):
@@ -104,6 +160,335 @@ def test_document_ingest_reports_real_embedding_success(tmp_path):
     assert result["embedded_chunks"] == result["chunks_ingested"]
     assert result["embedding_status"] == "embedded"
     assert result["degraded"] is False
+
+
+def test_document_ingest_replay_replaces_one_stable_document_snapshot(tmp_path):
+    store = _store(tmp_path)
+    content = "repeatable section " * 90
+
+    first = store.ingest_document("specs", content, title="Replay Safe")
+    second = store.ingest_document("specs", content, title="Replay Safe")
+
+    assert first["success"] is True
+    assert second["success"] is True
+    assert first["chunks_ingested"] == second["chunks_ingested"]
+    with closing(store._connect()) as con:
+        files = con.execute(
+            "SELECT COUNT(*) FROM files WHERE tenant=? AND workspace=? AND path=?",
+            (store._scope_key("default"), "specs", "doc:Replay Safe"),
+        ).fetchone()[0]
+        chunks = con.execute(
+            "SELECT COUNT(*) FROM chunks WHERE tenant=? AND workspace=? AND path=?",
+            (store._scope_key("default"), "specs", "doc:Replay Safe"),
+        ).fetchone()[0]
+
+    assert files == 1
+    assert chunks == second["chunks_ingested"]
+
+
+def test_document_ingest_retries_publish_busy_without_reembedding(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+
+    class _CountingServices:
+        def __init__(self):
+            self.calls = 0
+
+        def embed(self, texts, _tenant, **_kwargs):
+            self.calls += 1
+            return {"success": True, "embeddings": [[0.1, 0.2] for _ in texts]}
+
+    services = _CountingServices()
+    store.services = services
+    state = {"failures": 1, "begins": 0}
+
+    class _FlakyConnection:
+        def __init__(self, connection):
+            self._connection = connection
+
+        def execute(self, sql, *args):
+            if sql == "BEGIN IMMEDIATE":
+                state["begins"] += 1
+                if state["failures"]:
+                    state["failures"] -= 1
+                    raise sqlite3.OperationalError("database is locked")
+            return self._connection.execute(sql, *args)
+
+        def close(self):
+            self._connection.close()
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+    connect = store._connect
+    monkeypatch.setattr(store, "_connect", lambda: _FlakyConnection(connect()))
+
+    result = store.ingest_document("specs", "retryable publication", title="Busy")
+
+    assert result["success"] is True
+    assert state["begins"] == 2
+    assert services.calls == 1
+
+
+def test_document_ingest_disk_full_keeps_previous_snapshot(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    title = "Atomic Document"
+    assert store.ingest_document("specs", "old content", title=title)["success"] is True
+
+    class _DiskFullConnection:
+        def __init__(self, connection):
+            self._connection = connection
+
+        def execute(self, sql, *args):
+            return self._connection.execute(sql, *args)
+
+        def executemany(self, sql, rows):
+            if sql.startswith("INSERT INTO chunks"):
+                raise sqlite3.OperationalError("database or disk is full")
+            return self._connection.executemany(sql, rows)
+
+        def close(self):
+            self._connection.close()
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+    connect = store._connect
+    monkeypatch.setattr(store, "_connect", lambda: _DiskFullConnection(connect()))
+
+    result = store.ingest_document("specs", "new content", title=title)
+    monkeypatch.setattr(store, "_connect", connect)
+
+    assert result["success"] is False
+    assert "old content" in _chunk_text(store, "default", "specs", f"doc:{title}")
+    assert "new content" not in _chunk_text(store, "default", "specs", f"doc:{title}")
+
+
+@pytest.mark.parametrize("failed_statement", ["INSERT INTO chunk_fts", "DELETE FROM chunk_fts"])
+def test_incremental_index_fts_write_failure_keeps_previous_snapshot(
+    tmp_path, monkeypatch, failed_statement
+):
+    store = _store(tmp_path)
+    root = tmp_path / "project"
+    root.mkdir()
+    path = root / "module.py"
+    path.write_text("before = 'old snapshot'\n", encoding="utf-8")
+
+    class _VectorServices:
+        def embed(self, texts, _tenant, **_kwargs):
+            return {
+                "success": True,
+                "embedding_space_id": "atomic-index-test-space",
+                "embeddings": [[0.25, 0.75] for _ in texts],
+            }
+
+    store.services = _VectorServices()
+    workspace = "atomic-index-workspace"
+    assert store.index_paths_step(str(root), "tenant", workspace, ["module.py"])["success"] is True
+    previous = _rag_snapshot(store, "tenant", workspace)
+
+    path.write_text("after = 'new snapshot'\n", encoding="utf-8")
+    injected = _inject_sqlite_write_failure(store, monkeypatch, failed_statement)
+    result = store.index_paths_step(str(root), "tenant", workspace, ["module.py"])
+
+    assert result["success"] is False
+    assert result["retryable"] is False
+    assert injected["attempts"] == 1
+    assert _rag_snapshot(store, "tenant", workspace) == previous
+
+
+@pytest.mark.parametrize("failed_statement", ["INSERT INTO chunk_fts", "DELETE FROM chunk_fts"])
+def test_document_ingest_fts_write_failure_keeps_previous_snapshot(
+    tmp_path, monkeypatch, failed_statement
+):
+    store = _store(tmp_path)
+    title = "Atomic FTS Document"
+    assert store.ingest_document("specs", "before snapshot", title=title)["success"] is True
+    previous = _rag_snapshot(store, "default", "specs")
+
+    injected = _inject_sqlite_write_failure(store, monkeypatch, failed_statement)
+    result = store.ingest_document("specs", "after snapshot", title=title)
+
+    assert result["success"] is False
+    assert result["retryable"] is False
+    assert injected["attempts"] == 1
+    assert _rag_snapshot(store, "default", "specs") == previous
+
+
+@pytest.mark.parametrize("operation", ["incremental_index", "document_ingest"])
+def test_exhausted_publish_busy_retries_preserve_snapshot_and_report_retryable(
+    tmp_path, monkeypatch, operation
+):
+    store = _store(tmp_path)
+    if operation == "incremental_index":
+        root = tmp_path / "project"
+        root.mkdir()
+        path = root / "module.py"
+        path.write_text("before = 'old snapshot'\n", encoding="utf-8")
+
+        class _VectorServices:
+            def __init__(self):
+                self.calls = 0
+
+            def embed(self, texts, _tenant, **_kwargs):
+                self.calls += 1
+                return {
+                    "success": True,
+                    "embedding_space_id": "busy-index-test-space",
+                    "embeddings": [[0.5, 0.5] for _ in texts],
+                }
+
+        services = _VectorServices()
+        store.services = services
+        workspace = "busy-index-workspace"
+        assert store.index_paths_step(str(root), "tenant", workspace, ["module.py"])["success"] is True
+        previous = _rag_snapshot(store, "tenant", workspace)
+        path.write_text("after = 'new snapshot'\n", encoding="utf-8")
+        invoke = lambda: store.index_paths_step(str(root), "tenant", workspace, ["module.py"])
+        expected_error = "publish_failed"
+    else:
+        title = "Busy Document"
+        assert store.ingest_document("specs", "before snapshot", title=title)["success"] is True
+        previous = _rag_snapshot(store, "default", "specs")
+        invoke = lambda: store.ingest_document("specs", "after snapshot", title=title)
+        expected_error = "ingest_publish_failed"
+
+    injected = _inject_sqlite_write_failure(
+        store,
+        monkeypatch,
+        "BEGIN IMMEDIATE",
+        max_failures=None,
+        error_message="database is locked",
+    )
+    result = invoke()
+
+    assert result["success"] is False
+    assert result["error"] == expected_error
+    assert result["retryable"] is True
+    assert 1 < injected["attempts"] <= store._sqlite_write_retries + 1
+    assert _rag_snapshot(
+        store,
+        "tenant" if operation == "incremental_index" else "default",
+        "busy-index-workspace" if operation == "incremental_index" else "specs",
+    ) == previous
+    if operation == "incremental_index":
+        assert services.calls == 2
+
+
+def test_index_paths_step_recovers_missing_embedding_space_from_existing_chunks(tmp_path):
+    store = _store(tmp_path)
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "module.py").write_text("value = 'stable chunk'\n", encoding="utf-8")
+
+    class _VectorServices:
+        def __init__(self):
+            self.calls = 0
+
+        def embed(self, texts, _tenant, **_kwargs):
+            self.calls += 1
+            return {
+                "success": True,
+                "embedding_space_id": "legacy-inferred-test-space",
+                "embeddings": [[0.25, 0.75] for _ in texts],
+            }
+
+    services = _VectorServices()
+    store.services = services
+    workspace = "legacy-incremental-workspace"
+    assert store.index_paths_step(str(root), "tenant", workspace, ["module.py"])["success"] is True
+    scope_key = store._scope_key("tenant")
+    space_key = store._workspace_embedding_space_key(scope_key, workspace)
+    with closing(store._connect()) as con:
+        con.execute("DELETE FROM rag_meta WHERE key=?", (space_key,))
+        con.commit()
+
+    class _UnexpectedEmbed:
+        def embed(self, *_args, **_kwargs):
+            raise AssertionError("legacy embedding should be reused")
+
+    store.services = _UnexpectedEmbed()
+    result = store.index_paths_step(str(root), "tenant", workspace, ["module.py"])
+
+    assert result["success"] is True
+    assert result["embedding_space_id"] == "legacy-inferred-test-space"
+    assert result["embedding_space_resolved"] is True
+    assert result["reused_chunks"] > 0
+    assert services.calls == 1
+    with closing(store._connect()) as con:
+        assert store._stored_workspace_embedding_space(con, scope_key, workspace) == "legacy-inferred-test-space"
+
+
+def test_index_paths_step_persists_inferred_space_without_paths_to_publish(tmp_path):
+    store = _store(tmp_path)
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "module.py").write_text("value = 'stable chunk'\n", encoding="utf-8")
+
+    class _VectorServices:
+        def embed(self, texts, _tenant, **_kwargs):
+            return {
+                "success": True,
+                "embedding_space_id": "legacy-noop-test-space",
+                "embeddings": [[0.5, 0.5] for _ in texts],
+            }
+
+    store.services = _VectorServices()
+    workspace = "legacy-noop-workspace"
+    assert store.index_paths_step(str(root), "tenant", workspace, ["module.py"])["success"] is True
+    scope_key = store._scope_key("tenant")
+    space_key = store._workspace_embedding_space_key(scope_key, workspace)
+    with closing(store._connect()) as con:
+        con.execute("DELETE FROM rag_meta WHERE key=?", (space_key,))
+        con.commit()
+        generation_before = store._workspace_index_generation(con, scope_key, workspace)
+
+    result = store.index_paths_step(str(root), "tenant", workspace, [])
+
+    assert result["success"] is True
+    assert result["processed_paths"] == []
+    assert result["embedding_space_id"] == "legacy-noop-test-space"
+    assert result["embedding_space_resolved"] is True
+    with closing(store._connect()) as con:
+        assert store._stored_workspace_embedding_space(con, scope_key, workspace) == "legacy-noop-test-space"
+        assert store._workspace_index_generation(con, scope_key, workspace) > generation_before
+
+
+def test_index_paths_step_requests_rebuild_for_mixed_legacy_embedding_spaces(tmp_path):
+    store = _store(tmp_path)
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "module.py").write_text("value = 'stable chunk'\n", encoding="utf-8")
+
+    class _VectorServices:
+        def embed(self, texts, _tenant, **_kwargs):
+            return {
+                "success": True,
+                "embedding_space_id": "legacy-first-test-space",
+                "embeddings": [[0.25, 0.75] for _ in texts],
+            }
+
+    store.services = _VectorServices()
+    workspace = "legacy-mixed-workspace"
+    assert store.index_paths_step(str(root), "tenant", workspace, ["module.py"])["success"] is True
+    scope_key = store._scope_key("tenant")
+    space_key = store._workspace_embedding_space_key(scope_key, workspace)
+    with closing(store._connect()) as con:
+        con.execute(
+            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (scope_key, workspace, "other.py", 0, "other-hash", "other chunk", "[0.5,0.5]", "legacy-second-test-space"),
+        )
+        con.execute("DELETE FROM rag_meta WHERE key=?", (space_key,))
+        con.commit()
+    previous = _rag_snapshot(store, "tenant", workspace)
+
+    result = store.index_paths_step(str(root), "tenant", workspace, [])
+
+    assert result["success"] is False
+    assert result["error"] == "embedding_space_rebuild_required"
+    assert result["rebuild_required"] is True
+    assert result["retryable"] is False
+    assert _rag_snapshot(store, "tenant", workspace) == previous
 
 
 def test_document_ingest_bounds_batches_and_preserves_long_document_order(tmp_path):

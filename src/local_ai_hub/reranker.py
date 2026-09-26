@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import threading
 import time
@@ -62,7 +63,13 @@ class Reranker:
         backend = self.active_backend or self.backend
         device = str(self.active_device or self.device or "cpu").strip().lower()
         revision = self._loaded_model_revision() or ""
-        return f"{backend}:{device}:{self.model_name}:{revision}"
+        return stable_hash({
+            "backend": backend,
+            "device": device,
+            "model": self.model_name,
+            "revision": revision,
+            "max_length": self.max_length,
+        })
 
     def _cache_identity(self) -> str | None:
         if self._loaded_model_revision() is None:
@@ -172,6 +179,25 @@ class Reranker:
         if not self._ensure_model():
             return {"success": False, "error": self._load_error or "reranker disabled", "results": []}
 
+        request_key = stable_hash({
+            "execution": self._execution_identity(),
+            "query": query,
+            "documents": documents,
+            "top_k": top_k,
+        })
+        result, _coalesced = self.flight_group.do(
+            request_key,
+            lambda: self._rerank_uncached(query, documents, top_k=top_k, priority=priority),
+        )
+        output = dict(result)
+        if isinstance(output.get("results"), list):
+            output["results"] = [dict(item) if isinstance(item, dict) else item for item in output["results"]]
+        return output
+
+    def _rerank_uncached(
+        self, query: str, documents: list[str], top_k: int | None = None, priority: int = 3
+    ) -> dict[str, Any]:
+
         # OpenVINO may compile successfully for NPU and then reject a real input
         # shape at predict time.  Keep each logical ranking on exactly one
         # backend/device: if inference falls through NPU -> GPU -> CPU, restart
@@ -191,8 +217,12 @@ class Reranker:
             for i, doc in enumerate(documents):
                 key = stable_hash({"identity": cache_identity, "q": query, "d": doc}) if use_cache else ""
                 cached = self.cache.get(key) if use_cache else None
-                if isinstance(cached, (int, float)):
-                    scores[i] = float(cached)
+                try:
+                    cached_score = float(cached)
+                except (TypeError, ValueError, OverflowError):
+                    cached_score = float("nan")
+                if isinstance(cached, (int, float)) and not isinstance(cached, bool) and math.isfinite(cached_score):
+                    scores[i] = cached_score
                     local_cache_hits += 1
                 else:
                     missing_pairs.append((query, doc))
@@ -207,11 +237,24 @@ class Reranker:
                     predicted = self._predict(missing_pairs[start:stop], priority=priority)
                     if predicted is None:
                         return {"success": False, "error": self._load_error or "reranker backend unavailable", "results": []}
+                    try:
+                        predicted_count = len(predicted)
+                    except TypeError:
+                        predicted_count = -1
+                    if predicted_count != stop - start:
+                        return {"success": False, "error": "reranker returned invalid score count", "results": []}
                     if self._execution_identity() != execution_identity:
                         switched = True
                         break
                     for idx, key, score in zip(missing_indices[start:stop], missing_keys[start:stop], predicted):
-                        value = float(score)
+                        if isinstance(score, bool):
+                            return {"success": False, "error": "reranker returned invalid score", "results": []}
+                        try:
+                            value = float(score)
+                        except (TypeError, ValueError, OverflowError):
+                            return {"success": False, "error": "reranker returned invalid score", "results": []}
+                        if not math.isfinite(value):
+                            return {"success": False, "error": "reranker returned invalid score", "results": []}
                         scores[idx] = value
                         pending_writes.append((key, value))
 

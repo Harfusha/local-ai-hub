@@ -97,6 +97,126 @@ def test_search_propagates_embedding_backend_fallback_status(tmp_path):
     assert result["fallback"] == "sentence-transformers"
 
 
+def test_search_excludes_vectors_from_other_embedding_spaces(tmp_path):
+    store = _store(tmp_path)
+    store.services.embed = lambda *_args, **_kwargs: {
+        "success": True,
+        "embedding_space_id": "space-a",
+        "embeddings": [[1.0, 0.0]],
+    }
+    tenant = "tenant"
+    workspace = "mixed-spaces"
+    with store._connect() as con:
+        con.executemany(
+            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            [
+                (store._scope_key(tenant), workspace, "a.py", 0, "hash-a", "space a", "[1.0,0.0]", "space-a"),
+                (store._scope_key(tenant), workspace, "b.py", 0, "hash-b", "space b", "[0.0,1.0]", "space-b"),
+            ],
+        )
+        con.commit()
+
+    result = store._search_uncached("query", tenant, workspace, top_k=2, use_reranker=False)
+
+    assert [row["path"] for row in result["results"]] == ["a.py"]
+
+
+def test_search_reports_degraded_when_index_has_no_matching_embedding_space(tmp_path):
+    store = _store(tmp_path)
+    store.services.embed = lambda *_args, **_kwargs: {
+        "success": True,
+        "embedding_space_id": "space-current",
+        "embeddings": [[1.0, 0.0]],
+    }
+    tenant = "tenant"
+    workspace = "stale-space"
+    with store._connect() as con:
+        con.execute(
+            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (store._scope_key(tenant), workspace, "old.py", 0, "old-hash", "unrelated words", "[1.0,0.0]", "space-old"),
+        )
+        con.commit()
+
+    result = store._search_uncached("zebra query", tenant, workspace, top_k=2, use_reranker=False)
+
+    assert result["success"] is True
+    assert result["results"] == []
+    assert result["degraded"] is True
+    assert result["fallback"] == "embedding_space_mismatch"
+
+
+def test_search_reports_pending_rebuild_for_partial_embedding_space(tmp_path):
+    store = _store(tmp_path)
+    store.services.embed = lambda *_args, **_kwargs: {
+        "success": True,
+        "embedding_space_id": "space-current",
+        "embeddings": [[1.0, 0.0]],
+    }
+    tenant = "tenant"
+    workspace = "partial-spaces"
+    with store._connect() as con:
+        con.executemany(
+            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            [
+                (store._scope_key(tenant), workspace, "current.py", 0, "current", "current result", "[1.0,0.0]", "space-current"),
+                (store._scope_key(tenant), workspace, "old.py", 0, "old", "old result", "[0.0,1.0]", "space-old"),
+            ],
+        )
+        con.commit()
+
+    result = store._search_uncached("query", tenant, workspace, top_k=2, use_reranker=False)
+
+    assert [row["path"] for row in result["results"]] == ["current.py"]
+    assert result["degraded"] is True
+    assert result["reindex_required"] is True
+    assert "embedding_space_rebuild_pending" in result["fallbacks"]
+    with store._connect() as con:
+        assert store._stored_workspace_embedding_space(con, store._scope_key(tenant), workspace) == "space-current"
+
+
+def test_search_cache_key_tracks_runtime_embedding_space(tmp_path):
+    store = _store(tmp_path)
+    active_space = {"value": "space-a"}
+    calls = []
+    store.services.space_id = active_space["value"]
+
+    def embed(texts, _tenant, **_kwargs):
+        calls.append(list(texts))
+        return {
+            "success": True,
+            "embedding_space_id": active_space["value"],
+            "embeddings": [[1.0, 0.0] for _ in texts],
+        }
+
+    store.services.embed = embed
+    tenant, workspace = "tenant", "cache-spaces"
+    with store._connect() as con:
+        con.executemany(
+            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            [
+                (store._scope_key(tenant), workspace, "a.py", 0, "hash-a", "space a", "[1.0,0.0]", "space-a"),
+                (store._scope_key(tenant), workspace, "b.py", 0, "hash-b", "space b", "[1.0,0.0]", "space-b"),
+            ],
+        )
+        con.commit()
+
+    first = store.search("same query", tenant, workspace, use_reranker=False)
+    repeated = store.search("same query", tenant, workspace, use_reranker=False)
+    active_space["value"] = "space-b"
+    store.services.space_id = active_space["value"]
+    second = store.search("same query", tenant, workspace, use_reranker=False)
+
+    assert [row["path"] for row in first["results"]] == ["a.py"]
+    assert repeated["search_cache"]["hit"] is True
+    assert [row["path"] for row in second["results"]] == ["b.py"]
+    assert second["search_cache"]["hit"] is False
+    assert len(calls) == 2
+
+
 def test_rag_index_retries_transient_publish_lock(tmp_path, monkeypatch):
     store = _store(tmp_path)
     root = tmp_path / "project"
@@ -127,6 +247,43 @@ def test_rag_index_retries_transient_publish_lock(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "_connect", lambda: _FlakyConnection(original_connect()))
 
     result = store.index(str(root), "test_tenant", workspace="locked-workspace")
+
+    assert result["success"] is True
+    assert state["begins"] == 2
+    assert len(store.services.calls) == 1
+
+
+def test_rag_index_paths_step_retries_publish_lock_without_reembedding(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    root = tmp_path / "project-step"
+    root.mkdir()
+    (root / "locked.py").write_text("def locked_step():\n    return 1\n", encoding="utf-8")
+    state = {"failures": 1, "begins": 0}
+
+    class _FlakyConnection:
+        def __init__(self, connection):
+            self._connection = connection
+
+        def execute(self, sql, *args):
+            if sql == "BEGIN IMMEDIATE":
+                state["begins"] += 1
+                if state["failures"]:
+                    state["failures"] -= 1
+                    raise sqlite3.OperationalError("database is locked")
+            return self._connection.execute(sql, *args)
+
+        def close(self):
+            self._connection.close()
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+    original_connect = store._connect
+    monkeypatch.setattr(store, "_connect", lambda: _FlakyConnection(original_connect()))
+
+    result = store.index_paths_step(
+        str(root), "test_tenant", "step-workspace", ["locked.py"]
+    )
 
     assert result["success"] is True
     assert state["begins"] == 2

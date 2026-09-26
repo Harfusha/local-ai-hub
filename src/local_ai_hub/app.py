@@ -1233,16 +1233,46 @@ class LocalAIApp:
 
         if self.rag is not None:
             scope_key = self.rag._scope_key("__preprocess__")
+            rag_files = rows("rag_files")
+            rag_chunks = rows("rag_chunks")
+            restored_spaces = {_str(c, "embedding_space") for c in rag_chunks}
             with self.rag._index_lock, closing(self.rag._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
                 con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=?", (scope_key, workspace))
                 con.execute("DELETE FROM files WHERE tenant=? AND workspace=?", (scope_key, workspace))
-                for f in rows("rag_files"):
+                fts_exists = con.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_fts'"
+                ).fetchone() is not None
+                if fts_exists:
+                    con.execute("DELETE FROM chunk_fts WHERE tenant=? AND workspace=?", (scope_key, workspace))
+                for f in rag_files:
                     con.execute("INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
                                 (scope_key, workspace, str(f.get("path", "")), int(f.get("mtime_ns", 0) or 0), int(f.get("size", 0) or 0), str(f.get("content_hash", ""))))
-                for c in rows("rag_chunks"):
-                    con.execute("INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) VALUES(?,?,?,?,?,?,?)",
-                                (scope_key, workspace, str(c.get("path", "")), int(c.get("chunk_no", 0) or 0), str(c.get("content_hash", "")), str(c.get("text", "")), c.get("embedding", "")))
+                con.executemany(
+                    "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
+                    [
+                        (
+                            scope_key, workspace, _str(c, "path"), _int(c, "chunk_no"),
+                            _str(c, "content_hash"), _str(c, "text"), c.get("embedding", ""),
+                            _str(c, "embedding_space"),
+                        )
+                        for c in rag_chunks
+                    ],
+                )
+                if fts_exists:
+                    con.executemany(
+                        "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
+                        [
+                            (scope_key, workspace, _str(c, "path"), _int(c, "chunk_no"), _str(c, "text"))
+                            for c in rag_chunks
+                        ],
+                    )
+                space_key = self.rag._workspace_embedding_space_key(scope_key, workspace)
+                if len(restored_spaces) == 1 and next(iter(restored_spaces)):
+                    self.rag._store_workspace_embedding_space(con, scope_key, workspace, next(iter(restored_spaces)))
+                else:
+                    con.execute("DELETE FROM rag_meta WHERE key=?", (space_key,))
+                self.rag._bump_workspace_index_generation(con, scope_key, workspace)
                 con.commit()
 
         restored_agent_records = 0

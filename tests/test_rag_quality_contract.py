@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import time
@@ -20,7 +21,11 @@ class _QueryServices:
     def embed(self, texts, _tenant, *, query=False, **_kwargs):
         vector = np.zeros(self.dimension, dtype=np.float32)
         vector[0] = 1.0
-        return {"success": True, "embeddings": [vector.tolist() for _ in texts]}
+        return {
+            "success": True,
+            "embedding_space_id": "quality-space",
+            "embeddings": [vector.tolist() for _ in texts],
+        }
 
 
 def _store(tmp_path, dimension: int = 2) -> RAGStore:
@@ -45,12 +50,12 @@ def _insert_vectors(store: RAGStore, tenant: str, workspace: str, vectors: np.nd
     scope_key = store._scope_key(tenant)
     with closing(store._connect()) as con:
         con.executemany(
-            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) "
-            "VALUES(?,?,?,?,?,?,?)",
+            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
+            "VALUES(?,?,?,?,?,?,?,?)",
             [
                 (
                     scope_key, workspace, f"src/{i // 32:04d}.py", i % 32,
-                    f"hash-{i}", f"fixture row {i}", sqlite3.Binary(vector.tobytes()),
+                    f"hash-{i}", f"fixture row {i}", sqlite3.Binary(vector.tobytes()), "quality-space",
                 )
                 for i, vector in enumerate(vectors)
             ],
@@ -153,13 +158,21 @@ def test_golden_corpus_keeps_relevant_credentials_above_realistic_distractors(tm
             )
         con.commit()
 
-    result = store._search_uncached("weekly credential rotation", tenant, workspace, top_k=4, use_reranker=False)
+    store.config["rag"]["rerank_candidates"] = 16
+    result = store._search_uncached("weekly credential rotation", tenant, workspace, top_k=10, use_reranker=False)
 
     assert result["success"] is True
     result_paths = [row["path"] for row in result["results"]]
-    assert len(result_paths) == 4
+    assert len(result_paths) == 10
     assert result_paths[0] == relevant[0][0]
-    assert set(result_paths) <= {row[0] for row in relevant}
+    relevant_paths = {row[0] for row in relevant}
+    relevance = [int(path in relevant_paths) for path in result_paths]
+    recall_at_10 = sum(relevance) / len(relevant_paths)
+    dcg_at_10 = sum(score / math.log2(rank + 2) for rank, score in enumerate(relevance))
+    ideal_dcg_at_10 = sum(1.0 / math.log2(rank + 2) for rank in range(len(relevant_paths)))
+    ndcg_at_10 = dcg_at_10 / ideal_dcg_at_10
+    assert recall_at_10 == 1.0
+    assert ndcg_at_10 >= 0.98
 
 
 def test_python_cosine_fallback_rejects_non_finite_vectors():
@@ -280,8 +293,8 @@ def test_numpy_vector_parse_skips_integer_overflow(tmp_path):
     scope_key = store._scope_key(tenant)
     with closing(store._connect()) as con:
         con.execute(
-            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) VALUES(?,?,?,?,?,?,?)",
-            (scope_key, workspace, "src/overflow.py", 0, "overflow", "oversized vector", json.dumps([10 ** 1000, 0])),
+            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
+            (scope_key, workspace, "src/overflow.py", 0, "overflow", "oversized vector", json.dumps([10 ** 1000, 0]), "quality-space"),
         )
         con.commit()
 
@@ -297,9 +310,9 @@ def test_equal_scores_use_semantic_path_order_not_row_order(tmp_path):
     scope_key = store._scope_key(tenant)
     with closing(store._connect()) as con:
         con.executemany(
-            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) VALUES(?,?,?,?,?,?,?)",
+            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
             [
-                (scope_key, workspace, path, 0, f"hash-{path}", "same content", sqlite3.Binary(np.asarray([1.0, 0.0], dtype=np.float32).tobytes()))
+                (scope_key, workspace, path, 0, f"hash-{path}", "same content", sqlite3.Binary(np.asarray([1.0, 0.0], dtype=np.float32).tobytes()), "quality-space")
                 for path in ("z-last.py", "m-middle.py", "a-first.py")
             ],
         )
@@ -374,24 +387,30 @@ def test_vector_cursor_closes_before_scoring_batch(tmp_path, monkeypatch):
 def test_retrieval_latency_and_peak_memory_baseline(tmp_path, capsys):
     if os.environ.get("RAG_BENCHMARK") != "1":
         import pytest
-        pytest.skip("set RAG_BENCHMARK=1 to run bounded retrieval measurements")
+        pytest.skip("set RAG_BENCHMARK=1 to run 100k chunk retrieval measurements")
 
     dimension = 384
     tenant, workspace = "benchmark-tenant", "benchmark-workspace"
     metrics = []
-    for count in (1024, 8192, 16384):
+    batch_sizes = (128, 512, 1024, 2048)
+    for count in (1024, 16384, 100_000):
         rng = np.random.default_rng(41)
         vectors = rng.standard_normal((count, dimension), dtype=np.float32)
         vectors[0] = 0.0
         vectors[0, 0] = 1.0
-        for batch_size in (128, 512):
-            store = _store(tmp_path / f"{count}-{batch_size}", dimension)
-            store.config["rag"]["search_batch_size"] = batch_size
-            _insert_vectors(store, tenant, workspace, vectors)
+        store = _store(tmp_path / str(count), dimension)
+        _insert_vectors(store, tenant, workspace, vectors)
 
+        for batch_size in batch_sizes:
+            store.config["rag"]["search_batch_size"] = batch_size
             samples_ms = []
             peak_bytes = 0
-            for _ in range(3):
+            sample_count = 20 if count == 100_000 else 5
+            for _ in range(2):
+                warmup = store._search_uncached("benchmark query", tenant, workspace, top_k=8, use_reranker=False)
+                assert warmup["success"] is True
+                assert warmup["results"][0]["chunk_no"] == 0
+            for _ in range(sample_count):
                 tracemalloc.start()
                 started = time.perf_counter()
                 result = store._search_uncached("benchmark query", tenant, workspace, top_k=8, use_reranker=False)
@@ -402,24 +421,35 @@ def test_retrieval_latency_and_peak_memory_baseline(tmp_path, capsys):
                 assert result["success"] is True
                 assert result["results"][0]["chunk_no"] == 0
             median_ms = float(np.median(samples_ms))
+            p95_index = min(len(samples_ms) - 1, math.ceil(0.95 * len(samples_ms)) - 1)
+            p95_ms = sorted(samples_ms)[p95_index]
             metrics.append({
                 "chunks": count,
                 "search_batch_size": batch_size,
                 "median_ms": round(median_ms, 3),
+                "p95_ms": round(float(p95_ms), 3),
                 "chunks_per_second": round(count * 1000.0 / max(median_ms, 1e-9), 2),
                 "peak_traced_mib": round(peak_bytes / (1024 * 1024), 3),
                 "vector_batch_buffer_mib": round(batch_size * dimension * 4 / (1024 * 1024), 3),
+                "warmup_samples": 2,
+                "measured_samples": sample_count,
             })
 
     print("RAG_BENCHMARK=" + json.dumps(metrics, sort_keys=True))
-    assert len(metrics) == 6
+    assert len(metrics) == 12
+    warm_100k = [row for row in metrics if row["chunks"] == 100_000]
+    for row in warm_100k:
+        assert float(row["p95_ms"]) <= 750.0, (
+            f"100k retrieval p95 exceeded 750 ms for batch {row['search_batch_size']}: "
+            f"{row['p95_ms']:.3f} ms"
+        )
     peak_by_size_and_batch = {
         (int(row["chunks"]), int(row["search_batch_size"])): float(row["peak_traced_mib"])
         for row in metrics
     }
-    for batch_size in (128, 512):
+    for batch_size in batch_sizes:
         small_peak = peak_by_size_and_batch[(1024, batch_size)]
-        large_peak = peak_by_size_and_batch[(16384, batch_size)]
+        large_peak = peak_by_size_and_batch[(100_000, batch_size)]
         assert large_peak <= small_peak + 1.5, (
             f"peak traced memory scaled with corpus size for batch {batch_size}: "
             f"{small_peak:.3f} MiB -> {large_peak:.3f} MiB"

@@ -4,6 +4,7 @@ import io
 import json
 import time
 import zipfile
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 import pytest
@@ -124,6 +125,75 @@ def test_selective_export_and_import_valid_records(tmp_path: Path):
         found = app2.agent_memory.find(key="repo_fact")
         assert len(found) == 1
         assert found[0].value == {"architecture": "modular"}
+
+
+def test_project_bundle_restore_rebuilds_rag_fts_and_embedding_identity(tmp_path: Path):
+    source_root = tmp_path / "source-repo"
+    target_root = tmp_path / "target-repo"
+    source_root.mkdir()
+    target_root.mkdir()
+
+    with app_with_agent_state(tmp_path / "app1") as app1:
+        assert app1.rag is not None
+        source_workspace = app1.rag.workspace_id(str(source_root))
+        source_scope = app1.rag._scope_key("__preprocess__")
+        con = app1.rag._connect()
+        try:
+            con.execute(
+                "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
+                (source_scope, source_workspace, "src.py", 1, 51, "source-file-hash"),
+            )
+            con.execute(
+                "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (source_scope, source_workspace, "src.py", 0, "source-chunk-hash", "Restored credential rotation token.", "[1.0,0.0]", "source-space"),
+            )
+            con.commit()
+        finally:
+            con.close()
+        bundle = app1.export_bundle(str(source_root))
+
+    with app_with_agent_state(tmp_path / "app2") as app2:
+        assert app2.rag is not None
+        target_workspace = app2.rag.workspace_id(str(target_root))
+        target_scope = app2.rag._scope_key("__preprocess__")
+        con = app2.rag._connect()
+        try:
+            con.execute(
+                "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
+                (target_scope, target_workspace, "old.py", 2, 12, "old-file-hash"),
+            )
+            con.execute(
+                "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (target_scope, target_workspace, "old.py", 0, "old-chunk-hash", "Obsolete search phrase.", "[1.0,0.0]", "old-space"),
+            )
+            con.execute(
+                "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
+                (target_scope, target_workspace, "old.py", 0, "Obsolete search phrase."),
+            )
+            app2.rag._store_workspace_embedding_space(con, target_scope, target_workspace, "old-space")
+            app2.rag._bump_workspace_index_generation(con, target_scope, target_workspace)
+            con.commit()
+            generation_before = app2.rag._workspace_index_generation(con, target_scope, target_workspace)
+        finally:
+            con.close()
+
+        restored = app2.import_bundle(bundle, str(target_root))
+
+        assert restored["success"] is True
+        with closing(app2.rag._connect()) as con:
+            chunks = con.execute(
+                "SELECT path,embedding_space FROM chunks WHERE tenant=? AND workspace=?",
+                (target_scope, target_workspace),
+            ).fetchall()
+            target_space = app2.rag._stored_workspace_embedding_space(con, target_scope, target_workspace)
+            generation_after = app2.rag._workspace_index_generation(con, target_scope, target_workspace)
+        assert chunks == [("src.py", "source-space")]
+        assert target_space == "source-space"
+        assert generation_after > generation_before
+        assert app2.rag._search_fts_candidates("credential rotation", "__preprocess__", target_workspace)[0]["path"] == "src.py"
+        assert app2.rag._search_fts_candidates("obsolete", "__preprocess__", target_workspace) == []
 
 
 def test_selective_bundle_roundtrips_memory_metadata(tmp_path: Path):
