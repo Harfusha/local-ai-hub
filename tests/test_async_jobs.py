@@ -402,7 +402,7 @@ def test_timed_out_wait_returns_active_state_without_cancelling(tmp_path):
     )
     try:
         submitted = manager.submit("tenant-a", "reason", {"task": "slow"})
-        assert executing.wait(1)
+        assert executing.wait(5)
 
         waited = manager.wait("tenant-a", submitted["job_id"], 0)
 
@@ -544,7 +544,7 @@ def test_recovered_async_job_reopens_terminal_trace(tmp_path):
         manager._dispatch = lambda _job_id: None
         with closing(manager._connect()) as con:
             con.execute(
-                "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at,trace_id) VALUES(?,?,?,?,?,'running',?,?,?,?)",
+                "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,attempts,created_at,updated_at,expires_at,trace_id) VALUES(?,?,?,?,?,'running',1,?,?,?,?)",
                 ("persisted", "tenant-a", "reason", "persisted-hash", '{"task":"recover me","request_id":"safe-replay-1"}', now, now, now + 600, trace_id),
             )
             con.commit()

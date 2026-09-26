@@ -151,10 +151,16 @@ def test_restart_retries_running_job_with_same_request_id(manager_factory, monke
 
 
 @pytest.mark.parametrize(
-    ("request_id", "expected_state"),
-    [(None, "outcome_unknown"), ("t13-stable-request-004", "queued")],
+    ("action", "request_id", "expected_state"),
+    [
+        ("batch", None, "outcome_unknown"),
+        ("batch", "t13-stable-request-004", "queued"),
+        ("speculative_lint", "t13-unclassified-command-001", "outcome_unknown"),
+    ],
 )
-def test_retryable_executor_failure_requeues_only_with_request_id(manager_factory, request_id, expected_state) -> None:
+def test_retryable_executor_failure_requeues_only_with_safe_action_identity(
+    manager_factory, action, request_id, expected_state
+) -> None:
     manager = manager_factory(
         lambda _action, _payload, _tenant: {
             "success": False,
@@ -165,7 +171,8 @@ def test_retryable_executor_failure_requeues_only_with_request_id(manager_factor
     payload = {"task": "mutating operation"}
     if request_id is not None:
         payload["request_id"] = request_id
-    submitted = manager.submit("tenant-a", "batch", payload, dispatch_delay_seconds=30)
+    payload["command"] = "ruff check"
+    submitted = manager.submit("tenant-a", action, payload, dispatch_delay_seconds=30)
     _cancel_delayed_dispatch(manager, submitted["job_id"])
 
     manager._execute(submitted["job_id"])
@@ -174,6 +181,106 @@ def test_retryable_executor_failure_requeues_only_with_request_id(manager_factor
     assert status["state"] == expected_state
     assert status["retryable"] is (expected_state == "queued")
     assert status["terminal"] is (expected_state == "outcome_unknown")
+
+
+@pytest.mark.parametrize("recovery_path", ["restart", "expired_lease"])
+def test_recovery_does_not_replay_unclassified_command_with_request_id(
+    manager_factory, monkeypatch, recovery_path, tmp_path
+) -> None:
+    executions: list[str] = []
+
+    def execute(action: str, _payload: dict[str, Any], _tenant: str) -> dict[str, Any]:
+        executions.append(action)
+        return {"success": True}
+
+    first_manager = manager_factory(execute)
+    submitted = first_manager.submit(
+        "tenant-a",
+        "speculative_lint",
+        {
+            "request_id": "t13-unclassified-command-002",
+            "root": str(tmp_path),
+            "paths": ["src/example.py"],
+            "command": "ruff check",
+        },
+        dispatch_delay_seconds=30,
+    )
+    _cancel_delayed_dispatch(first_manager, submitted["job_id"])
+    con = first_manager._connect()
+    try:
+        con.execute(
+            "UPDATE async_jobs SET state='running',attempts=1,cancel_requested=0,lease_until=0 WHERE job_id=?",
+            (submitted["job_id"],),
+        )
+        con.commit()
+    finally:
+        con.close()
+    first_manager._shutdown.set()
+
+    restarted_manager = manager_factory(execute)
+    dispatched: list[str] = []
+    monkeypatch.setattr(restarted_manager, "_dispatch", lambda job_id: dispatched.append(job_id))
+    if recovery_path == "restart":
+        assert restarted_manager.recover() == 0
+    else:
+        restarted_manager.tick()
+
+    status = restarted_manager.status("tenant-a", submitted["job_id"])
+    assert status["state"] == "outcome_unknown"
+    assert status["terminal"] is True
+    assert status["retryable"] is False
+    assert dispatched == []
+    assert executions == []
+
+
+def test_worker_exception_retry_limit_counts_started_attempts_once(manager_factory) -> None:
+    manager = manager_factory(lambda _action, _payload, _tenant: {"success": True})
+    submitted = manager.submit(
+        "tenant-a",
+        "batch",
+        {"request_id": "t13-attempt-count-001", "tasks": [{"task": "bounded work"}]},
+        dispatch_delay_seconds=30,
+    )
+    _cancel_delayed_dispatch(manager, submitted["job_id"])
+
+    for attempt in (1, 2, 3):
+        con = manager._connect()
+        try:
+            con.execute(
+                "UPDATE async_jobs SET state='running',attempts=?,cancel_requested=0 WHERE job_id=?",
+                (attempt, submitted["job_id"]),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+        manager._release_for_retry(submitted["job_id"], f"worker interrupted at attempt {attempt}")
+
+        status = manager.status("tenant-a", submitted["job_id"])
+        assert status["state"] == ("queued" if attempt < 3 else "outcome_unknown")
+        con = manager._connect()
+        try:
+            row = con.execute("SELECT attempts FROM async_jobs WHERE job_id=?", (submitted["job_id"],)).fetchone()
+        finally:
+            con.close()
+        assert int(row[0]) == attempt
+
+
+def test_worker_exception_does_not_overwrite_terminal_success(manager_factory) -> None:
+    manager = manager_factory(lambda _action, _payload, _tenant: {"success": True, "value": "saved"})
+    submitted = manager.submit(
+        "tenant-a",
+        "reason",
+        {"request_id": "t13-terminal-state-001", "task": "summarize"},
+        dispatch_delay_seconds=30,
+    )
+    _cancel_delayed_dispatch(manager, submitted["job_id"])
+    manager._execute(submitted["job_id"])
+
+    manager._release_for_retry(submitted["job_id"], "late worker exception")
+
+    assert manager.status("tenant-a", submitted["job_id"])["state"] == "done"
+    assert manager.result("tenant-a", submitted["job_id"])["result"]["value"] == "saved"
 
 
 @pytest.mark.parametrize("recovery_path", ["restart", "expired_lease"])
