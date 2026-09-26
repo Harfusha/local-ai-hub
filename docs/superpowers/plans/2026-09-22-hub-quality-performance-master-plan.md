@@ -120,9 +120,9 @@ Měření: cold a warm odděleně; concurrency 1/4/16/32; nejméně 1000 vzorků
 | B — hranice a správnost | T03–T09 | Sdílené kontrakty, identity, bezpečné mutace, spolehlivá evidence a stav |
 | C — výkon a kvalita | T10–T16 | Měřené zrychlení retrieval/model/RAG/cache/status/command/work bez zhoršení kvality |
 | D — produktové a provozní cesty | T17–T19 | Multimodal, instalace, CLI/SDK, dokumentace, feature parity a usability scénáře |
-| E — ověření celku | T20 | Všechny operace uzavřeny, release gates, load/restart/backend acceptance |
+| E — konfigurace a ověření celku | T21, pak T20 | Projektová konfigurace a uvolněná consumer integrace hotová; teprve potom release gates, load/restart/backend acceptance |
 
-T03 je závislost transportních změn T04/T05/T19. T06 předchází mutujícím acceptance testům T15/T16. T08 a T09 předcházejí verified handoff T16. T10 přebírá dokončený adaptivní retrieval. T11 a T12 mohou po T02 běžet souběžně. T20 následuje po všech úkolech.
+T03 je závislost transportních změn T04/T05/T19. T06 předchází mutujícím acceptance testům T15/T16. T08 a T09 předcházejí verified handoff T16. T10 přebírá dokončený adaptivní retrieval. T11 a T12 mohou po T02 běžet souběžně. T21 navazuje na dostupná project/worktree a path-hint API; adaptéry zapojuje jen po přesném owner release. T20 následuje po T01–T19 i T21 a nesmí uzavřít release dříve.
 
 ## 4. Backlog oprav a vylepšení
 
@@ -372,6 +372,7 @@ T03 je závislost transportních změn T04/T05/T19. T06 předchází mutujícím
 - [ ] Provést live HTTP/MCP/HubClient shodu, auth/body/feature negatives, backend outage/fallback, restart recovery a concurrency matice.
 - [ ] Zátěž alespoň 60 minut mixed workload; restart/crash fault injection odděleně. Změřit memory/queue/process growth a reconciliation.
 - [ ] Porovnat výkon i kvalitu s T02, provést nezávislé correctness/security review a uzavřít potvrzené P0/P1.
+- [ ] Ověřit T21 project/worktree konfiguraci a každý slíbený released consumer seam podle jeho receipt; bez toho T20 release zůstává otevřený. Nezveřejnit nepropojené path hints jako shipped.
 - [ ] Agent OS `verify_completion` musí projít s receipts odpovídajícími skutečné závěrečné revizi; potom task_complete a release report.
 
 Povinné commands z kořene, každý samostatně přes broker:
@@ -386,6 +387,23 @@ python tools/selftest.py
 Instalovaná instance: `python tools/doctor.py` a `python tools/hubctl.py status`. Předem ověřit cestu `mcp` v konkrétním checkoutu; chybějící cestu nesmí wrapper vydávat za splněnou kontrolu. Compileall/build/pytest mohou zapisovat; patří do explicitně vlastněného validačního prostředí.
 
 **Hotovo:** release report obsahuje skutečné výsledky, známá omezení podporovaných konfigurací a nulové neuzavřené inventární položky.
+
+### T21 — Project/worktree konfigurace a bezpečné path hints
+
+**Soubory:** `src/local_ai_hub/project_config.py`, projektová konfigurace docs a T21-owned testy; pouze owner-released consumer symbols. T06 uvolnil `LocalAIServices.affected_tests` a větev `run_affected` v `LocalAIServices.command`. T10 je read-only consumer; T11 si ponechává `rag.py`; T13 si ponechává MCP server surfaces. T03/T14/T15/T16/T19 consumer soubory zůstávají owner-owned. Žádný z těchto seamů se needituje bez přesného owner release. `/api/context/pack` je vyloučený.
+
+- [x] Resolver čte `.local-ai.toml` z repository root, machine-local `.git/info/local-ai.toml` odvozené přes `git rev-parse --git-common-dir`, a worktree-local `.local-ai.worktree.toml`; precedenci a mapové dědění dokumentovat a testovat. Worktree override vyhrává; seznamy nahrazují, mapy slučují po klíči.
+- [x] Typovaný settings schema podporuje `exclude_paths`, `force_include_paths`, custom text/binary extensions, `max_file_size_bytes`, `skip_phases`, `commands`, `affected_tests_mapping`, `env_references`, additive `verification_rules`, `pinned_context`, literal repo-relative `entry_points`, `retrieval_weights`, `project_type`, `solution_path`, `language_overrides`, `model_profile`, `system_prompt_prefix` a `shared_namespace`.
+- [x] Safe path/glob pravidla odmítnou absolute, drive/UNC, traversal, globbed candidate, symlink/junction escape a unsafe config source. Explicit excludes, preprocess excludes, binary/hard-deny a file-size limit nejdou obejít force-include ani path hinty. `path_is_allowed` a `may_descend` vynucují předané skipped optional phase; directory traversal používá `may_descend` a souborové consumers vždy `path_is_allowed`.
+- [x] Durable `entry_points` zůstanou literal repo-relative soubory/adresáře a primární ranking tier. Core request pole `path_hints` přijímá nejvýš 64 typed `PathHint` záznamů, odděleně od command argument `paths`, changed paths a focus textu. Hints jsou purpose/scope/revision/config bound, containment checked a nesmí zužovat kandidáty.
+- [x] `resolve_pinned_context` vrací kandidáty literal repo-relative souborů po project policy; `resolve_entry_points` vrací kandidáty souborů/adresářů přes `path_is_allowed`/`may_descend`. Caller stále aplikuje walker ignore/hard-deny stav před čtením. Testy ověřují pořadí, vyloučení, chybějící i nebezpečné cesty, limit souboru a přeskočenou fázi. Napojení na retrieval consumers čeká na přesné owner release.
+- [ ] Owner schemas expose the optional `path_hints` field across eligible search/repo/command/MCP operations; each keeps trusted route root and applies path policy after ranking. T03/T14/T15/T16/T19 seams remain owner-gated; T10 permits read-only consumption only; T11 `rag.py` and T13 MCP surfaces remain untouched until their owners release exact scope. `/api/context/pack` stays excluded.
+- [x] Runtime config čte pouze repository/per-machine/worktree config locations. Learned hint DB zůstává disposable derived state pod `server.state_dir`; raw prompts, source, output, secret, hint paths a full project paths nesmí jít do telemetry.
+- [x] Cache identity includes `config_digest`, current repository/workspace fingerprint, and opaque request-hint digest; learned hints odmítají stale revision/digest, wrong scope, expiry, missing target a containment escape. Config change invalidates relevant cached result.
+- [x] T06-released affected-test seam aplikuje `affected_tests_mapping`, `entry_points` a request/saved `path_hints` na úplný test candidate set, pak vynutí path policy. T09 potvrdil, že task metadata search repo path hints nepotřebuje.
+- [ ] T21-owned tests dokazují všechny core acceptance; consumer test důkaz existuje pro T06 release. Další consumer tests, schema/route propagation a install/update policy docs vyžadují příslušný owner release.
+
+**Hotovo:** core schema/resolver, každý uvolněný consumer seam a jeho testy ověřeny na aktuální revizi; každý ne-uvolněný seam je v handoffu pojmenovaný a T20 release gate zůstává otevřený.
 
 ## 5. Paralelní práce a ownership
 
@@ -403,6 +421,7 @@ Implementační workery dělit podle write setu, nikoli jeden souběžný editor
 | F — inference | router/model_policy/scheduler/ollama/llama_cpp/hardware/async_jobs | T12/T13 |
 | G — evidence a provoz | artifacts/evidence/context_ledger/response_budget/telemetry/debug_traces/dashboard | T14/T18 |
 | H — acceptance/integrace | benchmark fixtures, clean-host setup, browser integration, full acceptance | T02/T17/T19/T20 |
+| I — project config | `project_config.py`, per-project settings, path-hint core, T21-owned tests; released consumer slices only | T21; owner leases govern adapters |
 
 `services.py`, `app.py`, společné test fixtures, defaults a INSTALL/UPDATE prompty mají vždy jednoho aktivního editora. Ostatní dodají přesný integrační patch a test očekávaného kontraktu. Leases chrání překryvy; neumožňují přepsat cizí rozpracovanou změnu. Nezávislý review následuje po integraci, ne nad odlišnými verzemi téhož souboru.
 
