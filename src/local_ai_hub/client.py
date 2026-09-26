@@ -714,10 +714,17 @@ class HubClient:
     def get_task(self, task_id: str) -> dict[str, Any]:
         return self.post("/api/agent-state/tasks", {"action": "get", "task_id": task_id})
 
-    def list_tasks(self, status: str | None = None, limit: int = 100) -> dict[str, Any]:
+    def list_tasks(
+        self,
+        status: str | None = None,
+        limit: int = 100,
+        query: str | None = None,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {"action": "list", "limit": limit}
         if status:
             payload["status"] = status
+        if query is not None:
+            payload["query"] = query
         return self.post("/api/agent-state/tasks", payload)
 
     def complete_task(self, task_id: str, reason: str = "completed by agent") -> dict[str, Any]:

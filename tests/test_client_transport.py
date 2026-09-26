@@ -21,6 +21,31 @@ def _client(tmp_path):
     return HubClient(config_path=str(config), auto_start=False)
 
 
+def test_client_list_tasks_serializes_query_and_preserves_positional_args(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    calls = []
+
+    def capture_post(path, payload, **_kwargs):
+        calls.append((path, dict(payload)))
+        return {"success": True}
+
+    monkeypatch.setattr(client, "post", capture_post)
+
+    client.list_tasks("active", 12)
+    client.list_tasks("active", 12, query="needle")
+
+    assert calls == [
+        (
+            "/api/agent-state/tasks",
+            {"action": "list", "limit": 12, "status": "active"},
+        ),
+        (
+            "/api/agent-state/tasks",
+            {"action": "list", "limit": 12, "status": "active", "query": "needle"},
+        ),
+    ]
+
+
 def test_client_reuses_one_http11_connection_for_sequential_requests(tmp_path, monkeypatch):
     class Response:
         status = 200
