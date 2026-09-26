@@ -52,6 +52,13 @@ Route test/lint/typecheck/build/read-only commands through `local_ai_command` be
 Selection guide: `local_ai_repo` for bounded repository facts and checks (including `review_diff` and `security_audit`), `local_ai_command` for bounded repeatable commands, `local_ai_task` for bounded semantic generation, exploration, reasoning, review, independent second opinions and compression, `local_ai_work` for a complete bounded repository task with planning, edits, validation and handoff, `local_ai_rag` only after cheaper indexed evidence, `local_ai_artifact` for exact slices, `local_ai_coord` for leases/memos.
 
 Local model policy is profile-aware: integrated reserves qwen2.5-coder:0.5b for preprocessing, qwen2.5-coder:1.5b for quick work, qwen2.5-coder:3b for involved work, qwen2.5-coder:7b for hard reasoning and qwen3-vl:4b for vision; balanced reserves qwen2.5-coder:1.5b for preprocessing, qwen2.5-coder:3b for fast work, qwen2.5-coder:7b for ordinary/hard work and qwen3.5:9b for extreme reasoning/vision; high raises reasoning/general/vision to 9b; max raises heavy/general/reasoning/vision to 9b. Run deterministic and indexed Hub actions first for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, exploration, reasoning, review, independent second opinions and compression.
+
+MCP response economy:
+- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
+- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
+- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
+- Reject `max_response_tokens` below 128; never raise the request silently.
+
 <!-- END LOCAL AI HUB TOOL POLICY -->
 
 <!-- BEGIN TOKEN ECONOMY POLICY -->
