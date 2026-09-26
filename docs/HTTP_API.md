@@ -44,8 +44,8 @@ Model-backed endpoints `/api/delegate`, `/api/reason`, `/api/review`, `/api/seco
 
 Agent Operating System endpoints project durable task, memory, incident, verification and context state:
 
-* `GET /api/agent-state/tasks?task_id=&status=&limit=` lists or inspects tasks.
-* `POST /api/agent-state/tasks` supports actions: `create` (goal, acceptance criteria, scope, risk profile), `get` (task_id), `transition` (status: planned, active, waiting, blocked, verifying, completed, failed, abandoned), `complete` (auto-advances through verification gates if criteria met), `fail` (records failure reason), `checkpoint` (phase, next_action, affected_paths, evidence_ids), `resume`, and `list`.
+* `GET /api/agent-state/tasks?task_id=&status=&limit=&query=` lists or inspects tasks. For list requests, `query` performs a case-insensitive substring search across task ID, owner, contract goal and acceptance criteria, and checkpoint phase, next action, affected paths and blockers. Blank query leaves results unfiltered; filtering happens before `limit`.
+* `POST /api/agent-state/tasks` supports actions: `create` (goal, acceptance criteria, scope, risk profile), `get` (task_id), `transition` (status: planned, active, waiting, blocked, verifying, completed, failed, abandoned), `complete` (auto-advances through verification gates if criteria met), `fail` (records failure reason), `checkpoint` (phase, next_action, affected_paths, evidence_ids), `resume`, and `list` (`query` uses the same search fields and rules as GET; non-string query returns terminal 400).
 * `GET /api/agent-state/memory?record_id=&scope=&key=&query=&status=&limit=` searches or fetches memory records.
 * `POST /api/agent-state/memory` supports actions: `record` (kind, scope, key, value, evidence_ids, confidence), `get` (record_id), `find` (scope, key, query, status, limit), `promote` (record_id, target_scope), and `supersede` (old_record_id, new_record_id, reason).
 * `POST /api/agent-state/incidents` supports actions: `record` (tool failure fingerprint), `find` (lookup matching negative knowledge), and `decision` (circuit-breaker / tool retry guidance).

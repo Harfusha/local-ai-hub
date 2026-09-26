@@ -364,11 +364,40 @@ class TaskStore:
             return None
         return self._row_to_state(row)
 
-    def list_tasks(self, status: TaskStatus | None = None, limit: int = 100, include_stale: bool = False) -> list[TaskState]:
+    def list_tasks(
+        self,
+        status: TaskStatus | None = None,
+        limit: int = 100,
+        include_stale: bool = False,
+        query: str | None = None,
+    ) -> list[TaskState]:
         if not self._db_path_available():
             return []
         self._init_projection_table()
         now = time.time()
+        normalized_query = (query or "").strip().casefold()
+        page_size = max(1, int(limit))
+
+        def matches_query(row: tuple[Any, ...]) -> bool:
+            contract_data = json.loads(row[4] or "{}")
+            checkpoint_data = json.loads(row[6] or "{}")
+            search_values = [str(row[0] or ""), str(row[2] or "")]
+
+            def add_text(value: Any) -> None:
+                if isinstance(value, str):
+                    search_values.append(value)
+                elif isinstance(value, (list, tuple)):
+                    for item in value:
+                        add_text(item)
+                elif value is not None:
+                    search_values.append(str(value))
+
+            for field in ("goal", "acceptance_criteria"):
+                add_text(contract_data.get(field))
+            for field in ("phase", "next_action", "affected_paths", "blockers"):
+                add_text(checkpoint_data.get(field))
+            return any(normalized_query in value.casefold() for value in search_values)
+
         def _fetch_tasks() -> list[Any]:
             with closing(connect_sqlite(self.state_store.db_path)) as con:
                 where_clauses: list[str] = []
@@ -386,17 +415,26 @@ class TaskStore:
                     FROM agent_tasks_projection
                     {where_sql}
                     ORDER BY updated_at DESC
-                    LIMIT ?
                 """
-                params.append(max(1, int(limit)))
+                if not normalized_query:
+                    cur = con.execute(sql + " LIMIT ?", (*params, page_size))
+                    return cur.fetchall()
+
                 cur = con.execute(sql, tuple(params))
-                return cur.fetchall()
+                matched: list[Any] = []
+                while batch := cur.fetchmany(128):
+                    for row in batch:
+                        if matches_query(row):
+                            matched.append(row)
+                            if len(matched) >= page_size:
+                                return matched
+                return matched
 
         rows = retry_busy(_fetch_tasks, retries=5, base_delay_seconds=0.02)
         tasks = [self._row_to_state(row) for row in rows]
         if not include_stale:
             tasks = [t for t in tasks if not t.is_stale]
-        return tasks[:max(1, int(limit))]
+        return tasks[:page_size]
 
     def count(self, status: TaskStatus | None = None) -> int:
         if not self._db_path_available():
