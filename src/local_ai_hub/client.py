@@ -512,6 +512,21 @@ class HubClient:
             return self.get("/api/status?detail=agent_state")
         return self.get(f"/api/live/status?light=1&scope={scope}&detail={detail}")
 
+    def callers(self, root: str, symbol: str, limit: int = 50) -> dict[str, Any]:
+        return self.post("/api/repo/callers", {"root": root, "symbol": symbol, "limit": limit})
+
+    def context_pack(
+        self,
+        root: str,
+        query: str,
+        max_tokens: int = 4200,
+        mode: str = "adaptive",
+        **options: Any,
+    ) -> dict[str, Any]:
+        payload = dict(options)
+        payload.update({"root": root, "query": query, "max_tokens": max_tokens, "mode": mode})
+        return self.post("/api/context/pack", payload)
+
     def coord(self, action: str, **kwargs: Any) -> dict[str, Any]:
         act = action.strip().lower().replace("-", "_")
         if act.startswith("task_"):
@@ -656,6 +671,9 @@ class HubClient:
             payload["since_hash"] = since_hash
         return self.post("/api/agent-state/context", payload)
 
+    def get_evidence(self, evidence_id: str, verify: bool = True) -> dict[str, Any]:
+        return self.post("/api/evidence/get", {"evidence_id": evidence_id, "verify": verify})
+
     def verify_receipt(self, task_id: str, criterion: str, passed: bool = True, command_id: str = "", evidence_id: str = "", details: dict[str, Any] | None = None) -> dict[str, Any]:
         return self.post("/api/agent-state/verification", {
             "action": "receipt",
@@ -747,6 +765,9 @@ class HubClient:
         if temperature is not None:
             payload["temperature"] = temperature
         return self.post("/api/conversations/continue", payload)
+
+    def cancel_job(self, job_id: str) -> dict[str, Any]:
+        return self.post("/api/async-jobs", {"action": "cancel", "job_id": job_id})
 
     def doctor(self) -> dict[str, Any]:
         return self.get("/api/doctor")
