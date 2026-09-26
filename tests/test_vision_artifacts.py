@@ -78,6 +78,29 @@ def test_artifacts_are_tenant_scoped_and_same_content_cannot_overwrite(tmp_path:
     }
 
 
+@pytest.mark.parametrize("operation", ["put", "get", "get_binary", "list"])
+def test_artifact_identity_rejects_non_string_tenant_labels(tmp_path: Path, operation: str) -> None:
+    store = ArtifactStore(tmp_path)
+
+    with pytest.raises(ValueError, match="tenant"):
+        if operation == "put":
+            store.put("payload", 7, "text")  # type: ignore[arg-type]
+        elif operation == "get":
+            store.get("art_missing", tenant=7)  # type: ignore[arg-type]
+        elif operation == "get_binary":
+            store.get_binary("art_missing", tenant=7)  # type: ignore[arg-type]
+        else:
+            store.list(tenant=7)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("tenant", [None, 0])
+def test_artifact_list_rejects_falsey_non_string_tenant_labels(tmp_path: Path, tenant: object) -> None:
+    store = ArtifactStore(tmp_path)
+
+    with pytest.raises(ValueError, match="tenant"):
+        store.list(tenant=tenant)  # type: ignore[arg-type]
+
+
 def test_artifact_schema_uses_additive_release_compatible_tables(tmp_path: Path) -> None:
     source = Path(__file__).resolve().parents[1] / "src" / "local_ai_hub" / "artifacts.py"
     forbidden_sql = "ALTER" + " TABLE"
@@ -99,6 +122,159 @@ def test_artifact_schema_uses_additive_release_compatible_tables(tmp_path: Path)
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "artifacts_v2" in tables
     assert store.get("art_legacy", tenant="tenant")["text"] == "legacy"
+
+
+def test_legacy_migration_backs_up_once_and_preserves_binary_metadata(tmp_path: Path) -> None:
+    raw_tenant = "legacy-private-token"
+    checksum = hashlib.sha256(PNG).hexdigest()
+    artifact_id = "art_legacy_binary"
+    identity_json = json.dumps({
+        "artifact_id": artifact_id,
+        "kind": "vision-image",
+        "mime_type": "image/png",
+        "encoding": "base64",
+        "size_bytes": len(PNG),
+        "checksum": checksum,
+    })
+    db_path = tmp_path / "artifacts.sqlite3"
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute(
+            """CREATE TABLE artifacts (
+                artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL, tenant TEXT NOT NULL,
+                kind TEXT NOT NULL, text TEXT NOT NULL DEFAULT '', mime_type TEXT,
+                encoding TEXT, blob BLOB, size_bytes INTEGER, checksum TEXT, identity_json TEXT
+            )"""
+        )
+        connection.execute(
+            """INSERT INTO artifacts(
+                artifact_id, created_at, tenant, kind, text, mime_type, encoding, blob,
+                size_bytes, checksum, identity_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                artifact_id, 9_999_999_999, raw_tenant, "vision-image", "",
+                "image/png", "base64", sqlite3.Binary(PNG), len(PNG), checksum, identity_json,
+            ),
+        )
+        connection.commit()
+
+    store = ArtifactStore(tmp_path)
+    expected_identity = hashlib.sha256(raw_tenant.encode("utf-8")).hexdigest()
+    backup_path = db_path.with_name(db_path.name + ".pre-tenant-identity.bak")
+    assert backup_path.is_file()
+    with closing(sqlite3.connect(backup_path)) as backup:
+        assert backup.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        original = backup.execute(
+            """SELECT tenant, mime_type, encoding, blob, size_bytes, checksum, identity_json
+               FROM artifacts WHERE artifact_id=?""",
+            (artifact_id,),
+        ).fetchone()
+    assert original == (
+        raw_tenant, "image/png", "base64", PNG, len(PNG), checksum, identity_json,
+    )
+
+    with closing(sqlite3.connect(db_path)) as connection:
+        migrated = connection.execute(
+            """SELECT tenant, tenant_identity, mime_type, encoding, blob, size_bytes, checksum, identity_json
+               FROM artifacts_v2 WHERE artifact_id=?""",
+            (artifact_id,),
+        ).fetchone()
+        stored_labels = "\n".join(connection.iterdump())
+    assert migrated == (
+        expected_identity, expected_identity, "image/png", "base64", PNG,
+        len(PNG), checksum, identity_json,
+    )
+    assert raw_tenant not in stored_labels
+    assert store.get_binary(artifact_id, tenant=raw_tenant)["success"] is True
+
+    backup_digest = hashlib.sha256(backup_path.read_bytes()).hexdigest()
+    reopened = ArtifactStore(tmp_path)
+    assert reopened.get_binary(artifact_id, tenant=raw_tenant)["success"] is True
+    assert hashlib.sha256(backup_path.read_bytes()).hexdigest() == backup_digest
+
+
+def test_legacy_migration_conflict_rolls_back_before_writing(tmp_path: Path) -> None:
+    db_path = tmp_path / "artifacts.sqlite3"
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute(
+            "CREATE TABLE artifacts (artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL, tenant TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO artifacts VALUES (?, ?, ?, ?, ?)",
+            ("art_conflict", 9_999_999_999, "legacy-tenant", "text", "legacy"),
+        )
+        connection.execute(
+            """CREATE TABLE artifacts_v2 (
+                artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL, tenant TEXT NOT NULL,
+                tenant_identity TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL DEFAULT '',
+                mime_type TEXT, encoding TEXT, blob BLOB, size_bytes INTEGER, checksum TEXT,
+                identity_json TEXT
+            )"""
+        )
+        connection.execute(
+            "INSERT INTO artifacts_v2(artifact_id, created_at, tenant, tenant_identity, kind, text) VALUES (?, ?, ?, ?, ?, ?)",
+            ("art_conflict", 9_999_999_999, "other-tenant", "other-tenant", "text", "other"),
+        )
+        connection.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="artifact migration conflict"):
+        ArtifactStore(tmp_path)
+
+    backup_path = db_path.with_name(db_path.name + ".pre-tenant-identity.bak")
+    assert backup_path.is_file()
+    with closing(sqlite3.connect(db_path)) as connection:
+        legacy = connection.execute("SELECT tenant, text FROM artifacts WHERE artifact_id=?", ("art_conflict",)).fetchone()
+        current = connection.execute(
+            "SELECT tenant, tenant_identity, text FROM artifacts_v2 WHERE artifact_id=?",
+            ("art_conflict",),
+        ).fetchone()
+        meta_exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='artifact_schema_meta'"
+        ).fetchone()
+    assert legacy == ("legacy-tenant", "legacy")
+    assert current == ("other-tenant", "other-tenant", "other")
+    assert meta_exists is None
+
+
+def test_concurrent_legacy_migration_creates_one_verified_backup(tmp_path: Path) -> None:
+    raw_tenant = "concurrent-legacy-tenant"
+    db_path = tmp_path / "artifacts.sqlite3"
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute(
+            "CREATE TABLE artifacts (artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL, tenant TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO artifacts VALUES (?, ?, ?, ?, ?)",
+            ("art_concurrent", 9_999_999_999, raw_tenant, "text", "payload"),
+        )
+        connection.commit()
+
+    barrier = threading.Barrier(3)
+    results: list[dict[str, object]] = []
+    errors: list[BaseException] = []
+
+    def open_store() -> None:
+        try:
+            barrier.wait(timeout=5)
+            store = ArtifactStore(tmp_path)
+            results.append(store.get("art_concurrent", tenant=raw_tenant))
+        except BaseException as exc:
+            errors.append(exc)
+
+    workers = [threading.Thread(target=open_store) for _ in range(2)]
+    for worker in workers:
+        worker.start()
+    barrier.wait(timeout=5)
+    for worker in workers:
+        worker.join(timeout=15)
+
+    assert all(not worker.is_alive() for worker in workers)
+    assert errors == []
+    assert len(results) == 2
+    assert all(result.get("success") is True for result in results)
+    backup_path = db_path.with_name(db_path.name + ".pre-tenant-identity.bak")
+    assert backup_path.is_file()
+    with closing(sqlite3.connect(backup_path)) as backup:
+        assert backup.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
 
 def test_legacy_migration_hashes_raw_64_hex_tenant_tokens(tmp_path: Path) -> None:
@@ -436,7 +612,7 @@ def test_mcp_binary_artifact_response_is_metadata_only(monkeypatch: pytest.Monke
         },
     )
 
-    result = mcp_server.local_ai_artifact("art_image", binary=True)
+    result = mcp_server.local_ai_artifact(artifact_id="art_image", binary=True)
 
     assert result["success"] is True
     assert "data_base64" not in result
