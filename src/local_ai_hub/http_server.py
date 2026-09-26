@@ -579,6 +579,18 @@ class Handler(BaseHTTPRequestHandler):
             return {"success": False, "error": "query exceeds SQL byte limit", "truncated": True}
         if ";" in sql_clean.rstrip(";"):
             return {"success": False, "error": "Multi-statement queries are forbidden"}
+        sql_without_literals = re.sub(
+            r"""'(?:''|[^'])*'|"(?:""|[^"])*"|`(?:``|[^`])*`|\[(?:[^\]]|\]\])*\]|--[^\r\n]*|/\*.*?\*/""",
+            " ",
+            sql_clean,
+            flags=re.DOTALL,
+        )
+        if re.search(
+            r"\b(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP|ATTACH|DETACH|VACUUM|REINDEX|ANALYZE|PRAGMA|BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE)\b",
+            sql_without_literals,
+            flags=re.IGNORECASE,
+        ):
+            return {"success": False, "error": "Forbidden keyword in query."}
 
         if APP is None:
             return {"success": False, "error": "Hub app not initialized"}
@@ -1007,7 +1019,11 @@ class Handler(BaseHTTPRequestHandler):
         if expected_path.endswith("/"):
             path_matches = actual_path.startswith(expected_path) and actual_path.count("/") == expected_path.count("/")
         if str(getattr(self, "command", "")) not in methods:
-            self._send(405, {"success": False, "error": "method not allowed for admin action"})
+            self._send(
+                405,
+                {"success": False, "error": "method not allowed for admin action"},
+                headers={"Allow": ", ".join(sorted(methods))},
+            )
             return False
         if not path_matches:
             self._send(403, {"success": False, "error": "admin action does not match route"})
@@ -1992,7 +2008,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._authorize_admin_action("maintenance.resolve_errors"):
                     return
                 result = APP.services.resolve_all_errors()
-                self._send(200 if result.get("success") else 500, result)
+                self._send(200 if result.get("success") else 503 if result.get("retryable") else 500, result)
                 return
             if path == "/api/config":
                 if not self._authorize_admin_action("config.read"):
@@ -3510,7 +3526,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._authorize_admin_action("maintenance.resolve_errors"):
                     return
                 result = APP.services.resolve_all_errors()
-                self._send(200 if result.get("success") else 500, result)
+                self._send(200 if result.get("success") else 503 if result.get("retryable") else 500, result)
                 return
             if path == "/api/doctor":
                 self._send(200, APP.services.run_doctor())

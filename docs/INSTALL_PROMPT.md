@@ -231,4 +231,6 @@ Output concise confirmation with:
 ```
 ### MCP response economy
 
+Keep live and generated schemas aligned: `local_ai_status.action` accepts `""`, `brief`, `cache`, `telemetry`, `full`, `agent_state`, `status`, `health`, `check`, and `info`; `detail` accepts `brief`, `cache`, `telemetry`, `full`, and `agent_state`.
+
 Keep the generated MCP response contract enabled. Hub responses are aggregate-bounded by default; agents should prefer `response_profile="minimal"` or `"compact"`, pass a stable `reuse_key` for repeated logical queries, reuse cache-hit/pointer responses, and fetch exact detail only through `local_ai_artifact` slices. Do not weaken the budget to expose broad command output or repository text.

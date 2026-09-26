@@ -65,6 +65,9 @@ def _percentile(values: list[float], pct: float) -> float:
     if not values:
         return 0.0
     ordered = sorted(float(x) for x in values)
+    if pct == 0.50 and len(ordered) % 2 == 0:
+        middle = len(ordered) // 2
+        return round((ordered[middle - 1] + ordered[middle]) / 2, 1)
     idx = max(0, min(len(ordered) - 1, int(round((len(ordered) - 1) * pct))))
     return round(ordered[idx], 1)
 
@@ -244,8 +247,8 @@ class TelemetryStore:
             self._thread = threading.Thread(target=self._writer_loop, name="local-ai-telemetry", daemon=True)
             self._thread.start()
 
-    def _connect(self) -> sqlite3.Connection:
-        return connect_sqlite(self.path, timeout_seconds=5.0)
+    def _connect(self, *, timeout_seconds: float = 5.0) -> sqlite3.Connection:
+        return connect_sqlite(self.path, timeout_seconds=timeout_seconds)
 
     def _init_db_with_recovery(self) -> None:
         try:
@@ -1130,24 +1133,38 @@ class TelemetryStore:
             con.execute("DELETE FROM daily_rollups WHERE day<?", (rollup_cutoff,))
             con.commit()
 
-    def resolve_errors(self) -> dict[str, Any]:
+    def resolve_errors(self, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
         """Acknowledge and clear all recorded operational failures, errors, crashes, and unclean sessions."""
         if not self.enabled:
             return {"enabled": False}
-        self.flush(1.0)
-        with closing(self._connect()) as con:
-            with con:
-                events_cur = con.execute("UPDATE events SET success=1, error_type='' WHERE success=0;")
-                resolved_events = events_cur.rowcount
-                errors_cur = con.execute("DELETE FROM errors;")
-                cleared_errors = errors_cur.rowcount
-                sessions_cur = con.execute("UPDATE process_sessions SET exit_clean=1 WHERE exit_clean=0;")
-                cleaned_sessions = sessions_cur.rowcount
-                con.execute("DELETE FROM daily_rollups WHERE success=0;")
+        timeout_seconds = max(0.01, min(10.0, float(timeout_seconds)))
+        deadline = time.monotonic() + timeout_seconds
+        if not self.flush(min(1.0, timeout_seconds)):
+            return {"success": False, "degraded": True, "retryable": True, "error": "telemetry flush time budget exceeded"}
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {"success": False, "degraded": True, "retryable": True, "error": "telemetry resolution time budget exceeded"}
+        try:
+            with closing(self._connect(timeout_seconds=min(1.0, remaining))) as con:
+                con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
                 try:
-                    con.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-                except Exception:
-                    pass
+                    with con:
+                        events_cur = con.execute("UPDATE events SET success=1, error_type='' WHERE success=0;")
+                        resolved_events = events_cur.rowcount
+                        errors_cur = con.execute("DELETE FROM errors;")
+                        cleared_errors = errors_cur.rowcount
+                        sessions_cur = con.execute("UPDATE process_sessions SET exit_clean=1 WHERE exit_clean=0;")
+                        cleaned_sessions = sessions_cur.rowcount
+                        con.execute("DELETE FROM daily_rollups WHERE success=0;")
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("telemetry resolution time budget exceeded")
+                finally:
+                    con.set_progress_handler(None, 0)
+        except Exception as exc:
+            message = str(exc).lower()
+            if time.monotonic() >= deadline or "interrupt" in message or "locked" in message or "busy" in message:
+                return {"success": False, "degraded": True, "retryable": True, "error": "telemetry resolution time budget exceeded"}
+            raise
         if hasattr(self, "_summary_cache"):
             self._summary_cache.clear()
         with self._live_lock:

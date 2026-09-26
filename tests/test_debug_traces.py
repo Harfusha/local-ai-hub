@@ -58,6 +58,43 @@ def test_trace_detail_preserves_ordered_full_debug_content(tmp_path):
     assert detail["events"][0]["payload"]["prompt"] == "full prompt"
 
 
+def test_full_payload_detail_marks_content_beyond_bounded_preview(tmp_path):
+    store = DebugTraceStore(_config(tmp_path, max_session_text_bytes=2 * 1024 * 1024))
+    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    output = "x" * 600_000
+    store.update(trace_id, output=output)
+
+    detail = store.detail(trace_id, full_payload=True)
+
+    assert detail["full_payload_requested"] is True
+    assert detail["payload_truncated"] is True
+    assert detail["session"]["output"]["truncated"] is True
+    assert len(detail["session"]["output"]["preview"]) < len(output)
+
+
+def test_detail_flags_event_payload_truncated_before_response_serialization(tmp_path):
+    store = DebugTraceStore(_config(tmp_path, max_event_bytes=256, max_session_text_bytes=1024))
+    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    store.event(trace_id, "model_request", {"prompt": "p" * 2000})
+
+    detail = store.detail(trace_id, full_payload=True)
+
+    assert detail["payload_truncated"] is True
+    assert any(event["payload"].get("truncated") is True for event in detail["events"])
+
+
+def test_detail_flags_session_fields_truncated_before_response_serialization(tmp_path):
+    store = DebugTraceStore(_config(tmp_path, max_session_text_bytes=1024))
+    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    store.update(trace_id, output="o" * 6000, request={"body": "r" * 6000})
+
+    detail = store.detail(trace_id, full_payload=True)
+
+    assert detail["payload_truncated"] is True
+    assert detail["session"]["request"]["truncated"] is True
+    assert "[trace output truncated]" in detail["session"]["output"]
+
+
 def test_trace_detail_since_seq_and_list_filters_are_bounded(tmp_path):
     store = DebugTraceStore(_config(tmp_path))
     first = store.start(kind="api_request", tenant="tenant", agent="codex", action="/api/reason", model="m1")
@@ -119,9 +156,26 @@ def test_recover_incomplete_traces_marks_previous_processes_interrupted(tmp_path
 
 def test_dashboard_and_favicon_are_monitor_paths():
     from local_ai_hub.http_server import MONITOR_PATHS
+    from local_ai_hub.dashboard import DASHBOARD_HTML
 
     assert "/dashboard" in MONITOR_PATHS
     assert "/favicon.ico" in MONITOR_PATHS
+    assert "When enabled, trace capture stores prompts, model output, request bodies, and responses" in DASHBOARD_HTML
+    assert "stored records and the authenticated admin API may contain raw values" in DASHBOARD_HTML
+    assert "this page cannot fetch omitted content" in DASHBOARD_HTML
+
+
+def test_http_trace_request_capture_redacts_nested_sensitive_fields():
+    from local_ai_hub.http_server import Handler
+
+    captured = Handler._safe_debug_trace_request({
+        "prompt": "keep this trace content",
+        "headers": {"authorization": "Bearer secret", "nested": {"api_key": "secret-key"}},
+    })
+
+    assert captured["prompt"] == "keep this trace content"
+    assert captured["headers"]["authorization"] == "[redacted]"
+    assert captured["headers"]["nested"]["api_key"] == "[redacted]"
 
 
 def test_event_count_and_session_text_caps_are_hard_limits(tmp_path):

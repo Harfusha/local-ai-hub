@@ -5632,46 +5632,99 @@ class LocalAIServices:
                 return {"success": False, "degraded": True, "retryable": timed_out or busy, "error": "query time budget exceeded" if timed_out else "cache database is busy" if busy else "cache maintenance failed"}
         return {"success": True, "purged_entries": deleted_entries, "days_threshold": days}
 
-    def resolve_all_errors(self) -> dict[str, Any]:
+    def resolve_all_errors(self, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
         """Acknowledge and resolve all operational failures, crashes, errors, and agent incidents."""
+        timeout_seconds = max(0.05, min(10.0, float(timeout_seconds)))
+        deadline = time.monotonic() + timeout_seconds
         telemetry_res: dict[str, Any] = {}
+        supervisor_res: dict[str, Any] = {"success": True}
         successful = True
+        retryable = False
         if self.telemetry:
-            try:
-                telemetry_res = self.telemetry.resolve_errors()
-            except Exception as exc:
-                telemetry_res = {"error": type(exc).__name__}
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                telemetry_res = {"success": False, "degraded": True, "retryable": True, "error": "telemetry resolution time budget exceeded"}
                 successful = False
+                retryable = True
+            else:
+                try:
+                    telemetry_res = self.telemetry.resolve_errors(timeout_seconds=remaining)
+                    successful = successful and bool(telemetry_res.get("success", True))
+                    retryable = retryable or bool(telemetry_res.get("retryable", False))
+                except TimeoutError:
+                    telemetry_res = {"success": False, "degraded": True, "retryable": True, "error": "TimeoutError"}
+                    successful = False
+                    retryable = True
+                except Exception as exc:
+                    telemetry_res = {"error": type(exc).__name__}
+                    successful = False
+                if time.monotonic() >= deadline:
+                    telemetry_res.setdefault("retryable", True)
+                    successful = False
+                    retryable = True
 
         resolved_incidents = 0
         if self.incident_store:
-            try:
-                resolved_incidents = self.incident_store.resolve_all(
-                    verified_fix="Resolved by operator",
-                    root_cause="Operator manual resolve",
-                )
-            except Exception:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 resolved_incidents = -1
                 successful = False
+                retryable = True
+            else:
+                try:
+                    resolved_incidents = self.incident_store.resolve_all(
+                        verified_fix="Resolved by operator",
+                        root_cause="Operator manual resolve",
+                        timeout_seconds=remaining,
+                    )
+                except TimeoutError:
+                    resolved_incidents = -1
+                    successful = False
+                    retryable = True
+                except Exception:
+                    resolved_incidents = -1
+                    successful = False
+                if time.monotonic() >= deadline:
+                    successful = False
+                    retryable = True
 
         try:
+            if deadline - time.monotonic() <= 0:
+                raise TimeoutError("supervisor resolution time budget exceeded")
             state_dir = Path(self.config["server"]["state_dir"])
             sup_status_path = state_dir / "supervisor.status.json"
             if sup_status_path.exists():
+                if sup_status_path.stat().st_size > 64 * 1024:
+                    raise ValueError("supervisor status file exceeds 65536 bytes")
                 raw = json.loads(sup_status_path.read_text(encoding="utf-8"))
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("supervisor resolution time budget exceeded")
                 if isinstance(raw, dict):
                     raw["restarts"] = 0
                     raw["last_error"] = ""
-                    sup_status_path.write_text(json_dumps(raw, ensure_ascii=False), encoding="utf-8")
-        except Exception:
+                    contents = json_dumps(raw, ensure_ascii=False)
+                    if len(contents.encode("utf-8")) > 64 * 1024:
+                        raise ValueError("supervisor status file exceeds 65536 bytes")
+                    if deadline - time.monotonic() <= 0:
+                        raise TimeoutError("supervisor resolution time budget exceeded")
+                    sup_status_path.write_text(contents, encoding="utf-8")
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("supervisor resolution time budget exceeded")
+        except TimeoutError as exc:
+            supervisor_res = {"success": False, "degraded": True, "retryable": True, "error": str(exc)}
+            successful = False
+            retryable = True
+        except Exception as exc:
+            supervisor_res = {"success": False, "degraded": True, "retryable": False, "error": type(exc).__name__}
             successful = False
 
         return {
             "success": successful,
             "degraded": not successful,
-            "retryable": False,
+            "retryable": retryable,
             "telemetry": telemetry_res,
             "resolved_incidents": resolved_incidents,
+            "supervisor": supervisor_res,
         }
 
     def run_doctor(self) -> dict[str, Any]:
