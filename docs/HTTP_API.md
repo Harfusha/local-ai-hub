@@ -11,6 +11,8 @@ The service defaults to `127.0.0.1:11435`. `/health` is a lightweight liveness e
 
 Repository endpoints cover profile/map/code-index/deterministic/search/context, code symbols/diagnostics/AST, import resolution, dependency/security/test/refactor/dead-code/callgraph analysis and git status. Code-intelligence queries use `/api/code-intelligence/query`; session management uses `/api/code-intelligence/control`.
 
+`GET /api/resolve_imports` and `POST /api/resolve_imports` default `language` to `auto`; callers may supply a language explicitly. `POST /api/artifact/list` needs no artifact ID and returns newest-first metadata. Its `limit` defaults to 20 and is capped at 100; this endpoint does not paginate.
+
 `local_ai_repo(action="context")` and `POST /api/context/pack` share the adaptive context contract. For non-trivial work, pass `task_id` or `phase`, or `guarded: true`; this is default-on guidance for agent integrations. Omit those fields to preserve legacy `fast`/`full` behavior.
 
 Guarded request fields are `guarded`, `task_id`, `phase`, `focus`, `preload_profile`, `changed_paths`, `base`, `staged`, `since_hash`, `approval`, `override_reason`, and `token_budget`. Supported phases are `plan`, `edit`, `review`, `test`, and `handoff`. The response includes a bounded `adaptive_context_pack`/`context_pack`, `context_id`, `repo_revision`, `stale`, `evidence_ids`, `warnings`, `model_warnings`, and (when supplied) `delta_from`/`since_hash` metadata. A matching revision/hash may be reused as an unchanged delta pack; callers should keep the prior useful pack and avoid duplicate discovery.
