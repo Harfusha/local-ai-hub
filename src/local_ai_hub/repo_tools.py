@@ -135,6 +135,7 @@ class RepositoryTools:
         self._snapshot_bytes = 0
         self.snapshot_hits = 0
         self.snapshot_misses = 0
+        self.snapshot_verified_rehashes = 0
 
     @staticmethod
     def _root(root: str) -> Path:
@@ -296,24 +297,38 @@ class RepositoryTools:
         """Cache decoded file content/hash by stat identity across different repo queries."""
         stat = path.stat()
         key = str(path)
+        identity, verify_content = self._cache_identity(path, stat)
+        cached = None
         with self._snapshot_lock:
             item = self._snapshots.get(key)
-            identity = (int(stat.st_mtime_ns), int(stat.st_size), int(getattr(stat, "st_ctime_ns", 0)), int(getattr(stat, "st_ino", 0)))
             if item is not None and item[:4] == identity:
                 self._snapshots.move_to_end(key)
-                self.snapshot_hits += 1
-                return item[4], item[5]
+                if not verify_content:
+                    self.snapshot_hits += 1
+                    return item[4], item[5]
+                cached = item
         raw = path.read_bytes()
         digest = hashlib.sha256(raw).hexdigest()
+        if cached is not None and cached[4] == digest:
+            with self._snapshot_lock:
+                self.snapshot_verified_rehashes += 1
+                self._hash_only_cache[key] = (*identity, digest)
+                self._hash_only_cache.move_to_end(key)
+                while len(self._hash_only_cache) > self._hash_only_max_entries:
+                    self._hash_only_cache.popitem(last=False)
+            return cached[4], cached[5]
         lines = raw.decode("utf-8", errors="replace").splitlines()
         size = len(raw)
         with self._snapshot_lock:
+            if cached is not None:
+                self.snapshot_verified_rehashes += 1
             old = self._snapshots.pop(key, None)
             if old:
                 self._snapshot_bytes -= old[6]
-            self._snapshots[key] = (int(stat.st_mtime_ns), int(stat.st_size), int(getattr(stat, "st_ctime_ns", 0)), int(getattr(stat, "st_ino", 0)), digest, lines, size)
+            self._snapshots[key] = (*identity, digest, lines, size)
             self._snapshot_bytes += size
-            self._hash_only_cache[key] = (int(stat.st_mtime_ns), int(stat.st_size), int(getattr(stat, "st_ctime_ns", 0)), int(getattr(stat, "st_ino", 0)), digest)
+            self._hash_only_cache[key] = (*identity, digest)
+            self._hash_only_cache.move_to_end(key)
             if len(self._hash_only_cache) > self._hash_only_max_entries:
                 self._hash_only_cache.popitem(last=False)
             self.snapshot_misses += 1
@@ -321,6 +336,78 @@ class RepositoryTools:
                 _k, evicted = self._snapshots.popitem(last=False)
                 self._snapshot_bytes -= evicted[6]
         return digest, lines
+
+    @staticmethod
+    def _windows_change_time(path: Path) -> int | None:
+        """Return NTFS change time, which remains distinct when mtime is restored."""
+        if os.name != "nt":
+            return None
+        handle = None
+        close_handle = None
+        invalid_handle = -1
+        kernel32 = None
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class _FileBasicInfo(ctypes.Structure):
+                _fields_ = [
+                    ("CreationTime", ctypes.c_longlong),
+                    ("LastAccessTime", ctypes.c_longlong),
+                    ("LastWriteTime", ctypes.c_longlong),
+                    ("ChangeTime", ctypes.c_longlong),
+                    ("FileAttributes", wintypes.DWORD),
+                ]
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            create_file = kernel32.CreateFileW
+            create_file.argtypes = [
+                wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+            ]
+            create_file.restype = wintypes.HANDLE
+            get_info = kernel32.GetFileInformationByHandleEx
+            get_info.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+            get_info.restype = wintypes.BOOL
+            close_handle = kernel32.CloseHandle
+            close_handle.argtypes = [wintypes.HANDLE]
+            close_handle.restype = wintypes.BOOL
+
+            invalid_handle = ctypes.c_void_p(-1).value
+            native_path = os.path.abspath(os.fspath(path))
+            if native_path.startswith("\\\\"):
+                native_path = "\\\\?\\UNC\\" + native_path[2:]
+            elif not native_path.startswith("\\\\?\\"):
+                native_path = "\\\\?\\" + native_path
+            handle = create_file(native_path, 0x80, 0x7, None, 3, 0x80, None)
+            if handle == ctypes.c_void_p(-1).value:
+                return None
+            info = _FileBasicInfo()
+            if not get_info(handle, 0, ctypes.byref(info), ctypes.sizeof(info)):
+                return None
+            return int(info.ChangeTime)
+        except Exception:
+            return None
+        finally:
+            if close_handle is not None and handle is not None and handle != invalid_handle:
+                try:
+                    close_handle(handle)
+                except Exception:
+                    pass
+
+    def _cache_identity(self, path: Path, stat: os.stat_result) -> tuple[tuple[int, int, int, int], bool]:
+        change_time = self._windows_change_time(path)
+        if os.name == "nt" and change_time is None:
+            # Windows st_ctime_ns is creation time; hash when native change time is unavailable.
+            return (
+                int(stat.st_mtime_ns), int(stat.st_size),
+                int(getattr(stat, "st_ctime_ns", 0)), int(getattr(stat, "st_ino", 0)),
+            ), True
+        return (
+            int(stat.st_mtime_ns), int(stat.st_size),
+            int(change_time if change_time is not None else getattr(stat, "st_ctime_ns", 0)),
+            int(getattr(stat, "st_ino", 0)),
+        ), False
 
     def _hash_file_only(self, path: Path) -> str:
         """Return SHA-256 without decoding source text or populating the decoded snapshot LRU.
@@ -330,18 +417,25 @@ class RepositoryTools:
         """
         stat = path.stat()
         key = str(path)
-        identity = (int(stat.st_mtime_ns), int(stat.st_size), int(getattr(stat, "st_ctime_ns", 0)), int(getattr(stat, "st_ino", 0)))
+        identity, verify_content = self._cache_identity(path, stat)
+        cached_digest = None
         with self._snapshot_lock:
             item = self._snapshots.get(key)
             if item is not None and item[:4] == identity:
                 self._snapshots.move_to_end(key)
-                self.snapshot_hits += 1
-                return item[4]
+                if verify_content:
+                    cached_digest = item[4]
+                else:
+                    self.snapshot_hits += 1
+                    return item[4]
             h_item = self._hash_only_cache.get(key)
             if h_item is not None and h_item[:4] == identity:
                 self._hash_only_cache.move_to_end(key)
-                self.snapshot_hits += 1
-                return h_item[4]
+                if verify_content:
+                    cached_digest = cached_digest or h_item[4]
+                else:
+                    self.snapshot_hits += 1
+                    return h_item[4]
         h = hashlib.sha256()
         with path.open("rb") as fh:
             while True:
@@ -351,7 +445,16 @@ class RepositoryTools:
                 h.update(chunk)
         digest = h.hexdigest()
         with self._snapshot_lock:
+            snapshot = self._snapshots.get(key)
+            if snapshot is not None and snapshot[:4] == identity and snapshot[4] != digest:
+                self._snapshots.pop(key, None)
+                self._snapshot_bytes -= snapshot[6]
+            elif snapshot is not None and snapshot[:4] == identity:
+                self._snapshots.move_to_end(key)
+            if cached_digest == digest:
+                self.snapshot_verified_rehashes += 1
             self._hash_only_cache[key] = (identity[0], identity[1], identity[2], identity[3], digest)
+            self._hash_only_cache.move_to_end(key)
             if len(self._hash_only_cache) > self._hash_only_max_entries:
                 self._hash_only_cache.popitem(last=False)
         return digest
@@ -670,7 +773,11 @@ class RepositoryTools:
 
     def snapshot_stats(self) -> dict[str, Any]:
         with self._snapshot_lock:
-            snapshot = {"entries": len(self._snapshots), "bytes": self._snapshot_bytes, "hits": self.snapshot_hits, "misses": self.snapshot_misses}
+            snapshot = {
+                "entries": len(self._snapshots), "bytes": self._snapshot_bytes,
+                "hits": self.snapshot_hits, "misses": self.snapshot_misses,
+                "verified_rehashes": self.snapshot_verified_rehashes,
+            }
         with self._git_files_lock:
             now = time.monotonic()
             snapshot["git_files"] = {

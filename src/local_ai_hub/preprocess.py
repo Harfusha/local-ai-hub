@@ -2431,11 +2431,15 @@ class ProjectPreprocessor:
             except Exception:
                 pass
         try:
-            with closing(self.code_index._connect()) as ci_con:
-                existing = dict(ci_con.execute("SELECT path, content_hash FROM files WHERE root=?", (root,)).fetchall())
+            select_pending = getattr(self.code_index, "files_needing_reindex", None)
+            if callable(select_pending):
+                pending = select_pending(root, refs)[:limit]
+            else:
+                with closing(self.code_index._connect()) as ci_con:
+                    existing = dict(ci_con.execute("SELECT path, content_hash FROM files WHERE root=?", (root,)).fetchall())
+                pending = [(p, h) for p, h in refs if existing.get(p) != h][:limit]
         except Exception:
-            existing = {}
-        pending = [(p, h) for p, h in refs if existing.get(p) != h][:limit]
+            pending = refs[:limit]
         if not pending:
             self._set_project(root, phase="deterministic")
             return True

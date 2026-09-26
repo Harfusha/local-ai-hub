@@ -5,6 +5,7 @@ from .json_utils import dumps as json_dumps
 import base64
 import copy
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -4131,6 +4132,31 @@ class LocalAIServices:
         # per-backend lane bounds stragglers without delaying this request.
         return groups, warnings, states
 
+    @staticmethod
+    def _adaptive_builtin_confidence(
+        deterministic_result: dict[str, Any] | None,
+        path_groups: dict[str, list[str]],
+    ) -> float:
+        """Require deterministic confidence plus independent index agreement."""
+        if not isinstance(deterministic_result, dict) or deterministic_result.get("success") is not True:
+            return 0.0
+        if not any(
+            deterministic_result.get(key)
+            for key in ("facts", "dependencies", "scripts", "evidence", "code_index", "test_candidates")
+        ):
+            return 0.0
+        try:
+            confidence = float(deterministic_result.get("confidence", 0.0))
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+        if not 0.0 <= confidence <= 1.0:
+            return 0.0
+        deterministic_paths = {str(path) for path in path_groups.get("deterministic", []) if path}
+        indexed_paths = {str(path) for path in path_groups.get("code_index", []) if path}
+        union = deterministic_paths | indexed_paths
+        agreement = len(deterministic_paths & indexed_paths) / len(union) if union else 0.0
+        return min(confidence, agreement)
+
     def _hybrid_context_uncached(
         self,
         root: str,
@@ -4144,6 +4170,17 @@ class LocalAIServices:
         rag_revision_available: bool = True,
     ) -> dict[str, Any]:
         started_at = time.perf_counter()
+        search_cfg = self.config.get("search", {})
+
+        def bounded_timeout(key: str, default: float) -> float:
+            try:
+                return max(0.05, min(float(search_cfg.get(key, default)), 120.0))
+            except (TypeError, ValueError, OverflowError):
+                return default
+        backend_deadline = started_at + max(
+            bounded_timeout("context_backend_timeout_seconds", 3.0),
+            bounded_timeout("context_rag_timeout_seconds", 3.0),
+        )
         if self.learner is not None:
             try: self.learner.record(root, query)
             except Exception: pass
@@ -4162,19 +4199,12 @@ class LocalAIServices:
             except Exception as exc:
                 rag_setup_error = f"rag workspace unavailable: {type(exc).__name__}"
 
-        search_cfg = self.config.get("search", {})
         rag_configured = self.rag is not None and self.config.get("features", {}).get("rag", True)
         retrieval_warnings: list[str] = [rag_setup_error] if rag_setup_error else []
         if rag_configured and not rag_revision_available:
             retrieval_warnings.append("rag revision unavailable; cache bypassed")
         rag_pool = None
         rag_future = None
-        if rag_configured and target_workspace and query.strip():
-            rag_pool = _CONTEXT_BACKEND_POOLS["rag"]
-            rag_future = rag_pool.submit(
-                self.rag.search, query, tenant, target_workspace,
-                top_k=10, use_reranker=True,
-            )
         semantic_fraction = max(0.0, min(float(search_cfg.get("semantic_fraction", 0.35)), 0.7))
         lexical_tokens = max_tokens if not target_workspace else max(512, int(max_tokens * (1.0 - semantic_fraction)))
         # Local AI: preprocessed deterministic/semantic cards narrow the lexical scan to likely files.
@@ -4183,6 +4213,7 @@ class LocalAIServices:
         candidate_paths: list[str] = []
         path_groups: dict[str, list[str]] = {}
         backend_states: dict[str, str] = {}
+        deterministic_result: dict[str, Any] | None = None
         # Prioritize files explicitly named in the query/task (e.g. AGENTS.md, src/main.py)
         root_path = Path(root)
         explicit_paths: list[str] = []
@@ -4199,7 +4230,22 @@ class LocalAIServices:
             path_groups["explicit"] = explicit_paths
         if self.deterministic is not None:
             try:
-                path_groups["deterministic"] = list(self.deterministic.related_paths(root, query, limit=28))
+                if quality_first:
+                    try:
+                        deterministic_result = self.deterministic_query(root, query, 30)
+                    except Exception:
+                        deterministic_result = None
+                related_kwargs: dict[str, Any] = {"limit": 28}
+                if deterministic_result is not None:
+                    try:
+                        parameters = inspect.signature(self.deterministic.related_paths).parameters
+                        if "result" in parameters or any(
+                            parameter.kind == parameter.VAR_KEYWORD for parameter in parameters.values()
+                        ):
+                            related_kwargs["result"] = deterministic_result
+                    except Exception:
+                        pass
+                path_groups["deterministic"] = list(self.deterministic.related_paths(root, query, **related_kwargs))
                 backend_states["deterministic"] = "used"
             except Exception as exc:
                 backend_states["deterministic"] = "degraded"
@@ -4228,13 +4274,66 @@ class LocalAIServices:
                 retrieval_warnings.append("preprocessor degraded")
         else:
             backend_states["preprocessor"] = "skipped"
-        if quality_first:
-            external_groups, external_warnings, external_states = self._external_context_candidates(root, query)
+        confidence = self._adaptive_builtin_confidence(deterministic_result, path_groups) if quality_first else 0.0
+        try:
+            confidence_threshold = max(
+                0.0,
+                min(float(self.config.get("deterministic", {}).get("context_confidence", 0.80)), 1.0),
+            )
+        except (TypeError, ValueError, OverflowError):
+            confidence_threshold = 0.80
+        confident_builtin = quality_first and confidence >= confidence_threshold
+        remaining_budget = max(0.0, backend_deadline - time.perf_counter())
+        request_optional = not confident_builtin
+        rag_ready = bool(
+            rag_configured and target_workspace and query.strip() and rag_revision_available
+        )
+        requested_backends: list[str] = []
+        if quality_first and request_optional and self.external_tools is not None:
+            requested_backends.append("serena")
+        if rag_ready and request_optional:
+            requested_backends.append("rag")
+        if rag_ready and request_optional and remaining_budget > 0.0:
+            rag_pool = _CONTEXT_BACKEND_POOLS["rag"]
+            rag_future = rag_pool.submit(
+                self.rag.search, query, tenant, target_workspace,
+                top_k=10, use_reranker=True,
+            )
+        elif rag_ready and request_optional:
+            backend_states["rag"] = "skipped"
+        elif rag_configured and not rag_revision_available:
+            backend_states["rag"] = "degraded"
+        else:
+            backend_states["rag"] = "skipped"
+        if confident_builtin:
+            backend_states["serena"] = "skipped"
+        elif quality_first and remaining_budget <= 0.0:
+            backend_states["serena"] = "skipped"
+        elif quality_first:
+            external_groups, external_warnings, external_states = self._external_context_candidates(
+                root, query, timeout_budget=remaining_budget,
+            )
             path_groups.update(external_groups)
             backend_states.update(external_states)
             retrieval_warnings.extend(external_warnings)
         else:
-            backend_states.update({"serena": "skipped", "rag": "skipped"})
+            backend_states["serena"] = "skipped"
+        selected_backends = requested_backends if remaining_budget > 0.0 else []
+        if confident_builtin:
+            selection_decision = "builtin_confident"
+        elif requested_backends and remaining_budget <= 0.0:
+            selection_decision = "deadline_exhausted"
+        elif selected_backends:
+            selection_decision = "optional_backends_selected"
+        else:
+            selection_decision = "no_optional_backend_available"
+        backend_selection = {
+            "decision": selection_decision,
+            "confidence": round(confidence, 4),
+            "threshold": round(confidence_threshold, 4),
+            "selected_backends": selected_backends,
+            "remaining_budget_ms": round(remaining_budget * 1000, 3),
+        }
         fused_candidates = fuse_ranked_paths(path_groups, limit=64, max_per_path=2)
         candidate_paths = [path for path, _score in fused_candidates]
         try:
@@ -4325,11 +4424,10 @@ class LocalAIServices:
         max_per_file = max(1, int(search_cfg.get("max_snippets_per_file", 3)))
 
         if rag_future is not None and rag_pool is not None:
-            try:
-                configured_rag_timeout = search_cfg.get("context_rag_timeout_seconds", 3.0)
-                rag_timeout = max(0.05, min(float(configured_rag_timeout), 120.0))
-            except (TypeError, ValueError):
-                rag_timeout = 3.0
+            rag_timeout = min(
+                bounded_timeout("context_rag_timeout_seconds", 3.0),
+                max(0.0, backend_deadline - time.perf_counter()),
+            )
             rag_done, rag_pending = wait((rag_future,), timeout=rag_timeout)
             if rag_pending:
                 rag_future.cancel()
@@ -4439,6 +4537,7 @@ class LocalAIServices:
                 "skipped_backends": sorted(name for name, state in backend_states.items() if state == "skipped"),
                 "degraded_backends": sorted(name for name, state in backend_states.items() if state == "degraded"),
                 "backend_states": dict(sorted(backend_states.items())),
+                "backend_selection": backend_selection,
                 "warnings": list(dict.fromkeys(retrieval_warnings))[:8],
                 "fused_paths": [path for path, _score in fuse_ranked_paths(path_groups, limit=24, max_per_path=2)],
                 "quality": {
