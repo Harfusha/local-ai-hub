@@ -76,6 +76,8 @@ def test_install_and_update_prompts_cover_async_and_conversation_contracts():
             "wait_timeout_seconds",
             "cancel_requested=true",
             "restart",
+            "replay-safe actions",
+            "terminal `outcome_unknown`",
         ):
             assert phrase in docs
 
@@ -109,6 +111,10 @@ def test_mcp_task_description_exposes_async_and_conversation_contracts():
         "259,200 seconds",
         "wait_timeout_seconds",
         "cancel_requested=true",
+        "replay-safe actions",
+        "terminal `outcome_unknown`",
+        "HubClient.continue_conversation",
+        "POST /api/conversations/continue",
     ):
         assert phrase in contract
 

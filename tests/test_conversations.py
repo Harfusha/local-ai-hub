@@ -51,6 +51,32 @@ def test_conversation_store_rejects_active_and_expired_turns() -> None:
     assert error == "conversation not found"
 
 
+def test_expired_active_conversation_cannot_be_completed_or_revived_by_abort() -> None:
+    from local_ai_hub.conversations import ConversationStore
+
+    for finish in ("complete", "abort"):
+        now = [100.0]
+        store = ConversationStore(
+            idle_ttl_seconds=5,
+            active_ttl_seconds=8,
+            max_turns=2,
+            clock=lambda: now[0],
+        )
+        conversation = store.start("tenant-a", {"model": "fast"})
+        reserved, error = store.reserve(conversation.conversation_id, "tenant-a")
+        assert reserved is conversation
+        assert error == ""
+
+        now[0] += 9
+        if finish == "complete":
+            finished = store.complete(conversation.conversation_id, "tenant-a", "late prompt", "late answer")
+        else:
+            finished = store.abort(conversation.conversation_id, "tenant-a")
+
+        assert finished is False
+        assert conversation.conversation_id not in store._items
+
+
 def test_service_continues_with_pinned_route_without_persistent_cache() -> None:
     from local_ai_hub.conversations import ConversationStore
     from local_ai_hub.router import ModelRouter

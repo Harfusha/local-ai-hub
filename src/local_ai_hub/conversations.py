@@ -78,6 +78,8 @@ class ConversationStore:
 
     def complete(self, conversation_id: str, tenant: str, user_text: str, assistant_text: str) -> bool:
         with self._lock:
+            now = self._clock()
+            self._purge_locked(now)
             conversation = self._owned_active_locked(conversation_id, tenant)
             if conversation is None:
                 return False
@@ -86,16 +88,18 @@ class ConversationStore:
                 {"role": "assistant", "content": str(assistant_text)},
             ))
             conversation.active = False
-            conversation.updated_at = self._clock()
+            conversation.updated_at = now
             return True
 
     def abort(self, conversation_id: str, tenant: str) -> bool:
         with self._lock:
+            now = self._clock()
+            self._purge_locked(now)
             conversation = self._owned_active_locked(conversation_id, tenant)
             if conversation is None:
                 return False
             conversation.active = False
-            conversation.updated_at = self._clock()
+            conversation.updated_at = now
             return True
 
     def discard(self, conversation_id: str, tenant: str) -> None:

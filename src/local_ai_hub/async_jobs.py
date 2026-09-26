@@ -23,6 +23,10 @@ class AsyncJobManager:
     """Durable, tenant-scoped orchestration whose model calls use the scheduler."""
 
     ACTIONS = {"delegate", "reason", "review", "review_diff", "second_opinion", "compress", "route", "batch", "speculative_lint"}
+    # Command-backed actions stay out until they have an explicit T07 replay contract.
+    RECOVERY_REPLAY_SAFE_ACTIONS = frozenset(
+        {"delegate", "reason", "review", "review_diff", "second_opinion", "compress", "route", "batch"}
+    )
     TERMINAL_STATES = frozenset({"done", "failed", "cancelled", "expired", "outcome_unknown"})
 
     def __init__(
@@ -116,6 +120,15 @@ class AsyncJobManager:
         except Exception:
             return ""
         return value.strip() if isinstance(value, str) else ""
+
+    def _can_replay_after_interruption(self, action: Any, payload: Any, attempts: int) -> bool:
+        normalized_action = str(action or "").strip().lower().replace("-", "_")
+        attempt_count = int(attempts or 0)
+        return (
+            normalized_action in self.RECOVERY_REPLAY_SAFE_ACTIONS
+            and bool(self._request_id(payload))
+            and 0 < attempt_count < self.max_attempts
+        )
 
     def _result_artifact_available(self, artifact_id: str, tenant: str) -> bool:
         artifact_id = str(artifact_id or "").strip()
@@ -336,19 +349,38 @@ class AsyncJobManager:
 
     def _release_for_retry(self, job_id: str, error: str) -> None:
         trace_id = ""
+        already_terminal = False
         with self._lock, closing(self._connect()) as con:
-            row = con.execute("SELECT attempts,cancel_requested,trace_id,payload_json FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
+            row = con.execute(
+                "SELECT state,attempts,cancel_requested,trace_id,payload_json,action FROM async_jobs WHERE job_id=?",
+                (job_id,),
+            ).fetchone()
             if not row:
                 return
-            attempts, cancelled = int(row[0] or 0) + 1, bool(row[1])
-            trace_id = str(row[2] or "") if len(row) > 2 and row[2] else ""
-            can_retry = bool(self._request_id(row[3])) and attempts < self.max_attempts
-            state = "cancelled" if cancelled else "queued" if can_retry else "outcome_unknown"
-            detail = error[:500] if state in {"queued", "cancelled"} else f"async job outcome unknown after interrupted attempt: {error}"[:500]
-            con.execute("UPDATE async_jobs SET state=?,attempts=?,lease_until=0,error=?,updated_at=? WHERE job_id=?", (state, attempts, detail, time.time(), job_id))
-            con.commit()
-            if state == "cancelled": self._stats["cancelled"] += 1
-        if self.debug_traces is not None and trace_id:
+            current_state, attempts, cancelled = str(row[0] or ""), int(row[1] or 0), bool(row[2])
+            trace_id = str(row[3] or "")
+            already_terminal = current_state in self.TERMINAL_STATES
+            if already_terminal:
+                state, detail = current_state, ""
+            elif cancelled:
+                state, detail = "cancelled", error[:500]
+            elif current_state == "queued" and attempts == 0:
+                # No executor attempt began; keep this dispatch retry free.
+                state, detail = "queued", error[:500]
+            elif self._can_replay_after_interruption(row[5], row[4], attempts):
+                state, detail = "queued", error[:500]
+            else:
+                state = "outcome_unknown"
+                detail = f"async job outcome unknown after interrupted attempt: {error}"[:500]
+            if not already_terminal:
+                con.execute(
+                    "UPDATE async_jobs SET state=?,attempts=?,lease_until=0,error=?,updated_at=? WHERE job_id=?",
+                    (state, attempts, detail, time.time(), job_id),
+                )
+                con.commit()
+                if state == "cancelled":
+                    self._stats["cancelled"] += 1
+        if not already_terminal and self.debug_traces is not None and trace_id:
             try:
                 self.debug_traces.event(trace_id, "retry" if state == "queued" else state, {"error": detail, "attempts": attempts})
                 if state in {"cancelled", "outcome_unknown"}:
@@ -459,7 +491,7 @@ class AsyncJobManager:
                 cur_row = con.execute("SELECT attempts FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
                 attempts = int(cur_row["attempts"] if cur_row else 1)
                 retryable = bool(result.get("retryable", True))
-                if retryable and request_id and attempts < self.max_attempts:
+                if retryable and self._can_replay_after_interruption(action, payload, attempts):
                     con.execute("UPDATE async_jobs SET state='queued',result_json=?,error=?,lease_until=0,updated_at=? WHERE job_id=?", (json_dumps(result, ensure_ascii=False, separators=(",", ":")), str(result.get("error", "async job failed"))[:500], time.time(), job_id))
                     final = result
                 elif retryable:
@@ -592,12 +624,15 @@ class AsyncJobManager:
         cancelled_ids: list[tuple[str, str]] = []
         unknown_ids: list[tuple[str, str]] = []
         with self._lock, closing(self._connect()) as con:
-            rows = con.execute("SELECT job_id,state,attempts,cancel_requested,trace_id,payload_json FROM async_jobs WHERE state IN ('queued','running')").fetchall(); ids: list[tuple[str, str]] = []
-            for job_id, state, attempts, cancelled, trace_id, payload_json in rows:
+            rows = con.execute(
+                "SELECT job_id,state,action,attempts,cancel_requested,trace_id,payload_json "
+                "FROM async_jobs WHERE state IN ('queued','running')"
+            ).fetchall(); ids: list[tuple[str, str]] = []
+            for job_id, state, action, attempts, cancelled, trace_id, payload_json in rows:
                 if cancelled:
                     con.execute("UPDATE async_jobs SET state='cancelled',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id))
                     cancelled_ids.append((str(job_id), str(trace_id or "")))
-                elif (state == "running" or int(attempts or 0) > 0) and (not self._request_id(payload_json) or int(attempts or 0) >= self.max_attempts):
+                elif (state == "running" or int(attempts or 0) > 0) and not self._can_replay_after_interruption(action, payload_json, int(attempts or 0)):
                     error = "async job outcome unknown after restart; safe replay unavailable"
                     con.execute("UPDATE async_jobs SET state='outcome_unknown',lease_until=0,error=?,updated_at=? WHERE job_id=?", (error, time.time(), job_id))
                     unknown_ids.append((str(job_id), str(trace_id or "")))
@@ -633,11 +668,14 @@ class AsyncJobManager:
             expired = con.execute("UPDATE async_jobs SET state='expired',updated_at=? WHERE state IN ('done','failed','cancelled','outcome_unknown') AND expires_at<?", (now, now)).rowcount
             # Periodic tombstone purge: evict expired jobs whose retention period has lapsed
             con.execute("DELETE FROM async_jobs WHERE state='expired' AND updated_at<?", (now - self.result_ttl_seconds,))
-            stuck = con.execute("SELECT job_id, attempts, cancel_requested, payload_json FROM async_jobs WHERE state='running' AND lease_until<?", (now,)).fetchall()
-            for s_id, s_att, s_canc, payload_json in stuck:
+            stuck = con.execute(
+                "SELECT job_id, action, attempts, cancel_requested, payload_json "
+                "FROM async_jobs WHERE state='running' AND lease_until<?",
+                (now,),
+            ).fetchall()
+            for s_id, s_action, s_att, s_canc, payload_json in stuck:
                 s_attempts = int(s_att or 0)
-                request_id = self._request_id(payload_json)
-                if s_canc or s_attempts >= self.max_attempts or not request_id:
+                if s_canc or not self._can_replay_after_interruption(s_action, payload_json, s_attempts):
                     state = "cancelled" if s_canc else "outcome_unknown"
                     error = "async job cancelled" if s_canc else "async job outcome unknown after lease expiry; safe replay unavailable"
                     con.execute("UPDATE async_jobs SET state=?,lease_until=0,error=?,updated_at=? WHERE job_id=?", (state, error, now, str(s_id)))
