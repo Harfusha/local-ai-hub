@@ -356,7 +356,7 @@ class ArtifactStore:
                             legacy_rows = list(con.execute(f"SELECT {selected_columns} FROM artifacts"))
                             for legacy_row in legacy_rows:
                                 values = dict(zip(copied_columns, legacy_row))
-                                raw_tenant = str(values["tenant"])
+                                source_tenant = str(values["tenant"])
                                 optional_values = [values.get(column) for column in optional_columns]
                                 existing = con.execute(
                                     """SELECT tenant, tenant_identity, kind, text, mime_type, encoding,
@@ -372,10 +372,8 @@ class ArtifactStore:
                                         raise sqlite3.IntegrityError(
                                             f"artifact migration conflict for {values['artifact_id']}"
                                         )
-                                    if (
-                                        marker_value != "sha256-v1"
-                                        and tuple(existing[:2]) != (raw_tenant, raw_tenant)
-                                    ):
+                                    # Source row already uses marker's raw or hashed representation.
+                                    if tuple(existing[:2]) != (source_tenant, source_tenant):
                                         raise sqlite3.IntegrityError(
                                             f"artifact migration conflict for {values['artifact_id']}"
                                         )
@@ -386,7 +384,7 @@ class ArtifactStore:
                                         mime_type, encoding, blob, size_bytes, checksum, identity_json
                                     ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                                     (
-                                        values["artifact_id"], values["created_at"], raw_tenant, raw_tenant,
+                                        values["artifact_id"], values["created_at"], source_tenant, source_tenant,
                                         values["kind"], values["text"], *optional_values,
                                     ),
                                 )
