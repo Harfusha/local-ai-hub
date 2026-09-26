@@ -427,7 +427,7 @@ TaskAction: TypeAlias = Literal[
     "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold",
 ]
 _REPO_ACTIONS = (
-    "profile", "search", "map", "code_index", "semantic", "graph", "intelligence",
+    "profile", "search", "map", "code_index", "semantic", "intelligence",
     "deterministic", "context", "route", "delegate", "solve", "review_diff", "impact",
     "refactor_impact", "resolve_imports", "generate_tests", "validate_patch",
     "audit_dependencies", "ast_outline", "test_matrix", "security_audit", "git_status", "repo_state",

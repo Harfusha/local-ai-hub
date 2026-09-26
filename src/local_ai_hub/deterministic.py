@@ -2717,8 +2717,10 @@ class DeterministicEngine:
             return "No deterministic match found."
         return "\n".join(lines)
 
-    def related_paths(self, root: str, query: str, limit: int = 24) -> list[str]:
-        result = self.query(root, query, limit=max(limit, 24))
+    def related_paths(
+        self, root: str, query: str, limit: int = 24, *, result: dict[str, Any] | None = None
+    ) -> list[str]:
+        result = result if isinstance(result, dict) else self.query(root, query, limit=max(limit, 24))
         scores: dict[str, int] = defaultdict(int)
         for item in result.get("facts", []):
             p = str(item.get("path", "")); scores[p] += 4

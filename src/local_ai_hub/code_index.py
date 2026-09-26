@@ -23,13 +23,254 @@ from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick
 
 IDENT = re.compile(r"\b[A-Za-z_$][A-Za-z0-9_$]{2,}\b")
 GENERIC_DEF = re.compile(r"^\s*(?:(?:public|private|protected|internal|static|final|async|export|abstract|virtual|override|sealed|readonly)\s+)*(class|interface|trait|enum|struct|record|function|func|fn|def|type)\s+([A-Za-z_$][A-Za-z0-9_$]*)")
-IMPORT = re.compile(r"^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w./@-]+)|(?:use|require|require_once|include|include_once|using)\s*\(?[\'\"]?([^\'\";]+)[\'\"]?\)?)")
+IMPORT = re.compile(r"^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w./@-]+)|(?:require_once|include_once|require|include|using|use)\s*\(?[\'\"]?([^\'\";]+)[\'\"]?\)?)")
 ARROW_DEF = re.compile(r"^\s*(?:(?:export|default|public|private|protected|internal|static|readonly|const|let|var)\s+)*([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*=>")
 GO_METHOD = re.compile(r"^\s*func\s*(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 TYPED_METHOD = re.compile(r"^\s*(?:(?:public|private|protected|internal|static|final|async|virtual|override|abstract|sealed|synchronized|native)\s+)*(?:[A-Za-z_$][\w.$<>,?\[\]]*\s+)+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^;{}]*)\)\s*(?:\{|=>|throws\b|where\b)")
 JS_METHOD = re.compile(r"^\s*(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*\{")
 _CONTROL_NAMES = {"if","for","while","switch","catch","return","new","throw","using","lock","foreach","typeof","sizeof","default"}
-_PARSER_ANALYZER_VERSION = f"{__version__}:call-edges-v3-parse-status"
+_PARSER_ANALYZER_VERSION = f"{__version__}:call-edges-v10-lexical-mask"
+
+
+def _javascript_regex_end(chars: list[str], start: int) -> int | None:
+    in_character_class = False
+    escaped = False
+    i = start + 1
+    while i < len(chars) and chars[i] not in "\r\n":
+        char = chars[i]
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == "[":
+            in_character_class = True
+        elif char == "]":
+            in_character_class = False
+        elif char == "/" and not in_character_class:
+            i += 1
+            while i < len(chars) and (chars[i].isalpha() or chars[i].isdigit()):
+                i += 1
+            return i
+        i += 1
+    return None
+
+
+def _javascript_regex_can_start(chars: list[str], offset: int) -> bool:
+    previous = offset - 1
+    while previous >= 0 and chars[previous].isspace():
+        previous -= 1
+    if previous < 0:
+        return True
+    if chars[previous] in "=([{,:;!&|?~^*%+-":
+        return True
+    if chars[previous] == ")":
+        depth = 0
+        cursor = previous
+        while cursor >= 0:
+            if chars[cursor] == ")":
+                depth += 1
+            elif chars[cursor] == "(":
+                depth -= 1
+                if depth == 0:
+                    prefix = "".join(chars[max(0, cursor - 16):cursor])
+                    if re.search(r"(?<![\w$.])(?:if|while|for|with)\s*$", prefix):
+                        return True
+                    break
+            cursor -= 1
+    if chars[previous] == "}":
+        depth = 0
+        cursor = previous
+        while cursor >= 0:
+            if chars[cursor] == "}":
+                depth += 1
+            elif chars[cursor] == "{":
+                depth -= 1
+                if depth == 0:
+                    prefix = "".join(chars[max(0, cursor - 80):cursor])
+                    if re.search(r"(?<![\w$.])(?:if|while|for|with|switch|catch)\s*\([^{}]*\)\s*$", prefix):
+                        return True
+                    if re.search(r"\b(?:else|do|finally)\s*$", prefix):
+                        return True
+                    segment_start = cursor - 1
+                    while segment_start >= 0 and chars[segment_start] not in ";{}":
+                        segment_start -= 1
+                    prior_source = "".join(chars[segment_start + 1:cursor])
+                    declaration_patterns = (
+                        r"(?:^|[\r\n])\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?"
+                        r"function\s*\*?\s*[A-Za-z_$][A-Za-z0-9_$]*\s*\([^{}]*\)\s*$",
+                        r"(?:^|[\r\n])\s*(?:export\s+)?(?:default\s+)?class\s+"
+                        r"[A-Za-z_$][A-Za-z0-9_$]*(?:\s+extends\b[^{}]*)?\s*$",
+                    )
+                    for pattern in declaration_patterns:
+                        declaration = re.search(pattern, prior_source)
+                        if declaration is None:
+                            continue
+                        before_declaration = prior_source[:declaration.start()].rstrip()
+                        if not before_declaration or before_declaration[-1] not in "=([{,:!&|?~^*%+-<>/.":
+                            return True
+                    break
+            cursor -= 1
+    if previous > 0 and chars[previous - 1:previous + 1] == ["=", ">"]:
+        return True
+    prefix = "".join(chars[max(0, offset - 24):offset])
+    return bool(re.search(r"(?<![\w$.])(?:return|case|throw|delete|void|typeof|instanceof|in|of|yield|await|else|do)\s*$", prefix))
+
+
+def _mask_non_code(text: str, language: str, *, mask_literals: bool = True) -> str:
+    """Blank comments and literals while preserving source offsets and lines."""
+    chars = list(text)
+    length = len(chars)
+    hash_comments = language in {"php", "yaml"}
+
+    def blank(start: int, end: int) -> None:
+        for pos in range(start, min(end, length)):
+            if chars[pos] not in "\r\n":
+                chars[pos] = " "
+
+    i = 0
+    while i < length:
+        if chars[i] in "\r\n":
+            i += 1
+            continue
+
+        if chars[i:i + 2] == ["/", "/"]:
+            end = i + 2
+            while end < length and chars[end] not in "\r\n":
+                end += 1
+            blank(i, end)
+            i = end
+            continue
+
+        if chars[i:i + 2] == ["/", "*"]:
+            start = i
+            depth = 1
+            i += 2
+            while i < length and depth:
+                if chars[i:i + 2] == ["/", "*"]:
+                    depth += 1
+                    i += 2
+                elif chars[i:i + 2] == ["*", "/"]:
+                    depth -= 1
+                    i += 2
+                else:
+                    i += 1
+            blank(start, i)
+            continue
+
+        if hash_comments and chars[i] == "#":
+            end = i + 1
+            while end < length and chars[end] not in "\r\n":
+                end += 1
+            blank(i, end)
+            i = end
+            continue
+
+        if (
+            language in {"javascript", "typescript"}
+            and chars[i] == "/"
+            and _javascript_regex_can_start(chars, i)
+        ):
+            regex_end = _javascript_regex_end(chars, i)
+            if regex_end is not None:
+                if mask_literals:
+                    blank(i, regex_end)
+                i = regex_end
+                continue
+
+        if language == "rust" and chars[i] == "'" and i + 1 < length:
+            ident_end = i + 1
+            if chars[ident_end] == "_" or chars[ident_end].isalpha():
+                ident_end += 1
+                while ident_end < length and (chars[ident_end] == "_" or chars[ident_end].isalnum()):
+                    ident_end += 1
+                if ident_end >= length or chars[ident_end] != "'":
+                    i += 1
+                    continue
+
+        start = i
+        quote_at = i
+        raw_terminator = ""
+        verbatim = False
+
+        # Rust raw strings: r#"..."# and br##"..."##.
+        raw_base = i + 2 if text.startswith(("br", "cr"), i) else i + 1 if chars[i] == "r" else -1
+        if raw_base >= 0:
+            hashes_at = raw_base
+            while hashes_at < length and chars[hashes_at] == "#":
+                hashes_at += 1
+            if hashes_at < length and chars[hashes_at] == '"':
+                quote_at = hashes_at
+                raw_terminator = '"' + "#" * (hashes_at - raw_base)
+            else:
+                raw_base = -1
+        if raw_base < 0 and (text.startswith('$@"', i) or text.startswith('@$"', i)):
+            quote_at = i + 2
+            verbatim = True
+        elif raw_base < 0 and text.startswith('@"', i):
+            quote_at = i + 1
+            verbatim = True
+        elif raw_base < 0 and chars[i] == '$' and i + 1 < length and chars[i + 1] in "\"'`":
+            quote_at = i + 1
+        elif raw_base < 0 and chars[i] in "\"'`":
+            quote_at = i
+        elif raw_base < 0:
+            i += 1
+            continue
+
+        quote = chars[quote_at]
+        delimiter_size = 1
+        if quote in "\"'":
+            quote_run = quote_at
+            while quote_run < length and chars[quote_run] == quote:
+                quote_run += 1
+            if quote_run - quote_at >= 3:
+                delimiter_size = quote_run - quote_at
+        if raw_terminator:
+            close = text.find(raw_terminator, quote_at + 1)
+            end = length if close < 0 else close + len(raw_terminator)
+        else:
+            end = quote_at + delimiter_size
+            while end < length:
+                if delimiter_size >= 3 and chars[end] == quote:
+                    quote_run = end
+                    while quote_run < length and chars[quote_run] == quote:
+                        quote_run += 1
+                    if quote_run - end >= delimiter_size:
+                        end += delimiter_size
+                        break
+                    end = quote_run
+                    continue
+                if delimiter_size == 1 and chars[end] == quote:
+                    if verbatim and end + 1 < length and chars[end + 1] == quote:
+                        end += 2
+                        continue
+                    end += 1
+                    break
+                if not verbatim and chars[end] == "\\":
+                    end += 2
+                else:
+                    end += 1
+        if mask_literals:
+            blank(start, end)
+        i = max(end, start + 1)
+
+    return "".join(chars)
+
+
+_DECLARATION_CALL_PATTERNS = (
+    re.compile(r"\b(?:function|func|fn|def)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\("),
+    re.compile(
+        r"\b(?:(?:public|private|protected|internal|static|final|async|virtual|override|abstract|sealed|synchronized|native)\s+)*(?:[A-Za-z_$][\w.$<>,?\[\]]*\s+)+([A-Za-z_$][A-Za-z0-9_$]*)\s*\([^;{}]*\)\s*(?:\{|=>|throws\b|where\b)"
+    ),
+)
+
+
+def _declaration_call_spans(line: str) -> set[tuple[int, int]]:
+    return {
+        match.span(1)
+        for pattern in _DECLARATION_CALL_PATTERNS
+        for match in pattern.finditer(line)
+    }
 
 
 class CodeIndex:
@@ -57,12 +298,22 @@ class CodeIndex:
         return con
 
     def _schema(self, con: sqlite3.Connection) -> None:
+        has_files = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='files'"
+        ).fetchone()
+        if has_files:
+            file_columns = {str(row[1]) for row in con.execute("PRAGMA table_info(files)")}
+            if "analyzer_version" not in file_columns:
+                # This database is a disposable index; rebuild obsolete shape instead of migrating it.
+                for table in ("edges", "refs", "symbols", "files", "parse_blobs"):
+                    con.execute(f"DROP TABLE IF EXISTS {table}")
         con.executescript("""
         CREATE TABLE IF NOT EXISTS files(
             root TEXT,
             path TEXT,
             content_hash TEXT,
             language TEXT,
+            analyzer_version TEXT NOT NULL DEFAULT '',
             updated_at REAL,
             PRIMARY KEY(root, path)
         );
@@ -120,7 +371,6 @@ class CodeIndex:
         );
         CREATE INDEX IF NOT EXISTS idx_parse_blobs_updated ON parse_blobs(updated_at);
         """)
-        
     def _init_db(self) -> None:
         try:
             with self._lock, closing(self._connect()) as con:
@@ -299,7 +549,8 @@ class CodeIndex:
         refs: list[dict[str, Any]] = []
         edges: list[dict[str, Any]] = []
 
-        lines = text.splitlines()
+        raw_lines = text.splitlines()
+        lines = _mask_non_code(text, "csharp").splitlines()
         brace_pairs, next_open = self._brace_metadata(lines)
 
         class_re = re.compile(
@@ -342,7 +593,7 @@ class CodeIndex:
 
                 doc = ""
                 if i > 1:
-                    prev = lines[i - 2].strip()
+                    prev = raw_lines[i - 2].strip()
                     if prev.startswith("///"):
                         doc = re.sub(r"<[^>]+>", "", prev.replace("///", "")).strip()
 
@@ -414,21 +665,27 @@ class CodeIndex:
                 })
 
         call_pattern = re.compile(r"\b([A-Za-z_$][A-Za-z0-9_$]{2,})\s*\(")
+        definitions = {(int(symbol["line"]), str(symbol["name"])) for symbol in syms}
         for i, line in enumerate(lines, 1):
-            cleaned = line.split("//")[0]
-            for m in call_pattern.finditer(cleaned):
+            declaration_spans = _declaration_call_spans(line)
+            for m in call_pattern.finditer(line):
                 cname = m.group(1)
-                if cname not in _CONTROL_NAMES:
+                if (
+                    cname not in _CONTROL_NAMES
+                    and (m.start(1), m.end(1)) not in declaration_spans
+                    and (i, cname) not in definitions
+                ):
                     refs.append({"name": cname, "line": i, "kind": "call"})
                     edges.append({"src": "<module>", "dst": cname, "kind": "calls", "line": i})
 
         return syms, refs, edges
 
-    def _parse_generic(self, text: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    def _parse_generic(self, text: str, language: str = "") -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         syms: list[dict[str, Any]] = []
         refs: list[dict[str, Any]] = []
         edges: list[dict[str, Any]] = []
-        lines = text.splitlines()
+        lines = _mask_non_code(text, language).splitlines()
+        import_lines = _mask_non_code(text, language, mask_literals=False).splitlines()
         brace_pairs, next_open = self._brace_metadata(lines)
 
         ns_pattern = re.compile(r"^\s*namespace\s+([A-Za-z0-9_\\]+)")
@@ -467,7 +724,7 @@ class CodeIndex:
                     "docstring": "",
                 })
 
-            im = IMPORT.match(line)
+            im = IMPORT.match(import_lines[i - 1])
             if im:
                 dst = next((x for x in im.groups() if x), "")
                 edges.append({"src": "<module>", "dst": dst, "kind": "imports", "line": i})
@@ -479,10 +736,16 @@ class CodeIndex:
             syms.append(s)
 
         call_re = re.compile(r"\b([A-Za-z_$][A-Za-z0-9_$]{2,})\s*\(")
+        definitions = {(int(symbol["line"]), str(symbol["name"])) for symbol in syms}
         for i, line in enumerate(lines, 1):
+            declaration_spans = _declaration_call_spans(line)
             for m in call_re.finditer(line):
                 name = m.group(1)
-                if name.lower() not in _CONTROL_NAMES:
+                if (
+                    name.lower() not in _CONTROL_NAMES
+                    and (m.start(1), m.end(1)) not in declaration_spans
+                    and (i, name) not in definitions
+                ):
                     refs.append({"name": name, "line": i, "kind": "call"})
                     edges.append({"src": "<module>", "dst": name, "kind": "calls", "line": i})
 
@@ -520,7 +783,7 @@ class CodeIndex:
         elif lang == "csharp":
             parsed = self._parse_csharp(text)
         else:
-            parsed = self._parse_generic(text)
+            parsed = self._parse_generic(text, lang)
         syntax_error_count = int(parser_report.get("syntax_error_count", 0) or 0)
         diagnostic = {
             "status": "syntax_error" if syntax_error_count else "fallback",
@@ -586,6 +849,28 @@ class CodeIndex:
         except Exception:
             pass
 
+    def files_needing_reindex(self, root: str, items: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        """Select changed files and files analyzed by an older parser version."""
+        c_root = canonical_root(root)
+        if not items:
+            return []
+        with self._lock, closing(self._connect()) as con:
+            existing = {
+                str(row["path"]): (
+                    str(row["content_hash"] or ""),
+                    str(row["analyzer_version"] or ""),
+                )
+                for row in con.execute(
+                    "SELECT path,content_hash,analyzer_version FROM files WHERE root=?",
+                    (c_root,),
+                ).fetchall()
+            }
+        return [
+            (str(path), str(content_hash))
+            for path, content_hash in items
+            if existing.get(str(path)) != (str(content_hash), _PARSER_ANALYZER_VERSION)
+        ]
+
     def update_file(self, root: str, path: str, content_hash: str | None = None) -> dict[str, Any]:
         base = Path(canonical_root(root))
         target = (base / path).resolve(strict=False)
@@ -604,8 +889,8 @@ class CodeIndex:
         content_hash = content_hash or digest
         lang = self._lang(path)
         with self._lock, closing(self._connect()) as con:
-            row = con.execute("SELECT content_hash FROM files WHERE root=? AND path=?", (str(base), path)).fetchone()
-            if row and row[0] == content_hash:
+            row = con.execute("SELECT content_hash,analyzer_version FROM files WHERE root=? AND path=?", (str(base), path)).fetchone()
+            if row and row[0] == content_hash and str(row[1] or "") == _PARSER_ANALYZER_VERSION:
                 cached = self._parse_blob_get_with_report(content_hash, lang)
                 return {
                     "success": True, "cached": True, "path": path,
@@ -624,7 +909,7 @@ class CodeIndex:
             con.execute("BEGIN IMMEDIATE")
             for t in ("symbols", "refs", "edges"):
                 con.execute(f"DELETE FROM {t} WHERE root=? AND path=?", (str(base), path))
-            con.execute("INSERT OR REPLACE INTO files(root, path, content_hash, language, updated_at) VALUES(?,?,?,?,?)", (str(base), path, content_hash, lang, time.time()))
+            con.execute("INSERT OR REPLACE INTO files(root,path,content_hash,language,analyzer_version,updated_at) VALUES(?,?,?,?,?,?)", (str(base), path, content_hash, lang, _PARSER_ANALYZER_VERSION, time.time()))
             con.executemany(
                 "INSERT OR REPLACE INTO symbols(root, path, name, kind, line, end_line, container, name_path, signature, access, docstring) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 [(str(base), path, s["name"], s["kind"], s["line"], s["end_line"], s.get("container", ""), s.get("name_path", s["name"]), s.get("signature", ""), s.get("access", "public"), s.get("docstring", "")) for s in syms],
@@ -653,7 +938,16 @@ class CodeIndex:
             return {"success": True, "files_processed": 0, "cached": 0, "symbols": 0, "refs": 0, "edges": 0}
 
         with self._lock, closing(self._connect()) as con:
-            existing = dict(con.execute("SELECT path,content_hash FROM files WHERE root=?", (c_root,)).fetchall())
+            existing = {
+                str(row["path"]): (
+                    str(row["content_hash"] or ""),
+                    str(row["analyzer_version"] or ""),
+                )
+                for row in con.execute(
+                    "SELECT path,content_hash,analyzer_version FROM files WHERE root=?",
+                    (c_root,),
+                ).fetchall()
+            }
 
         candidates: list[tuple[str, str, str, list[str]]] = []
         cached = 0
@@ -667,7 +961,7 @@ class CodeIndex:
                 continue
             lang = self._lang(path)
             if supplied_hash:
-                if existing.get(path) == supplied_hash:
+                if existing.get(path) == (supplied_hash, _PARSER_ANALYZER_VERSION):
                     cached += 1
                     continue
                 # A clean new worktree can reuse a parse blob from another root.
@@ -680,7 +974,7 @@ class CodeIndex:
             except OSError:
                 continue
             content_hash = supplied_hash or digest
-            if existing.get(path) == content_hash:
+            if existing.get(path) == (content_hash, _PARSER_ANALYZER_VERSION):
                 cached += 1
                 continue
             candidates.append((path, content_hash, lang, lines))
@@ -768,7 +1062,7 @@ class CodeIndex:
                     **({"error_type": str(diagnostic["error_type"])} if diagnostic.get("error_type") else {}),
                 })
             paths_to_clean.append((c_root, path))
-            files_to_insert.append((c_root, path, content_hash, lang, now))
+            files_to_insert.append((c_root, path, content_hash, lang, _PARSER_ANALYZER_VERSION, now))
             syms_to_insert.extend((c_root, path, x["name"], x["kind"], x["line"], x["end_line"], x.get("container", ""), x.get("name_path", x["name"]), x.get("signature", ""), x.get("access", "public"), x.get("docstring", "")) for x in syms)
             refs_to_insert.extend((c_root, path, x["name"], x["line"], x.get("kind", "call")) for x in refs)
             edges_to_insert.extend((c_root, x["src"], x["dst"], x.get("kind", "reference"), path, x["line"]) for x in edges)
@@ -782,7 +1076,7 @@ class CodeIndex:
                 for table in ("symbols", "refs", "edges"):
                     assert table in _IDX_TABLES  # defence-in-depth whitelist
                     con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", paths_to_clean)  # noqa: S608
-                con.executemany("INSERT OR REPLACE INTO files(root,path,content_hash,language,updated_at) VALUES(?,?,?,?,?)", files_to_insert)
+                con.executemany("INSERT OR REPLACE INTO files(root,path,content_hash,language,analyzer_version,updated_at) VALUES(?,?,?,?,?,?)", files_to_insert)
                 con.executemany("INSERT OR REPLACE INTO symbols(root,path,name,kind,line,end_line,container,name_path,signature,access,docstring) VALUES(?,?,?,?,?,?,?,?,?,?,?)", syms_to_insert)
                 con.executemany("INSERT INTO refs(root,path,name,line,kind) VALUES(?,?,?,?,?)", refs_to_insert)
                 con.executemany("INSERT INTO edges(root,src,dst,kind,path,line) VALUES(?,?,?,?,?,?)", edges_to_insert)
