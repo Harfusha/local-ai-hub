@@ -2447,6 +2447,8 @@ def local_ai_coord(
             "checkpoint": checkpoint, "status": status, "reason": reason,
             "root": root, "ttl_seconds": ttl_seconds, "include_stale": include_stale,
         }
+        if action == "task_list":
+            task_kwargs["query"] = query
         if action == "task_create" and task:
             task_kwargs["task"] = task
         return _compact(CLIENT.coord(
