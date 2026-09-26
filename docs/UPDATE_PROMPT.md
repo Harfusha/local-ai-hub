@@ -135,4 +135,6 @@ Confirm:
 ```
 ### MCP response economy
 
+Keep live and generated schemas aligned: `local_ai_status.action` accepts `""`, `brief`, `cache`, `telemetry`, `full`, `agent_state`, `status`, `health`, `check`, and `info`; `detail` accepts `brief`, `cache`, `telemetry`, `full`, and `agent_state`.
+
 After updating, verify the generated schemas under the installation's `generated/` directory expose `max_response_tokens`, `response_profile`, and `reuse_key` on the existing Hub tools. These are installation artifacts, not checked-in source files. Treat generator output and configuration as trusted repository inputs; never copy tool fields from untrusted model output. Keep aggregate response budgeting enabled, preserve artifact-backed exact detail, and verify telemetry reports raw/projected/saved response estimates without prompt or source retention.

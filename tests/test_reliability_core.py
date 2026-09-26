@@ -421,10 +421,12 @@ def test_http_auth_json_limits_security_headers_and_binary_bundle(tmp_path: Path
         assert "recent_http" in live_status["observability"]
         status, _, _ = _request(base+"/api/command", method="POST", body=json.dumps({"action":"classify","command":"pytest -q"}).encode(), headers={**auth,"Content-Type":"application/json"})
         assert status == 200
+        assert _request(base+"/api/debug-traces?limit=10")[0] == 401
         status, _, body = _request(base+"/api/debug-traces?limit=10", headers=auth)
         traces = json.loads(body)
         assert status == 200 and traces["success"] is True and traces["items"]
         trace_id = traces["items"][0]["trace_id"]
+        assert _request(base+"/api/debug-traces/"+trace_id)[0] == 401
         status, _, body = _request(base+"/api/debug-traces/"+trace_id, headers=auth)
         detail = json.loads(body)
         assert status == 200 and detail["success"] is True

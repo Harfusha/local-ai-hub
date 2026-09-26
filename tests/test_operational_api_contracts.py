@@ -6,6 +6,8 @@ import time
 from contextlib import closing
 from types import SimpleNamespace
 
+import pytest
+
 from local_ai_hub import http_server
 from local_ai_hub.debug_traces import DebugTraceStore
 from local_ai_hub.telemetry import TelemetryStore
@@ -73,6 +75,19 @@ def test_db_query_enforces_row_and_byte_budgets(monkeypatch, tmp_path):
     assert len(result["rows"]) < 4
 
 
+def test_db_query_authorizer_denies_unapproved_sqlite_functions(monkeypatch, tmp_path):
+    db = tmp_path / "agent_state.sqlite3"
+    with closing(sqlite3.connect(db)) as con:
+        con.execute("CREATE TABLE marker (value INTEGER)")
+        con.commit()
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"server": {"state_dir": str(tmp_path)}}))
+
+    result = http_server.Handler._handle_db_query(None, "agent_state", "SELECT load_extension('not-loaded')")
+
+    assert result["success"] is False
+    assert result["error"] == "query execution failed"
+
+
 def test_db_query_deadline_reports_degraded_timeout(monkeypatch, tmp_path):
     db = tmp_path / "agent_state.sqlite3"
     with closing(sqlite3.connect(db)) as con:
@@ -94,16 +109,162 @@ def test_db_query_deadline_reports_degraded_timeout(monkeypatch, tmp_path):
     assert result["error"] == "query time budget exceeded"
 
 
+def test_telemetry_error_resolution_deadline_rolls_back(monkeypatch, tmp_path):
+    import local_ai_hub.telemetry as telemetry_module
+
+    store = TelemetryStore(tmp_path / "telemetry", enabled=True, flush_interval_seconds=0.01)
+    try:
+        store.record_http(action="/api/example", success=False, error_type="internal")
+        assert store.flush(1)
+        clock_values = iter([0.0, 0.0] + [2.0] * 20)
+        with monkeypatch.context() as patcher:
+            patcher.setattr(store, "flush", lambda timeout: True)
+            patcher.setattr(
+                telemetry_module,
+                "time",
+                SimpleNamespace(monotonic=lambda: next(clock_values), time=time.time),
+            )
+            result = store.resolve_errors(timeout_seconds=0.05)
+
+        assert result["success"] is False
+        assert result["retryable"] is True
+        with closing(store._connect()) as con:
+            assert con.execute("SELECT COUNT(*) FROM events WHERE success=0").fetchone()[0] == 1
+    finally:
+        store.close()
+
+
+def test_incident_resolution_deadline_rolls_back(monkeypatch, tmp_path):
+    import local_ai_hub.agent_incidents as incident_module
+    from local_ai_hub.agent_events import AgentStateStore
+    from local_ai_hub.agent_incidents import IncidentStore, ToolOutcome
+
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    store = IncidentStore(state_store)
+    incident = store.capture(
+        ToolOutcome(
+            tool_name="command",
+            command="python -m pytest",
+            error="database busy",
+            exit_code=1,
+            state_revision="test-rev",
+            evidence_ids=("ev-timeout",),
+        )
+    )
+    assert incident is not None
+    clock_values = iter([0.0, 0.0] + [2.0] * 20)
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            incident_module,
+            "time",
+            SimpleNamespace(monotonic=lambda: next(clock_values), time=time.time),
+        )
+        with pytest.raises(TimeoutError, match="incident resolution time budget exceeded"):
+            store.resolve_all(timeout_seconds=0.05)
+
+    assert store.list_incidents(resolved=False)
+
+
+def test_incident_resolution_rolls_back_when_audit_event_cannot_append(tmp_path, monkeypatch):
+    from local_ai_hub.agent_events import AgentStateStore
+    from local_ai_hub.agent_incidents import IncidentStore, ToolOutcome
+
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    store = IncidentStore(state_store)
+    incident = store.capture(
+        ToolOutcome(
+            tool_name="command",
+            command="python -m pytest",
+            error="database busy",
+            exit_code=1,
+            state_revision="test-rev",
+            evidence_ids=("ev-audit-timeout",),
+        )
+    )
+    assert incident is not None
+    monkeypatch.setattr(
+        state_store,
+        "_append_event_in_transaction",
+        lambda con, event: SimpleNamespace(retryable=True, error="database busy"),
+    )
+
+    with pytest.raises(TimeoutError, match="incident resolution time budget exceeded"):
+        store.resolve_all(timeout_seconds=0.05)
+
+    assert store.list_incidents(resolved=False)
+    with closing(sqlite3.connect(state_store.db_path)) as con:
+        assert con.execute("SELECT COUNT(*) FROM agent_events WHERE kind='incident.all_resolved'").fetchone()[0] == 0
+
+
+def test_resolve_all_errors_propagates_retryable_store_deadlines(tmp_path):
+    from local_ai_hub.services import LocalAIServices
+
+    class TimedOutTelemetry:
+        def resolve_errors(self, *, timeout_seconds):
+            assert 0 < timeout_seconds <= 0.05
+            return {"success": False, "degraded": True, "retryable": True}
+
+    class TimedOutIncidents:
+        def resolve_all(self, *, verified_fix, root_cause, timeout_seconds):
+            assert verified_fix == "Resolved by operator"
+            assert root_cause == "Operator manual resolve"
+            assert 0 < timeout_seconds <= 0.05
+            raise TimeoutError("incident resolution time budget exceeded")
+
+    service = object.__new__(LocalAIServices)
+    service.config = {"server": {"state_dir": str(tmp_path)}}
+    service.telemetry = TimedOutTelemetry()
+    service.incident_store = TimedOutIncidents()
+
+    result = service.resolve_all_errors(timeout_seconds=0.05)
+
+    assert result["success"] is False
+    assert result["degraded"] is True
+    assert result["retryable"] is True
+
+
+def test_resolve_all_errors_shares_one_deadline_across_stores(tmp_path, monkeypatch):
+    import local_ai_hub.services as services_module
+    from local_ai_hub.services import LocalAIServices
+
+    clock = {"now": 0.0}
+    captured = {}
+
+    class Telemetry:
+        def resolve_errors(self, *, timeout_seconds):
+            captured["telemetry"] = timeout_seconds
+            clock["now"] = 0.03
+            return {"success": True}
+
+    class Incidents:
+        def resolve_all(self, *, verified_fix, root_cause, timeout_seconds):
+            captured["incidents"] = timeout_seconds
+            return 0
+
+    service = object.__new__(LocalAIServices)
+    service.config = {"server": {"state_dir": str(tmp_path)}}
+    service.telemetry = Telemetry()
+    service.incident_store = Incidents()
+    monkeypatch.setattr(services_module, "time", SimpleNamespace(monotonic=lambda: clock["now"]))
+
+    result = service.resolve_all_errors(timeout_seconds=0.05)
+
+    assert captured["telemetry"] == pytest.approx(0.05)
+    assert captured["incidents"] == pytest.approx(0.02)
+    assert result["success"] is True
+
+
 def test_admin_action_policy_rejects_wrong_method_and_audits_metadata_only(monkeypatch):
     handler = object.__new__(http_server.Handler)
     handler.command = "GET"
     handler.path = "/api/maintenance/optimize_db"
     handler._authorization_succeeded = True
     sent = []
-    handler._send = lambda status, body: sent.append((status, body))
+    handler._send = lambda status, body, **kwargs: sent.append((status, body, kwargs.get("headers", {})))
 
     assert handler._authorize_admin_action("maintenance.optimize_db") is False
     assert sent[0][0] == 405
+    assert sent[0][2] == {"Allow": "POST"}
 
     audits = []
     telemetry = SimpleNamespace(record_system=lambda action, **event: audits.append((action, event)))
@@ -116,6 +277,80 @@ def test_admin_action_policy_rejects_wrong_method_and_audits_metadata_only(monke
     assert "prompt" not in audits[0][1]
     assert "source_text" not in audits[0][1]
     assert "path" not in audits[0][1]
+
+
+def test_admin_wrong_method_sends_allow_header_over_http(monkeypatch):
+    import http.client
+    import threading
+
+    class AdminGuardHandler(http_server.Handler):
+        def do_GET(self):
+            self._authorization_succeeded = True
+            self._authorize_admin_action("maintenance.optimize_db")
+
+    monkeypatch.setattr(http_server, "APP", None)
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), AdminGuardHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    connection = http.client.HTTPConnection(*server.server_address, timeout=2)
+    try:
+        connection.request("GET", "/api/maintenance/optimize_db")
+        response = connection.getresponse()
+        body = json.loads(response.read())
+
+        assert response.status == 405
+        assert response.getheader("Allow") == "POST"
+        assert body["status_code"] == 405
+    finally:
+        connection.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
+def test_retryable_error_resolution_returns_503_over_http(monkeypatch, tmp_path):
+    import http.client
+    import threading
+
+    class Services:
+        def resolve_all_errors(self):
+            return {"success": False, "degraded": True, "retryable": True}
+
+    class AdminHandler(http_server.Handler):
+        def _begin_trace(self, path):
+            self._telemetry_finished = True
+
+        def _require_authorized(self):
+            self._authorization_succeeded = True
+            return True
+
+    app = SimpleNamespace(
+        config={"server": {}, "observability": {"exclude_http_paths": []}},
+        services=Services(),
+        telemetry=SimpleNamespace(record_system=lambda *args, **kwargs: None),
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), AdminHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    connection = http.client.HTTPConnection(*server.server_address, timeout=2)
+    try:
+        connection.request(
+            "POST",
+            "/api/maintenance/resolve_errors",
+            body="{}",
+            headers={"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read())
+
+        assert response.status == 503
+        assert body["retryable"] is True
+    finally:
+        connection.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
 
 
 def test_admin_action_requires_exact_route_and_payload_action():
@@ -149,12 +384,16 @@ def test_status_action_aliases_match_live_and_generated_schemas(monkeypatch):
     assert (details | aliases) <= set(live["action"]["enum"])
 
     calls = []
-    status = {"hub_online": True, "version": "test", "scheduler": {}, "observability": {}, "runtime_stats": {}}
+    status = {"success": True, "hub_online": True, "version": "test", "scheduler": {}, "observability": {}, "runtime_stats": {}}
 
     class Client:
         def get(self, path):
             calls.append(path)
-            return status
+            if path == "/api/capabilities":
+                return {"capabilities": []}
+            if path.startswith("/api/telemetry/report"):
+                return {"success": True, "summary": {}}
+            return dict(status)
 
         def status(self, **kwargs):
             calls.append(("status", kwargs))

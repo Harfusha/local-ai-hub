@@ -843,7 +843,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["brief", "cache", "telemetry", "full", "agent_state"], "default": ""},
+                    "action": {"type": "string", "enum": ["", "brief", "cache", "telemetry", "full", "agent_state", "status", "health", "check", "info"], "default": ""},
                     "detail": {"type": "string", "enum": ["brief", "cache", "telemetry", "full", "agent_state"], "default": "brief"},
                     "scope": {"type": "string", "enum": ["process", "window"], "default": "process"},
                     "extra_fields": {"type": "array", "items": {"type": "string"}},

@@ -396,7 +396,12 @@ class DebugTraceStore:
                     raw_payload = str(event_row[3] or "")
                     payload_size = int(event_row[4] or 0)
                     payload = self._decode(raw_payload, {}) if payload_size <= event_preview_chars else {"truncated": True, "preview": raw_payload}
-                    event_truncated = event_truncated or payload_size > event_preview_chars
+                    stored_payload_truncated = (
+                        isinstance(payload, dict)
+                        and payload.get("truncated") is True
+                        and isinstance(payload.get("preview"), str)
+                    )
+                    event_truncated = event_truncated or payload_size > event_preview_chars or stored_payload_truncated
                     events.append({"seq": int(event_row[0]), "created_at": float(event_row[1]), "event_type": str(event_row[2]), "payload": payload})
                 thinking_char_cap = max(64, min(4096, self.max_detail_response_bytes // max(64, self.max_detail_events * 8)))
                 thinking_rows = con.execute(
@@ -409,10 +414,19 @@ class DebugTraceStore:
                 length_columns = {"request": "request_bytes", "effective_payload": "effective_payload_bytes", "output": "output_bytes", "response": "response_bytes"}
                 session_truncated = False
                 for key, length_key in length_columns.items():
-                    if int(row[length_key] or 0) > session_preview_chars:
+                    value = session.get(key)
+                    stored_field_truncated = (
+                        isinstance(value, dict)
+                        and value.get("truncated") is True
+                        and isinstance(value.get("preview"), str)
+                    )
+                    if key == "output" and isinstance(value, str):
+                        stored_field_truncated = value.endswith("[trace output truncated]")
+                    over_response_limit = int(row[length_key] or 0) > session_preview_chars
+                    if over_response_limit:
                         raw_column = {"request": "request_json", "effective_payload": "effective_payload_json", "output": "output_text", "response": "response_json"}[key]
                         session[key] = {"truncated": True, "preview": str(row[raw_column] or "")}
-                        session_truncated = True
+                    session_truncated = session_truncated or over_response_limit or stored_field_truncated
                     session.pop(length_key, None)
                 session["thinking"] = "".join(thinking_parts)[: self.max_session_text_bytes]
                 thinking_truncated = len(thinking_rows) > self.max_detail_events or any(len(part) >= thinking_char_cap for part in thinking_parts)
