@@ -62,6 +62,95 @@ def test_unsupported_chat_completions_rejects_before_payload_validation(live_api
     assert "messages" not in result["error"]
 
 
+def test_task_list_query_filters_contract_and_checkpoint_before_limit(live_api):
+    from local_ai_hub.agent_identity import ScopeContext
+    from local_ai_hub.agent_tasks import GoalContract
+
+    app, client = live_api
+
+    matching = client.create_task(
+        "goal-needle",
+        acceptance_criteria=["criterion-needle"],
+        task_id="query-match",
+    )
+    assert matching["success"] is True
+    checkpoint = client.post("/api/agent-state/tasks", {
+        "action": "checkpoint",
+        "task_id": "query-match",
+        "checkpoint": {
+            "phase": "phase-needle",
+            "next_action": "action-needle",
+            "affected_paths": ["path-needle"],
+            "blockers": ["blocker-needle"],
+        },
+    })
+    assert checkpoint["success"] is True
+    unrelated = client.create_task("Newest unrelated task", task_id="query-other")
+    assert unrelated["success"] is True
+
+    app.agent_tasks.create(
+        GoalContract(goal="Owner-only task"),
+        ScopeContext(),
+        task_id="query-owner",
+        actor="distinct-owner",
+    )
+    store_result = app.agent_tasks.list_tasks(query="BLOCKER-NEEDLE", limit=1)
+    assert [task.task_id for task in store_result] == ["query-match"]
+
+    queries = [
+        "query-match",
+        "goal-needle",
+        "criterion-needle",
+        "phase-needle",
+        "action-needle",
+        "path-needle",
+        "blocker-needle",
+    ]
+    for query in queries:
+        post_result = client.list_tasks(query=query.upper(), limit=1)
+        assert [item["task_id"] for item in post_result["tasks"]] == ["query-match"], query
+
+    owner_result = client.list_tasks(query="DISTINCT-OWNER", limit=1)
+    assert [item["task_id"] for item in owner_result["tasks"]] == ["query-owner"]
+
+    get_result = client.get("/api/agent-state/tasks?query=BLOCKER-NEEDLE&limit=1")
+    assert [task["task_id"] for task in get_result["tasks"]] == ["query-match"]
+
+    unfiltered = client.list_tasks(query="  ", limit=10)
+    assert {task["task_id"] for task in unfiltered["tasks"]} == {"query-match", "query-other", "query-owner"}
+
+
+def test_task_list_post_rejects_non_string_query(live_api):
+    _app, client = live_api
+
+    response = client.post("/api/agent-state/tasks", {"action": "list", "query": ["needle"]})
+
+    assert response["success"] is False
+    assert response["terminal"] is True
+    assert response["retryable"] is False
+    assert "query" in response["error"].lower()
+
+
+def test_coord_task_list_forwards_query(monkeypatch):
+    from local_ai_hub import mcp_server
+
+    captured = {}
+
+    class DummyClient:
+        def coord(self, action, **kwargs):
+            captured.update(action=action, kwargs=kwargs)
+            return {"success": True, "tasks": []}
+
+    monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+
+    result = mcp_server.local_ai_coord(action="task_list", query="needle")
+
+    assert result["success"] is True
+    assert captured["action"] == "task_list"
+    assert captured["kwargs"]["query"] == "needle"
+
+
 def test_lean_rag_description_lists_every_supported_action(monkeypatch):
     from local_ai_hub import mcp_server
 

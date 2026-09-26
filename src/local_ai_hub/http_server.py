@@ -1481,7 +1481,13 @@ class Handler(BaseHTTPRequestHandler):
                         pass
                 limit = int((query.get("limit") or [100])[0])
                 include_stale = str((query.get("include_stale") or ["false"])[0]).lower() in ("true", "1", "yes")
-                tasks = APP.agent_tasks.list_tasks(status=status_filter, limit=limit, include_stale=include_stale)
+                task_query = (query.get("query") or [""])[0]
+                tasks = APP.agent_tasks.list_tasks(
+                    status=status_filter,
+                    limit=limit,
+                    include_stale=include_stale,
+                    query=task_query,
+                )
                 self._send(200, {"success": True, "tasks": [t.to_dict() for t in tasks]}); return
             if path == "/api/agent-state/memory":
                 if not getattr(APP, "agent_memory", None) or not APP.agent_memory.state_store.enabled:
@@ -2398,7 +2404,20 @@ class Handler(BaseHTTPRequestHandler):
                             pass
                     limit = int(payload.get("limit", 100))
                     include_stale = bool(payload.get("include_stale", False))
-                    tasks = APP.agent_tasks.list_tasks(status=status_filter, limit=limit, include_stale=include_stale)
+                    task_query = payload.get("query")
+                    if task_query is not None and not isinstance(task_query, str):
+                        self._send(400, {
+                            "success": False,
+                            "error": "query must be a string",
+                            "terminal": True,
+                            "retryable": False,
+                        }); return
+                    tasks = APP.agent_tasks.list_tasks(
+                        status=status_filter,
+                        limit=limit,
+                        include_stale=include_stale,
+                        query=task_query,
+                    )
                     self._send(200, {"success": True, "tasks": [t.to_dict() for t in tasks]}); return
                 self._send(400, {"success": False, "error": f"unknown task action '{action}'", "terminal": True, "retryable": False}); return
             if path == "/api/agent-state/memory":
