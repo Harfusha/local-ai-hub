@@ -72,6 +72,50 @@ def test_full_payload_detail_marks_content_beyond_bounded_preview(tmp_path):
     assert len(detail["session"]["output"]["preview"]) < len(output)
 
 
+def test_full_payload_content_pages_reconstruct_retained_session_and_event_data(tmp_path):
+    store = DebugTraceStore(_config(
+        tmp_path,
+        max_session_text_bytes=2 * 1024 * 1024,
+        max_event_bytes=4096,
+        max_detail_response_bytes=4096,
+    ))
+    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    output = "start-秘密-😀-" + "x" * 5000 + "-end"
+    response = {"message": "結果-" + "y" * 1500}
+    event_payload = {"prompt": "入力-" + "z" * 1000}
+    store.event(trace_id, "model_request", event_payload)
+    store.update(trace_id, output=output)
+    store.finish(trace_id, state="done", response=response)
+
+    def collect(field):
+        parts = []
+        offset = 0
+        while True:
+            detail = store.detail(
+                trace_id,
+                full_payload=True,
+                content_field=field,
+                content_offset=offset,
+            )
+            assert detail["success"] is True
+            page = detail["content_page"]
+            assert len(json.dumps(detail, ensure_ascii=False).encode("utf-8")) <= store.max_detail_response_bytes
+            assert page["offset"] == offset
+            parts.append(page["text"])
+            if not page["has_more"]:
+                break
+            assert page["next_offset"] > offset
+            offset = page["next_offset"]
+        return "".join(parts)
+
+    assert collect("output") == output
+    assert json.loads(collect("response")) == response
+    assert json.loads(collect("event:1")) == event_payload
+    last_page = store.detail(trace_id, full_payload=True, content_field="output", content_offset=2**63 - 1)
+    assert last_page["success"] is True
+    assert last_page["content_page"]["offset"] == len(output)
+
+
 def test_detail_flags_event_payload_truncated_before_response_serialization(tmp_path):
     store = DebugTraceStore(_config(tmp_path, max_event_bytes=256, max_session_text_bytes=1024))
     trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
@@ -106,6 +150,60 @@ def test_trace_detail_since_seq_and_list_filters_are_bounded(tmp_path):
     listed = store.list(kind="async_job", agent="worker", limit=1, offset=0)
     assert listed["total"] == 1
     assert listed["items"][0]["trace_id"] == second
+
+
+def test_trace_detail_supports_bounded_backward_event_pages(tmp_path):
+    store = DebugTraceStore(_config(tmp_path))
+    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    for index in range(5):
+        store.event(trace_id, "progress", {"index": index})
+
+    newest_older_page = store.detail(trace_id, before_seq=6, limit=2)
+    oldest_page = store.detail(trace_id, before_seq=newest_older_page["events_before_seq"], limit=2)
+    first_page = store.detail(trace_id, before_seq=oldest_page["events_before_seq"], limit=2)
+
+    assert [event["seq"] for event in newest_older_page["events"]] == [4, 5]
+    assert newest_older_page["events_has_more"] is True
+    assert newest_older_page["events_before_seq"] == 4
+    assert [event["seq"] for event in oldest_page["events"]] == [2, 3]
+    assert oldest_page["events_has_more"] is True
+    assert [event["seq"] for event in first_page["events"]] == [1]
+    assert first_page["events_has_more"] is False
+
+
+def test_backward_page_size_trimming_does_not_claim_older_events(tmp_path):
+    store = DebugTraceStore(
+        _config(
+            tmp_path,
+            max_detail_response_bytes=4096,
+            max_event_bytes=16 * 1024,
+            max_session_text_bytes=16 * 1024,
+        )
+    )
+    trace_id = store.start(kind="async_job", tenant="tenant")
+    store.event(trace_id, "progress", {"payload": "x" * 5000})
+    encode = store._encode
+    store._encode = lambda value: encode(value) + (" " * 6000 if isinstance(value, dict) and value.get("events") else "")
+
+    detail = store.detail(trace_id, before_seq=2, limit=1, full_payload=True)
+
+    assert detail["events"] == []
+    assert detail["events_has_more"] is False
+
+
+def test_forward_page_size_trimming_preserves_cursor_for_omitted_events(tmp_path):
+    store = DebugTraceStore(_config(tmp_path, max_detail_response_bytes=4096))
+    trace_id = store.start(kind="async_job", tenant="tenant")
+    store.event(trace_id, "progress", {"index": 1})
+    store.event(trace_id, "progress", {"index": 2})
+    encode = store._encode
+    store._encode = lambda value: encode(value) + (" " * 6000 if isinstance(value, dict) and len(value.get("events", [])) > 1 else "")
+
+    detail = store.detail(trace_id, since_seq=0, limit=2)
+
+    assert [event["seq"] for event in detail["events"]] == [1]
+    assert detail["events_has_more"] is True
+    assert detail["next_seq"] == 1
 
 
 def test_trace_link_and_event_payload_limits_keep_trace_bounded(tmp_path):
@@ -162,7 +260,8 @@ def test_dashboard_and_favicon_are_monitor_paths():
     assert "/favicon.ico" in MONITOR_PATHS
     assert "When enabled, trace capture stores prompts, model output, request bodies, and responses" in DASHBOARD_HTML
     assert "stored records and the authenticated admin API may contain raw values" in DASHBOARD_HTML
-    assert "this page cannot fetch omitted content" in DASHBOARD_HTML
+    assert "Reveal loads retained content in bounded chunks" in DASHBOARD_HTML
+    assert "Content removed by storage limits at capture cannot be recovered" in DASHBOARD_HTML
 
 
 def test_http_trace_request_capture_redacts_nested_sensitive_fields():
@@ -232,7 +331,7 @@ def test_missing_debug_trace_detail_returns_not_found(monkeypatch):
     class DebugTraces:
         TERMINAL_STATES = set()
 
-        def detail(self, trace_id, *, since_seq, limit=100, full_payload=False):
+        def detail(self, trace_id, *, since_seq, limit=100, full_payload=False, content_field="", content_offset=0, before_seq=0):
             return {"success": False, "error": "trace not found"}
 
     class App:
@@ -251,3 +350,34 @@ def test_missing_debug_trace_detail_returns_not_found(monkeypatch):
     handler.do_GET()
 
     assert responses == [(404, {"success": False, "error": "trace not found"})]
+
+
+def test_debug_trace_route_forwards_bounded_content_page_cursor(monkeypatch):
+    class DebugTraces:
+        TERMINAL_STATES = set()
+        captured = None
+
+        def detail(self, trace_id, **kwargs):
+            self.captured = (trace_id, kwargs)
+            return {"success": True, "content_page": {"field": "output", "offset": 128}}
+
+    class App:
+        debug_traces = DebugTraces()
+
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/debug-traces/trace-1?full=1&content_field=output&content_offset=128"
+    handler.command = "GET"
+    handler._begin_trace = lambda path: None
+    handler._require_authorized = lambda: True
+    handler._authorization_succeeded = True
+    responses = []
+    handler._send = lambda status, data: responses.append((status, data))
+    monkeypatch.setattr(http_server, "APP", App())
+
+    handler.do_GET()
+
+    assert App.debug_traces.captured == (
+        "trace-1",
+        {"since_seq": 0, "limit": 100, "full_payload": True, "content_field": "output", "content_offset": 128, "before_seq": 0},
+    )
+    assert responses == [(200, {"success": True, "content_page": {"field": "output", "offset": 128}})]

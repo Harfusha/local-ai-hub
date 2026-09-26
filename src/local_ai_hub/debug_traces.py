@@ -352,14 +352,104 @@ class DebugTraceStore:
             preview = preview[:160]
         return " · ".join(part for part in (operation, preview) if part)
 
-    def detail(self, trace_id: str, *, since_seq: int = 0, limit: int = 100, full_payload: bool = False) -> dict[str, Any]:
+    def _content_page(self, trace_id: str, content_field: str, content_offset: int) -> dict[str, Any]:
+        session_columns = {
+            "request": ("request_json", "json"),
+            "effective_payload": ("effective_payload_json", "json"),
+            "output": ("output_text", "text"),
+            "response": ("response_json", "json"),
+        }
+        field = str(content_field or "")
+        event_match = re.fullmatch(r"event:([1-9][0-9]{0,9})", field)
+        if field in session_columns:
+            column, encoding = session_columns[field]
+            event_seq = None
+        elif event_match:
+            column, encoding = "payload_json", "json"
+            event_seq = int(event_match.group(1))
+        else:
+            return {"success": False, "error": "trace content field not found", "terminal": True}
+
+        try:
+            offset = min(2**63 - 2, max(0, int(content_offset)))
+        except (TypeError, ValueError, OverflowError):
+            offset = 0
+        page_chars = max(64, (self.max_detail_response_bytes - 2048) // 8)
+        try:
+            with closing(self._connect()) as con:
+                if event_seq is None:
+                    row = con.execute(
+                        f"SELECT length({column}),substr({column},?,?),CASE WHEN json_valid({column}) THEN json_extract({column},'$.truncated') ELSE 0 END FROM traces WHERE trace_id=?",
+                        (offset + 1, page_chars, trace_id),
+                    ).fetchone()
+                else:
+                    row = con.execute(
+                        "SELECT length(payload_json),substr(payload_json,?,?),CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,'$.truncated') ELSE 0 END FROM trace_events WHERE trace_id=? AND seq=?",
+                        (offset + 1, page_chars, trace_id, event_seq),
+                    ).fetchone()
+                if not row:
+                    return {"success": False, "error": "trace not found", "trace_id": trace_id, "terminal": True}
+                total_chars = max(0, int(row[0] or 0))
+                start = min(offset, total_chars)
+                text = str(row[1] or "")
+                next_offset = start + len(text)
+                has_more = next_offset < total_chars
+                storage_truncated = bool(row[2]) if encoding == "json" else False
+                if field == "output" and not has_more:
+                    storage_truncated = text.endswith("[trace output truncated]")
+                result = {
+                    "success": True,
+                    "trace_id": trace_id,
+                    "full_payload_requested": True,
+                    "content_page": {
+                        "field": field,
+                        "encoding": encoding,
+                        "offset": start,
+                        "next_offset": next_offset,
+                        "total_chars": total_chars,
+                        "has_more": has_more,
+                        "storage_truncated": storage_truncated,
+                        "text": text,
+                    },
+                }
+                result["response_bytes"] = 0
+                for _ in range(3):
+                    measured = len(self._encode(result).encode("utf-8"))
+                    if result["response_bytes"] == measured:
+                        break
+                    result["response_bytes"] = measured
+                if int(result["response_bytes"]) > self.max_detail_response_bytes:
+                    return {"success": False, "error": "trace content page exceeds response budget", "trace_id": trace_id, "retryable": True}
+                return result
+        except sqlite3.Error:
+            return {"success": False, "error": "trace store unavailable", "trace_id": trace_id, "retryable": True}
+
+    def detail(
+        self,
+        trace_id: str,
+        *,
+        since_seq: int = 0,
+        limit: int = 100,
+        full_payload: bool = False,
+        content_field: str = "",
+        content_offset: int = 0,
+        before_seq: int = 0,
+    ) -> dict[str, Any]:
         trace_id = str(trace_id or "")[:160]
         if not trace_id:
             return {"success": False, "error": "trace not found", "terminal": True}
+        if content_field:
+            if not full_payload:
+                return {"success": False, "error": "full payload access required", "terminal": True}
+            return self._content_page(trace_id, content_field, content_offset)
         try:
             cursor = max(0, int(since_seq))
         except (TypeError, ValueError, OverflowError):
             cursor = 0
+        try:
+            backward_cursor = min(2**63 - 1, max(0, int(before_seq)))
+        except (TypeError, ValueError, OverflowError):
+            backward_cursor = 0
         try:
             bounded_limit = max(1, min(self.max_detail_events, int(limit)))
         except (TypeError, ValueError, OverflowError):
@@ -384,12 +474,21 @@ class DebugTraceStore:
                 ).fetchone()
                 if not row:
                     return {"success": False, "error": "trace not found", "trace_id": trace_id, "terminal": True}
-                event_rows = con.execute(
-                    """SELECT seq,created_at,event_type,substr(payload_json,1,?),length(payload_json)
-                       FROM trace_events WHERE trace_id=? AND seq>? ORDER BY seq ASC LIMIT ?""",
-                    (event_preview_chars, trace_id, cursor, bounded_limit + 1),
-                ).fetchall()
-                has_more = len(event_rows) > bounded_limit
+                if backward_cursor:
+                    backward_rows = con.execute(
+                        """SELECT seq,created_at,event_type,substr(payload_json,1,?),length(payload_json)
+                           FROM trace_events WHERE trace_id=? AND seq<? ORDER BY seq DESC LIMIT ?""",
+                        (event_preview_chars, trace_id, backward_cursor, bounded_limit + 1),
+                    ).fetchall()
+                    has_more = len(backward_rows) > bounded_limit
+                    event_rows = list(reversed(backward_rows[:bounded_limit]))
+                else:
+                    event_rows = con.execute(
+                        """SELECT seq,created_at,event_type,substr(payload_json,1,?),length(payload_json)
+                           FROM trace_events WHERE trace_id=? AND seq>? ORDER BY seq ASC LIMIT ?""",
+                        (event_preview_chars, trace_id, cursor, bounded_limit + 1),
+                    ).fetchall()
+                    has_more = len(event_rows) > bounded_limit
                 events = []
                 event_truncated = False
                 for event_row in event_rows[:bounded_limit]:
@@ -434,6 +533,8 @@ class DebugTraceStore:
                     "success": True, "session": session, "events": events,
                     "next_seq": events[-1]["seq"] if events else cursor,
                     "has_more": has_more or len(thinking_rows) > self.max_detail_events,
+                    "events_has_more": has_more,
+                    "events_before_seq": events[0]["seq"] if events else backward_cursor,
                     "truncated": event_truncated or session_truncated or thinking_truncated,
                     "payload_truncated": event_truncated or session_truncated or thinking_truncated,
                     "full_payload_requested": bool(full_payload),
@@ -455,8 +556,11 @@ class DebugTraceStore:
                 while response_size() > response_limit and events:
                     events.pop()
                     result["has_more"] = True
+                    if not backward_cursor:
+                        result["events_has_more"] = True
                     result["truncated"] = True
                     result["next_seq"] = events[-1]["seq"] if events else cursor
+                    result["events_before_seq"] = events[0]["seq"] if events else backward_cursor
                 if response_size() > response_limit:
                     for key in ("request", "effective_payload", "response", "output", "thinking"):
                         value = session.get(key)
@@ -469,7 +573,9 @@ class DebugTraceStore:
                 if response_size() > response_limit:
                     result["events"] = []
                     result["has_more"] = bool(result["has_more"] or has_more)
+                    result["events_has_more"] = bool(result["events_has_more"] or has_more)
                     result["next_seq"] = last_selected_seq
+                    result["events_before_seq"] = int(event_rows[0][0]) if backward_cursor and event_rows else backward_cursor
                     result["truncated"] = True
                     result["session"] = {
                         key: str(session.get(key, ""))[:256]

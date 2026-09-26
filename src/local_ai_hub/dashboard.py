@@ -820,7 +820,8 @@ let lastDashboardStatusSnapshot=null;
 let lastDashboardStatusChanged=false;
 let hardwareRefreshPending=false;
 function shouldRefreshDashboardStatus(status){
-  const snapshot=JSON.stringify(status);
+  const stableStatus={...(status||{})};delete stableStatus.status_age_ms;delete stableStatus.snapshot_cached;
+  const snapshot=JSON.stringify(stableStatus);
   if(snapshot===lastDashboardStatusSnapshot)return false;
   lastDashboardStatusSnapshot=snapshot;
   return true;
@@ -2665,34 +2666,91 @@ function traceHumanTitle(model){
   if(titleEl)titleEl.textContent=traceHumanTitle(model);
   if(liveEl){liveEl.textContent=d?.terminal?'finished':'● live · updating';liveEl.className='tiny '+(d?.terminal?'ok':'trace-running');}
   const state=model.lifecycle.state,displayState=traceStatus(s),stateClass=(displayState==='failed'||displayState==='error')?'bad':(displayState==='interrupted'?'warn':(d?.terminal?'ok':'warn'));
-  const revealLabel=traceRevealRedactedDetails?'Hide unredacted details':'Reveal redacted details',revealState=traceRevealRedactedDetails?'Unredacted values visible in this browser session.':'Recognized sensitive values are masked in this dashboard by default.',traceRetentionNotice='<div class="trace-content-notice" role="note" style="padding:10px 12px;margin:8px 0;border:1px solid var(--warn);border-radius:10px;color:var(--muted);font-size:12px">When enabled, trace capture stores prompts, model output, request bodies, and responses within configured size and retention limits. The dashboard masks recognized sensitive values for display only; stored records and the authenticated admin API may contain raw values. Reveal shows stored values in this browser.</div>',contentNotice=d?.payload_truncated?'<div class="trace-content-notice" role="note" style="padding:10px 12px;margin:8px 0;border:1px solid var(--warn);border-radius:10px;color:var(--muted);font-size:12px">Trace content was truncated by a storage or response limit. Reveal requests one larger bounded response. If this notice remains, this page cannot fetch omitted content. Storage caps may have removed content at capture.</div>':'';
+  const revealLabel=traceRevealRedactedDetails?'Hide unredacted details':'Reveal redacted details',revealState=traceRevealRedactedDetails?'Unredacted values visible in this browser session.':'Recognized sensitive values are masked in this dashboard by default.',traceRetentionNotice='<div class="trace-content-notice" role="note" style="padding:10px 12px;margin:8px 0;border:1px solid var(--warn);border-radius:10px;color:var(--muted);font-size:12px">When enabled, trace capture stores prompts, model output, request bodies, and responses within configured size and retention limits. The dashboard masks recognized sensitive values for display only; stored records and the authenticated admin API may contain raw values. Reveal shows stored values in this browser.</div>',contentNotice=d?.full_payload_error?`<div class="trace-content-notice" role="note" style="padding:10px 12px;margin:8px 0;border:1px solid var(--warn);border-radius:10px;color:var(--muted);font-size:12px">Full trace retrieval stopped: ${esc(d.full_payload_error)}. More content remains available through the paged debug trace API.</div>`:d?.payload_truncated?'<div class="trace-content-notice" role="note" style="padding:10px 12px;margin:8px 0;border:1px solid var(--warn);border-radius:10px;color:var(--muted);font-size:12px">Trace detail responses are paged to stay within the configured response cap. Reveal loads retained content in bounded chunks, up to 8 MiB of text per Reveal action. Content removed by storage limits at capture cannot be recovered.</div>':'';
+  const historyControls=d?.has_older_events||d?.has_newer_events?`<div class="trace-metrics" aria-label="Trace event history">${d?.has_older_events?'<button type="button" class="btn" data-trace-event-page="older">Load older events</button>':''}${d?.has_newer_events?'<button type="button" class="btn" data-trace-event-page="newer">Load newer events</button>':''}</div>`:'';
   const header=`<div class="trace-inspector-head"><div><div class="trace-kicker">Request trace</div><strong>${esc(traceHumanTitle(model))}</strong><div class="tiny">${esc(s.action||s.source||'Trace')} · ${esc(s.agent||'unknown actor')}${s.model?` · ${esc(s.model)}`:''}</div></div><div class="trace-inspector-context"><span class="trace-project-label">${esc(model.project||'Project not recorded')}</span><span class="badge ${stateClass}">${esc(state)}</span></div></div><div class="trace-metrics"><span>${esc(model.project||'Project not recorded')}</span><button type="button" class="btn" data-trace-reveal aria-pressed="${traceRevealRedactedDetails}" aria-describedby="trace-reveal-status">${esc(revealLabel)}</button><span id="trace-reveal-status" class="tiny" aria-live="polite">${esc(revealState)}</span></div>`;
   const panels=model.panels.filter(panel=>panel.available),universalSummary=traceSummary(model,unavailableCopy),panelMarkup=panels.map(panel=>{const selected=panel.id===traceView,content=selected?panel.render():'';return `<div id="trace-panel-${esc(panel.id)}" class="trace-view" role="tabpanel" aria-labelledby="trace-tab-${esc(panel.id)}"${selected?'':' hidden'}>${content}</div>`}).join('');
    const presentationMarkup=renderTracePresentation(model),primaryMarkup=tracePrimaryFallback(presentationMarkup,panels,model);
    const optionalMarkup=`<details class="trace-optional-details" id="traceTechnicalDetails"${traceOptionalDetailsOpen?' open':''}><summary>Technical details · ${panels.length} optional views</summary><div class="trace-optional-body">${universalSummary}<nav class="trace-tabs" role="tablist" aria-label="Trace views">${panels.map(panel=>traceTab(panel.label,panel.id)).join('')}</nav>${panelMarkup}</div></details>`;
    const traceBodyEl=$('tracePageBody');
-  if(traceBodyEl){traceBodyEl.className='trace-page-body';traceBodyEl.innerHTML=`<div class="human-shell">${header}${traceRetentionNotice}${contentNotice}${primaryMarkup}${optionalMarkup}</div>`;}
+  if(traceBodyEl){traceBodyEl.className='trace-page-body';traceBodyEl.innerHTML=`<div class="human-shell">${header}${historyControls}${traceRetentionNotice}${contentNotice}${primaryMarkup}${optionalMarkup}</div>`;}
     const restore=()=>{restoreTracePrimaryGroups($('tracePageBody'),primaryGroupsState);restoreTraceCollapsibleDetails($('tracePageBody'),collapsibleDetailsState);restoreTraceThinkingDetails($('tracePageBody'),thinkingDetailsOpen);restoreTraceScrollPositions($('tracePageBody'),scrollPositions);const nextMain=$('tracePageBody')?.closest('.trace-main');if(nextMain){nextMain.scrollTop=mainScrollTop;nextMain.scrollLeft=mainScrollLeft}};
    if(window.requestAnimationFrame)window.requestAnimationFrame(restore);else restore();
 }
 function setTraceView(view){if(!activeTraceData)return;const model=traceDisplayModel(activeTraceData);if(!model.panels.some(panel=>panel.available&&panel.id===view))return;traceView=view;renderTraceDetail(activeTraceData)}
+function appendBoundedTraceEvents(target,page,limit=traceEventBufferLimit){
+  const incoming=Array.isArray(page)?page:[];target.push(...incoming);if(target.length>limit)target.splice(0,target.length-limit);return incoming.length;
+}
+const traceRevealMaxBytes=8*1024*1024;
+async function fetchTraceContentPages(traceId,field,budget={used:0,limit:traceRevealMaxBytes}){
+  let offset=0;const chunks=[];let encoding='text',storageTruncated=false;
+  for(;;){
+    const path='/api/debug-traces/'+encodeURIComponent(traceId)+'?full=1&content_field='+encodeURIComponent(field)+'&content_offset='+offset;
+    const response=await apiFetch(path,{cache:'no-store'}),data=await response.json();
+    if(!data.success||!data.content_page)throw new Error(data.error||'Trace content page unavailable');
+    const page=data.content_page;if(Number(page.offset)!==offset)throw new Error('Trace content cursor changed');
+    encoding=page.encoding||encoding;storageTruncated=storageTruncated||Boolean(page.storage_truncated);const pageText=String(page.text||''),pageBytes=pageText.length*2;if(budget.used+pageBytes>budget.limit)throw new Error('Dashboard reveal limit exceeded (8 MiB); use the paged debug trace API for remaining content');budget.used+=pageBytes;chunks.push(pageText);
+    if(!page.has_more)break;
+    const next=Number(page.next_offset);if(!Number.isSafeInteger(next)||next<=offset)throw new Error('Trace content cursor did not advance');offset=next;
+  }
+  const text=chunks.join('');
+  if(encoding==='text')return {value:text,storageTruncated:storageTruncated||text.endsWith('[trace output truncated]')};
+  if(!text)return {value:{},storageTruncated};
+  try{const value=JSON.parse(text);return {value,storageTruncated:storageTruncated||Boolean(value&&typeof value==='object'&&value.truncated===true&&typeof value.preview==='string')}}
+  catch{return {value:{},storageTruncated:true}}
+}
+async function fetchFullTracePayload(traceId){
+  let cursor=0,more=true,first=null,eventsSeen=0;const events=[],revealBudget={used:0,limit:traceRevealMaxBytes};
+  while(more){
+    const path='/api/debug-traces/'+encodeURIComponent(traceId)+'?since_seq='+cursor+'&limit=500&full=1';
+    const response=await apiFetch(path,{cache:'no-store'}),data=await response.json();
+    if(!data.success)throw new Error(data.error||'Trace detail unavailable');
+    if(!first)first=data;
+    eventsSeen+=appendBoundedTraceEvents(events,data.events);
+    const next=Number(data.next_seq||cursor);more=Boolean(data.events_has_more);
+    if(more&&next<=cursor)throw new Error('Trace event cursor did not advance');
+    cursor=next;
+  }
+  const visibleEvents=events,session={...(first?.session||{})};let storedTruncation=false;
+  for(const field of ['request','effective_payload','output','response']){
+    const loaded=await fetchTraceContentPages(traceId,field,revealBudget);session[field]=loaded.value;storedTruncation=storedTruncation||loaded.storageTruncated;
+  }
+  for(const event of visibleEvents){
+    const loaded=await fetchTraceContentPages(traceId,'event:'+event.seq,revealBudget);event.payload=loaded.value;storedTruncation=storedTruncation||loaded.storageTruncated;
+  }
+  return {...first,session,events:visibleEvents,next_seq:cursor,events_has_more:false,events_before_seq:visibleEvents[0]?.seq||0,has_older_events:eventsSeen>visibleEvents.length,has_newer_events:false,full_payload_requested:true,payload_truncated:storedTruncation,truncated:storedTruncation};
+}
+async function loadTraceEventPage(direction){
+  if(!activeTraceId||!traceEvents.length)return;
+  const older=direction==='older',firstSeq=Number(traceEvents[0]?.seq||0),lastSeq=Number(traceEvents[traceEvents.length-1]?.seq||0),cursor=older?firstSeq:lastSeq;
+  if(!cursor)return;
+  try{
+    const pageCursor=older?'before_seq='+cursor:'since_seq='+cursor;
+    const response=await apiFetch('/api/debug-traces/'+encodeURIComponent(activeTraceId)+'?'+pageCursor+'&limit=500&full='+(traceRevealRedactedDetails?'1':'0'),{cache:'no-store'}),data=await response.json();
+    if(!data.success)throw new Error(data.error||'Trace event page unavailable');
+    const events=Array.isArray(data.events)?data.events:[];let storedTruncation=false;
+    if(traceRevealRedactedDetails){
+      const revealBudget={used:0,limit:traceRevealMaxBytes};for(const event of events){const loaded=await fetchTraceContentPages(activeTraceId,'event:'+event.seq,revealBudget);event.payload=loaded.value;storedTruncation=storedTruncation||loaded.storageTruncated;}
+    }
+    if(!events.length)return;
+    traceEvents=events;const more=Boolean(data.events_has_more);
+    activeTraceData={...activeTraceData,...data,session:activeTraceData.session,events:traceEvents,events_total:traceEventTotal,events_before_seq:events[0].seq,has_older_events:older?more:Boolean(activeTraceData.has_older_events),has_newer_events:older?true:more,payload_truncated:Boolean(activeTraceData.payload_truncated||storedTruncation)};
+    renderTraceDetail(activeTraceData);
+  }catch(error){openModal({error:String(error?.message||error)},'Trace history unavailable');}
+}
 async function toggleTraceReveal(){
   if(!activeTraceData)return;
   const reveal=!traceRevealRedactedDetails;
-  if(reveal&&activeTraceData.payload_truncated&&!activeTraceData.full_payload_requested&&activeTraceId&&traceFullPayloadInFlightId!==activeTraceId){
+  if(reveal&&activeTraceId&&(!activeTraceData.full_payload_requested||activeTraceData.full_payload_error)&&traceFullPayloadInFlightId!==activeTraceId){
     const requestingTraceId=activeTraceId;
     traceFullPayloadInFlightId=requestingTraceId;
     try{
-      const r=await apiFetch('/api/debug-traces/'+encodeURIComponent(requestingTraceId)+'?since_seq=0&limit=100&full=1',{cache:'no-store'}),d=await r.json();
+      const d=await fetchFullTracePayload(requestingTraceId);
       if(activeTraceId!==requestingTraceId)return;
-      if(d.success){
-        const bySeq=new Map((traceEvents||[]).map(event=>[event.seq,event]));
-        for(const event of Array.isArray(d.events)?d.events:[])bySeq.set(event.seq,event);
-        traceEvents=Array.from(bySeq.values()).sort((a,b)=>a.seq-b.seq).slice(-traceEventBufferLimit);
-        traceEventTotal=Math.max(traceEventTotal,Number(d.events_total||d.next_seq||0));
-        activeTraceData={...activeTraceData,...d,events:traceEvents,events_total:traceEventTotal};
-      }
-    }catch{}finally{if(traceFullPayloadInFlightId===requestingTraceId)traceFullPayloadInFlightId='';}
+      traceEvents=d.events||[];traceSeq=Math.max(traceSeq,Number(d.next_seq||0));traceEventTotal=Math.max(traceEventTotal,traceSeq);
+      activeTraceData={...activeTraceData,...d,events:traceEvents,events_total:traceEventTotal,full_payload_error:''};
+    }catch(error){if(activeTraceId===requestingTraceId)activeTraceData={...activeTraceData,full_payload_error:String(error?.message||error),payload_truncated:true};}
+    finally{if(traceFullPayloadInFlightId===requestingTraceId)traceFullPayloadInFlightId='';}
   }
   traceRevealRedactedDetails=reveal;renderTraceDetail(activeTraceData);
 }
@@ -2722,8 +2780,8 @@ async function openTrace(id){
       const sinceSeq=traceSeq,r=await apiFetch('/api/debug-traces/'+encodeURIComponent(pollTraceId)+'?since_seq='+sinceSeq,{cache:'no-store'}),d=await r.json();
       if(pollGeneration!==tracePollGeneration||pollTraceId!==activeTraceId)return;
       if(d.success){
-        traceSeq=traceFiniteSequence(d.next_seq,traceSeq);traceEventTotal=Math.max(traceEventTotal,traceSeq,Number(d.events_total||d.eventsTotal||0));const next=traceAppendEvents(traceEvents,d.events,traceEventTotal);traceEvents=next.events;traceEventTotal=next.eventsTotal;renderTraceDetail({...d,events:traceEvents,events_total:traceEventTotal});
-        if(d.terminal&&pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){clearInterval(traceTimer);traceTimer=null}
+        traceSeq=traceFiniteSequence(d.next_seq,traceSeq);traceEventTotal=Math.max(traceEventTotal,traceSeq,Number(d.events_total||d.eventsTotal||0));const next=traceAppendEvents(traceEvents,d.events,traceEventTotal);traceEvents=next.events;traceEventTotal=next.eventsTotal;renderTraceDetail({...d,events:traceEvents,events_total:traceEventTotal,has_older_events:traceEventTotal>traceEvents.length,events_before_seq:traceEvents[0]?.seq||0,has_newer_events:false});
+        if(d.terminal&&!d.events_has_more&&pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){clearInterval(traceTimer);traceTimer=null}
       }else if(d.retryable){const lEl=$('tracePageLive');if(lEl){lEl.textContent='● live · retrying…';lEl.className='tiny trace-running';}return;
       }else{openModal(d,'Trace error');clearInterval(traceTimer);traceTimer=null}
     }catch(e){if(pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){const lEl=$('tracePageLive');if(lEl)lEl.textContent='refresh failed: '+e.message;}
@@ -4487,6 +4545,7 @@ document.addEventListener('click',e=>{
   const expandAll=e.target.closest?.('[data-trace-expand-all]');if(expandAll){setTraceDetailsOpen(true);return}
   const collapseAll=e.target.closest?.('[data-trace-collapse-all]');if(collapseAll){setTraceDetailsOpen(false);return}
   const reveal=e.target.closest?.('[data-trace-reveal]');if(reveal){toggleTraceReveal();return}
+  const eventPage=e.target.closest?.('[data-trace-event-page]');if(eventPage){loadTraceEventPage(eventPage.dataset.traceEventPage);return}
   const tab=e.target.closest?.('[data-trace-view]');if(tab){setTraceView(tab.dataset.traceView);return}
   const pageTrace=e.target.closest?.('[data-trace-page-id]');if(pageTrace){openTrace(pageTrace.dataset.tracePageId);return}
   const back=e.target.closest?.('[data-trace-back]');if(back){switchTab('work');return}
@@ -5213,14 +5272,13 @@ $('eventSeverity')?.addEventListener('change',()=>renderEvents([]));
 $('eventSource')?.addEventListener('input',()=>renderEvents([]));
 async function pollEvents(){if(eventsPollInFlight)return;eventsPollInFlight=true;try{const r=await apiFetch('/api/live?after='+cursor+'&limit=200',{cache:'no-store'}),d=await r.json();cursor=Number(d.cursor||cursor);renderEvents(d.events||[])}catch{}finally{eventsPollInFlight=false}}
 
-probeHealth();pollStatus();pollEvents();pollTraces();
+probeHealth();pollEvents();pollTraces();
 let isVisible=!document.hidden;
 document.addEventListener('visibilitychange',()=>{
   isVisible=!document.hidden;
-  if(isVisible){probeHealth();pollStatus();pollEvents();pollTraces();}
+  if(isVisible){probeHealth();pollEvents();pollTraces();}
 });
 setInterval(()=>{if(isVisible)probeHealth();},5000);
-setInterval(()=>{if(isVisible)pollStatus();},1000);
 setInterval(()=>{if(isVisible)pollEvents();},1000);
 setInterval(()=>{if(isVisible)pollTraces();},2000);
 
