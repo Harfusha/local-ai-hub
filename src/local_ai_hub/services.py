@@ -1235,7 +1235,11 @@ class LocalAIServices:
             "temperature": temperature, "source": source, "priority": priority,
             "route": dict(route),
         })
-        self.conversations.reserve(conversation.conversation_id, tenant)
+        if conversation is None:
+            return self._conversation_error("", "conversation capacity reached")
+        reserved, error = self.conversations.reserve(conversation.conversation_id, tenant)
+        if reserved is None:
+            return self._conversation_error(conversation.conversation_id, error or "conversation not found")
         try:
             result = self._generate(
                 route["model"], prompt, system, max_tokens, temperature, tenant, source, priority,
@@ -1247,7 +1251,11 @@ class LocalAIServices:
         if not result.get("success", "error" not in result):
             self.conversations.discard(conversation.conversation_id, tenant)
             return result
-        self.conversations.complete(conversation.conversation_id, tenant, prompt, str(result.get("text", "")))
+        if not self.conversations.complete(conversation.conversation_id, tenant, prompt, str(result.get("text", ""))):
+            return self._conversation_error(
+                conversation.conversation_id,
+                "conversation expired or was lost while model was running",
+            )
         result["conversation_id"] = conversation.conversation_id
         result["route"] = dict(route)
         return result
@@ -1281,7 +1289,11 @@ class LocalAIServices:
         if not result.get("success", "error" not in result):
             self.conversations.abort(conversation_id, tenant)
             return result
-        self.conversations.complete(conversation_id, tenant, user_prompt, str(result.get("text", "")))
+        if not self.conversations.complete(conversation_id, tenant, user_prompt, str(result.get("text", ""))):
+            return self._conversation_error(
+                conversation_id,
+                "conversation expired or was lost while model was running",
+            )
         result["conversation_id"] = conversation_id
         result["route"] = dict(settings["route"])
         return result
@@ -1295,6 +1307,8 @@ class LocalAIServices:
         if str(args.get("profile", "")).strip():
             return self.delegate_profile(args, tenant)
         task = str(args.get("task") or args.get("prompt") or "")
+        if bool(args.get("conversation", False)) and not task.strip():
+            return self._conversation_error("", "task is required")
         context = str(args.get("context", ""))
         task_type_override = str(args.get("task_type", "auto"))
         complexity_override = str(args.get("complexity", "auto"))

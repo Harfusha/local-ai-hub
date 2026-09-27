@@ -134,6 +134,32 @@ def test_mcp_compact_applies_aggregate_budget(monkeypatch) -> None:
     assert result["response_budget"]["truncated"] is True
 
 
+def test_async_job_status_compaction_preserves_lifecycle_fields(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_server, "_REUSE_DIGESTS", mcp_server.OrderedDict())
+    value = {
+        "success": True,
+        "job_id": "job-123",
+        "state": "completed",
+        "artifact_id": "artifact-123",
+        "cancel_requested": False,
+        "wait_timeout_seconds": 0.0,
+        "results": [{"text": "x" * 2000} for _ in range(20)],
+    }
+    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set(_options(
+        max_response_tokens=180, tool="local_ai_task", reuse_key="async-status-budget",
+    ))
+    try:
+        result = mcp_server._compact(value, "status")
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
+
+    assert result["job_id"] == "job-123"
+    assert result["state"] == "completed"
+    assert result["artifact_id"] == "artifact-123"
+    assert result["cancel_requested"] is False
+    assert result["wait_timeout_seconds"] == 0.0
+
+
 def test_mcp_compact_reuses_unchanged_payload(monkeypatch) -> None:
     monkeypatch.setattr(mcp_server, "_REUSE_DIGESTS", mcp_server.OrderedDict())
     monkeypatch.setattr(mcp_server, "_REUSE_VALUES", mcp_server.OrderedDict())
