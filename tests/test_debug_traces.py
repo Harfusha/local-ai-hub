@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import time
 
+import pytest
+
 from local_ai_hub import http_server
 from local_ai_hub.debug_traces import DebugTraceStore
 
@@ -150,6 +152,18 @@ def test_trace_detail_since_seq_and_list_filters_are_bounded(tmp_path):
     listed = store.list(kind="async_job", agent="worker", limit=1, offset=0)
     assert listed["total"] == 1
     assert listed["items"][0]["trace_id"] == second
+
+
+@pytest.mark.parametrize("since_seq", [2**63 - 1, 2**63, 2**100])
+def test_trace_detail_clamps_forward_cursor_to_sqlite_integer_range(tmp_path, since_seq):
+    store = DebugTraceStore(_config(tmp_path))
+    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    store.event(trace_id, "progress", {"index": 1})
+
+    detail = store.detail(trace_id, since_seq=since_seq)
+
+    assert detail["success"] is True
+    assert detail["events"] == []
 
 
 def test_trace_detail_supports_bounded_backward_event_pages(tmp_path):

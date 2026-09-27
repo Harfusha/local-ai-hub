@@ -1946,7 +1946,7 @@ class TelemetryStore:
         except (TypeError, ValueError, OverflowError):
             limit = 100
         try:
-            cursor = max(0, int(before_id)) if before_id is not None else None
+            cursor = min(2**63 - 1, max(0, int(before_id))) if before_id is not None else None
         except (TypeError, ValueError, OverflowError):
             cursor = None
         with closing(self._connect()) as con:
