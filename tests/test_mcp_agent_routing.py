@@ -155,6 +155,28 @@ def test_coord_forwards_explicit_receipt_criterion_and_blackboard_identity(monke
     assert calls[1][1]["section"] == "review"
 
 
+def test_coord_memo_put_forwards_expected_version(monkeypatch, tmp_path):
+    calls = []
+
+    class _Client:
+        def post(self, endpoint, payload, **kwargs):
+            calls.append((endpoint, payload))
+            return {"success": True}
+
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", _Client())
+    result = local_ai_mcp.local_ai_coord(
+        action="memo_put",
+        root=str(tmp_path),
+        key="decision",
+        value="accepted",
+        expected_version=3,
+    )
+
+    assert result["success"] is True
+    assert calls[0][0] == "/api/memory/put"
+    assert calls[0][1]["expected_version"] == 3
+
+
 def test_empty_semantic_success_is_structured_retryable_failure():
     result = local_ai_mcp._quality_check_semantic_result(
         {"success": True, "model": "qwen2.5-coder:3b"}, task="review", context=""

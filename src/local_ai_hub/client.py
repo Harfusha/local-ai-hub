@@ -518,12 +518,15 @@ class HubClient:
             return self.post("/api/agent-state/tasks", payload)
         if act in ("memo_put", "memo_get", "memo_search", "memo_delete"):
             if act == "memo_put":
-                return self.post("/api/memory/put", {
+                payload = {
                     "root": kwargs.get("root", "."),
                     "key": kwargs.get("key", ""),
                     "value": kwargs.get("value", ""),
                     "ttl_seconds": kwargs.get("ttl_seconds", 604800),
-                })
+                }
+                if kwargs.get("expected_version") is not None:
+                    payload["expected_version"] = kwargs["expected_version"]
+                return self.post("/api/memory/put", payload)
             if act == "memo_get":
                 return self.post("/api/memory/get", {"root": kwargs.get("root", "."), "key": kwargs.get("key", "")})
             if act == "memo_search":

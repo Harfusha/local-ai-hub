@@ -75,6 +75,10 @@ When `[agent_state].enabled` is active, the compact MCP surface projects durable
 - `local_ai_task`: `candidate_create`, `candidate_promote`.
 - `local_ai_status`: `detail="agent_state"` for health and counts.
 - Privacy boundary: telemetry and agent state never store raw prompts, model outputs, secrets, or absolute file paths.
+## Shared workspace memo contract
+
+Treat workspace memos and leases as trusted-local shared coordination state; tenant labels are caller-supplied provenance, not identity or authorization. Workspace memos are keyed by canonical workspace and key. Use `expected_version` from a memo read when `memo_put` must reject stale overwrites; a `version_conflict` returns the current generation, so reread and reconcile before retrying. Omission retains last-writer-wins; deletion advances the generation while expiration does not.
+
 ## Aggregate response budgets
 
 Every public Hub tool now applies an aggregate agent-facing response budget after semantic projection. Default is approximately 3200 tokens. Use `max_response_tokens` for a bounded override; explicit values below 128 are rejected, never silently increased. Use `response_profile="minimal"|"compact"|"standard"|"debug"|"delta"` for intent, and a stable `reuse_key` for repeated logical queries. `delta` returns changed fields only; unchanged repeated results return a pointer envelope with IDs and summary instead of repeating payload data. Independent local-model work uses the existing `local_ai_task(action="batch")` path.

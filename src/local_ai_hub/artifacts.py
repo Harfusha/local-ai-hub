@@ -200,17 +200,32 @@ class ArtifactStore:
             raise ValueError("tenant label must be a string")
         return hashlib.sha256(tenant.encode("utf-8")).hexdigest()
 
+    @staticmethod
+    def _is_tenant_identity(value: str) -> bool:
+        return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+    @staticmethod
+    def _database_content_digest(database: sqlite3.Connection) -> bytes:
+        digest = hashlib.sha256()
+        for statement in database.iterdump():
+            digest.update(statement.encode("utf-8"))
+            digest.update(b"\n")
+        return digest.digest()
+
     def _create_migration_backup(self) -> None:
         """Create and verify one pre-migration SQLite backup without using the writer connection."""
         backup_path = self.path.with_name(self.path.name + _ARTIFACT_MIGRATION_BACKUP_SUFFIX)
         if backup_path.exists():
             if not backup_path.is_file():
                 raise sqlite3.DatabaseError("artifact migration backup path is not a file")
-            with closing(sqlite3.connect(str(backup_path))) as existing:
-                integrity = existing.execute("PRAGMA integrity_check").fetchone()
-            if integrity != ("ok",):
-                raise sqlite3.DatabaseError("artifact migration backup integrity check failed")
-            return
+            if not backup_path.is_symlink() and not backup_path.samefile(self.path):
+                with closing(sqlite3.connect(str(backup_path))) as existing:
+                    integrity = existing.execute("PRAGMA integrity_check").fetchone()
+                    if integrity != ("ok",):
+                        raise sqlite3.DatabaseError("artifact migration backup integrity check failed")
+                    with closing(sqlite3.connect(str(self.path))) as current:
+                        if self._database_content_digest(existing) == self._database_content_digest(current):
+                            return
 
         file_descriptor, temporary_name = tempfile.mkstemp(
             prefix=backup_path.name + ".",
@@ -272,6 +287,15 @@ class ArtifactStore:
                     if marker_value not in {"", "legacy-raw-v1", "sha256-v1"}:
                         raise sqlite3.DatabaseError("unsupported artifact tenant storage marker")
 
+                    primary_identity_conflict = False
+                    if marker_value == "sha256-v1" and full_schema.issubset(existing_columns):
+                        primary_identity_conflict = any(
+                            not self._is_tenant_identity(str(tenant))
+                            or str(tenant_identity) != str(tenant)
+                            for tenant, tenant_identity in con.execute(
+                                "SELECT tenant, tenant_identity FROM artifacts"
+                            )
+                        )
                     v2_repair_needed = False
                     if (
                         marker_value == "sha256-v1"
@@ -283,6 +307,10 @@ class ArtifactStore:
                             str(artifact_id): str(tenant)
                             for artifact_id, tenant in con.execute("SELECT artifact_id, tenant FROM artifacts")
                         }
+                        v2_repair_needed = any(
+                            not self._is_tenant_identity(source_tenant)
+                            for source_tenant in source_tenants.values()
+                        )
                         v2_columns = {str(row[1]) for row in con.execute("PRAGMA table_info(artifacts_v2)")}
                         if {"artifact_id", "tenant", "tenant_identity"}.issubset(v2_columns):
                             for artifact_id, tenant, tenant_identity in con.execute(
@@ -290,7 +318,9 @@ class ArtifactStore:
                             ):
                                 source_tenant = source_tenants.get(str(artifact_id))
                                 if source_tenant is not None and (
-                                    str(tenant) != source_tenant or str(tenant_identity) != source_tenant
+                                    not self._is_tenant_identity(source_tenant)
+                                    or str(tenant) != source_tenant
+                                    or str(tenant_identity) != source_tenant
                                 ):
                                     v2_repair_needed = True
                                     break
@@ -302,9 +332,12 @@ class ArtifactStore:
                             and not v2_exists
                         )
                         or v2_repair_needed
+                        or primary_identity_conflict
                     )
                     if migration_needs_backup:
                         self._create_migration_backup()
+                    if primary_identity_conflict:
+                        raise sqlite3.IntegrityError("artifact migration conflict for primary table tenant identity")
 
                     con.execute(
                         "CREATE TABLE IF NOT EXISTS artifact_schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
@@ -357,6 +390,10 @@ class ArtifactStore:
                             for legacy_row in legacy_rows:
                                 values = dict(zip(copied_columns, legacy_row))
                                 source_tenant = str(values["tenant"])
+                                if marker_value == "sha256-v1" and not self._is_tenant_identity(source_tenant):
+                                    raise sqlite3.IntegrityError(
+                                        f"artifact migration conflict for {values['artifact_id']}"
+                                    )
                                 optional_values = [values.get(column) for column in optional_columns]
                                 existing = con.execute(
                                     """SELECT tenant, tenant_identity, kind, text, mime_type, encoding,
@@ -372,11 +409,16 @@ class ArtifactStore:
                                         raise sqlite3.IntegrityError(
                                             f"artifact migration conflict for {values['artifact_id']}"
                                         )
-                                    # Source row already uses marker's raw or hashed representation.
-                                    if tuple(existing[:2]) != (source_tenant, source_tenant):
+                                    existing_tenants_match = all(
+                                        str(stored_tenant) == source_tenant
+                                        or self._tenant_identity(str(stored_tenant)) == source_tenant
+                                        for stored_tenant in existing[:2]
+                                    )
+                                    if not existing_tenants_match:
                                         raise sqlite3.IntegrityError(
                                             f"artifact migration conflict for {values['artifact_id']}"
                                         )
+                                    # Same-owner raw/hash representations are normalized below.
                                     continue
                                 con.execute(
                                     """INSERT INTO artifacts_v2(
