@@ -20,6 +20,26 @@ def _client(tmp_path):
     return HubClient(config_path=str(config), auto_start=False)
 
 
+def test_client_coord_memo_put_forwards_expected_version(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    calls = []
+
+    def capture_post(endpoint, payload, **kwargs):
+        calls.append((endpoint, payload))
+        return {"success": True}
+
+    monkeypatch.setattr(client, "post", capture_post)
+    result = client.coord(
+        "memo_put", root="repo", key="decision", value="accepted", expected_version=4
+    )
+
+    assert result["success"] is True
+    assert calls == [(
+        "/api/memory/put",
+        {"root": "repo", "key": "decision", "value": "accepted", "ttl_seconds": 604800, "expected_version": 4},
+    )]
+
+
 def test_client_reuses_one_http11_connection_for_sequential_requests(tmp_path, monkeypatch):
     class Response:
         status = 200

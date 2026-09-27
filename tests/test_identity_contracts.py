@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from contextlib import closing
+import os
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -48,6 +50,231 @@ def test_workspace_memos_report_shared_scope_and_isolate_repositories(tmp_path):
     assert store.get(str(repo_b), "decision")["success"] is False
     assert store.search(str(repo_b))["results"] == []
 
+
+def test_workspace_memo_expected_version_rejects_stale_overwrite(tmp_path):
+    store = WorkspaceMemoryStore(tmp_path / "state")
+    root = tmp_path / "repo"
+    root.mkdir()
+
+    created = store.put(str(root), "decision", "first", "identity-a", expected_version=0)
+    assert created["version"] == 1
+    assert store.get(str(root), "decision")["version"] == 1
+
+    winning = store.put(str(root), "decision", "second", "identity-b", expected_version=1)
+    assert winning["version"] == 2
+
+    stale = store.put(str(root), "decision", "stale", "identity-c", expected_version=1)
+    assert stale["success"] is False
+    assert stale["version_conflict"] is True
+    assert stale["expected_version"] == 1
+    assert stale["current_version"] == 2
+    current = store.get(str(root), "decision")
+    assert current["value"] == "second"
+    assert current["tenant"] == "identity-b"
+    assert current["version"] == 2
+
+
+def test_workspace_memo_version_does_not_reset_after_delete_and_recreate(tmp_path):
+    store = WorkspaceMemoryStore(tmp_path / "state")
+    root = tmp_path / "repo"
+    root.mkdir()
+
+    created = store.put(str(root), "decision", "first", "identity-a", expected_version=0)
+    assert created["version"] == 1
+    deleted = store.delete(str(root), "decision")
+    assert deleted["deleted"] is True
+    assert deleted["version"] == 2
+    missing = store.get(str(root), "decision")
+    assert missing["success"] is False
+    assert missing["version"] == 2
+
+    recreated = store.put(str(root), "decision", "recreated", "identity-b", expected_version=2)
+    assert recreated["version"] == 3
+    stale = store.put(str(root), "decision", "stale", "identity-c", expected_version=1)
+    assert stale["version_conflict"] is True
+    assert stale["current_version"] == 3
+    assert store.get(str(root), "decision")["value"] == "recreated"
+
+
+def test_workspace_memo_expiry_preserves_last_committed_generation(tmp_path):
+    state_dir = tmp_path / "state"
+    store = WorkspaceMemoryStore(state_dir)
+    root = tmp_path / "repo"
+    root.mkdir()
+    created = store.put(str(root), "decision", "first", "identity-a", expected_version=0)
+    assert created["version"] == 1
+
+    with closing(sqlite3.connect(state_dir / "workspace_memory.sqlite3")) as connection:
+        connection.execute(
+            "UPDATE memos SET expires_at=0 WHERE workspace=? AND memo_key=?",
+            (WorkspaceMemoryStore.workspace_id(str(root)), "decision"),
+        )
+        connection.commit()
+
+    expired = store.get(str(root), "decision")
+    assert expired["success"] is False
+    assert expired["version"] == 1
+    recreated = store.put(str(root), "decision", "restored", "identity-b", expected_version=1)
+    assert recreated["version"] == 2
+    assert store.get(str(root), "decision")["value"] == "restored"
+
+
+def test_workspace_memo_schema_upgrade_preserves_existing_rows(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    root = tmp_path / "repo"
+    root.mkdir()
+    db_path = state_dir / "workspace_memory.sqlite3"
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute(
+            """CREATE TABLE memos (
+                workspace TEXT NOT NULL, memo_key TEXT NOT NULL, value TEXT NOT NULL,
+                tenant TEXT NOT NULL, metadata TEXT NOT NULL, updated_at REAL NOT NULL,
+                expires_at REAL NOT NULL, PRIMARY KEY(workspace, memo_key)
+            )"""
+        )
+        connection.execute(
+            "INSERT INTO memos VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (WorkspaceMemoryStore.workspace_id(str(root)), "decision", "kept", "owner", "{}", 10.0, 9_999_999_999.0),
+        )
+        connection.commit()
+
+    store = WorkspaceMemoryStore(state_dir)
+    backup_path = db_path.with_name(db_path.name + ".pre-memo-version.bak")
+    assert backup_path.is_file()
+    with closing(sqlite3.connect(backup_path)) as backup:
+        assert backup.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        backup_columns = {str(row[1]) for row in backup.execute("PRAGMA table_info(memos)")}
+        backup_row = backup.execute(
+            "SELECT workspace, memo_key, value, tenant, metadata, updated_at, expires_at FROM memos"
+        ).fetchone()
+    assert "version" not in backup_columns
+    assert backup_row == (WorkspaceMemoryStore.workspace_id(str(root)), "decision", "kept", "owner", "{}", 10.0, 9_999_999_999.0)
+    backup_contents = backup_path.read_bytes()
+
+    current = store.get(str(root), "decision")
+    assert current["success"] is True
+    assert current["value"] == "kept"
+    assert current["version"] == 1
+    WorkspaceMemoryStore(state_dir)
+    assert backup_path.read_bytes() == backup_contents
+
+
+def test_workspace_memo_migration_backup_refreshes_when_stale(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    root = tmp_path / "repo"
+    root.mkdir()
+    db_path = state_dir / "workspace_memory.sqlite3"
+    workspace = WorkspaceMemoryStore.workspace_id(str(root))
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute(
+            """CREATE TABLE memos (
+                workspace TEXT NOT NULL, memo_key TEXT NOT NULL, value TEXT NOT NULL,
+                tenant TEXT NOT NULL, metadata TEXT NOT NULL, updated_at REAL NOT NULL,
+                expires_at REAL NOT NULL, PRIMARY KEY(workspace, memo_key)
+            )"""
+        )
+        connection.execute(
+            "INSERT INTO memos VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (workspace, "decision", "kept", "owner", "{}", 10.0, 9_999_999_999.0),
+        )
+        connection.commit()
+
+    store = WorkspaceMemoryStore(state_dir)
+    backup_path = db_path.with_name(db_path.name + ".pre-memo-version.bak")
+    store.put(str(root), "later", "new row", "writer")
+    store._create_migration_backup()
+
+    with closing(sqlite3.connect(backup_path)) as backup:
+        rows = set(backup.execute("SELECT memo_key, value FROM memos"))
+    assert rows == {("decision", "kept"), ("later", "new row")}
+
+
+def test_workspace_memo_migration_backup_replaces_hard_link(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    root = tmp_path / "repo"
+    root.mkdir()
+    store = WorkspaceMemoryStore(state_dir)
+    store.put(str(root), "decision", "kept", "owner")
+    backup_path = store.path.with_name(store.path.name + ".pre-memo-version.bak")
+    os.link(store.path, backup_path)
+    assert os.path.samefile(store.path, backup_path)
+
+    store._create_migration_backup()
+
+    assert not os.path.samefile(store.path, backup_path)
+    with closing(sqlite3.connect(backup_path)) as backup:
+        assert backup.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert backup.execute(
+            "SELECT value FROM memos WHERE memo_key='decision'"
+        ).fetchone() == ("kept",)
+
+
+def test_workspace_memo_migration_backup_replaces_symlink_to_matching_copy(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    root = tmp_path / "repo"
+    root.mkdir()
+    store = WorkspaceMemoryStore(state_dir)
+    store.put(str(root), "decision", "kept", "owner")
+    backup_path = store.path.with_name(store.path.name + ".pre-memo-version.bak")
+    external_copy = tmp_path / "external-copy.sqlite3"
+    with closing(sqlite3.connect(store.path)) as source, closing(
+        sqlite3.connect(external_copy)
+    ) as destination:
+        source.backup(destination)
+        destination.commit()
+    try:
+        os.symlink(external_copy, backup_path)
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"symlinks unavailable: {error}")
+    assert backup_path.is_symlink()
+    assert not backup_path.samefile(store.path)
+
+    store._create_migration_backup()
+
+    assert not backup_path.is_symlink()
+    assert not backup_path.samefile(store.path)
+    with closing(sqlite3.connect(backup_path)) as backup:
+        assert backup.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert backup.execute(
+            "SELECT value FROM memos WHERE memo_key='decision'"
+        ).fetchone() == ("kept",)
+
+def test_workspace_memo_migration_backup_failure_leaves_schema_unchanged(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    root = tmp_path / "repo"
+    root.mkdir()
+    db_path = state_dir / "workspace_memory.sqlite3"
+    workspace = WorkspaceMemoryStore.workspace_id(str(root))
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute(
+            """CREATE TABLE memos (
+                workspace TEXT NOT NULL, memo_key TEXT NOT NULL, value TEXT NOT NULL,
+                tenant TEXT NOT NULL, metadata TEXT NOT NULL, updated_at REAL NOT NULL,
+                expires_at REAL NOT NULL, PRIMARY KEY(workspace, memo_key)
+            )"""
+        )
+        connection.execute(
+            "INSERT INTO memos VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (workspace, "decision", "kept", "owner", "{}", 10.0, 9_999_999_999.0),
+        )
+        connection.commit()
+    db_path.with_name(db_path.name + ".pre-memo-version.bak").mkdir()
+
+    with pytest.raises(sqlite3.DatabaseError, match="backup path is not a file"):
+        WorkspaceMemoryStore(state_dir)
+
+    with closing(sqlite3.connect(db_path)) as connection:
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(memos)")}
+        row = connection.execute("SELECT value FROM memos WHERE memo_key='decision'").fetchone()
+    assert "memo_versions" not in tables
+    assert "version" not in columns
+    assert row == ("kept",)
 
 @pytest.mark.parametrize(
     ("key", "value", "tenant"),
