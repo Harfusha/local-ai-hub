@@ -32,7 +32,7 @@ from .ollama_subagents import OllamaSubagentCatalog
 from .process_utils import canonical_root
 from .repo_tools import RepositoryTools
 from .router import ModelRouter, review_diff_complexity
-from .sqlite_support import connect_sqlite
+from .sqlite_support import connect_sqlite, is_busy_error
 from .adoption_metrics import AdoptionMetricsStore
 from .state_paths import configured_state_dir
 from .speculative_lint import normalize_changed_paths
@@ -5568,24 +5568,41 @@ class LocalAIServices:
     def optimize_databases(self) -> dict[str, Any]:
         """Perform WAL checkpointing, page pruning and VACUUM/optimize across all SQLite stores."""
         state_dir = Path(self.config["server"]["state_dir"])
-        db_files = list(state_dir.glob("*.sqlite3"))
+        all_db_files = sorted(state_dir.glob("*.sqlite3"))
+        db_files = all_db_files[:16]
+        deadline = time.monotonic() + 20.0
         optimized = []
         bytes_freed = 0
         for db in db_files:
+            if time.monotonic() >= deadline:
+                break
             try:
                 before_size = db.stat().st_size
-                with closing(connect_sqlite(db, timeout_seconds=10.0)) as con:
-                    con.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                with closing(connect_sqlite(db, timeout_seconds=1.0)) as con:
+                    con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+                    checkpoint = con.execute("PRAGMA wal_checkpoint(TRUNCATE);").fetchone()
+                    if checkpoint and int(checkpoint[0] or 0):
+                        raise TimeoutError("database checkpoint busy")
                     con.execute("PRAGMA optimize;")
+                    con.set_progress_handler(None, 0)
                 after_size = db.stat().st_size
                 freed = max(0, before_size - after_size)
                 bytes_freed += freed
                 optimized.append({"db": db.name, "before_kb": before_size // 1024, "after_kb": after_size // 1024, "freed_kb": freed // 1024})
             except Exception as exc:
-                optimized.append({"db": db.name, "error": str(exc)})
+                optimized.append({"db": db.name, "error": type(exc).__name__, "retryable": is_busy_error(exc) or isinstance(exc, TimeoutError) or time.monotonic() >= deadline})
+                if time.monotonic() >= deadline:
+                    break
+        skipped = max(0, len(all_db_files) - len(optimized))
+        success = not skipped and all("error" not in item for item in optimized)
+        succeeded = sum("error" not in item for item in optimized)
         return {
-            "success": True,
-            "databases_optimized": len(optimized),
+            "success": success,
+            "degraded": not success,
+            "retryable": any(item.get("retryable", False) for item in optimized) or time.monotonic() >= deadline,
+            "databases_optimized": succeeded,
+            "databases_attempted": len(optimized),
+            "databases_skipped": skipped,
             "total_freed_kb": bytes_freed // 1024,
             "details": optimized,
         }
@@ -5593,55 +5610,121 @@ class LocalAIServices:
     def purge_stale_cache(self, days: int = 7) -> dict[str, Any]:
         """Purge cache entries older than N days to free disk space."""
         state_dir = Path(self.config["server"]["state_dir"])
+        days = max(1, min(3650, int(days)))
         cutoff = time.time() - (days * 86400)
         cache_db = state_dir / "cache.sqlite3"
         deleted_entries = 0
         if cache_db.is_file():
+            deadline = time.monotonic() + 3.0
             try:
-                with closing(connect_sqlite(cache_db, timeout_seconds=10.0)) as con:
+                with closing(connect_sqlite(cache_db, timeout_seconds=1.0)) as con:
+                    con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
                     cur = con.execute("DELETE FROM cache_entries WHERE accessed_at < ?", (cutoff,))
                     deleted_entries = cur.rowcount
                     con.commit()
-                    con.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                    checkpoint = con.execute("PRAGMA wal_checkpoint(TRUNCATE);").fetchone()
+                    if checkpoint and int(checkpoint[0] or 0):
+                        raise TimeoutError("database checkpoint busy")
+                    con.set_progress_handler(None, 0)
             except Exception as exc:
-                return {"success": False, "error": str(exc)}
+                timed_out = time.monotonic() >= deadline
+                busy = is_busy_error(exc) or isinstance(exc, TimeoutError)
+                return {"success": False, "degraded": True, "retryable": timed_out or busy, "error": "query time budget exceeded" if timed_out else "cache database is busy" if busy else "cache maintenance failed"}
         return {"success": True, "purged_entries": deleted_entries, "days_threshold": days}
 
-    def resolve_all_errors(self) -> dict[str, Any]:
+    def resolve_all_errors(self, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
         """Acknowledge and resolve all operational failures, crashes, errors, and agent incidents."""
+        timeout_seconds = max(0.05, min(10.0, float(timeout_seconds)))
+        deadline = time.monotonic() + timeout_seconds
         telemetry_res: dict[str, Any] = {}
+        supervisor_res: dict[str, Any] = {"success": True}
+        successful = True
+        retryable = False
         if self.telemetry:
-            try:
-                telemetry_res = self.telemetry.resolve_errors()
-            except Exception as exc:
-                telemetry_res = {"error": str(exc)}
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                telemetry_res = {"success": False, "degraded": True, "retryable": True, "error": "telemetry resolution time budget exceeded"}
+                successful = False
+                retryable = True
+            else:
+                try:
+                    telemetry_res = self.telemetry.resolve_errors(timeout_seconds=remaining)
+                    successful = successful and bool(telemetry_res.get("success", True))
+                    retryable = retryable or bool(telemetry_res.get("retryable", False))
+                except TimeoutError:
+                    telemetry_res = {"success": False, "degraded": True, "retryable": True, "error": "TimeoutError"}
+                    successful = False
+                    retryable = True
+                except Exception as exc:
+                    telemetry_res = {"error": type(exc).__name__}
+                    successful = False
+                if time.monotonic() >= deadline:
+                    telemetry_res.setdefault("retryable", True)
+                    successful = False
+                    retryable = True
 
         resolved_incidents = 0
         if self.incident_store:
-            try:
-                resolved_incidents = self.incident_store.resolve_all(
-                    verified_fix="Resolved by operator",
-                    root_cause="Operator manual resolve",
-                )
-            except Exception:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 resolved_incidents = -1
+                successful = False
+                retryable = True
+            else:
+                try:
+                    resolved_incidents = self.incident_store.resolve_all(
+                        verified_fix="Resolved by operator",
+                        root_cause="Operator manual resolve",
+                        timeout_seconds=remaining,
+                    )
+                except TimeoutError:
+                    resolved_incidents = -1
+                    successful = False
+                    retryable = True
+                except Exception:
+                    resolved_incidents = -1
+                    successful = False
+                if time.monotonic() >= deadline:
+                    successful = False
+                    retryable = True
 
         try:
+            if deadline - time.monotonic() <= 0:
+                raise TimeoutError("supervisor resolution time budget exceeded")
             state_dir = Path(self.config["server"]["state_dir"])
             sup_status_path = state_dir / "supervisor.status.json"
             if sup_status_path.exists():
+                if sup_status_path.stat().st_size > 64 * 1024:
+                    raise ValueError("supervisor status file exceeds 65536 bytes")
                 raw = json.loads(sup_status_path.read_text(encoding="utf-8"))
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("supervisor resolution time budget exceeded")
                 if isinstance(raw, dict):
                     raw["restarts"] = 0
                     raw["last_error"] = ""
-                    sup_status_path.write_text(json_dumps(raw, ensure_ascii=False), encoding="utf-8")
-        except Exception:
-            pass
+                    contents = json_dumps(raw, ensure_ascii=False)
+                    if len(contents.encode("utf-8")) > 64 * 1024:
+                        raise ValueError("supervisor status file exceeds 65536 bytes")
+                    if deadline - time.monotonic() <= 0:
+                        raise TimeoutError("supervisor resolution time budget exceeded")
+                    sup_status_path.write_text(contents, encoding="utf-8")
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("supervisor resolution time budget exceeded")
+        except TimeoutError as exc:
+            supervisor_res = {"success": False, "degraded": True, "retryable": True, "error": str(exc)}
+            successful = False
+            retryable = True
+        except Exception as exc:
+            supervisor_res = {"success": False, "degraded": True, "retryable": False, "error": type(exc).__name__}
+            successful = False
 
         return {
-            "success": True,
+            "success": successful,
+            "degraded": not successful,
+            "retryable": retryable,
             "telemetry": telemetry_res,
             "resolved_incidents": resolved_incidents,
+            "supervisor": supervisor_res,
         }
 
     def run_doctor(self) -> dict[str, Any]:

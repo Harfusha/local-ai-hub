@@ -272,22 +272,6 @@ def test_read_only_db_query_safety(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     import local_ai_hub.http_server as http_srv
     import sqlite3
 
-    # Non-SELECT statement should be rejected
-    res1 = Handler._handle_db_query(None, "agent_state", "INSERT INTO tasks (id) VALUES ('x')")
-    assert res1["success"] is False
-    assert "Only read-only SELECT" in res1["error"]
-
-    # Forbidden mutating keywords in subqueries should be rejected
-    res2 = Handler._handle_db_query(None, "agent_state", "SELECT * FROM tasks WHERE id = (DELETE FROM x)")
-    assert res2["success"] is False
-    assert "Forbidden keyword" in res2["error"]
-
-    # Semicolons / multi-statements should be rejected
-    res3 = Handler._handle_db_query(None, "agent_state", "SELECT * FROM tasks; SELECT 1;")
-    assert res3["success"] is False
-    assert "Multi-statement" in res3["error"]
-
-    # Valid SELECT on existing sqlite database
     db_file = tmp_path / "agent_state.sqlite3"
     con = sqlite3.connect(db_file)
     con.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, role TEXT);")
@@ -300,11 +284,30 @@ def test_read_only_db_query_safety(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
     monkeypatch.setattr(http_srv, "APP", DummyApp())
 
+    # Non-SELECT statement should be rejected
+    res1 = Handler._handle_db_query(None, "agent_state", "INSERT INTO tasks (id) VALUES ('x')")
+    assert res1["success"] is False
+    assert "Only read-only SELECT" in res1["error"]
+
+    # Forbidden mutating keywords in subqueries should be rejected.
+    res2 = Handler._handle_db_query(None, "agent_state", "SELECT * FROM tasks WHERE id = (DELETE FROM x)")
+    assert res2["success"] is False
+    assert "Forbidden keyword" in res2["error"]
+
+    # Semicolons / multi-statements should be rejected
+    res3 = Handler._handle_db_query(None, "agent_state", "SELECT * FROM tasks; SELECT 1;")
+    assert res3["success"] is False
+    assert "Multi-statement" in res3["error"]
+
+    # Valid SELECT remains available, and rejected requests do not mutate data.
     res4 = Handler._handle_db_query(None, "agent_state", "SELECT id, role FROM tasks")
     assert res4["success"] is True
     assert res4["columns"] == ["id", "role"]
     assert res4["rows"] == [["t1", "researcher"]]
     assert res4["count"] == 1
+    literal = Handler._handle_db_query(None, "agent_state", "SELECT 'DELETE' AS action")
+    assert literal["success"] is True
+    assert literal["rows"] == [["DELETE"]]
 
 
 # ── Area 5: GraphRAG Code Entity Attachment ─────────────────────────────────
