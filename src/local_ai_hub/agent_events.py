@@ -347,6 +347,61 @@ class AgentStateStore:
         finally:
             con.close()
 
+    def event_page(self, stream_id: str, after_seq: int = 0, limit: int = 50) -> dict[str, Any]:
+        if not self.enabled:
+            return {"success": False, "error": "agent_state is disabled"}
+        try:
+            cursor = max(0, min((1 << 63) - 1, int(after_seq)))
+        except (TypeError, ValueError, OverflowError):
+            cursor = 0
+        try:
+            page_limit = max(1, min(1000, int(limit)))
+        except (TypeError, ValueError, OverflowError):
+            page_limit = 50
+        if not self.db_path.exists():
+            return {
+                "success": True,
+                "stream_id": str(stream_id),
+                "events": [],
+                "after_seq": cursor,
+                "next_seq": cursor,
+                "last_seq": 0,
+                "first_retained_seq": 0,
+                "has_gap": False,
+                "has_more": False,
+            }
+        self._ensure_schema()
+        con = connect_sqlite(self.db_path)
+        try:
+            bounds = con.execute(
+                "SELECT MIN(seq),MAX(seq) FROM agent_events WHERE stream_id=?",
+                (str(stream_id),),
+            ).fetchone()
+            first_retained_seq = int(bounds[0] or 0)
+            last_seq = int(bounds[1] or 0)
+            rows = con.execute(
+                """SELECT stream_id,seq,event_id,kind,payload,idempotency_key,correlation_id,actor,created_at
+                   FROM agent_events WHERE stream_id=? AND seq>? ORDER BY seq ASC LIMIT ?""",
+                (str(stream_id), cursor, page_limit + 1),
+            ).fetchall()
+            events = [AgentEvent.from_row(row) for row in rows[:page_limit]]
+            has_gap = first_retained_seq > 0 and cursor < first_retained_seq - 1
+            has_more = len(rows) > page_limit
+            next_seq = int(events[-1].seq or cursor) if events else (last_seq if has_gap else cursor)
+            return {
+                "success": True,
+                "stream_id": str(stream_id),
+                "events": events,
+                "after_seq": cursor,
+                "next_seq": next_seq,
+                "last_seq": last_seq,
+                "first_retained_seq": first_retained_seq,
+                "has_gap": has_gap,
+                "has_more": has_more,
+            }
+        finally:
+            con.close()
+
     def snapshot(self, stream_id: str, state: Mapping[str, Any], seq: int | None = None) -> int:
         if not self.enabled:
             return 0
@@ -509,7 +564,7 @@ class SwarmPubSub:
         with cls._lock:
             if cls._instance is None:
                 cls._instance = cls(state_store)
-            elif state_store is not None and cls._instance.state_store is None:
+            elif state_store is not None and cls._instance.state_store is not state_store:
                 cls._instance.state_store = state_store
             return cls._instance
 
@@ -541,17 +596,42 @@ class SwarmPubSub:
             self._topics[clean_topic] = [m for m in msgs if m["timestamp"] >= cutoff]
 
     def publish(self, topic: str, message: dict[str, Any] | str, sender: str = "agent") -> dict[str, Any]:
-        """Publish a message to an ephemeral topic channel with memory bounds and TTL pruning."""
+        """Publish a bounded topic message and persist it when a state store is attached."""
         clean_topic = topic.strip().lower()
+        if not clean_topic:
+            return {"success": False, "error": "topic is required"}
         now = time.time()
         msg_payload = message if isinstance(message, dict) else {"text": str(message)}
+        persisted_event: AgentEvent | None = None
+        if self.state_store and self.state_store.enabled:
+            try:
+                append_result = self.state_store.append(
+                    AgentEvent.create(
+                        stream_id=f"pubsub:{clean_topic}",
+                        kind="pubsub_message",
+                        payload={"sender": sender, "message": msg_payload},
+                        actor=sender,
+                    )
+                )
+            except Exception as exc:
+                return {"success": False, "topic": clean_topic, "error": f"message persistence failed: {exc}"}
+            if append_result.error or append_result.retryable or append_result.event is None:
+                return {
+                    "success": False,
+                    "topic": clean_topic,
+                    "retryable": bool(append_result.retryable),
+                    "error": append_result.error or "message persistence failed",
+                }
+            persisted_event = append_result.event
         event = {
-            "id": f"pub_{uuid.uuid4().hex[:12]}",
+            "id": persisted_event.event_id if persisted_event else f"pub_{uuid.uuid4().hex[:12]}",
             "topic": clean_topic,
             "sender": sender,
-            "timestamp": now,
+            "timestamp": persisted_event.created_at if persisted_event else now,
             "payload": msg_payload,
         }
+        if persisted_event:
+            event["seq"] = persisted_event.seq
         with self._mu:
             if clean_topic not in self._topics:
                 if len(self._topics) > 128:
@@ -577,24 +657,65 @@ class SwarmPubSub:
                 except Exception:
                     pass
 
-        if self.state_store and self.state_store.enabled:
-            try:
-                self.state_store.append(
-                    AgentEvent.create(
-                        stream_id=f"pubsub:{clean_topic}",
-                        kind="pubsub_message",
-                        payload={"sender": sender, "message": msg_payload},
-                        actor=sender,
-                    )
-                )
-            except Exception:
-                pass
+        result = {"success": True, "topic": clean_topic, "message_id": event["id"], "timestamp": event["timestamp"]}
+        if persisted_event:
+            result["seq"] = persisted_event.seq
+        return result
 
-        return {"success": True, "topic": clean_topic, "message_id": event["id"], "timestamp": now}
-
-    def poll(self, topic: str, since_timestamp: float = 0.0, limit: int = 50) -> dict[str, Any]:
-        """Poll messages from a topic published after since_timestamp."""
+    def poll(
+        self,
+        topic: str,
+        since_timestamp: float = 0.0,
+        limit: int = 50,
+        *,
+        after_seq: int | None = None,
+    ) -> dict[str, Any]:
+        """Poll by durable sequence cursor when supplied, otherwise by legacy timestamp."""
         clean_topic = topic.strip().lower()
+        if after_seq is not None:
+            if self.state_store is None or not self.state_store.enabled:
+                return {"success": False, "topic": clean_topic, "error": "durable agent state storage is unavailable"}
+            try:
+                page_limit = max(1, min(1000, int(limit)))
+            except (TypeError, ValueError, OverflowError):
+                page_limit = 50
+            page = self.state_store.event_page(
+                f"pubsub:{clean_topic}", after_seq=after_seq, limit=page_limit
+            )
+            if not page.get("success"):
+                return {"success": False, "topic": clean_topic, "error": page.get("error", "message history is unavailable")}
+            messages = [
+                {
+                    "id": event.event_id,
+                    "topic": clean_topic,
+                    "sender": str(event.payload.get("sender") or "agent"),
+                    "timestamp": event.created_at,
+                    "seq": event.seq,
+                    "payload": event.payload.get("message", {}),
+                }
+                for event in page["events"]
+            ]
+            has_gap = bool(page.get("has_gap"))
+            requested_after_seq = int(page.get("after_seq", 0))
+            gap = {
+                "reason": "retention",
+                "requested_after_seq": requested_after_seq,
+                "first_retained_seq": int(page.get("first_retained_seq", 0)),
+                "last_seq": int(page.get("last_seq", 0)),
+            } if has_gap else None
+            return {
+                "success": True,
+                "topic": clean_topic,
+                "count": len(messages),
+                "messages": messages,
+                "after_seq": requested_after_seq,
+                "next_seq": int(messages[-1]["seq"] or requested_after_seq) if messages else int(page.get("next_seq", requested_after_seq)),
+                "last_seq": int(page.get("last_seq", 0)),
+                "first_retained_seq": int(page.get("first_retained_seq", 0)),
+                "has_gap": has_gap,
+                "has_more": bool(page.get("has_more")),
+                "gap": gap,
+            }
         now = time.time()
         with self._mu:
             self._prune_expired_locked(clean_topic, now)

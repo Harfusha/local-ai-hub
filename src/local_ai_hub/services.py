@@ -3255,11 +3255,11 @@ class LocalAIServices:
 
     def pubsub_publish(self, topic: str, message: dict[str, Any] | str, sender: str = "agent") -> dict[str, Any]:
         from .agent_events import SwarmPubSub
-        return SwarmPubSub.get_default().publish(topic, message, sender=sender)
+        return SwarmPubSub.get_default(state_store=getattr(self, "agent_state", None)).publish(topic, message, sender=sender)
 
-    def pubsub_poll(self, topic: str, since_timestamp: float = 0.0, limit: int = 50) -> dict[str, Any]:
+    def pubsub_poll(self, topic: str, after_seq: int = 0, limit: int = 50) -> dict[str, Any]:
         from .agent_events import SwarmPubSub
-        return SwarmPubSub.get_default().poll(topic, since_timestamp=since_timestamp, limit=limit)
+        return SwarmPubSub.get_default(state_store=getattr(self, "agent_state", None)).poll(topic, after_seq=after_seq, limit=limit)
 
     def synthesize_commit(self, root: str, hint: str = "", task_id: str = "") -> dict[str, Any]:
         tasks_data: list[dict[str, Any]] = []

@@ -17,7 +17,6 @@ import urllib.request
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__
-from .operation_contracts import MAX_EVENT_SEQUENCE
 from .app import LocalAIApp, _STATUS_DEPENDENCY_TIMEOUT_SECONDS, _STATUS_TOTAL_BUDGET_SECONDS, _status_dependency
 from .scheduler import ModelUnavailableError, QueueFullError
 from .debug_traces import DebugTraceObserver
@@ -51,6 +50,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 APP: LocalAIApp | None = None
+MAX_EVENT_SEQUENCE = (1 << 63) - 1
 _DB_QUERY_TIMEOUT_SECONDS = 0.5
 _DB_QUERY_MAX_ROWS = 100
 _DB_QUERY_MAX_RESPONSE_BYTES = 256 * 1024
