@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import threading
-import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.error import HTTPError, URLError
@@ -34,6 +33,26 @@ def test_client_get_non_object_json_uses_complete_invalid_response(tmp_path, mon
     assert result["retryable"] is True
     assert result["terminal"] is False
     assert result["request_id"].startswith("req_")
+
+
+def test_client_coord_memo_put_forwards_expected_version(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    calls = []
+
+    def capture_post(endpoint, payload, **kwargs):
+        calls.append((endpoint, payload))
+        return {"success": True}
+
+    monkeypatch.setattr(client, "post", capture_post)
+    result = client.coord(
+        "memo_put", root="repo", key="decision", value="accepted", expected_version=4
+    )
+
+    assert result["success"] is True
+    assert calls == [(
+        "/api/memory/put",
+        {"root": "repo", "key": "decision", "value": "accepted", "ttl_seconds": 604800, "expected_version": 4},
+    )]
 
 
 def test_client_reuses_one_http11_connection_for_sequential_requests(tmp_path, monkeypatch):

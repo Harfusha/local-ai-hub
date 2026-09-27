@@ -1758,6 +1758,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/memory/put":
             required_text("key", maximum=160)
             required_text("value", maximum=1000000)
+            if "expected_version" in payload and (
+                type(payload["expected_version"]) is not int or payload["expected_version"] < 0
+            ):
+                raise RequestBodyError("expected_version must be a non-negative integer")
             if "root" in payload:
                 text(payload["root"], "root", 4096)
         elif path in {"/api/memory/get", "/api/memory/delete"}:
@@ -5352,6 +5356,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, APP.memory.put(
                     str(payload.get("root", ".")), str(payload.get("key", "")), str(payload.get("value", "")), tenant,
                     ttl_seconds=payload.get("ttl_seconds"), metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None,
+                    expected_version=payload.get("expected_version"),
                 )); return
             if path == "/api/memory/get":
                 self._send(200, APP.memory.get(str(payload.get("root", ".")), str(payload.get("key", "")))); return
