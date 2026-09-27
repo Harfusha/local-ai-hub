@@ -443,7 +443,7 @@ class DebugTraceStore:
                 return {"success": False, "error": "full payload access required", "terminal": True}
             return self._content_page(trace_id, content_field, content_offset)
         try:
-            cursor = max(0, int(since_seq))
+            cursor = min(2**63 - 1, max(0, int(since_seq)))
         except (TypeError, ValueError, OverflowError):
             cursor = 0
         try:

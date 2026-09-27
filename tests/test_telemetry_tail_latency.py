@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from local_ai_hub.telemetry import TelemetryStore
 from local_ai_hub.dashboard import DASHBOARD_HTML
 
@@ -23,6 +25,20 @@ def test_report_exposes_http_action_and_cache_layer_tail_percentiles(tmp_path):
     assert actions["/slow"]["p95_duration_ms"] == 1_000.0
     assert actions["/slow"]["failures"] == 1
     assert layers["miss"]["p99_duration_ms"] == 1_000.0
+
+
+@pytest.mark.parametrize("before_id", [2**63 - 1, 2**63, 2**100])
+def test_timeline_page_clamps_backward_cursor_to_sqlite_integer_range(tmp_path, before_id):
+    store = TelemetryStore(tmp_path / "telemetry", enabled=True, flush_interval_seconds=0.01)
+    try:
+        store.record(event_type="inference", action="cursor", success=True)
+        assert store.flush(1)
+        page = store.get_timeline_page(10, before_id=before_id)
+    finally:
+        store.close()
+
+    assert [item["action"] for item in page["timeline"]] == ["cursor"]
+    assert page["has_more"] is False
 
 
 def test_dashboard_has_http_tail_latency_target():
