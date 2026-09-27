@@ -2870,6 +2870,7 @@ def local_ai_coord(
     focus: list[str] | None = None,
     preload_profile: str = "",
     since_hash: str = "",
+    expected_version: int | None = None,
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. Actions: claim, release, leases, memo_put, memo_get, memo_search, memo_delete, task_create, task_get, task_checkpoint, task_rollback, task_transition, task_resume, task_list, task_complete, task_fail, task_heartbeat, memory_record, memory_get, memory_find, memory_delete, memory_promote, memory_reap, context_compile, verify_receipt, verify_completion, negative_knowledge_record, negative_knowledge_find, incident_decision, blackboard_update, blackboard_get, blackboard_list, blackboard_merge, blackboard_delete, swarm_dispatch, swarm_step, swarm_status, swarm_list, swarm_cancel. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool. Use when: Hub workers share edit paths, leases, or reusable findings. Skip when: work is isolated and no shared Hub state or memo is involved."""
     if not FEATURES.coord:
@@ -3010,9 +3011,12 @@ def local_ai_coord(
     if action == "leases":
         return _compact(CLIENT.get(f"/api/leases?root={quote(root)}"))
     if action == "memo_put":
-        return _compact(CLIENT.post("/api/memory/put", {
+        payload = {
             "root": root, "key": key, "value": value, "ttl_seconds": ttl_seconds or 604800,
-        }))
+        }
+        if expected_version is not None:
+            payload["expected_version"] = expected_version
+        return _compact(CLIENT.post("/api/memory/put", payload))
     if action == "memo_get":
         return _compact(CLIENT.post("/api/memory/get", {"root": root, "key": key}))
     if action == "memo_search":

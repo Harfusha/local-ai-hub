@@ -8,6 +8,8 @@ The current candidate does not implement `allowed_roots` or principal-to-root te
 
 HTTP tenant scope uses caller-provided `X-LocalAI-Tenant`, then `X-Tenant-ID`, then `http-default`. Browser routes bind to their configured browser tenant when an API token is configured. Tenant labels do not authenticate callers and are not derived from repository roots.
 
+Workspace memos are intentionally shared by canonical workspace and memo key. Reads and searches ignore the tenant label, and a later write to the same workspace/key replaces the earlier value when no expected version is supplied; the stored tenant records who supplied the current value. A memo writer may supply the per-key generation it read to reject a stale overwrite. Deletion retains and advances that generation to prevent stale delete-and-recreate writes. A tenant-filtered delete selects a matching memo but does not authenticate the caller. Agent leases live in shared local coordination state. Tenant labels influence lease conflict and owner checks, but they are caller-supplied and are not proof of identity; another caller able to choose a label can impersonate it.
+
 Configure `api_token` when HTTP data/control routes need token authentication, including on loopback. The current token is one shared API secret; per-token permissions and principal namespaces are not implemented.
 
 Root-derived principal/effective-tenant scoping applies to the specified root-scoped memory/task paths only. It does not prove hostile-user isolation for every caller sharing this state directory. Use a separate Hub instance and state directory per trust domain until every private state surface has a confirmed identity-binding contract.
