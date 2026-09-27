@@ -65,11 +65,15 @@ from .work_orchestrator import WorkOrchestrator
 
 
 _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
+_STATUS_TOTAL_BUDGET_SECONDS = 1.0
 _STATUS_MAX_INFLIGHT_DEPENDENCIES = 8
 
 
-def _status_dependency(callback, fallback, *, key, lock, inflight, slots):
+def _status_dependency(callback, fallback, *, key, lock, inflight, slots, timeout_seconds=None):
     """Reuse active status work and cap workers that remain stuck past their deadline."""
+    timeout = _STATUS_DEPENDENCY_TIMEOUT_SECONDS if timeout_seconds is None else max(0.0, float(timeout_seconds))
+    if timeout <= 0:
+        return fallback, False
     with lock:
         entry = inflight.get(key)
         if entry is None:
@@ -98,7 +102,7 @@ def _status_dependency(callback, fallback, *, key, lock, inflight, slots):
                 del inflight[key]
                 slots.release()
                 return fallback, False
-    if not entry["completed"].wait(max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))):
+    if not entry["completed"].wait(timeout):
         return fallback, False
     outcome = entry["outcome"]
     if "error" in outcome:
@@ -538,14 +542,37 @@ class LocalAIApp:
             scope = "process"
         now = time.monotonic()
         cache_key = f"{'light' if light else 'full'}:{scope}"
-        cache_ttl = 0.5 if light else 1.5
+        cache_ttl = 5.0 if light else 1.5
         with self._live_status_lock:
             cached = self._live_status_cache.get(cache_key)
             if cached and now - cached[0] < cache_ttl:
-                result = dict(cached[1])
-                result["agent_state"] = self._agent_state_summary()
+                result = deepcopy(cached[1])
+                result["snapshot_cached"] = True
+                result["status_age_ms"] = max(0, int((now - cached[0]) * 1000))
                 return result
-            headless = self._headless_status()
+            dependency_status: dict[str, dict[str, Any]] = {}
+            deadline = time.monotonic() + _STATUS_TOTAL_BUDGET_SECONDS
+
+            def read(key, callback, fallback):
+                remaining = max(0.0, deadline - time.monotonic())
+                timeout = min(max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS)), remaining)
+                value, healthy = _status_dependency(
+                    callback,
+                    fallback,
+                    key=key,
+                    lock=self._status_dependency_lock,
+                    inflight=self._status_dependency_inflight,
+                    slots=self._status_dependency_slots,
+                    timeout_seconds=timeout,
+                )
+                dependency_status[key] = {
+                    "deadline_ms": max(0, int(timeout * 1000)),
+                    "degraded": not healthy,
+                    "status": "ok" if healthy else "degraded",
+                }
+                return value
+
+            headless = read("headless", self._headless_status, {"enabled": False, "supervisor": False})
             ollama = headless.get("ollama_online") if headless.get("supervisor") else None
             # The supervisor status file is asynchronous and can lag behind a
             # live endpoint during restart/recovery. Prefer the runtime probe
@@ -553,19 +580,13 @@ class LocalAIApp:
             # not report a healthy Ollama process as offline.
             runtime = getattr(self, "runtime", None)
             if runtime is not None:
-                try:
-                    ollama = bool(runtime.is_online())
-                    if isinstance(headless, dict) and headless.get("supervisor"):
-                        headless = dict(headless)
-                        headless["ollama_online"] = ollama
-                except Exception:
-                    pass
-            scheduler = self.scheduler.status()
-            prep_stats = self.preprocessor.stats()
-            try:
-                prep_status = self.preprocessor.status()
-            except Exception:
-                prep_status = {"success": False, "projects": []}
+                ollama = bool(read("runtime.online", runtime.is_online, False))
+                if isinstance(headless, dict) and headless.get("supervisor"):
+                    headless = dict(headless)
+                    headless["ollama_online"] = ollama
+            scheduler = read("scheduler", self.scheduler.status, {"state": "unavailable"})
+            prep_stats = read("preprocessing.stats", self.preprocessor.stats, {})
+            prep_status = read("preprocessing.status", self.preprocessor.status, {"success": False, "projects": []})
             projects = []
             for item in prep_status.get("projects", []) if isinstance(prep_status, dict) else []:
                 row = dict(item)
@@ -574,9 +595,35 @@ class LocalAIApp:
                 projects.append(row)
             from .features import FeatureSet
             fs = FeatureSet.from_config(self.config)
-            observability = self.telemetry.realtime_summary(scope=scope)
+            observability = read("telemetry", lambda: self.telemetry.realtime_summary(scope=scope), {})
+            model_execution = read("model_execution", self.services.model_policy.summary, {})
+            code_intelligence = read("code_intelligence", self.external_tools.status, {})
+            background_gpu = read("background_gpu", self.background_gpu.status, {})
+            ollama_profile = read("ollama_profile", self.runtime.managed_profile_status, {}) if getattr(self, "runtime", None) else {}
+            vram_balancer = read("vram_balancer", self.vram_balancer.status, {}) if getattr(self, "vram_balancer", None) else {}
+            benchmark = read("benchmark", self.benchmark_runner.get_latest_summary, {"available": False}) if getattr(self, "benchmark_runner", None) else {"available": False}
+            debug_traces = read("debug_traces", self.debug_traces.stats, {})
+            accelerators = read("accelerators", lambda: accelerator_status(self.config), {})
+            runtime_stats = {
+                "generation_cache": read("generation_cache", self.services.generation_cache.stats, {}),
+                "semantic_cache": read("semantic_cache", self.services.semantic_cache.stats, {}),
+                "repo_cache": read("repo_cache", self.services.repo_cache.stats, {}),
+                "repo_state": read("repo_state", self.repo_state.stats, {}),
+                "repo_snapshots": read("repo_snapshots", self.repo_tools.snapshot_stats, {}),
+                "commands": read("commands", self.commands.stats, {}),
+                "pipeline": read("pipeline", self.pipeline.stats, {}),
+                "tool_agent": read("tool_agent", self.tool_agent.stats, {}),
+                "deterministic": read("deterministic", self.deterministic.status, {}) if not light and self.deterministic is not None else {},
+                "code_index": read("code_index", self.code_index.status, {}) if not light and self.code_index is not None else {},
+            }
+            agent_state = read("agent_state", self._agent_state_summary, {"enabled": False})
+            cache_collected_at = time.monotonic()
             result = {
-                "success": True, "hub_online": True, "version": __version__,
+                "success": not any(item["degraded"] for item in dependency_status.values()),
+                "degraded": any(item["degraded"] for item in dependency_status.values()),
+                "dependency_status": dependency_status,
+                "snapshot_cached": False,
+                "hub_online": True, "version": __version__,
                 "uptime_seconds": max(0, int(time.time() - self.started_at)),
                 "features": {
                     "status": fs.status,
@@ -595,24 +642,25 @@ class LocalAIApp:
                 },
                 "models": dict(self.config.get("models", {})),
                 "hardware": dict(self.config.get("_hardware", {})),
-                "accelerators": accelerator_status(self.config),
-                "code_intelligence": self.external_tools.status(),
+                "accelerators": accelerators,
+                "code_intelligence": code_intelligence,
                 "runtime_profile": {
                     "tiered_models": self.config.get("models", {}).get("heavy_code") != self.config.get("models", {}).get("fast_code"),
                     "max_loaded_models": int(self.config.get("scheduler", {}).get("max_loaded_models", 1)),
                     "max_parallel": int(self.config.get("scheduler", {}).get("max_parallel", 1)),
-                    "execution": self.services.model_policy.summary(),
+                    "execution": model_execution,
                     "flash_attention": bool(self.config.get("ollama", {}).get("flash_attention", True)),
                     "kv_cache_type": str(self.config.get("ollama", {}).get("kv_cache_type", "q8_0")),
                 },
                 "ollama_online": ollama, "scheduler": scheduler,
                 "headless": headless,
-                "background_gpu": self.background_gpu.status(),
-                "ollama_profile": self.runtime.managed_profile_status() if getattr(self, "runtime", None) else {},
-                "model_execution": self.services.model_policy.summary() if getattr(self, "services", None) and getattr(self.services, "model_policy", None) else {},
-                "vram_balancer": self.vram_balancer.status() if getattr(self, "vram_balancer", None) else {},
-                "benchmark": self.benchmark_runner.get_latest_summary() if getattr(self, "benchmark_runner", None) else {"available": False},
-                "debug_traces": self.debug_traces.stats(),
+                "agent_state": agent_state,
+                "background_gpu": background_gpu,
+                "ollama_profile": ollama_profile,
+                "model_execution": model_execution,
+                "vram_balancer": vram_balancer,
+                "benchmark": benchmark,
+                "debug_traces": debug_traces,
                 "observability": observability,
                 "preprocessing": {
                     **(prep_status if isinstance(prep_status, dict) else {}),
@@ -623,21 +671,10 @@ class LocalAIApp:
                     "scheduler_background_allowed": prep_status.get("scheduler_background_allowed", True) if isinstance(prep_status, dict) else True,
                     "query_hit_rate": observability.get("preprocessed_query_hit_rate", 0.0),
                 },
-                "runtime_stats": {
-                    "generation_cache": self.services.generation_cache.stats(),
-                    "semantic_cache": self.services.semantic_cache.stats(),
-                    "repo_cache": self.services.repo_cache.stats(),
-                    "repo_state": self.repo_state.stats(),
-                    "repo_snapshots": self.repo_tools.snapshot_stats(),
-                    "commands": self.commands.stats(),
-                    "pipeline": self.pipeline.stats(),
-                    "tool_agent": self.tool_agent.stats(),
-                    "deterministic": self.deterministic.status() if not light and self.deterministic is not None else {},
-                    "code_index": self.code_index.status() if not light and self.code_index is not None else {},
-                },
+                "runtime_stats": runtime_stats,
             }
-            result["agent_state"] = self._agent_state_summary()
-            self._live_status_cache[cache_key] = (now, result)
+            result["status_age_ms"] = 0
+            self._live_status_cache[cache_key] = (cache_collected_at, deepcopy(result))
             return dict(result)
 
     def status(self, *, scope: str = "process") -> dict[str, Any]:
@@ -645,25 +682,35 @@ class LocalAIApp:
         if scope not in {"process", "window"}:
             scope = "process"
         import os
+        deadline = time.monotonic() + _STATUS_TOTAL_BUDGET_SECONDS
+        dependency_status: dict[str, dict[str, Any]] = {}
 
         def dependency(key, callback, fallback):
-            return _status_dependency(
+            remaining = max(0.0, deadline - time.monotonic())
+            timeout = min(_STATUS_DEPENDENCY_TIMEOUT_SECONDS, remaining)
+            value, healthy = _status_dependency(
                 callback,
                 fallback,
                 key=key,
                 lock=self._status_dependency_lock,
                 inflight=self._status_dependency_inflight,
                 slots=self._status_dependency_slots,
+                timeout_seconds=timeout,
             )
+            dependency_status[key] = {
+                "deadline_ms": max(0, int(timeout * 1000)),
+                "degraded": not healthy,
+                "status": "ok" if healthy else "degraded",
+            }
+            return value, healthy
 
         with self._status_full_cache_lock:
             now = time.monotonic()
             cached = self._status_full_cache.get(scope)
             if cached and now - cached["time"] < 2.0:
                 result = deepcopy(cached["data"])
-                agent_state, healthy = dependency("agent_state", self._agent_state_summary, {"enabled": False})
-                result["success"] = bool(result.get("success", True) and healthy)
-                result["agent_state"] = agent_state
+                result["snapshot_cached"] = True
+                result["status_age_ms"] = max(0, int((now - cached["time"]) * 1000))
                 return result
             degraded = False
 
@@ -702,10 +749,13 @@ class LocalAIApp:
             embeddings = read("embeddings", self.embeddings.status, {})
             reranker = read("reranker", self.reranker.status, {})
             code_intelligence = read("code_intelligence", self.external_tools.status, {})
+            accelerators = read("accelerators", lambda: accelerator_status(self.config), {})
             debug_traces = read("debug_traces", self.debug_traces.stats, {})
             agent_state = read("agent_state", self._agent_state_summary, {"enabled": False})
             res = {
                 "success": not degraded, "hub_pid": os.getpid(), "hub_online": True, "version": __version__,
+                "degraded": degraded, "dependency_status": dependency_status,
+                "snapshot_cached": False, "status_age_ms": 0,
                 "ollama_online": online, "online": online, "ollama_version": version,
                 "installed_models": installed, "loaded_models": loaded, "loaded_model_details": loaded_details, "models": dict(self.config["models"]),
                 "model_execution": model_execution, "ollama_profile": ollama_profile,
@@ -720,7 +770,7 @@ class LocalAIApp:
                 "circuit_breakers": circuit_breakers, "recovery": recovery,
                 "fallback_count": self.services.fallback_count, "embeddings": embeddings,
                 "reranker": reranker, "features": dict(self.config.get("features", {})),
-                "hardware": dict(self.config.get("_hardware", {})), "accelerators": accelerator_status(self.config),
+                "hardware": dict(self.config.get("_hardware", {})), "accelerators": accelerators,
                 "code_intelligence": code_intelligence,
                 "observability": telemetry_summary, "token_saving": telemetry_summary, "debug_traces": debug_traces,
             }
@@ -778,9 +828,9 @@ class LocalAIApp:
     def _bundle_limits(self) -> tuple[int, int, int]:
         cfg = self.config.get("bundles", {})
         return (
-            max(1024, int(cfg.get("max_bundle_bytes", 128 * 1024 * 1024))),
-            max(1024, int(cfg.get("max_json_bytes", 256 * 1024 * 1024))),
-            max(1, int(cfg.get("max_rows_per_table", 1_000_000))),
+            max(1024, min(128 * 1024 * 1024, int(cfg.get("max_bundle_bytes", 128 * 1024 * 1024)))),
+            max(1024, min(256 * 1024 * 1024, int(cfg.get("max_json_bytes", 256 * 1024 * 1024)))),
+            max(1, min(1_000_000, int(cfg.get("max_rows_per_table", 1_000_000)))),
         )
 
     def agent_state_cleanup(self, now: float | None = None) -> int:

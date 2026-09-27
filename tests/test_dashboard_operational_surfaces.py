@@ -45,7 +45,7 @@ def test_live_events_with_trace_id_link_to_trace_inspector() -> None:
 
 
 def test_live_pollers_skip_overlapping_requests() -> None:
-    pollers = DASHBOARD_HTML[DASHBOARD_HTML.index("let liveEvents=[]") : DASHBOARD_HTML.index("probeHealth();pollStatus()")]
+    pollers = DASHBOARD_HTML[DASHBOARD_HTML.index("let liveEvents=[]") : DASHBOARD_HTML.index("probeHealth();pollEvents();pollTraces();")]
     trace_poller = DASHBOARD_HTML[DASHBOARD_HTML.index("async function pollTraces()") : DASHBOARD_HTML.index("$('traceRefresh')")]
     assert "let liveEvents=[],eventsPollInFlight=false,tracesPollInFlight=false" in pollers
     assert "if(tracesPollInFlight)return;tracesPollInFlight=true" in trace_poller

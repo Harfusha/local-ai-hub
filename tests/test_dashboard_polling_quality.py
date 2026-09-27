@@ -54,6 +54,133 @@ def _run_polling_javascript(scenario: str, *, include_status: bool = False) -> N
     assert result.returncode == 0, result.stderr or result.stdout
 
 
+def test_dashboard_status_uses_only_adaptive_poller_for_periodic_refresh() -> None:
+    assert "statusPoller.start();" in DASHBOARD_HTML
+    assert "setInterval(()=>{if(isVisible)pollStatus();},1000);" not in DASHBOARD_HTML
+    assert "probeHealth();pollStatus();pollEvents();pollTraces();" not in DASHBOARD_HTML
+    assert "if(isVisible){probeHealth();pollStatus();pollEvents();pollTraces();}" not in DASHBOARD_HTML
+
+
+def test_dashboard_status_fingerprint_ignores_cache_metadata() -> None:
+    _run_polling_javascript(
+        """
+        const assert = require('node:assert/strict');
+        assert.equal(shouldRefreshDashboardStatus({success: true, status_age_ms: 0, snapshot_cached: false}), true);
+        assert.equal(shouldRefreshDashboardStatus({success: true, status_age_ms: 1200, snapshot_cached: true}), false);
+        """
+    )
+
+
+def test_trace_reveal_drains_event_pages_and_reconstructs_content_pages() -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required to exercise dashboard trace paging")
+    start = DASHBOARD_HTML.index("function appendBoundedTraceEvents(")
+    end = DASHBOARD_HTML.index("function setTraceDetailsOpen(", start)
+    source = DASHBOARD_HTML[start:end]
+    setup = r"""
+    const traceEventBufferLimit = 200;
+    let activeTraceId = 'trace-id', traceEvents = [], traceRevealRedactedDetails = false, activeTraceData = {}, traceEventTotal = 5;
+    function renderTraceDetail(data) { activeTraceData = data; }
+    function openModal() {}
+    const fields = {
+      request: '', effective_payload: '{}', output: 'full output text', response: '{"ok":true}',
+      'event:1': '{"prompt":"complete first"}', 'event:2': '{"prompt":"complete second"}'
+    };
+    async function apiFetch(path) {
+      const url = new URL(path, 'http://localhost');
+      const since = Number(url.searchParams.get('since_seq') || 0);
+      const before = Number(url.searchParams.get('before_seq') || 0);
+      const field = url.searchParams.get('content_field');
+      if (field) {
+        const value = fields[field] || '';
+        const offset = Number(url.searchParams.get('content_offset') || 0), size = 4;
+        const text = value.slice(offset, offset + size), next = offset + text.length;
+        return {json: async () => ({success: true, content_page: {field, encoding: field === 'output' ? 'text' : 'json', offset, next_offset: next, total_chars: value.length, has_more: next < value.length, storage_truncated: false, text}})};
+      }
+      if (before) return {json: async () => ({success: true, session: {}, events: [{seq: 2}, {seq: 3}], events_has_more: true, terminal: true})};
+      const events = since === 0
+        ? [{seq: 1, payload: {truncated: true, preview: 'first'}}]
+        : since === 1
+          ? [{seq: 2, payload: {truncated: true, preview: 'second'}}]
+          : [{seq: 4}, {seq: 5}];
+      return {json: async () => ({success: true, session: {output: {truncated: true, preview: 'short'}}, events, next_seq: events[events.length - 1].seq, events_has_more: since === 0, terminal: true})};
+    }
+    """;
+    script_source = setup + source + r"""
+    (async () => {
+      const assert = require('node:assert/strict');
+      const result = await fetchFullTracePayload('trace-id');
+      assert.equal(result.session.output, fields.output);
+      assert.deepEqual(result.session.request, {});
+      assert.deepEqual(result.session.response, {ok: true});
+      assert.deepEqual(result.events.map(event => event.payload.prompt), ['complete first', 'complete second']);
+      assert.equal(result.next_seq, 2);
+      assert.equal(result.full_payload_requested, true);
+      assert.equal(result.payload_truncated, false);
+      const bounded = [];
+      assert.equal(appendBoundedTraceEvents(bounded, Array.from({length: 250}, (_, index) => ({seq: index + 1}))), 250);
+      assert.equal(bounded.length, 200);
+      assert.equal(bounded[0].seq, 51);
+      const budget = {used: 0, limit: 12};
+      await assert.rejects(fetchTraceContentPages('trace-id', 'output', budget), /Dashboard reveal limit exceeded/);
+      assert.equal(budget.used, 8);
+      activeTraceData = result;
+      traceEvents = [{seq: 4, payload: {index: 4}}, {seq: 5, payload: {index: 5}}];
+      await loadTraceEventPage('older');
+      assert.deepEqual(traceEvents.map(event => event.seq), [2, 3]);
+      assert.equal(activeTraceData.has_older_events, true);
+      assert.equal(activeTraceData.has_newer_events, true);
+      await loadTraceEventPage('newer');
+      assert.deepEqual(traceEvents.map(event => event.seq), [4, 5]);
+      assert.equal(activeTraceData.has_older_events, true);
+      assert.equal(activeTraceData.has_newer_events, false);
+    })().catch(error => { console.error(error); process.exitCode = 1; });
+    """;
+    script = "const vm = require('node:vm');\n" + f"vm.runInNewContext({json.dumps(script_source)}, {{require, process, console, URL}});\n"
+    with tempfile.TemporaryDirectory() as directory:
+        script_path = Path(directory) / "trace_paging.cjs"
+        script_path.write_text(script, encoding="utf-8")
+        result = subprocess.run([node, str(script_path)], capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_trace_reveal_keeps_event_history_window_bounded() -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required to exercise dashboard trace paging")
+    start = DASHBOARD_HTML.index("function appendBoundedTraceEvents(")
+    end = DASHBOARD_HTML.index("function setTraceDetailsOpen(", start)
+    source = DASHBOARD_HTML[start:end]
+    setup = r"""
+    const traceEventBufferLimit = 200;
+    async function apiFetch(path) {
+      const url = new URL(path, 'http://localhost');
+      const field = url.searchParams.get('content_field');
+      if (field) return {json: async () => ({success: true, content_page: {field, encoding: 'json', offset: 0, next_offset: 0, total_chars: 0, has_more: false, storage_truncated: false, text: ''}})};
+      const since = Number(url.searchParams.get('since_seq') || 0), first = since + 1, last = Math.min(first + 99, 205);
+      const events = Array.from({length: Math.max(0, last - first + 1)}, (_, index) => ({seq: first + index}));
+      return {json: async () => ({success: true, session: {}, events, next_seq: last, events_has_more: last < 205, terminal: true})};
+    }
+    """;
+    script_source = setup + source + r"""
+    (async () => {
+      const assert = require('node:assert/strict');
+      const result = await fetchFullTracePayload('trace-id');
+      assert.equal(result.events.length, 200);
+      assert.equal(result.events[0].seq, 6);
+      assert.equal(result.events[result.events.length - 1].seq, 205);
+      assert.equal(result.has_older_events, true);
+    })().catch(error => { console.error(error); process.exitCode = 1; });
+    """;
+    script = "const vm = require('node:vm');\n" + f"vm.runInNewContext({json.dumps(script_source)}, {{require, process, console, URL}});\n"
+    with tempfile.TemporaryDirectory() as directory:
+        script_path = Path(directory) / "trace_window.cjs"
+        script_path.write_text(script, encoding="utf-8")
+        result = subprocess.run([node, str(script_path)], capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 def test_hidden_dashboard_stops_poll_timer_and_resume_starts_one_poll() -> None:
     _run_polling_javascript(
         """
@@ -92,6 +219,27 @@ def test_poll_failures_use_jittered_exponential_backoff_with_a_hard_cap() -> Non
         await fire(); assert.equal([...timers.values()][0].delay, 320);
         for (let i = 0; i < 12; i++) await fire();
         assert.ok([...timers.values()][0].delay <= 400);
+        poller.stop();
+        """
+    )
+
+
+def test_unchanged_status_slows_polling_and_changed_status_resets_interval() -> None:
+    _run_polling_javascript(
+        """
+        const assert = require('node:assert/strict');
+        let nextId = 0, timers = new Map();
+        const outcomes = [{changed: true}, {changed: false}, {changed: false}, {changed: true}];
+        const poller = createDashboardStatusPoller(async () => outcomes.shift(), {
+          isVisible: () => true, random: () => 0.5,
+          setTimer: (fn, delay) => { const id = ++nextId; timers.set(id, {fn, delay}); return id; },
+          clearTimer: id => timers.delete(id), baseDelay: 100, maxDelay: 400,
+        });
+        const fire = async () => { const [id, timer] = timers.entries().next().value; timers.delete(id); timer.fn(); await new Promise(r => setImmediate(r)); };
+        poller.start(); await fire(); assert.equal([...timers.values()][0].delay, 100);
+        await fire(); assert.equal([...timers.values()][0].delay, 200);
+        await fire(); assert.equal([...timers.values()][0].delay, 400);
+        await fire(); assert.equal([...timers.values()][0].delay, 100);
         poller.stop();
         """
     )

@@ -19,6 +19,7 @@ def test_report_exposes_http_action_and_cache_layer_tail_percentiles(tmp_path):
 
     actions = {item["action"]: item for item in report["http_tail_latency"]["by_action"]}
     layers = {item["cache_layer"]: item for item in report["http_tail_latency"]["by_cache_layer"]}
+    assert actions["/slow"]["p50_duration_ms"] == 550.0
     assert actions["/slow"]["p95_duration_ms"] == 1_000.0
     assert actions["/slow"]["failures"] == 1
     assert layers["miss"]["p99_duration_ms"] == 1_000.0
