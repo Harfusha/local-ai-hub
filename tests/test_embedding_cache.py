@@ -39,6 +39,9 @@ class _Cache:
 
 def _embedding_model(cache, *, provider="ollama", model_name="test-model", dimension=2, delay=0):
     model = EmbeddingModel.__new__(EmbeddingModel)
+    model.enabled = True
+    model._model = None
+    model._load_error = None
     model.config = {
         "models": {
             "embedding": model_name,
@@ -75,6 +78,7 @@ def _embedding_model(cache, *, provider="ollama", model_name="test-model", dimen
     model._computed = 0
     model._batch_deduplicated = 0
     model._load_error = None
+    model._ensure_model = lambda: True
     model.calls = 0
     model.started = threading.Event()
     model.release = threading.Event()
@@ -88,13 +92,15 @@ def _embedding_model(cache, *, provider="ollama", model_name="test-model", dimen
 
     def encode_st(texts, **_kwargs):
         model.calls += 1
-        return encode_ollama_vectors(texts), provider
+        active_backend = "sentence-transformers" if provider in {"auto", "ollama"} else provider
+        return encode_ollama_vectors(texts), active_backend
 
     def encode_ollama_vectors(texts):
         return [[float(len(text)), 1.0][:dimension] + [0.5] * max(0, dimension - 2) for text in texts]
 
     model._encode_ollama = encode_ollama
-    model._encode_st_batch = encode_st
+    if provider != "openvino":
+        model._encode_st_batch = encode_st
     return model
 
 
@@ -229,7 +235,11 @@ def test_cache_identity_invalidates_provider_model_or_dimension(
 
     assert second["cache_hits"] == 0
     assert second_model_instance.calls == 1
-    assert len(cache.values) == 2
+    entries = list(cache.values.values())
+    vector_entries = [entry for entry in entries if isinstance(entry, dict) and "vector" in entry]
+    metadata_entries = [entry for entry in entries if isinstance(entry, dict) and "vector" not in entry]
+    assert len(vector_entries) == 2
+    assert len(metadata_entries) == 2
 
 
 def test_cache_key_distinguishes_normalized_and_raw_provider_vectors():
@@ -317,6 +327,7 @@ def test_concurrent_openvino_fallback_keeps_each_encoder_identity():
         return True
 
     model._ensure_st_model = load_cpu_fallback
+    model._encode_static_npu_batch = lambda encoder, texts, **_kwargs: encoder.encode(texts)
     model._cpu_gate = _ContextGate()
     second_started = threading.Event()
     original_request_key = model._encode_request_key
@@ -436,7 +447,11 @@ def test_cancelled_inflight_encode_is_removed_and_can_retry():
 
     assert result["success"] is True
     assert calls == 2
-    assert len(cache.values) == 1
+    entries = list(cache.values.values())
+    vector_entries = [entry for entry in entries if isinstance(entry, dict) and "vector" in entry]
+    metadata_entries = [entry for entry in entries if isinstance(entry, dict) and "vector" not in entry]
+    assert len(vector_entries) == 1
+    assert len(metadata_entries) == 1
     assert model.flight_group.stats()["inflight"] == 0
 
 
@@ -466,7 +481,10 @@ def test_zero_norm_backend_output_is_rejected_without_caching():
 def test_backend_fallback_is_reported_as_degraded():
     model = _embedding_model(_Cache(), provider="ollama")
     model._encode_ollama = lambda _texts: None
-    model._encode_st_batch = lambda texts, **_kwargs: ([[float(len(text)), 1.0] for text in texts], "sentence-transformers")
+    model._encode_st_batch = lambda texts, **_kwargs: (
+        [[float(len(text)), 1.0] for text in texts],
+        "sentence-transformers",
+    )
 
     result = model.encode(["fallback embedding"])
 
@@ -484,7 +502,25 @@ def test_backend_fallback_reports_embedding_space_of_backend_that_encoded_vector
         {"identity": ollama_identity, "dimension": 2, "vector": [0.0, 1.0]},
     )
     model._encode_ollama = lambda _texts: None
-    model._encode_st_batch = lambda texts, **_kwargs: ([[float(len(text)), 1.0] for text in texts], "sentence-transformers")
+
+    def encode_on_sentence_transformers(texts, **_kwargs):
+        identity = "sentence-transformers:cpu:test-model"
+        revision = "b" * 40
+        model.active_backend = "sentence-transformers"
+        model.active_device = "cpu"
+        model._loaded_model_revision = revision
+        model._record_model_provenance(identity, revision=revision)
+        model._execution_local.snapshot = {
+            "identity": identity,
+            "backend": "sentence-transformers",
+            "device": "cpu",
+            "model": "test-model",
+            "revision": revision,
+            "digest": None,
+        }
+        return [[float(len(text)), 1.0] for text in texts], "sentence-transformers"
+
+    model._encode_st_batch = encode_on_sentence_transformers
 
     result = model.encode(["cached item", "fallback identity"])
 

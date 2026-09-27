@@ -1903,8 +1903,8 @@ class RAGStore:
                     predicates.append("(path=? OR path LIKE ? || '/%')")
                     params.extend((norm_scope, norm_scope))
                 if last_path is not None:
-                    predicates.append("(path>? OR (path=? AND chunk_no>?))")
-                    params.extend((last_path, last_path, last_chunk_no))
+                    predicates.append("(path, chunk_no) > (?, ?)")
+                    params.extend((last_path, last_chunk_no))
                 cursor = con.execute(
                     "SELECT path, chunk_no, embedding, content_hash FROM chunks WHERE "
                     + " AND ".join(predicates)
@@ -1946,10 +1946,46 @@ class RAGStore:
                         dot_scores = np.dot(matrix, q)
                         scores[valid] = dot_scores[valid] / norms[valid]
                     scores = np.where(np.isfinite(scores), scores, 0.0)
-                    path_keys = np.asarray([str(row[0]) for row in batch], dtype=np.str_)
-                    chunk_keys = np.fromiter((int(row[1]) for row in batch), dtype=np.int64, count=len(batch))
-                    hash_keys = np.asarray([str(row[3] or "") for row in batch], dtype=np.str_)
-                    local_order = np.lexsort((hash_keys, chunk_keys, path_keys, -scores))[:candidate_limit]
+                    local_count = min(candidate_limit, len(batch))
+                    if local_count < len(batch):
+                        kth = len(batch) - local_count
+                        partition = np.argpartition(scores, kth)
+                        cutoff = scores[partition[kth]]
+                        above = np.flatnonzero(scores > cutoff)
+                        tied = np.flatnonzero(scores == cutoff)
+                        remaining = local_count - len(above)
+                        if tied.size > remaining:
+                            tie_paths = np.asarray(
+                                [str(batch[int(index)][0]) for index in tied], dtype=np.str_
+                            )
+                            tie_chunks = np.fromiter(
+                                (int(batch[int(index)][1]) for index in tied),
+                                dtype=np.int64,
+                                count=len(tied),
+                            )
+                            tie_hashes = np.asarray(
+                                [str(batch[int(index)][3] or "") for index in tied],
+                                dtype=np.str_,
+                            )
+                            tie_order = np.lexsort((tie_hashes, tie_chunks, tie_paths))
+                            tied = tied[tie_order[:remaining]]
+                        candidate_indices = np.concatenate((above, tied))
+                    else:
+                        candidate_indices = np.arange(len(batch), dtype=np.intp)
+                    path_keys = np.asarray(
+                        [str(batch[int(index)][0]) for index in candidate_indices], dtype=np.str_
+                    )
+                    chunk_keys = np.fromiter(
+                        (int(batch[int(index)][1]) for index in candidate_indices),
+                        dtype=np.int64,
+                        count=len(candidate_indices),
+                    )
+                    hash_keys = np.asarray(
+                        [str(batch[int(index)][3] or "") for index in candidate_indices], dtype=np.str_
+                    )
+                    local_order = candidate_indices[
+                        np.lexsort((hash_keys, chunk_keys, path_keys, -scores[candidate_indices]))
+                    ]
                     for index in local_order:
                         offer(batch[index], float(scores[index]))
                 else:

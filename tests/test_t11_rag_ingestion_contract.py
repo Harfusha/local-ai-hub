@@ -6,6 +6,7 @@ import os
 import sqlite3
 import struct
 from contextlib import closing
+from types import SimpleNamespace
 
 import pytest
 from local_ai_hub import mcp_server
@@ -498,7 +499,7 @@ def test_document_ingest_bounds_batches_and_preserves_long_document_order(tmp_pa
         f"section-{index:04d} " + ("payload " * 112)
         for index in range(75)
     )
-    indexed_text = f"Title: {title}\nContent:\n{content}"
+    indexed_text = f"Title: {title}\nContent:\n{content.strip()}"
     expected_chunks = store._text_chunks(indexed_text, size=1000, overlap=100)
     assert len(expected_chunks) > 64
     assert len(set(expected_chunks)) == len(expected_chunks)
@@ -547,7 +548,7 @@ def test_document_ingest_keeps_text_and_degrades_remainder_after_later_batch_fai
         f"section-{index:04d} " + ("payload " * 112)
         for index in range(75)
     )
-    indexed_text = f"Title: {title}\nContent:\n{content}"
+    indexed_text = f"Title: {title}\nContent:\n{content.strip()}"
     expected_chunks = store._text_chunks(indexed_text, size=1000, overlap=100)
     assert len(expected_chunks) > 64
 
@@ -596,7 +597,7 @@ def test_document_ingest_rejects_overlong_later_batch_without_misassociation(tmp
         f"section-{index:04d} " + ("payload " * 112)
         for index in range(75)
     )
-    indexed_text = f"Title: {title}\nContent:\n{content}"
+    indexed_text = f"Title: {title}\nContent:\n{content.strip()}"
     expected_chunks = store._text_chunks(indexed_text, size=1000, overlap=100)
     assert len(expected_chunks) > 64
     expected_positions = {text: index + 1 for index, text in enumerate(expected_chunks)}
@@ -630,7 +631,7 @@ def test_document_ingest_rejects_overlong_later_batch_without_misassociation(tmp
     assert result["embedded"] is False
     assert result["embedding_status"] == "degraded"
     assert result["degraded"] is True
-    assert [len(batch) for batch in services.calls] == [64, 1]
+    assert [len(batch) for batch in services.calls] == [64, len(expected_chunks) - 64]
     assert [text for batch in services.calls for text in batch] == expected_chunks
     with closing(store._connect()) as con:
         rows = con.execute(
@@ -901,3 +902,146 @@ def test_index_embedding_calls_are_bounded_for_large_single_file(tmp_path, monke
             (store._scope_key("tenant"), workspace, "large.py"),
         ).fetchall()
     assert [(int(row[0]), str(row[1])) for row in rows] == list(enumerate(chunks))
+
+
+def test_preemption_after_embed_batch_preserves_published_snapshot(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+    path = root / "module.py"
+    path.write_text("before = 1\n", encoding="utf-8")
+
+    store = _store(tmp_path)
+
+    class _RecordingServices:
+        def __init__(self):
+            self.calls = []
+
+        def embed(self, texts, _tenant, **_kwargs):
+            batch = list(texts)
+            self.calls.append(batch)
+            return {
+                "success": True,
+                "backend": "test",
+                "model": "preemption-test-model",
+                "embedding_space_id": "preemption-test-space",
+                "embeddings": [[0.25, 0.75] for _ in batch],
+            }
+
+    services = _RecordingServices()
+    store.services = services
+    chunks = ["baseline chunk"]
+    monkeypatch.setattr(store, "_chunks", lambda _text, path="": list(chunks))
+    workspace = "preemption-workspace"
+
+    initial = store.index_paths_step(str(root), "tenant", workspace, ["module.py"])
+    assert initial["success"] is True
+    previous = _rag_snapshot(store, "tenant", workspace)
+
+    path.write_text("after = 2\n", encoding="utf-8")
+    chunks[:] = [f"replacement chunk {index}" for index in range(65)]
+
+    def should_yield():
+        return len(services.calls) >= 2
+
+    result = store.index_paths_step(
+        str(root), "tenant", workspace, ["module.py"], should_yield=should_yield
+    )
+
+    assert result["success"] is True
+    assert result["preempted"] is True
+    assert [len(batch) for batch in services.calls] == [1, 64]
+    assert _rag_snapshot(store, "tenant", workspace) == previous
+
+
+@pytest.mark.parametrize(
+    ("action", "kwargs", "expected_error"),
+    [
+        (
+            "ingest_document",
+            {"content": "", "query": "fallback text", "root": "."},
+            "content is required",
+        ),
+        (
+            "ingest_diagram",
+            {"image_path": "", "query": "fallback.svg", "root": "."},
+            "image_path is required",
+        ),
+    ],
+)
+def test_mcp_rag_ingest_requires_explicit_input(
+    action, kwargs, expected_error, monkeypatch
+):
+    monkeypatch.setattr(
+        mcp_server,
+        "FEATURES",
+        SimpleNamespace(
+            rag=True, tasks=False, status=False, has_any_model=lambda: False
+        ),
+    )
+    calls = []
+    monkeypatch.setattr(
+        mcp_server.CLIENT,
+        "post",
+        lambda *args, **kw: calls.append((args, kw)) or {"success": True},
+    )
+
+    result = mcp_server.local_ai_rag(action=action, **kwargs)
+
+    assert result["success"] is False
+    assert expected_error in result["error"]
+    assert calls == []
+
+
+def test_mcp_rag_ingest_forwards_explicit_fields_only(monkeypatch):
+    monkeypatch.setattr(
+        mcp_server,
+        "FEATURES",
+        SimpleNamespace(
+            rag=True, tasks=False, status=False, has_any_model=lambda: False
+        ),
+    )
+    calls = []
+
+    def post(path, payload, **kwargs):
+        calls.append((path, payload))
+        return {"success": True, "status": "accepted"}
+
+    monkeypatch.setattr(mcp_server.CLIENT, "post", post)
+
+    mcp_server.local_ai_rag(
+        action="ingest_document",
+        workspace="specs",
+        content="Explicit document content.",
+        title="Explicit title",
+        metadata={"source": "test"},
+        query="unrelated query",
+    )
+    mcp_server.local_ai_rag(
+        action="ingest_diagram",
+        image_path="diagram.svg",
+        caption="",
+        metadata={"kind": "diagram"},
+        extra_fields=["must not become caption"],
+        query="unrelated path",
+    )
+
+    assert calls == [
+        (
+            "/api/rag/ingest_document",
+            {
+                "workspace": "specs",
+                "content": "Explicit document content.",
+                "title": "Explicit title",
+                "metadata": {"source": "test"},
+            },
+        ),
+        (
+            "/api/rag/ingest_diagram",
+            {
+                "workspace": "default",
+                "image_path": "diagram.svg",
+                "caption": "",
+                "metadata": {"kind": "diagram"},
+            },
+        ),
+    ]

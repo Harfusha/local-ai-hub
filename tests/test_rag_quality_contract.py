@@ -4,6 +4,7 @@ import json
 import math
 import os
 import sqlite3
+import threading
 import time
 import tracemalloc
 from contextlib import closing
@@ -95,12 +96,28 @@ def test_vector_search_streams_rows_and_keeps_golden_relevance(tmp_path, monkeyp
         def close(self):
             self._connection.close()
 
+        def commit(self):
+            self._connection.commit()
+
     connect = store._connect
     monkeypatch.setattr(store, "_connect", lambda: _Connection(connect()))
     result = store._search_uncached("golden target", tenant, workspace, top_k=3, use_reranker=False)
 
     assert result["success"] is True
     assert [row["chunk_no"] for row in result["results"][:3]] == [2, 3, 1]
+
+
+def test_vector_search_keeps_deterministic_ties_at_candidate_cutoff(tmp_path):
+    store = _store(tmp_path)
+    vectors = np.asarray([[1.0, 0.0]] * 32, dtype=np.float32)
+    _insert_vectors(store, "tenant", "tie-workspace", vectors)
+
+    result = store._search_uncached(
+        "tie query", "tenant", "tie-workspace", top_k=16, use_reranker=False
+    )
+
+    assert result["success"] is True
+    assert [row["chunk_no"] for row in result["results"]] == list(range(16))
 
 
 def test_golden_corpus_keeps_relevant_credentials_above_realistic_distractors(tmp_path):
@@ -227,7 +244,11 @@ def test_fallback_embedding_reports_identity_of_backend_that_produced_vectors():
 
     model = EmbeddingModel.__new__(EmbeddingModel)
     model.config = {
-        "models": {"embedding": "primary-model", "embedding_dimension": 2},
+        "models": {
+            "embedding": "primary-model",
+            "embedding_dimension": 2,
+            "embedding_revision": "test-revision",
+        },
         "cache": {"embeddings": True},
     }
     model.model_name = "primary-model"
@@ -239,6 +260,12 @@ def test_fallback_embedding_reports_identity_of_backend_that_produced_vectors():
     model._active_embedding_dimension = 2
     model._ollama_model_name = "primary-model"
     model._loaded_model_name = "fallback-model"
+    model._loaded_model_revision = "test-revision"
+    model._encoder_lock = threading.RLock()
+    model._identity_dimension_lock = threading.Lock()
+    model._dimensions_by_identity = {}
+    model._model_provenance_lock = threading.Lock()
+    model._model_provenance_by_identity = {}
     model.cache = _Cache()
     model.cache_enabled = True
     model.batch_size = 32
@@ -246,6 +273,7 @@ def test_fallback_embedding_reports_identity_of_backend_that_produced_vectors():
     model._computed = 0
     model._batch_deduplicated = 0
     model._load_error = None
+    model._execution_local = threading.local()
     model._encode_ollama = lambda _texts: None
     model._candidate_specs = lambda: [("sentence-transformers", "cpu")]
 
@@ -258,7 +286,13 @@ def test_fallback_embedding_reports_identity_of_backend_that_produced_vectors():
     fallback_identity = "sentence-transformers:cpu:fallback-model"
     assert result["backend"] == "sentence-transformers"
     assert result["embedding_space_id"] == model.embedding_space_id(fallback_identity)
-    assert next(iter(model.cache.values.values()))["identity"] == fallback_identity
+    vector_entries = [
+        entry
+        for entry in model.cache.values.values()
+        if isinstance(entry, dict) and "vector" in entry
+    ]
+    assert len(vector_entries) == 1
+    assert vector_entries[0]["identity"] == fallback_identity
 
 
 def test_subthreshold_query_embedding_returns_degraded_empty_results(tmp_path):
@@ -334,12 +368,12 @@ def test_configured_candidate_count_has_hard_upper_bound(tmp_path):
     assert len(result["results"]) <= 512
 
 
-def test_vector_cursor_closes_before_scoring_batch(tmp_path, monkeypatch):
+def test_vector_cursor_streams_during_scoring_and_closes_after_search(tmp_path, monkeypatch):
     import local_ai_hub.rag as rag_module
 
     store = _store(tmp_path)
     _insert_vectors(store, "tenant", "cursor-workspace", np.asarray([[1.0, 0.0]], dtype=np.float32))
-    state = {"cursor": None, "closed_before_dot": False}
+    state = {"cursor": None, "cursor_open_during_dot": False, "fetches": 0}
     real_dot = np.dot
 
     class _Cursor:
@@ -349,6 +383,7 @@ def test_vector_cursor_closes_before_scoring_batch(tmp_path, monkeypatch):
             state["cursor"] = self
 
         def fetchmany(self, size):
+            state["fetches"] += 1
             return self._cursor.fetchmany(size)
 
         def close(self):
@@ -371,17 +406,22 @@ def test_vector_cursor_closes_before_scoring_batch(tmp_path, monkeypatch):
         def close(self):
             self._connection.close()
 
+        def commit(self):
+            self._connection.commit()
+
     connect = store._connect
     monkeypatch.setattr(store, "_connect", lambda: _Connection(connect()))
 
     def checked_dot(*args, **kwargs):
-        state["closed_before_dot"] = bool(state["cursor"] and state["cursor"].closed)
+        state["cursor_open_during_dot"] = bool(state["cursor"] and not state["cursor"].closed)
         return real_dot(*args, **kwargs)
 
     monkeypatch.setattr(np, "dot", checked_dot)
     result = store._search_uncached("cursor query", "tenant", "cursor-workspace", top_k=1, use_reranker=False)
     assert result["success"] is True
-    assert state["closed_before_dot"] is True
+    assert state["cursor_open_during_dot"] is True
+    assert state["fetches"] >= 2
+    assert state["cursor"].closed is True
 
 
 def test_retrieval_latency_and_peak_memory_baseline(tmp_path, capsys):

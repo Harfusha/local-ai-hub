@@ -2279,17 +2279,31 @@ def local_ai_rag(
             "name": workspace or "default", "query": query, "top_k": max(1, min(top_k, 12)),
         }))
     if action == "ingest_document":
+        if not isinstance(content, str) or not content.strip():
+            return _compact({
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error": "content is required for ingest_document",
+            }, "status")
         return _compact(CLIENT.post("/api/rag/ingest_document", {
             "workspace": workspace or "default",
-            "content": content or query or root,
+            "content": content,
             "title": title,
             "metadata": metadata if isinstance(metadata, dict) else None,
         }, timeout=_timeout("quick")), "status")
     if action == "ingest_diagram":
+        if not isinstance(image_path, str) or not image_path.strip():
+            return _compact({
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error": "image_path is required for ingest_diagram",
+            }, "status")
         return _compact(CLIENT.post("/api/rag/ingest_diagram", {
             "workspace": workspace or "default",
-            "image_path": image_path or query or root,
-            "caption": caption or (extra_fields[0] if extra_fields else ""),
+            "image_path": image_path,
+            "caption": caption,
             "metadata": metadata if isinstance(metadata, dict) else None,
         }, timeout=_timeout("quick")), "status")
     return _invalid_action("local_ai_rag", action, tuple(RagAction.__args__), "Use RAG only when cheaper Local AI Hub evidence is insufficient.")
