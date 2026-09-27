@@ -81,13 +81,22 @@ def test_enabled_agent_os_and_tool_actions_are_discoverable():
         assert all(action in schemas[name]["description"] for action in expected)
 
     task_properties = schemas["local_ai_task"]["parameters"]["properties"]
-    assert {"prompt", "model", "format", "json_schema", "candidate_data", "evaluation_cohort", "job_id", "latency_budget_ms", "timeout_seconds", "extra_fields"}.issubset(task_properties)
+    assert {"prompt", "model", "format", "json_schema", "candidate_data", "evaluation_cohort", "job_id", "request_id", "latency_budget_ms", "timeout_seconds", "extra_fields"}.issubset(task_properties)
     assert {"docset_index", "docset_search", "ingest_document", "ingest_diagram"}.issubset(_actions(schemas["local_ai_rag"]))
     assert {"contract", "checkpoint", "record", "tool_outcome", "target_scope"}.issubset(schemas["local_ai_coord"]["parameters"]["properties"])
     assert schemas["local_ai_artifact"]["parameters"]["required"] == ["artifact_id"]
     assert "id" not in schemas["local_ai_artifact"]["parameters"]["properties"]
     assert "agent_state" in schemas["local_ai_status"]["description"]
     assert "local_ai_work" not in schemas
+
+
+def test_async_job_controls_remain_in_mcp_schema_without_model_backend():
+    cfg = _config()
+    cfg["server"]["auto_start_ollama"] = False
+    schemas = generate_mcp_tool_schemas(cfg)
+
+    assert "local_ai_task" in schemas
+    assert _actions(schemas["local_ai_task"]) == ["status", "wait", "result", "cancel"]
 
 
 def test_disabled_agent_os_is_omitted_from_generated_surfaces():

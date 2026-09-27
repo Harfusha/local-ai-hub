@@ -37,7 +37,23 @@ For model-backed `local_ai_task` actions, use `delivery="sync"` when the answer 
 
 Durable async actions: `batch`, `compress`, `delegate`, `reason`, `review`, `review_diff`, `route`, `second_opinion`, `speculative_lint`.
 
-For HTTP `/api/review/diff`, `delivery="auto"` with a positive `latency_budget_ms` has a cold-start exception: fewer than 5 telemetry samples selects async with reason `cold_start_review_diff`. Other auto delivery follows the measured p95 rule above.
+HTTP foreground delivery maps `/api/delegate`, `/api/reason`, `/api/review`, `/api/review/diff`, `/api/second-opinion`, `/api/compress`, `/api/route`, and `/api/delegate/batch` to their corresponding durable actions. Direct MCP `submit` uses `job_action` from the durable action list above. `sync` is the default delivery; `async` submits immediately on mapped HTTP routes.
+
+For HTTP `/api/review/diff`, auto delivery first checks queue age: when `review.max_queue_age_ms` is positive and queue age exceeds it, the request returns a terminal 503 bypass. Otherwise, a positive `latency_budget_ms` with fewer than 5 telemetry samples selects async with reason `cold_start_review_diff`. Other auto delivery follows the measured p95 rule above.
+
+Async lifecycle responses preserve `job_id`, `state`, `artifact_id` (empty until available), and `expires_at` (Unix timestamp seconds). Expiry is set at submission; terminal job results become `expired` at that time. `async_jobs.result_ttl_seconds` defaults to 259,200 seconds (72 hours), and artifact-store TTL must cover it. A timed-out wait returns current state with `wait_timeout_seconds` and does not cancel the job. Queued cancellation returns terminal `cancelled`; running cancellation returns `running` with `cancel_requested=true` as acknowledgement, then worker completion supplies final state.
+
+Direct HTTP lifecycle requests use `POST /api/async-jobs`: submit sends `action="submit"`, `job_action`, and optional stable `request_id`; controls send `action="status"|"wait"|"result"|"cancel"` with `job_id`, and wait also sends `timeout_seconds`. MCP uses `local_ai_task(action=submit|status|wait|result|cancel, ...)`. The existing generic `HubClient.post("/api/async-jobs", payload, timeout=...)` sends the same HTTP requests.
+
+Recovery may replay only explicitly replay-safe actions with a stable `request_id`, matching tenant/action/payload identity, and remaining attempts; command-backed and unclassified actions become terminal `outcome_unknown` after interruption.
+
+### Conversation lifecycle
+
+Initial and continued task text must be nonblank.
+
+Start synchronously with HTTP `POST /api/delegate` or `POST /api/reason`, setting `conversation=true` and `delivery="sync"`, or MCP `local_ai_task(action="delegate"|"explore"|"reason", conversation=true, delivery="sync")`. HubClient has no dedicated start helper; use `HubClient.post("/api/delegate", payload)` or `HubClient.post("/api/reason", payload)`. Continue with HTTP `POST /api/conversations/continue` and body `conversation_id`, `task`, optional `context`; MCP uses `local_ai_task(action="continue", conversation_id=..., task=..., context=...)`; the existing `HubClient.continue_conversation(conversation_id, prompt, model=None, system=None, max_tokens=None, temperature=None)` maps `prompt` to HTTP `task`. Use `HubClient.post` when sending optional `context`. IDs are opaque and tenant-scoped. The initial model, system prompt, output limit, temperature, and route stay pinned for the conversation. Only one turn can be active; a concurrent continuation returns retryable in-progress status.
+
+Conversations allow up to 12 user turns by default. The prompt limit comes from `model_conversations.max_prompt_tokens`, falling back to `token_saving.max_local_input_tokens` or 56,000 tokens. Defaults are 900 seconds idle TTL, 1,800 seconds active TTL, and capacity 1,000. Conversation state and transcripts remain in process memory and are lost on restart.
 
 For repository context, `local_ai_repo(action="context", mode="fast")` returns bounded deterministic/index context and a `continuation` for `mode="full"`. Use it when foreground p95 matters more than broad semantic recall. It runs no generation task. Repository responses expose `cache_hit`, `cache_layer="workspace"`, and `coalesced`; reuse them instead of submitting a near-identical root/revision/query request.
 
@@ -63,9 +79,9 @@ Named profiles are available through existing `local_ai_task` and `local_ai_repo
 
 ## Local model conversations
 
-Start a synchronous conversation with `local_ai_task(action="delegate"|"reason", conversation=true, ...)`. The response returns an opaque `conversation_id`; continue it with `local_ai_task(action="continue", conversation_id=..., task="...")`. A conversation pins its initial model, route and system instructions, accepts one active turn, and is bound to its MCP tenant.
+Start a synchronous conversation with `local_ai_task(action="delegate"|"explore"|"reason", conversation=true, delivery="sync", ...)`. The response returns an opaque `conversation_id`; continue it with `local_ai_task(action="continue", conversation_id=..., task="...")`. A conversation pins its initial model, route and system instructions, accepts one active turn, and is bound to its MCP tenant.
 
-Conversation history is process-memory only: it expires after inactivity and disappears after a hub restart. It bypasses generation, semantic and artifact caches, so no transcript or continuation output becomes durable cache state. Profiles and async/auto delivery are unsupported for conversations. Omit `conversation=true` to retain normal stateless behavior.
+Conversation history is process-memory only: it expires after inactivity and disappears after a hub restart. Defaults allow 12 user turns and capacity 1,000. The prompt limit uses `model_conversations.max_prompt_tokens`, then `token_saving.max_local_input_tokens`, then 56,000 tokens. Idle TTL defaults to 900 seconds; active TTL defaults to 1,800 seconds. Conversations bypass generation, semantic and artifact caches, so no transcript or continuation output becomes durable cache state. Profiles and async/auto delivery are unsupported for conversations. Omit `conversation=true` to retain normal stateless behavior.
 
 ## Agent Operating System projection
  
