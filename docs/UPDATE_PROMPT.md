@@ -2,7 +2,7 @@
 
 Use this prompt with any AI coding agent (Claude Code, Codex, Cursor, Windsurf, Gemini, Roo, GitHub Copilot) in any repository to upgrade an existing Local AI Hub installation from V3 to V4 from the canonical `master` branch, upgrade dependencies, restart services, and refresh the repository's instruction policies.
 
-Preserve profile-aware model routing when refreshing repository instructions: integrated uses qwen2.5-coder:0.5b preprocessing, 1.5b quick, 3b involved, 7b hard reasoning and qwen3-vl:4b vision; balanced uses qwen2.5-coder:1.5b preprocessing, 3b fast, 7b ordinary/hard work and qwen3.5:9b only for extreme reasoning and vision; high uses 1.5b/3b/7b/9b; max uses 1.5b/3b/9b for heavy routes.
+Preserve profile-aware model routing when refreshing repository instructions: integrated reserves qwen2.5-coder:0.5b for preprocessing, qwen2.5-coder:1.5b for quick work, qwen2.5-coder:3b for involved work, qwen2.5-coder:7b for hard reasoning and qwen3-vl:4b for vision; balanced reserves qwen2.5-coder:1.5b for preprocessing, qwen2.5-coder:3b for fast work, qwen2.5-coder:7b for ordinary/hard work and qwen3.5:9b for extreme reasoning/vision; high raises reasoning/general/vision to qwen3.5:9b; max raises heavy/general/reasoning/vision to qwen3.5:9b.
 
 ---
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import closing
 
 import pytest
 
@@ -116,6 +117,70 @@ def test_full_payload_content_pages_reconstruct_retained_session_and_event_data(
     last_page = store.detail(trace_id, full_payload=True, content_field="output", content_offset=2**63 - 1)
     assert last_page["success"] is True
     assert last_page["content_page"]["offset"] == len(output)
+
+
+def test_large_unicode_content_pages_use_indexed_chunks_at_late_offsets(tmp_path):
+    store = DebugTraceStore(_config(
+        tmp_path,
+        max_session_text_bytes=8 * 1024 * 1024,
+        max_event_bytes=4 * 1024 * 1024,
+        max_detail_response_bytes=4096,
+    ))
+    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    output = "秘密😀" * 100_000
+    response = {"answer": "結果🛰️" * 30_000}
+    event_payload = {"prompt": "入力🪷" * 25_000}
+    store.update(trace_id, output=output, response=response)
+    store.event(trace_id, "model_request", event_payload)
+
+    offset = len(output) - 700
+    output_page = store.detail(
+        trace_id, full_payload=True, content_field="output", content_offset=offset
+    )
+    response_text = store._encode(response)
+    response_offset = len(response_text) - 350
+    response_page = store.detail(
+        trace_id, full_payload=True, content_field="response", content_offset=response_offset
+    )
+    event_text = store._encode(event_payload)
+    event_offset = len(event_text) - 450
+    event_page = store.detail(
+        trace_id, full_payload=True, content_field="event:1", content_offset=event_offset
+    )
+
+    assert output_page["success"] is True
+    assert output_page["content_page"]["text"] == output[offset:offset + 256]
+    assert output_page["content_page"]["total_chars"] == len(output)
+    assert response_page["success"] is True
+    assert response_page["content_page"]["text"] == response_text[response_offset:response_offset + 256]
+    assert response_page["content_page"]["total_chars"] == len(response_text)
+    assert event_page["success"] is True
+    assert event_page["content_page"]["text"] == event_text[event_offset:event_offset + 256]
+    assert event_page["content_page"]["total_chars"] == len(event_text)
+
+    with closing(store._connect()) as con:
+        max_chunk_chars = con.execute(
+            "SELECT MAX(length(chunk_text)) FROM trace_content_chunks WHERE trace_id=?",
+            (trace_id,),
+        ).fetchone()[0]
+        preview_chars = con.execute(
+            "SELECT length(output_text) FROM traces WHERE trace_id=?", (trace_id,)
+        ).fetchone()[0]
+        event_preview_chars = con.execute(
+            "SELECT length(payload_json) FROM trace_events WHERE trace_id=? AND seq=1",
+            (trace_id,),
+        ).fetchone()[0]
+        plan = con.execute(
+            "EXPLAIN QUERY PLAN SELECT chunk_index,chunk_text FROM trace_content_chunks "
+            "WHERE trace_id=? AND content_field=? AND event_seq=? AND chunk_index>=? "
+            "AND chunk_index<? ORDER BY chunk_index LIMIT ?",
+            (trace_id, "output", 0, 10, 11, 2),
+        ).fetchall()
+
+    assert max_chunk_chars <= store.CONTENT_CHUNK_CHARS
+    assert preview_chars <= store.CONTENT_PREVIEW_CHARS
+    assert event_preview_chars <= store.CONTENT_PREVIEW_CHARS
+    assert any("SEARCH" in str(row[3]) and "trace_content_chunks" in str(row[3]) for row in plan)
 
 
 def test_detail_flags_event_payload_truncated_before_response_serialization(tmp_path):

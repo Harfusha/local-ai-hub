@@ -486,6 +486,50 @@ def test_pubsub_service_uses_app_store_and_preserves_sequence_gap(monkeypatch):
     ]
 
 
+def test_pubsub_polls_durable_sequence_pages_and_reports_retention_gap(tmp_path):
+    from local_ai_hub.agent_events import AgentStateStore, SwarmPubSub
+
+    db_path = tmp_path / "agent_state.sqlite3"
+    state_store = AgentStateStore(db_path)
+    bus = SwarmPubSub(state_store=state_store)
+    for index in range(3):
+        result = bus.publish("build", {"index": index}, sender="worker")
+        assert result["success"] is True
+
+    with closing(sqlite3.connect(db_path)) as con:
+        con.execute("DELETE FROM agent_events WHERE stream_id=? AND seq=1", ("pubsub:build",))
+        con.commit()
+
+    first_page = bus.poll("build", after_seq=0, limit=1)
+    next_page = bus.poll("build", after_seq=2, limit=1)
+
+    assert first_page["success"] is True
+    assert first_page["messages"][0]["seq"] == 2
+    assert first_page["has_gap"] is True
+    assert first_page["gap"] == {
+        "reason": "retention",
+        "requested_after_seq": 0,
+        "first_retained_seq": 2,
+        "last_seq": 3,
+    }
+    assert next_page["messages"][0]["seq"] == 3
+    assert next_page["has_more"] is False
+
+
+def test_pubsub_default_rebinds_to_current_app_state_store(monkeypatch, tmp_path):
+    from local_ai_hub.agent_events import AgentStateStore, SwarmPubSub
+
+    monkeypatch.setattr(SwarmPubSub, "_instance", None)
+    first_store = AgentStateStore(tmp_path / "first.sqlite3")
+    current_store = AgentStateStore(tmp_path / "current.sqlite3")
+
+    bus = SwarmPubSub.get_default(state_store=first_store)
+    current_bus = SwarmPubSub.get_default(state_store=current_store)
+
+    assert current_bus is bus
+    assert current_bus.state_store is current_store
+
+
 def test_pubsub_http_route_forwards_sequence_cursor_and_gap(monkeypatch):
     from local_ai_hub import http_server
 
