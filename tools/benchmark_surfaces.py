@@ -34,6 +34,13 @@ from urllib.request import Request, urlopen
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_SOURCE = (_REPO_ROOT / "src").resolve()
+sys.path[:] = [
+    entry
+    for entry in sys.path
+    if Path(entry or os.getcwd()).resolve() != _REPO_SOURCE
+]
+sys.path.insert(0, str(_REPO_SOURCE))
 _FULL_FILE_SIZES = {100, 10_000, 100_000}
 _FULL_RAG_SIZES = {10_000, 100_000}
 _MAX_CONCURRENCY = 256
@@ -576,21 +583,17 @@ def _revision() -> str | None:
 
 
 def _implementation_fingerprint() -> str:
-    tracked_runtime = (
-        "src/local_ai_hub/app.py",
-        "src/local_ai_hub/http_server.py",
-        "src/local_ai_hub/services.py",
-        "src/local_ai_hub/code_index.py",
-        "src/local_ai_hub/rag.py",
-        "src/local_ai_hub/async_jobs.py",
-        "src/local_ai_hub/repo_tools.py",
-        "src/local_ai_hub/benchmark.py",
-        "tools/benchmark_surfaces.py",
-    )
+    package_root = _REPO_ROOT / "src" / "local_ai_hub"
+    tracked_runtime = {
+        path.relative_to(_REPO_ROOT).as_posix()
+        for path in package_root.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts
+    } if package_root.is_dir() else set()
+    tracked_runtime.update({"pyproject.toml", "tools/benchmark_surfaces.py"})
     digest = hashlib.sha256()
-    for relative in tracked_runtime:
+    for relative in sorted(tracked_runtime):
         source_path = _REPO_ROOT / relative
-        digest.update(Path(relative).name.encode("utf-8"))
+        digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
         try:
             digest.update(hashlib.sha256(source_path.read_bytes()).digest())
@@ -670,6 +673,23 @@ def _vram_usage_bytes(snapshot: Any) -> int | None:
     if isinstance(value, (int, float)) and math.isfinite(value) and value >= 0:
         return int(value * 1024 * 1024)
     return None
+
+
+def _queue_probe_failure_category(
+    stage: str,
+    *,
+    response: Any = None,
+    exception: Exception | None = None,
+) -> str | None:
+    if stage not in {"submit", "cancel"}:
+        raise ValueError(f"unsupported queue probe stage: {stage}")
+    if exception is not None:
+        return f"{stage}_exception"
+    if not isinstance(response, dict) or response.get("success") is not True:
+        return f"{stage}_rejected"
+    if stage == "submit":
+        return None if response.get("job_id") else "submit_missing_job_id"
+    return None if response.get("state") == "cancelled" else "cancel_not_cancelled"
 
 
 def run_benchmark(
@@ -752,6 +772,10 @@ def run_benchmark(
             "[prewarm]\n"
             "enabled = false\n\n"
             "[observability]\n"
+            "enabled = false\n\n"
+            "[resilience]\n"
+            "watchdog_enabled = false\n\n"
+            "[debug_traces]\n"
             "enabled = false\n",
             encoding="utf-8",
         )
@@ -922,28 +946,36 @@ def run_benchmark(
             definition="Direct LocalAIApp RAGStore._chunks calls on one synthetic source file; excludes retrieval, embeddings, reranking, and model inference.",
         )
 
-        def queue_admission_attempt(_value: int) -> tuple[float, str | None]:
+        def queue_admission_attempt(_value: int) -> tuple[float, str | None, str | None]:
             queued_at = time.perf_counter()
             error_type: str | None = None
+            error_category: str | None = None
+            probe_stage = "submit"
             try:
                 task_id = f"benchmark-{uuid.uuid4().hex}"
                 submitted = app.async_jobs.submit(
                     "benchmark", "reason", {"task_id": task_id, "task": "T02 queue admission probe"},
                     dispatch_delay_seconds=30.0,
                 )
-                if submitted.get("success") is not True or not submitted.get("job_id"):
-                    raise RuntimeError("Hub async job admission failed")
-                cancelled = app.async_jobs.cancel("benchmark", str(submitted["job_id"]))
-                if cancelled.get("success") is not True or cancelled.get("state") != "cancelled":
-                    raise RuntimeError("Hub async job was not cancelled before worker service")
+                error_category = _queue_probe_failure_category("submit", response=submitted)
+                if error_category:
+                    error_type = "RuntimeError"
+                else:
+                    probe_stage = "cancel"
+                    cancelled = app.async_jobs.cancel("benchmark", str(submitted["job_id"]))
+                    error_category = _queue_probe_failure_category("cancel", response=cancelled)
+                    if error_category:
+                        error_type = "RuntimeError"
             except Exception as exc:
                 error_type = type(exc).__name__
-            return (time.perf_counter() - queued_at) * 1000.0, error_type
+                error_category = _queue_probe_failure_category(probe_stage, exception=exc)
+            return (time.perf_counter() - queued_at) * 1000.0, error_type, error_category
 
         queue_samples: list[float] = []
         queue_cold_samples: list[float] = []
         queue_warm_samples: list[float] = []
         queue_error_types: set[str] = set()
+        queue_error_categories: dict[str, int] = {}
         queue_error_count = 0
         queue_measurements: dict[str, Any] = {}
         total_admissions = 0
@@ -951,6 +983,7 @@ def run_benchmark(
         for level in concurrency:
             level_samples: list[float] = []
             level_errors = 0
+            level_error_categories: dict[str, int] = {}
             level_batch_seconds = 0.0
             for repetition_index in range(light_repetitions):
                 batch_started = time.perf_counter()
@@ -960,17 +993,21 @@ def run_benchmark(
                 level_batch_seconds += batch_seconds
                 total_batch_seconds += batch_seconds
                 total_admissions += level
-                for elapsed_ms, error_type in outcomes:
+                for elapsed_ms, error_type, error_category in outcomes:
                     level_samples.append(elapsed_ms)
                     queue_samples.append(elapsed_ms)
                     (queue_cold_samples if repetition_index == 0 else queue_warm_samples).append(elapsed_ms)
-                    if error_type:
+                    if error_category:
                         level_errors += 1
                         queue_error_count += 1
+                        queue_error_categories[error_category] = queue_error_categories.get(error_category, 0) + 1
+                        level_error_categories[error_category] = level_error_categories.get(error_category, 0) + 1
+                    if error_type:
                         queue_error_types.add(error_type)
             queue_measurements[str(level)] = {
                 **summarize_samples(level_samples),
                 "error_count": level_errors,
+                "error_categories": dict(sorted(level_error_categories.items())),
                 "error_rate_pct": round(level_errors * 100.0 / max(1, len(level_samples)), 3),
                 "concurrent_admissions_per_second": round(level * light_repetitions / level_batch_seconds, 3) if level_batch_seconds else None,
                 "cold_warm": _cold_warm_summary(level_samples),
@@ -988,6 +1025,7 @@ def run_benchmark(
             "error_count": queue_error_count,
             "error_rate_pct": round(queue_error_count * 100.0 / max(1, len(queue_samples)), 3),
             "error_types": sorted(queue_error_types),
+            "error_categories": dict(sorted(queue_error_categories.items())),
             "http_response_body_bytes": 0,
             "whitespace_token_estimate": 0,
             "response_measurement": "not_applicable_no_http_response",
@@ -1067,7 +1105,12 @@ def run_benchmark(
             "light_repetitions": light_repetitions, "paired_repetitions": paired_repetitions,
             "concurrency": list(concurrency), "full": full, "inference": include_inference,
             "inference_model": inference_model,
-            "hub_app": {"prewarm_enabled": False, "observability_enabled": False},
+            "hub_app": {
+                "prewarm_enabled": False,
+                "observability_enabled": False,
+                "watchdog_enabled": False,
+                "debug_traces_enabled": False,
+            },
             "context_mode": "fast",
             "code_index_cache_policy": "distinct cold keys and preseeded fixed warm key",
         }
@@ -1093,6 +1136,8 @@ def run_benchmark(
             "concurrency": list(concurrency),
             "prewarm_enabled": False,
             "observability_enabled": False,
+            "watchdog_enabled": False,
+            "debug_traces_enabled": False,
             "http_response_body_bytes_scope": "HTTP response body bytes only; excludes HTTP headers, transfer framing, and transport bytes. Internal operations have no HTTP body.",
             "whitespace_token_estimate": "Whitespace split count from HTTP response bodies; not model tokenization.",
             "matrix_aggregation": "not_performed_single_case_record",

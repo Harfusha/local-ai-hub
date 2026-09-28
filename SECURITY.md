@@ -14,5 +14,5 @@ Do not publish suspected vulnerabilities, secrets, or private repository content
 - Remote binding requires `security.allow_remote = true` and a strong API token.
 - Treat tenant IDs as scheduling/fairness labels, not authentication boundaries.
 - Review `[commands]` before enabling mutating or unknown commands.
-- Serena/CodeGraph and Ollama are local subprocess/services with access to repositories you point them at; apply normal local-machine trust controls.
+- Serena and Ollama are Hub-managed local subprocesses/services with access to repositories you point them at; apply normal local-machine trust controls. CodeGraphContext is standalone external CLI/MCP tooling and follows its own process controls.
 - Telemetry is designed to exclude prompts/source/model output, but repository indexes and RAG state contain derived local code data and should be protected like source code.

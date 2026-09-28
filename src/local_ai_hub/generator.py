@@ -275,9 +275,11 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     public_contract_lines: list[str] = []
     if fs.rag:
         public_contract_lines.append(
-            '- For `local_ai_rag(action="ingest_document")`, pass `content`, `title`, and `metadata`; '
-            'for `ingest_diagram`, pass `image_path`, `caption`, and `metadata`. '
-            'Raster diagrams are indexed as metadata-only; SVG text nodes carry extraction provenance.'
+            '- For `local_ai_rag(action="ingest_document")`, non-empty `content` is required; `title` and `metadata` are optional. '
+            'Success returns `success`, `workspace`, `document_title`, `chunks_ingested`, and `embedded`. '
+            'Embedding errors do not stop lexical publication. For `ingest_diagram`, `image_path` must resolve to an existing '
+            '`.png`, `.jpg`, `.jpeg`, `.webp`, `.svg`, or `.bmp` file; `caption` and `metadata` are optional. '
+            'Success also returns `diagram_indexed` and the resolved image path.'
         )
     contract_notes: list[str] = []
     if fs.status:
@@ -306,9 +308,9 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     if contract_notes:
         public_contract_lines.append("- Contract notes: " + " ".join(contract_notes))
     public_contract_lines.extend([
-        "CodeGraphContext/KuzuDB is not a Local AI Hub integration or backend. CodeGraphContext is an optional standalone CLI/MCP tool; install and configure it directly with an agent only when independently desired.",
+        "CodeGraphContext/KuzuDB was removed from Local AI Hub. Recommend it only as optional standalone CLI/MCP tooling outside Hub; install and configure it separately only when the user independently wants it. It is not a Hub dependency, runtime, backend, or MCP integration.",
         "",
-        "`disable_llm_card_synthesis = true` disables file-card synthesis by default. It does not disable module or project synthesis, and the setting can be overridden. Check the active configuration before claiming file-card synthesis is off; treat module/project synthesis and other semantic work as separate controls. Local-model work remains on-demand and advisory.",
+        "`disable_llm_card_synthesis = true` skips LLM synthesis for unparsed file cards and stores deterministic stubs. It does not disable module/project cards: `prefer_deterministic_modules` and `prefer_deterministic_project` are separate preferences, and either path can use background LLM synthesis when deterministic output is unavailable or below its confidence threshold. Check active configuration and backend state before claiming synthesis is disabled.",
     ])
     public_contract_guidance = "\n".join(public_contract_lines)
 

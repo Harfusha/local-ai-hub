@@ -25,6 +25,62 @@ def test_run_resolves_windows_batch_executables(tmp_path, monkeypatch):
     assert result.stdout.strip() == 'batch-ok'
 
 
+def test_setup_skip_service_does_not_restart_hub(tmp_path, monkeypatch):
+    config_source = tmp_path / "config.toml"
+    config_source.write_text("[hardware]\nprofile = \"auto\"\n", encoding="utf-8")
+    install_dir = tmp_path / "install"
+    config = {
+        "setup": {
+            "install_agent_configs": False,
+            "install_optional_tools": False,
+            "install_service": True,
+        },
+        "hardware": {"profile": "cpu"},
+        "_hardware": {"gpus": [], "npus": [], "profile": "cpu", "os": "Windows", "arch": "AMD64"},
+        "features": {
+            "rag": False,
+            "reranker": False,
+            "install_local_nlp_dependencies": False,
+            "install_openvino_dependencies": False,
+            "pull_models_during_setup": False,
+        },
+        "models": {"embedding_backend": "none", "reranker_backend": "none"},
+        "code_intelligence": {"serena_enabled": False},
+        "headless": {"enabled": True},
+        "ollama": {"enabled": False},
+        "llama_cpp": {"mode": "off"},
+        "tools": {},
+    }
+    commands = []
+
+    monkeypatch.setattr(setup, "select_config_source", lambda _path: (config_source, config, install_dir))
+
+    def copy_install_tree(destination, _source):
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "config.toml").write_text("[hardware]\nprofile = \"auto\"\n", encoding="utf-8")
+
+    monkeypatch.setattr(setup, "copy_install_tree", copy_install_tree)
+    monkeypatch.setattr(setup, "load_hub_config", lambda _path: config)
+    monkeypatch.setattr(setup, "ensure_venv", lambda _path: tmp_path / "python.exe")
+    monkeypatch.setattr(setup, "install_requirements", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(setup, "write_generated_agent_manifests", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "ensure_ollama_for_setup", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "pull_ollama_models", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "ensure_llama_cpp_for_setup", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "run", lambda command, **_kwargs: commands.append([str(part) for part in command]))
+    monkeypatch.setattr(sys, "argv", [
+        "setup.py", "--config", str(config_source), "--profile", "cpu", "--skip-service",
+        "--skip-tools", "--skip-agent-config", "--skip-token-economy", "--skip-model-pull",
+        "--skip-local-nlp-preload", "--skip-ollama-install", "--skip-companion-skills",
+    ])
+
+    assert setup.main() == 0
+    assert not any(
+        command[-1:] == ["restart"] and any(part.endswith("tools/hubctl.py") or part.endswith("tools\\hubctl.py") for part in command)
+        for command in commands
+    )
+
+
 def test_token_economy_launchers_and_trim_run_allowlist(tmp_path, monkeypatch):
     scripts = tmp_path / '.venv' / ('Scripts' if setup.os.name == 'nt' else 'bin')
     scripts.mkdir(parents=True)
@@ -82,7 +138,7 @@ def test_compact_agent_config_is_default(tmp_path: Path):
     install = tmp_path / "install"
     py = tmp_path / "python"
     serena = tmp_path / "serena"
-    cfg = {"code_intelligence": {"direct_agent_mcp": False, "serena_enabled": True, "codegraph_enabled": True}}
+    cfg = {"code_intelligence": {"direct_agent_mcp": False, "serena_enabled": True}}
     entries = setup.build_mcp_entries(install, py, serena, "codex", cfg)
     assert set(entries) == {"local-ai"}
     assert entries["local-ai"]["env"]["LOCAL_AI_AGENT"] == "codex"
@@ -108,7 +164,7 @@ def test_global_policy_has_explicit_read_only_and_fallback_contract() -> None:
 
 
 def test_direct_serena_is_explicit_opt_in(tmp_path: Path):
-    cfg = {"code_intelligence": {"direct_agent_mcp": True, "serena_enabled": True, "codegraph_enabled": True}}
+    cfg = {"code_intelligence": {"direct_agent_mcp": True, "serena_enabled": True}}
     entries = setup.build_mcp_entries(tmp_path, tmp_path / "python", tmp_path / "serena", "codex", cfg)
     assert set(entries) == {"local-ai", "serena"}
     assert "--project-from-cwd" in entries["serena"]["args"]

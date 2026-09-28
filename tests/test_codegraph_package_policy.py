@@ -38,7 +38,9 @@ def test_codegraph_removed_from_configs_and_backends():
     assert not hasattr(feat, "codegraph")
 
     ext = ExternalCodeIntelligence({"code_intelligence": {"enabled": True}})
-    assert ext.codegraph_enabled is False
+    assert not hasattr(ext, "codegraph_enabled")
     assert ext.backend_available("codegraph") is False
-    res = ext.query_codegraph(".", "test")
-    assert res.get("skipped") is True
+    assert "codegraph" not in ext.status()
+    res = ext.query(".", "test", backend="codegraph")
+    assert res == {"success": False, "error": "unknown code-intelligence backend: codegraph"}
+    ext.close()

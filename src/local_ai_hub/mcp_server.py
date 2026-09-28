@@ -345,7 +345,7 @@ def _desc_repo() -> str:
 
 def _desc_rag() -> str:
     if LEAN_SCHEMAS:
-        return "Semantic RAG & documentation search with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: search, index, docset_search, ingest_document."
+        return "Semantic RAG & documentation search with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: search, index, docset_search, ingest_document. Document ingestion requires non-empty content; title and metadata are optional."
     if not FEATURES.rag:
         return (
             "Semantic retrieval — RAG backend is disabled on this installation (`features.rag=false`)."
@@ -362,6 +362,7 @@ def _desc_rag() -> str:
         " Do not trigger index repeatedly for a fresh stable workspace."
         " Use when: cheaper indexed repository paths cannot answer a bounded semantic retrieval question."
         " Skip when: deterministic/indexed evidence is sufficient or Codex-owned subagent orchestration is the right owner."
+        " Document ingestion requires non-empty content; title and metadata are optional."
     )
 
 
@@ -2401,7 +2402,7 @@ def local_ai_rag(
     image_path: str = "",
     caption: str = "",
 ) -> dict[str, Any]:
-    """Fallback semantic retrieval after deterministic and indexed repository evidence. Search defaults workspace to the explicit repository root. For document ingestion pass content, title, and metadata; for diagram ingestion pass image_path, caption, and metadata. Raster diagrams are indexed as metadata-only; SVG text nodes are indexed with their extraction provenance. Use when: cheaper indexed paths are insufficient. Skip when: deterministic or indexed evidence already answers the question."""
+    """Fallback semantic retrieval after deterministic and indexed repository evidence. Search defaults workspace to the explicit repository root. Document ingestion requires non-empty content; title and metadata are optional. Diagram ingestion requires image_path; caption and metadata are optional. Raster diagrams are indexed as metadata-only; SVG text nodes are indexed with their extraction provenance. Use when: cheaper indexed paths are insufficient. Skip when: deterministic or indexed evidence already answers the question."""
     if not FEATURES.rag:
         return {"success": False, "unsupported": True, "error": "RAG backend is disabled (features.rag=false in config.toml)"}
     action = action.strip().lower().replace("-", "_")
@@ -2424,9 +2425,11 @@ def local_ai_rag(
             "name": workspace or "default", "query": query, "top_k": max(1, min(top_k, 12)),
         }))
     if action == "ingest_document":
+        if not isinstance(content, str) or not content.strip():
+            return contract_error("content is required for document ingestion")
         return _compact(CLIENT.post("/api/rag/ingest_document", {
             "workspace": workspace or "default",
-            "content": content or query or root,
+            "content": content,
             "title": title,
             "metadata": metadata if isinstance(metadata, dict) else None,
         }, timeout=_timeout("quick")), "status")

@@ -15,7 +15,20 @@ The bootstrap delegates to `tools/setup.py`, creates the user installation/state
 
 When `[ollama].enabled = false` (the default), setup and the supervisor do not install or start Ollama. Use `llama_cpp.mode = "on"` for the managed local server, `"auto"` for an existing loopback endpoint, or `"off"` for no llama.cpp backend. Enable Ollama only when that is the selected provider.
 
-Useful flags: `--profile cpu|integrated|low|balanced|high|max`, `--skip-token-economy`, `--skip-companion-skills`, `--skip-model-pull`, `--skip-tools`, `--skip-agent-config`, and `--skip-service`. Rerunning setup preserves an existing installed configuration unless `--config` is explicitly supplied.
+Profiles: `auto`, `cpu`, `integrated`, `low`, `balanced`, `high`, or `max`. Optional setup flags:
+
+| Flag | Effect |
+| --- | --- |
+| `--skip-model-pull` | Disable setup-time Ollama model pulls. Managed llama.cpp provisioning is separate. |
+| `--skip-local-nlp-preload` | Skip local NLP/OpenVINO model prefetch. Configured optional dependency installation can still run. |
+| `--skip-tools` | Skip Serena installation. |
+| `--skip-agent-config` | Skip host-agent configuration; generated manifests and schemas are still written. |
+| `--skip-service` | Do not install or restart the managed Hub service for this setup run. |
+| `--skip-ollama-install` | Do not install Ollama. An existing executable can still start when all explicit Ollama opt-ins are enabled. |
+| `--skip-token-economy` | Skip Token Economy packages and external CLI helper probes. |
+| `--skip-companion-skills` | Skip installation of companion skills. |
+
+Rerunning setup preserves an existing installed configuration unless `--config` is explicitly supplied.
 
 See [TOKEN_ECONOMY.md](TOKEN_ECONOMY.md) for full details on token optimization.
 
@@ -35,8 +48,36 @@ Install CodeGraphContext only if you want that separate tool. Use its [official 
  
 ## Python package
 
-For development/package installation use `python -m pip install .` or `python -m pip install ".[token-economy]"`. For Python client usage, see [Python SDK](PYTHON_SDK.md). CLI tools `tokcount`, `trim-run`, `repo-map`, and `local-ai-hub` are registered automatically. `local-ai-hub --config /path/config.toml` starts the service.
+From the repository root, install the core package with `python -m pip install .`. For development, use `python -m pip install ".[dev]"`; to combine development and Token Economy dependencies, use `python -m pip install ".[dev,token-economy]"`. For Python client usage, see [Python SDK](PYTHON_SDK.md). CLI tools `tokcount`, `trim-run`, `repo-map`, and `local-ai-hub` are registered automatically. `local-ai-hub --config /path/config.toml` starts the service.
+
+When `HubClient` has no explicit `config_path`, it uses `LOCAL_AI_CONFIG` when set; otherwise an existing installed home config takes priority, followed by repository-root `config.toml` for a source checkout, then the home config path as the default.
+
+### Optional Python extras
+
+Install one or more extras with `python -m pip install ".[extra-name]"`; combine names with commas, for example `python -m pip install ".[local-nlp,performance]"`. These are package dependencies from `pyproject.toml`; setup-managed tools, agent configuration, and service installation remain separate.
+
+| Extra | Declared packages |
+| --- | --- |
+| `local-nlp` | `sentence-transformers` |
+| `intel-accelerators` | `sentence-transformers[openvino]`, `openvino` |
+| `token-economy` | `tiktoken`, `files-to-prompt`, `grep-ast` |
+| `performance` | `orjson`, `msgspec`, `Cython` |
+| `profiling` | `py-spy`, `scalene` |
+| `dev` | `pytest`, `pyflakes`, `coverage[toml]` |
 
 ## Verification
 
-Run `python tools/doctor.py`, `python tools/selftest.py`, `python tools/hubctl.py clean`, and `python -m pytest -q`. The lightweight `/health` endpoint must return the same version as the package.
+After setup, activate the installed `.venv` and run from the active installation root:
+
+```text
+python tools/doctor.py --json
+python tools/hubctl.py status --json
+```
+
+The lightweight `/health` endpoint must return the same version as the package. Its default URL is `http://127.0.0.1:11435/health`; use the active config's bind address and port when they differ. From the activated venv, compare the running service and installed package with:
+
+```text
+python -c 'import importlib.metadata as m,json,urllib.request; h=json.load(urllib.request.urlopen("http://127.0.0.1:11435/health", timeout=3)); p=m.version("local-ai-hub"); print({"health_version":h["version"],"package_version":p}); assert h["version"] == p'
+```
+
+`python tools/selftest.py` and `python -m pytest -q` are source-checkout checks, separate from installed-instance verification. `python tools/hubctl.py clean` removes repository caches and build artifacts; it is not an installation check.

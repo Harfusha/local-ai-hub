@@ -52,3 +52,22 @@ def test_python_sdk_docs_cover_t19_workflows():
 
     assert "maps one client call to one endpoint" in sdk_doc
     assert "terminal" in sdk_doc and "retryable" in sdk_doc
+
+
+def test_sdk_docs_explain_resume_state_and_failure_recovery():
+    sdk_doc = (ROOT / "docs" / "PYTHON_SDK.md").read_text(encoding="utf-8")
+
+    assert "Sets task status to `ACTIVE` and preserves checkpoint metadata; does not restore workspace files." in sdk_doc
+    assert "context mode must be adaptive, full or fast" in sdk_doc
+    assert "conversation not found" in sdk_doc
+    continuation_guidance = next(
+        line.lower()
+        for line in sdk_doc.splitlines()
+        if "a continuation is already running" in line.lower()
+    )
+    assert "continuation is already running" in continuation_guidance
+    assert "wait for it to finish" in continuation_guidance
+    assert "do not send a duplicate request" in continuation_guidance
+    assert "`in_progress=true`" in continuation_guidance
+    assert "`retryable=true`" in continuation_guidance
+    assert "Inspect current task or job state before retrying." in sdk_doc

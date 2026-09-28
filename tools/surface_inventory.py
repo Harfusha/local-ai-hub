@@ -32,6 +32,13 @@ DYNAMIC_ROUTE_REGISTRY = (
         "classification": "registered_dynamic",
         "note": "Handler implementation excluded from T01 inspection.",
     },
+    {
+        "path": "/api/context/pack",
+        "method": "POST",
+        "match": "exact",
+        "classification": "registered_dynamic",
+        "note": "Handler implementation excluded from T01 inspection.",
+    },
 )
 
 HTTP_METHODS = {
@@ -149,6 +156,8 @@ def _dispatch_literals(
                     if isinstance(part, ast.Name) and (part.id == parameter or part.id in action_aliases):
                         for other in parts[:index] + parts[index + 1 :]:
                             actions.update(_literal_strings(other))
+                            if isinstance(other, ast.Name):
+                                actions.update(type_aliases.get(other.id, set()))
                             if isinstance(other, ast.Attribute) and other.attr == "__args__" and isinstance(other.value, ast.Name):
                                 actions.update(type_aliases.get(other.value.id, set()))
             elif (
@@ -162,7 +171,9 @@ def _dispatch_literals(
 
 
 def _mcp_action_handlers(
-    tree: ast.Module, function: ast.FunctionDef | ast.AsyncFunctionDef
+    tree: ast.Module,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    external_type_aliases: dict[str, set[str]] | None = None,
 ) -> dict[str, Any]:
     functions = {
         item.name: item for item in ast.walk(tree)
@@ -179,6 +190,8 @@ def _mcp_action_handlers(
     targets: set[str] = set()
     action_payload = False
     type_aliases = _type_alias_literals(tree)
+    for name, values in (external_type_aliases or {}).items():
+        type_aliases.setdefault(name, values)
     while pending:
         current = pending.pop()
         current_nodes = list(ast.walk(current))
@@ -247,7 +260,11 @@ def _target_name(node: ast.AST) -> str:
     return ""
 
 
-def _extract_mcp(tree: ast.Module, path: str) -> tuple[list[dict[str, Any]], dict[str, dict[str, str]], dict[str, dict[str, str]]]:
+def _extract_mcp(
+    tree: ast.Module,
+    path: str,
+    external_type_aliases: dict[str, set[str]] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, str]], dict[str, dict[str, str]]]:
     tools: list[dict[str, Any]] = []
     action_aliases: dict[str, dict[str, str]] = {}
     conditional_actions: dict[str, dict[str, str]] = {}
@@ -283,7 +300,7 @@ def _extract_mcp(tree: ast.Module, path: str) -> tuple[list[dict[str, Any]], dic
             if isinstance(parent, ast.If):
                 registration_conditions.append(ast.unparse(parent.test))
             parent = parents.get(parent)
-        handler_analysis = _mcp_action_handlers(tree, node)
+        handler_analysis = _mcp_action_handlers(tree, node, external_type_aliases)
         tools.append({
             "name": public_name,
             "handler": node.name,
@@ -874,8 +891,14 @@ def _matches_route(target: dict[str, Any], routes: list[dict[str, Any]]) -> bool
 def collect_inventory(root: Path | str) -> dict[str, Any]:
     root = Path(root).resolve()
     modules = {key: _read_module(root, key) for key in SOURCE_FILES}
+    contract_path = root / "src" / "local_ai_hub" / "operation_contracts.py"
+    contract_aliases = (
+        _type_alias_literals(ast.parse(contract_path.read_text(encoding="utf-8"), filename=str(contract_path)))
+        if contract_path.is_file()
+        else {}
+    )
     source_mcp_tools, mcp_action_aliases, conditional_mcp_actions = _extract_mcp(
-        modules["mcp"][1], SOURCE_FILES["mcp"]
+        modules["mcp"][1], SOURCE_FILES["mcp"], contract_aliases
     )
     source_tools_by_name = {item["name"]: item for item in source_mcp_tools}
     mcp_schemas, mcp_schema_evidence, schema_errors = _generated_mcp_schemas(root)

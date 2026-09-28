@@ -40,7 +40,7 @@ If Serena is unavailable, the hub degrades to built-in indexes. Treat response s
 
 ## RAG document and diagram ingestion
 
-For `local_ai_rag(action="ingest_document")`, pass `content`, `title`, and `metadata`; for `ingest_diagram`, pass `image_path`, `caption`, and `metadata`. Raster diagrams are indexed as metadata-only; SVG text nodes carry extraction provenance.
+For `local_ai_rag(action="ingest_document")`, non-empty `content` is required; `title` and `metadata` are optional. Success returns `success`, `workspace`, `document_title`, `chunks_ingested`, and `embedded`. Embedding errors do not stop lexical publication. For `ingest_diagram`, `image_path` must resolve to an existing `.png`, `.jpg`, `.jpeg`, `.webp`, `.svg`, or `.bmp` file; `caption` and `metadata` are optional. Success also returns `diagram_indexed` and the resolved image path.
 
 ## Cloud-agent request and delivery contract
 
@@ -76,7 +76,7 @@ Named profiles are available through existing `local_ai_task` and `local_ai_repo
 
 ## Synthesis scope
 
-`disable_llm_card_synthesis = true` disables file-card synthesis by default. It does not disable module or project synthesis, and the setting can be overridden. Check the active configuration before claiming file-card synthesis is off; treat module/project synthesis and other semantic work as separate controls. Local-model work remains on-demand and advisory.
+`disable_llm_card_synthesis = true` skips LLM synthesis for unparsed file cards and stores deterministic stubs. It does not disable module/project cards: `prefer_deterministic_modules` and `prefer_deterministic_project` are separate preferences, and either path can use background LLM synthesis when deterministic output is unavailable or below its confidence threshold. Check active configuration and backend state before claiming synthesis is disabled.
 
 ## Local model conversations
 

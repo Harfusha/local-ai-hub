@@ -840,12 +840,17 @@ def main() -> int:
     pull_ollama_models(cfg)
     ensure_llama_cpp_for_setup(cfg)
 
-    if not args.skip_service and bool(setup_cfg.get("install_service", True)) and cfg.get("headless", {}).get("enabled", True):
+    should_install_service = (
+        not args.skip_service
+        and bool(setup_cfg.get("install_service", True))
+        and cfg.get("headless", {}).get("enabled", True)
+    )
+    if should_install_service:
         try:
             run([str(hub_python), str(install_dir / "tools" / "service.py"), "install"], check=False, timeout=45)
         except Exception as exc:
             log(f"WARNING: service install failed: {exc}")
-    else:
+    elif not args.skip_service:
         try:
             run([str(hub_python), str(install_dir / "tools" / "hubctl.py"), "restart"], check=False, timeout=30)
         except Exception:
