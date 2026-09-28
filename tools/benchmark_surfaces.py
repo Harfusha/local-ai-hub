@@ -672,6 +672,654 @@ def _vram_usage_bytes(snapshot: Any) -> int | None:
     return None
 
 
+_T12_PROFILE_CORPUS: dict[str, tuple[dict[str, Any], ...]] = {
+    "reason": ({
+        "case_id": "reason-latency-triage-01",
+        "prompt": "Use only these measurements: queue_wait_ms=250 and generation_duration_ms=80. Return one JSON object with dominant_stage, total_measured_ms, and evidence_paths. Use dominant_stage=queue_wait, total_measured_ms=330, and evidence_paths=[\"benchmarks/t12/reason-latency.json\"].",
+        "num_tokens": 96,
+        "evidence_paths": ["benchmarks/t12/reason-latency.json"],
+        "expected": {
+            "dominant_stage": "queue_wait",
+            "total_measured_ms": 330,
+            "evidence_paths": ["benchmarks/t12/reason-latency.json"],
+        },
+    },),
+    "review": ({
+        "case_id": "review-edge-case-01",
+        "prompt": "Review `def first_item(items): return items[0]` for its empty-list edge case. Return one JSON object with edge_case, minimal_fix, and evidence_paths. Use edge_case=empty_list, minimal_fix=check empty input before indexing, and evidence_paths=[\"benchmarks/t12/review.py\"].",
+        "num_tokens": 128,
+        "evidence_paths": ["benchmarks/t12/review.py"],
+        "expected": {
+            "edge_case": "empty_list",
+            "minimal_fix": "check empty input before indexing",
+            "evidence_paths": ["benchmarks/t12/review.py"],
+        },
+    },),
+    "compress": ({
+        "case_id": "compress-incident-notes-01",
+        "prompt": "Compress these incident notes without losing evidence or uncertainty: queue age rose to 400 ms; generation stayed near 90 ms; peak VRAM was not sampled during generation. Return one JSON object with facts, evidence_paths, and unknowns. Use facts=[\"queue age rose to 400 ms\",\"generation stayed near 90 ms\"], evidence_paths=[\"benchmarks/t12/incident.json\"], and unknowns=[\"peak VRAM was not sampled during generation\"].",
+        "num_tokens": 96,
+        "evidence_paths": ["benchmarks/t12/incident.json"],
+        "expected": {
+            "facts": ["queue age rose to 400 ms", "generation stayed near 90 ms"],
+            "evidence_paths": ["benchmarks/t12/incident.json"],
+            "unknowns": ["peak VRAM was not sampled during generation"],
+        },
+    },),
+    "complete": ({
+        "case_id": "complete-empty-mean-01",
+        "prompt": "Complete the behavior of mean(values): return None for empty input and the arithmetic mean otherwise. For [] and [2,4], return one JSON object with empty_result=null, mean_2_4=3, and evidence_paths=[].",
+        "num_tokens": 96,
+        "evidence_paths": [],
+        "expected": {"empty_result": None, "mean_2_4": 3, "evidence_paths": []},
+    },),
+    "scaffold": ({
+        "case_id": "scaffold-parser-tests-01",
+        "prompt": "Write a minimal unittest scaffold plan for parse_record(text), covering a valid record and malformed input. Do not invent parser behavior. Return one JSON object with test_cases, implementation_invented, and evidence_paths. Use test_cases=[\"valid record\",\"malformed input\"], implementation_invented=false, and evidence_paths=[].",
+        "num_tokens": 128,
+        "evidence_paths": [],
+        "expected": {
+            "test_cases": ["valid record", "malformed input"],
+            "implementation_invented": False,
+            "evidence_paths": [],
+        },
+    },),
+}
+_T12_QUALITY_EVALUATOR_ID = "model_quality.evaluate_case:t12.v1"
+_T12_PROFILE_MODEL_KEYS = {
+    "reason": "reasoning",
+    "review": "heavy_code",
+    "compress": "fast_code",
+    "complete": "fast_code",
+    "scaffold": "heavy_code",
+}
+_T12_SCENARIO_FIELDS: dict[str, tuple[str, ...]] = {
+    "scheduler": (
+        "queue_age_ms", "fairness_wait_ms", "bucket_id", "batch_size", "batch_item_count",
+        "prefill_tokens", "vram_admission", "vram_budget_bytes", "vram_available_bytes", "vram_required_bytes",
+        "vram_admission_budget_bytes", "vram_incremental_required_bytes", "vram_estimate_source",
+    ),
+    "batch": (
+        "input_item_ids", "result_item_ids", "item_statuses", "partial_failure_count",
+        "max_concurrency", "concurrency_limit", "failure_probe_item_id", "failure_probe_observed",
+    ),
+    "deadline": (
+        "deadline_ms", "stages", "stage_timings_ms", "deadline_stage", "completed_within_deadline",
+        "request_succeeded",
+    ),
+    "overload": ("overloaded", "queue_depth", "queue_admission", "queued_count", "rejected_count"),
+    "cancel": ("cancel_requested", "cancelled", "cleanup_complete", "cancel_to_stop_ms"),
+    "fallback": (
+        "fallback_used", "fallback_visible", "source_profile", "fallback_profile",
+        "quality_floor_pct", "fallback_quality_pct",
+    ),
+}
+_T12_PROFILE_METRICS = (
+    "ttft_ms", "end_to_end_latency_ms", "tokens_per_second", "load_duration_ms",
+    "queue_age_ms", "queue_wait_ms", "prefill_tokens",
+    "vram_budget_bytes", "vram_required_bytes", "deadline_queue_ms", "deadline_model_load_ms",
+    "deadline_generation_ms", "peak_vram_bytes",
+)
+
+
+def _t12_fingerprint(value: Any) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _t12_hardware_identity(detected: Any = None) -> tuple[dict[str, Any], str]:
+    hardware = {
+        "system": platform.system(), "release": platform.release(), "machine": platform.machine(),
+        "processor": platform.processor() or None, "cpu_count": os.cpu_count(),
+        "total_memory_bytes": _total_memory_bytes(),
+    }
+    if isinstance(detected, dict):
+        profile = detected.get("profile")
+        hardware["profile"] = profile if isinstance(profile, str) else None
+        device_fields = (
+            "name", "gpu_name", "vendor", "vram_total_mb", "unified_memory_mb",
+            "integrated", "shared_memory", "backend",
+        )
+        for device_kind in ("gpus", "npus"):
+            devices = detected.get(device_kind)
+            if isinstance(devices, list):
+                hardware[device_kind] = [
+                    {
+                        key: device[key]
+                        for key in device_fields
+                        if isinstance(device, dict)
+                        and key in device
+                        and isinstance(device[key], (str, int, float, bool))
+                    }
+                    for device in devices[:8]
+                    if isinstance(device, dict)
+                ]
+    return hardware, _t12_fingerprint(hardware)
+
+
+def _t12_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return float(value)
+
+
+def _t12_scenario_report(
+    runner: Any,
+    name: str,
+    *,
+    concurrency_limit: int,
+    quality_floor_pct: float,
+    live_hardware: bool,
+) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "status": "not_measured", "contract_passed": False,
+        "accepted": False, "live_hardware": live_hardware,
+    }
+    run_scenario = getattr(runner, "run_benchmark_scenario", None)
+    if not callable(run_scenario):
+        report["reason"] = "runner_has_no_scenario_hook"
+        return report
+
+    runner_config = getattr(runner, "config", {})
+    runner_config = runner_config if isinstance(runner_config, dict) else {}
+    configured_models = runner_config.get("models", {})
+    configured_models = configured_models if isinstance(configured_models, dict) else {}
+    model = configured_models.get("reasoning")
+    if not isinstance(model, str) or not model.strip():
+        report["reason"] = "scenario_model_not_configured"
+        return report
+    fallback_model = None
+    fallback_profile = None
+    for candidate_profile in ("fast_code", "heavy_code", "general"):
+        candidate_model = configured_models.get(candidate_profile)
+        if (
+            isinstance(candidate_model, str)
+            and candidate_model.strip()
+            and candidate_model.strip() != model.strip()
+        ):
+            fallback_model = candidate_model
+            fallback_profile = candidate_profile
+            break
+    hardware = runner_config.get("_hardware", {})
+    scenario_profile = hardware.get("profile") if isinstance(hardware, dict) else None
+    if not isinstance(scenario_profile, str) or not scenario_profile.strip():
+        scenario_profile = "reasoning"
+    bounded_concurrency = concurrency_limit if isinstance(concurrency_limit, int) and not isinstance(concurrency_limit, bool) else 1
+    bounded_concurrency = max(1, min(8, bounded_concurrency))
+    item_count = max(2, min(8, bounded_concurrency * 2))
+    scenario_inputs = {
+        "model": model,
+        "profile": scenario_profile,
+        "items": [
+            {
+                "id": f"t12-{name}-{index + 1}",
+                "tenant": f"t12-tenant-{index % 2 + 1}",
+                "prompt": 'Return exactly the JSON object {"answer":"READY"} and no extra text.',
+            }
+            for index in range(item_count)
+        ],
+        "max_tokens": 32,
+        "max_concurrency": bounded_concurrency,
+        "deadline_ms": 30_000,
+        "cancel_after_ms": 100,
+        "fallback_model": fallback_model,
+        "fallback_profile": fallback_profile,
+        "expected": {"answer": "READY"},
+        "quality_floor_pct": quality_floor_pct,
+        "overload_count": item_count,
+    }
+    if name == "batch":
+        scenario_inputs["failure_probe_item_id"] = f"t12-{name}-{item_count}"
+
+    contract = {
+        "scenario": name,
+        "required_fields": list(_T12_SCENARIO_FIELDS[name]),
+        "concurrency_limit": concurrency_limit,
+        "quality_floor_pct": quality_floor_pct,
+        "scenario_inputs": scenario_inputs,
+    }
+    try:
+        result = run_scenario(name=name, contract=contract)
+    except Exception as exc:
+        report.update(status="failed", error_type=type(exc).__name__)
+        return report
+    if not isinstance(result, dict) or result.get("success") is False:
+        error_type = result.get("error_type") if isinstance(result, dict) else None
+        if not isinstance(error_type, str) or not error_type.isidentifier():
+            error_type = "invalid_scenario_result"
+        missing_fields = result.get("missing_fields") if isinstance(result, dict) else None
+        safe_missing = [
+            field for field in missing_fields
+            if isinstance(field, str) and field and len(field) <= 128
+        ] if isinstance(missing_fields, list) else []
+        report.update(status="failed", error_type=error_type)
+        if safe_missing:
+            report["missing_fields"] = sorted(set(safe_missing))
+        return report
+
+    allowed_fields = set(_T12_SCENARIO_FIELDS[name])
+    measurements = {key: result[key] for key in allowed_fields if key in result}
+    receipt_id = result.get("receipt_id")
+    missing = [key for key in _T12_SCENARIO_FIELDS[name] if key not in measurements]
+    passed = False
+    if not missing and name == "scheduler":
+        batch_size = _t12_number(measurements["batch_size"])
+        batch_item_count = _t12_number(measurements["batch_item_count"])
+        vram_budget = _t12_number(measurements["vram_budget_bytes"])
+        vram_available = _t12_number(measurements["vram_available_bytes"])
+        vram_required = _t12_number(measurements["vram_required_bytes"])
+        vram_admission_budget = _t12_number(measurements["vram_admission_budget_bytes"])
+        vram_incremental_required = _t12_number(measurements["vram_incremental_required_bytes"])
+        passed = (
+            _t12_number(measurements["queue_age_ms"]) is not None
+            and _t12_number(measurements["fairness_wait_ms"]) is not None
+            and isinstance(measurements["bucket_id"], str) and bool(measurements["bucket_id"])
+            and batch_size is not None and batch_size > 0
+            and batch_item_count is not None and batch_size <= batch_item_count
+            and _t12_number(measurements["prefill_tokens"]) is not None
+            and measurements["vram_admission"] in (True, "admitted")
+            and vram_budget is not None
+            and vram_available is not None
+            and vram_required is not None and vram_required > 0
+            and vram_available <= vram_budget
+            and vram_required <= vram_budget
+            and vram_admission_budget is not None
+            and vram_incremental_required is not None
+            and vram_incremental_required <= vram_admission_budget
+            and vram_required <= vram_admission_budget
+            and measurements["vram_estimate_source"] in {"measured", "configured", "resident", "mixed"}
+        )
+    elif not missing and name == "batch":
+        statuses = measurements["item_statuses"]
+        failures = sum(status in ("failed", "error") for status in statuses) if isinstance(statuses, list) else -1
+        successes = sum(status in ("success", "succeeded") for status in statuses) if isinstance(statuses, list) else 0
+        passed = (
+            isinstance(measurements["input_item_ids"], list)
+            and measurements["input_item_ids"] == measurements["result_item_ids"]
+            and isinstance(statuses, list)
+            and len(statuses) == len(measurements["input_item_ids"])
+            and all(status in {"success", "succeeded", "failed", "error"} for status in statuses)
+            and _t12_number(measurements["partial_failure_count"]) == failures
+            and successes > 0
+            and failures > 0
+            and isinstance(measurements["failure_probe_item_id"], str)
+            and measurements["failure_probe_item_id"] in measurements["input_item_ids"]
+            and measurements["failure_probe_item_id"] == scenario_inputs.get("failure_probe_item_id")
+            and measurements["failure_probe_observed"] is True
+            and statuses[measurements["input_item_ids"].index(measurements["failure_probe_item_id"])] in {"failed", "error"}
+            and _t12_number(measurements["max_concurrency"]) is not None
+            and _t12_number(measurements["concurrency_limit"]) is not None
+            and measurements["max_concurrency"] <= measurements["concurrency_limit"]
+            and measurements["concurrency_limit"] <= concurrency_limit
+        )
+    elif not missing and name == "deadline":
+        stages = measurements["stages"]
+        stage_timings = measurements["stage_timings_ms"]
+        passed = (
+            _t12_number(measurements["deadline_ms"]) is not None
+            and isinstance(stages, list)
+            and {"queue", "model_load", "generation"}.issubset(
+                {stage for stage in stages if isinstance(stage, str)} if isinstance(stages, list) else set()
+            )
+            and isinstance(stage_timings, dict)
+            and all(_t12_number(stage_timings.get(stage)) is not None for stage in ("queue", "model_load", "generation"))
+            and measurements["deadline_stage"] in {"queue", "model_load", "generation"}
+            and measurements["completed_within_deadline"] is True
+            and measurements["request_succeeded"] is True
+        )
+    elif not missing and name == "overload":
+        queued = _t12_number(measurements["queued_count"])
+        rejected = _t12_number(measurements["rejected_count"])
+        passed = (
+            measurements["overloaded"] is True
+            and _t12_number(measurements["queue_depth"]) is not None
+            and queued is not None and queued >= 0
+            and rejected is not None and rejected >= 0
+            and queued + rejected > 0
+            and measurements["queue_admission"] in {"queued", "rejected"}
+        )
+    elif not missing and name == "cancel":
+        passed = (
+            measurements["cancel_requested"] is True
+            and measurements["cancelled"] is True
+            and measurements["cleanup_complete"] is True
+            and _t12_number(measurements["cancel_to_stop_ms"]) is not None
+        )
+    elif not missing and name == "fallback":
+        floor = _t12_number(measurements["quality_floor_pct"])
+        fallback_quality = _t12_number(measurements["fallback_quality_pct"])
+        passed = (
+            measurements["fallback_used"] is True
+            and measurements["fallback_visible"] is True
+            and bool(measurements["source_profile"])
+            and bool(measurements["fallback_profile"])
+            and floor is not None and fallback_quality is not None
+            and floor >= quality_floor_pct
+            and fallback_quality >= floor
+        )
+
+    receipt_value = receipt_id.strip() if isinstance(receipt_id, str) else ""
+    has_receipt = bool(receipt_value)
+    passed = passed and has_receipt
+    status = "measured" if not missing else "partial"
+    report.update(
+        status=status,
+        contract_passed=passed,
+        accepted=bool(live_hardware and passed),
+        measurements=measurements,
+        missing_fields=missing,
+    )
+    if passed and has_receipt:
+        report["runner_receipt_id"] = receipt_value
+    return report
+
+
+def _run_t12_matrix(
+    inference_runner: Any,
+    *,
+    repetitions: int,
+    concurrency_limit: int,
+    quality_floor_pct: float = 80.0,
+    live_hardware: bool = False,
+) -> dict[str, Any]:
+    """Collect an opt-in T12 profile matrix; prompts and generated output stay out of records."""
+    runner_config = getattr(inference_runner, "config", {})
+    runner_config = runner_config if isinstance(runner_config, dict) else {}
+    configured_models = runner_config.get("models", {})
+    configured_models = configured_models if isinstance(configured_models, dict) else {}
+    profile_configs = runner_config.get("profile_configs", runner_config.get("profiles", {}))
+    profile_configs = profile_configs if isinstance(profile_configs, dict) else {}
+    hardware, hardware_fingerprint = _t12_hardware_identity(runner_config.get("_hardware"))
+    cases_by_task_role = {
+        profile: [case["case_id"] for case in cases]
+        for profile, cases in _T12_PROFILE_CORPUS.items()
+    }
+    corpus_fingerprint = _t12_fingerprint({
+        profile: [
+            {key: case[key] for key in ("case_id", "prompt", "num_tokens", "evidence_paths", "expected")}
+            for case in cases
+        ]
+        for profile, cases in _T12_PROFILE_CORPUS.items()
+    })
+    task_roles: dict[str, Any] = {}
+
+    for profile, cases in _T12_PROFILE_CORPUS.items():
+        model_key = profile if profile in configured_models else _T12_PROFILE_MODEL_KEYS.get(profile, profile)
+        model = configured_models.get(model_key)
+        if not isinstance(model, str) or not model.strip():
+            task_roles[profile] = {
+                "status": "not_configured", "accepted": False, "contract_passed": False,
+                "identity": {
+                    "task_role": profile, "hardware_profile": hardware.get("profile"),
+                    "model_key": model_key, "model": None, "model_digest": None,
+                    "config_fingerprint": None, "hardware_fingerprint": hardware_fingerprint,
+                },
+                "quality": {"status": "not_measured", "score_pct": None, "sample_count": 0},
+                "metrics": {name: summarize_samples([]) for name in _T12_PROFILE_METRICS},
+                "missing_acceptance": ["profile_model_not_configured"],
+                "samples": [],
+            }
+            continue
+
+        profile_config = profile_configs.get(profile, profile_configs.get(model_key, {}))
+        config_fingerprint = _t12_fingerprint({
+            "task_role": profile, "model_key": model_key, "model": model, "config": profile_config,
+        })
+        samples: list[dict[str, Any]] = []
+        metric_samples: dict[str, list[float]] = {name: [] for name in _T12_PROFILE_METRICS}
+        quality_scores: list[float] = []
+        load_event_count = 0
+        reuse_event_count = 0
+        event_observations = 0
+        quality_evaluator_ids: list[str] = []
+        routed_profiles: list[str] = []
+        model_digests: list[str] = []
+        deadline_stage_counts: dict[str, int] = {}
+        admission_counts = {"admitted": 0, "rejected": 0, "unknown": 0}
+        boundary_peak_samples = 0
+        peak_scope_counts: dict[str, int] = {}
+        failed_runs = 0
+
+        for case in cases:
+            for repetition in range(repetitions):
+                call_started = time.perf_counter()
+                try:
+                    run_t12_case = getattr(inference_runner, "run_t12_case", None)
+                    if callable(run_t12_case):
+                        result = run_t12_case(
+                            task=profile, model=model, prompt=case["prompt"],
+                            num_tokens=case["num_tokens"], expected=case["expected"],
+                            evidence_paths=case["evidence_paths"],
+                        )
+                    else:
+                        result = inference_runner.run(
+                            model=model, prompt=case["prompt"], num_tokens=case["num_tokens"],
+                        )
+                    if not isinstance(result, dict) or result.get("success") is not True:
+                        failed_runs += 1
+                        failure_code = result.get("failure_code") if isinstance(result, dict) else None
+                        if not isinstance(failure_code, str) or not failure_code.isidentifier():
+                            failure_code = "runner_reported_failure"
+                        samples.append({
+                            "case_id": case["case_id"], "repetition": repetition,
+                            "status": "failed", "error_type": failure_code,
+                        })
+                        continue
+                except Exception as exc:
+                    failed_runs += 1
+                    samples.append({
+                        "case_id": case["case_id"], "repetition": repetition,
+                        "status": "failed", "error_type": type(exc).__name__,
+                    })
+                    continue
+                outer_elapsed_ms = max(0.0, (time.perf_counter() - call_started) * 1000.0)
+                elapsed_ms = _t12_number(result.get("end_to_end_latency_ms"))
+                if elapsed_ms is None:
+                    elapsed_ms = outer_elapsed_ms
+                routed_profile = result.get("routed_profile", result.get("profile"))
+                if isinstance(routed_profile, str):
+                    routed_profiles.append(routed_profile)
+                model_digest = _normalize_model_digest(result.get("model_digest"))
+                if model_digest is not None:
+                    model_digests.append(model_digest)
+                reported_score = _t12_number(result.get("quality_score_pct"))
+                evaluator_id = result.get("quality_evaluator_id")
+                if reported_score is not None and reported_score <= 100.0 and (
+                    not live_hardware or evaluator_id == _T12_QUALITY_EVALUATOR_ID
+                ):
+                    score = reported_score
+                    quality_scores.append(score)
+                else:
+                    score = None
+                if isinstance(evaluator_id, str) and evaluator_id.strip():
+                    quality_evaluator_ids.append(evaluator_id.strip())
+
+                row: dict[str, Any] = {
+                    "case_id": case["case_id"], "repetition": repetition, "status": "measured",
+                    "task_role": profile, "routed_profile": routed_profile,
+                    "model_digest": model_digest,
+                    "quality_score_pct": score,
+                    "structured_json_valid": result.get("structured_json_valid") if isinstance(result.get("structured_json_valid"), bool) else None,
+                    "quality_schema_pass": result.get("quality_schema_pass") if isinstance(result.get("quality_schema_pass"), bool) else None,
+                    "quality_expected_match": result.get("quality_expected_match") if isinstance(result.get("quality_expected_match"), bool) else None,
+                    "quality_paths_grounded": result.get("quality_paths_grounded") if isinstance(result.get("quality_paths_grounded"), bool) else None,
+                    "config_fingerprint": config_fingerprint,
+                    "hardware_fingerprint": hardware_fingerprint,
+                }
+                values = {
+                    "ttft_ms": _t12_number(result.get("ttft_ms")),
+                    "end_to_end_latency_ms": elapsed_ms,
+                    "tokens_per_second": _t12_number(result.get("tokens_per_second")),
+                    "load_duration_ms": _t12_number(result.get("load_duration_ms")),
+                    "queue_age_ms": _t12_number(result.get("queue_age_ms")),
+                    "queue_wait_ms": _t12_number(result.get("queue_wait_ms")),
+                    "prefill_tokens": _t12_number(result.get("prefill_tokens")),
+                    "vram_budget_bytes": _t12_number(result.get("vram_budget_bytes")),
+                    "vram_required_bytes": _t12_number(result.get("vram_required_bytes")),
+                }
+                values["deadline_queue_ms"] = _t12_number(result.get("deadline_queue_ms"))
+                values["deadline_model_load_ms"] = _t12_number(result.get("deadline_model_load_ms"))
+                values["deadline_generation_ms"] = _t12_number(result.get("deadline_generation_ms"))
+                direct_peak = _t12_number(result.get("peak_vram_bytes"))
+                if direct_peak is None:
+                    boundary_values = [
+                        value for value in (
+                            _vram_usage_bytes(result.get("initial_vram")),
+                            _vram_usage_bytes(result.get("final_vram")),
+                        ) if value is not None
+                    ]
+                    peak_vram = float(max(boundary_values)) if boundary_values else None
+                    peak_scope = "inference_boundary_samples"
+                    boundary_peak_samples += int(peak_vram is not None)
+                else:
+                    peak_vram = direct_peak
+                    peak_scope_value = result.get("peak_vram_scope")
+                    peak_scope = peak_scope_value if isinstance(peak_scope_value, str) and peak_scope_value else "runtime_reported_peak"
+                values["peak_vram_bytes"] = peak_vram
+                row["peak_vram_scope"] = peak_scope
+                if peak_vram is not None:
+                    peak_scope_counts[peak_scope] = peak_scope_counts.get(peak_scope, 0) + 1
+                bucket = result.get("batch_bucket")
+                row["batch_bucket"] = bucket if isinstance(bucket, str) else None
+                row.update(values)
+                for name, value in values.items():
+                    if value is not None:
+                        metric_samples[name].append(value)
+
+                load_event = result.get("model_load_event")
+                reuse_event = result.get("model_reuse_event")
+                if isinstance(load_event, bool) and isinstance(reuse_event, bool):
+                    event_observations += 1
+                    load_event_count += int(load_event)
+                    reuse_event_count += int(reuse_event)
+                row["model_load_event"] = load_event if isinstance(load_event, bool) else None
+                row["model_reuse_event"] = reuse_event if isinstance(reuse_event, bool) else None
+                admission = result.get("vram_admitted")
+                if admission is True or admission == "admitted":
+                    admission_counts["admitted"] += 1
+                    row["vram_admission"] = "admitted"
+                elif admission is False or admission == "rejected":
+                    admission_counts["rejected"] += 1
+                    row["vram_admission"] = "rejected"
+                else:
+                    admission_counts["unknown"] += 1
+                    row["vram_admission"] = None
+                deadline_stage = result.get("deadline_stage")
+                if isinstance(deadline_stage, str):
+                    deadline_stage_counts[deadline_stage] = deadline_stage_counts.get(deadline_stage, 0) + 1
+                row["deadline_ms"] = _t12_number(result.get("deadline_ms"))
+                row["deadline_stage"] = deadline_stage if isinstance(deadline_stage, str) else None
+                row["deadline_exceeded"] = result.get("deadline_exceeded") if isinstance(result.get("deadline_exceeded"), bool) else None
+                samples.append(row)
+
+        expected_count = sum(len(cases) for cases in (_T12_PROFILE_CORPUS[profile],)) * repetitions
+        missing: list[str] = []
+        if failed_runs or len(samples) != expected_count:
+            missing.append("profile_runs_incomplete")
+        if live_hardware and hardware.get("profile") not in {"integrated", "balanced", "high", "max"}:
+            missing.append("active_hardware_profile_missing_or_invalid")
+        if len(quality_scores) != expected_count:
+            missing.append("live_quality_scores_missing")
+        if len(quality_evaluator_ids) != expected_count or len(set(quality_evaluator_ids)) != 1:
+            missing.append("quality_evaluator_identity_missing_or_inconsistent")
+        if live_hardware and (
+            not callable(getattr(inference_runner, "run_t12_case", None))
+            or set(quality_evaluator_ids) != {_T12_QUALITY_EVALUATOR_ID}
+        ):
+            missing.append("trusted_structured_evaluator_required")
+        if quality_scores and any(score < quality_floor_pct for score in quality_scores):
+            missing.append("quality_floor_not_met")
+        if len(model_digests) != expected_count or len(set(model_digests)) != 1:
+            missing.append("model_digest_missing_or_inconsistent")
+        if len(routed_profiles) != expected_count or any(route != model_key for route in routed_profiles):
+            missing.append("profile_route_missing_or_mismatched")
+        if event_observations != expected_count:
+            missing.append("load_reuse_events_missing")
+        if boundary_peak_samples:
+            missing.append("peak_vram_is_boundary_only")
+        for name in _T12_PROFILE_METRICS:
+            if len(metric_samples[name]) != expected_count:
+                missing.append(f"{name}_missing")
+        if admission_counts["unknown"]:
+            missing.append("vram_admission_missing")
+        if len(deadline_stage_counts) == 0 or any(
+            not isinstance(sample.get("deadline_ms"), float)
+            or sample.get("deadline_stage") not in {"queue", "model_load", "generation"}
+            or not isinstance(sample.get("deadline_exceeded"), bool)
+            for sample in samples if sample.get("status") == "measured"
+        ):
+            missing.append("deadline_stage_metrics_missing")
+
+        profile_report = {
+            "status": "partial" if failed_runs or missing else "measured",
+            "contract_passed": not missing,
+            "accepted": bool(live_hardware and not missing),
+            "identity": {
+                "task_role": profile, "hardware_profile": hardware.get("profile"),
+                "model_key": model_key, "model": model,
+                "model_digest": model_digests[0] if len(model_digests) == expected_count and len(set(model_digests)) == 1 else None,
+                "config_fingerprint": config_fingerprint,
+                "hardware_fingerprint": hardware_fingerprint,
+            },
+            "quality": {
+                "status": "measured" if len(quality_scores) == expected_count else ("partial" if quality_scores else "not_measured"),
+                "corpus_id": "t12-live-quality-v1",
+                "case_ids": [case["case_id"] for case in cases],
+                "score_pct": round(sum(quality_scores) / len(quality_scores), 3) if quality_scores else None,
+                "sample_count": len(quality_scores), "quality_floor_pct": quality_floor_pct,
+                "passed_count": sum(score >= quality_floor_pct for score in quality_scores),
+                "evaluator_id": quality_evaluator_ids[0] if len(quality_evaluator_ids) == expected_count and len(set(quality_evaluator_ids)) == 1 else None,
+            },
+            "metrics": {name: summarize_samples(values) for name, values in metric_samples.items()},
+            "events": {
+                "model_load_count": load_event_count,
+                "model_reuse_count": reuse_event_count,
+                "observed_run_count": event_observations,
+                "vram_admission_counts": admission_counts,
+            },
+            "deadline_stage_counts": deadline_stage_counts,
+            "peak_vram_scope": (
+                next(iter(peak_scope_counts)) if len(peak_scope_counts) == 1
+                else "mixed" if peak_scope_counts
+                else "unmeasured"
+            ),
+            "missing_acceptance": sorted(set(missing)),
+            "samples": samples,
+        }
+        task_roles[profile] = profile_report
+
+    scenarios = {
+        name: _t12_scenario_report(
+            inference_runner, name, concurrency_limit=concurrency_limit,
+            quality_floor_pct=quality_floor_pct, live_hardware=live_hardware,
+        )
+        for name in _T12_SCENARIO_FIELDS
+    }
+    contract_passed = (
+        all(task_role.get("contract_passed") is True for task_role in task_roles.values())
+        and all(scenario.get("contract_passed") is True for scenario in scenarios.values())
+    )
+    accepted = bool(live_hardware and contract_passed)
+    return {
+        "run_id": f"t12-{uuid.uuid4().hex}",
+        "schema_version": "t12.v1",
+        "status": "accepted" if accepted else ("contract_complete_fixture_only" if contract_passed else "incomplete"),
+        "live_hardware": live_hardware,
+        "contract_passed": contract_passed,
+        "accepted": accepted,
+        "hardware": hardware,
+        "hardware_profile": hardware.get("profile"),
+        "corpus": {
+            "corpus_id": "t12-live-quality-v1", "fingerprint": corpus_fingerprint,
+            "cases_by_task_role": cases_by_task_role,
+        },
+        "task_roles": task_roles,
+        "scenarios": scenarios,
+    }
+
+
 def run_benchmark(
     *,
     state_dir: Path | str,
@@ -685,6 +1333,7 @@ def run_benchmark(
     full: bool = False,
     inference_runner: Any = None,
     include_inference: bool = False,
+    include_t12_matrix: bool = False,
     baseline_record: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run synthetic stages and persist samples, aggregates, and optional comparison."""
@@ -708,6 +1357,8 @@ def run_benchmark(
         raise ValueError("full benchmark sizes must use the documented file and RAG matrices")
     if include_inference and inference_runner is None:
         raise ValueError("inference opt-in requires an explicit benchmark runner")
+    if include_t12_matrix and inference_runner is None:
+        raise ValueError("T12 profile matrix requires an explicit benchmark runner")
 
     output_dir = _resolve_outside_repo(Path(state_dir), "state_dir")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1055,6 +1706,15 @@ def run_benchmark(
             if len(inference_model_digests) == paired_repetitions and len(set(inference_model_digests)) == 1:
                 inference_model_digest = f"sha256:{inference_model_digests[0]}"
 
+        t12_acceptance = None
+        if include_t12_matrix:
+            t12_acceptance = _run_t12_matrix(
+                inference_runner,
+                repetitions=paired_repetitions,
+                concurrency_limit=max(concurrency),
+                live_hardware=True,
+            )
+
         inference_model = None
         if include_inference:
             model_config = getattr(inference_runner, "config", {})
@@ -1066,6 +1726,7 @@ def run_benchmark(
             "file_count": file_count, "rag_chunks": rag_chunks, "repetitions": repetitions,
             "light_repetitions": light_repetitions, "paired_repetitions": paired_repetitions,
             "concurrency": list(concurrency), "full": full, "inference": include_inference,
+            "t12_matrix": include_t12_matrix,
             "inference_model": inference_model,
             "hub_app": {"prewarm_enabled": False, "observability_enabled": False},
             "context_mode": "fast",
@@ -1078,7 +1739,11 @@ def run_benchmark(
         }
         metadata = {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "benchmark_scope": "hub_app_synthetic_repo_plus_hardware_inference" if include_inference else "hub_app_synthetic_repo",
+            "benchmark_scope": (
+                "hub_app_synthetic_repo_plus_t12_profile_matrix" if include_t12_matrix else
+                "hub_app_synthetic_repo_plus_hardware_inference" if include_inference else
+                "hub_app_synthetic_repo"
+            ),
             "cold_warm_policy": "Explicit cold query keys and preseeded warm keys for cached Hub routes; uncached operations use fresh calls; no OS cache flush.",
             "revision": _revision(),
             "implementation_fingerprint": _implementation_fingerprint(),
@@ -1102,6 +1767,8 @@ def run_benchmark(
                 for name in sorted(_REQUIRED_GOLDEN_OPERATIONS)
             },
             "inference": "requested" if include_inference else "skipped_not_requested",
+            "t12_matrix": "requested" if include_t12_matrix else "skipped_not_requested",
+            "t12_acceptance_status": t12_acceptance.get("status") if t12_acceptance is not None else "not_requested",
             "inference_model": inference_model,
             "inference_model_digest": inference_model_digest,
         }
@@ -1122,6 +1789,7 @@ def run_benchmark(
         success = (
             not failed_stages
             and all(item.get("passed") is True for item in golden.values() if isinstance(item.get("passed"), bool))
+            and (t12_acceptance is None or t12_acceptance.get("accepted") is True)
         )
         supported_golden = {
             name: item["passed"] for name, item in golden.items()
@@ -1142,6 +1810,8 @@ def run_benchmark(
             "failed_stages": failed_stages,
             "total_duration_ms": round((time.perf_counter() - started) * 1000.0, 3),
         }
+        if t12_acceptance is not None:
+            record["t12_acceptance"] = t12_acceptance
         if baseline_record is not None:
             record["comparison"] = compare_records(baseline_record, record)
         record_name = f"surface-benchmark-{time.time_ns()}.json"
@@ -1187,7 +1857,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--concurrency", type=int, nargs="+", default=[1, 4])
     parser.add_argument("--full", action="store_true", help="allow documented large synthetic size matrix")
     parser.add_argument("--inference", action="store_true", help="explicitly run one synthetic hardware inference")
-    parser.add_argument("--config", type=Path, help="Hub config required by --inference")
+    parser.add_argument("--t12-matrix", action="store_true", help="explicitly run T12 profile, quality, and scenario measurements")
+    parser.add_argument("--config", type=Path, help="Hub config required by --inference or --t12-matrix")
     parser.add_argument("--compare-with", type=Path, help="compare against a previous benchmark JSON record")
     args = parser.parse_args(argv)
     app = None
@@ -1200,9 +1871,9 @@ def main(argv: list[str] | None = None) -> int:
             baseline_record = json.loads(args.compare_with.read_text(encoding="utf-8"))
             if not isinstance(baseline_record, dict):
                 raise ValueError("baseline record must contain a JSON object")
-        if args.inference:
+        if args.inference or args.t12_matrix:
             if args.config is None:
-                raise ValueError("--inference requires --config")
+                raise ValueError("--inference and --t12-matrix require --config")
             from local_ai_hub.app import LocalAIApp
 
             app = LocalAIApp(str(args.config))
@@ -1216,6 +1887,7 @@ def main(argv: list[str] | None = None) -> int:
             light_repetitions=args.light_repetitions, paired_repetitions=args.paired_repetitions,
             concurrency=tuple(args.concurrency), full=args.full,
             inference_runner=inference_runner, include_inference=args.inference,
+            include_t12_matrix=args.t12_matrix,
             baseline_record=baseline_record,
         )
     except (OSError, ValueError) as exc:

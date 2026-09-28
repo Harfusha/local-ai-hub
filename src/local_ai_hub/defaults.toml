@@ -42,9 +42,9 @@ profile = "auto"
 auto_tune = true
 
 [models]
-# Use 0.5B for preprocessing, 1.5B for quick/simple requests, 3B for ordinary work,
-# 7B for hard reasoning, and 9B for extreme reasoning in the balanced profile.
-# These are the only model choices most users need to edit.
+# These are baseline model IDs, not the effective routing for every machine.
+# [hardware].profile="auto" overlays the detected profile; explicit profile
+# and model overrides take precedence. See hardware.py for the role maps.
 background_code = "qwen2.5-coder:0.5b"
 fast_code = "qwen2.5-coder:1.5b"
 heavy_code = "qwen2.5-coder:3b"
@@ -203,6 +203,8 @@ module_batch_size = 4
 
 [scheduler]
 # Balanced baseline; the hardware profile overlays this before explicit user values.
+# Optional conservative per-model VRAM upper bounds for cold-start admission.
+model_vram_estimates_bytes = {}
 max_parallel = 2
 max_loaded_models = 1
 max_queue = 256

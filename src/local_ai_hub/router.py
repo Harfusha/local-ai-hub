@@ -134,6 +134,31 @@ class ModelRouter:
         }
         if requested not in configured:
             raise ValueError("model override must match a configured model tier")
+
+        task_type = str(route.get("task_type", ""))
+        complexity = str(route.get("complexity", "fast"))
+        if task_type == "reasoning":
+            required_model = (
+                self.models.get("reasoning") or self.models.get("heavy_code")
+                if complexity == "heavy"
+                else self.models.get("heavy_code") or route.get("model")
+            )
+        elif task_type in {"code", "review"} and complexity == "heavy":
+            required_model = self.models.get("heavy_code") or route.get("model")
+        else:
+            required_model = route.get("model")
+
+        role_ranks = {"fast_code": 0, "general": 0, "heavy_code": 1, "reasoning": 2}
+
+        def model_rank(model: Any) -> int:
+            return max(
+                (rank for role, rank in role_ranks.items() if str(self.models.get(role, "")) == str(model or "")),
+                default=0,
+            )
+
+        if model_rank(requested) < model_rank(required_model):
+            raise ValueError("model override would fall below the configured quality floor")
+
         result = dict(route)
         result["original_model"] = route.get("model")
         result["model"] = requested

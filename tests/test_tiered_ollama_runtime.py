@@ -7,6 +7,8 @@ class FakeRuntime:
     def __init__(self, loaded: list[dict] | None = None):
         self.loaded = list(loaded or [])
         self.events: list[tuple] = []
+        self.prepare_controls: list[tuple] = []
+        self.request_controls: list[tuple] = []
 
     def is_online(self) -> bool:
         return True
@@ -19,11 +21,20 @@ class FakeRuntime:
         self.events.append(("request", endpoint, (payload or {}).get("model")))
         return {"done": True}
 
-    def request_interruptible(self, endpoint: str, payload: dict | None, should_stop, *, timeout: float | None = None) -> dict:
+    def request_interruptible(self, endpoint: str, payload: dict | None, should_stop, *, timeout: float | None = None, deadline: float | None = None) -> dict:
+        self.request_controls.append((should_stop, timeout, deadline))
         return self.request(endpoint, payload, timeout)
 
-    def prepare_model(self, model: str, *, unload_others: bool = True) -> list[str]:
+    def prepare_model(
+        self,
+        model: str,
+        *,
+        unload_others: bool = True,
+        should_stop=None,
+        deadline: float | None = None,
+    ) -> list[str]:
         self.events.append(("prepare_model", model, unload_others))
+        self.prepare_controls.append((should_stop, deadline))
         return []
 
     def unload(self, model: str) -> bool:
@@ -88,6 +99,38 @@ def test_fast_request_unloads_smart_runner_before_prepare(tmp_path: Path):
 
     assert smart.events == [("unload_model", "qwen3.5:9b")]
     assert fast.events == [("ensure_running",), ("prepare_model", "qwen2.5-coder:7b", True)]
+
+
+def test_model_prepare_forwards_cancellation_controls_to_selected_runtime(tmp_path: Path):
+    from local_ai_hub.tiered_ollama import TieredOllamaRuntime
+
+    fast = FakeRuntime()
+    smart = FakeRuntime()
+    runtime = TieredOllamaRuntime(_config(tmp_path), fast_runtime=fast, smart_runtime=smart)
+    should_stop = lambda: False
+
+    runtime.prepare_model("qwen2.5-coder:7b", should_stop=should_stop, deadline=123.4)
+
+    assert fast.prepare_controls == [(should_stop, 123.4)]
+    assert smart.prepare_controls == []
+
+
+def test_interruptible_request_forwards_deadline_to_selected_runtime(tmp_path: Path):
+    from local_ai_hub.tiered_ollama import TieredOllamaRuntime
+
+    fast = FakeRuntime()
+    smart = FakeRuntime()
+    runtime = TieredOllamaRuntime(_config(tmp_path), fast_runtime=fast, smart_runtime=smart)
+    should_stop = lambda: False
+
+    result = runtime.request_interruptible(
+        "/api/generate", {"model": "qwen2.5-coder:7b"}, should_stop,
+        timeout=0.5, deadline=123.4,
+    )
+
+    assert result["done"] is True
+    assert fast.request_controls == [(should_stop, 0.5, 123.4)]
+    assert smart.request_controls == []
 
 
 def test_status_keeps_endpoint_ownership_and_handoff_metadata(tmp_path: Path):

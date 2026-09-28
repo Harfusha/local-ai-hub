@@ -125,6 +125,37 @@ def test_token_economy_policy_generation():
     assert all(trigger in instructions for instructions in (install_prompt, update_prompt, agents_file))
 
 
+def test_shared_agent_policy_blocks_match_canonical_prompts():
+    root = Path(__file__).resolve().parents[1]
+    files = ("AGENTS.md", "docs/INSTALL_PROMPT.md", "docs/UPDATE_PROMPT.md")
+    tool_blocks = []
+    economy_blocks = []
+    instruction_files = []
+    for relative in files:
+        instructions = (root / relative).read_text(encoding="utf-8")
+        instruction_files.append(instructions)
+
+        def block(marker: str) -> str:
+            start = f"<!-- BEGIN {marker} -->"
+            end = f"<!-- END {marker} -->"
+            start_index = instructions.index(start)
+            end_index = instructions.index(end, start_index) + len(end)
+            return instructions[start_index:end_index]
+
+        tool_blocks.append(block("LOCAL AI HUB TOOL POLICY"))
+        economy_blocks.append(block("TOKEN ECONOMY POLICY"))
+
+    assert tool_blocks[0] == tool_blocks[1] == tool_blocks[2]
+    assert economy_blocks[0] == economy_blocks[1] == economy_blocks[2]
+    assert "`local_ai_status`" in tool_blocks[0]
+    assert "only heavy reasoning uses `reasoning`" in tool_blocks[0]
+    assert "balanced=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b" in tool_blocks[0]
+    assert "Before any repository task, load and follow the `token-economizer` skill" in economy_blocks[0]
+    assert all("ensure-tools.ps1" not in instructions for instructions in instruction_files)
+    update_prompt = (root / "docs/UPDATE_PROMPT.md").read_text(encoding="utf-8")
+    assert "Keep the `TOKEN ECONOMY POLICY` block identical" in update_prompt
+
+
 def test_token_economizer_skill_md(tmp_path: Path):
     assert "name: token-economizer" in TOKEN_ECONOMIZER_SKILL_MD
     assert "Use when starting any coding or repository task" in TOKEN_ECONOMIZER_SKILL_MD
