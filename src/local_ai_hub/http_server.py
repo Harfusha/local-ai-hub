@@ -1488,7 +1488,10 @@ class Handler(BaseHTTPRequestHandler):
                     include_stale=include_stale,
                     query=task_query,
                 )
-                self._send(200, {"success": True, "tasks": [t.to_dict() for t in tasks]}); return
+                response = {"success": True, "tasks": [t.to_dict() for t in tasks]}
+                if getattr(tasks, "query_truncated", False):
+                    response["query_truncated"] = True
+                self._send(200, response); return
             if path == "/api/agent-state/memory":
                 if not getattr(APP, "agent_memory", None) or not APP.agent_memory.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
@@ -2418,7 +2421,10 @@ class Handler(BaseHTTPRequestHandler):
                         include_stale=include_stale,
                         query=task_query,
                     )
-                    self._send(200, {"success": True, "tasks": [t.to_dict() for t in tasks]}); return
+                    response = {"success": True, "tasks": [t.to_dict() for t in tasks]}
+                    if getattr(tasks, "query_truncated", False):
+                        response["query_truncated"] = True
+                    self._send(200, response); return
                 self._send(400, {"success": False, "error": f"unknown task action '{action}'", "terminal": True, "retryable": False}); return
             if path == "/api/agent-state/memory":
                 if not getattr(APP, "agent_memory", None) or not APP.agent_memory.state_store.enabled:
