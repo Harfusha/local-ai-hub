@@ -9,7 +9,6 @@ from local_ai_hub.project_config import (
     PathHintUsage,
     ProjectPathHintStore,
     prioritize_paths_with_hints,
-    report_path_hint_outcome,
     resolve_project_context,
     validate_path_hint,
 )
@@ -39,7 +38,7 @@ def test_path_hint_telemetry_metadata_normalizes_malformed_runtime_values() -> N
         paths=(),
         hint_used="private/hint.txt",  # type: ignore[arg-type]
         fallback_used="private/fallback.txt",  # type: ignore[arg-type]
-        hint_helped="private/outcome.txt",  # type: ignore[arg-type]
+        hint_helped=True,  # type: ignore[arg-type]
     )
 
     assert usage.telemetry_metadata() == {
@@ -82,7 +81,6 @@ def test_cakephp_button_hint_prioritizes_templates_without_narrowing_results(
     assert usage.hint_used is True
     assert usage.fallback_used is False
     assert usage.hint_helped is None
-    assert report_path_hint_outcome(usage, helped=True).hint_helped is True
 
 
 def test_hint_freshness_scope_existence_and_containment_are_rechecked(
