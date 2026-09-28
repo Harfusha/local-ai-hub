@@ -783,6 +783,10 @@ class HubClient:
         self,
         conversation_id: str,
         prompt: str,
+        model: str | None = None,
+        system: str | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
         *,
         context: str | None = None,
         timeout: float = 360.0,
@@ -791,6 +795,14 @@ class HubClient:
             "conversation_id": conversation_id,
             "task": prompt,
         }
+        if model:
+            payload["model"] = model
+        if system:
+            payload["system"] = system
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+        if temperature is not None:
+            payload["temperature"] = temperature
         if context is not None:
             payload["context"] = context
         return self.post("/api/conversations/continue", payload, timeout=timeout)

@@ -674,7 +674,7 @@ def test_async_job_client_methods_keep_submit_identity_and_cover_wait_deadline(t
     ) is False
 
 
-def test_continue_conversation_sends_only_supported_fields(tmp_path, monkeypatch):
+def test_continue_conversation_keeps_legacy_args_with_context_timeout(tmp_path, monkeypatch):
     client = _client(tmp_path)
     calls = []
 
@@ -685,13 +685,28 @@ def test_continue_conversation_sends_only_supported_fields(tmp_path, monkeypatch
     monkeypatch.setattr(client, "post", fake_post)
 
     result = client.continue_conversation(
-        "conversation-1", "follow up", context="relevant context", timeout=12
+        "conversation-1",
+        "follow up",
+        "model-x",
+        "system-x",
+        2048,
+        0.2,
+        context="relevant context",
+        timeout=12,
     )
 
     assert result == {"success": True, "conversation_id": "conversation-1"}
     assert calls == [(
         "/api/conversations/continue",
-        {"conversation_id": "conversation-1", "task": "follow up", "context": "relevant context"},
+        {
+            "conversation_id": "conversation-1",
+            "task": "follow up",
+            "model": "model-x",
+            "system": "system-x",
+            "max_tokens": 2048,
+            "temperature": 0.2,
+            "context": "relevant context",
+        },
         12,
     )]
 
