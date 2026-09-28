@@ -103,6 +103,10 @@ class VRAMBalancer:
             self._last_check_time = now
             return res
 
+    def sample_vram(self) -> dict[str, Any]:
+        """Take a fresh VRAM snapshot for benchmark measurements."""
+        return dict(self.status(force=True))
+
     def pin_model(self, model_name: str, ttl_seconds: float = 300.0) -> dict[str, Any]:
         """Pin a warm model in VRAM to prevent cache thrashing."""
         with self._lock:

@@ -2,7 +2,7 @@
 
 Use this prompt with any AI coding agent (Claude Code, Codex, Cursor, Windsurf, Gemini, Roo, GitHub Copilot) in any repository to upgrade an existing Local AI Hub installation from V3 to V4 from the canonical `master` branch, upgrade dependencies, restart services, and refresh the repository's instruction policies.
 
-Preserve profile-aware model routing when refreshing repository instructions: integrated uses qwen2.5-coder:0.5b preprocessing, 1.5b quick, 3b involved, 7b hard reasoning and qwen3-vl:4b vision; balanced uses qwen2.5-coder:1.5b preprocessing, 3b fast, 7b ordinary/hard work and qwen3.5:9b only for extreme reasoning and vision; high uses 1.5b/3b/7b/9b; max uses 1.5b/3b/9b for heavy routes.
+Preserve hardware-profile model routing when refreshing repository instructions. `[hardware].profile` defaults to `auto`; use the verified role-to-model map in the Local AI Hub Tool Policy below. Treat profile mappings as routing targets, not proof that a model is installed.
 
 ---
 
@@ -93,12 +93,13 @@ Run the platform installer with the active hardware profile to apply dependency 
 ### PHASE 4: REFRESH INSTRUCTIONS IN CURRENT REPOSITORY
 
 Locate active agent instruction files in this repository (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.windsurfrules`, `GEMINI.md`, etc.):
-- Replace or sync the `<!-- BEGIN LOCAL AI HUB TOOL POLICY -->` block with the latest policy from `~/.local-ai-hub/generated/agent-policy.md`.
-- Replace or sync the `<!-- BEGIN TOKEN ECONOMY POLICY -->` block with the latest policy from `~/.local-ai-hub/generated/token-economy-policy.md`.
+- Replace or sync the Local AI Hub tool policy block with the latest policy from `~/.local-ai-hub/generated/agent-policy.md`.
+- Replace or sync the token economy policy block with the latest policy from `~/.local-ai-hub/generated/token-economy-policy.md`.
 - If no instruction file exists, ensure `AGENTS.md` is created with both policy blocks.
 - Verify the default setup deploys the `token-economizer` skill and registers the token-tool CLI directory on the user's persistent PATH. Keep the generated policy trigger that requires agents to load this skill before every repository task.
 - Ensure the refreshed policy retains this trigger verbatim:
   - Before any repository task, load and follow the `token-economizer` skill when it is installed; this trigger applies even under deadline pressure.
+- Keep the `TOKEN ECONOMY POLICY` block identical in `AGENTS.md` and both canonical prompts; use only tooling and setup commands that the installed skill and repository actually provide.
 - Use `local_ai_rag` for semantic retrieval only after deterministic and indexed repository evidence is insufficient.
 - Preserve the `trim-run` safety boundary: only its bundled token tools and read-only search CLIs may be launched; use `local_ai_command` for tests/builds and arbitrary validation commands.
 - For durable work, require one `local_ai_coord(action="task_create")` contract, phase changes through `local_ai_coord(action="task_checkpoint")`, and one bounded wait instead of status polling loops.
@@ -136,3 +137,73 @@ Confirm:
 ### MCP response economy
 
 After updating, verify the generated schemas under the installation's `generated/` directory expose `max_response_tokens`, `response_profile`, and `reuse_key` on the existing Hub tools. These are installation artifacts, not checked-in source files. Treat generator output and configuration as trusted repository inputs; never copy tool fields from untrusted model output. Keep aggregate response budgeting enabled, preserve artifact-backed exact detail, and verify telemetry reports raw/projected/saved response estimates without prompt or source retention.
+
+## Embedded agent policy blocks
+
+<!-- BEGIN LOCAL AI HUB TOOL POLICY -->
+Trigger map:
+- bounded health/cache/telemetry inspection (never poll): `local_ai_status`
+- repository facts/files/symbols: `local_ai_repo`
+- tests/lint/typecheck/build: `local_ai_command`
+- exact source/evidence text: `local_ai_artifact`
+- shared findings or overlapping edits: `local_ai_coord`
+- semantic retrieval after indexed paths are insufficient: `local_ai_rag`
+- semantic generation, exploration, reasoning, review, second opinion and compression: `local_ai_task`
+- closed whole-task delegation with verified handoff: `local_ai_work`
+- Agent OS task and incident state: `local_ai_status(detail="agent_state")`
+
+Recipes (guidance, not gates):
+- Recipe — Explore: preprocess once, use the cheapest repository action, fetch only required evidence slices.
+- Recipe — Change: gather indexed evidence, use `local_ai_repo(action="solve")` before edits, claim `local_ai_coord` leases for overlapping paths, then run indexed impact/review before validation.
+- Recipe — Validate: route repeatable commands through `local_ai_command`, reuse cached results, use `review_diff` or `security_audit` when relevant.
+- Recipe — Retrieve: use `local_ai_rag` only after deterministic/indexed paths are exhausted.
+- A recipe step may be skipped when irrelevant; one bounded fallback is allowed when Hub is unavailable.
+
+Delegation is the default for any task with useful bounded independent work.
+
+- Model routing follows `[hardware].profile` (default `auto`) and user overrides; task routers select the role tier. Use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression after deterministic evidence; keep deterministic simple tasks enabled for exact facts, symbols, diff and tests.
+- Use the native Codex `multi_agent_v1__spawn_agent` path only for useful independent bounded work or an explicit Codex-subagent request.
+- Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
+- Do not duplicate the same scope across agents. Keep final decisions, edits, and integration in Codex.
+- Skip delegation only for trivial tasks, pure evidence lookups, security/privacy constraints, or no useful independent scope.
+
+Routing hierarchy: the main agent is the orchestrator, planner, integrator and final owner. Use Local AI Hub first for its own precise, bounded microtasks: deterministic facts, indexed/search retrieval, preprocess artifacts, targeted impact/review/security checks, safe commands, compression, local-model synthesis and second opinions. Native `multi_agent_v1__spawn_agent` is used only for useful independent bounded work or an explicit Codex-subagent request. It is not routed or managed by Local AI Hub.
+
+READ-ONLY AUDIT CONTRACT:
+- Read-only means no Git writes, `git worktree add` or removal, dependency installation, builds/imports, generated artifacts, or other workspace side effects. Never label such work read-only when any of these occur; split validation into a separately owned, explicitly side-effecting task.
+- Before native discovery or validation, retain preceding Hub result with action, absolute root, status, cache/in_progress state, and evidence IDs. Native discovery is fallback-only after one bounded terminal Hub failure.
+- Native validation fallback is allowed only after `local_ai_command` returns `terminal=true` and `retryable=false`; run one bounded fallback, state side effects/owner, and never repeat identical commands.
+- Codex controls subagent permissions per task. Native Codex subagents may write only when Codex explicitly enables it, and write work stays in the assigned workspace/worktree. Codex remains integrator.
+- Do not run parallel duplicate commands or scopes. Tool labels are not evidence; preserve exact action, arguments, result, and ownership in the audit record.
+
+For every non-trivial repository task, use Local AI Hub before broad native discovery or repeatable validation. Keep one stable absolute project root. On the first task for that root call `local_ai_repo(action="preprocess", root=ABS_ROOT)` exactly once, then continue immediately; preprocessing is asynchronous, so never poll/wait/force-refresh it. Then make `local_ai_repo(action="context", mode="adaptive")` the first useful repository operation: it is the quality-first retrieval orchestrator, not a thin grep wrapper.
+
+Adoption gate: `local_ai_command` alone is never sufficient for a repository task. The first useful Hub operation must be `local_ai_repo(action="context", mode="adaptive")` after one-time preprocess. It accepts the task/context directly and boundedly combines deterministic/indexed evidence, CodeIndex, Serena, lexical search and RAG; it deduplicates, rewards cross-backend agreement, preserves path diversity and degrades optional backends independently. Do not send a hand-built term list or start native grep first. For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after the grounded context and before native edits. After edits, use the applicable indexed impact/review/security/evidence action before final validation.
+
+Default guarded context flow: Before planning, editing, reviewing, testing, or handing off non-trivial repository work, call `local_ai_repo(action="context", mode="adaptive")` with the stable absolute root and the current phase (`plan`, `edit`, `review`, `test`, or `handoff`). Include `task_id`, focus, and `preload_profile` when known; cite returned `evidence_ids`. Reuse candidates before introducing new abstractions. Treat deterministic/indexed output as authoritative; Serena/RAG enrich and cross-check it; local-model output may rank or compose structured evidence but cannot override it or invent repository facts. If a preload, code-intelligence backend, local model, or Agent OS layer is unavailable, continue with the useful deterministic/indexed or stateless pack and its concise machine-readable warning. Preserve legacy fast/full behavior only for callers that explicitly request them.
+
+Cheapest path for repository evidence: deterministic -> code_index/search -> semantic/graph -> context/solve -> RAG. Semantic generation, reasoning, review, independent second opinions and compression use `local_ai_task` after any needed evidence; `local_ai_repo(action="solve")` also preserves one bounded local pass when its task text explicitly requests semantic work.
+ Stop escalating as soon as a cheaper layer provides enough evidence. Do not fan out overlapping retrieval layers in parallel for the same question. Before native `find`/`rg`/`grep`/recursive glob/tree or opening more than two files for discovery, use that hub path first. Reuse fresh evidence IDs, artifact slices, memos and cache hits;
+ do not repeat the same hub action with the same root/query while repository state is unchanged.
+
+Treat result state as a protocol: `cache_hit`/`coalesced` means reuse the result; `in_progress=true` means another owner is doing identical work, so never duplicate it; `retryable`/429/503 means back off and do independent work; `degraded`/`stale` means verify only the affected path/slice; a non-retryable failure permits one cheaper/native fallback. Never turn a transient result into larger timeouts, force refreshes, or polling loops.
+
+Route test/lint/typecheck/build/read-only commands through `local_ai_command` before running them natively. If it returns `in_progress=true`, do not launch a duplicate command. Before an expensive `solve`/model call, search coordination memos for reusable findings. For overlapping multi-agent edits use `local_ai_coord` leases and store concise reusable discoveries as memos.
+ After edits, use indexed impact/review plus targeted cached validation; do not rerun broad discovery merely because files changed. `force` and `preprocess_refresh` are recovery/admin controls, never retry buttons. If an optional backend degrades, accept the hub's deterministic/index fallback. If the hub itself is unavailable, make one bounded health/retry attempt, then fall back to native tools. Never loop on health, status, preprocessing, model startup, a failing backend, or an identical command.
+
+Selection guide: `local_ai_status` for bounded health/cache/telemetry inspection and Agent OS state, `local_ai_repo` for bounded repository facts and checks (including `review_diff` and `security_audit`), `local_ai_command` for bounded repeatable commands, `local_ai_task` for bounded semantic generation, exploration, reasoning, review, independent second opinions and compression, `local_ai_work` for a complete bounded task with planning, edits, validation and handoff, `local_ai_rag` only after cheaper indexed evidence, `local_ai_artifact` for exact slices, `local_ai_coord` for leases, memory, context, and verification workflows.
+
+Local model routing starts from `[hardware].profile="auto"`; hardware detection or an explicit profile selects a role map, then user overrides apply. In order `background_code/fast_code/heavy_code/reasoning/general/vision`: integrated=`qwen2.5-coder:0.5b/qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen2.5-coder:1.5b/qwen3-vl:4b`; balanced=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b/qwen2.5-coder:7b/qwen3.5:9b`; high=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b`; max=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b`. Ordinary reasoning uses `heavy_code`; only heavy reasoning uses `reasoning`. These are routing targets, not proof that models are installed; model pulls remain opt-in. Run deterministic and indexed Hub actions first for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, exploration, reasoning, review, independent second opinions and compression.
+For model roles, `cpu` and `low` reuse the integrated model map; profile-specific scheduler settings still apply. Explicit model overrides and runtime fallbacks preserve the routed request's minimum tier; do not lower its quality floor for latency.
+<!-- END LOCAL AI HUB TOOL POLICY -->
+
+<!-- BEGIN TOKEN ECONOMY POLICY -->
+- Before any repository task, load and follow the `token-economizer` skill when it is installed; this trigger applies even under deadline pressure.
+- Zero full-file dumping: Never read files >80 lines in their entirety. Use `repo-map` for high-level structure, `grep-ast <pattern> <file>`, targeted line slices, or `local_ai_artifact(action="slice")`.
+- Fast code search: Use `rg` (`ripgrep`) with `-m 5` / bounded matches and `fd` for file finding before opening files.
+- AST & structural code search: Use `ast-grep` (`sg`), Serena LSP (`find_symbol`, `find_referencing_symbols`), or `local_ai_repo(action="code_index")` before opening files.
+- Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.
+- Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.
+- Surgical edits: Prefer targeted block replacements over rewriting entire files.
+- Local model delegation follows the active hardware profile and configured role tiers; do not assume a named model is installed. Use `local_ai_task` only for bounded semantic work after deterministic evidence.
+<!-- END TOKEN ECONOMY POLICY -->

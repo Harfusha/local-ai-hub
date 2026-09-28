@@ -1,14 +1,61 @@
 from __future__ import annotations
 
+import contextvars
+import math
 import threading
 import time
-import contextvars
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .model_policy import ModelExecutionPolicy
 from .trace_context import observer
+
+
+_T12_SCENARIO_NAMES = frozenset({"scheduler", "batch", "deadline", "overload", "cancel", "fallback"})
+_T12_RESERVED_FIELDS = frozenset({"success", "error_type", "scenario", "status", "metrics", "receipt_id"})
+_T12_FIXTURE_CONTRACT_FIELDS = frozenset({"fixture", "fixture_metrics", "measurements", "observations", "receipt_id", "results"})
+
+
+def _bounded_json_copy(value: Any, budget: list[int], depth: int = 0) -> Any:
+    """Copy bounded JSON data for benchmark contracts and observed metrics."""
+    if depth > 8 or budget[0] >= 2048:
+        raise ValueError("scenario_value_limit")
+    budget[0] += 1
+
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        budget[1] += len(value)
+        if len(value) > 4096 or budget[1] > 16384:
+            raise ValueError("scenario_value_limit")
+        return value
+    if isinstance(value, int):
+        if value.bit_length() > 63:
+            raise ValueError("scenario_value_limit")
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("scenario_value_limit")
+        return value
+    if isinstance(value, list):
+        if len(value) > 256:
+            raise ValueError("scenario_value_limit")
+        return [_bounded_json_copy(item, budget, depth + 1) for item in value]
+    if isinstance(value, Mapping):
+        if len(value) > 128:
+            raise ValueError("scenario_value_limit")
+        copied: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str) or not key or len(key) > 256:
+                raise ValueError("scenario_value_limit")
+            budget[1] += len(key)
+            if budget[1] > 16384:
+                raise ValueError("scenario_value_limit")
+            copied[key] = _bounded_json_copy(item, budget, depth + 1)
+        return copied
+    raise ValueError("scenario_value_type")
 
 
 @dataclass
@@ -32,6 +79,8 @@ class Job:
     context: contextvars.Context = field(default_factory=contextvars.copy_context)
     trace_id: str = ""
     admission: dict[str, Any] = field(default_factory=dict)
+    cancel_event: threading.Event | None = None
+    deadline: float | None = None
 
 
 class QueueFullError(RuntimeError):
@@ -73,6 +122,17 @@ class SchedulerTimeoutError(TimeoutError):
         self.terminal = False
         self.error_code = "scheduler_caller_timeout"
         super().__init__(f"job {job.id} did not finish before caller timeout ({state})")
+
+
+class SchedulerCancelledError(InterruptedError):
+    """Caller cancellation ended its wait before a scheduler job completed."""
+
+    def __init__(self, job: Job, state: str):
+        self.job = job
+        self.job_id = job.id
+        self.state = state
+        self.error_code = "scheduler_caller_cancelled"
+        super().__init__(f"job {job.id} was cancelled by its caller ({state})")
 
 
 class AffinityScheduler:
@@ -124,6 +184,7 @@ class AffinityScheduler:
         self._switching = False
         self._model_blocked_until: dict[str, float] = {}
         self._model_last_error: dict[str, str] = {}
+        self._model_vram_bytes: dict[str, int] = {}
         self._running = True
         self._last_foreground_activity = time.monotonic()
         self._foreground_generation = 0
@@ -170,6 +231,115 @@ class AffinityScheduler:
         self._dispatcher = threading.Thread(target=self._dispatch_loop, name="local-ai-dispatcher", daemon=True)
         self._dispatcher.start()
 
+    def run_benchmark_scenario(
+        self,
+        *,
+        name: str,
+        contract: Mapping[str, Any],
+        resource_sampler: Any | None = None,
+    ) -> dict[str, Any]:
+        """Expose only validated measurements from a runtime scenario executor.
+
+        The runtime owns scenario execution and receipt provenance. This adapter
+        never treats input contract values as observations or creates receipts.
+        """
+        if not isinstance(name, str) or name not in _T12_SCENARIO_NAMES:
+            return {"success": False, "error_type": "unsupported_scenario"}
+        if not isinstance(contract, Mapping):
+            return {"success": False, "error_type": "invalid_scenario_contract"}
+
+        try:
+            if len(contract) > 32:
+                return {"success": False, "error_type": "invalid_scenario_contract"}
+            safe_contract: dict[str, Any] = {}
+            contract_budget = [0, 0]
+            for key, value in contract.items():
+                if not isinstance(key, str) or not key or len(key) > 128:
+                    return {"success": False, "error_type": "invalid_scenario_contract"}
+                if key.casefold() in _T12_FIXTURE_CONTRACT_FIELDS:
+                    return {"success": False, "error_type": "invalid_scenario_contract"}
+                safe_contract[key] = _bounded_json_copy(value, contract_budget)
+        except Exception:
+            return {"success": False, "error_type": "invalid_scenario_contract"}
+
+        if safe_contract.get("scenario") != name:
+            return {"success": False, "error_type": "invalid_scenario_contract"}
+        required_fields = safe_contract.get("required_fields")
+        if (
+            not isinstance(required_fields, list)
+            or not required_fields
+            or len(required_fields) > 64
+            or any(
+                not isinstance(field, str)
+                or not field
+                or len(field) > 128
+                or field in _T12_RESERVED_FIELDS
+                for field in required_fields
+            )
+            or len(set(required_fields)) != len(required_fields)
+        ):
+            return {"success": False, "error_type": "invalid_scenario_contract"}
+        requested_fields = tuple(required_fields)
+
+        execute_scenario = getattr(self.runtime, "run_benchmark_scenario", None)
+        if not callable(execute_scenario):
+            return {"success": False, "error_type": "scenario_executor_unavailable"}
+
+        try:
+            execute_args: dict[str, Any] = {"name": name, "contract": safe_contract, "scheduler": self}
+            if callable(getattr(resource_sampler, "sample_vram", None)):
+                execute_args["resource_sampler"] = resource_sampler
+            result = execute_scenario(**execute_args)
+        except Exception as exc:
+            return {"success": False, "error_type": type(exc).__name__}
+        if not isinstance(result, Mapping):
+            return {"success": False, "error_type": "scenario_execution_failed"}
+        try:
+            if result.get("scenario") == name and result.get("status") == "unmeasured":
+                missing_fields = result.get("missing_fields")
+                safe_missing = [
+                    field for field in missing_fields
+                    if isinstance(field, str) and field and len(field) <= 128
+                ] if isinstance(missing_fields, list) else []
+                return {
+                    "success": False,
+                    "error_type": "scenario_measurement_missing",
+                    "missing_fields": sorted(set(safe_missing)),
+                }
+            if (
+                result.get("success", True) is not True
+                or result.get("scenario") != name
+                or result.get("status") != "measured"
+            ):
+                return {"success": False, "error_type": "scenario_result_invalid"}
+            metrics = result.get("metrics")
+            if not isinstance(metrics, Mapping) or len(metrics) > 256:
+                return {"success": False, "error_type": "scenario_result_invalid"}
+            if any(not isinstance(field, str) for field in metrics):
+                return {"success": False, "error_type": "scenario_result_invalid"}
+            receipt_id = result.get("receipt_id")
+            if not isinstance(receipt_id, str) or not receipt_id.strip() or len(receipt_id) > 256:
+                return {"success": False, "error_type": "scenario_receipt_unavailable"}
+
+            report: dict[str, Any] = {"success": True}
+            metric_budget = [0, 0]
+            missing_metrics: list[str] = []
+            for field in requested_fields:
+                if field not in metrics or metrics[field] is None:
+                    missing_metrics.append(field)
+                    continue
+                report[field] = _bounded_json_copy(metrics[field], metric_budget)
+            if missing_metrics:
+                return {
+                    "success": False,
+                    "error_type": "scenario_measurement_missing",
+                    "missing_fields": missing_metrics,
+                }
+            report["receipt_id"] = receipt_id.strip()
+            return report
+        except Exception:
+            return {"success": False, "error_type": "scenario_result_invalid"}
+
     def _resource_status(self) -> dict[str, Any]:
         candidates = [
             getattr(self.runtime, "resource_status", None),
@@ -189,27 +359,153 @@ class AffinityScheduler:
         configured = self.config.get("resource_pressure", self.config.get("scheduler", {}).get("resource_pressure", {}))
         return dict(configured) if isinstance(configured, dict) else {}
 
-    def _admission(self, *, background: bool) -> dict[str, Any]:
+    def _observe_model_vram_bytes(
+        self,
+        model: str,
+        *,
+        should_stop: Callable[[], bool] | None = None,
+        deadline: float | None = None,
+    ) -> int | None:
+        model_key = str(model or "").strip().casefold()
+        provider = getattr(self.runtime, "loaded_model_details", None)
+        if not model_key or not callable(provider):
+            return None
+        try:
+            rows = provider(force_refresh=True, should_stop=should_stop, deadline=deadline)
+        except TypeError:
+            try:
+                rows = provider(should_stop=should_stop, deadline=deadline)
+            except Exception:
+                return None
+        except Exception:
+            return None
+        if not isinstance(rows, list):
+            return None
+        matching_sizes = [
+            int(round(float(row["vram_bytes"])))
+            for row in rows
+            if isinstance(row, dict)
+            and str(row.get("name", row.get("model", ""))).strip().casefold() == model_key
+            and isinstance(row.get("vram_bytes"), (int, float))
+            and not isinstance(row.get("vram_bytes"), bool)
+            and math.isfinite(row["vram_bytes"])
+            and row["vram_bytes"] > 0
+        ]
+        return sum(matching_sizes) if matching_sizes else None
+
+    def _configured_model_vram_estimate(self, model_key: str) -> int | None:
+        config = getattr(self, "config", {})
+        scheduler_config = config.get("scheduler", {}) if isinstance(config, dict) else {}
+        estimates = scheduler_config.get("model_vram_estimates_bytes", {}) if isinstance(scheduler_config, dict) else {}
+        if not isinstance(estimates, dict):
+            return None
+        for model, value in estimates.items():
+            if (
+                str(model or "").strip().casefold() == model_key
+                and isinstance(value, int)
+                and not isinstance(value, bool)
+                and value > 0
+            ):
+                return value
+        return None
+
+    def _admission(self, *, background: bool, model: str | None = None) -> dict[str, Any]:
         resource = self._resource_status()
         pressure = str(resource.get("pressure_level", "nominal") or "nominal").lower()
+        vram_fields: dict[str, int] = {}
+        total_mb = resource.get("vram_total_mb")
+        available_mb = resource.get("vram_available_mb")
+        if (
+            isinstance(total_mb, (int, float)) and not isinstance(total_mb, bool)
+            and math.isfinite(total_mb) and total_mb > 0
+            and isinstance(available_mb, (int, float)) and not isinstance(available_mb, bool)
+            and math.isfinite(available_mb) and available_mb >= 0
+        ):
+            vram_fields = {
+                "vram_budget_bytes": int(round(float(total_mb) * 1024 * 1024)),
+                "vram_available_bytes": int(round(min(float(total_mb), float(available_mb)) * 1024 * 1024)),
+            }
+        model_key = str(model or "").strip().casefold()
+        active_key = str(getattr(self, "_active_model", None) or "").strip().casefold()
+        estimates = getattr(self, "_model_vram_bytes", {})
+        incremental_required: int | None = None
+        admission_budget: int | None = None
+        vram_admission_state: str | None = None
+        vram_estimate_source = "unknown"
+        if vram_fields:
+            reclaimable = 0
+            if (
+                bool(getattr(self, "unload_others", False))
+                and active_key
+                and active_key != model_key
+                and isinstance(estimates, dict)
+            ):
+                active_size = estimates.get(active_key)
+                if isinstance(active_size, int) and not isinstance(active_size, bool) and active_size > 0:
+                    reclaimable = active_size
+            admission_budget = min(
+                vram_fields["vram_budget_bytes"],
+                vram_fields["vram_available_bytes"] + reclaimable,
+            )
+            if model_key == active_key and model_key:
+                incremental_required = 0
+                vram_estimate_source = "resident"
+            elif isinstance(estimates, dict):
+                estimate = estimates.get(model_key)
+                if isinstance(estimate, int) and not isinstance(estimate, bool) and estimate > 0:
+                    incremental_required = estimate
+                    vram_estimate_source = "measured"
+            if incremental_required is None:
+                configured_estimate = self._configured_model_vram_estimate(model_key)
+                if configured_estimate is not None:
+                    incremental_required = configured_estimate
+                    vram_estimate_source = "configured"
+            vram_fields["vram_admission_budget_bytes"] = admission_budget
+            if incremental_required is None:
+                vram_admission_state = "unknown"
+            else:
+                vram_fields["vram_incremental_required_bytes"] = incremental_required
+                vram_admission_state = (
+                    "admitted" if incremental_required <= admission_budget else "rejected"
+                )
         factor = resource.get("context_budget_factor", 1.0)
         try:
             factor = max(0.0, min(1.0, float(factor)))
         except (TypeError, ValueError, OverflowError):
             factor = 1.0
         throttled = bool(resource.get("throttle_background", False))
-        if background and throttled and pressure in {"high", "critical"}:
-            return {
+        pressure_rejected = background and throttled and pressure in {"high", "critical"}
+        budget_rejected = bool(vram_fields) and (
+            vram_admission_state == "rejected"
+            or (
+                vram_fields["vram_available_bytes"] <= 0
+                and (incremental_required is None or incremental_required > 0)
+            )
+        )
+        if pressure_rejected or budget_rejected:
+            result = {
                 "state": "rejected", "reason": "resource_pressure", "pressure_level": pressure,
                 "context_budget_factor": factor, "queue_age_ms": 0, "retryable": True,
+                **vram_fields,
             }
+            if vram_fields:
+                result["vram_admission"] = "rejected"
+            result["vram_estimate_source"] = vram_estimate_source
+            if budget_rejected:
+                result["reason"] = "vram_budget"
+            return result
         degraded = pressure in {"moderate", "high", "critical"} or factor < 1.0
-        return {
+        result = {
             "state": "degraded" if degraded else "accepted",
             "reason": "resource_pressure" if degraded else "capacity_available",
             "pressure_level": pressure, "context_budget_factor": factor,
             "queue_age_ms": 0, "retryable": False,
+            **vram_fields,
         }
+        if vram_fields:
+            result["vram_admission"] = vram_admission_state or "unknown"
+        result["vram_estimate_source"] = vram_estimate_source
+        return result
 
     @staticmethod
     def _bounded_mapping(value: Any, limit: int) -> dict[str, Any]:
@@ -237,6 +533,7 @@ class AffinityScheduler:
         wait_timeout: float | None = None,
         *,
         background: bool = False,
+        cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
         tenant = tenant or "default"
         priority = max(0, min(int(priority), 9))
@@ -245,6 +542,7 @@ class AffinityScheduler:
         # are preserved; longer ones are capped by one configurable hard ceiling.
         effective_wait_timeout = self.default_caller_wait_timeout if wait_timeout is None else max(0.05, float(wait_timeout))
         effective_wait_timeout = min(effective_wait_timeout, self.max_caller_wait_timeout)
+        request_deadline = time.monotonic() + effective_wait_timeout
         if background:
             # Background work cannot smuggle itself above foreground work through a
             # caller-supplied priority.
@@ -262,7 +560,7 @@ class AffinityScheduler:
                 self._model_blocked_until.pop(model, None)
                 self._model_last_error.pop(model, None)
             tenant_queued = sum(1 for job in self._pending if job.tenant == tenant)
-            admission = self._admission(background=background)
+            admission = self._admission(background=background, model=model)
             if admission["state"] == "rejected":
                 self._stats["queue_rejections"] += 1
                 raise QueueFullError("resource pressure blocks background admission", reason="resource_pressure", admission=admission)
@@ -273,7 +571,11 @@ class AffinityScheduler:
             self._job_id += 1
             trace_observer = observer()
             trace_id = str(getattr(trace_observer, "trace_id", "") or "")
-            job = Job(self._job_id, model, tenant, source, priority, execute, background=background, trace_id=trace_id, admission=admission)
+            job = Job(
+                self._job_id, model, tenant, source, priority, execute,
+                background=background, trace_id=trace_id, admission=admission,
+                cancel_event=cancel_event, deadline=request_deadline,
+            )
             self._pending.append(job)
             if trace_observer is not None and trace_id:
                 try:
@@ -305,19 +607,46 @@ class AffinityScheduler:
                 self._background_gpu_lease = False
             self._cond.notify_all()
 
-        if not job.done.wait(effective_wait_timeout):
-            with self._cond:
-                job.caller_timed_out = True
-                self._stats["caller_timeouts"] += 1
-                state = "running" if job.started_at else "dispatching"
-                if job in self._pending:
-                    self._pending.remove(job)
-                    self._stats["cancelled_pending"] += 1
-                    job.error = "caller timed out before dispatch"
-                    job.done.set()
-                    state = "pending"
-                    self._cond.notify_all()
-            raise SchedulerTimeoutError(job, state, effective_wait_timeout)
+        deadline = request_deadline
+        while not job.done.is_set():
+            remaining = max(0.0, deadline - time.monotonic())
+            wait_slice = min(0.05, remaining) if cancel_event is not None else remaining
+            if job.done.wait(wait_slice):
+                break
+
+            if cancel_event is not None and cancel_event.is_set():
+                with self._cond:
+                    if job.done.is_set():
+                        break
+                    state = "running" if job.started_at else "dispatching"
+                    if job in self._pending:
+                        self._pending.remove(job)
+                        self._stats["cancelled_pending"] += 1
+                        job.error = "caller cancelled before dispatch"
+                        job.finished_at = time.monotonic()
+                        job.done.set()
+                        state = "pending"
+                        self._cond.notify_all()
+                raise SchedulerCancelledError(job, state)
+
+            if time.monotonic() >= deadline:
+                with self._cond:
+                    if job.done.is_set():
+                        break
+                    job.caller_timed_out = True
+                    self._stats["caller_timeouts"] += 1
+                    if job.cancel_event is not None:
+                        job.cancel_event.set()
+                    state = "running" if job.started_at else "dispatching"
+                    if job in self._pending:
+                        self._pending.remove(job)
+                        self._stats["cancelled_pending"] += 1
+                        job.error = "caller timed out before dispatch"
+                        job.finished_at = time.monotonic()
+                        job.done.set()
+                        state = "pending"
+                        self._cond.notify_all()
+                raise SchedulerTimeoutError(job, state, effective_wait_timeout)
         queue_wait_ms = max(0.0, ((job.started_at or job.finished_at or time.monotonic()) - job.created_at) * 1000)
         service_ms = max(0.0, (job.finished_at - job.started_at) * 1000) if job.finished_at and job.started_at else 0.0
         if job.error:
@@ -535,7 +864,10 @@ class AffinityScheduler:
                 break
 
             if target_switch:
-                self._perform_switch(target_switch)
+                self._perform_switch(
+                    target_switch,
+                    should_stop=lambda target=target_switch: not self._has_active_preparation_waiter(target),
+                )
                 continue
 
             if selected is not None:
@@ -659,31 +991,89 @@ class AffinityScheduler:
 
         def score(job: Job) -> tuple[float, int, float]:
             wait = now - job.created_at
-            effective_priority = job.priority + min(int(wait // 30.0), 3) if not job.background else job.priority
+            # Let an old foreground request catch up with higher-priority arrivals.
+            # Cap at the public priority ceiling so tenant virtual runtime can still
+            # share capacity fairly once waiting jobs have aged into the same tier.
+            effective_priority = min(9, job.priority + int(wait // 30.0)) if not job.background else job.priority
             vruntime = self._tenant_vruntime.get(job.tenant, 0)
             return (-effective_priority, vruntime, job.created_at)
 
         return min(candidates, key=score)
 
-    def _perform_switch(self, target: str) -> bool:
+    def _has_active_preparation_waiter(self, target: str) -> bool:
+        now = time.monotonic()
+        with self._cond:
+            return any(
+                job.model == target
+                and not job.done.is_set()
+                and (job.cancel_event is None or not job.cancel_event.is_set())
+                and (job.deadline is None or now < job.deadline)
+                for job in self._pending
+            )
+
+    def _perform_switch(
+        self,
+        target: str,
+        *,
+        should_stop: Callable[[], bool] | None = None,
+        deadline: float | None = None,
+    ) -> bool:
         evicted: list[str] = []
+        observed_vram_bytes: int | None = None
         started = time.perf_counter()
         error = ""
-        try:
-            prepared = self.runtime.prepare_model(target, unload_others=self.unload_others)
-            # Runtime adapters historically returned either a list of evicted models
-            # or None. Treat a falsey/non-list success value as no evictions instead
-            # of letting an adapter quirk kill the dispatcher thread.
-            evicted = list(prepared) if isinstance(prepared, (list, tuple, set)) else []
-        except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"[:300]
+        cancelled = False
+        if should_stop is not None and should_stop():
+            cancelled = True
+        else:
+            try:
+                prepare_kwargs: dict[str, Any] = {"unload_others": self.unload_others}
+                if should_stop is not None or deadline is not None:
+                    prepare_kwargs.update(should_stop=should_stop, deadline=deadline)
+                prepared = self.runtime.prepare_model(target, **prepare_kwargs)
+                # Runtime adapters historically returned either a list of evicted models
+                # or None. Treat a falsey/non-list success value as no evictions instead
+                # of letting an adapter quirk kill the dispatcher thread.
+                evicted = list(prepared) if isinstance(prepared, (list, tuple, set)) else []
+            except Exception as exc:
+                if bool(getattr(exc, "preparation_cancelled", False)):
+                    cancelled = True
+                else:
+                    error = f"{type(exc).__name__}: {exc}"[:300]
+        if not cancelled and not error:
+            observed_vram_bytes = self._observe_model_vram_bytes(
+                target,
+                should_stop=should_stop,
+                deadline=deadline,
+            )
         elapsed_ms = (time.perf_counter() - started) * 1000
         with self._cond:
+            if observed_vram_bytes is not None:
+                self._model_vram_bytes[target.strip().casefold()] = observed_vram_bytes
             self._stats["switch_time_ms"] = round(float(self._stats.get("switch_time_ms", 0.0)) + elapsed_ms, 1)
             self._stats["evictions"] += len(evicted)
             self._active_dispatched = 0
             self._last_switch = time.monotonic()
-            if error:
+            if cancelled:
+                now = time.monotonic()
+                abandoned = [
+                    job for job in self._pending
+                    if job.model == target
+                    and (
+                        job.done.is_set()
+                        or (job.cancel_event is not None and job.cancel_event.is_set())
+                        or (job.deadline is not None and now >= job.deadline)
+                    )
+                ]
+                for job in abandoned:
+                    self._pending.remove(job)
+                    self._stats["cancelled_pending"] += 1
+                self._stats["model_switch_cancellations"] = int(self._stats.get("model_switch_cancellations", 0)) + 1
+                # Preparation may already have unloaded the old model. Force the next
+                # dispatch to re-check residency instead of trusting a stale affinity.
+                self._active_model = None
+                self._active_since = 0.0
+            elif error:
                 self._stats["model_switch_failures"] += 1
                 self._model_blocked_until[target] = time.monotonic() + self.switch_failure_cooldown
                 self._model_last_error[target] = error

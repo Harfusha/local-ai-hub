@@ -304,6 +304,7 @@ class LocalAIApp:
             runtime=self.runtime,
             vram_balancer=self.vram_balancer,
             config=self.config,
+            scheduler=self.scheduler,
         )
         self.recovery = RecoveryJournal(state_dir, stale_seconds=int(self.config.get("resilience", {}).get("journal_stale_seconds", 900)))
         self._start_resilience_watchdog()

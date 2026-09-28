@@ -462,7 +462,7 @@ def test_ollama_interruptible_stream_exists_and_aggregates(tmp_path: Path, monke
                 b'{"response":"lo","done":true,"eval_count":2}\n',
             ])
 
-    monkeypatch.setattr(ollama_module, "urlopen", lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(ollama_module, "_open_interruptible_response", lambda *_args, **_kwargs: Response())
     runtime = OllamaRuntime(_ollama_config(tmp_path))
     result = runtime.request_interruptible("/api/generate", {"model": "x"}, lambda: False, timeout=1)
     assert result["response"] == "hello"

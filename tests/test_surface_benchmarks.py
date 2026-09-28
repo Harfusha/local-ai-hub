@@ -8,7 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from tools.benchmark_surfaces import _plan_grade_reasons, compare_records, main, run_benchmark, summarize_samples
+from tools.benchmark_surfaces import (
+    _plan_grade_reasons,
+    _t12_hardware_identity,
+    _run_t12_matrix,
+    compare_records,
+    main,
+    run_benchmark,
+    summarize_samples,
+)
 from local_ai_hub.async_jobs import AsyncJobManager
 
 _REQUIRED_GOLDEN_OPERATIONS = (
@@ -23,6 +31,20 @@ _REQUIRED_COMPARISON_STAGES = (
 _COMPARISON_METADATA_FIELDS = (
     "benchmark_scope", "config_fingerprint", "hardware_fingerprint",
 )
+
+
+def test_t12_hardware_identity_includes_detected_profile_and_devices():
+    hardware, fingerprint = _t12_hardware_identity({
+        "profile": "balanced",
+        "gpus": [{"vendor": "nvidia", "gpu_name": "Example GPU", "vram_total_mb": 8192, "serial": "omit-me"}],
+        "npus": [{"name": "Example NPU", "backend": "test"}],
+    })
+
+    assert hardware["profile"] == "balanced"
+    assert hardware["gpus"] == [{"gpu_name": "Example GPU", "vendor": "nvidia", "vram_total_mb": 8192}]
+    assert hardware["npus"] == [{"name": "Example NPU", "backend": "test"}]
+    assert "serial" not in json.dumps(hardware)
+    assert len(fingerprint) == 64
 
 
 def _async_jobs_lifecycle_snapshot(state_dir: Path) -> dict[str, object]:
@@ -517,3 +539,152 @@ def test_optional_inference_uses_runtime_load_metric_without_real_model(tmp_path
     assert result["stages"]["inference_queue_wait"]["status"] == "skipped"
     assert result["resource_usage"]["peak_vram_bytes"] == 250 * 1024 * 1024
     assert result["resource_usage"]["availability"]["peak_vram_bytes"] == "measured_at_inference_boundaries"
+
+
+def test_t12_matrix_reports_profile_corpus_metrics_and_scenario_receipts() -> None:
+    class FakeRunner:
+        config = {
+            "models": {
+                "reason": "reason-model",
+                "review": "review-model",
+                "compress": "compress-model",
+                "complete": "complete-model",
+                "scaffold": "scaffold-model",
+                "reasoning": "reason-model",
+                "fast_code": "compress-model",
+                "heavy_code": "review-model",
+            },
+            "profile_configs": {profile: {"temperature": 0.0} for profile in (
+                "reason", "review", "compress", "complete", "scaffold",
+            )},
+        }
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def run(self, *, model: str, prompt: str, num_tokens: int) -> dict[str, object]:
+            profile = next(name for name, model_name in self.config["models"].items() if model_name == model)
+            repetition = sum(1 for call in self.calls if call["profile"] == profile)
+            self.calls.append({"profile": profile, "prompt": prompt, "num_tokens": num_tokens})
+            return {
+                "success": True,
+                "routed_profile": profile,
+                "model_digest": ("a" if profile == "reason" else "b") * 64,
+                "quality_score_pct": 90.0,
+                "quality_evaluator_id": "t12-rubric-v1",
+                "ttft_ms": 4.0,
+                "tokens_per_second": 20.0,
+                "load_duration_ms": 12.0 if repetition == 0 else 0.0,
+                "model_load_event": repetition == 0,
+                "model_reuse_event": repetition > 0,
+                "queue_age_ms": 10.0 + repetition,
+                "queue_wait_ms": 8.0 + repetition,
+                "fairness_wait_ms": 3.0 + repetition,
+                "batch_size": 2,
+                "batch_bucket": "short-prefill",
+                "prefill_tokens": 64,
+                "vram_admitted": True,
+                "vram_budget_bytes": 512 * 1024 * 1024,
+                "vram_required_bytes": 256 * 1024 * 1024,
+                "deadline_ms": 500.0,
+                "deadline_stage": "generation",
+                "deadline_exceeded": False,
+                "deadline_stages_ms": {"queue": 4.0, "model_load": 12.0, "generation": 20.0},
+                "peak_vram_bytes": 256 * 1024 * 1024,
+            }
+
+        def run_benchmark_scenario(self, *, name: str, contract: dict[str, object]) -> dict[str, object]:
+            del contract
+            scenarios: dict[str, dict[str, object]] = {
+                "scheduler": {
+                    "queue_age_ms": 25.0, "fairness_wait_ms": 10.0, "batch_size": 4,
+                    "batch_item_count": 4, "bucket_id": "short-prefill",
+                    "prefill_tokens": 128, "vram_admission": "admitted",
+                    "vram_budget_bytes": 512 * 1024 * 1024,
+                    "vram_available_bytes": 256 * 1024 * 1024,
+                    "vram_required_bytes": 256 * 1024 * 1024,
+                    "vram_admission_budget_bytes": 256 * 1024 * 1024,
+                    "vram_incremental_required_bytes": 192 * 1024 * 1024,
+                    "vram_estimate_source": "measured",
+                },
+                "batch": {
+                    "input_item_ids": ["a", "b", "c"], "result_item_ids": ["a", "b", "c"],
+                    "item_statuses": ["success", "failed", "success"], "partial_failure_count": 1,
+                    "max_concurrency": 2, "concurrency_limit": 2,
+                },
+                "deadline": {
+                    "deadline_ms": 100.0, "stages": ["queue", "model_load", "generation"],
+                    "stage_timings_ms": {"queue": 5.0, "model_load": 20.0, "generation": 40.0},
+                    "deadline_stage": "generation", "completed_within_deadline": True,
+                },
+                "overload": {
+                    "overloaded": True, "queue_depth": 4, "queue_admission": "rejected",
+                },
+                "cancel": {
+                    "cancel_requested": True, "cancelled": True, "cleanup_complete": True,
+                    "cancel_to_stop_ms": 15.0,
+                },
+                "fallback": {
+                    "fallback_used": True, "fallback_visible": True, "source_profile": "reason",
+                    "fallback_profile": "review", "quality_floor_pct": 80.0,
+                    "fallback_quality_pct": 85.0,
+                },
+            }
+            return {**scenarios[name], "receipt_id": f"receipt-{name}"}
+
+    runner = FakeRunner()
+    report = _run_t12_matrix(runner, repetitions=2, concurrency_limit=4, quality_floor_pct=80.0)
+
+    assert report["accepted"] is False
+    assert report["contract_passed"] is True
+    assert report["live_hardware"] is False
+    assert report["run_id"].startswith("t12-")
+    assert "receipt_id" not in report
+    assert len(runner.calls) == 10
+    assert report["corpus"]["corpus_id"] == "t12-live-quality-v1"
+    assert len(report["corpus"]["fingerprint"]) == 64
+    assert set(report["task_roles"]) == {"reason", "review", "compress", "complete", "scaffold"}
+    assert report["hardware_profile"] is None
+    reason = report["task_roles"]["reason"]
+    assert reason["status"] == "measured"
+    assert reason["identity"]["model"] == "reason-model"
+    assert reason["identity"]["task_role"] == "reason"
+    assert len(reason["identity"]["config_fingerprint"]) == 64
+    assert len(reason["identity"]["hardware_fingerprint"]) == 64
+    assert reason["quality"]["score_pct"] == 90.0
+    assert reason["quality"]["evaluator_id"] == "t12-rubric-v1"
+    assert reason["metrics"]["ttft_ms"]["p50_ms"] == 4.0
+    assert reason["metrics"]["end_to_end_latency_ms"]["count"] == 2
+    assert reason["metrics"]["peak_vram_bytes"]["p50_ms"] == 256 * 1024 * 1024
+    assert reason["events"]["model_load_count"] == 1
+    assert reason["events"]["model_reuse_count"] == 1
+    assert reason["deadline_stage_counts"] == {"generation": 2}
+    assert all(scenario["contract_passed"] is True for scenario in report["scenarios"].values())
+    assert report["scenarios"]["fallback"]["runner_receipt_id"] == "receipt-fallback"
+    serialized = json.dumps(report)
+    assert "Given queue" not in serialized
+    assert '"prompt"' not in serialized
+    assert '"output"' not in serialized
+
+    runner.config["_hardware"] = {"profile": "balanced"}
+    live_spoof_attempt = _run_t12_matrix(
+        runner, repetitions=1, concurrency_limit=4, quality_floor_pct=80.0, live_hardware=True,
+    )
+    assert live_spoof_attempt["accepted"] is False
+    assert live_spoof_attempt["task_roles"]["reason"]["quality"]["sample_count"] == 0
+    assert "trusted_structured_evaluator_required" in live_spoof_attempt["task_roles"]["reason"]["missing_acceptance"]
+
+
+def test_t12_matrix_keeps_missing_live_quality_and_scenarios_incomplete() -> None:
+    class UnscoredRunner:
+        config = {"models": {"reason": "reason-model"}}
+
+        def run(self, **_kwargs: object) -> dict[str, object]:
+            return {"success": True, "ttft_ms": 4.0}
+
+    report = _run_t12_matrix(UnscoredRunner(), repetitions=1, concurrency_limit=1, quality_floor_pct=80.0)
+
+    assert report["accepted"] is False
+    assert report["task_roles"]["reason"]["quality"]["status"] == "not_measured"
+    assert report["task_roles"]["review"]["status"] == "not_configured"
+    assert report["scenarios"]["fallback"]["status"] == "not_measured"

@@ -25,6 +25,17 @@ def test_vram_balancer_nominal_pressure():
         assert st["speculative_inference"]["strategy"] == "full_capacity"
 
 
+def test_sample_vram_forces_fresh_snapshot():
+    balancer = VRAMBalancer()
+    first = {"available": True, "gpu_name": "GPU", "vram_total_mb": 1000.0, "vram_used_mb": 100.0}
+    second = {"available": True, "gpu_name": "GPU", "vram_total_mb": 1000.0, "vram_used_mb": 250.0}
+    with patch("local_ai_hub.vram_balancer.get_gpu_telemetry", side_effect=[first, second]):
+        balancer.status()
+        snapshot = balancer.sample_vram()
+
+    assert snapshot["vram_used_mb"] == 250.0
+
+
 def test_vram_balancer_high_pressure_downscale():
     balancer = VRAMBalancer({"models": {"fast_code": "qwen2.5-coder:7b"}})
     mock_gpu = {
