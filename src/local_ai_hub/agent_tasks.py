@@ -16,6 +16,8 @@ from .agent_events import AgentEvent, AgentStateStore
 from .agent_identity import AgentScope, ScopeContext
 from .sqlite_support import connect_sqlite, retry_busy
 
+MAX_TASK_QUERY_SCAN_ROWS = 10_000
+
 
 class CompletionGateError(RuntimeError):
     """Raised when task completion is attempted without verified criteria receipts."""
@@ -211,6 +213,14 @@ class TaskState:
         }
 
 
+class TaskList(list[TaskState]):
+    """List-compatible task page with an explicit bounded-query truncation signal."""
+
+    def __init__(self, tasks: list[TaskState] | tuple[TaskState, ...] = (), *, query_truncated: bool = False) -> None:
+        super().__init__(tasks)
+        self.query_truncated = bool(query_truncated)
+
+
 class TaskStore:
     def __init__(
         self,
@@ -370,9 +380,9 @@ class TaskStore:
         limit: int = 100,
         include_stale: bool = False,
         query: str | None = None,
-    ) -> list[TaskState]:
+    ) -> TaskList:
         if not self._db_path_available():
-            return []
+            return TaskList()
         self._init_projection_table()
         now = time.time()
         normalized_query = (query or "").strip().casefold()
@@ -398,16 +408,24 @@ class TaskStore:
                 add_text(checkpoint_data.get(field))
             return any(normalized_query in value.casefold() for value in search_values)
 
-        def _fetch_tasks() -> list[Any]:
+        def _fetch_tasks() -> tuple[list[Any], bool]:
             with closing(connect_sqlite(self.state_store.db_path)) as con:
                 where_clauses: list[str] = []
                 params: list[Any] = []
                 if status is not None:
                     where_clauses.append("status = ?")
                     params.append(status.value)
-                if not include_stale:
-                    where_clauses.append("NOT (heartbeat_expires_at > 0 AND heartbeat_expires_at < ?)")
-                    params.append(now)
+                if not normalized_query and not include_stale:
+                    where_clauses.append(
+                        "(status IN (?, ?, ?, ?) OR heartbeat_expires_at <= 0 OR heartbeat_expires_at >= ?)"
+                    )
+                    params.extend((
+                        TaskStatus.COMPLETED.value,
+                        TaskStatus.CANCELLED.value,
+                        TaskStatus.FAILED.value,
+                        TaskStatus.ABANDONED.value,
+                        now,
+                    ))
                 where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
                 sql = f"""
                     SELECT task_id, status, owner, lease_id, contract, context, checkpoint, receipts,
@@ -418,23 +436,36 @@ class TaskStore:
                 """
                 if not normalized_query:
                     cur = con.execute(sql + " LIMIT ?", (*params, page_size))
-                    return cur.fetchall()
+                    return cur.fetchall(), False
 
-                cur = con.execute(sql, tuple(params))
+                cur = con.execute(sql + " LIMIT ?", (*params, MAX_TASK_QUERY_SCAN_ROWS + 1))
+                candidates = cur.fetchmany(MAX_TASK_QUERY_SCAN_ROWS + 1)
+                query_truncated = len(candidates) > MAX_TASK_QUERY_SCAN_ROWS
                 matched: list[Any] = []
-                while batch := cur.fetchmany(128):
-                    for row in batch:
-                        if matches_query(row):
-                            matched.append(row)
-                            if len(matched) >= page_size:
-                                return matched
-                return matched
+                terminal_statuses = {
+                    TaskStatus.COMPLETED.value,
+                    TaskStatus.CANCELLED.value,
+                    TaskStatus.FAILED.value,
+                    TaskStatus.ABANDONED.value,
+                }
+                for row in candidates[:MAX_TASK_QUERY_SCAN_ROWS]:
+                    heartbeat_expires_at = float(row[8] or 0.0)
+                    if (
+                        not include_stale
+                        and heartbeat_expires_at > 0
+                        and heartbeat_expires_at < now
+                        and row[1] not in terminal_statuses
+                    ):
+                        continue
+                    if matches_query(row):
+                        matched.append(row)
+                        if len(matched) >= page_size:
+                            return matched, False
+                return matched, query_truncated
 
-        rows = retry_busy(_fetch_tasks, retries=5, base_delay_seconds=0.02)
+        rows, query_truncated = retry_busy(_fetch_tasks, retries=5, base_delay_seconds=0.02)
         tasks = [self._row_to_state(row) for row in rows]
-        if not include_stale:
-            tasks = [t for t in tasks if not t.is_stale]
-        return tasks[:page_size]
+        return TaskList(tasks[:page_size], query_truncated=query_truncated)
 
     def count(self, status: TaskStatus | None = None) -> int:
         if not self._db_path_available():

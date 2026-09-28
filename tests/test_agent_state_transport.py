@@ -39,7 +39,7 @@ enabled = true
         task_id="task-1",
     )
     # Save a memo
-    app.memory.put(str(tmp_path), "known", "memo_value", 3600)
+    app.memory.put(str(tmp_path), "known", "memo_value", "agent-state-test", ttl_seconds=3600)
 
     # We mock or run directly via app or client
     # For transport test without network server, we can mock client request/get/post through app handlers or test client directly

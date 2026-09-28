@@ -52,14 +52,42 @@ def test_resolve_imports_get_and_post_share_auto_default(live_api):
     assert calls == [("repo", ["Thing"], "auto"), ("repo", ["Thing"], "auto")]
 
 
-def test_unsupported_chat_completions_rejects_before_payload_validation(live_api):
+def test_unsupported_chat_completions_rejects_valid_payload(live_api):
     _app, client = live_api
 
-    result = client.post("/api/chat/completions", {"messages": []})
+    result = client.post("/api/chat/completions", {"messages": [{"role": "user", "content": "hello"}]})
 
     assert result["success"] is False
     assert result["status_code"] == 404
     assert "messages" not in result["error"]
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        "not-a-list",
+        [],
+        [{}] * 129,
+        [{"role": "user", "content": "x" * 1_000_001}],
+    ],
+)
+def test_unsupported_chat_completions_returns_404_for_invalid_payloads(live_api, messages):
+    _app, client = live_api
+
+    result = client.post("/api/chat/completions", {"messages": messages})
+
+    assert result["success"] is False
+    assert result["status_code"] == 404
+
+
+@pytest.mark.parametrize("message", [None, "text"])
+def test_unsupported_chat_completions_returns_404_for_non_object_messages(live_api, message):
+    _app, client = live_api
+
+    result = client.post("/api/chat/completions", {"messages": [message]})
+
+    assert result["success"] is False
+    assert result["status_code"] == 404
 
 
 def test_task_list_query_filters_contract_and_checkpoint_before_limit(live_api):
@@ -118,6 +146,50 @@ def test_task_list_query_filters_contract_and_checkpoint_before_limit(live_api):
 
     unfiltered = client.list_tasks(query="  ", limit=10)
     assert {task["task_id"] for task in unfiltered["tasks"]} == {"query-match", "query-other", "query-owner"}
+
+
+def test_task_list_query_skips_stale_matches_before_limit(live_api):
+    from local_ai_hub.agent_identity import ScopeContext
+    from local_ai_hub.agent_tasks import GoalContract
+    from local_ai_hub.sqlite_support import connect_sqlite
+
+    app, _client = live_api
+    stale = app.agent_tasks.create(GoalContract(goal="page-needle stale"), ScopeContext(), task_id="stale-match")
+    fresh = app.agent_tasks.create(GoalContract(goal="page-needle fresh"), ScopeContext(), task_id="fresh-match")
+    con = connect_sqlite(app.agent_state.db_path)
+    try:
+        con.execute(
+            "UPDATE agent_tasks_projection SET heartbeat_expires_at=?, updated_at=? WHERE task_id=?",
+            (1.0, 2.0, stale.task_id),
+        )
+        con.execute(
+            "UPDATE agent_tasks_projection SET heartbeat_expires_at=?, updated_at=? WHERE task_id=?",
+            (0.0, 1.0, fresh.task_id),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    tasks = app.agent_tasks.list_tasks(query="page-needle", limit=1)
+
+    assert [task.task_id for task in tasks] == ["fresh-match"]
+
+
+def test_task_list_surfaces_query_scan_truncation(live_api, monkeypatch):
+    from local_ai_hub.agent_tasks import TaskList
+
+    app, client = live_api
+    monkeypatch.setattr(
+        app.agent_tasks,
+        "list_tasks",
+        lambda **_kwargs: TaskList([], query_truncated=True),
+    )
+
+    result = client.list_tasks(query="needle")
+
+    assert result["success"] is True
+    assert result["tasks"] == []
+    assert result["query_truncated"] is True
 
 
 def test_task_list_post_rejects_non_string_query(live_api):
@@ -210,3 +282,125 @@ def test_semantic_diff_action_uses_public_call_graph_diff_route(monkeypatch):
     assert captured["path"] == "/api/repo/call_graph_diff"
     assert captured["payload"]["root"].endswith("repo")
     assert captured["payload"]["diff"] == "diff --git a/a.cs b/a.cs"
+
+
+def test_artifact_list_is_bounded_metadata_and_needs_no_id(live_api, monkeypatch):
+    from types import SimpleNamespace
+
+    from local_ai_hub import mcp_server
+
+    app, client = live_api
+    with app.artifacts.batch(client.tenant) as batch:
+        for index in range(105):
+            batch.put(f"artifact-{index}", "test")
+
+    route_result = client.post("/api/artifact/list", {"limit": 1000})
+    assert route_result["success"] is True
+    artifacts = route_result["artifacts"]
+    assert len(artifacts) == 100
+    expected_fields = {"artifact_id", "kind", "size_bytes", "created_at", "mime_type"}
+    assert all(set(item) == expected_fields for item in artifacts)
+    assert all(left["created_at"] >= right["created_at"] for left, right in zip(artifacts, artifacts[1:]))
+
+    with app.artifacts.batch("other-tenant") as batch:
+        foreign_id = batch.put("private artifact", "test")
+    assert [item["artifact_id"] for item in app.artifacts.list("other-tenant")] == [foreign_id]
+    assert foreign_id not in {item["artifact_id"] for item in artifacts}
+
+    captured = {}
+
+    def fake_post(path, payload):
+        captured.update(path=path, payload=payload)
+        return {"success": True, "artifacts": artifacts[:20]}
+
+    monkeypatch.setattr(mcp_server, "CLIENT", SimpleNamespace(post=fake_post))
+    public_result = mcp_server.local_ai_artifact(action="list")
+
+    assert captured == {"path": "/api/artifact/list", "payload": {"limit": 20}}
+    assert public_result["success"] is True
+    assert len(public_result["artifacts"]) == 20
+
+
+def test_artifact_list_v2_hashes_and_isolates_tenants(tmp_path):
+    import hashlib
+    import sqlite3
+    from contextlib import closing
+
+    from local_ai_hub.artifacts import ArtifactStore
+
+    db_path = tmp_path / "artifacts.sqlite3"
+    with closing(sqlite3.connect(db_path)) as con:
+        con.execute(
+            "CREATE TABLE artifacts (artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL, tenant TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL)"
+        )
+        con.executemany(
+            "INSERT INTO artifacts VALUES (?, ?, ?, ?, ?)",
+            [
+                ("tenant-a-artifact", 2.0, "tenant-a", "text", "a"),
+                ("tenant-b-artifact", 1.0, "tenant-b", "text", "b"),
+            ],
+        )
+        con.commit()
+
+    store = ArtifactStore(tmp_path)
+
+    assert store._table == "artifacts_v2"
+    assert [item["artifact_id"] for item in store.list("tenant-a")] == ["tenant-a-artifact"]
+    assert [item["artifact_id"] for item in store.list("tenant-b")] == ["tenant-b-artifact"]
+    with closing(sqlite3.connect(db_path)) as con:
+        identities = con.execute(
+            "SELECT tenant, tenant_identity FROM artifacts_v2 ORDER BY artifact_id"
+        ).fetchall()
+    assert identities == [
+        (hashlib.sha256(b"tenant-a").hexdigest(), hashlib.sha256(b"tenant-a").hexdigest()),
+        (hashlib.sha256(b"tenant-b").hexdigest(), hashlib.sha256(b"tenant-b").hexdigest()),
+    ]
+
+
+def test_artifact_list_legacy_hashes_and_isolates_tenants(tmp_path):
+    import hashlib
+    import sqlite3
+    from contextlib import closing
+
+    from local_ai_hub.artifacts import ArtifactStore
+
+    db_path = tmp_path / "artifacts.sqlite3"
+    with closing(sqlite3.connect(db_path)) as con:
+        con.execute(
+            """CREATE TABLE artifacts (
+                artifact_id TEXT PRIMARY KEY,
+                created_at REAL NOT NULL,
+                tenant TEXT NOT NULL,
+                tenant_identity TEXT,
+                kind TEXT NOT NULL,
+                text TEXT NOT NULL DEFAULT '',
+                mime_type TEXT,
+                encoding TEXT,
+                blob BLOB,
+                size_bytes INTEGER,
+                checksum TEXT,
+                identity_json TEXT
+            )"""
+        )
+        con.executemany(
+            "INSERT INTO artifacts(artifact_id, created_at, tenant, tenant_identity, kind, text) VALUES(?, ?, ?, ?, ?, ?)",
+            [
+                ("tenant-a-artifact", 2.0, "tenant-a", "tenant-a", "text", "a"),
+                ("tenant-b-artifact", 1.0, "tenant-b", "tenant-b", "text", "b"),
+            ],
+        )
+        con.commit()
+
+    store = ArtifactStore(tmp_path)
+
+    assert store._table == "artifacts"
+    assert [item["artifact_id"] for item in store.list("tenant-a")] == ["tenant-a-artifact"]
+    assert [item["artifact_id"] for item in store.list("tenant-b")] == ["tenant-b-artifact"]
+    with closing(sqlite3.connect(db_path)) as con:
+        identities = con.execute(
+            "SELECT tenant, tenant_identity FROM artifacts ORDER BY artifact_id"
+        ).fetchall()
+    assert identities == [
+        (hashlib.sha256(b"tenant-a").hexdigest(), hashlib.sha256(b"tenant-a").hexdigest()),
+        (hashlib.sha256(b"tenant-b").hexdigest(), hashlib.sha256(b"tenant-b").hexdigest()),
+    ]
