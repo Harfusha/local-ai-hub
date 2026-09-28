@@ -156,17 +156,17 @@ def test_cached_external_unavailability_is_retried_when_backend_is_available(tmp
         with closing(pre._connect()) as con:
             con.execute(
                 "INSERT INTO external_index_state(root,backend,revision_hash,status,updated_at,error) VALUES(?,?,?,?,?,?)",
-                (str(repo), "codegraph", revision, "unavailable", 0.0, "codegraph indexing exceeded 120s"),
+                (str(repo), "serena", revision, "unavailable", 0.0, "serena indexing exceeded 120s"),
             )
             con.commit()
         row = {"root": str(repo), "workspace": "test", "generation": 0}
 
-        assert pre._step_external_index(row, "codegraph", "lexical") is True
+        assert pre._step_external_index(row, "serena", "lexical") is True
         assert external.calls == 1
         with closing(pre._connect()) as con:
             state = con.execute(
                 "SELECT status FROM external_index_state WHERE root=? AND backend=?",
-                (str(repo), "codegraph"),
+                (str(repo), "serena"),
             ).fetchone()
         assert state[0] == "ready"
     finally:
@@ -190,7 +190,7 @@ def test_startup_requeues_complete_project_with_available_external_backend(tmp_p
             )
             con.execute(
                 "INSERT INTO external_index_state(root,backend,revision_hash,status,updated_at,error) VALUES(?,?,?,?,?,?)",
-                (str(repo), "codegraph", "same", "skipped", now, "codegraph indexing exceeded 120s"),
+                (str(repo), "serena", "same", "skipped", now, "serena indexing exceeded 120s"),
             )
             con.commit()
     finally:
@@ -200,7 +200,7 @@ def test_startup_requeues_complete_project_with_available_external_backend(tmp_p
     try:
         with closing(reopened._connect()) as con:
             state = con.execute("SELECT status,phase FROM projects WHERE root=?", (str(repo),)).fetchone()
-        assert tuple(state) == ("waiting", "codegraph")
+        assert tuple(state) == ("waiting", "serena")
     finally:
         reopened.close()
 

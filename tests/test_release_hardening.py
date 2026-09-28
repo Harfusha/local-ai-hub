@@ -75,7 +75,7 @@ def test_external_close_is_best_effort_across_all_sessions(tmp_path: Path) -> No
             closed.append("good")
 
     external._serena_sessions["a"] = Bad()  # type: ignore[assignment]
-    external._codegraph_sessions["b"] = Good()  # type: ignore[assignment]
+    external._serena_sessions["b"] = Good()  # type: ignore[assignment]
     external.close()
     assert closed == ["bad", "good"]
 

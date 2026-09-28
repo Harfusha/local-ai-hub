@@ -48,8 +48,18 @@ def _start_conversation(client):
     )
 
 
-def test_hub_client_continues_through_production_route_and_preserves_transcript(production_hub):
+def test_hub_client_continues_through_production_route_and_preserves_transcript(production_hub, monkeypatch):
+    from local_ai_hub import http_server
+
     app, client, calls = production_hub
+    post_paths = []
+    original_do_post = http_server.Handler.do_POST
+
+    def count_post(handler):
+        post_paths.append(handler.path.split("?", 1)[0])
+        return original_do_post(handler)
+
+    monkeypatch.setattr(http_server.Handler, "do_POST", count_post)
     service_payloads = []
     continue_conversation = app.services.continue_conversation
 
@@ -59,9 +69,11 @@ def test_hub_client_continues_through_production_route_and_preserves_transcript(
 
     app.services.continue_conversation = observe_service_boundary
     started = _start_conversation(client)
+    post_paths.clear()
     prompt = "follow-up question"
     continued = client.continue_conversation(started["conversation_id"], prompt)
 
+    assert post_paths == ["/api/conversations/continue"]
     assert continued["success"] is True
     assert continued["conversation_id"] == started["conversation_id"]
     assert service_payloads == [{"conversation_id": started["conversation_id"], "task": prompt}]

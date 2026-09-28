@@ -15,7 +15,14 @@ sys.path.insert(0, str(root / "src"))
 from local_ai_hub import __version__
 from local_ai_hub.client import HubClient
 from local_ai_hub.config import load_config
-from local_ai_hub.doctor_support import installed_models_from_status, probe_hub_status
+from local_ai_hub.doctor_support import (
+    installed_models_from_status,
+    managed_serena_executable,
+    optional_component_lines,
+    optional_component_status,
+    probe_hub_status,
+    serena_backend_status,
+)
 from local_ai_hub.http_server import validate_network_security
 from local_ai_hub.llama_cpp_runtime import llama_cpp_backend_selection
 
@@ -46,7 +53,6 @@ def runtime_module_available(module: str) -> bool:
         return result.returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
-
 
 
 def command_version(name: str) -> str | None:
@@ -109,12 +115,7 @@ vision_status_known = bool(installed) if inference_backend == "ollama" else bool
 mcp_file = root / "src" / "local_ai_hub" / "mcp_server.py"
 state_dir = Path(cfg.get("server", {}).get("state_dir", "~/.local-ai-hub/state")).expanduser()
 install_dir = Path(cfg.get("setup", {}).get("install_dir", "~/.local-ai-hub")).expanduser()
-codegraph_candidates = [
-    install_dir / "tool-envs" / "codegraph" / "Scripts" / "codegraphcontext.exe",
-    install_dir / "tool-envs" / "codegraph" / "Scripts" / "cgc.exe",
-    install_dir / "tool-envs" / "codegraph" / "bin" / "codegraphcontext",
-    install_dir / "tool-envs" / "codegraph" / "bin" / "cgc",
-]
+serena_executable = managed_serena_executable(install_dir, shutil.which)
 
 warnings: list[str] = []
 openvino_requested = str(models.get("embedding_backend", "")).lower() == "openvino" or str(models.get("reranker_backend", "")).lower() == "openvino"
@@ -273,10 +274,12 @@ report = {
         "llama_cpp": ollama_profile.get("llama_cpp", {}) if isinstance(ollama_profile, dict) else {},
         "background_gpu": background_gpu,
         "sentence_transformers": runtime_module_available("sentence_transformers"),
+        "optional_components": optional_component_status(runtime_module_available, shutil.which),
         "openvino": {"requested": openvino_requested, "installed": openvino_installed, "status": status.get("accelerators") if isinstance(status, dict) else None},
-        "codegraph_executable": next((str(p) for p in codegraph_candidates if p.exists()), None),
+        "serena_executable": serena_executable,
         "hardware": cfg.get("_hardware", {}),
-        "code_intelligence": status.get("code_intelligence") if isinstance(status, dict) else None,
+        "code_intelligence": serena_backend_status(status),
+        "code_intelligence_status": hub_probe["code_intelligence_status"],
         "preprocessing": status.get("preprocessing") if isinstance(status, dict) else None,
         "tool_agent": status.get("tool_agent") if isinstance(status, dict) else None,
         "code_index": status.get("code_index") if isinstance(status, dict) else None,
@@ -365,12 +368,17 @@ def format_doctor_report(rep: dict[str, Any]) -> str:
     lines.append(f"  - OpenVINO:           {ov_status}")
     st_status = "Installed" if rt.get("sentence_transformers") else "Not installed"
     lines.append(f"  - SentenceTransf:     {st_status}")
+    optional_components = rt.get("optional_components", {})
+    lines.extend(optional_component_lines(optional_components))
     lines.append("")
 
     lines.append("Code Intelligence:")
+    serena_executable = rt.get("serena_executable")
+    serena_executable_status = f"Installed at {serena_executable}" if serena_executable else "Not installed"
+    lines.append(f"  - Serena executable:  {serena_executable_status}")
     code_intelligence = rt.get("code_intelligence") if isinstance(rt, dict) else None
     if isinstance(code_intelligence, dict):
-        for backend in ("serena", "codegraph"):
+        for backend in ("serena",):
             details = code_intelligence.get(backend)
             if not isinstance(details, dict):
                 lines.append(f"  [??] {backend:<17} Status unavailable")
@@ -387,7 +395,14 @@ def format_doctor_report(rep: dict[str, Any]) -> str:
                 line += f"; {reason[:140]}"
             lines.append(line)
     else:
-        lines.append("  [??] Status unavailable (Hub did not report backend diagnostics)")
+        diagnostic_status = rt.get("code_intelligence_status", {})
+        reason = diagnostic_status.get("reason") if isinstance(diagnostic_status, dict) else None
+        reason_text = {
+            "hub_offline": "Hub is offline",
+            "status_unavailable": "Hub status endpoint is unavailable",
+            "diagnostics_not_reported": "Hub did not report backend diagnostics",
+        }.get(reason, "Hub did not report backend diagnostics")
+        lines.append(f"  [??] Status unavailable ({reason_text})")
     lines.append("")
 
     lines.append("Models:")

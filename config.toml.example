@@ -49,10 +49,9 @@ served_model = "hub-qwen-7"
 context_length = 32768
 
 [code_intelligence]
-# Enable Serena (semantic symbols) and CodeGraphContext (call/dependency graphs).
+# Enable Hub-managed Serena semantic and symbol operations.
 enabled = true
 serena_enabled = true
-codegraph_enabled = true
 # Increase timeout for large projects (default 120s may not be enough for big Unity repos)
 index_timeout_seconds = 1200
 # direct_agent_mcp = false
@@ -99,7 +98,7 @@ rag = true                # semantic retrieval fallback (local_ai_rag)
 commands = true           # safe command execution broker (local_ai_command)
 coord = true              # coordination leases, memos, task contracts (local_ai_coord)
 artifacts = true          # compact responses & evidence slicing (local_ai_artifact)
-code_intelligence = true  # Serena / CodeGraphContext backends
+code_intelligence = true  # Serena backend
 preprocessing = true      # background idle project warmup
 subagents = true          # advisory local profiles
 agent_os = true           # durable execution: tasks, verification receipts, memory

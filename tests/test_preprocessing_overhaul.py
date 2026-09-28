@@ -125,14 +125,14 @@ def test_hotspots_cache(mock_repo: Path, tmp_path: Path):
     assert res2.get("cached") is True
 
 
-def test_codegraph_disabled_skips_in_preprocess(mock_repo: Path, tmp_path: Path):
+def test_stale_codegraph_config_does_not_add_preprocess_phase(mock_repo: Path, tmp_path: Path):
     state_dir = tmp_path / "state"
     config = {
         "server": {"state_dir": str(state_dir)},
         "code_intelligence": {
             "enabled": True,
-            "codegraph_enabled": False,
-            "preprocess_codegraph": False,
+            "codegraph_enabled": True,
+            "preprocess_codegraph": True,
         },
         "preprocessing": {
             "enabled": True,

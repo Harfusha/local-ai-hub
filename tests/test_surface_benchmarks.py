@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import gc
 import json
+import os
 import sqlite3
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
 import pytest
 
+import tools.benchmark_surfaces as benchmark_surfaces
 from tools.benchmark_surfaces import _plan_grade_reasons, compare_records, main, run_benchmark, summarize_samples
 from local_ai_hub.async_jobs import AsyncJobManager
 
@@ -138,6 +142,61 @@ def test_summarize_samples_reports_percentiles_and_throughput() -> None:
     assert summary["throughput_per_second"] == 40.0
 
 
+def test_queue_probe_failure_categories_distinguish_submit_and_cancel_outcomes() -> None:
+    classify = getattr(benchmark_surfaces, "_queue_probe_failure_category", None)
+    assert callable(classify), "queue probe must expose bounded outcome categories"
+
+    assert classify("submit", response={"success": False, "error": "redacted"}) == "submit_rejected"
+    assert classify("submit", response={"success": True, "job_id": ""}) == "submit_missing_job_id"
+    assert classify("cancel", response={"success": False, "error": "redacted"}) == "cancel_rejected"
+    assert classify("cancel", response={"success": True, "state": "running"}) == "cancel_not_cancelled"
+    assert classify("submit", exception=RuntimeError("redacted")) == "submit_exception"
+    assert classify("cancel", exception=RuntimeError("redacted")) == "cancel_exception"
+    assert classify("cancel", response={"success": True, "state": "cancelled"}) is None
+
+
+def test_benchmark_runner_imports_package_from_its_own_repository(tmp_path: Path) -> None:
+    foreign_source = tmp_path / "foreign-source"
+    foreign_package = foreign_source / "local_ai_hub"
+    foreign_package.mkdir(parents=True)
+    (foreign_package / "__init__.py").write_text("origin = 'foreign'\n", encoding="utf-8")
+    repo_source = Path(benchmark_surfaces.__file__).resolve().parents[1] / "src"
+    runner_path = Path(benchmark_surfaces.__file__).resolve()
+    probe = (
+        "import pathlib, runpy; "
+        f"runpy.run_path({str(runner_path)!r}, run_name='benchmark_test'); "
+        "import local_ai_hub; "
+        f"assert pathlib.Path(local_ai_hub.__file__).resolve().is_relative_to(pathlib.Path({str(repo_source)!r}).resolve())"
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(foreign_source)
+
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=runner_path.parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_implementation_fingerprint_includes_retrieval_dependency(monkeypatch, tmp_path: Path) -> None:
+    package_dir = tmp_path / "src" / "local_ai_hub"
+    package_dir.mkdir(parents=True)
+    retrieval = package_dir / "retrieval.py"
+    retrieval.write_text("weight = 0.0\n", encoding="utf-8")
+    monkeypatch.setattr(benchmark_surfaces, "_REPO_ROOT", tmp_path)
+
+    before = benchmark_surfaces._implementation_fingerprint()
+    retrieval.write_text("weight = 0.75\n", encoding="utf-8")
+    after = benchmark_surfaces._implementation_fingerprint()
+
+    assert after != before, "fingerprint must include imported runtime dependencies"
+
+
 def test_plan_grade_gate_rejects_malformed_metadata_without_crashing() -> None:
     reasons = _plan_grade_reasons({
         "stage_repetitions": {"light": "1000", "paired": None},
@@ -259,6 +318,8 @@ def test_run_benchmark_is_isolated_and_preserves_existing_scratch_data(
     finally:
         diagnostic["async_jobs_after_baseline_close"] = _async_jobs_lifecycle_snapshot(state_dir)
 
+    assert result["metadata"].get("watchdog_enabled") is False
+    assert result["metadata"].get("debug_traces_enabled") is False
     assert result["success"] is True
     assert collision_path.read_text(encoding="utf-8") == "user-owned sentinel"
     assert result["metadata"]["benchmark_scope"] == "hub_app_synthetic_repo"
@@ -300,6 +361,7 @@ def test_run_benchmark_is_isolated_and_preserves_existing_scratch_data(
     assert "excludes HTTP headers" in result["metadata"]["http_response_body_bytes_scope"]
     assert all("response_bytes" not in stage for stage in result["stages"].values())
     assert result["stages"]["hub_queue_admission"]["measurement"] == "async_jobs_submit_cancel_admission_only"
+    assert result["stages"]["hub_queue_admission"]["error_categories"] == {}
     assert result["stages"]["hub_rag_chunking"]["measurement"] == "RAGStore._chunks_chunker_only"
     assert result["resource_usage"]["peak_rss_bytes"] is None or result["resource_usage"]["peak_rss_bytes"] > 0
     assert "availability" in result["resource_usage"]

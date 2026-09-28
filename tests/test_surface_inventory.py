@@ -160,10 +160,25 @@ def inspect_command():
 
 
 ROOT_TASK_ID = MODULE._coverage_task_id((ROOT / "docs" / "API_COVERAGE.md").read_text(encoding="utf-8"))
+ROOT_INVENTORY = MODULE.collect_inventory(ROOT)
 ROOT_COVERAGE_ROWS = MODULE.coverage_rows(
-    MODULE._findings(MODULE.collect_inventory(ROOT)),
+    MODULE._findings(ROOT_INVENTORY),
     task_id=ROOT_TASK_ID,
 )
+
+
+def test_root_inventory_resolves_imported_actions_and_redacted_pack_route():
+    drift = ROOT_INVENTORY["drift"]
+
+    assert not any(item.startswith("missing MCP action handler local_ai_status:") for item in drift)
+    assert not any(item.startswith("orphan client target POST /api/context/pack ") for item in drift)
+    assert {"status", "health", "check", "info"} <= set(ROOT_INVENTORY["mcp_actions"]["local_ai_status"])
+    assert any(
+        route["method"] == "POST"
+        and route["path"] == "/api/context/pack"
+        and route["classification"] == "registered_dynamic"
+        for route in ROOT_INVENTORY["http_routes"]
+    )
 
 
 @pytest.mark.parametrize("row", ROOT_COVERAGE_ROWS, ids=lambda row: row["operation_id"])

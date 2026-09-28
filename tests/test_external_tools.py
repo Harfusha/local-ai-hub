@@ -15,11 +15,12 @@ def test_serena_index_uses_upstream_per_file_timeout(monkeypatch, tmp_path: Path
     root.mkdir()
     cfg = {
         "server": {"state_dir": str(tmp_path / "state")},
-        "code_intelligence": {"enabled": True, "serena_enabled": True, "codegraph_enabled": False},
+        "code_intelligence": {"enabled": True, "serena_enabled": True},
     }
     ext = ExternalCodeIntelligence(cfg, telemetry=None)
     captured = []
     monkeypatch.setattr(ext, "_resolve_command", lambda backend: "serena.exe" if backend == "serena" else None)
+    ext.refresh_discovery()
     monkeypatch.setattr(
         ext,
         "_run_index",
@@ -31,6 +32,31 @@ def test_serena_index_uses_upstream_per_file_timeout(monkeypatch, tmp_path: Path
     assert result["success"] is True
     timeout_index = captured[0].index("--timeout")
     assert captured[0][timeout_index + 1] == "10"
+
+
+def test_codegraph_stale_config_does_not_register_runtime_backend(tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    ext = ExternalCodeIntelligence(
+        {
+            "server": {"state_dir": str(tmp_path / "state")},
+            "code_intelligence": {
+                "enabled": True,
+                "serena_enabled": False,
+                "codegraph_enabled": True,
+                "codegraph_command": sys.executable,
+            },
+        },
+        telemetry=None,
+    )
+
+    assert "codegraph" not in ext.status()
+    assert not hasattr(ext, "codegraph_enabled")
+    assert not hasattr(ext, "_codegraph")
+    expected = {"success": False, "error": "unknown code-intelligence backend: codegraph"}
+    assert ext.index("codegraph", str(root)) == expected
+    assert ext.query(str(root), "caller", backend="codegraph") == expected
+    assert ext.reset_sessions("codegraph") == {"success": False, "error": "unknown backend: codegraph"}
 
 
 @pytest.mark.skip(reason="codegraph backend excised from application")
@@ -269,38 +295,13 @@ def test_codegraph_nested_query_error_is_not_reported_as_success(monkeypatch, tm
     assert "Unknown query type" in result["error"]
 
 
-def test_fresh_codegraph_index_finds_known_python_callee(tmp_path: Path):
-    root = tmp_path / "repo"
-    root.mkdir()
-    source = root / "sample.py"
-    source.write_text("def callee():\n    return 1\n\ndef caller():\n    return callee()\n", encoding="utf-8")
-    ext = ExternalCodeIntelligence(
-        {
-            "server": {"state_dir": str(tmp_path / "state")},
-            "code_intelligence": {"enabled": True, "codegraph_enabled": True, "serena_enabled": False},
-        },
-        telemetry=None,
-    )
-    if not ext.backend_available("codegraph"):
-        ext.close()
-        pytest.skip("CodeGraphContext is not installed")
-    try:
-        indexed = ext.index("codegraph", str(root))
-        result = ext.query_codegraph(str(root), "calls", query="caller", path="sample.py")
-    finally:
-        ext.close()
-
-    assert indexed["success"] is True
-    assert result["success"] is True
-    assert "callee" in repr(result)
-
-
 def test_serena_tool_error_is_counted_as_backend_failure(monkeypatch, tmp_path: Path):
     cfg = {
         "server": {"state_dir": str(tmp_path / "state")},
         "code_intelligence": {"enabled": True, "serena_enabled": True, "codegraph_enabled": False},
     }
     ext = ExternalCodeIntelligence(cfg, telemetry=None)
+    ext._serena = sys.executable
 
     class RejectedSerenaClient:
         def tool_names(self):
@@ -327,6 +328,7 @@ def test_serena_structured_tool_error_is_counted_as_backend_failure(monkeypatch,
         "code_intelligence": {"enabled": True, "serena_enabled": True, "codegraph_enabled": False},
     }
     ext = ExternalCodeIntelligence(cfg, telemetry=None)
+    ext._serena = sys.executable
 
     class RejectedSerenaClient:
         def tool_names(self):
@@ -621,15 +623,15 @@ def test_codegraph_index_closes_cached_session_before_rebuilding(monkeypatch, tm
     assert observed == [(True, "codegraph", str(root))]
 
 
-def test_managed_context_intelligence_defaults_expose_needed_tools(tmp_path: Path):
+def test_managed_context_intelligence_defaults_expose_serena_only():
     from local_ai_hub.config import load_config
 
     cfg = load_config()
     ext = ExternalCodeIntelligence(cfg)
     try:
-        env = ext._codegraph_env(str(tmp_path))
-        assert env["CGC_OUTPUT_FORMAT"] == "json"
         assert cfg["code_intelligence"]["serena_context"] == "codex"
+        assert "serena" in ext.status()
+        assert "codegraph" not in ext.status()
     finally:
         ext.close()
 
