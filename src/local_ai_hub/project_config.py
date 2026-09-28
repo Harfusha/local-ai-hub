@@ -16,7 +16,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 
 _MAX_CONFIG_BYTES = 256 * 1024
@@ -29,6 +29,7 @@ _GIT_TIMEOUT_SECONDS = 1.5
 _PHASES = frozenset({"rag", "call_graph", "modules"})
 _PATH_POLICY_PHASES = _PHASES | {"search", "repository_search", "preprocess", "test"}
 _MODEL_PROFILES = frozenset({"integrated", "balanced", "high", "max"})
+_ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _ENV_REFERENCE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 _KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
 _EXTENSION = re.compile(r"^\.[a-z0-9][a-z0-9._+-]{0,15}$")
@@ -104,6 +105,7 @@ class ProjectSettings:
     model_profile: str = "balanced"
     system_prompt_prefix: str | None = None
     shared_namespace: str | None = None
+    env: Mapping[str, str] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
         for name in (
@@ -121,6 +123,7 @@ class ProjectSettings:
             "commands",
             "path_overrides",
             "affected_tests_mapping",
+            "env",
             "env_references",
             "verification_rules",
             "retrieval_weights",
@@ -265,18 +268,14 @@ class PathHintUsage:
     paths: tuple[str, ...]
     hint_used: bool
     fallback_used: bool
-    hint_helped: bool | None
+    hint_helped: None = None
 
     def telemetry_metadata(self) -> dict[str, bool | None]:
         """Return path-free fields safe for aggregate telemetry."""
         return {
             "hint_used": self.hint_used is True,
             "fallback_used": self.fallback_used is True,
-            "hint_helped": (
-                self.hint_helped
-                if self.hint_helped is True or self.hint_helped is False
-                else None
-            ),
+            "hint_helped": None,
         }
 
 
@@ -383,6 +382,34 @@ def _extensions(value: Any) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _has_extension(path: str | os.PathLike[str], extensions: tuple[str, ...]) -> bool:
+    """Match configured extensions against full names, including compound suffixes."""
+    name = Path(path).name.casefold()
+    return any(name.endswith(extension.casefold()) for extension in extensions)
+
+
+def custom_extension_kind(
+    path: str | os.PathLike[str],
+    settings: ProjectSettings,
+    *,
+    language: str | None = None,
+) -> Literal["text", "binary"] | None:
+    """Classify configured custom extensions for reader and indexer consumers."""
+    if _has_extension(path, settings.binary_extensions):
+        return "binary"
+    text_extensions = list(settings.text_extensions)
+    if language is not None:
+        override = settings.language_overrides.get(language, {})
+        override_extensions = override.get("text_extensions", ())
+        if isinstance(override_extensions, (tuple, list)):
+            text_extensions.extend(
+                item for item in override_extensions if isinstance(item, str)
+            )
+    if _has_extension(path, tuple(text_extensions)):
+        return "text"
+    return None
+
+
 def _validate_command(value: Any) -> str | CommandDefinition:
     if isinstance(value, str):
         if not value.strip() or len(value) > 4096:
@@ -417,6 +444,28 @@ def _env_references(value: Any) -> dict[str, str]:
             raise ProjectConfigError("invalid_config")
         result[key] = match.group(1)
     return result
+
+
+def _environment_values(value: Any) -> tuple[dict[str, str], dict[str, str]]:
+    if not isinstance(value, dict):
+        raise ProjectConfigError("invalid_config")
+    values: dict[str, str] = {}
+    references: dict[str, str] = {}
+    for key, item in value.items():
+        if (
+            not isinstance(key, str)
+            or not _ENV_KEY.fullmatch(key)
+            or not isinstance(item, str)
+        ):
+            raise ProjectConfigError("invalid_config")
+        match = _ENV_REFERENCE.fullmatch(item)
+        if match is not None:
+            references[key] = match.group(1)
+        elif "${" in item:
+            raise ProjectConfigError("invalid_config")
+        else:
+            values[key] = item
+    return values, references
 
 
 def _normalize(data: dict[str, Any]) -> ProjectSettings:
@@ -515,9 +564,16 @@ def _normalize(data: dict[str, Any]) -> ProjectSettings:
         for name, value in language_overrides.items()
     ):
         raise ProjectConfigError("invalid_config")
-    language_overrides = {
-        name: _json_compatible(value) for name, value in language_overrides.items()
-    }
+    normalized_language_overrides: dict[str, dict[str, Any]] = {}
+    for name, value in language_overrides.items():
+        override = _json_compatible(value)
+        if "text_extensions" in value:
+            override_extensions = _extensions(value["text_extensions"])
+            if set(override_extensions) & set(binary_extensions):
+                raise ProjectConfigError("invalid_config")
+            override["text_extensions"] = override_extensions
+        normalized_language_overrides[name] = override
+    language_overrides = normalized_language_overrides
 
     path_overrides_value = data.get("path_overrides", {})
     if (
@@ -560,6 +616,8 @@ def _normalize(data: dict[str, Any]) -> ProjectSettings:
     ):
         raise ProjectConfigError("invalid_config")
 
+    project_env, env_references = _environment_values(data.get("env", {}))
+
     return ProjectSettings(
         exclude_paths=_string_list(data.get("exclude_paths", [])),
         force_include_paths=_string_list(data.get("force_include_paths", [])),
@@ -571,7 +629,8 @@ def _normalize(data: dict[str, Any]) -> ProjectSettings:
         skip_phases=tuple(skip),
         commands=commands,
         affected_tests_mapping=affected,
-        env_references=_env_references(data.get("env", {})),
+        env=project_env,
+        env_references=env_references,
         verification_rules=rules,
         pinned_context=_literal_path_list(data.get("pinned_context", [])),
         entry_points=_literal_path_list(data.get("entry_points", [])),
@@ -853,8 +912,7 @@ def path_is_allowed(
         return False
     if hard_denied or binary:
         return False
-    suffix = resolved.suffix.lower()
-    if suffix and suffix in settings.binary_extensions:
+    if custom_extension_kind(resolved.name, settings) == "binary":
         return False
     if settings.max_file_size_bytes is not None:
         if (
@@ -1171,16 +1229,6 @@ def _safe_label(value: str, maximum: int) -> bool:
         isinstance(value, str)
         and 0 < len(value) <= maximum
         and not any(ord(char) < 32 or ord(char) == 127 for char in value)
-    )
-
-
-def report_path_hint_outcome(usage: PathHintUsage, *, helped: bool) -> PathHintUsage:
-    """Attach consumer-measured usefulness to prioritized path hints."""
-    return PathHintUsage(
-        paths=usage.paths,
-        hint_used=usage.hint_used,
-        fallback_used=usage.fallback_used,
-        hint_helped=bool(helped) if usage.hint_used else False,
     )
 
 

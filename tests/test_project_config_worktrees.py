@@ -33,7 +33,8 @@ def test_linked_worktree_inherits_common_config_and_keeps_local_override(
         'exclude_paths = ["tracked/**"]\n'
         '[path_overrides]\n'
         '"src/**" = "exclude"\n'
-        '"generated/**" = "include"\n',
+        '"generated/**" = "include"\n'
+        '[env]\nPROJECT_ONLY = "project"\nCOLLISION = "project"\n',
         encoding="utf-8",
     )
     (primary / "README.md").write_text("test\n", encoding="utf-8")
@@ -50,7 +51,8 @@ def test_linked_worktree_inherits_common_config_and_keeps_local_override(
         'shared_namespace = "shared"\n'
         '[path_overrides]\n'
         '"src/main.py" = "include"\n'
-        '"generated/**" = "exclude"\n',
+        '"generated/**" = "exclude"\n'
+        '[env]\nMACHINE_ONLY = "machine"\nCOLLISION = "machine"\n',
         encoding="utf-8",
     )
     (linked / ".local-ai.worktree.toml").write_text(
@@ -58,7 +60,8 @@ def test_linked_worktree_inherits_common_config_and_keeps_local_override(
         'shared_namespace = "worktree"\n'
         '[path_overrides]\n'
         '"src/main.py" = "exclude"\n'
-        '"local/**" = "include"\n',
+        '"local/**" = "include"\n'
+        '[env]\nWORKTREE_ONLY = "worktree"\nCOLLISION = "worktree"\n',
         encoding="utf-8",
     )
 
@@ -79,6 +82,17 @@ def test_linked_worktree_inherits_common_config_and_keeps_local_override(
         "generated/**": "exclude",
         "src/main.py": "exclude",
         "local/**": "include",
+    }
+    assert primary_result.settings.env == {
+        "PROJECT_ONLY": "project",
+        "MACHINE_ONLY": "machine",
+        "COLLISION": "machine",
+    }
+    assert linked_result.settings.env == {
+        "PROJECT_ONLY": "project",
+        "MACHINE_ONLY": "machine",
+        "WORKTREE_ONLY": "worktree",
+        "COLLISION": "worktree",
     }
     assert "git_common" in linked_result.active_sources
     assert "worktree" in linked_result.active_sources

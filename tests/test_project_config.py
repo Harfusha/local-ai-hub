@@ -7,6 +7,7 @@ import pytest
 from local_ai_hub.project_config import (
     CommandDefinition,
     ProjectSettings,
+    custom_extension_kind,
     may_descend,
     phase_enabled,
     phase_is_allowed,
@@ -393,6 +394,36 @@ def test_project_configuration_rejects_extension_overlap(tmp_path: Path) -> None
     assert result.settings == ProjectSettings()
     assert result.error_codes == ("invalid_config",)
 
+    (tmp_path / ".local-ai.toml").write_text(
+        '[custom_extensions]\nbinary = [".foo"]\n'
+        '[language_overrides.python]\ntext_extensions = [".FOO"]\n',
+        encoding="utf-8",
+    )
+    language_overlap = resolve_project_config(tmp_path)
+
+    assert language_overlap.settings == ProjectSettings()
+    assert language_overlap.error_codes == ("invalid_config",)
+
+
+def test_binary_extension_policy_matches_compound_extensions(tmp_path: Path) -> None:
+    archive = tmp_path / "backup.TAR.GZ"
+    compressed_text = tmp_path / "notes.gz"
+    archive.write_text("archive")
+    compressed_text.write_text("text")
+    (tmp_path / ".local-ai.toml").write_text(
+        '[custom_extensions]\ntext = [".tmpl"]\nbinary = [".tar.gz"]\n'
+        '[language_overrides.python]\ntext_extensions = [".py"]\n',
+        encoding="utf-8",
+    )
+    settings = resolve_project_config(tmp_path).settings
+
+    assert not path_is_allowed(tmp_path, archive, settings, phase="search")
+    assert path_is_allowed(tmp_path, compressed_text, settings, phase="search")
+    assert custom_extension_kind("views/element.TMPL", settings) == "text"
+    assert custom_extension_kind("src/main.PY", settings, language="python") == "text"
+    assert custom_extension_kind("backup.TAR.GZ", settings) == "binary"
+    assert custom_extension_kind("notes.gz", settings) is None
+
 
 def test_project_configuration_rejects_weakening_verification_and_nonfinite_weights(
     tmp_path: Path,
@@ -401,6 +432,53 @@ def test_project_configuration_rejects_weakening_verification_and_nonfinite_weig
         '[verification_rules]\nrequire_receipt = false\n'
         '[retrieval_weights]\nlexical = nan\n',
         encoding="utf-8",
+    )
+
+    result = resolve_project_config(tmp_path)
+
+    assert result.settings == ProjectSettings()
+    assert result.error_codes == ("invalid_config",)
+
+
+def test_verification_rules_keep_additive_values_and_command_aliases_typed(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".local-ai.toml").write_text(
+        '[commands]\nlint = "python -m ruff check"\n'
+        '[commands.test]\nargv = ["python", "-m", "pytest"]\n'
+        '[verification_rules]\nrequire_receipt = true\n'
+        'required_commands = ["lint", "test"]\n',
+        encoding="utf-8",
+    )
+
+    result = resolve_project_config(tmp_path)
+
+    assert result.error_codes == ()
+    assert result.settings.verification_rules == {
+        "require_receipt": True,
+        "required_commands": ("lint", "test"),
+    }
+    assert result.settings.commands["lint"] == "python -m ruff check"
+    assert result.settings.commands["test"] == CommandDefinition(
+        ("python", "-m", "pytest")
+    )
+    with pytest.raises(TypeError):
+        result.settings.verification_rules["require_receipt"] = False
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        "required_commands = []",
+        'required_commands = ["lint", " "]',
+        'required_commands = ["lint", 3]',
+    ],
+)
+def test_verification_rules_reject_empty_or_invalid_additive_values(
+    tmp_path: Path, assignment: str
+) -> None:
+    (tmp_path / ".local-ai.toml").write_text(
+        f"[verification_rules]\n{assignment}\n", encoding="utf-8"
     )
 
     result = resolve_project_config(tmp_path)
@@ -471,6 +549,46 @@ def test_all_declared_configuration_fields_have_typed_values(tmp_path: Path) -> 
         settings.language_overrides["python"]["text_extensions"] = ()
 
 
+def test_project_environment_separates_literals_from_references(tmp_path: Path) -> None:
+    (tmp_path / ".local-ai.toml").write_text(
+        '[env]\nPYTHONPATH = "."\nNODE_ENV = "test"\n'
+        'API_TOKEN = "${HOST_API_TOKEN}"\n',
+        encoding="utf-8",
+    )
+
+    result = resolve_project_config(tmp_path)
+
+    assert result.error_codes == ()
+    assert result.settings.env == {"PYTHONPATH": ".", "NODE_ENV": "test"}
+    assert result.settings.env_references == {"API_TOKEN": "HOST_API_TOKEN"}
+    with pytest.raises(TypeError):
+        result.settings.env["NODE_ENV"] = "production"
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        'BAD-KEY = "value"',
+        "NODE_ENV = 7",
+        'API_TOKEN = "${HOST_TOKEN"',
+        'API_TOKEN = "prefix${HOST_TOKEN}"',
+        'API_TOKEN = "${HOST_TOKEN}/suffix"',
+        'API_TOKEN = "prefix${HOST_TOKEN}/suffix"',
+    ],
+)
+def test_project_environment_rejects_invalid_keys_values_and_references(
+    tmp_path: Path, assignment: str
+) -> None:
+    (tmp_path / ".local-ai.toml").write_text(
+        f"[env]\n{assignment}\n", encoding="utf-8"
+    )
+
+    result = resolve_project_config(tmp_path)
+
+    assert result.settings.env == {}
+    assert result.error_codes == ("invalid_config",)
+
+
 def test_language_override_rejects_toml_datetime_atomically(tmp_path: Path) -> None:
     (tmp_path / ".local-ai.toml").write_text(
         "[language_overrides.python]\nrelease_date = 1979-05-27\n",
@@ -494,7 +612,7 @@ def test_direct_settings_freezes_mutable_sequence_inputs() -> None:
         settings.exclude_paths.append("secrets/**")
 
 
-def test_project_configuration_accepts_only_host_environment_references(
+def test_project_configuration_accepts_host_references_and_rejects_partial_references(
     tmp_path: Path,
 ) -> None:
     (tmp_path / ".local-ai.toml").write_text(
@@ -507,7 +625,7 @@ def test_project_configuration_accepts_only_host_environment_references(
     assert result.error_codes == ()
 
     (tmp_path / ".local-ai.toml").write_text(
-        '[env]\nAPI_TOKEN = "secret-value"\n', encoding="utf-8"
+        '[env]\nAPI_TOKEN = "${HOST_API_TOKEN"\n', encoding="utf-8"
     )
     rejected = resolve_project_config(tmp_path)
     assert rejected.settings == ProjectSettings()
@@ -1013,6 +1131,28 @@ def test_invalid_path_override_falls_back_atomically(tmp_path: Path) -> None:
 
     assert result.settings == ProjectSettings()
     assert result.error_codes == ("invalid_config",)
+
+
+def test_project_settings_repr_omits_literal_environment_values() -> None:
+    settings = ProjectSettings(env={"PRIVATE_MODE": "private-value"})
+
+    assert "private-value" not in repr(settings)
+
+
+@pytest.mark.parametrize("name", ["CI.TOKEN", "CI-TOKEN"])
+def test_command_environment_reference_keys_keep_legacy_names(
+    tmp_path: Path, name: str
+) -> None:
+    (tmp_path / ".local-ai.toml").write_text(
+        f'[commands.check]\nargv = ["python"]\n'
+        f'[commands.check.env]\n"{name}" = "${{HOST_TOKEN}}"\n',
+        encoding="utf-8",
+    )
+
+    result = resolve_project_config(tmp_path)
+
+    assert result.error_codes == ()
+    assert result.settings.commands["check"].env_references == {name: "HOST_TOKEN"}
 
 
 def test_ignored_parent_stays_traversable_for_forced_descendant(tmp_path: Path) -> None:

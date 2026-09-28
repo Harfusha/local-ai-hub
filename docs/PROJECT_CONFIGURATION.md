@@ -16,10 +16,10 @@ Maps merge by key. A higher layer replaces values for keys it names while unrela
 ## Supported settings
 
 - `exclude_paths`, `force_include_paths`, `path_overrides`, and `[preprocess].exclude_paths` control path policy. Explicit excludes and hard boundaries beat force includes.
-- `[custom_extensions].text`, `[custom_extensions].binary`, and `[file_limits].max_file_size_bytes` set file handling limits. A configured size cap rejects missing or malformed size evidence and files larger than the cap.
-- `skip_phases` accepts `rag`, `call_graph`, and `modules`. `phase_is_allowed(settings, phase)` denies unknown phase names before an optional phase starts; `path_is_allowed(...)` and `may_descend(...)` deny unknown path phases and candidates in skipped optional phases. Known path phases include `search`, `repository_search`, `preprocess`, and `test`; optional phases use the names above. Task-facing settings also include `commands`, `affected_tests_mapping`, `env`, and additive `verification_rules`.
+- `[custom_extensions].text`, `[custom_extensions].binary`, and `[file_limits].max_file_size_bytes` configure file classification and size policy. `custom_extension_kind(path, settings, language=...)` returns `text`, `binary`, or `None`; matching is case-insensitive and supports compound extensions such as `.tar.gz`. `path_is_allowed(...)` rejects configured binary extensions. Readers and indexers must call `custom_extension_kind(...)` before interpreting content; adapter adoption remains owner-gated. A configured size cap rejects missing or malformed size evidence and files larger than the cap.
+- `skip_phases` accepts `rag`, `call_graph`, and `modules`. `phase_is_allowed(settings, phase)` denies unknown phase names before an optional phase starts; `path_is_allowed(...)` and `may_descend(...)` deny unknown path phases and candidates in skipped optional phases. Known path phases include `search`, `repository_search`, `preprocess`, and `test`; optional phases use the names above. Task-facing settings also include `commands`, `affected_tests_mapping`, `env`, and additive `verification_rules`. Verification rule values accept only `true` or a non-empty array of non-blank strings; `false`, empty arrays, and malformed entries reject the overlay. Names and list items remain data for the owning evaluator; resolver does not execute commands, enforce evaluator semantics, or cross-validate rule strings against command aliases. Command aliases are a separate `commands` mapping from `_KEY` names to shell strings or typed `argv` definitions.
 - Literal repo-relative `pinned_context` files (no glob syntax), literal `entry_points` (files or directories; no glob syntax), and `[retrieval_weights]` provide retrieval inputs. `resolve_pinned_context(...)` returns existing repo-contained pinned candidates after `path_is_allowed`; `resolve_entry_points(...)` does the same for files and directories, using `may_descend(...)` for directories. These are candidates, not read authorization: consumers must reapply policy with actual soft-ignore/hard-deny state before reading pinned files and during every directory traversal. `project_type`, `solution_path`, and `[language_overrides]` provide project and language context; `model_profile` selects the project model context. `system_prompt_prefix` supplies task-prompt context; T21 does not define a separate `task_profile` key.
-- `shared_namespace` shares hints across linked worktrees under the same Git common directory and partitions them by namespace; different common directories remain isolated. Environment values must reference host variables as `${NAME}`; config never stores secret values.
+- `shared_namespace` shares hints across linked worktrees under the same Git common directory and partitions them by namespace; different common directories remain isolated. Top-level `[env]` accepts literal project values such as `PYTHONPATH = "."` and `NODE_ENV = "test"`; values written as `${NAME}` remain host-environment references in `env_references`. Keep secrets in host variables, not literal config values.
 
 Example project or worktree file:
 
@@ -45,14 +45,21 @@ argv = ["python", "-m", "pytest", "-q"]
 [commands.check.env]
 CI_TOKEN = "${HOST_CI_TOKEN}"
 
+[env]
+PYTHONPATH = "."
+NODE_ENV = "test"
+API_TOKEN = "${HOST_API_TOKEN}"
+
 [verification_rules]
 require_receipt = true
+required_commands = ["check"]
 
 [retrieval_weights]
 lexical = 0.6
 
 [language_overrides.python]
 text_extensions = [".py"]
+
 ```
 
 Command values are data; resolver does not execute them. Host variable names resolve only in the owning command adapter.
@@ -89,7 +96,7 @@ Hub-wide configuration is separate: `config.py::load_config` merges installation
 
 `resolve_project_context(root, state_dir)` returns immutable effective settings and a `config_digest`. It keeps config in the project or Git common directory; the state directory stores only bounded, evidence-bound path hints.
 
-Call `ProjectContext.prioritize_paths(candidates, purpose, scope, repository_revision, path_hints=())` to rank the complete candidate list in this order: configured literal `entry_points`, per-call `path_hints`, then saved hints matching current scope, revision, and config digest. The optional `path_hints` argument is a tuple of `PathHint` records; it is request-scoped and is not persisted. Ranking preserves every candidate and returns `PathHintUsage`. Consumers measure usefulness, report it with `report_path_hint_outcome(...)`, and use the normal broader fallback when no hint helps. Save only verified hints through `ProjectContext.save_path_hint(...)`.
+Call `ProjectContext.prioritize_paths(candidates, purpose, scope, repository_revision, path_hints=())` to rank the complete candidate list in this order: configured literal `entry_points`, per-call `path_hints`, then saved hints matching current scope, revision, and config digest. The optional `path_hints` argument is a tuple of `PathHint` records; it is request-scoped and is not persisted. Ranking preserves every candidate and returns `PathHintUsage`. `hint_helped` remains unknown until a consumer measures usefulness; `telemetry_metadata()` exposes only `hint_used`, `fallback_used`, and `hint_helped`, without candidate paths. Consumers use the normal broader fallback when no hint helps. Save only verified hints through `ProjectContext.save_path_hint(...)`.
 
 Use one optional wire field, `path_hints`, for search-oriented repo, command, or MCP requests that rank repository candidates. Its JSON shape is an array of objects with required string fields `path`, `purpose`, and `scope`, plus optional string fields `evidence_id`, `provenance`, `repository_revision`, `config_digest`, and `expires_at`. Cap it at 64 records at ingress; core also caps direct calls. There is no `paths` alias. Keep this separate from command argument paths, changed paths, focus text, and durable `entry_points`. Request hints may omit evidence metadata; learned/persisted hints require evidence ID, provenance, matching repository revision and config digest.
 
