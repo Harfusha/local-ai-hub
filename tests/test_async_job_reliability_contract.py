@@ -1,10 +1,26 @@
 from __future__ import annotations
 
+import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+import local_ai_hub.async_jobs as async_jobs
 from local_ai_hub.async_jobs import AsyncJobManager
+
+
+@pytest.fixture(autouse=True)
+def _active_operational_mode(monkeypatch):
+    snapshot = SimpleNamespace(
+        mode="active", revision=0, updated_at=time.time(), degraded=False, error=""
+    )
+    monkeypatch.setattr(
+        async_jobs,
+        "load_operational_mode",
+        lambda _state_dir: snapshot,
+        raising=False,
+    )
 
 
 class _ArtifactStore:
@@ -174,6 +190,15 @@ def test_retryable_executor_failure_requeues_only_with_safe_action_identity(
     payload["command"] = "ruff check"
     submitted = manager.submit("tenant-a", action, payload, dispatch_delay_seconds=30)
     _cancel_delayed_dispatch(manager, submitted["job_id"])
+    con = manager._connect()
+    try:
+        persisted_payload = con.execute(
+            "SELECT payload_json FROM async_jobs WHERE job_id=?",
+            (submitted["job_id"],),
+        ).fetchone()[0]
+    finally:
+        con.close()
+    assert manager._request_id(persisted_payload) == (request_id or "")
 
     manager._execute(submitted["job_id"])
 
@@ -298,6 +323,11 @@ def test_restart_does_not_replay_running_job_without_request_id(manager_factory,
     _cancel_delayed_dispatch(first_manager, submitted["job_id"])
     con = first_manager._connect()
     try:
+        payload_json = con.execute(
+            "SELECT payload_json FROM async_jobs WHERE job_id=?",
+            (submitted["job_id"],),
+        ).fetchone()[0]
+        assert first_manager._request_id(payload_json) == ""
         con.execute(
             "UPDATE async_jobs SET state='running',attempts=1,cancel_requested=0 WHERE job_id=?",
             (submitted["job_id"],),
