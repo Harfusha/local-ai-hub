@@ -35,6 +35,15 @@ from local_ai_hub.token_accounting import account_projection, attach_accounting,
 from local_ai_hub.trace_context import efficiency_metadata, reset_metadata, set_metadata
 from local_ai_hub.adoption_metrics import AdoptionMetricsStore
 from local_ai_hub.routing import semantic_handoff_hint
+from local_ai_hub.operation_contracts import (
+    operation_actions,
+    operation_enabled,
+    operation_tool_output_schema,
+    operation_tool_input_schema,
+    validate_operation_arguments,
+    validate_operation_call,
+    validate_operation_output,
+)
 from local_ai_hub.state_paths import configured_state_dir
 from local_ai_hub.semantic_quality import assess_semantic_result
 from local_ai_hub.evidence_contract import evidence_meta
@@ -2665,13 +2674,25 @@ def local_ai_work(
 @mcp.tool()
 @_instrumented_tool()
 def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", binary: bool = False) -> dict[str, Any]:
-    """Fetch one needed artifact section, exact evidence slice, or list artifacts. Evidence IDs start with E. Actions: get, slice, list."""
-    if not FEATURES.artifacts:
+    """Fetch an artifact operation defined by the shared contract. Evidence IDs start with E."""
+    if not operation_enabled(FEATURES, "local_ai_artifact"):
         return {"success": False, "unsupported": True, "error": "local_ai_artifact is disabled in configuration"}
+    validation_arguments: dict[str, Any] = {}
+    if action in {"get", "slice"}:
+        validation_arguments.update({
+            "artifact_id": artifact_id,
+            "offset": offset,
+            "max_chars": max_chars,
+            "section": section,
+            "binary": binary,
+        })
+    if extra_fields is not None:
+        validation_arguments["extra_fields"] = extra_fields
+    validation_error = validate_operation_arguments("local_ai_artifact", action, validation_arguments)
+    if validation_error is not None:
+        return {"success": False, "error": validation_error}
     if action == "list":
         return _compact(CLIENT.post("/api/artifact/list", {"limit": 20}), "artifact")
-    if not artifact_id:
-        return {"success": False, "error": "artifact_id is required for action='get' or 'slice'"}
     if artifact_id.startswith("E"):
         return _compact(CLIENT.post("/api/evidence/get", {"evidence_id": artifact_id, "verify": True}), "artifact")
     result = CLIENT.post("/api/artifact/get", {
@@ -2714,7 +2735,34 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools"):
 if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types is not None:
     from local_ai_hub.json_utils import dumps as json_dumps
 
+    # FastMCP 1.x reads `parameters` and `fn_metadata.output_schema` when listing
+    # tools. Publish the feature-aware conditional input schema and shared output
+    # envelope while keeping per-action output contracts in operation metadata.
+    for _tool_name in _all_desc_map:
+        _registered_tool = mcp._tool_manager._tools.get(_tool_name)
+        _actions = operation_actions(_tool_name, FEATURES)
+        if _registered_tool is None or not _actions:
+            continue
+        if hasattr(_registered_tool, "parameters"):
+            _registered_tool.parameters = operation_tool_input_schema(_tool_name, FEATURES)
+        _output_schema = operation_tool_output_schema(_tool_name, FEATURES)
+        _fn_metadata = getattr(_registered_tool, "fn_metadata", None)
+        if hasattr(_fn_metadata, "output_schema"):
+            _fn_metadata.output_schema = _output_schema
+            getattr(_registered_tool, "__dict__", {}).pop("output_schema", None)
+
     async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
+        validation = validate_operation_call(name, arguments, features=FEATURES)
+        if validation is not None:
+            status_code, error = validation
+            payload = {
+                "success": False,
+                "status_code": status_code,
+                "terminal": True,
+                "retryable": False,
+                "error": error,
+            }
+            return ([mcp_types.TextContent(type="text", text=json_dumps(payload))], payload)
         try:
             raw = await mcp._tool_manager.call_tool(name, arguments, convert_result=False)
         except Exception as exc:
@@ -2728,6 +2776,27 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                 "terminal": True,
                 "retryable": False,
                 "error": f"MCP input validation failed: {text}" if type(exc).__name__ == "ValidationError" else f"MCP tool failed: {text}",
+            }
+            return ([mcp_types.TextContent(type="text", text=json_dumps(payload))], payload)
+        selector = "detail" if name == "local_ai_status" else "action"
+        action = arguments.get(selector)
+        if name == "local_ai_status":
+            alias = arguments.get("action")
+            if isinstance(alias, str) and alias in {"status", "health", "check", "info"}:
+                action = "brief"
+            elif isinstance(alias, str) and alias in operation_actions(name, FEATURES):
+                action = alias
+        if not isinstance(action, str) or action not in operation_actions(name, FEATURES):
+            available_actions = operation_actions(name, FEATURES)
+            action = available_actions[0] if available_actions else ""
+        output_error = validate_operation_output(name, action, raw)
+        if output_error is not None:
+            payload = {
+                "success": False,
+                "status_code": 500,
+                "terminal": True,
+                "retryable": False,
+                "error": f"MCP output contract failed: {output_error}",
             }
             return ([mcp_types.TextContent(type="text", text=json_dumps(payload))], payload)
         if isinstance(raw, (dict, list)):
