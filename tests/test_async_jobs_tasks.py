@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 import pytest
 
+import local_ai_hub.async_jobs as async_jobs
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import AgentScope, ScopeContext
 from local_ai_hub.agent_tasks import GoalContract, TaskStatus, TaskStore
@@ -28,6 +30,25 @@ class _Scheduler:
 class _Artifacts:
     def put(self, _content, _tenant, _kind):
         return "art-123"
+
+
+@pytest.fixture(autouse=True)
+def _active_operational_mode(monkeypatch):
+    snapshot = SimpleNamespace(
+        mode="active", revision=0, updated_at=None, degraded=False, error=""
+    )
+    monkeypatch.setattr(
+        async_jobs,
+        "load_operational_mode",
+        lambda _state_dir: snapshot,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        async_jobs,
+        "operational_mode_gate_error",
+        lambda _snapshot: None,
+        raising=False,
+    )
 
 
 def test_async_job_updates_agent_task_and_mints_receipt(tmp_path: Path):

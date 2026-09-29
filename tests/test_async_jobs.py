@@ -4,7 +4,10 @@ import sqlite3
 import threading
 import time
 from contextlib import closing
+from types import SimpleNamespace
 
+import pytest
+import local_ai_hub.async_jobs as async_jobs
 from local_ai_hub.async_jobs import AsyncJobManager
 from local_ai_hub.debug_traces import DebugTraceStore
 
@@ -32,6 +35,38 @@ class _Scheduler:
 class _Artifacts:
     def put(self, _content, _tenant, _kind):
         return "artifact-1"
+
+
+def _mode_gate_error(snapshot):
+    if snapshot.mode == "active" and not snapshot.degraded:
+        return None
+    return {
+        "success": False,
+        "error": f"Hub operational mode is {snapshot.mode}; agent tool calls are disabled",
+        "error_code": "operational_mode_blocked",
+        "operational_mode": snapshot.mode,
+        "mode_revision": snapshot.revision,
+        "degraded": snapshot.degraded,
+        "terminal": True,
+        "retryable": False,
+    }
+
+
+@pytest.fixture(autouse=True)
+def _active_operational_mode(monkeypatch):
+    snapshot = SimpleNamespace(
+        mode="active", revision=0, updated_at=time.time(), degraded=False, error=""
+    )
+    monkeypatch.setattr(
+        async_jobs,
+        "load_operational_mode",
+        lambda _state_dir: snapshot,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        async_jobs, "operational_mode_gate_error", _mode_gate_error, raising=False
+    )
+    return snapshot
 
 
 def _manager(tmp_path):
@@ -853,4 +888,272 @@ def test_wait_preserves_zero_timeout_budget_instead_of_using_default(tmp_path, m
         assert wait_timeouts == [0]
         assert result["wait_timeout_seconds"] == 0
     finally:
+        manager.close()
+
+
+def _patch_operational_mode(monkeypatch, mode="active", revision=0, *, degraded=False, error=""):
+    snapshot = SimpleNamespace(
+        mode=mode,
+        revision=revision,
+        updated_at=time.time(),
+        degraded=degraded,
+        error=error,
+    )
+    monkeypatch.setattr(
+        async_jobs,
+        "load_operational_mode",
+        lambda _state_dir: snapshot,
+        raising=False,
+    )
+    return snapshot
+
+
+class _Receipts:
+    def __init__(self):
+        self.items = []
+
+    def record(self, receipt):
+        self.items.append(receipt)
+
+
+def test_gaming_rejects_new_inference_before_persistence_and_preserves_result_receipt(tmp_path, monkeypatch):
+    mode = _patch_operational_mode(monkeypatch)
+    scheduler = _Scheduler()
+    artifacts = _Artifacts()
+    receipts = _Receipts()
+    manager = AsyncJobManager(
+        {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}},
+        scheduler,
+        artifacts,
+        lambda action, payload, tenant: {"success": True, "action": action, "task": payload.get("task"), "tenant": tenant},
+        verification_store=receipts,
+    )
+    try:
+        existing = manager.submit(
+            "tenant-a", "reason", {"task": "finished before gaming", "task_id": "task-existing", "request_id": "existing"}
+        )
+        assert manager.wait("tenant-a", existing["job_id"], 2)["state"] == "done"
+        stored_result = manager.result("tenant-a", existing["job_id"])
+        assert stored_result["success"] is True
+        assert len(receipts.items) == 1
+
+        mode.mode = "gaming"
+        mode.revision = 1
+        blocked = manager.submit("tenant-a", "reason", {"task": "new inference", "request_id": "new"})
+
+        assert blocked["success"] is False
+        assert blocked["state"] == "rejected"
+        assert blocked["code"] == "operational_mode_blocked"
+        assert blocked["status_code"] == 423
+        assert blocked["terminal"] is True
+        assert blocked["retryable"] is False
+        with closing(manager._connect()) as con:
+            assert con.execute("SELECT COUNT(*) FROM async_jobs").fetchone()[0] == 1
+        assert manager.result("tenant-a", existing["job_id"]) == stored_result
+        assert len(receipts.items) == 1
+    finally:
+        manager.close()
+
+
+def test_maintenance_blocks_speculative_lint_before_persistence(tmp_path, monkeypatch):
+    _patch_operational_mode(monkeypatch, "maintenance", 3, degraded=True, error="state file corrupt")
+    manager, _scheduler = _manager(tmp_path)
+    try:
+        blocked = manager.submit("tenant-a", "speculative_lint", {"path": "src/example.py"})
+
+        assert blocked["success"] is False
+        assert blocked["code"] == "operational_mode_blocked"
+        assert blocked["status_code"] == 423
+        assert blocked["terminal"] is True
+        assert blocked["retryable"] is False
+        with closing(manager._connect()) as con:
+            assert con.execute("SELECT COUNT(*) FROM async_jobs").fetchone()[0] == 0
+    finally:
+        manager.close()
+
+
+def test_gaming_allows_non_inference_lint_job(tmp_path, monkeypatch):
+    _patch_operational_mode(monkeypatch, "gaming", 4)
+    manager, _scheduler = _manager(tmp_path)
+    try:
+        submitted = manager.submit("tenant-a", "speculative_lint", {"path": "src/example.py"})
+
+        assert submitted["success"] is True
+        assert manager.wait("tenant-a", submitted["job_id"], 2)["state"] == "done"
+    finally:
+        manager.close()
+
+
+@pytest.mark.parametrize(
+    ("mode_name", "action"),
+    (("gaming", "reason"), ("maintenance", "speculative_lint")),
+)
+def test_submit_before_restricted_mode_is_cancelled_at_dispatch(tmp_path, monkeypatch, mode_name, action):
+    mode = _patch_operational_mode(monkeypatch)
+    calls = []
+    manager = AsyncJobManager(
+        {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}},
+        _Scheduler(),
+        _Artifacts(),
+        lambda action, payload, tenant: calls.append((action, payload, tenant)) or {"success": True},
+    )
+    try:
+        submitted = manager.submit(
+            "tenant-a", action, {"task": "pause race"}, dispatch_delay_seconds=30
+        )
+        assert submitted["success"] is True
+
+        mode.mode = mode_name
+        mode.revision = 1
+        manager._dispatch(submitted["job_id"])
+
+        status = manager.status("tenant-a", submitted["job_id"])
+        assert status["state"] == "cancelled"
+        assert status["terminal"] is True
+        assert status["retryable"] is False
+        assert calls == []
+    finally:
+        manager.close()
+
+
+@pytest.mark.parametrize(
+    ("mode_name", "action"),
+    (("gaming", "reason"), ("maintenance", "speculative_lint")),
+)
+def test_restricted_mode_requests_running_job_cancellation_without_early_completion(
+    tmp_path, monkeypatch, mode_name, action
+):
+    mode = _patch_operational_mode(monkeypatch)
+    started = threading.Event()
+    release = threading.Event()
+
+    def execute(_action, _payload, _tenant):
+        started.set()
+        release.wait(2)
+        return {"success": True, "text": "finished after cancellation request"}
+
+    manager = AsyncJobManager(
+        {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}},
+        _Scheduler(),
+        _Artifacts(),
+        execute,
+    )
+    try:
+        running = manager.submit("tenant-a", action, {"task": "active job"})
+        assert started.wait(1)
+
+        mode.mode = mode_name
+        mode.revision = 1
+        pending = manager.status("tenant-a", running["job_id"])
+        assert pending["state"] == "running"
+        assert pending["cancel_requested"] is True
+        assert manager.wait("tenant-a", running["job_id"], 0.01)["state"] == "running"
+
+        release.set()
+        finished = manager.wait("tenant-a", running["job_id"], 1)
+        assert finished["state"] == "cancelled"
+        assert finished["terminal"] is True
+        assert finished["retryable"] is False
+    finally:
+        release.set()
+        manager.close()
+
+
+@pytest.mark.parametrize(
+    ("mode_name", "action"),
+    (("gaming", "reason"), ("maintenance", "speculative_lint")),
+)
+def test_mode_change_hook_requests_running_job_cancel_before_status_or_result(
+    tmp_path, monkeypatch, mode_name, action
+):
+    mode = _patch_operational_mode(monkeypatch)
+    started = threading.Event()
+    release = threading.Event()
+
+    def execute(_action, _payload, _tenant):
+        started.set()
+        release.wait(2)
+        return {"success": True, "text": "finished after mode change"}
+
+    manager = AsyncJobManager(
+        {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}},
+        _Scheduler(),
+        _Artifacts(),
+        execute,
+    )
+    try:
+        running = manager.submit("tenant-a", action, {"task": "active job"})
+        assert started.wait(1)
+
+        mode.mode = mode_name
+        mode.revision = 2
+        manager.on_operational_mode_changed(mode)
+
+        with closing(manager._connect()) as con:
+            row = con.execute(
+                "SELECT state,cancel_requested FROM async_jobs WHERE job_id=?",
+                (running["job_id"],),
+            ).fetchone()
+        assert row == ("running", 1)
+
+        release.set()
+        finished = manager.wait("tenant-a", running["job_id"], 1)
+        assert finished["state"] == "cancelled"
+    finally:
+        release.set()
+        manager.close()
+
+
+@pytest.mark.parametrize(
+    ("mode_name", "action"),
+    (("gaming", "reason"), ("maintenance", "speculative_lint")),
+)
+def test_mode_commit_at_executor_boundary_prevents_inference_start(
+    tmp_path, monkeypatch, mode_name, action
+):
+    mode = _patch_operational_mode(monkeypatch)
+    executor_calls = []
+    boundary_entered = threading.Event()
+    release_boundary = threading.Event()
+
+    def execute(actual_action, _payload, _tenant):
+        executor_calls.append(actual_action)
+        return {"success": True, "text": "should not start"}
+
+    manager = AsyncJobManager(
+        {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}},
+        _Scheduler(),
+        _Artifacts(),
+        execute,
+    )
+    original_start = getattr(manager, "_invoke_executor_if_allowed", None)
+
+    def pause_at_boundary(job_id, actual_action, payload, tenant):
+        boundary_entered.set()
+        assert release_boundary.wait(2)
+        return original_start(job_id, actual_action, payload, tenant)
+
+    monkeypatch.setattr(manager, "_invoke_executor_if_allowed", pause_at_boundary, raising=False)
+    try:
+        submitted = manager.submit(
+            "tenant-a", action, {"task": "mode start race"}, dispatch_delay_seconds=30
+        )
+        dispatch = threading.Thread(target=manager._dispatch, args=(submitted["job_id"],))
+        dispatch.start()
+        assert boundary_entered.wait(1)
+
+        with manager.operational_mode_change_guard():
+            mode.mode = mode_name
+            mode.revision = 3
+            manager.on_operational_mode_changed(mode)
+        release_boundary.set()
+        dispatch.join(1)
+
+        assert executor_calls == []
+        finished = manager.wait("tenant-a", submitted["job_id"], 1)
+        assert finished["state"] == "cancelled"
+        assert finished["terminal"] is True
+        assert finished["retryable"] is False
+    finally:
+        release_boundary.set()
         manager.close()
