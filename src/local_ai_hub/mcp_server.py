@@ -421,7 +421,8 @@ def _desc_work() -> str:
 
 def _desc_artifact() -> str:
     if LEAN_SCHEMAS:
-        return "Fetch an exact source or log slice or bounded binary artifact metadata; binary retrieval never inlines payloads; optional max_response_tokens, response_profile, reuse_key. Actions: get, slice, list."
+        actions = ", ".join(operation_actions("local_ai_artifact"))
+        return f"Fetch an exact source or log slice or bounded binary artifact metadata; binary retrieval never inlines payloads; optional max_response_tokens, response_profile, reuse_key. Actions: {actions}."
     return (
         "Fetch one exact source or log slice or bounded binary artifact metadata. Binary payloads are never inlined in MCP responses. Evidence IDs start with E."
         " Use when: exact source or evidence text is required after indexed discovery."
@@ -429,60 +430,24 @@ def _desc_artifact() -> str:
     )
 
 
-TaskAction: TypeAlias = Literal[
-    "delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch",
-    "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait",
-    "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe",
-    "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold",
-]
-_REPO_ACTIONS = (
-    "profile", "search", "map", "code_index", "semantic", "graph", "intelligence",
-    "deterministic", "context", "route", "delegate", "solve", "review_diff", "impact",
-    "refactor_impact", "resolve_imports", "generate_tests", "validate_patch",
-    "audit_dependencies", "ast_outline", "test_matrix", "security_audit", "git_status", "repo_state",
-    "synthesize_commit", "verify", "preprocess", "preprocess_status", "preprocess_refresh",
-    "preprocess_pause", "preprocess_resume", "preprocess_cancel", "preprocess_unregister",
-    "context_compile", "verify_receipt", "verify_completion",
-    "cross_project_graph", "cross_project_symbols", "cross_project_impact",
-    "cross_repo_graph", "cross_repo_symbols", "cross_repo_impact",
-    "call_graph_diff", "semantic_diff",
-    "affected_tests", "topology", "ast_refactor",
-    "generate_mocks", "split_changes", "synthesize_rules",
-    "code_invariants", "generate_dataset", "profile_digest",
-    "callers", "dead_code", "secret_scan", "schema_inspect", "explain_query", "env_compat",
-    "circular_dependencies", "generate_types", "complexity", "api_spec", "dependency_slice", "migration_drift", "package_audit",
-    "structural_search", "context_budget",
-    "git_diff", "git_history_search", "hotspots", "generate_tests_for_diff", "cross_repo_contract",
-    "reachability_dead_code", "mutation_test", "type_stubs", "skeletonize", "investigate",
-    "diagnose", "briefing", "pipeline",
+TaskAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_task"))
+
+
+def _repo_action_type(features: Any) -> Any:
+    return Literal.__getitem__(operation_actions("local_ai_repo", features))
+
+
+RepoAction: TypeAlias = _repo_action_type(FEATURES)
+RagAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_rag"))
+CommandAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_command"))
+CoordAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_coord"))
+StatusDetail: TypeAlias = Literal.__getitem__(operation_actions("local_ai_status"))
+StatusAction: TypeAlias = Literal.__getitem__(
+    tuple(dict.fromkeys((*operation_actions("local_ai_status"), "status", "health", "check", "info")))
 )
-RepoAction: TypeAlias = Literal.__getitem__(_REPO_ACTIONS + (("batch_replace",) if FEATURES.batch_replacement else ()))
-RagAction: TypeAlias = Literal["index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram"]
-CommandAction: TypeAlias = Literal[
-    "run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix", "run_affected", "format",
-    "lint_fix", "spawn_daemon", "daemon_status", "stop_daemon", "http_probe",
-    "stash_save", "stash_restore", "record_mock", "replay_mock",
-    "diff_hunk_stage", "flaky_detect", "webhook_replay",
-    "mock_server", "mock_server_start", "mock_server_stop", "mock_server_status", "patch_and_verify",
-    "preflight", "speculative_lint",
-]
-CoordAction: TypeAlias = Literal[
-    "claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete",
-    "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat",
-    "memory_record", "memory_get", "memory_find", "memory_promote", "memory_reap",
-    "relation_record", "relation_find", "relation_traverse",
-    "context_compile", "verify_receipt", "verify_completion",
-    "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
-    "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_merge", "blackboard_delete",
-    "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel",
-    "worktree_lease", "worktree_release",
-    "pubsub_publish", "pubsub_poll", "simulate_merge",
-    "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree",
-]
-StatusDetail: TypeAlias = Literal["brief", "cache", "telemetry", "full", "agent_state"]
 StatusScope: TypeAlias = Literal["process", "window"]
-WorkAction: TypeAlias = Literal["submit", "status", "wait", "get", "cancel", "continue"]
-ArtifactAction: TypeAlias = Literal["get", "slice", "list"]
+WorkAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_work"))
+ArtifactAction: TypeAlias = Literal[*operation_actions("local_ai_artifact")]
 
 
 def _invalid_action(tool: str, action: str, valid: tuple[str, ...], guidance: str) -> dict[str, Any]:
@@ -526,6 +491,10 @@ _STATUS_PROTECTED_KEYS = (
     "active_model", "queued", "inflight", "cache_hits", "coalesced_waiters",
     "net_cloud_token_delta_est", "vram_pressure", "context_budget_factor",
     "summary", "window", "queue", "hotspots", "by_operation", "error_fingerprints",
+)
+_RELIABILITY_PROTECTED_KEYS = (
+    "success", "terminal", "retryable", "degraded", "stale",
+    "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
 )
 _REUSE_DIGESTS: OrderedDict[str, str] = OrderedDict()
 _REUSE_VALUES: OrderedDict[str, Any] = OrderedDict()
@@ -670,11 +639,11 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
         repeated, previous = _reuse_state(reuse_key, compacted)
         if profile == "delta" and previous is not None and not repeated:
             compacted = delta_response(previous, compacted, result_id=result_id(compacted))
-        protected_keys = (
-            _CONTEXT_PROTECTED_KEYS if task_kind in {"context", "context_compile"}
-            else _STATUS_PROTECTED_KEYS if task_kind == "status"
-            else ()
-        )
+        protected_keys = tuple(dict.fromkeys((
+            *_RELIABILITY_PROTECTED_KEYS,
+            *(_CONTEXT_PROTECTED_KEYS if task_kind in {"context", "context_compile"} else ()),
+            *(_STATUS_PROTECTED_KEYS if task_kind == "status" else ()),
+        )))
         compacted = budget_response(
             compacted,
             max_tokens=requested,
@@ -1094,14 +1063,14 @@ def _adoption_reason(value: Any) -> str:
 _ADOPTION_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _ADOPTION_TOOLS = {"local_ai_status", "local_ai_task", "local_ai_repo", "local_ai_rag", "local_ai_command", "local_ai_coord", "local_ai_work", "local_ai_artifact"}
 _ADOPTION_ACTIONS = {
-    "local_ai_status": set(StatusDetail.__args__),
-    "local_ai_task": set(TaskAction.__args__),
-    "local_ai_repo": set(_REPO_ACTIONS) | {"batch_replace"},
-    "local_ai_rag": set(RagAction.__args__),
-    "local_ai_command": set(CommandAction.__args__),
-    "local_ai_coord": set(CoordAction.__args__),
-    "local_ai_work": set(WorkAction.__args__),
-    "local_ai_artifact": set(ArtifactAction.__args__),
+    "local_ai_status": set(operation_actions("local_ai_status")),
+    "local_ai_task": set(operation_actions("local_ai_task")),
+    "local_ai_repo": set(operation_actions("local_ai_repo")),
+    "local_ai_rag": set(operation_actions("local_ai_rag")),
+    "local_ai_command": set(operation_actions("local_ai_command")),
+    "local_ai_coord": set(operation_actions("local_ai_coord")),
+    "local_ai_work": set(operation_actions("local_ai_work")),
+    "local_ai_artifact": set(operation_actions("local_ai_artifact")),
 }
 
 
@@ -1149,7 +1118,7 @@ def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration
 
 @mcp.tool()
 @_instrumented_tool()
-def local_ai_status(action: str = "", detail: StatusDetail = "brief", scope: str = "process", extra_fields: list[str] | None = None, adoption_signal: Literal["", "bypassed"] = "", target_tool: str = "", target_action: str = "", max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "") -> dict[str, Any]:
+def local_ai_status(action: StatusAction = "", detail: StatusDetail = "brief", scope: str = "process", extra_fields: list[str] | None = None, adoption_signal: Literal["", "bypassed"] = "", target_tool: str = "", target_action: str = "", max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "") -> dict[str, Any]:
     """Health/queue/token-saving status. detail: brief, cache, telemetry, full, agent_state. scope: process (default) or window. action is an alias for detail. To report a deliberate bypass, set adoption_signal=bypassed with validated target_tool and target_action; omitted means no bypass. Telemetry is metadata-only. Do not poll status during normal repository work or while preprocessing/model startup is in progress; one bounded health check is enough before native fallback. Use when: make one bounded health, cache, or telemetry check. Skip when: repository evidence or task work is needed."""
     if action:
         act = action.strip().lower()
@@ -1815,7 +1784,7 @@ def _local_ai_repo_impl(
             extra.extend(["text", "raw"])
         return _compact(CLIENT.post("/api/search", {
             "root": root, "query": query or task, "top_k": 12, "enrich": enrich,
-        }, timeout=_timeout("quick")), "search", extra_fields=extra if extra else None)
+        }, timeout=min(120, _timeout("quick"))), "search", extra_fields=extra if extra else None)
     if action == "map":
         return _compact(CLIENT.post("/api/repo/map", {"root": root, "max_symbols": 100}, timeout=_timeout("quick")), "architecture")
     if action == "code_index":
