@@ -10,6 +10,140 @@ from local_ai_hub.commands import CommandBroker, _get_windows_dacl, _windows_dac
 from local_ai_hub.process_utils import hidden_run_kwargs
 
 
+def test_patch_and_verify_failure_reverses_only_supplied_patch(tmp_path: Path, monkeypatch) -> None:
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
+
+    target = tmp_path / "target.txt"
+    unrelated = tmp_path / "unrelated.txt"
+    target.write_text("committed target\nsecond line\n", encoding="utf-8")
+    unrelated.write_text("committed unrelated\n", encoding="utf-8")
+    subprocess.run(["git", "add", "target.txt", "unrelated.txt"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
+    subprocess.run(["git", "commit", "-m", "baseline"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
+
+    target.write_text("user dirty baseline\nsecond line\n", encoding="utf-8")
+    unrelated.write_text("staged unrelated edit\n", encoding="utf-8")
+    subprocess.run(["git", "add", "unrelated.txt"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
+    unrelated.write_text("staged unrelated edit\nunstaged unrelated edit\n", encoding="utf-8")
+    preexisting = tmp_path / "preexisting.tmp"
+    preexisting.write_text("keep", encoding="utf-8")
+
+    broker = CommandBroker({"server": {"state_dir": str(tmp_path)}}, artifacts=None, repo_state=None)
+
+    def fail_validation(*args, **kwargs):
+        (tmp_path / "concurrent.tmp").write_text("foreign", encoding="utf-8")
+        return {"success": False, "exit_code": 1}
+
+    monkeypatch.setattr(broker, "run", fail_validation)
+    patch = (
+        "diff --git a/target.txt b/target.txt\n"
+        "--- a/target.txt\n"
+        "+++ b/target.txt\n"
+        "@@ -1,2 +1,2 @@\n"
+        "-user dirty baseline\n"
+        "+patched target\n"
+        " second line\n"
+    )
+
+    result = broker.patch_and_verify(patch, tmp_path, tenant="", command="pytest -q")
+
+    staged = subprocess.run(
+        ["git", "show", ":unrelated.txt"], cwd=str(tmp_path), capture_output=True, text=True, check=True, **hidden_run_kwargs()
+    )
+    assert result["success"] is False
+    assert result["rolled_back"] is True
+    assert target.read_text(encoding="utf-8") == "user dirty baseline\nsecond line\n"
+    assert staged.stdout == "staged unrelated edit\n"
+    assert unrelated.read_text(encoding="utf-8") == "staged unrelated edit\nunstaged unrelated edit\n"
+    assert preexisting.read_text(encoding="utf-8") == "keep"
+    assert (tmp_path / "concurrent.tmp").read_text(encoding="utf-8") == "foreign"
+
+
+def test_patch_and_verify_reports_failed_reverse_without_clobbering_concurrent_edit(tmp_path: Path, monkeypatch) -> None:
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
+
+    target = tmp_path / "target.txt"
+    target.write_text("before patch\nsecond line\n", encoding="utf-8")
+    subprocess.run(["git", "add", "target.txt"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
+    subprocess.run(["git", "commit", "-m", "baseline"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
+
+    broker = CommandBroker({"server": {"state_dir": str(tmp_path)}}, artifacts=None, repo_state=None)
+
+    def fail_validation_with_concurrent_edit(*args, **kwargs):
+        target.write_text("concurrent replacement\nsecond line\n", encoding="utf-8")
+        return {"success": False, "exit_code": 1}
+
+    monkeypatch.setattr(broker, "run", fail_validation_with_concurrent_edit)
+    patch = (
+        "diff --git a/target.txt b/target.txt\n"
+        "--- a/target.txt\n"
+        "+++ b/target.txt\n"
+        "@@ -1,2 +1,2 @@\n"
+        "-before patch\n"
+        "+patched target\n"
+        " second line\n"
+    )
+
+    original_run = commands_module.subprocess.run
+    reverse_commands: list[list[str]] = []
+
+    def observe_reverse(command, *args, **kwargs):
+        if isinstance(command, list) and command[:3] == ["git", "apply", "--reverse"]:
+            reverse_commands.append(command)
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(commands_module.subprocess, "run", observe_reverse)
+    result = broker.patch_and_verify(patch, tmp_path, tenant="", command="pytest -q")
+
+    assert result["success"] is False
+    assert result["applied"] is True
+    assert result["rolled_back"] is False
+    assert "Patch rollback failed" in result["rollback_error"]
+    assert len(reverse_commands) == 1
+    assert "--check" not in reverse_commands[0]
+    assert target.read_text(encoding="utf-8") == "concurrent replacement\nsecond line\n"
+
+
+def test_patch_and_verify_syntax_failure_reverses_only_supplied_patch(tmp_path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
+
+    target = tmp_path / "syntax_target.py"
+    unrelated = tmp_path / "unrelated.txt"
+    target.write_text("committed = 1\n", encoding="utf-8")
+    unrelated.write_text("committed unrelated\n", encoding="utf-8")
+    subprocess.run(["git", "add", "syntax_target.py", "unrelated.txt"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
+    subprocess.run(["git", "commit", "-m", "baseline"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
+
+    target.write_text("user baseline = 1\n", encoding="utf-8")
+    unrelated.write_text("unrelated user edit\n", encoding="utf-8")
+    preexisting = tmp_path / "preexisting.tmp"
+    preexisting.write_text("keep", encoding="utf-8")
+
+    broker = CommandBroker({"server": {"state_dir": str(tmp_path)}}, artifacts=None, repo_state=None)
+    patch = (
+        "diff --git a/syntax_target.py b/syntax_target.py\n"
+        "--- a/syntax_target.py\n"
+        "+++ b/syntax_target.py\n"
+        "@@ -1 +1 @@\n"
+        "-user baseline = 1\n"
+        "+def broken(:\n"
+    )
+
+    result = broker.patch_and_verify(patch, tmp_path, tenant="", command="pytest -q")
+
+    assert result["success"] is False
+    assert result["rolled_back"] is True
+    assert result["applied"] is False
+    assert target.read_text(encoding="utf-8") == "user baseline = 1\n"
+    assert unrelated.read_text(encoding="utf-8") == "unrelated user edit\n"
+    assert preexisting.read_text(encoding="utf-8") == "keep"
+
+
 def test_command_rollback_on_failure_preserves_unowned_changes(tmp_path: Path, monkeypatch) -> None:
     # Set up git repo
     subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())

@@ -1,0 +1,164 @@
+diff --git a/tests/test_mutation_replay.py b/tests/test_mutation_replay.py
+index 5aa37cc..3d71315 100644
+--- a/tests/test_mutation_replay.py
++++ b/tests/test_mutation_replay.py
+@@ -649,6 +666,159 @@ def test_http_retry_replays_outcome_and_rejects_changed_payload(tmp_path, monkey
+     assert changed == {"state": "conflict", "error": "request id already belongs to a different identity, operation, or payload"}
+ 
+ 
++def test_http_retry_from_two_clients_dispatches_once(tmp_path, monkeypatch) -> None:
++    journal = RecoveryJournal(tmp_path)
++    payload = {"action": "submit", "work_id": "work-two-clients"}
++    publish_started = threading.Event()
++    release_publish = threading.Event()
++    duplicate_waiting = threading.Event()
++    submissions: list[dict[str, Any]] = []
++    responses: list[tuple[int, dict[str, Any]]] = []
++
++    def submit(_tenant: str, value: dict[str, Any]) -> dict[str, Any]:
++        submissions.append(dict(value))
++        publish_started.set()
++        if not release_publish.wait(5.0):
++            raise TimeoutError("test did not release first publication")
++        return {"success": True, "work_id": value["work_id"]}
++
++    app = SimpleNamespace(
++        config={"resilience": {"singleflight_wait_timeout_seconds": 1.0}},
++        recovery=journal,
++        work_orchestrator=SimpleNamespace(enabled=True, submit=submit),
++    )
++    monkeypatch.setattr(http_server, "APP", app)
++    monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-two-clients"))
++    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
++    monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
++    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
++    monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: dict(payload))
++    monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
++
++    wait_for = journal.wait_for
++
++    def observed_wait(*args: Any, **kwargs: Any) -> dict[str, Any] | None:
++        duplicate_waiting.set()
++        return wait_for(*args, **kwargs)
++
++    monkeypatch.setattr(journal, "wait_for", observed_wait)
++
++    def respond(self, status: int, data: dict[str, Any]) -> None:
++        if not getattr(self, "_journal_finished", False):
++            journal.finish(
++                self._journal_request_id,
++                http_server._journal_outcome_success(status, data),
++                status_code=status,
++                response=data,
++            )
++            self._journal_finished = True
++        responses.append((status, data))
++
++    monkeypatch.setattr(http_server.Handler, "_send", respond)
++
++    def request() -> None:
++        handler = object.__new__(http_server.Handler)
++        handler.path = "/api/work-orders"
++        handler.headers = {"Content-Type": "application/json"}
++        http_server.Handler.do_POST(handler)
++
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        first_client = pool.submit(request)
++        assert publish_started.wait(5.0)
++        second_client = pool.submit(request)
++        assert duplicate_waiting.wait(5.0)
++        release_publish.set()
++        first_client.result(timeout=5.0)
++        second_client.result(timeout=5.0)
++
++    expected = (200, {"success": True, "work_id": "work-two-clients"})
++    assert submissions == [payload]
++    assert responses == [expected, expected]
++
++
++def test_http_retry_from_two_live_clients_dispatches_once(tmp_path, monkeypatch) -> None:
++    from http.client import HTTPConnection
++    import logging
++
++    journal = RecoveryJournal(tmp_path)
++    payload = {"action": "submit", "root": str(tmp_path), "task": "live HTTP idempotence"}
++    publish_started = threading.Event()
++    release_publish = threading.Event()
++    duplicate_waiting = threading.Event()
++    submissions: list[dict[str, Any]] = []
++
++    def submit(_tenant: str, value: dict[str, Any]) -> dict[str, Any]:
++        submissions.append(dict(value))
++        publish_started.set()
++        if not release_publish.wait(10.0):
++            raise TimeoutError("test did not release first publication")
++        return {"success": True, "work_id": "live-work-one"}
++
++    telemetry = SimpleNamespace(record_live=lambda **_kwargs: None, record_http=lambda **_kwargs: None)
++    app = SimpleNamespace(
++        # Keep replay wait above the 5s synchronization barrier for loaded CI.
++        config={"resilience": {"singleflight_wait_timeout_seconds": 10.0}, "observability": {}},
++        recovery=journal,
++        telemetry=telemetry,
++        logger=logging.getLogger("test.http-idempotence"),
++        work_orchestrator=SimpleNamespace(enabled=True, submit=submit),
++    )
++    monkeypatch.setattr(http_server, "APP", app)
++    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
++
++    wait_for = journal.wait_for
++
++    def observed_wait(*args: Any, **kwargs: Any) -> dict[str, Any] | None:
++        duplicate_waiting.set()
++        return wait_for(*args, **kwargs)
++
++    monkeypatch.setattr(journal, "wait_for", observed_wait)
++
++    server = http_server.ThreadingHTTPServer(("127.0.0.1", 0), http_server.Handler)
++    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
++    server_thread.start()
++    host, port = server.server_address
++
++    def send_request() -> tuple[int, dict[str, Any]]:
++        connection = HTTPConnection(host, port, timeout=10.0)
++        try:
++            connection.request(
++                "POST",
++                "/api/work-orders",
++                body=json.dumps(payload).encode("utf-8"),
++                headers={
++                    "Content-Type": "application/json",
++                    "X-LocalAI-Request-ID": "req-live-two-clients",
++                },
++            )
++            response = connection.getresponse()
++            return response.status, json.loads(response.read().decode("utf-8"))
++        finally:
++            connection.close()
++
++    try:
++        with ThreadPoolExecutor(max_workers=2) as pool:
++            first_client = pool.submit(send_request)
++            assert publish_started.wait(10.0)
++            second_client = pool.submit(send_request)
++            try:
++                assert duplicate_waiting.wait(5.0)
++            finally:
++                release_publish.set()
++            first_response = first_client.result(timeout=10.0)
++            second_response = second_client.result(timeout=10.0)
++    finally:
++        release_publish.set()
++        server.shutdown()
++        server.server_close()
++        server_thread.join(timeout=5.0)
++
++    expected = (200, {"success": True, "work_id": "live-work-one"})
++    assert submissions == [payload]
++    assert first_response == second_response == expected
++    assert not server_thread.is_alive()
++
++
+ def test_http_retry_after_response_loss_publishes_one_durable_event(tmp_path, monkeypatch) -> None:
+     journal = RecoveryJournal(tmp_path / "recovery")
+     state_store = AgentStateStore(tmp_path / "agent-state.sqlite3")
