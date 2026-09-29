@@ -573,11 +573,15 @@ def test_context_http_endpoint_defaults_to_adaptive():
 
 def test_realtime_status_includes_preprocessor_projects_on_light():
     import threading
-    from local_ai_hub.app import LocalAIApp
+    from local_ai_hub.app import LocalAIApp, _STATUS_MAX_INFLIGHT_DEPENDENCIES, _new_status_dependency_executor
 
     app = LocalAIApp.__new__(LocalAIApp)
     app._live_status_lock = threading.Lock()
     app._live_status_cache = {}
+    app._status_dependency_lock = threading.Lock()
+    app._status_dependency_inflight = {}
+    app._status_dependency_slots = threading.BoundedSemaphore(_STATUS_MAX_INFLIGHT_DEPENDENCIES)
+    app._status_dependency_executor = _new_status_dependency_executor()
     app._headless_status = lambda: {"supervisor": True, "ollama_online": False}
     app.runtime = type("Runtime", (), {
         "is_online": lambda self: True,
@@ -613,6 +617,7 @@ def test_realtime_status_includes_preprocessor_projects_on_light():
     assert res_light["preprocessing"]["projects"][0]["project"] == "myproject"
     assert res_light["ollama_online"] is True
     assert res_light["headless"]["ollama_online"] is True
+    app._status_dependency_executor.shutdown(wait=False, cancel_futures=True)
 
 
 class _EvidenceDeterministic(_Deterministic):
