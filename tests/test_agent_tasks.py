@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from local_ai_hub.agent_events import AgentStateStore
+from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.agent_identity import AgentScope, ScopeContext
 from local_ai_hub.agent_tasks import (
     CompletionGateError,
@@ -88,8 +89,35 @@ def test_completed_succeeds_when_verified(store: TaskStore):
     store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="a")
     store.transition(task.task_id, TaskStatus.VERIFYING, reason="ready", actor="agent", idempotency_key="v")
     # Completion requires durable verification evidence, not projection-only receipt IDs.
-    VerificationStore(store.state_store, task_store=store).record(
-        VerificationReceipt.create(task.task_id, "tests", evidence_id="ev-tests")
+    store.checkpoint(
+        task.task_id,
+        TaskCheckpoint(state_data={"repository_revision": "rev-1", "mutation_generation": 0}),
+        actor="agent",
+        idempotency_key="verify-revision",
+    )
+    artifact_store = ArtifactStore(store.state_store.db_path.parent / "artifacts")
+    command_id = "cmd-tests"
+    proof = {
+        "kind": "work_command_verification",
+        "passed": True,
+        "task_id": task.task_id,
+        "owner": task.owner,
+        "criterion": "tests",
+        "command_id": command_id,
+        "exit_code": 0,
+        "repository_revision": "rev-1",
+        "mutation_generation": 0,
+        "result": {"success": True, "exit_code": 0},
+    }
+    evidence_id = artifact_store.put_json(proof, task.owner, "command_verification")
+    VerificationStore(
+        store.state_store, task_store=store, artifact_store=artifact_store
+    ).record(
+        VerificationReceipt.create(
+            task.task_id, "tests", evidence_id=evidence_id, command_id=command_id,
+            owner=task.owner, repository_revision="rev-1", mutation_generation=0,
+            evidence_type="test",
+        )
     )
     completed = store.transition(task.task_id, TaskStatus.COMPLETED, reason="all passed", actor="agent", idempotency_key="c")
     assert completed.status == TaskStatus.COMPLETED

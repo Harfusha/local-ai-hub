@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 import pytest
 
 from local_ai_hub.agent_events import AgentStateStore
+from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.agent_identity import ScopeContext
-from local_ai_hub.agent_tasks import CompletionGateError, GoalContract, TaskStore
+from local_ai_hub.agent_tasks import CompletionGateError, GoalContract, TaskCheckpoint, TaskStore
 from local_ai_hub.agent_verification import (
     ChangeIntent,
     CompletionResult,
     OutcomeRecord,
     VerificationReceipt,
     VerificationStore,
+    criterion_evidence_type,
 )
 from local_ai_hub.agent_consistency import AgentConsistencyGuard, ConsistencyRequest, GuardWarning
 from local_ai_hub.agent_memory import MemoryStore
@@ -23,7 +26,8 @@ from local_ai_hub.sqlite_support import connect_sqlite
 def stores(tmp_path: Path) -> tuple[TaskStore, VerificationStore]:
     state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
     task_store = TaskStore(state_store)
-    verif_store = VerificationStore(state_store, task_store=task_store)
+    artifact_store = ArtifactStore(tmp_path / "artifacts")
+    verif_store = VerificationStore(state_store, task_store=task_store, artifact_store=artifact_store)
     return task_store, verif_store
 
 
@@ -32,13 +36,48 @@ def receipt_for(
     criterion: str,
     passed: bool = True,
     expires_at: float | None = None,
+    *,
+    owner: str = "agent",
+    repository_revision: str = "rev-1",
+    mutation_generation: int = 0,
+    evidence_type: str | None = None,
+    artifact_store: ArtifactStore | None = None,
 ) -> VerificationReceipt:
+    kind = evidence_type or criterion_evidence_type(criterion)
+    command_id = "cmd-123" if kind in {"test", "benchmark"} else ""
+    evidence_id = "ev-123"
+    if passed is True and artifact_store is not None:
+        proof = {
+            "kind": "work_command_verification" if command_id else "work_source_review",
+            "passed": True,
+            "task_id": task_id,
+            "owner": owner,
+            "repository_revision": repository_revision,
+            "mutation_generation": mutation_generation,
+        }
+        if command_id:
+            proof.update(
+                criterion=criterion,
+                command_id=command_id,
+                exit_code=0,
+                result={"success": True, "exit_code": 0},
+            )
+        else:
+            proof["criteria"] = [criterion]
+        evidence_id = artifact_store.put_json(
+            proof, owner, "command_verification" if command_id else "source_review"
+        )
     return VerificationReceipt.create(
         task_id=task_id,
         criterion=criterion,
         passed=passed,
         expires_at=expires_at,
-        evidence_id="ev-123",
+        evidence_id=evidence_id,
+        command_id=command_id,
+        owner=owner,
+        repository_revision=repository_revision,
+        mutation_generation=mutation_generation,
+        evidence_type=kind,
     )
 
 
@@ -49,7 +88,7 @@ def test_stale_receipt_cannot_satisfy_completion(stores: tuple[TaskStore, Verifi
         ScopeContext(task_id="task-1"),
         task_id="task-1",
     )
-    verif_store.record(receipt_for("task-1", "tests", expires_at=10.0))
+    verif_store.record(receipt_for("task-1", "tests", expires_at=10.0, artifact_store=verif_store.artifact_store))
     # Check at now=11: expired!
     res = verif_store.completion("task-1", now=11.0)
     assert res.complete is False
@@ -173,7 +212,7 @@ def test_completion_rejects_receipt_with_mismatched_identity(
         ScopeContext(task_id="task-mismatch"),
         task_id="task-mismatch",
     )
-    receipt = receipt_for(receipt_task_id, receipt_criterion)
+    receipt = receipt_for(receipt_task_id, receipt_criterion, artifact_store=verif_store.artifact_store)
     verif_store.record(receipt)
     task_store.add_verification_receipt("task-mismatch", "tests", receipt.receipt_id)
 
@@ -235,7 +274,7 @@ def test_failed_receipt_storage_cannot_satisfy_completion(
 
     monkeypatch.setattr("local_ai_hub.agent_verification.connect_sqlite", fail_store)
     with pytest.raises(RuntimeError, match="receipt write failed"):
-        verif_store.record(receipt_for("task-store-error", "tests"))
+        verif_store.record(receipt_for("task-store-error", "tests", artifact_store=verif_store.artifact_store))
     monkeypatch.undo()
 
     with pytest.raises(CompletionGateError, match="tests"):
@@ -249,7 +288,7 @@ def test_valid_receipt_allows_task_completion(stores: tuple[TaskStore, Verificat
         ScopeContext(task_id="task-valid"),
         task_id="task-valid",
     )
-    receipt = receipt_for("task-valid", "tests")
+    receipt = receipt_for("task-valid", "tests", artifact_store=verif_store.artifact_store)
     verif_store.record(receipt)
 
     completed = task_store.complete("task-valid")
@@ -291,8 +330,8 @@ def test_current_revision_rejects_fresh_receipt_from_other_revision(stores: tupl
         ScopeContext(task_id="revision-task"),
         task_id="revision-task",
     )
-    verif_store.record(VerificationReceipt.create(
-        "revision-task", "tests", evidence_id="ev-old-revision",
+    verif_store.record(receipt_for(
+        "revision-task", "tests", artifact_store=verif_store.artifact_store,
         repository_revision="old-revision", expires_at=100.0,
     ))
 
@@ -310,13 +349,65 @@ def test_all_criteria_must_pass_for_completion(stores: tuple[TaskStore, Verifica
         ScopeContext(task_id="task-2"),
         task_id="task-2",
     )
-    verif_store.record(receipt_for("task-2", "tests", passed=True))
-    verif_store.record(receipt_for("task-2", "lint", passed=False))
+    verif_store.record(receipt_for("task-2", "tests", passed=True, artifact_store=verif_store.artifact_store))
+    verif_store.record(receipt_for("task-2", "lint", passed=False, artifact_store=verif_store.artifact_store))
 
     comp = verif_store.completion("task-2", now=100.0)
     assert comp.complete is False
     assert "lint" in comp.unsatisfied_criteria
     assert "tests" in comp.satisfied_criteria
+
+
+def test_newer_failed_receipt_supersedes_older_pass(stores: tuple[TaskStore, VerificationStore]):
+    task_store, verif_store = stores
+    task_store.create(
+        GoalContract(goal="latest receipt wins", acceptance_criteria=("tests",)),
+        ScopeContext(task_id="task-latest-receipt"),
+        task_id="task-latest-receipt",
+    )
+    passing = replace(
+        receipt_for("task-latest-receipt", "tests", artifact_store=verif_store.artifact_store),
+        observed_at=10.0,
+    )
+    failing = VerificationReceipt.create(
+        "task-latest-receipt", "tests", passed=False, owner="agent",
+        command_id="cmd-failed", evidence_type="test",
+    )
+    failing = replace(failing, observed_at=20.0)
+    verif_store.record(passing)
+    verif_store.record(failing)
+
+    completion = verif_store.completion("task-latest-receipt", now=30.0)
+
+    assert completion.complete is False
+    assert completion.unsatisfied_criteria == ("tests",)
+    assert completion.receipts[0].receipt_id == failing.receipt_id
+
+
+def test_completion_rejects_receipt_from_previous_mutation_generation(
+    stores: tuple[TaskStore, VerificationStore],
+):
+    task_store, verif_store = stores
+    task_store.create(
+        GoalContract(goal="changed task", acceptance_criteria=("tests",)),
+        ScopeContext(task_id="task-generation"),
+        task_id="task-generation",
+    )
+    receipt = receipt_for(
+        "task-generation", "tests", artifact_store=verif_store.artifact_store,
+        mutation_generation=0,
+    )
+    verif_store.record(receipt)
+    task_store.checkpoint(
+        "task-generation",
+        TaskCheckpoint(state_data={"mutation_generation": 1}),
+        actor="agent", idempotency_key="changed-generation",
+    )
+
+    completion = verif_store.completion("task-generation", now=receipt.observed_at + 1)
+
+    assert completion.complete is False
+    assert completion.stale_criteria == ("tests",)
 
 
 def test_completion_audit_maps_criteria_to_evidence_and_receipts(stores: tuple[TaskStore, VerificationStore], tmp_path: Path):
@@ -326,8 +417,8 @@ def test_completion_audit_maps_criteria_to_evidence_and_receipts(stores: tuple[T
         ScopeContext(task_id="task-audit"),
         task_id="task-audit",
     )
-    verif_store.record(VerificationReceipt.create("task-audit", "tests", evidence_id="ev-tests", repository_revision="rev-1"))
-    verif_store.record(VerificationReceipt.create("task-audit", "lint", evidence_id="ev-lint", repository_revision="rev-1"))
+    verif_store.record(receipt_for("task-audit", "tests", artifact_store=verif_store.artifact_store, repository_revision="rev-1"))
+    verif_store.record(receipt_for("task-audit", "lint", artifact_store=verif_store.artifact_store, repository_revision="rev-1"))
     guard = AgentConsistencyGuard(RepositoryTools({}), verification_store=verif_store)
 
     result = verif_store.completion(
@@ -340,7 +431,8 @@ def test_completion_audit_maps_criteria_to_evidence_and_receipts(stores: tuple[T
     audit = result.to_dict()["consistency"]
 
     assert result.complete is True
-    assert audit["criteria"]["tests"]["evidence_ids"] == ["ev-tests"]
+    test_receipt = next(receipt for receipt in result.receipts if receipt.criterion == "tests")
+    assert audit["criteria"]["tests"]["evidence_ids"] == [test_receipt.evidence_id]
     assert audit["criteria"]["lint"]["receipt_ids"] == [result.receipts[0].receipt_id] or audit["criteria"]["lint"]["receipt_ids"]
     assert audit["current_revision_receipt_coverage"]["covered"] == 2
     assert audit["current_revision_receipt_coverage"]["total"] == 2
@@ -354,7 +446,7 @@ def test_completion_audit_reports_unresolved_contract_mismatch(stores: tuple[Tas
         ScopeContext(task_id="task-contract"),
         task_id="task-contract",
     )
-    verif_store.record(VerificationReceipt.create("task-contract", "tests", evidence_id="ev-tests", repository_revision="rev-2"))
+    verif_store.record(receipt_for("task-contract", "tests", artifact_store=verif_store.artifact_store, repository_revision="rev-2"))
     guard = AgentConsistencyGuard(RepositoryTools({}), verification_store=verif_store)
 
     result = verif_store.completion(

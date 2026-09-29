@@ -237,7 +237,11 @@ class LocalAIApp:
         self.agent_tasks = TaskStore(self.agent_state)
         self.agent_memory = MemoryStore(self.agent_state)
         self.agent_incidents = IncidentStore(self.agent_state)
-        self.agent_verification = VerificationStore(self.agent_state, task_store=self.agent_tasks)
+        self.agent_verification = VerificationStore(
+            self.agent_state,
+            task_store=self.agent_tasks,
+            artifact_store=self.artifacts,
+        )
         self.agent_policy = PolicyEngine(self.agent_state)
         self.agent_tasks.set_policy_engine(self.agent_policy)
         self.agent_blackboard = BlackboardStore(state_dir / "agent_state.sqlite3")
