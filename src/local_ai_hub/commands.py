@@ -1341,6 +1341,7 @@ class CommandBroker:
         tenant: str,
         task_id: str,
         criterion: str,
+        command: str,
         command_id: str,
         command_digest: str,
         repository_revision: str,
@@ -1352,23 +1353,39 @@ class CommandBroker:
         try:
             if self.artifacts is None:
                 raise RuntimeError("artifact store unavailable")
-            from .agent_verification import VerificationReceipt
+            from .agent_verification import VerificationReceipt, classify_verification_command
+
+            evidence_type = classify_verification_command(command)
+            if evidence_type not in {"test", "benchmark"}:
+                return
+            task_store = self.task_store or getattr(self.verification_store, "task_store", None)
+            task = task_store.get(task_id) if task_store is not None else None
+            verified_owner = str(getattr(task, "owner", "") or tenant).strip()
+            state_data = getattr(getattr(task, "checkpoint", None), "state_data", {}) or {}
+            mutation_generation = int(state_data.get("mutation_generation", 0) or 0)
+            exit_code = result.get("exit_code")
+            if type(exit_code) is not int or exit_code != 0 or not verified_owner:
+                return
 
             proof = {
-                "kind": "command_verification",
+                "kind": "work_command_verification",
                 "task_id": task_id,
+                "owner": verified_owner,
                 "criterion": criterion,
                 "command_id": command_id,
                 "command_sha256": command_digest,
-                "exit_code": int(result.get("exit_code", 0)),
+                "exit_code": exit_code,
                 "repository_revision": repository_revision,
+                "mutation_generation": mutation_generation,
+                "passed": True,
+                "result": {"success": result.get("success") is True, "exit_code": exit_code},
                 "duration_ms": max(0.0, float(duration_ms or 0)),
                 "cached": cached,
             }
             if hasattr(self.artifacts, "put_json"):
-                evidence_id = self.artifacts.put_json(proof, tenant, "command_verification")
+                evidence_id = self.artifacts.put_json(proof, verified_owner, "command_verification")
             elif hasattr(self.artifacts, "put"):
-                evidence_id = self.artifacts.put(json_dumps(proof), tenant, "command_verification", "application/json")
+                evidence_id = self.artifacts.put(json_dumps(proof), verified_owner, "command_verification", "application/json")
             else:
                 evidence_id = ""
             if not evidence_id:
@@ -1380,6 +1397,9 @@ class CommandBroker:
                 command_id=command_id,
                 evidence_id=str(evidence_id),
                 repository_revision=repository_revision,
+                owner=verified_owner,
+                mutation_generation=mutation_generation,
+                evidence_type=evidence_type,
                 details={
                     "exit_code": proof["exit_code"],
                     "duration_ms": proof["duration_ms"],
@@ -2805,6 +2825,7 @@ class CommandBroker:
                     tenant=tenant,
                     task_id=task_id,
                     criterion=criterion or f"command:{self._safe_label(command)}",
+                    command=command,
                     command_id=f"cache_{uuid.uuid4().hex}",
                     command_digest=hashlib.sha256(command.encode("utf-8")).hexdigest(),
                     repository_revision=str(state.get("fingerprint", "")),
@@ -2968,6 +2989,7 @@ class CommandBroker:
                 tenant=tenant,
                 task_id=task_id,
                 criterion=criterion or f"command:{self._safe_label(command)}",
+                command=command,
                 command_id=execution_id,
                 command_digest=hashlib.sha256(command.encode("utf-8")).hexdigest(),
                 repository_revision=str(state.get("fingerprint", "")),

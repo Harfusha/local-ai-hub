@@ -44,12 +44,29 @@ def test_interrupted_task_resumes_with_fresh_evidence_and_no_duplicate_command(t
     chk = TaskCheckpoint(phase="testing", next_action="verify_tests")
     app.agent_tasks.checkpoint(t.task_id, chk, actor="agent", idempotency_key="chk-1")
 
-    # Record verification receipt
+    # Record trusted command proof
+    command_id = "cmd-resume-tests"
+    proof = {
+        "kind": "work_command_verification",
+        "passed": True,
+        "task_id": t.task_id,
+        "owner": t.owner,
+        "criterion": "suite_passed",
+        "command_id": command_id,
+        "exit_code": 0,
+        "repository_revision": "",
+        "mutation_generation": 0,
+        "result": {"success": True, "exit_code": 0},
+    }
+    evidence_id = app.artifacts.put_json(proof, t.owner, "command_verification")
     rcpt = VerificationReceipt.create(
         task_id=t.task_id,
         criterion="suite_passed",
         passed=True,
-        evidence_id="E-test-passed",
+        evidence_id=evidence_id,
+        command_id=command_id,
+        owner=t.owner,
+        evidence_type="test",
     )
     app.agent_verification.record(rcpt)
 
@@ -114,16 +131,46 @@ def test_e2e_completion_gate_enforcement(tmp_path: Path):
     with pytest.raises(CompletionGateError):
         app.agent_tasks.transition(t.task_id, TaskStatus.COMPLETED, reason="premature", actor="agent", idempotency_key="g-fail")
 
-    # Record first receipt
-    r1 = VerificationReceipt.create(task_id=t.task_id, criterion="tests_pass", passed=True, evidence_id="ev_test")
+    # Record trusted test proof
+    test_command_id = "cmd-tests"
+    test_proof = {
+        "kind": "work_command_verification",
+        "passed": True,
+        "task_id": t.task_id,
+        "owner": t.owner,
+        "criterion": "tests_pass",
+        "command_id": test_command_id,
+        "exit_code": 0,
+        "repository_revision": "",
+        "mutation_generation": 0,
+        "result": {"success": True, "exit_code": 0},
+    }
+    test_evidence = app.artifacts.put_json(test_proof, t.owner, "command_verification")
+    r1 = VerificationReceipt.create(
+        task_id=t.task_id, criterion="tests_pass", passed=True, evidence_id=test_evidence,
+        command_id=test_command_id, owner=t.owner, evidence_type="test",
+    )
     app.agent_verification.record(r1)
 
     # Still missing lint_pass
     with pytest.raises(CompletionGateError):
         app.agent_tasks.transition(t.task_id, TaskStatus.COMPLETED, reason="still missing", actor="agent", idempotency_key="g-fail2")
 
-    # Record second receipt
-    r2 = VerificationReceipt.create(task_id=t.task_id, criterion="lint_pass", passed=True, evidence_id="ev_lint")
+    # Record trusted review proof
+    review_proof = {
+        "kind": "work_source_review",
+        "passed": True,
+        "task_id": t.task_id,
+        "owner": t.owner,
+        "repository_revision": "",
+        "mutation_generation": 0,
+        "criteria": ["lint_pass"],
+    }
+    review_evidence = app.artifacts.put_json(review_proof, t.owner, "source_review")
+    r2 = VerificationReceipt.create(
+        task_id=t.task_id, criterion="lint_pass", passed=True, evidence_id=review_evidence,
+        owner=t.owner, evidence_type="source_review",
+    )
     app.agent_verification.record(r2)
 
     # Now completion succeeds
