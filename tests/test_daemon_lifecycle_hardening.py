@@ -5,21 +5,41 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 
 from local_ai_hub import commands as commands_module
+from local_ai_hub.agent_policy import PolicyEngine
 from local_ai_hub.commands import CommandBroker
 
 
+class _FakeTaskStore:
+    def __init__(self, worktree_path: str) -> None:
+        self.worktree_path = worktree_path
+
+    def get(self, task_id: str):
+        if task_id != "daemon-test":
+            return None
+        return SimpleNamespace(
+            checkpoint=SimpleNamespace(
+                state_data={"worktree": {"success": True, "worktree_path": self.worktree_path}}
+            )
+        )
+
+
 def _broker(tmp_path: Path, **command_config: object) -> CommandBroker:
-    return CommandBroker(
+    broker = CommandBroker(
         {
             "server": {"state_dir": str(tmp_path / "state")},
             "commands": {"enabled": True, **command_config},
+            "agent_policy": {"enabled": True, "allow_developer_authorized_mutations": True},
         }
     )
+    broker.set_task_store(_FakeTaskStore(str(tmp_path)))
+    broker.set_policy_engine(PolicyEngine())
+    return broker
 
 
 def test_daemon_environment_filters_inherited_secrets_but_keeps_explicit_values(
@@ -43,6 +63,7 @@ def test_daemon_environment_filters_inherited_secrets_but_keeps_explicit_values(
         {"BAD=NAME": "value"},
         {"GOOD": "contains\x00nul"},
         {"GOOD": 1},
+        {"GIT_COMMON_DIR": "outside/.git"},
     ],
 )
 def test_daemon_environment_rejects_invalid_explicit_entries(
@@ -54,6 +75,68 @@ def test_daemon_environment_rejects_invalid_explicit_entries(
         broker._daemon_environment(extra_env)  # type: ignore[arg-type]
 
 
+def test_spawn_daemon_requires_auxiliary_policy_before_process_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = _broker(tmp_path)
+    broker.config["agent_policy"]["allow_developer_authorized_mutations"] = False
+    broker.set_policy_engine(PolicyEngine())
+    launches: list[object] = []
+
+    def fail_if_launched(*args: object, **_kwargs: object) -> None:
+        launches.append(args)
+        raise AssertionError("unauthorized daemon reached process launch")
+
+    monkeypatch.setattr(commands_module.subprocess, "Popen", fail_if_launched)
+    result = broker.spawn_daemon(
+        [sys.executable, "-c", "pass"], str(tmp_path), task_id="daemon-test"
+    )
+
+    assert result["success"] is False
+    assert result["policy"]["allowed"] is False
+    assert not launches
+
+
+def test_spawn_daemon_applies_command_policy_before_process_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = _broker(tmp_path)
+    launches: list[object] = []
+
+    def fail_if_launched(*args: object, **_kwargs: object) -> None:
+        launches.append(args)
+        raise AssertionError("dangerous daemon reached process launch")
+
+    monkeypatch.setattr(commands_module.subprocess, "Popen", fail_if_launched)
+    result = broker.spawn_daemon(["rm", "-rf", "/"], str(tmp_path), task_id="daemon-test")
+
+    assert result["success"] is False
+    assert result["policy_blocked"] is True
+    assert not launches
+
+
+def test_spawn_daemon_rejects_git_shared_worktree_override_before_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shared = tmp_path.parent / f"{tmp_path.name}-shared"
+    shared.mkdir()
+    broker = _broker(tmp_path)
+    launches: list[object] = []
+
+    def fail_if_launched(*args: object, **_kwargs: object) -> None:
+        launches.append(args)
+        raise AssertionError("daemon Git override reached process launch")
+
+    monkeypatch.setattr(commands_module.subprocess, "Popen", fail_if_launched)
+    result = broker.spawn_daemon(
+        ["git", "-C", str(shared), "status"], str(tmp_path), task_id="daemon-test"
+    )
+
+    assert result["success"] is False
+    assert "outside the registered task worktree" in result["error"]
+    assert not launches
+
+
 def test_daemon_log_retains_bounded_recent_output(tmp_path: Path) -> None:
     max_log_bytes = 1024
     broker = _broker(tmp_path, daemon_log_max_bytes=max_log_bytes)
@@ -62,6 +145,7 @@ def test_daemon_log_retains_bounded_recent_output(tmp_path: Path) -> None:
         f'"{sys.executable}" -c "{code}"',
         str(tmp_path),
         name="bounded-log-test",
+        task_id="daemon-test",
     )
     assert daemon["success"] is True
 
@@ -141,6 +225,7 @@ def test_daemon_accepts_structured_argv_without_shell(tmp_path: Path) -> None:
         [sys.executable, "-c", "import time; time.sleep(30)"],
         str(tmp_path),
         name="structured-argv-test",
+        task_id="daemon-test",
     )
 
     assert daemon["success"] is True
@@ -152,7 +237,7 @@ def test_stop_daemon_does_not_claim_tree_stopped_when_cleanup_is_unconfirmed(
 ) -> None:
     monkeypatch.setattr(CommandBroker, "_watch_daemon_exit", lambda *_args: None)
     broker = _broker(tmp_path)
-    daemon = broker.spawn_daemon([sys.executable, "-c", "pass"], str(tmp_path))
+    daemon = broker.spawn_daemon([sys.executable, "-c", "pass"], str(tmp_path), task_id="daemon-test")
     assert daemon["success"] is True
     process = broker._daemons[daemon["daemon_id"]]["process"]
     process.wait(timeout=5)
@@ -197,7 +282,7 @@ def test_daemon_job_stops_descendants_after_leader_exits(
         "pathlib.Path(sys.argv[1]).write_text(str(child.pid), encoding='ascii')"
     )
     daemon = broker.spawn_daemon(
-        [sys.executable, "-c", parent_code, str(child_pid_file)], str(tmp_path), name="orphan-child-test"
+        [sys.executable, "-c", parent_code, str(child_pid_file)], str(tmp_path), name="orphan-child-test", task_id="daemon-test"
     )
     assert daemon["success"] is True
     child_pid: int | None = None
@@ -237,7 +322,7 @@ def test_daemon_ttl_retries_unconfirmed_tree_cleanup(
 ) -> None:
     monkeypatch.setattr(CommandBroker, "_watch_daemon_exit", lambda *_args: None)
     broker = _broker(tmp_path)
-    daemon = broker.spawn_daemon([sys.executable, "-c", "pass"], str(tmp_path))
+    daemon = broker.spawn_daemon([sys.executable, "-c", "pass"], str(tmp_path), task_id="daemon-test")
     assert daemon["success"] is True
     broker._daemons[daemon["daemon_id"]]["process"].wait(timeout=5)
     attempts: list[str] = []
@@ -262,6 +347,7 @@ def test_daemon_rejects_implicit_shell_operators(tmp_path: Path) -> None:
     result = broker.spawn_daemon(
         f'"{sys.executable}" -c "pass" && "{sys.executable}" -c "pass"',
         str(tmp_path),
+        task_id="daemon-test",
     )
 
     try:
@@ -278,6 +364,7 @@ def test_daemon_ttl_stops_process_and_records_owner(tmp_path: Path) -> None:
         [sys.executable, "-c", "import time; time.sleep(30)"],
         str(tmp_path),
         name="ttl-test",
+        task_id="daemon-test",
     )
     assert daemon["success"] is True
     try:
@@ -299,19 +386,16 @@ def test_daemon_ttl_stops_process_and_records_owner(tmp_path: Path) -> None:
 
 
 def test_live_daemon_is_reconciled_after_broker_restart(tmp_path: Path) -> None:
-    config = {
-        "server": {"state_dir": str(tmp_path / "state")},
-        "commands": {"enabled": True},
-    }
-    first = CommandBroker(config)
+    first = _broker(tmp_path)
     daemon = first.spawn_daemon(
         f'"{sys.executable}" -c "import time; time.sleep(30)"',
         str(tmp_path),
         name="restart-reconcile-test",
+        task_id="daemon-test",
     )
     assert daemon["success"] is True
 
-    second = CommandBroker(config)
+    second = _broker(tmp_path)
     try:
         status = second.daemon_status(daemon["daemon_id"])
         assert status["success"] is True
@@ -325,21 +409,18 @@ def test_live_daemon_is_reconciled_after_broker_restart(tmp_path: Path) -> None:
 
 
 def test_restart_reconciliation_rejects_pid_reuse(tmp_path: Path) -> None:
-    config = {
-        "server": {"state_dir": str(tmp_path / "state")},
-        "commands": {"enabled": True},
-    }
-    first = CommandBroker(config)
+    first = _broker(tmp_path)
     daemon = first.spawn_daemon(
         f'"{sys.executable}" -c "import time; time.sleep(30)"',
         str(tmp_path),
         name="pid-reuse-test",
+        task_id="daemon-test",
     )
     assert daemon["success"] is True
 
     try:
         with mock.patch.object(commands_module, "process_identity", return_value={"pid": daemon["pid"], "creation_identity": -1}):
-            second = CommandBroker(config)
+            second = _broker(tmp_path)
         result = second.daemon_status(daemon["daemon_id"])
         assert result["success"] is False
         assert first.daemon_status(daemon["daemon_id"])["running"] is True
