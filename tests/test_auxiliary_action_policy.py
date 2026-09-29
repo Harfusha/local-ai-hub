@@ -11,6 +11,7 @@ from local_ai_hub.agent_policy import (
     PolicyEngine,
     RiskClass,
 )
+from local_ai_hub.services import LocalAIServices
 
 
 @pytest.fixture
@@ -81,6 +82,42 @@ def test_unknown_auxiliary_action_fails_closed_even_when_marked_read(
     assert decision.allowed is False
     assert decision.owner == "agent_policy"
     assert decision.side_effect_class == "unknown"
+
+
+def test_command_spawn_daemon_forwards_task_id_separately_from_name(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    class Broker:
+        def spawn_daemon(
+            self,
+            command: str,
+            cwd: str,
+            *,
+            name: str = "",
+            env: dict[str, str] | None = None,
+            task_id: str = "",
+        ) -> dict[str, object]:
+            captured.update({"command": command, "cwd": cwd, "name": name, "env": env, "task_id": task_id})
+            return {"success": True}
+
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.commands = Broker()
+    services.agent_state = None
+
+    result = services.command(
+        {
+            "action": "spawn_daemon",
+            "command": "python -c pass",
+            "cwd": str(tmp_path),
+            "name": "named-daemon",
+            "task_id": "task-owned",
+        },
+        "agent",
+    )
+
+    assert result["success"] is True
+    assert captured["task_id"] == "task-owned"
+    assert captured["name"] == "named-daemon"
 
 
 def test_disabled_auxiliary_policy_denies_known_action(policy: PolicyEngine) -> None:
