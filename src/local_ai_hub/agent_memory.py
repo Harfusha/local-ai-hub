@@ -596,7 +596,8 @@ class MemoryStore:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
                 con.execute("BEGIN IMMEDIATE")
-                stream_id = f"memory:{record.scope.value}:{record.key or record.record_id}"
+                stream_parts = (record.scope.value, record.scope_id or "", record.key or record.record_id)
+                stream_id = "memory:" + "".join(f"{len(part)}:{part}" for part in stream_parts)
                 event_idempotency_key = idempotency_key or f"rec_{record.record_id}"
                 existing = con.execute(
                     """
@@ -1684,14 +1685,32 @@ class MemoryStore:
             expires_at=float(expires_at) if expires_at is not None else None,
         )
 
-    def delete(self, record_id: str) -> bool:
+    def delete(
+        self,
+        record_id: str,
+        *,
+        scope: AgentScope | str | None = None,
+        scope_id: str | None = None,
+    ) -> bool:
+        # Never derive authorization from the record being deleted. Callers must
+        # provide the scope identity they already verified.
+        if scope is None:
+            return False
+        scope_value = scope.value if isinstance(scope, AgentScope) else str(scope)
+        if scope_value == AgentScope.GLOBAL.value and scope_id is None:
+            scope_id = ""
+        elif scope_value != AgentScope.GLOBAL.value and not scope_id:
+            return False
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return False
         self._init_table()
         con = connect_sqlite(self.state_store.db_path, isolation_level=None)
         try:
             con.execute("BEGIN IMMEDIATE")
-            cur = con.execute("DELETE FROM agent_memory_records WHERE record_id = ?", (record_id,))
+            cur = con.execute(
+                "DELETE FROM agent_memory_records WHERE record_id = ? AND scope = ? AND scope_id IS ?",
+                (record_id, scope_value, scope_id),
+            )
             cnt = cur.rowcount
             if cnt > 0:
                 con.execute(
