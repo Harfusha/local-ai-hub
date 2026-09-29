@@ -157,7 +157,7 @@ def test_local_ai_repo_non_context_actions_ignore_guard_fields(monkeypatch) -> N
     assert calls == [(
         "/api/search",
         {"root": str(Path("C:/repo")), "query": "route", "top_k": 12, "enrich": False},
-        180.0,
+        120.0,
     )]
 
 
