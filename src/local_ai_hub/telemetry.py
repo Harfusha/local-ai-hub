@@ -24,6 +24,11 @@ _PATH_RE = re.compile(r"(?:(?:[A-Za-z]:\\\\|/)(?:[^\s:'\"<>|]+[/\\\\])+[^\s:'\"<
 _LONG_TOKEN_RE = re.compile(r"\b(?:[A-Fa-f0-9]{24,}|[A-Za-z0-9_\-]{48,})\b")
 _WINDOWS_PATH_RE = re.compile(r"\b[A-Za-z]:[\\/][^\s<>|\"']+")
 _POSIX_PATH_RE = re.compile(r"(?<![\w:])/(?:[^/\s]+/)+[^/\s]*")
+_SENSITIVE_METADATA_VALUE_RE = re.compile(
+    r"(?i)[\"']?(prompt|source(?:_text)?|input(?:_text)?|completion|output(?:_text)?|"
+    r"response(?:_body)?|request(?:_body)?|body|payload|content|api[_-]?key|token|"
+    r"password|secret|authorization)[\"']?\s*([=:])\s*.*$"
+)
 _SAVINGS_SOURCE_ALLOWLIST = frozenset({
     "cache_hit", "cache_or_local_reuse", "context_compaction", "delegated_context",
     "deterministic_outline", "local_compute", "measured_context", "reused",
@@ -65,6 +70,9 @@ def _percentile(values: list[float], pct: float) -> float:
     if not values:
         return 0.0
     ordered = sorted(float(x) for x in values)
+    if pct == 0.50 and len(ordered) % 2 == 0:
+        middle = len(ordered) // 2
+        return round((ordered[middle - 1] + ordered[middle]) / 2, 1)
     idx = max(0, min(len(ordered) - 1, int(round((len(ordered) - 1) * pct))))
     return round(ordered[idx], 1)
 
@@ -96,17 +104,15 @@ def _tail_latency(rows: list[tuple[Any, ...]], key_name: str) -> list[dict[str, 
 
 
 def _safe_error_message(value: Any) -> str:
-    """Keep error diagnostics useful without persisting project/source content."""
-    text = str(value or "").replace("\r", " ").replace("\n", " ")[:1200]
-    text = _PATH_RE.sub("<path>", text)
-    text = _LONG_TOKEN_RE.sub("<token>", text)
-    return " ".join(text.split())[:500]
+    """Omit untrusted exception text; error class and operation are stored separately."""
+    return "Error details omitted"
 
 
-def _error_fingerprint(error_type: str, component: str, operation: str, message: str) -> str:
-    # Strip volatile numbers so the same failure groups together across requests.
-    stable = re.sub(r"\b\d+\b", "#", message.lower())
-    raw = f"{error_type}|{component}|{operation}|{stable}".encode("utf-8", "replace")
+def _error_fingerprint(error_type: str, component: str, operation: str, error_code: str = "") -> str:
+    # Fingerprint only sanitized classification labels, never free-form error text.
+    labels = (_safe_error_metadata(value) for value in (error_type, component, operation, error_code))
+    stable = [value.casefold() for value in labels]
+    raw = "|".join(stable).encode("utf-8", "replace")
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
@@ -128,6 +134,23 @@ def _safe_metadata(value: Any, limit: int = _MAX_METADATA_LENGTH) -> str:
     text = _POSIX_PATH_RE.sub(redact_posix, text)
     text = _LONG_TOKEN_RE.sub("<token>", text)
     return " ".join(text.split())[:limit]
+
+
+def _safe_error_metadata(value: Any, limit: int = _MAX_METADATA_LENGTH) -> str:
+    """Redact sensitive labeled payloads as well as paths in error classifications."""
+    text = _safe_metadata(value, limit)
+    text = re.sub(r"(?i)/api/[^\s,;\"']+", "<path>", text)
+    text = _SENSITIVE_METADATA_VALUE_RE.sub(r"\1\2[redacted]", text)
+    return " ".join(text.split())[:limit]
+
+
+def _safe_error_code(error: Any) -> str:
+    """Retain only bounded numeric codes; never hash free-form exception attributes."""
+    for attribute in ("status_code", "errno", "code"):
+        value = getattr(error, attribute, None)
+        if type(value) is int and -65_535 <= value <= 65_535:
+            return f"{attribute}:{value}"
+    return ""
 
 
 def _bounded_number(value: Any, *, integer: bool = False, maximum: float = _MAX_DURATION_MS) -> int | float:
@@ -801,18 +824,26 @@ class TelemetryStore:
         tenant = tenant or str(ctx.get("tenant") or "")
         agent = agent or str(ctx.get("agent") or "")
         error_type = type(error).__name__ if isinstance(error, BaseException) else "Error"
+        safe_request_id = _safe_error_metadata(request_id, 96)
+        safe_tenant = _safe_error_metadata(tenant, 160)
+        safe_agent = _safe_error_metadata(agent, 80)
+        safe_component = _safe_error_metadata(component, 120)
+        safe_operation = _safe_error_metadata(operation, 160)
+        safe_error_type = _safe_error_metadata(error_type, 120)
+        safe_error_code = _safe_error_code(error)
         message = _safe_error_message(error)
-        fp = _error_fingerprint(error_type, component, operation, message)
+        fp = _error_fingerprint(safe_error_type, safe_component, safe_operation, safe_error_code)
         payload = {
-            "created_at": time.time(), "request_id": request_id[:96], "tenant": tenant[:160], "agent": agent[:80],
-            "component": str(component)[:120], "operation": str(operation)[:160], "error_type": error_type[:120],
+            "created_at": time.time(), "request_id": safe_request_id, "tenant": safe_tenant, "agent": safe_agent,
+            "component": safe_component, "operation": safe_operation, "error_type": safe_error_type,
             "fingerprint": fp, "safe_message": message, "retryable": 1 if retryable else 0,
             "recovered": 1 if recovered else 0,
         }
         self._enqueue("error", payload)
         self.record(
-            event_type="error", tenant=tenant, agent=agent, request_id=request_id,
-            action=f"{component}:{operation}", success=False, error_type=error_type, error_fingerprint=fp,
+            event_type="error", tenant=safe_tenant, agent=safe_agent, request_id=safe_request_id,
+            action=f"{safe_component}:{safe_operation}", success=False,
+            error_type=safe_error_type, error_fingerprint=fp,
         )
         return fp
 
