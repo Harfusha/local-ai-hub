@@ -1257,22 +1257,26 @@ class CommandBroker:
         seq_parts = self._split_outside_quotes(trimmed, (";", "&&"))
         if len(seq_parts) > 1:
             classes = []
+            replay_safe = True
             for _, subcmd in seq_parts:
                 sub_res = self.classify(subcmd)
                 if not sub_res.get("allowed"):
                     return sub_res
                 classes.append(sub_res.get("class", "unknown"))
+                replay_safe = replay_safe and bool(
+                    sub_res.get("replay_safe", sub_res.get("class") == "read")
+                )
             order = ["dangerous", "unknown", "mutating", "build", "validation", "read"]
             for o in order:
                 if o in classes:
-                    return {"class": o, "cacheable": False, "allowed": bool(cfg.get(f"allow_{o}", o in {"read", "validation", "build"})), "reason": f"compound sequence ({o})"}
+                    return {"class": o, "cacheable": False, "allowed": bool(cfg.get(f"allow_{o}", o in {"read", "validation", "build"})), "replay_safe": replay_safe, "reason": f"compound sequence ({o})"}
             return {"class": "read", "cacheable": False, "allowed": True, "reason": "compound sequence"}
 
         # Pipelines (|) outside quotes
         pipe_parts = self._split_outside_quotes(trimmed, ("|",))
         if len(pipe_parts) > 1:
             first_delim, first_cmd = pipe_parts[0]
-            first_res = self._classify_single(first_cmd)
+            first_res = self.classify(first_cmd)
             if not first_res.get("allowed"):
                 return first_res
             for _, stage in pipe_parts[1:]:
@@ -1283,9 +1287,14 @@ class CommandBroker:
                 sexe_base = re.sub(r"\.(exe|cmd|bat|ps1|sh)$", "", sexe)
                 if sexe_base not in self.READ_FILTERS and sexe_base not in self.READ_ONLY:
                     return {"class": "unknown", "cacheable": False, "allowed": False, "reason": f"pipeline filter {sexe_base} not allowed"}
-            return {"class": first_res.get("class", "read"), "cacheable": False, "allowed": True, "reason": "pipeline with safe filters"}
+            replay_safe = bool(first_res.get("replay_safe", first_res.get("class") == "read"))
+            return {"class": first_res.get("class", "read"), "cacheable": False, "allowed": True, "replay_safe": replay_safe, "reason": "pipeline with safe filters"}
 
-        return self._classify_single(trimmed)
+        result = self._classify_single(trimmed)
+        if result.get("class") == "validation":
+            # Validation is replay-safe only when this classifier explicitly recognizes it.
+            result.setdefault("replay_safe", True)
+        return result
 
     def _classify_single(self, command: str) -> dict[str, Any]:
         tokens = self._tokens(command)
@@ -1302,7 +1311,8 @@ class CommandBroker:
 
         extra_allowed = set(str(x).strip().lower() for x in cfg.get("extra_allowed_tools", []))
         if exe_base in extra_allowed:
-            return {"class": "validation", "cacheable": True, "allowed": True, "reason": f"user-whitelisted tool: {exe_base}"}
+            # A user whitelist permits execution; it does not prove replay safety.
+            return {"class": "validation", "cacheable": False, "allowed": True, "replay_safe": False, "reason": f"user-whitelisted tool has unknown side effects: {exe_base}"}
 
         # PowerShell commands or script blocks
         if self._is_powershell_command(command) or exe_base in {"pwsh", "powershell"}:
@@ -1326,7 +1336,13 @@ class CommandBroker:
 
             validation_keywords = {"test", "validate", "check", "audit", "-runtests", "pester"} | extra_allowed
             if any(w in cmd_lower for w in validation_keywords):
-                return {"class": "validation", "cacheable": False, "allowed": bool(cfg.get("allow_validation", True)), "reason": "powershell validation command"}
+                replay_safe = not any(w and w in cmd_lower for w in extra_allowed)
+                reason = (
+                    "powershell validation command"
+                    if replay_safe
+                    else "powershell command includes user-whitelisted tool with unknown side effects"
+                )
+                return {"class": "validation", "cacheable": False, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": replay_safe, "reason": reason}
 
             ps_read_prefixes = ("get-", "select-", "measure-", "format-", "test-path", "where-", "out-string", "compare-", "convertfrom-", "convertto-")
             first_word = command.strip().split()[0].lower() if command.strip() else ""
@@ -1420,7 +1436,7 @@ class CommandBroker:
                     "pylint", "bandit", "coverage", "tox", "nox", "pre_commit", "pre-commit",
                 }
                 if dash_m in validation_modules:
-                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": f"python -m {dash_m} validation"}
+                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"python -m {dash_m} validation"}
                 if dash_m in {"build", "wheel", "setuptools", "flit"}:
                     return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": f"python -m {dash_m} packaging"}
                 if dash_m in {"local_ai_hub", "local_ai_hub.generator"}:
@@ -1436,7 +1452,7 @@ class CommandBroker:
                     return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": f"python -m {dash_m} inspection"}
                 if dash_m in {"black", "isort"}:
                     if any(f in lower for f in {"--check", "--diff"}):
-                        return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": f"python -m {dash_m} validation"}
+                        return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"python -m {dash_m} validation"}
                     return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": f"python -m {dash_m} format without --check"}
 
             dash_c = None
@@ -1478,7 +1494,7 @@ class CommandBroker:
                         is_validation = True
 
                 if is_validation:
-                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "python inline validation"}
+                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "python inline validation"}
                 return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": "python inline read"}
 
             non_flag_args = [t for t in tokens[1:] if not t.startswith("-")]
@@ -1491,9 +1507,9 @@ class CommandBroker:
                         is_mutating = any(t in lower for t in {"--complete", "--fail"})
                         if is_mutating:
                             return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": "hubctl tasks status mutation"}
-                        return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "hubctl tasks status check"}
+                        return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "hubctl tasks status check"}
                     if sub in {"status", "service-status", "agent-state", "dashboard", "watch", "memory", "doctor", "logs"}:
-                        return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": f"hubctl {sub} status check"}
+                        return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"hubctl {sub} status check"}
                     if sub == "generate":
                         return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "hubctl generate dynamic artifacts"}
                     if sub in {"start", "stop", "restart", "cleanup"}:
@@ -1502,7 +1518,7 @@ class CommandBroker:
                     if any(t in lower for t in {"--generate-only", "--help", "-h"}):
                         return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "setup.py generate dynamic artifacts"}
                 if any(f in arg.lower() for arg in non_flag_args for f in ("test", "validate", "check", "flow", "status", "audit", "doctor", "selftest", "report", "bench", "benchmark", "inspect", "diagnose", "eval", "summary")):
-                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "python validation script"}
+                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "python validation script"}
                 if any(f in script_name for f in ("generate", "build", "compile", "bundle")):
                     return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "python build/generate script"}
                 if not any(token.lower() in self.MUTATING_WORDS for token in non_flag_args[1:]):
@@ -2390,7 +2406,7 @@ class CommandBroker:
                     pass
 
             raw = dict(result)
-            if cacheable and not result.get("cancelled"):
+            if cacheable and not result.get("cancelled") and not result.get("timed_out"):
                 (self.success_cache if result.get("success") else self.failure_cache).set(key, raw)
             self._record_command_verification(
                 result,
@@ -2479,15 +2495,7 @@ class CommandBroker:
         if not patch or not patch.strip():
             return {"success": False, "error": "patch text is empty", "terminal": True, "retryable": False}
 
-        # 1. Capture snapshot
-        cp_untracked = subprocess.run(
-            ["git", "ls-files", "--others", "--exclude-standard"],
-            cwd=str(cwd_path), capture_output=True, text=True, check=False,
-            timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
-        )
-        initial_untracked = set(cp_untracked.stdout.splitlines()) if cp_untracked.returncode == 0 else set()
-
-        # 2. Check if patch applies cleanly
+        # 1. Check if patch applies cleanly
         check_proc = subprocess.run(
             ["git", "apply", "--check", "--whitespace=nowarn"],
             input=patch.encode("utf-8"),
@@ -2505,7 +2513,7 @@ class CommandBroker:
                 "retryable": False,
             }
 
-        # 3. Apply patch
+        # 2. Apply patch
         apply_proc = subprocess.run(
             ["git", "apply", "--whitespace=nowarn"],
             input=patch.encode("utf-8"),
@@ -2523,24 +2531,24 @@ class CommandBroker:
                 "retryable": False,
             }
 
-        # 4. Helper rollback closure
-        def _do_rollback() -> None:
-            subprocess.run(
-                ["git", "checkout", "--", "."],
-                cwd=str(cwd_path), capture_output=True, check=False,
-                timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
-            )
-            cp_after = subprocess.run(
-                ["git", "ls-files", "--others", "--exclude-standard"],
-                cwd=str(cwd_path), capture_output=True, text=True, check=False,
-                timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
-            )
-            if cp_after.returncode == 0:
-                new_files = set(cp_after.stdout.splitlines()) - initial_untracked
-                for nf in new_files:
-                    target_file = (cwd_path / nf).resolve()
-                    if target_file.is_file():
-                        target_file.unlink(missing_ok=True)
+        # 3. Roll back only the exact patch; preserve all other working-tree state.
+        def _do_rollback() -> dict[str, Any]:
+            try:
+                rollback_proc = subprocess.run(
+                    ["git", "apply", "--reverse", "--whitespace=nowarn"],
+                    input=patch.encode("utf-8"),
+                    cwd=str(cwd_path), capture_output=True, check=False,
+                    timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
+                )
+                if rollback_proc.returncode != 0:
+                    detail = rollback_proc.stderr.decode("utf-8", errors="replace").strip()
+                    return {
+                        "rolled_back": False,
+                        "rollback_error": f"Patch rollback failed: {detail or 'reverse patch did not apply'}",
+                    }
+                return {"rolled_back": True}
+            except Exception as rollback_exc:
+                return {"rolled_back": False, "rollback_error": f"Patch rollback failed: {rollback_exc}"}
 
         # 5. Syntax pre-flight check on modified Python files
         diff_lines = patch.splitlines()
@@ -2557,12 +2565,11 @@ class CommandBroker:
                 try:
                     py_compile.compile(str(py_file), doraise=True)
                 except py_compile.PyCompileError as syn_err:
-                    if auto_rollback:
-                        _do_rollback()
+                    rollback_result = _do_rollback() if auto_rollback else {"rolled_back": False}
                     return {
                         "success": False,
-                        "applied": False,
-                        "rolled_back": auto_rollback,
+                        "applied": not rollback_result["rolled_back"],
+                        **rollback_result,
                         "error": f"Syntax error in modified file {py_file.name}: {syn_err.msg}",
                         "diagnostics": [{"path": str(py_file.relative_to(cwd_path)), "message": syn_err.msg}],
                     }
@@ -2645,12 +2652,11 @@ class CommandBroker:
                 "message": "Patch applied and verified successfully",
             }
         else:
-            if auto_rollback:
-                _do_rollback()
+            rollback_result = _do_rollback() if auto_rollback else {"rolled_back": False}
             return {
                 "success": False,
-                "applied": False,
-                "rolled_back": auto_rollback,
+                "applied": not rollback_result["rolled_back"],
+                **rollback_result,
                 "error": "Validation command failed after applying patch",
                 "command": test_cmd,
                 "affected_tests_run": auto_detected_tests,
@@ -2782,6 +2788,28 @@ class CommandBroker:
                 "attempts": 0,
                 "result": initial,
                 "message": "command passed without repair",
+            }
+
+        classification = self.classify(command)
+        command_class = str(classification.get("class", "unknown"))
+        replay_safe = bool(classification.get("replay_safe", command_class == "read"))
+        outcome_unknown = bool(
+            initial.get("outcome_unknown")
+            or initial.get("timed_out")
+            or initial.get("cancelled")
+            or not replay_safe
+        )
+        if outcome_unknown:
+            uncertain = dict(initial)
+            uncertain["outcome_unknown"] = True
+            return {
+                "success": False,
+                "repaired": False,
+                "repair_skipped": True,
+                "outcome_unknown": True,
+                "attempts": 0,
+                "result": uncertain,
+                "message": "repair skipped because command outcome or side effects are not safe to replay",
             }
 
         original_files: dict[Path, str | None] = {}

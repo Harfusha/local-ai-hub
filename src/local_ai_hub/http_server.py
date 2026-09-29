@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import hashlib
 import json
 import os
 import queue
@@ -14,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
 import urllib.request
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import __version__
 from .app import LocalAIApp
@@ -752,12 +753,15 @@ class Handler(BaseHTTPRequestHandler):
         recovery = getattr(APP, "recovery", None) if APP is not None else None
         if store is None or recovery is None or not trace.get("request_id"):
             return trace
+        identity = str(trace.get("agent", "")).strip()
+        if not identity:
+            return trace
         try:
             journal = recovery.lookup_metadata(
                 str(trace.get("request_id")),
                 str(trace.get("tenant", "")),
                 str(trace.get("action", "")),
-                identity=str(trace.get("agent", "")),
+                identity=identity,
             )
             journal_state = str((journal or {}).get("state", ""))
             if journal_state not in {"done", "failed"}:
@@ -1217,8 +1221,28 @@ class Handler(BaseHTTPRequestHandler):
             trace_store.event(api_trace_id, "async_job_submitted", {"job_id": result.get("job_id", ""), "trace_id": result.get("trace_id", ""), "delivery": decision})
         return 200, result
 
-    def _send(self, status: int, data: Any) -> None:
-        if status >= 400:
+    def _send_event_page_response(self, status: int, data: Any) -> None:
+        previous = getattr(self, "_preserve_error_payload", False)
+        self._preserve_error_payload = True
+        try:
+            self._send(status, data)
+        finally:
+            self._preserve_error_payload = previous
+
+    def _read_agent_event_page(self, state: Any, stream_id: str, after_seq: int, limit: int) -> dict[str, Any]:
+        reader = getattr(state, "event_page", None)
+        if not callable(reader):
+            return {"success": False, "error": "agent event page unavailable", "terminal": False, "retryable": True}
+        try:
+            page = reader(stream_id, after_seq=after_seq, limit=limit)
+        except Exception:
+            return {"success": False, "error": "agent event page unavailable", "terminal": False, "retryable": True}
+        if not isinstance(page, dict):
+            return {"success": False, "error": "agent event page unavailable", "terminal": False, "retryable": True}
+        return page
+
+    def _send(self, status: int, data: Any, *, headers: dict[str, str] | None = None) -> None:
+        if status >= 400 and not getattr(self, "_preserve_error_payload", False):
             data = normalize_transport_error(status, data)
         request_id = getattr(self, "_journal_request_id", None)
         if request_id and APP is not None and not getattr(self, "_journal_finished", False):
@@ -1279,6 +1303,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Connection", "close")
             self._common_headers()
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1326,12 +1352,53 @@ class Handler(BaseHTTPRequestHandler):
         if APP is None or not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
             self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False})
             return
+        state = APP.agent_state
+        if not callable(getattr(state, "event_page", None)):
+            self._send_event_page_response(
+                503,
+                {"success": False, "error": "agent event page unavailable", "terminal": False, "retryable": True},
+            )
+            return
+
+        query = parse_qs(urlparse(getattr(self, "path", "")).query)
+        headers = getattr(self, "headers", {})
+        raw_cursor = headers.get("Last-Event-ID") or headers.get("last-event-id")
+        if not raw_cursor:
+            raw_cursor = (query.get("last_event_id") or [""])[0]
+        if raw_cursor:
+            decoded_cursor = unquote(str(raw_cursor))
+            cursor_stream, separator, cursor_seq = decoded_cursor.rpartition(":")
+            if separator and cursor_seq.isdigit():
+                stream_id = cursor_stream
+                after_seq = int(cursor_seq)
+        try:
+            after_seq = max(0, int(after_seq))
+        except (TypeError, ValueError):
+            after_seq = 0
 
         # Bound maximum stream duration to prevent holding worker threads indefinitely
         app_cfg = getattr(APP, "config", {}) or {}
         max_duration = float(app_cfg.get("server", {}).get("max_stream_duration_seconds", 300.0) if isinstance(app_cfg, dict) else 300.0)
         if timeout <= 0.0 or timeout > max_duration:
             timeout = max_duration
+        stream_started = time.monotonic()
+
+        try:
+            q = state.subscribe(maxsize=200)
+        except Exception:
+            self._send_event_page_response(
+                503,
+                {"success": False, "error": "agent event page unavailable", "terminal": False, "retryable": True},
+            )
+            return
+        first_page = self._read_agent_event_page(state, stream_id, after_seq, 1000)
+        if first_page.get("success") is False:
+            try:
+                state.unsubscribe(q)
+            except Exception:
+                pass
+            self._send_event_page_response(503, first_page)
+            return
 
         try:
             self.send_response(200)
@@ -1342,66 +1409,192 @@ class Handler(BaseHTTPRequestHandler):
             self._common_headers()
             self.end_headers()
         except OSError:
+            try:
+                state.unsubscribe(q)
+            except Exception:
+                pass
             self._finish_stream_request(False, error="client disconnected before headers")
             return
 
-        q = APP.agent_state.subscribe(maxsize=200)
-        try:
-            # Subscribe before fetching history. An event appended in the replay
-            # window is then either replayed or queued; duplicate queued events
-            # are discarded by the sequence check below.
-            last_seq = after_seq
-            if stream_id and after_seq >= 0:
-                past = APP.agent_state.events(stream_id=stream_id, after_seq=after_seq, limit=1000)
-                for ev in past:
-                    if kind and ev.kind != kind:
-                        continue
-                    last_seq = max(last_seq, ev.seq or 0)
-                    payload = json_dumps(ev.to_dict(), separators=(",", ":"))
-                    msg = f"id: {ev.seq}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
-                    try:
-                        self.wfile.write(msg)
-                        self.wfile.flush()
-                    except OSError:
-                        return
+        def as_int(value: Any, fallback: int) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return fallback
 
-            start_time = time.monotonic()
+        def as_dict(event: Any) -> dict[str, Any]:
+            if isinstance(event, dict):
+                return event
+            converter = getattr(event, "to_dict", None)
+            if callable(converter):
+                converted = converter()
+                return converted if isinstance(converted, dict) else {}
+            return {}
+
+        def send_sse(event_id: str | None, event_name: str | None, payload: Any = None) -> None:
+            lines: list[str] = []
+            if event_id is not None:
+                lines.append(f"id: {event_id}")
+            if event_name:
+                lines.append(f"event: {event_name}")
+            if payload is not None:
+                lines.append(f"data: {json_dumps(payload, separators=(',', ':'))}")
+            self.wfile.write(("\n".join(lines) + "\n\n").encode("utf-8"))
+            self.wfile.flush()
+
+        def event_cursor(target_stream: str, sequence: int) -> str:
+            return f"{quote(target_stream, safe='')}:{sequence}"
+
+        last_seq = after_seq
+        stream_success = True
+        stream_error = ""
+        replay_timed_out = False
+        try:
+            # Subscribe before replay so newly appended events are either replayed
+            # or queued. Sequence checks below discard duplicates.
+            page = first_page
             while True:
-                remaining = timeout - (time.monotonic() - start_time)
+                if time.monotonic() - stream_started >= timeout:
+                    send_sse(None, "stream_timeout", {"reconnect": True, "last_seq": last_seq})
+                    replay_timed_out = True
+                    break
+                page_start = last_seq
+                first_retained = as_int(page.get("first_retained_seq"), 0)
+                page_next = as_int(page.get("next_seq"), page_start)
+                reset = bool(page.get("cursor_reset"))
+                if reset:
+                    # Resume immediately before retained history so first retained
+                    # event remains visible after a future or expired cursor.
+                    last_seq = max(0, first_retained - 1) if first_retained else max(0, page_next)
+                    send_sse(event_cursor(stream_id, last_seq), "cursor_reset", {
+                        "stream_id": stream_id,
+                        "after_seq": last_seq,
+                    })
+
+                replay_start = last_seq
+                gaps = page.get("gap_ranges") or []
+                replay_items: list[tuple[int, int, str, Any, str]] = []
+                for gap in gaps:
+                    if isinstance(gap, dict):
+                        gap_from = as_int(gap.get("from_seq"), replay_start + 1)
+                        gap_to = as_int(gap.get("to_seq"), gap_from - 1)
+                    elif isinstance(gap, (list, tuple)) and len(gap) >= 2:
+                        gap_from = as_int(gap[0], replay_start + 1)
+                        gap_to = as_int(gap[1], gap_from - 1)
+                    else:
+                        continue
+                    if gap_to > replay_start:
+                        gap_from = max(gap_from, replay_start + 1)
+                        replay_items.append((gap_to, 0, "retention_gap", {
+                            "stream_id": stream_id,
+                            "from_seq": gap_from,
+                            "to_seq": gap_to,
+                        }, stream_id))
+                if page.get("has_gap") and not gaps and page_next > replay_start:
+                    replay_items.append((page_next, 0, "retention_gap", {
+                        "stream_id": stream_id,
+                        "from_seq": replay_start + 1,
+                        "to_seq": page_next,
+                    }, stream_id))
+
+                for event in page.get("events") or []:
+                    event_data = as_dict(event)
+                    sequence = as_int(event_data.get("seq"), 0)
+                    event_stream = str(event_data.get("stream_id") or stream_id)
+                    event_kind = str(event_data.get("kind") or "message")
+                    if sequence > replay_start:
+                        replay_items.append((sequence, 1, event_kind, event_data, event_stream))
+
+                replay_items.sort(key=lambda item: (item[0], item[1]))
+                last_emitted = last_seq
+                for sequence, _order, event_name, payload, item_stream in replay_items:
+                    if sequence <= last_seq:
+                        continue
+                    if stream_id and item_stream and item_stream != stream_id:
+                        continue
+                    last_seq = sequence
+                    if event_name not in {"retention_gap", "cursor_reset"} and kind and event_name != kind:
+                        continue
+                    send_sse(event_cursor(item_stream or stream_id, sequence), event_name, payload)
+                    last_emitted = sequence
+
+                page_cursor = max(last_seq, page_next)
+                if page_cursor > last_emitted:
+                    # SSE id-only message advances reconnect state across filtered
+                    # events and empty pages without inventing a visible event.
+                    send_sse(event_cursor(stream_id, page_cursor), None)
+                    last_emitted = page_cursor
+                last_seq = page_cursor
+
+                if not page.get("has_more"):
+                    break
+                if page_cursor <= replay_start:
+                    send_sse(None, "error", {
+                        "success": False,
+                        "error": "agent event page did not advance",
+                        "terminal": False,
+                        "retryable": True,
+                    })
+                    stream_success = False
+                    stream_error = "agent event page did not advance"
+                    break
+                page = self._read_agent_event_page(state, stream_id, page_cursor, 1000)
+                if page.get("success") is False:
+                    send_sse(None, "error", page)
+                    stream_success = False
+                    stream_error = str(page.get("error", "agent event page unavailable"))
+                    break
+
+            while stream_success and not replay_timed_out:
+                remaining = timeout - (time.monotonic() - stream_started)
                 if remaining <= 0:
-                    try:
-                        timeout_msg = f"event: stream_timeout\ndata: {{\"reconnect\":true,\"last_seq\":{last_seq}}}\n\n".encode("utf-8")
-                        self.wfile.write(timeout_msg)
-                        self.wfile.flush()
-                    except OSError:
-                        pass
+                    send_sse(None, "stream_timeout", {"reconnect": True, "last_seq": last_seq})
                     break
                 try:
                     ev = q.get(timeout=min(1.0, remaining))
-                    if ev.seq is not None and ev.seq <= last_seq:
+                    event_data = as_dict(ev)
+                    sequence = as_int(event_data.get("seq"), 0)
+                    event_stream = str(event_data.get("stream_id") or "")
+                    event_kind = str(event_data.get("kind") or "message")
+                    if sequence and sequence <= last_seq:
                         continue
-                    if stream_id and ev.stream_id != stream_id:
+                    if stream_id and event_stream != stream_id:
                         continue
-                    if kind and ev.kind != kind:
+                    if sequence:
+                        last_seq = sequence
+                    cursor = event_cursor(event_stream or stream_id, sequence)
+                    if kind and event_kind != kind:
+                        send_sse(cursor, None)
                         continue
-                    if ev.seq is not None:
-                        last_seq = max(last_seq, ev.seq)
-                    payload = json_dumps(ev.to_dict(), separators=(",", ":"))
-                    msg = f"id: {ev.seq or 0}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
-                    self.wfile.write(msg)
-                    self.wfile.flush()
+                    send_sse(cursor, event_kind, event_data)
                 except queue.Empty:
                     try:
                         self.wfile.write(b": keep-alive\n\n")
                         self.wfile.flush()
                     except OSError:
                         break
+        except OSError:
+            stream_success = False
+            stream_error = "client disconnected"
         except Exception:
-            pass
+            stream_success = False
+            stream_error = "agent event stream failed"
+            try:
+                send_sse(None, "error", {
+                    "success": False,
+                    "error": stream_error,
+                    "terminal": False,
+                    "retryable": True,
+                })
+            except OSError:
+                pass
         finally:
             self.close_connection = True
-            APP.agent_state.unsubscribe(q)
-            self._finish_stream_request(True)
+            try:
+                state.unsubscribe(q)
+            except Exception:
+                pass
+            self._finish_stream_request(stream_success, error=stream_error)
 
     def do_OPTIONS(self) -> None:
         if APP is None:
@@ -1627,8 +1820,15 @@ class Handler(BaseHTTPRequestHandler):
                 stream_id = (query.get("stream_id") or [""])[0]
                 after_seq = int((query.get("after_seq") or [0])[0])
                 limit = int((query.get("limit") or [100])[0])
-                evs = APP.agent_state.events(stream_id=stream_id, after_seq=after_seq, limit=limit)
-                self._send(200, {"success": True, "events": [e.to_dict() for e in evs]}); return
+                page = self._read_agent_event_page(APP.agent_state, stream_id, after_seq, limit)
+                if page.get("success") is False:
+                    self._send_event_page_response(503, page); return
+                result = dict(page)
+                result["events"] = [
+                    event.to_dict() if callable(getattr(event, "to_dict", None)) else event
+                    for event in (result.get("events") or [])
+                ]
+                self._send(200, result); return
             if path == "/api/agent-state/blackboard":
                 if not getattr(APP, "agent_blackboard", None):
                     self._send(503, {"success": False, "error": "blackboard unavailable"}); return
@@ -1800,14 +2000,13 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
             if path == "/api/maintenance/optimize_db":
-                self._send(200, APP.services.optimize_databases())
+                self._send(405, {"success": False, "error": "maintenance actions require POST", "allow": "POST"}, headers={"Allow": "POST"})
                 return
             if path == "/api/maintenance/purge_cache":
-                days = int((query.get("days") or [7])[0])
-                self._send(200, APP.services.purge_stale_cache(days))
+                self._send(405, {"success": False, "error": "maintenance actions require POST", "allow": "POST"}, headers={"Allow": "POST"})
                 return
             if path == "/api/maintenance/resolve_errors":
-                self._send(200, APP.services.resolve_all_errors())
+                self._send(405, {"success": False, "error": "maintenance actions require POST", "allow": "POST"}, headers={"Allow": "POST"})
                 return
             if path == "/api/config":
                 view = json.loads(json_dumps(APP.config, default=str))
@@ -1976,6 +2175,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._require_authorized():
             return
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        raw_bundle: bytes | None = None
+        target_root: str | None = None
         if path == "/api/bundle/import":
             if content_type not in {"application/zip", "application/octet-stream"}:
                 self._send(415, {"success": False, "error": "bundle import requires raw ZIP content"}); return
@@ -1984,36 +2185,18 @@ class Handler(BaseHTTPRequestHandler):
                 raw_bundle = self._read_body(limit=limit)
                 query = parse_qs(urlparse(self.path).query)
                 target_root = (query.get("target_root") or [None])[0]
-                self._send(200, APP.import_bundle(raw_bundle, target_root)); return
+                payload = {
+                    "bundle_sha256": hashlib.sha256(raw_bundle).hexdigest(),
+                    "target_root_sha256": hashlib.sha256(str(target_root or "").encode("utf-8")).hexdigest(),
+                }
             except RequestBodyError as exc:
                 self._send(exc.status, {"success": False, "error": str(exc)}); return
-        try:
-            payload = self._read_json()
-            self._validate_payload(path, payload)
-        except RequestBodyError as exc:
-            self._send(exc.status, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
-        if path == "/api/telemetry/tool-accounting":
-            # Internal MCP reporter path: do not journal or recursively count this
-            # metadata transport as an agent workload/tool call.
-            self._telemetry_finished = True
-            accepted = 0
-            rejected = 0
-            rejection_reasons: dict[str, int] = {}
-            for event in payload.get("events", []):
-                try:
-                    APP.telemetry.record_tool_accounting(event)
-                    accepted += 1
-                except Exception as exc:
-                    rejected += 1
-                    reason = "invalid_event" if isinstance(exc, (TypeError, ValueError)) else "record_failed"
-                    rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
-                    continue
-            self._send(200, {
-                "success": True,
-                "accepted": accepted,
-                "rejected": rejected,
-                "rejection_reasons": rejection_reasons,
-            }); return
+        else:
+            try:
+                payload = self._read_json()
+                self._validate_payload(path, payload)
+            except RequestBodyError as exc:
+                self._send(exc.status, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
         self._request_evaluation = payload.get("evaluation")
         if path == "/api/conversations/continue" or (
             path in {"/api/delegate", "/api/reason"} and bool(payload.get("conversation", False))
@@ -2097,6 +2280,32 @@ class Handler(BaseHTTPRequestHandler):
                 "retryable": True,
                 "outcome_unknown": False,
                 "request_id": self._journal_request_id,
+            }); return
+        if path == "/api/bundle/import":
+            try:
+                self._send(200, APP.import_bundle(raw_bundle or b"", target_root)); return
+            except RequestBodyError as exc:
+                self._send(exc.status, {"success": False, "error": str(exc)}); return
+        if path == "/api/telemetry/tool-accounting":
+            # Journal the event batch, but exclude this internal reporter from recursive workload accounting.
+            self._telemetry_finished = True
+            accepted = 0
+            rejected = 0
+            rejection_reasons: dict[str, int] = {}
+            for event in payload.get("events", []):
+                try:
+                    APP.telemetry.record_tool_accounting(event)
+                    accepted += 1
+                except Exception as exc:
+                    rejected += 1
+                    reason = "invalid_event" if isinstance(exc, (TypeError, ValueError)) else "record_failed"
+                    rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                    continue
+            self._send(200, {
+                "success": True,
+                "accepted": accepted,
+                "rejected": rejected,
+                "rejection_reasons": rejection_reasons,
             }); return
         try:
             if path == "/api/work-orders":

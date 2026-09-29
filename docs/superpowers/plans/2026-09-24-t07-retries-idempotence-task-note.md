@@ -1,0 +1,422 @@
+# T07 Task Note — Retries, Idempotence, Side Effects
+
+## Continuation - 2026-09-26, live HTTP test timing
+
+- Narrow T07-only change in `test_http_retry_from_two_live_clients_dispatches_once`: keep dispatch-count and identical-response assertions; set the publish wait, single-flight wait, HTTP connection, and future result bounds to 10 seconds. The event barriers remain 5 seconds. This keeps the internal replay wait above the barrier so scheduler delay cannot expire it before the test releases the first publication. The separate handler-level test remains at its original 5-second wait.
+- Updated standalone T07 patch with the same test change. No production or inherited files edited by this adjustment.
+- Base HEAD verified as `c2b49d363ffd6105f5e98f97d67c57c36a9459b6`.
+- Modified live-socket test command `python -m pytest -q tests/test_mutation_replay.py::test_http_retry_from_two_live_clients_dispatches_once --tb=short` returned `outcome_unknown` (`req_7c209fc09258`). Do not repeat this request.
+- Patch parser check returned `outcome_unknown` (`req_2a88dcc65b92`) after an earlier pre-fix `git apply --stat` reported a corrupt hunk at line 162. Hunk count was adjusted; final syntax has no terminal receipt.
+- Closed work order `wo_8a3e6d533ac8445b9cdd` failed with no unified diff; artifact `art_52499fe79cf93ec412133cc3` reports `changed_files=[]` and no validation commands. It made no changes.
+- Acceptance remains open until live-socket test and standalone patch syntax have terminal receipts.
+
+## Scope amendment — 2026-09-24
+
+Follow `docs/superpowers/specs/2026-09-24-gemini-audit-follow-up.md` and the T07 row in its **Task ownership map**. Preserve these constraints:
+
+- Agent 2 exclusively owns `/api/context/pack`.
+- CodeGraphContext and KuzuDB must be absent from Hub runtime; standalone external recommendation only.
+- Do not weaken tests. Do not retry mutations without an idempotency or safety basis.
+
+The audit spec is present in the sibling T17 worktree at the same HEAD, `a7b0868ac964fd14e160001024e6e0ecaaf4e9db`. Its T07 ownership row assigns retry/idempotency/side-effect correctness to T07. The master plan names `client.py`, `http_server.py`, `commands.py`, and `rag.py`; keep `/api/context/pack` exclusively with Agent 2. CodeGraphContext/Kuzu removal is T10, so this task must not add, restore, or broaden that integration.
+
+## T07 acceptance
+
+Source: `docs/superpowers/plans/2026-09-22-hub-quality-performance-master-plan.md`, T07.
+
+- Inventory index, ingest, model pull, learning, task checkpoint, and cleanup side effects; describe retrieval access metadata separately.
+- Retry mutations only with documented idempotency or request ID. Lost responses return known outcomes or explicit uncertainty.
+- Journal request identity, operation, and payload fingerprint. Reusing an ID with different payload conflicts.
+- Cover disconnect after commit, process crash, two-client retry, timeout, and partial publish for RAG/work/task/command.
+- Move maintenance side effects off GET; read-only client paths must not trigger cleanup.
+- Completion means no replay of a confirmed one-shot mutation and truthful classification of read paths.
+
+## Initial state and coordination
+
+- Initial worktree was clean and detached at HEAD `a7b0868ac964fd14e160001024e6e0ecaaf4e9db`; `refs/heads/master` points to the same commit.
+- Hub preprocess returned `success=true`; preprocessing remained `queued` for this root. No status polling was done.
+- Adaptive context retry returned `success=false`, `outcome_unknown=true`, request `req_5291281890f6` after transport failure. Native bounded discovery followed.
+- Agent OS `task_create` returned `outcome_unknown=true`, request `req_c66166af4730`. Do not retry this mutation. No lease acquired; Hub transport was unavailable.
+- Required `ensure-tools.ps1` path did not exist (`Test-Path=False`); invocation failed before native discovery.
+- No production or test files changed at checkpoint creation.
+
+## Read-only findings
+
+- `RequestRecoveryStore.requests` stores request ID, tenant, action, and outcome, without a payload fingerprint.
+- `begin()` upserts on request-ID conflict and resets the row to `running`; concurrent callers can both pass the preceding lookup and replace the same row.
+- HTTP dispatch ignores journal exceptions and continues into the operation. An `abandoned` prior row is not handled before `begin()`, so a retry can re-execute after restart.
+- Client POST retries fail closed through `_post_replay_safe`; command execution caches and single-flights only non-mutating operations.
+- `CommandBroker.run(..., auto_fix=True)` enters `repair_loop` for any failed non-cancelled command. `repair_loop` has no mutating-class guard and does not stop before repair after a timeout.
+- GET maintenance routes currently optimize databases, purge cache, and resolve errors. Client GET retries after transport failure.
+- RAG index publication uses one SQLite transaction; embedding occurs outside its SQLite busy retry. No retrieval access-metadata write appeared in the bounded `rag.py` search.
+- Side-effect inventory: RAG index/document/diagram ingest publish indexed content; model `pull` downloads weights; learning actions persist observations/promotions; task checkpoint/cleanup and work submission update durable task state; maintenance optimize/purge/resolve mutates local state. Read/reuse metadata is separate: `cache_entries` updates `accessed_at`/`hits` on cache reads (`cache.py:369-382`); EvidenceStore updates evidence recency/hits on fetch (`evidence.py:127-139`); semantic generation cache updates recency/hits on sampled reuse (`semantic_cache.py:175-187`); content-card cache hits update card recency/hits (`preprocess.py:2817-2829`); query-learning records increment `hits`/`last_seen` (`learning.py:88-99`). These are retrieval/reuse metadata, distinct from RAG content publication. Bounded RAG source search found no separate retrieval access-metadata write.
+- Runtime scan found CodeGraphContext/KuzuDB references in `external_tools.py`, `preprocess.py`, and `mcp_server.py`; related tests and docs also reference them. Exact removal scope awaits the missing ownership map.
+
+## Checkpoint — regression work and audit amendment
+
+- Added `tests/test_mutation_replay.py` first. It covers one initial mutating command only, unknown timeout, journal replay and conflicts, concurrent claims, restart abandonment, response loss, fail-closed journal errors, maintenance GET rejection, and injected RAG index publish failure.
+- `local_ai_command(action="run", command="python -m pytest -q tests/test_mutation_replay.py --tb=short", cwd="C:\Users\Adam\.codex\worktrees\f374\.local-ai-hub", timeout=90)` returned `success=false`, `outcome_unknown=true`, request `req_9a1504fc08fc`. No repeat and no native test fallback: result lacked `terminal=true` and `retryable=false`.
+- The independent runtime audit confirmed active CodeGraphContext/KuzuDB launch, query, auto-fallback, and per-project database paths in `external_tools.py`; MCP graph routing remains in `mcp_server.py`. `preprocess.py` has dormant stale branches. `retrieval.py` has a graph scoring reference. Standalone guidance lives in `docs/INSTALLATION.md` and should remain; current integration claims in docs/tests need review if removal is assigned.
+- The initial RED attempt remains outcome-unknown. T07 production edits have since started after the ownership row was located; no pass or RED result is claimed.
+
+## Continuation — 2026-09-24
+
+- Found the spec at `C:\Users\Adam\.codex\worktrees\t17-acceptance-2026-09-24\docs\superpowers\specs\2026-09-24-gemini-audit-follow-up.md`; its worktree HEAD matches this checkout.
+- Added fingerprinted atomic journal claims, fail-closed dispatch after journal errors/corruption, explicit stable request IDs for caller-driven retries, maintenance GET 405 responses, command repair replay guards, and agent-identity checks during trace reconciliation. A corruption sentinel stays in `server.state_dir`; operators must explicitly reset it if they accept losing prior journal history.
+- `local_ai_status(detail="brief")` returned `success=false` with no version/model; no tests ran. Prior command request `req_9a1504fc08fc` remains outcome-unknown, so no duplicate test command and no native fallback.
+- Planned focused validation at this checkpoint: `python -m pytest -q tests/test_mutation_replay.py tests/test_client_transport.py tests/test_command_transport.py --tb=short`. The later attempt and exact outcome are recorded below.
+- Working tree remains isolated to this T07 checkout; `/api/context/pack` is untouched.
+
+## Continuation — 2026-09-24, transport coverage and ownership handoff
+
+- Added handler replay coverage for `/api/bundle/import` and `/api/telemetry/tool-accounting`; both operations now enter the journal before side effects. Bundle identity fingerprints archive bytes and the target root without storing raw content or path.
+- Added client uncertainty coverage for malformed response after an explicitly safe retry and a coalesced timeout. The retry uses the same request ID; the timeout response now carries that ID and explicit unknown/in-progress state.
+- `local_ai_command` passed the two new client tests: `2 passed, 19 deselected in 1.09s` (execution `32200cd2b5574853b0e0659878670aac`). It passed the bundle/telemetry replay tests: `2 passed, 27 deselected in 1.00s` (execution `a66cf5c28e2047c0be282225822af697`).
+- Combined focused run `python -m pytest -q tests/test_mutation_replay.py tests/test_client_transport.py tests/test_command_transport.py --tb=short` returned `success=false`, `outcome_unknown=true`, request `req_cf265bcf1d0d`; do not repeat or fall back to native pytest. The indexed `review_diff` request exceeded its bounded wait and was cancelled without a review result.
+- T04 and T06 received integration contract messages for the shared `client.py`, `http_server.py`, and `commands.py` changes. Those files are now frozen for T07; keep integration with their owners. No completion claim until full acceptance evidence is available.
+
+## Continuation — 2026-09-24, complete T07 test-file coverage and integration gaps
+
+- T07 acceptance cases in `tests/test_mutation_replay.py` now pass across focused broker runs: journal/concurrency/crash/disconnect/partial-publish group `21 passed, 8 deselected` (execution `1dee728b8b7849b1bb6ba34dedecbff0`); repair/retry-ID/transport/maintenance/fail-closed group `6 passed, 24 deselected` (execution `58f6d82b83894c48b65c67491aa6e98f`); bundle and telemetry replay `2 passed, 27 deselected` (execution `a66cf5c28e2047c0be282225822af697`); one-shot restart retry `1 passed, 29 deselected` (execution `127718f910fa41d09a33818e5a70f94a`).
+- Full `tests/test_client_transport.py` run exposed one regression from the T07 client hunk: `test_client_coalescing_timeout_returns_structured_result` expected `success=False` but got `True`; 20 other tests passed. T04 owns and was notified to preserve coalescing while returning the actual owner request ID on timeout. Do not claim client transport acceptance.
+- Current T07 `Handler._begin_trace` trusts an explicitly supplied `X-LocalAI-Request-ID`; only `HubClient` validates its value. T18 was asked to reject malformed explicit server headers before dispatch. T18 also received the exact `RecoveryJournal` API, handler ordering, bundle/telemetry integration, and 405/Allow contract; T03 received the required order `_audit_admin_action` -> error normalization -> journal finish -> serialization. No HTTP handler edits made after ownership freeze.
+- `local_ai_repo(context)` ended `outcome_unknown=true`, request `req_bc3751107e16`; do not duplicate. Combined validation `python -m pytest -q tests/test_mutation_replay.py tests/test_client_transport.py tests/test_command_transport.py --tb=short` remains outcome-unknown (`req_cf265bcf1d0d`). Indexed `review_diff` likewise had no result (`req_5e946c367542`). The prior validation request is not shown active by `local_ai_command(action="stats")`.
+- T07 code changes and test evidence remain incomplete for full acceptance until T04's coalescing fix is ported, T18 integrates server validation/handler journal with the T07 `resilience.py` API, and full focused validation returns authoritative results.
+
+## Integration follow-up — 2026-09-24
+
+- T04 confirms its coalescing fix is uncommitted on `codex/t04-api-client-conversation`, separate from this T07 worktree. Parent integrator must port it; T04 will send a portable diff. Its receipts prove T04 worktree only, not this checkout.
+- T18 confirms T07 handler changes are absent from its last snapshot and is revalidating before integration. T20 was notified of the exact receipts, missing handoffs, and requirement to rerun affected suites together.
+
+## Revalidation — 2026-09-24
+
+- Current Hub search located the authoritative master-plan T07 row at `docs/superpowers/plans/2026-09-22-hub-quality-performance-master-plan.md:201-211` (evidence `E9e94f556f45775e5f1fe`); acceptance bullets here at lines 17-22 mirror its six requirements. Adaptive context terminated with `context_task_state_unavailable`, request `req_5b0ba9c25b1f`; no duplicate request.
+- T04 now reports the owner-aware coalescing fix: full client transport 23/23, public API 13/13, conversation continuation 13/13. Receipts `rcpt_843d3a780d26`, `rcpt_3530876b0cc8`, `rcpt_a87e0da87021` belong to revision `cd7cce0e53024732b9e6ec8e0b22ed666cf41ec84895612ed775ec8b49a77890`; fix is still uncommitted and absent from this T07 checkout pending a portable diff/parent port.
+- T18's last confirmed status says journal handler and server request-ID validation are absent; T18 is revalidating before integration. Its separate worktree reports 27 passed, 1 deselected and clean `git diff --check`, but those results do not validate this checkout.
+- T07 `git diff --check` passed via `local_ai_command` execution `f8435d8a89d74245bf172ba9ef2b963b`.
+- `python -m pytest -q tests/test_command_transport.py --tb=short` passed: 5 passed in 0.20s (execution `d0c1c728cded4002bb4992d24214a3d3`).
+- Combined T07 mutation and command transport run passed: `python -m pytest -q tests/test_mutation_replay.py tests/test_command_transport.py --tb=short` -> 35 passed in 8.22s (execution `2c06cffaac01498ebcc0cc551fb5aea6`).
+- Indexed `review_diff` completed advisory-only but evaluated tracked shared files and omitted untracked `tests/test_mutation_replay.py`; its generic “no tests” limitation is superseded by the focused T07 receipts above, not treated as review approval.
+
+## Next steps
+
+1. Recheck every T07 criterion against current source and tests; do not claim broad acceptance from unrun tests.
+2. Run the exact focused validation `python -m pytest -q tests/test_mutation_replay.py tests/test_client_transport.py tests/test_command_transport.py --tb=short` through the command broker when available.
+
+3. Keep T07 active until command, HTTP, RAG, work/task replay and full acceptance evidence pass.
+
+## Integration checkpoint — 2026-09-24, portable patch and API handoff
+
+- T04 portable patch was checked read-only and did not apply at `src/local_ai_hub/client.py:395`; current T07 source lines 418-427 already return explicit `_uncertain_response` for generic retry exceptions. No client hunk was applied. Exact source and apply-check failure were sent to T04; compatible patch requested.
+- T18 received the T07 `RecoveryJournal` contract: atomic `begin` claim/replay/conflict, identity and payload fingerprint checks, fail-closed behavior after journal corruption, and identity/fingerprint-aware `lookup`/`wait_for`. Parent T20 was updated; `http_server.py` remains frozen under T18 ownership.
+- T20 requested canonical T03 error-normalizer coordination and tests for replay/conflict/outcome_unknown/503-before-side-effect/bundle hashing. Existing `tests/test_mutation_replay.py` search confirms those contract cases, including partial-publish routes and bundle content/target fingerprint. T03 API request and T20 ownership clarification are pending.
+- Required token setup script was checked at both documented skill roots; both paths are absent. Prior task note already records the missing-script failure.
+
+- T03 confirmed `src/local_ai_hub/operation_contracts.py::normalize_transport_error(status_code, payload)` at commit `9b6e6fb`. T18 was asked to normalize status>=400 responses before `RecoveryJournal.finish`, then serialize the same JSON response; map any 2xx semantic failure to its failing HTTP status before finish. Contract relayed to T20; no T03-owned files edited.
+- T04 supplied regenerated client patch `C:\Users\Adam\AppData\Local\Temp\t04-client-portable-t07-compat-20260924.patch`. Brokered `git apply --check` returned `success=false`, `outcome_unknown=true`, request `req_db1103c5c85a`, with no terminal/retryable result. Patch remains unapplied; native fallback is disallowed by the command-routing policy. T04 and T20 were asked to resolve from the T07 checkout.
+
+## Current T18 handler audit — 2026-09-24
+
+- T18 reports current `http_server.py:1357-1369` persists raw `data` to `RecoveryJournal.finish` then serializes the same raw data. Journal/wire parity is present, but T03 `normalize_transport_error` is absent before both operations.
+- T18 line 2225 still uses the old 3-argument `RecoveryJournal.begin`; explicit `X-LocalAI-Request-ID` at line 743 is accepted verbatim. No focused tests ran; T18 keeps handler frozen pending T07 core transfer and parent integration direction.
+- Exact gaps and requested integration decision sent to T20.
+
+## Disjoint T07 core update — 2026-09-24
+
+- Added `RecoveryJournal.validate_request_id(request_id)` in `resilience.py`: accepts 1-128 visible ASCII characters, rejects whitespace/control/non-ASCII, and runs before every request-ID journal operation. `wait_for` now preserves `outcome_unknown` on terminal/timeout result projections.
+- Added 10 focused assertions in `tests/test_mutation_replay.py`: nine malformed request-ID cases prove rejection before row creation; interrupted `wait_for` proves unknown outcome is retained.
+- TDD RED `dc60766fdaa549919b48827e071232b5`: 10 expected failures. TDD GREEN `c00a96857c834a42b0aba8dd1c94a3ab`: 10 passed, 30 deselected in 1.39s.
+- Full replay-file test returned outcome unknown `req_3ebfde41c945`; targeted diff check returned unknown `req_7601d6d1a3c5`; indexed review returned unknown `req_cb0bd523852d`. No repeat or native fallback because broker did not report terminal/non-retryable failure.
+- Validator API and focused evidence sent to T18 and T20. No changes to T18/T04/T06-owned files; no commit created.
+- Exported T07 `resilience.py` diff for T18 transfer: `C:\Users\Adam\AppData\Local\Temp\t07-resilience-core-f6b51e17bee34b8dae3d02c2418c37c8.patch`, SHA-256 `81B1B8E1434DF48AD7932E19658FEC0F42DB3DD347BBDB5511D4C4A968648CE6`, 12,823 bytes, based on `a7b0868ac964fd14e160001024e6e0ecaaf4e9db`. Test file remains untracked with 40 cases. T18/T20 received path, hash, base, and check-before-apply request.
+- Follow-up split validation: the 30 existing replay cases passed (`293934d531194a53a9eef2ce798dbd5d`: 30 passed, 10 deselected); together with the 10 new cases (`c00a96857c834a42b0aba8dd1c94a3ab`: 10 passed), all 40 cases are green across two bounded broker runs. No repeat of the unknown full-file request.
+- Narrow source whitespace check passed: `git diff --check -- src/local_ai_hub/resilience.py` execution `407353ed8d0746ef9f7dbe6921efb1b1`.
+- T18 requested approval for handler wiring. T07 confirmed T18 may edit only its `http_server.py` call sites after the T07 core patch passes `git apply --check` in 682c; sent exact request-ID, begin/replay/conflict/wait, normalized finish/wire-order, and 2xx semantic-failure contract. T18 must not edit T07 core.
+- T07 core/test commit created: `f0a7ce0b94bca5fb5778c6890e6676b540c72fbe`, parent `a7b0868ac964fd14e160001024e6e0ecaaf4e9db`; includes only `src/local_ai_hub/resilience.py` and `tests/test_mutation_replay.py`. Full replay coverage passed across two broker runs (10+30 cases); staged diff check passed execution `7847bd9d33214a26a30228960745878b`.
+- Post-commit status confirms unrelated `client.py`, `commands.py`, `http_server.py`, `test_client_transport.py`, and task note remain unstaged/uncommitted. Commit SHA and receipts sent to T18/T20 for transfer into 682c.
+- Post-commit owner audit: current `HEAD=f0a7ce0b94bca5fb5778c6890e6676b540c72fbe`; remaining dirty paths are T04 client/tests, T06 commands, T18 HTTP handler, and the T07 task note. Hub context/status/lease requests returned unknown; after one bounded health check reported unavailable, bounded native `git status`, `rev-parse`, and `show --stat` confirmed ownership boundaries. No edits to owner files.
+
+## Current continuation — 2026-09-25
+
+- Fresh native state in this f374 checkout: `HEAD=c2b49d363ffd6105f5e98f97d67c57c36a9459b6`; tracked dirty paths are `src/local_ai_hub/client.py`, `src/local_ai_hub/commands.py`, `src/local_ai_hub/http_server.py`, `tests/test_client_transport.py`, and `tests/test_mutation_replay.py`. This supersedes the historical post-commit snapshot above; no new T07 source commit was created in this continuation.
+- Source audit confirms `do_POST` invokes `RecoveryJournal.begin()` before endpoint dispatch and binds request ID, tenant, route, agent identity, and payload. This includes model pull/delete through POST `/api/models/manage` and learning mutations through POST `/api/agent-state/learning`; GET `/api/models/manage` only lists models. Maintenance GET routes return 405 with `Allow: POST`. These classifications match the side-effect inventory above; existing focused receipts cover the common journal/replay contract and maintenance GET behavior.
+- The blank-agent trace guard test command returned `outcome_unknown`, request `req_d10b5b61df13`; the coalesced-timeout pair returned `outcome_unknown`, request `req_66a55e857537`; the adaptive acceptance context returned `outcome_unknown`, request `req_c3335a24cf20`. On 2026-09-26, a filtered mutation-suite command also returned `outcome_unknown`, request `req_4cc27bf28fd6`; no identical command was repeated.
+- T04 completed its owner-aware client fix in separate worktree `C:\Users\Adam\.codex\worktrees\393c\.local-ai-hub`, branch `codex/t04-api-client-conversation`, HEAD `8b0bc1660ec69337949a92cd88d5dadcc43fcf94`, diff hash `bf243443088602374c44b2df5a870b12d009afc6`. Fresh read-only review confirms owner-aware timeout code is already present in f374 `client.py`; T04's 26/26 transport pass, clean diff check, and independent review remain external evidence, not f374 validation.
+- Client test gap: `test_client_transport.py` actual-thread coalescing test does not assert waiter request ID equals owner's ID, and its newer owner-ID test stubs `_singleflight` with the same explicit ID. T07's `test_client_replay_safe_coalescing_timeout_returns_owner_request_id` (`test_mutation_replay.py:503-536`) does exercise a real coalesced waiter and asserts it receives the distinct owner request ID; it passed in the 11-test `maintenance_get_routes_are_read_only or repair_loop or client_` run (`af7d9f9c64f249c68390ef6239c8fb93`). A prior dedicated request remains unknown and was not repeated. Full POST replay allowlist matrix and repeated `in_progress` deadline exhaustion still lack established coverage. T04-owned client and test files were not edited.
+- Side-effect audit confirms journal begin precedes valid POST dispatch for inspected RAG, model pull, learning, task checkpoint/cleanup, and maintenance routes; maintenance optimize/purge/resolve GET routes return 405. RAG index writes chunk/file rows; model pull calls Ollama; task checkpoint persists an event; cleanup removes worktree. Retrieval/reuse metadata is separate: persisted `SQLiteCache` recency/hits on L2 reuse; evidence fetch recency; semantic-cache reuse; content-card hits; and `UsageLearner.record` query frequency. Targeted callsite search maps evidence fetches to HTTP, deterministic, and agent paths; semantic and query-learning updates to service queries; content-card hits to preprocessing; shared SQLite cache reuse to command, embedding, pipeline, RAG, reranking, service, token-routing, and deterministic consumers. L1/cache statistics are in-memory counters. `file_refs.last_accessed_at` is used for ordering and restored snapshots; no active setter appeared in searched source.
+- Status and findings were sent to T04 and T20. T07 patch `docs/superpowers/patches/2026-09-26-t07-two-client-http-idempotence.patch` now contains both the handler-level retry test and a live `ThreadingHTTPServer` test with two `HTTPConnection` clients sharing `X-LocalAI-Request-ID`. Static review confirms the patch excludes the inherited blank-agent test and its earlier `assert changed` line is context. The live test uses the real JSON/body, journal, and socket response paths; its targeted Hub command returned `outcome_unknown` (`req_f13de35fa241`), so it is not counted as passing. The blank-agent guard result remains unknown and outside the six master-plan criteria.
+- Ownership split: last verified dirty status showed inherited `client.py`, `commands.py`, `http_server.py`, and `test_client_transport.py`; T04 owns `client.py` and `test_client_transport.py`, latest owner direction reserves `http_server.py` to T08 and the acceptance matrix to T20, and Agent 2 retains `/api/context/pack`. T07 owns only its two additions in `tests/test_mutation_replay.py`, the standalone patch, and this task note; the inherited blank-agent test hunk remains outside the patch. No protected/source file was changed. Resume `local_ai_repo(action="git_status")` result is unknown (`req_fa48ea310a1a`), so this split is last-verified, not freshly confirmed.
+- Acceptance audit: inventory, request journaling/fingerprint, maintenance/read behavior, and no-replay classification have focused source/test evidence below. Original two-handler retry coverage passed; stronger live-socket follow-up is present but unverified. No full-file mutation pass or live-socket test pass is claimed. Side-effect callsite mapping remains bounded and is not exhaustive across every cache consumer.
+- Current f374 hashes: `client.py` `ADAA41F12027E72CED773CD909B2A3B92C9433CD9579E150B4B49C2704844292`; `http_server.py` `92EBF54012918396465A500ED9DD4C6EF2F9194096FA12DC96EC7E03669224B0`; `test_client_transport.py` `344EAB1033C63A86D7242EFA3C43BD15BDCA5EB32D091796DBED726D17C9FE14`; current `test_mutation_replay.py` `5D58531FE955B1E4D985B122C9AE2A1773EEBC1E3FFF99466F361FFD00D33590`.
+- Coverage review: `test_http_partial_publish_failure_replays_without_dispatching_twice` calls `do_POST` for RAG index/document ingest, work submit, task checkpoint, and command; mocked operations run once and stored response replays. `test_http_retry_after_response_loss_publishes_one_durable_event` checks one actual durable pubsub event; `test_response_is_journaled_before_a_client_disconnect` checks journal completion before socket write. Existing focused receipts cover these handler paths; the new two-live-client socket test has no terminal execution receipt.
+
+## Validation — 2026-09-26
+
+All listed `local_ai_command` results report repository revision `b7960330ef37748bc1051328ff6c61561aac1a4ab9200c0643496302055bd929`.
+
+- `python -m pytest -q tests/test_mutation_replay.py::test_http_retry_from_two_clients_dispatches_once --tb=short` — 1 passed in 0.41s with 1 s event waits; execution `edb2818e88e2426aab6c3dab5a277405`.
+- `python -m pytest -q tests/test_client_transport.py --tb=short` — 21 passed in 2.70s; execution `b28a9bc6a6634855bd6ec1a5b78096e1`.
+- `python -m pytest -q tests/test_mutation_replay.py -k 'http_ and not from_two_clients' --tb=short` — 8 passed, 47 deselected; execution `21c19e38278b48b8aa8d93616ea6b0b4`.
+- `python -m pytest -q tests/test_mutation_replay.py -k 'recovery_journal' --tb=short` — 16 passed, 39 deselected; execution `0bb04fd203d745a6a12c0a93c942aced`.
+- `python -m pytest -q tests/test_mutation_replay.py -k 'maintenance_get_routes_are_read_only or repair_loop or client_' --tb=short` — 11 passed, 44 deselected; execution `af7d9f9c64f249c68390ef6239c8fb93`.
+- `python -m pytest -q tests/test_command_transport.py --tb=short` — 5 passed in 0.11s; execution `d05c04b0530a40c99fda5e9a2e9f2ef6`.
+- `python -m pytest -q tests/test_mutation_replay.py -k 'begin_requires_identity or wait_for_ or lookup_ or corrupt_journal or failed_partial_publish or rag_index_publish_failure or post_journal_failure or post_rejects_malformed or send_normalizes or bundle_import or tool_accounting or confirmed_restart' --tb=short` — 18 passed, 37 deselected; execution `871a055694884088b34e4709a8483c87`.
+- `python -m pytest -q tests/test_mutation_replay.py -k 'mutation_transport_error or response_is_journaled' --tb=short` — 2 passed, 53 deselected; execution `0976eb1b3f93430eb8132e36d00b5d8c`.
+- `git diff --check -- tests/test_mutation_replay.py` — passed; execution `9ed842084a46479a837bb348b5386bf6`.
+- No result is claimed for `test_reconcile_debug_trace_does_not_complete_without_agent`; its earlier request `req_d10b5b61df13` remains unknown and was not repeated.
+
+## Acceptance map — 2026-09-26
+
+| Master-plan criterion | Result | Evidence and limit |
+|---|---|---|
+| Inventory required side effects; describe retrieval metadata separately | PASS for named scope | Side effects and five persisted retrieval/reuse metadata stores are listed above. Bounded source scan did not build an exhaustive route-to-cache map. |
+| Retry mutations only with idempotency/request ID; report known outcome or uncertainty | PASS, focused | Client transport 21 passed; command transport 5 passed; mutation uncertainty/journal-before-response cases 2 passed. |
+| Journal identity, operation, payload fingerprint; reject changed-payload reuse | PASS, focused | Recovery-journal group 16 passed; source binds request ID to tenant, identity, route, and payload fingerprint. |
+| Cover disconnect, crash/restart, two-client retry, timeout, and partial publish | PARTIAL; live-socket follow-up unverified | Existing receipts cover response loss/disconnect, confirmed restart, two concurrent `Handler` instances, wait timeout, and partial publish. A live two-connection test is now added but has no terminal test receipt (`req_f13de35fa241`). Partial-publish operation bodies are mocked; one durable pubsub event is tested separately. |
+| Move maintenance side effects off GET; read client paths must not trigger cleanup | PASS, focused | Maintenance/read-client/repair group 11 passed; maintenance GET routes return 405 with `Allow: POST`. |
+| Prevent replay of confirmed one-shot mutation; classify read paths truthfully | PASS for affected paths | No-replay tests pass. Maintenance GET behavior and identified persisted read/reuse metadata paths are classified separately. Broader endpoint-to-cache mapping is not claimed. |
+
+## Final patch validation — 2026-09-26
+
+- Prior handler-level version at test hash `D37FC9B34D284F7D5BECBE3290ED25FDBD5CA1F9F182F2672D3B6CFB85D3F343`: `python -m pytest -q tests/test_mutation_replay.py::test_http_retry_from_two_clients_dispatches_once --tb=short` — 1 passed in 0.40s; execution `26434b9c55e54cdaa2ee05cda601a38c`; repository revision `c8653d50befe30208a4ccbddfefa5cd7001e8b4fc158532d0c0e2a0d9665f5f7`. This receipt predates the live-socket test and does not validate current file hash `5D58531FE955B1E4D985B122C9AE2A1773EEBC1E3FFF99466F361FFD00D33590`.
+- Full-module attempt on 2026-09-26: `python -m pytest -q tests/test_mutation_replay.py --tb=short` returned `outcome_unknown`, request `req_a21d37041e25`; it was not repeated and no full-module pass is claimed.
+- Resume review attempt: `local_ai_repo(action="review_diff", root="C:\Users\Adam\.codex\worktrees\f374\.local-ai-hub", changed_paths=["tests/test_mutation_replay.py"], task_id="01a0d30c-435e-7413-88be-b67748764629", phase="review", focus=["test_http_retry_from_two_live_clients_dispatches_once", "Handler.do_POST request ID and replay flow"], reuse_key="t07-live-socket-review-resume-2026-09-26")` returned `outcome_unknown`, request `req_ed59adad7719`; not repeated. No indexed review result is available.
+- Independent reviewer agent `/root/t07_live_http_static_review` attempted `local_ai_repo(action="context", mode="adaptive")` for the same root and received `outcome_unknown`, request `req_a7d9406c63c5`. Per repo policy it did not inspect source or run tests; static review therefore yielded no source finding, only confirmation that live-test runtime evidence is missing.
+- New live-socket test attempt: `python -m pytest -q tests/test_mutation_replay.py::test_http_retry_from_two_live_clients_dispatches_once --tb=short` returned `outcome_unknown`, request `req_f13de35fa241`; not repeated, no pass claimed.
+- New focused partial-publish attempt: `python -m pytest -q tests/test_mutation_replay.py::test_http_partial_publish_failure_replays_without_dispatching_twice --tb=short` returned `outcome_unknown`, request `req_5bde8341ec83`; not repeated. Earlier HTTP focused group (8 passed) and journal/crash group (16 passed) remain the available terminal receipts.
+- Follow-up state check: `Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'"` filtered for `test_http_retry_from_two_live_clients_dispatches_once` found no matching local process; this proves no live local handle, not test pass/fail. `local_ai_artifact(action="list", response_profile="compact", max_response_tokens=700, max_chars=1800, reuse_key="t07-check-existing-command-artifact-req-f13de35fa241")` returned `outcome_unknown`, request `req_830ac2271dc1`; not repeated. No execution or artifact ID available to retrieve the lost test result.
+- Owner-scope check after resume: `local_ai_repo(action="git_status", root="C:\Users\Adam\.codex\worktrees\f374\.local-ai-hub", response_profile="compact", max_response_tokens=1200, reuse_key="t07-owner-scope-git-status-after-resume-2026-09-26")` returned `outcome_unknown`, request `req_fa48ea310a1a`; not repeated, so no fresh ownership/status evidence was obtained.
+- Two `singleflight_wait_timeout_seconds=2.0` variants returned `outcome_unknown`, requests `req_1ba35fdeb221` and `req_5e23a16cd861`; neither command was repeated. Restored exact validated `1.0` variant from execution `26434b9c55e54cdaa2ee05cda601a38c`. Current test hash matches that run's 5 s event/future, 1 s handler-wait variant: `D37FC9B34D284F7D5BECBE3290ED25FDBD5CA1F9F182F2672D3B6CFB85D3F343`.
+- `git diff --check -- tests/test_mutation_replay.py` returned `outcome_unknown`, request `req_ee6eaa424c77`; not counted as pass or repeated.
+- Read-only review confirms standalone patch adds only the new test; patch context includes existing `assert changed` line without adding it. Review notes handler-level scope and 1 s handler wait cap; tests were not run by reviewer.
+
+Separate patch SHA-256: `BFC79EECB0A637384A609807C118FA1D6CBAA8C7C74DFBCFCA88005AC1CAB3FB`. Patch contains only the two T07 two-client test additions. A formal `git apply --check` receipt is unavailable; broker denied that check, so portability rests on review of the standalone diff.
+
+Unknown supplemental blank-agent guard receipt is not counted as pass; it is outside these six master-plan criteria.
+
+## Live HTTP root-cause continuation — 2026-09-26
+
+- Current worktree root: `C:\Users\Adam\.codex\worktrees\f374\.local-ai-hub`. Goal `01a0d30c-435e-7413-88be-b67748764629` is active. T07-owned paths remain `tests/test_mutation_replay.py`, this task note, and `docs/superpowers/patches/2026-09-26-t07-two-client-http-idempotence.patch`; inherited modified paths remain `client.py` (T04), `http_server.py` (T08), `tests/test_client_transport.py` (T04), `commands.py` and `resilience.py` (owner not freshly resolved). Preserve all.
+- Terminal HTTP batch command `python -m pytest -q tests/test_mutation_replay.py -k 'http_ and not from_two_clients' --tb=short` returned 8 passed, 1 failed, 47 deselected; the selector included `test_http_retry_from_two_live_clients_dispatches_once` because its name contains `from_two_live_clients`. Failure: `publish_started.wait(5.0)` false at line 799; execution `7d34feaf1112454ba001e9a0797bd42a`; repository revision `211a3c7eef6ed11920c7746adac9d7096a82ada685d754898de13f45f1157298`.
+- T07 test and standalone patch raised only the live test's first `publish_started` gate from 5s to 10s. The exact live-test run then failed at the same gate after 11.35s; exit 1, execution `00f11790db2a4e61b1d39e674d2cc519`, repository revision `e1425e9d4ce75a92b2b3c1df7a91be5d9ed0559434b9b2af21cb7850ee970f17`. This falsifies “5s wait alone” as root-cause fix. Do not claim pass.
+- Source inspection: `publish_started` is set at the first line of the test's `submit` callback. `Handler.do_POST` reaches that callback only after request-ID validation, auth, JSON parse/payload validation, trace setup, and `RecoveryJournal.begin`. The live payload satisfies `/api/work-orders` submit validation (`root` and `task`); request ID validator allows its visible-ASCII value. `http_server.py` remains T08-owned and was read only. Exact pre-callback failure stage remains unproven.
+- Added T07-only diagnostic instrumentation in `tests/test_mutation_replay.py`: records `do_POST` entry, `RecoveryJournal.begin` start/finish/result, and first-client result if callback is not reached. Dispatch-count and response assertions remain unchanged. Diagnostic test request returned `outcome_unknown`, request `req_c1f884e87717`; no execution ID or receipt. A later Hub snapshot reported `success:true`, `inflight:0`; artifact list contained only unrelated T15/T19 receipts, not this T07 run. Do not repeat identical diagnostic command.
+- Hub context for current root cause returned terminal failure `guarded context stopped: guard_task_id_required` (`terminal:true`, `retryable:false`; provenance revision `211a3c7eef6ed11920c7746adac9d7096a82ada685d754898de13f45f1157298`). Native fallback was limited to bounded source slices/searches. `ensure-tools.ps1` was absent at the configured path.
+- Narrow `local_ai_repo(review_diff)` failed because shared dirty diff required 26 segments (safe limit 8); explicit T07 hunks produced the same error. Semantic review was advisory and unusable (`unsupported_location`). Manual scope review confirmed handler-level waits stay at 5s, only live startup gate changed to 10s, standalone patch matches that hunk, and functional assertions remain.
+- Root-cause correction and terminal live-test pass remain open. Next safe step: obtain the diagnostic test receipt through an authorized current Hub run or another permitted terminal fallback, identify the stage preventing submit, then fix only T07-owned code and run the live test once after that fix. Do not reuse T15 receipts or modify T08/Agent 2 paths.
+- Latest bounded solve request `local_ai_repo(action="solve", task_id="task_d9f67102fbb9", root="C:\\Users\\Adam\\.codex\\worktrees\\f374\\.local-ai-hub", repository_revision="e1425e9d4ce75a92b2b3c1df7a91be5d9ed0559434b9b2af21cb7850ee970f17")` returned `outcome_unknown`, request `req_eb88b237dbfe`; not repeated.
+
+## Broker continuation — 2026-09-26
+
+- A distinct diagnostic command, `python -m pytest -s -vv tests/test_mutation_replay.py::test_http_retry_from_two_live_clients_dispatches_once --tb=short`, returned `outcome_unknown` after transport failure, request `req_2c47305d82e8`; no execution ID, terminal status, or test output was returned. Do not infer that it passed, failed, or ran.
+- `local_ai_artifact(action="list")` also returned `outcome_unknown`, request `req_3be77c0953f7`. One bounded `local_ai_status(detail="brief")` check then returned `success:false` with health fields null. Hub broker/health recovery is now the blocker; no further identical calls were made.
+- Current bounded native snapshot confirms the T07 diagnostic instrumentation is present in `tests/test_mutation_replay.py`, with the 10s callback gate and stage/result fields. It does not provide the missing runtime trace. Native validation was not run because the command broker did not return the required terminal, non-retryable result.
+- Root-cause correction, narrow review receipt, and terminal live-test pass remain open. Resume with a broker-backed diagnostic receipt when Hub health recovers; use its `handler_started`, `journal_begin_*`, and `first_client` evidence to identify the failing stage before changing T07 behavior. Preserve T04/T08/Agent 2/T15 ownership and do not reuse unrelated receipts.
+
+## Resumed broker audit — 2026-09-26
+
+- Current worktree still has base `c2b49d363ffd6105f5e98f97d67c57c36a9459b6`; dirty paths remain the inherited T04/T08/commands files plus T07 `tests/test_mutation_replay.py` and T07 docs. No live pytest Python process matched the test name during the bounded process check.
+- Hub brief health recovered (`success:true`, `inflight:0`), but the distinct adaptive context request returned `outcome_unknown` (`req_09c506b0ff61`). Artifact listing itself succeeded, yet the inspected command-verification artifacts belonged to T15, T09, and another task; none establishes T07 test status. Follow-up artifact reads lost transport (`req_0b416234384f`, `req_bd6746c12761`, `req_51ad63b8822f`). Do not reuse those receipts or repeat those lookups.
+- No T07 test command ran in this continuation. The live test still lacks a terminal diagnostic trace and a passing terminal receipt. Keep root-cause correction and acceptance open; resume only with a recoverable T07 execution/artifact or a permitted terminal validation path. Preserve all unrelated dirty owners.
+
+## Resumed broker audit — 2026-09-26 (third attempt)
+
+- Bounded `local_ai_status(detail="brief")` returned `success:false` with health fields null. The planned adaptive context call was not dispatched after that failure. Hub retrieval/validation remains unavailable in this attempt.
+- Current native snapshot still shows base `c2b49d363ffd6105f5e98f97d67c57c36a9459b6` and the same inherited dirty files plus T07 test/docs. Read-only route inspection confirms `/api/work-orders` reaches `RecoveryJournal.begin` before `APP.work_orchestrator.submit`; the test supplies `APP.config`, telemetry, journal, and a valid submit payload. This narrows the static path but proves no runtime failure stage.
+- No test ran in this attempt. The earlier 10s terminal failure predates the current stage instrumentation; later diagnostic execution was `outcome_unknown`. Do not claim a fix or pass, and do not bypass the command broker with a repeated native test.
+- Same broker availability/transport blocker has recurred through three consecutive resumed audit turns. Root-cause repair, narrow review, and terminal live-test verification remain incomplete. Preserve unrelated owners; do not reuse T15/T09 artifacts.
+
+## Fresh resume audit — 2026-09-27
+
+- Goal resumed after the prior blocked status. Current brief Hub health again returned `success:false`; adaptive context was not dispatched. Current HEAD/status and the T07 diagnostic markers were inspected through the bounded native fallback. No matching pytest process is live.
+- Independent read-only route review confirms the payload matches `/api/work-orders` validation, the orchestrator is enabled in the fixture, and `RecoveryJournal.begin` is the first state gate before submit. A journal exception would return 503. This ranks the journal gate for investigation but does not prove it is the failure source.
+- Existing test instrumentation already captures handler entry, journal begin start/finish/result, and first-client result. The required next evidence is its terminal assertion output. No source fix or test rerun is justified without that evidence; preserve the goal as active for this fresh resumed audit.
+
+## Acceptance evidence freshness audit — 2026-09-27
+
+- Independent note-only audit found the broader side-effect/cache inventory is explicitly partial: named effects and five reuse/access-metadata stores are recorded, but route-to-cache coverage is not exhaustive.
+- The focused retry/client/command, journal identity/fingerprint, and maintenance/read-path passes remain historical evidence at repository revision `b7960330ef37748bc1051328ff6c61561aac1a4ab9200c0643496302055bd929`. They predate the later T07 and inherited dirty edits, so they do not establish current-tree acceptance.
+- The disconnect/restart/timeout/partial-publish evidence remains scoped; the live two-socket test still lacks a pass, partial-publish bodies are mocked, and the standalone patch has no `git apply --check` receipt. The handler-level two-client test is not a substitute for live sockets.
+- Full acceptance therefore still needs current-revision focused receipts, exhaustive side-effect-to-cache coverage, and the live two-client terminal pass. Do not promote historical PASS labels into current completion claims.
+
+## Bounded side-effect inventory — 2026-09-27
+
+- Read-only inventory identifies MCP mutation surfaces in `src/local_ai_hub/mcp_server.py` (RAG index/ingest, command repair/write actions, and coordination task/memory/lease/worktree operations); RAG dispatch includes `index` and `ingest_document`.
+- HTTP mutation candidates include maintenance purge POST guards, `/api/agent/tasks` cleanup/reap/curate operations, and `/api/agent-state/memory` delete. Command sinks include temp/candidate unlink and atomic replacement. Cache/index metadata writes exist in `cache.py`, `semantic_cache.py`, `code_index.py`, `artifacts.py`, and `memory.py`.
+- Some reads may populate cache/index metadata or invoke TTL cleanup. The inventory did not trace every HTTP/MCP dispatcher to every sink or every read route to metadata writes. It is useful scope evidence only; full side-effect acceptance remains open, and no tests ran.
+- Hub context attempt during this inventory returned `outcome_unknown` (`req_298121f14283`); its bounded health check returned `success:false`. No unrelated-owner artifacts were used.
+
+## Fresh resume audit — 2026-09-27 (third resumed attempt)
+
+- Adaptive Hub context request returned `outcome_unknown` after transport failure (`req_b3f9e8baa009`). No repository command or test ran.
+- Bounded native snapshot confirms HEAD `c2b49d363ffd6105f5e98f97d67c57c36a9459b6`; dirty paths remain inherited `client.py`, `commands.py`, `http_server.py`, `test_client_transport.py`, plus T07 `test_mutation_replay.py` and T07 documentation.
+- A bounded process query found no live process for `test_http_retry_from_two_live_clients_dispatches_once`.
+- Broker/transport failure has now repeated across three consecutive turns after the goal resumed. Root-cause repair, current-tree narrow review, full side-effect coverage, and terminal live-test acceptance remain incomplete. Do not bypass the command broker or reuse unrelated receipts. Preserve inherited owners.
+
+## Fresh resumed execution — 2026-09-27
+
+- Goal resumed by user. Before edits, HEAD was `c2b49d363ffd6105f5e98f97d67c57c36a9459b6`; worktree was detached. Dirty baseline: inherited `client.py`, `commands.py`, `http_server.py`, `test_client_transport.py`; T07 `test_mutation_replay.py` and T07 documentation. Agent 2 `/api/context/pack` untouched.
+- One adaptive context request failed with unknown transport outcome (`req_3752347daca1`). One command-broker request for the live test also failed unknown (`req_10cbdd1fe578`). No broker receipt exists. After checking that no matching test process remained, user-directed native fallback ran once.
+- First terminal live-socket run failed at the request helper: `TypeError: 'HTTPConnection' object does not support the context manager protocol`; handler and journal markers were false. This proved the test harness never sent its request; it did not prove an HTTP or journal root cause.
+- T07 fixed only the helper to close each `HTTPConnection` in `finally`; no assertion or expected response changed. Exact terminal fallback command `python -m pytest -q --tb=short -p no:cacheprovider tests/test_mutation_replay.py::test_http_retry_from_two_live_clients_dispatches_once` then exited 0: 1 passed in 0.88s. Both real socket clients received the same 200 response; submit callback ran once.
+- Current-tree test commands: `python -m pytest -q --tb=short -p no:cacheprovider tests/test_client_transport.py tests/test_command_transport.py` exited 0 (26 passed, 2.63s); the full `tests/test_mutation_replay.py` exited 0 (56 passed, 4.48s).
+- Side-effect command checks: `tests/test_command_rollback.py` 13 passed; `tests/test_auto_fix_repair_loop.py` 16 passed; `tests/test_cloud_model_accelerators.py -k 'patch_and_verify or rollback'` 5 passed, 11 deselected. `tests/test_command_timeout_cache_contract.py` initially failed because a timed-out result entered the failure cache. T07 changed the cache predicate to exclude `timed_out`; rerun exited 0 (2 passed, 0.24s).
+- The standalone patch now carries the same explicit-close fix. Initial `git apply --cached --check` found a stale hunk count (`corrupt patch at line 165`); after correcting the hunk count, the same check exited 0.
+- Fresh route/cache inventory maps request journaling, replay guards, mutation sinks, and hidden read-path metadata writes. It remains bounded: indirect command actions, dashboard/background retention, and some embedding/cache consumers are not fully traced.
+- Remaining side-effect risk: `patch_and_verify` rollback runs `git checkout -- .`, ignores rollback command status, and can erase pre-existing tracked edits. Existing rollback tests use clean temporary Git trees. No rollback behavior change was made pending design approval; choose fail-closed on dirty worktrees or snapshot/restore exact staged, unstaged, and untracked state.
+- `repair_loop` still treats ordinary `validation` failures as eligible to continue; no test yet proves safety for a validation command that mutates before failing. Do not claim full side-effect acceptance from the passing focused suites alone.
+
+## Current-tree focused validation — 2026-09-27
+
+All commands below ran natively after the current Hub context and command-broker calls returned unknown transport outcomes; pytest cache was disabled.
+
+- `python -m pytest -q --tb=short -p no:cacheprovider tests/test_mutation_replay.py`: exit 0, 56 passed in 5.46s.
+- `python -m pytest -q --tb=short -p no:cacheprovider tests/test_client_transport.py tests/test_command_transport.py`: exit 0, 26 passed in 2.77s.
+- `python -m pytest -q --tb=short -p no:cacheprovider tests/test_command_timeout_cache_contract.py tests/test_command_rollback.py tests/test_auto_fix_repair_loop.py`: exit 0, 31 passed in 6.62s.
+- `python -m pytest -q --tb=short -p no:cacheprovider tests/test_cloud_model_accelerators.py -k 'patch_and_verify or rollback'`: exit 0, 5 passed, 11 deselected in 5.07s.
+- `git apply --cached --check docs/superpowers/patches/2026-09-26-t07-two-client-http-idempotence.patch`: exit 0 after the standalone patch hunk count was corrected.
+
+## Expanded read-path and mutation map — 2026-09-27
+
+- HTTP POST request journaling precedes route dispatch. Same-ID completed work returns the stored response; changed identity/action/payload conflicts; running requests wait briefly then return in-progress; abandoned or response-less results return unknown without redispatch.
+- Work-order submit/status/wait/cancel/continue, command operations, agent task and memory operations, workspace memo operations, RAG index/search/ingest, artifacts, and maintenance routes were traced to their dispatchers and principal state sinks. Command, RAG, memory, work-order, task, and cleanup mutations remain outside the client replay-safe POST allowlist unless explicitly classified safe.
+- Retrieval metadata writes are separate from content mutations: persistent cache hit/recency updates, evidence recency, semantic/content-card cache recency, learning query counts, code-index refreshes, debug-trace reconciliation, request journals, and HTTP telemetry.
+- This source map is broader than the earlier inventory, but still does not trace every specialized command, dashboard/background retention worker, telemetry store policy, or every semantic-embedding cache consumer. Treat path classification as bounded evidence, not exhaustive proof.
+- Final exact live-test run on the combined current tree: `python -m pytest -q --tb=short -p no:cacheprovider tests/test_mutation_replay.py::test_http_retry_from_two_live_clients_dispatches_once` exited 0 (1 passed in 0.79s).
+
+## Replay-safe POST classification detail — 2026-09-27
+
+- Current `HubClient._post_replay_safe` directly allows memory get/search; deterministic repo queries and test skeleton generation; Git diff/history; Agent OS context. Action-gated paths allow task get/list/count, memory get/find/relation-find/relation-traverse, blackboard get/list, incident find, and verification completion. `generate_types` is allowed only when `write_stub` is false. Mutating action names are excluded by default.
+- Most allowlisted paths are logical reads, though caches, query learning, request journal, and telemetry can write access metadata. `/api/agent-state/context` is stateful: `compile` may mark changed-path memories stale and invalidate links. It remains transport-replay-safe because `HubClient.request` reuses one request ID and HTTP `do_POST` begins the durable recovery journal before dispatch; a duplicate ID returns the recorded outcome before redispatch.
+- `client.py` currently describes `_post_replay_safe` as read-only-only while `request()` documents journaled/idempotent safety. The stateful context route makes the narrower comment inaccurate. T04 owns this dirty client file; T07 left it unchanged and recorded the owner-bound documentation issue.
+
+## Acceptance matrix — current combined worktree, 2026-09-27
+
+| Criterion | Status | Evidence and remaining limit |
+| --- | --- | --- |
+| Inventory side effects and separate retrieval metadata | Pass for six named surfaces; broader route coverage partial | Scoped inventory below covers index, ingest, model pull, learning, task checkpoint, and cleanup. It does not trace every specialized command, retention worker, telemetry policy, or semantic-cache consumer. |
+| Retry mutations only with idempotency/request identity; report lost outcomes truthfully | Pass for journaled paths | `RecoveryJournal` binds request identity and operation; completed responses replay, while abandoned/response-less requests stay `outcome_unknown` without redispatch. This does not assert every mutation endpoint is retryable. |
+| Reject changed reuse of an ID | Pass | `test_recovery_journal_binds_id_to_tenant_identity_and_operation`, `test_http_retry_replays_outcome_and_rejects_changed_payload`, and journal identity/fingerprint tests cover conflicts. |
+| Disconnect, crash, two-client retry, timeout, partial publish | Pass for focused covered paths; partial integration proof | Disconnect and crash cases are covered by `test_response_is_journaled_before_a_client_disconnect` and `test_recovery_journal_process_crash_stays_explicitly_unknown`. The real two-socket live test passed on the current combined tree. Partial RAG/work/task/command publish cases use mocked dispatchers; `test_rag_index_publish_failure_keeps_previous_snapshot` separately checks RAG snapshot preservation. Timeout/cancellation non-caching is covered by `test_timeout_and_cancelled_repeatable_commands_are_not_cached`. |
+| Remove maintenance side effects from GET; keep reads from triggering cleanup | Pass for routed maintenance endpoints; bounded path scope | `test_maintenance_get_routes_are_read_only` verifies maintenance GET returns 405 and `Allow: POST`. The client replay-safe allowlist and stateful `/api/agent-state/context` behavior are mapped; broad proof over every read/cache consumer is not complete. |
+| Do not replay confirmed one-shot mutations; classify read paths truthfully | Partial | Repair-loop and journal tests prevent redispatch after a recorded/unknown result. User-whitelisted custom commands now carry `replay_safe=false`, including PowerShell wrappers, but the added wrapper regression is unverified because its broker request ended `outcome_unknown`. `compile` is stateful despite being transport-replay-safe because its request is durably journaled. The inherited comment in T04-owned `client.py` still calls the allowlist read-only-only. |
+
+### Current-tree validation receipts
+
+- `tests/test_mutation_replay.py::test_http_retry_from_two_live_clients_dispatches_once`: 1 passed in 0.79s. Uses real `ThreadingHTTPServer` and two socket clients; one submit callback for shared request ID.
+- Full `tests/test_mutation_replay.py`: 56 passed in 5.46s.
+- `tests/test_client_transport.py tests/test_command_transport.py`: 26 passed in 2.77s.
+- `tests/test_command_timeout_cache_contract.py tests/test_command_rollback.py tests/test_auto_fix_repair_loop.py`: 31 passed in 6.62s.
+- `tests/test_cloud_model_accelerators.py -k 'patch_and_verify or rollback'`: 5 passed, 11 deselected in 5.07s.
+- `git apply --cached --check docs/superpowers/patches/2026-09-26-t07-two-client-http-idempotence.patch` and `git diff --check -- src/local_ai_hub/commands.py tests/test_mutation_replay.py`: exited 0; diff check reported line-ending warnings only.
+
+### Remaining acceptance blocker and Hub record
+
+- `patch_and_verify` automatic rollback still uses broad `git checkout -- .` behavior and can erase pre-existing tracked edits. The proposed refusal-on-dirty-worktree versus exact-state snapshot design is awaiting the user's choice; no rollback behavior was changed. Existing rollback tests use clean temporary Git trees, so they do not resolve this risk.
+- The repair loop can continue after an ordinary `validation` failure. Whether a validation command may mutate before failing lacks direct evidence.
+- Latest `local_ai_repo(action="context", root="C:\\Users\\Adam\\.codex\\worktrees\\f374\\.local-ai-hub", mode="adaptive", phase="review")` returned `outcome_unknown=true`, request `req_f8724a8f0f68`; no cache, in-progress, or evidence IDs were returned. One bounded `local_ai_status(detail="brief")` health call returned `success=false`, with version/model/queue fields null. Hub unavailable; no duplicate command or context request launched.
+- Required `ensure-tools.ps1` invocation at `C:\Users\Adam\.agents\skills\token-economizer\scripts\ensure-tools.ps1` failed because that script path is unavailable in this environment. It installed nothing and changed no repository files.
+- Keep goal active. Six named side-effect surfaces are now inventoried. Do not claim full acceptance until rollback design is resolved and broader read-path scope is closed or explicitly accepted.
+
+## T07-named side-effect inventory — source audit, 2026-09-27
+
+| Surface | Durable or external effect | Retry and access-metadata boundary |
+| --- | --- | --- |
+| RAG index (`http_server.py` POST `/api/rag/index`; `rag.py` `index`) | Walks workspace files, reads changed content, embeds changed chunks, then atomically deletes prior chunk/file/FTS rows for changed or missing paths and inserts replacement rows in SQLite. | In-process single-flight coalesces identical root/tenant/workspace indexing. HTTP recovery journal prevents redispatch for repeated request ID; new request ID can run incremental index again. |
+| RAG document ingest (`http_server.py` POST `/api/rag/ingest_document`; `rag.py` `ingest_document`) | Optionally embeds document chunks; one SQLite transaction replaces matching tenant/workspace/document rows in chunks, files, and FTS. Reusing title replaces that document path. | Same-request-ID replay uses HTTP recovery journal. Embedding can run again for fresh request ID even when content is unchanged. |
+| Model pull (`http_server.py` POST `/api/models/manage`; `_handle_models_action`) | Sends `POST /api/pull` to configured Ollama URL with `stream:false`, timeout 120 seconds; downloads model state outside Hub databases. | HTTP recovery journal guards repeated request ID. A process failure after Ollama accepts pull but before Hub records response can leave explicit unknown outcome; Hub must not redispatch abandoned request. |
+| Agent learning (`http_server.py` `/api/agent-state/learning`; `agent_learning.py`) | Candidate creation, advancement, promotion, and SLO-triggered rollback append Agent OS events and update SQLite projection. Promotion requires approver `user`. | Create/advance/promote event keys derive from candidate/action IDs. Rollback event key also includes current second; first rollback changes status, so later observations stop. `observe` without breached threshold does not mutate candidate state. |
+| Agent task checkpoint (`http_server.py` `/api/agent-state/tasks`; `agent_tasks.py` `checkpoint`) | May capture affected file contents into checkpoint state; appends `task.checkpointed` and atomically updates task projection/version. | HTTP recovery journal covers same request ID. Checkpoint fallback event key includes current nanoseconds, so fresh request ID without explicit stable `idempotency_key` is not independently deduplicated. |
+| Cleanup (`http_server.py`, `services.py`, `app.py`, `agent_events.py`, `agent_tasks.py`) | POST-only `optimize_db` checkpoints/truncates WAL and runs SQLite optimize across state DBs; `purge_cache` deletes cache entries older than selected age; `resolve_errors` resolves operational errors/incidents. `/api/agent-state/cleanup` deletes expired events/snapshots; memory `reap`, task `reap_expired`, and `cleanup_worktree` reap expired memory/tasks or remove recorded worktrees/branches. Watchdog marks abandoned requests, ticks async jobs, cleans debug traces, reaps expired task heartbeats/memory and old events/snapshots, and periodically optimizes DBs. | Maintenance GET routes return 405 with `Allow: POST`; `/api/agent-state/cleanup` appears only in the POST dispatcher. Normal read handlers do not invoke these cleanup actions. Watchdog cleanup is independent background work. Worktree cleanup remains explicit mutation and requires request identity for safe retry. |
+
+Retrieval metadata remains separate from those content and lifecycle mutations: HTTP request telemetry records request/access events; RAG search uses an in-process search cache and reports hit/coalesced/revision metadata; repository file refs and content cards store `last_accessed_at`, `accessed_at`, and hit counts. Cache purge deletes expired cache rows and is a cleanup mutation, not a read-side access update.
+
+## Continuation — 2026-09-27, wrapper review and broker outcomes
+
+- Independent replay review found a PowerShell wrapper bypass: the PowerShell classifier folded `extra_allowed_tools` into generic validation keywords and omitted `replay_safe`, so `repair_loop` treated `pwsh -Command "custom_tool --apply"` as replay-safe by default. The PowerShell validation result now sets `replay_safe=false` when a user-whitelisted executable appears. Existing direct and compound cases remain; the regression parametrization now also covers `pwsh` and `powershell` wrappers.
+- The install and update prompts now both state that allowlisting permits dispatch only, does not establish cacheability/replay safety, and automatic repair retries only explicitly replay-safe commands.
+- Expanded focused test after adding wrapper cases returned `outcome_unknown=true`, request `req_34dcfe0e50a7`; do not repeat that request. After the classifier fix, the focused test returned `outcome_unknown=true`, request `req_f84dbf13668b`. A current-tree HTTP two-client test rerun returned `outcome_unknown=true`, request `req_9ca536d062a1`. Broker stats also returned `outcome_unknown=true`, request `req_23946e50acaf`; no terminal status or execution IDs were provided.
+- The latest terminal live HTTP receipt remains execution `702275ecc2004ddfb7fcca87cac73269`: 1 passed in 1.11s at repository revision `d424a4001ec37b822aa2d7aeddf2e3a9a58e58fcdd7e1c0999dc64f745184562`, before the PowerShell classifier-only delta and added wrapper parameters. The live test body and HTTP handler were unchanged by that delta, but the current-tree rerun is not verified.
+- Post-edit indexed impact returned `outcome_unknown=true`, request `req_5544da212ff5`. Do not repeat these unknown requests. The Hub broker is currently a validation blocker; no native test fallback was run because the broker did not return the required terminal/non-retryable result.
+- Current bounded `local_ai_status(detail="brief")` returned `success=false` with version, model, queue, and inflight fields null. It cannot establish whether the unknown test requests completed; no further status polling or command replay was done.
+- Bounded static wrapper audit: PowerShell has the explicit wrapper classifier and now propagates unknown side effects as `replay_safe=false`. `cmd`/`cmd.exe` has no corresponding safe-classifier branch and reaches the unknown-command path; repair-loop default does not mark unknown commands replay-safe. Python `-c` rejects listed dangerous calls such as `os.system` and `subprocess`, though this is a bounded source check rather than exhaustive parser/runtime proof.
+- Acceptance remains open: dirty-worktree rollback needed a narrow implementation fix; see next continuation. General validation-command replay safety remains partially evidenced, and exact current-tree live HTTP receipt is pending.
+
+## Continuation — 2026-09-27, scoped patch rollback
+
+- `patch_and_verify` no longer runs `git checkout -- .` or deletes newly observed untracked paths. Failure rollback uses one `git apply --reverse` call for the exact input patch, preserving staged, unstaged, pre-existing untracked, and concurrent unrelated files.
+- Rollback status now reflects reverse application result. Failed reverse apply returns `rolled_back=false`, `rollback_error`, and `applied=true`; disabled auto-rollback reports `rolled_back=false`.
+- Added three `tests/test_command_rollback.py` regressions: preserve dirty target plus staged/unstaged neighboring edits and unrelated untracked files; report reverse-apply failure without overwriting a concurrent same-file edit, and assert only one reverse command runs; cover syntax-preflight failure rollback while retaining unrelated dirty and untracked content.
+- Current adaptive context returned `outcome_unknown=true`, request `req_4be03a8e67de`. Do not repeat. Prior bounded Hub health check reported unavailable; exact source and diff slices were read natively.
+- Follow-up `get_goal` confirms Goal API status `blocked`; API has no resume status. `local_ai_coord(action="task_list")` returned `outcome_unknown=true`, request `req_811ae2e63218`; no task ID is available for checkpoint. Do not repeat or create duplicate goal.
+- Focused regression command `python -m pytest tests/test_command_rollback.py::test_patch_and_verify_failure_reverses_only_supplied_patch -q --tb=short` returned `outcome_unknown=true`, request `req_b4abb1bfe45d`. This attempt preceded adding required `tenant=""` arguments and the second regression, so it does not validate the final test tree. Do not repeat and do not run native pytest because broker gave no `terminal=true, retryable=false` receipt.
+- `local_ai_command(action="run", command="git diff --check")` also returned `outcome_unknown=true`, request `req_d51df1b3bfc0`; no native fallback or retry.
+- Indexed `local_ai_repo(action="review_diff", base="HEAD", changed_paths=["src/local_ai_hub/commands.py", "tests/test_command_rollback.py"])` returned `outcome_unknown=true`, request `req_7dd7336b2144`. Do not repeat; bounded static diff review found only the intended rollback and regression additions in these hunks.
+- Independent reviewer found a TOCTOU window between reverse-check and reverse-apply; implementation now uses one reverse apply, and regression asserts a single reverse command with no `--check` split.
+- Post-fix read-only reviewer confirmed one reverse call closes that split-state window; no actionable findings (`commands.py` 2533–2547, `test_command_rollback.py` 90–107).
+- Focused single-reverse regression command returned `outcome_unknown=true`, request `req_6ae53c92d0ca`. Do not repeat and do not run native pytest because broker gave no `terminal=true, retryable=false` receipt.
+- Added syntax-preflight rollback regression after that unknown result; source review passed. Distinct focused execution receipt follows.
+- Distinct syntax-preflight regression command `python -m pytest tests/test_command_rollback.py::test_patch_and_verify_syntax_failure_reverses_only_supplied_patch -q --tb=short` passed: execution `75a3c59105b54240925e08139d016de6`, `1 passed in 0.81s`, repository revision `abee6041ea5ddcfacca204829dbfaa0aab92e79680a46eec1fd90508c4b185fd`.
+- `ensure-tools.ps1` invocation failed because `C:\Users\Adam\.agents\skills\token-economizer\scripts\ensure-tools.ps1` is unavailable; installed nothing and changed no repository files.
+- Acceptance remains open: wrapper classifier test and current-tree live HTTP retry run remain unverified; wider route coverage and timeout/partial-publish integration proof remain partial. No completion claim until those gaps have terminal evidence or documented acceptance.
+
+## Handoff snapshot — 2026-09-27
+
+- Worktree: `C:\Users\Adam\.codex\worktrees\f374\.local-ai-hub`; detached `HEAD=c2b49d363ffd6105f5e98f97d67c57c36a9459b6`; base `a7b0868ac964fd14e160001024e6e0ecaaf4e9db`; no commit or master merge.
+- T07-owned paths: `docs/INSTALL_PROMPT.md`, `docs/UPDATE_PROMPT.md`, `src/local_ai_hub/commands.py` (shared file with existing hunks), `tests/test_mutation_replay.py`, `tests/test_command_rollback.py`, `docs/superpowers/patches/2026-09-26-t07-two-client-http-idempotence.patch`, this task note.
+- Inherited dirty paths preserved untouched: `src/local_ai_hub/client.py`, `src/local_ai_hub/http_server.py`, `tests/test_client_transport.py`.
+- Tracked diff text SHA-256 from PowerShell `git diff --binary HEAD`: `58ef393590d4f7ca644ee17b10621e9b995043f0969be1679779ac44c08b5564`. This excludes untracked patch and task-note files.
+- Post-addition static reviewer confirmed `test_patch_and_verify_syntax_failure_reverses_only_supplied_patch` reaches syntax preflight and its rollback/unrelated-file assertions match the method flow. It then passed with the receipt above.
+
+## Continuation — 2026-09-27, current acceptance review
+
+- Fresh adaptive review failed with `outcome_unknown=true`, request `req_25aeea600998`; do not repeat. Prior bounded status already reported Hub unavailable.
+- Current bounded native status confirms expected dirty paths only: T07 docs/source/tests plus inherited `client.py`, `http_server.py`, and `test_client_transport.py`; no edits to inherited owners this turn.
+- Current source contains explicit validation replay flags and the new positive repair regression. Live two-client HTTP test remains in the tree; no current-tree terminal receipt. No native tests or diff checks were run.
+
+## Handoff snapshot — 2026-09-27, validation classification follow-up
+
+- Worktree: `C:\Users\Adam\.codex\worktrees\f374\.local-ai-hub`; detached `HEAD=c2b49d363ffd6105f5e98f97d67c57c36a9459b6`; base `a7b0868ac964fd14e160001024e6e0ecaaf4e9db`.
+- Tracked dirty paths: `docs/INSTALL_PROMPT.md`, `docs/UPDATE_PROMPT.md`, `src/local_ai_hub/client.py`, `src/local_ai_hub/commands.py`, `src/local_ai_hub/http_server.py`, `tests/test_client_transport.py`, `tests/test_command_rollback.py`, `tests/test_mutation_replay.py`. Untracked T07 artifacts: `docs/superpowers/patches/2026-09-26-t07-two-client-http-idempotence.patch` and this task note.
+- T07-owned work: prompt docs, T07 symbols in shared `commands.py`, `tests/test_command_rollback.py`, T07 additions in `tests/test_mutation_replay.py`, standalone HTTP patch, and this note. Preserve inherited T04 `client.py`/`test_client_transport.py` and T08 `http_server.py`.
+- Tracked diff SHA-256: `bbc6b0a3418136151fdb4612f42fed0990399f01c79c18e195ba627c1e382054`; untracked files are excluded.
+- Live HTTP test's current-tree broker request remains outcome-unknown (`req_9ca536d062a1`). Do not repeat it. Validation test requests `req_83395f7557b5` and `req_488aa50840bc` also lack terminal receipts. Goal remains open until acceptance evidence is complete or an external broker blocker is resolved.
+
+## Continuation — 2026-09-28, piped validation follow-up
+
+- User resumed the existing T07 goal and requested end-to-end reproduction, minimal fix, regression coverage, and verification; no new task or worktree created.
+- Read-only review found pipeline classification called `_classify_single` directly, bypassing explicit `replay_safe` normalization. `python -m pytest -q | tail -n 1` was therefore classified unsafe despite the recognized validation command. Changed the pipeline branch to use `self.classify(first_cmd)`; no T15 identity/daemon symbols touched.
+- Added `test_repair_loop_retries_failed_builtin_python_validation_pipeline` before the fix. Its focused broker run returned `outcome_unknown=true`, request `req_0e0ad78556d7`; no terminal RED receipt and do not repeat. No post-fix test receipt exists.
+- Fresh adaptive context returned `outcome_unknown=true`, request `req_48d569a5d08f`; one bounded Hub status check returned `success=false`. Do not poll or repeat unknown requests. The earlier native-test exception request remains unanswered.
+- Current tracked diff SHA-256: `efa5955849d425426d9f83d98d3f25097d8e0b4fbbce20d17aaad0f0c4c6617f`; HEAD/base and ownership split remain as recorded in the preceding snapshot. Live HTTP current-tree test remains unverified.
+- Independent read-only review found no remaining static issue in the T07 classifier paths. It confirmed pipeline/compound recursion terminates and whitelist `replay_safe=false` propagates. Reviewer ran no tests or Hub calls.
+
+## Continuation — 2026-09-27, explicit validation replay classification
+
+- User chose to preserve retries for recognized validation commands and add explicit replay-safety classification plus tests.
+- `CommandBroker.classify` now marks recognized validation results `replay_safe=true` unless a branch already marks them unsafe. User-whitelisted commands retain `false`; PowerShell validation retains its executable-side-effect check. Compound, pipeline, and `repair_loop` fallback now infer safety from class `read` only.
+- Added `test_repair_loop_retries_failed_builtin_python_validation` to prove a recognized Python validation failure can still enter repair. Its broker run before the source edit returned `outcome_unknown=true`, request `req_83395f7557b5`; no terminal receipt, do not repeat.
+- Post-edit `test_repair_loop_does_not_replay_failed_user_whitelisted_command` returned `outcome_unknown=true`, request `req_488aa50840bc`; no terminal receipt, do not repeat.
+- Current adaptive context (`req_c8f9f6093da5`), `git_status` (`req_151a78760b2b`), coordination renew (`req_3cccc45f703b`), and lease inspection (`req_fceaca66f11b`) returned unknown after transport failures. One bounded Hub status check returned `success=false`; no further Hub polling or duplicate test request.
+- Current-tree implementation and regression-test source were reviewed with bounded native slices. No terminal test or indexed post-edit review receipt exists for this continuation; acceptance remains open.
+
+## Handoff — 2026-09-28, focused acceptance complete
+
+- The user resumed T07 and explicitly required completion of retries/idempotence/side-effect acceptance with repeated-call, conflict, rollback, and live two-client coverage. One bounded native test fallback was used after Hub returned `outcome_unknown=true` (`req_1e0d26649618`); prior broker requests were not repeated. The token-economizer setup script was absent at both configured skill roots, so no install or PATH mutation occurred.
+- Exact native command: `python -m pytest -q tests/test_mutation_replay.py::test_repair_loop_does_not_replay_failed_mutating_command tests/test_mutation_replay.py::test_repair_loop_does_not_replay_failed_user_whitelisted_command tests/test_mutation_replay.py::test_repair_loop_requires_explicit_validation_replay_safety tests/test_mutation_replay.py::test_repair_loop_retries_failed_builtin_python_validation tests/test_mutation_replay.py::test_repair_loop_retries_failed_builtin_python_validation_pipeline tests/test_mutation_replay.py::test_builtin_validation_commands_explicitly_set_replay_safety tests/test_mutation_replay.py::test_recovery_journal_replays_the_same_payload_after_response_loss tests/test_mutation_replay.py::test_recovery_journal_conflicts_when_request_payload_changes tests/test_mutation_replay.py::test_http_retry_replays_outcome_and_rejects_changed_payload tests/test_mutation_replay.py::test_http_retry_from_two_live_clients_dispatches_once tests/test_command_rollback.py::test_command_rollback_on_failure_preserves_unowned_changes`
+- Result: `19 passed in 2.51s`. This includes the live HTTP two-client dispatch-once test, validation replay classification/retry, mutation/whitelist safety, identical-payload replay, changed-payload conflict, and rollback preservation.
+- No source changes were made in this continuation. Existing T07 ownership remains the scoped classifier/repair-loop hunks and T07 tests/docs; inherited T04 `client.py`/`test_client_transport.py`, inherited T08 `http_server.py`, and T06 function-disjoint network/webhook hunks were preserved. Nothing staged or committed.
+- Final snapshot: worktree `C:\Users\Adam\.codex\worktrees\f374\.local-ai-hub`, `HEAD=c2b49d363ffd6105f5e98f97d67c57c36a9459b6`, tracked diff SHA-256 `efa5955849d425426d9f83d98d3f25097d8e0b4fbbce20d17aaad0f0c4c6617f`; untracked T07 patch and this note are excluded from that diff hash. Expected dirty paths remain those listed in the preceding handoff snapshot.
+
+## Continuation — 2026-09-28, post-F2 integration hold
+
+- Parent confirms F1.1 validation remains `outcome_unknown`; F2 has not been integrated. Do not rebase either T07 checkout until parent supplies exact post-F2 master SHA. Protected `client.py`, `http_server.py`, `tests/test_client_transport.py`, and `tests/test_mutation_replay.py` stay read-only until then.
+- Workspace clarification: only literal `C:\Ostatní\Freq` is forbidden. No reads or writes were made there.
+- Current source checkout remains `C:\Users\Adam\.codex\worktrees\f374\.local-ai-hub`, detached at `c2b49d363ffd6105f5e98f97d67c57c36a9459b6`; active handler SHA-256 `92EBF54012918396465A500ED9DD4C6EF2F9194096FA12DC96EC7E03669224B0`.
+- T18 acceptance against that handler: canonical event-page GET selector `4 failed, 1 passed, 60 deselected`; SSE/admin selector `12 failed, 24 passed, 29 deselected`, with all 12 failures in `test_agent_event_sse_*`. These are integration failures, not T07 test edits; T18 owns its dashboard/contract tests.
+- Home repository is `C:\Users\Adam\.local-ai-hub`, `master` at `2b33602adef0d030fea66cdcc04ca742c60b2e32`, with dirty master-plan/client/client-test changes. Merge base with f374 is `a7b0868ac964fd14e160001024e6e0ecaaf4e9db`; ancestry count is `5 10`. No exact post-F2 target SHA has been designated.
+- Attached artifact `C:\Users\Adam\.codex\worktrees\t07-idempotence\.local-ai-hub` is a separate older snapshot at `037e4cccd4a023f75baaef62efb4c6bd41c18c3b`, branch `codex/t07-idempotence`. Parent directed that snapshot remain untouched; no files were changed there.
+- No source or test changes, rebase, reset, stash, or validation run in this continuation. Next step: wait for exact master SHA, then follow parent-directed clean integration and focused validation.
+- T18 REST GET failures: `test_agent_event_list_route_returns_canonical_page_and_retention_gaps`, `test_agent_event_list_route_fails_closed_without_usable_event_page[missing|raises]`, and `test_agent_event_list_route_preserves_provider_page_failure`; `test_agent_event_list_route_preserves_canonical_gap_ranges` passed. Expected success page contains canonical `events`, `next_seq`, retention bounds, `has_more`, `gap_ranges`, and `cursor_reset`; provider failures return HTTP 503 unchanged; absent/throwing `event_page` must not fall back to `events()`.
+- T18 SSE failures (12 cases): `test_agent_event_sse_uses_scoped_last_event_id_with_event_page`, `test_agent_event_sse_route_accepts_saved_cursor_query_fallback`, `test_agent_event_sse_prefers_header_and_pages_replay_with_gap_metadata`, `test_agent_event_sse_merges_events_and_internal_gaps_in_sequence_order`, `test_agent_event_sse_paginates_filtered_replay_with_canonical_pages`, `test_agent_event_sse_fails_closed_without_usable_event_page[missing|raises]`, `test_agent_event_sse_preserves_initial_provider_failure_before_headers`, `test_agent_event_sse_emits_later_provider_failure_after_headers`, `test_agent_event_sse_empty_retention_gap_advances_reconnect_cursor`, `test_agent_event_sse_reports_cursor_reset_and_rewinds_future_cursor`, `test_agent_event_sse_filtered_cursor_reconnect_delivers_next_matching_event`, and `test_agent_event_sse_live_filter_advances_cursor_without_emitting_other_kind`.
+- Handler contract for post-rebase fix: page through `event_page` with limit 1000; decode `Last-Event-ID` with header precedence over `last_event_id` query fallback; merge event and gap records by sequence; emit canonical retention-gap/cursor-reset/error frames; advance filtered live cursors with ID-only frames; fail closed before SSE headers on initial provider failure and emit an error frame after headers on later failure. T18 owns dashboard and contract tests; do not edit those paths.

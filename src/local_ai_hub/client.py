@@ -427,12 +427,17 @@ class HubClient:
                         except (URLError, OSError, http.client.HTTPException):
                             self._drop_connection()
                             return self._uncertain_response(request_id, retried=True)
-                        except Exception as retry_exc: return {"success": False, "error": str(retry_exc), "request_id": request_id, "retried": True}
+                        except Exception as retry_exc:
+                            result = self._uncertain_response(request_id, retried=True)
+                            result["error"] = str(retry_exc)
+                            return result
                 return self._uncertain_response(request_id)
             except (UnicodeDecodeError, json.JSONDecodeError):
                 return self._uncertain_response(request_id)
             except Exception as exc:
-                return {"success": False, "error": str(exc), "request_id": request_id}
+                result = self._uncertain_response(request_id)
+                result["error"] = str(exc)
+                return result
 
         if not replay_safe:
             return execute()

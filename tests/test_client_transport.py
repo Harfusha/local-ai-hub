@@ -574,3 +574,36 @@ def test_continue_conversation_sends_task_over_real_http_and_keeps_transcript(tm
     assert "second question" in result["transcript"]
     assert server.payloads[0]["task"] == "second question"
     assert "prompt" not in server.payloads[0]
+
+
+def test_safe_post_decode_failure_reports_unknown_with_reusable_id(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    request_ids = []
+
+    def pooled_open(_method, _path, _body, headers, _timeout):
+        request_ids.append(headers["X-LocalAI-Request-ID"])
+        if len(request_ids) == 1:
+            raise URLError("connection lost")
+        return b"not-json"
+
+    monkeypatch.setattr(client, "_pooled_open", pooled_open)
+    result = client.request("/api/repo/complexity", {"root": "repo"}, replay_safe=True, request_id="stable-id")
+
+    assert len(request_ids) == 2
+    assert set(request_ids) == {"stable-id"}
+    assert result["outcome_unknown"] is True
+    assert result["request_id"] == "stable-id"
+    assert result["retried"] is True
+
+
+def test_safe_post_coalesced_timeout_reports_owner_request_id(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    monkeypatch.setattr(client, "_singleflight", lambda *_args: (_ for _ in ()).throw(TimeoutError()))
+
+    result = client.request(
+        "/api/repo/complexity", {"root": "repo"}, replay_safe=True, request_id="stable-id"
+    )
+
+    assert result["outcome_unknown"] is True
+    assert result["in_progress"] is True
+    assert result["request_id"] == "stable-id"

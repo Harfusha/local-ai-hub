@@ -60,6 +60,151 @@ def test_repair_loop_does_not_replay_failed_mutating_command(tmp_path, monkeypat
     assert generator_calls == []
 
 
+@pytest.mark.parametrize("command", [
+    "custom_tool --apply",
+    "custom_tool --apply && echo done",
+    'pwsh -Command "custom_tool --apply"',
+    'powershell -Command "custom_tool --apply"',
+])
+def test_repair_loop_does_not_replay_failed_user_whitelisted_command(tmp_path, monkeypatch, command: str) -> None:
+    broker = _broker(tmp_path)
+    broker.config["commands"]["extra_allowed_tools"] = ["custom_tool"]
+    target = tmp_path / "target.txt"
+    target.write_text("before", encoding="utf-8")
+    executions: list[str] = []
+    generator_calls: list[str] = []
+
+    def run(command: str, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        executions.append(command)
+        return {"success": False, "exit_code": 1, "stderr": "partial mutation"}
+
+    def generate(command: str, *_args: Any) -> dict[str, str]:
+        generator_calls.append(command)
+        return {"target.txt": "after"}
+
+    monkeypatch.setattr(broker, "run", run)
+
+    result = broker.repair_loop(
+        command,
+        str(tmp_path),
+        "tenant",
+        max_attempts=2,
+        fix_generator=generate,
+    )
+
+    assert executions == [command]
+    assert generator_calls == []
+    assert result.get("repair_skipped") is True
+    assert result.get("outcome_unknown") is True
+    assert target.read_text(encoding="utf-8") == "before"
+
+
+def test_repair_loop_requires_explicit_validation_replay_safety(tmp_path, monkeypatch) -> None:
+    broker = _broker(tmp_path)
+    executions: list[str] = []
+    generator_calls: list[str] = []
+
+    def run(command: str, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        executions.append(command)
+        return {"success": False, "exit_code": 1}
+
+    def generate(command: str, *_args: Any) -> dict[str, str]:
+        generator_calls.append(command)
+        return {"changed.py": "value = 1\n"}
+
+    monkeypatch.setattr(broker, "run", run)
+    monkeypatch.setattr(broker, "classify", lambda _command: {"class": "validation", "allowed": True})
+
+    result = broker.repair_loop(
+        "unclassified-validation",
+        str(tmp_path),
+        "tenant",
+        max_attempts=1,
+        fix_generator=generate,
+    )
+
+    assert result["repair_skipped"] is True
+    assert result["outcome_unknown"] is True
+    assert executions == ["unclassified-validation"]
+    assert generator_calls == []
+
+
+def test_repair_loop_retries_failed_builtin_python_validation(tmp_path, monkeypatch) -> None:
+    broker = _broker(tmp_path)
+    executions: list[str] = []
+    generator_calls: list[str] = []
+
+    def run(command: str, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        executions.append(command)
+        if len(executions) == 1:
+            return {"success": False, "exit_code": 1}
+        return {"success": True, "exit_code": 0}
+
+    def generate(command: str, *_args: Any) -> dict[str, str]:
+        generator_calls.append(command)
+        return {"changed.py": "value = 1\n"}
+
+    monkeypatch.setattr(broker, "run", run)
+
+    result = broker.repair_loop(
+        "python -m pytest -q",
+        str(tmp_path),
+        "tenant",
+        max_attempts=1,
+        fix_generator=generate,
+    )
+
+    assert result["success"] is True
+    assert executions == ["python -m pytest -q", "python -m pytest -q"]
+    assert generator_calls == ["python -m pytest -q"]
+
+
+def test_repair_loop_retries_failed_builtin_python_validation_pipeline(tmp_path, monkeypatch) -> None:
+    broker = _broker(tmp_path)
+    command = "python -m pytest -q | tail -n 1"
+    executions: list[str] = []
+    generator_calls: list[str] = []
+
+    def run(command: str, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        executions.append(command)
+        if len(executions) == 1:
+            return {"success": False, "exit_code": 1}
+        return {"success": True, "exit_code": 0}
+
+    def generate(command: str, *_args: Any) -> dict[str, str]:
+        generator_calls.append(command)
+        return {"changed.py": "value = 1\n"}
+
+    monkeypatch.setattr(broker, "run", run)
+
+    result = broker.repair_loop(
+        command,
+        str(tmp_path),
+        "tenant",
+        max_attempts=1,
+        fix_generator=generate,
+    )
+
+    assert result["success"] is True
+    assert executions == [command, command]
+    assert generator_calls == [command]
+
+
+@pytest.mark.parametrize("command", [
+    "pytest -q",
+    "python -m pytest -q",
+    "python -m unittest",
+    'pwsh -Command "Invoke-Pester"',
+    "python -m pytest -q && echo done",
+    "python -m pytest -q | tail -n 1",
+])
+def test_builtin_validation_commands_explicitly_set_replay_safety(tmp_path, command: str) -> None:
+    result = _broker(tmp_path).classify(command)
+
+    assert result["class"] == "validation"
+    assert result["replay_safe"] is True
+
+
 def test_repair_loop_stops_after_timed_out_command_outcome_is_unknown(tmp_path, monkeypatch) -> None:
     broker = _broker(tmp_path)
     command = "python -m pytest -q"
@@ -216,6 +361,23 @@ def test_trusted_lookup_metadata_never_returns_stored_response(tmp_path) -> None
 
     assert metadata["state"] == "done"
     assert "response" not in metadata
+
+
+def test_reconcile_debug_trace_does_not_complete_without_agent(tmp_path, monkeypatch) -> None:
+    journal = RecoveryJournal(tmp_path)
+    journal.begin("req-no-agent", "tenant", "/api/work-orders", identity="", payload={"action": "submit"})
+    journal.finish("req-no-agent", True, response={"success": True})
+    store = SimpleNamespace(reconcile_terminal=lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(debug_traces=store, recovery=journal))
+    trace = {
+        "trace_id": "trace-no-agent",
+        "request_id": "req-no-agent",
+        "tenant": "tenant",
+        "action": "/api/work-orders",
+        "state": "running",
+    }
+
+    assert http_server.Handler._reconcile_debug_trace(None, trace)["state"] == "running"
 
 
 @pytest.mark.parametrize(
@@ -519,33 +681,47 @@ def test_client_replay_safe_coalescing_timeout_returns_owner_request_id(tmp_path
     assert len(seen_request_ids) == 1
 
 
-def test_maintenance_get_routes_are_read_only(tmp_path, monkeypatch) -> None:
+def test_maintenance_get_routes_are_read_only(monkeypatch) -> None:
+    from http.client import HTTPConnection
+
+    calls: list[str] = []
     services = SimpleNamespace(
-        optimize_databases=lambda: pytest.fail("GET must not optimize databases"),
-        purge_stale_cache=lambda _days: pytest.fail("GET must not purge cache"),
-        resolve_all_errors=lambda: pytest.fail("GET must not resolve errors"),
+        optimize_databases=lambda: calls.append("optimize"),
+        purge_stale_cache=lambda _days: calls.append("purge"),
+        resolve_all_errors=lambda: calls.append("resolve"),
     )
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={}, services=services))
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: None)
     monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
-    responses: list[tuple[int, dict[str, Any], dict[str, str]]] = []
-    monkeypatch.setattr(
-        http_server.Handler,
-        "_send",
-        lambda self, status, data, **kwargs: responses.append((status, data, kwargs.get("headers", {}))),
-    )
+    server = http_server.ThreadingHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    host, port = server.server_address
+    try:
+        for path in (
+            "/api/maintenance/optimize_db",
+            "/api/maintenance/purge_cache?days=7",
+            "/api/maintenance/resolve_errors",
+        ):
+            connection = HTTPConnection(host, port, timeout=5.0)
+            try:
+                connection.request("GET", path)
+                response = connection.getresponse()
+                body = response.read()
 
-    for path in (
-        "/api/maintenance/optimize_db",
-        "/api/maintenance/purge_cache?days=7",
-        "/api/maintenance/resolve_errors",
-    ):
-        handler = object.__new__(http_server.Handler)
-        handler.path = path
-        http_server.Handler.do_GET(handler)
-
-    assert [status for status, _data, _headers in responses] == [405, 405, 405]
-    assert all(headers == {"Allow": "POST"} for _status, _data, headers in responses)
+                assert response.status == 405
+                assert response.getheader("Allow") == "POST"
+                assert response.getheader("Content-Type") == "application/json; charset=utf-8"
+                assert response.getheader("Content-Length") == str(len(body))
+                assert isinstance(json.loads(body.decode("utf-8")), dict)
+            finally:
+                connection.close()
+        assert calls == []
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5.0)
+    assert not server_thread.is_alive()
 
 
 def test_post_journal_failure_prevents_mutation_dispatch(monkeypatch) -> None:
@@ -647,6 +823,201 @@ def test_http_retry_replays_outcome_and_rejects_changed_payload(tmp_path, monkey
     )
     assert original["response"] == responses[0][1]
     assert changed == {"state": "conflict", "error": "request id already belongs to a different identity, operation, or payload"}
+
+
+def test_http_retry_from_two_clients_dispatches_once(tmp_path, monkeypatch) -> None:
+    journal = RecoveryJournal(tmp_path)
+    payload = {"action": "submit", "work_id": "work-two-clients"}
+    publish_started = threading.Event()
+    release_publish = threading.Event()
+    duplicate_waiting = threading.Event()
+    submissions: list[dict[str, Any]] = []
+    responses: list[tuple[int, dict[str, Any]]] = []
+
+    def submit(_tenant: str, value: dict[str, Any]) -> dict[str, Any]:
+        submissions.append(dict(value))
+        publish_started.set()
+        if not release_publish.wait(5.0):
+            raise TimeoutError("test did not release first publication")
+        return {"success": True, "work_id": value["work_id"]}
+
+    app = SimpleNamespace(
+        config={"resilience": {"singleflight_wait_timeout_seconds": 1.0}},
+        recovery=journal,
+        work_orchestrator=SimpleNamespace(enabled=True, submit=submit),
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-two-clients"))
+    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
+    monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
+    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
+    monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: dict(payload))
+    monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
+
+    wait_for = journal.wait_for
+
+    def observed_wait(*args: Any, **kwargs: Any) -> dict[str, Any] | None:
+        duplicate_waiting.set()
+        return wait_for(*args, **kwargs)
+
+    monkeypatch.setattr(journal, "wait_for", observed_wait)
+
+    def respond(self, status: int, data: dict[str, Any]) -> None:
+        if not getattr(self, "_journal_finished", False):
+            journal.finish(
+                self._journal_request_id,
+                http_server._journal_outcome_success(status, data),
+                status_code=status,
+                response=data,
+            )
+            self._journal_finished = True
+        responses.append((status, data))
+
+    monkeypatch.setattr(http_server.Handler, "_send", respond)
+
+    def request() -> None:
+        handler = object.__new__(http_server.Handler)
+        handler.path = "/api/work-orders"
+        handler.headers = {"Content-Type": "application/json"}
+        http_server.Handler.do_POST(handler)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_client = pool.submit(request)
+        assert publish_started.wait(5.0)
+        second_client = pool.submit(request)
+        assert duplicate_waiting.wait(5.0)
+        release_publish.set()
+        first_client.result(timeout=5.0)
+        second_client.result(timeout=5.0)
+
+    expected = (200, {"success": True, "work_id": "work-two-clients"})
+    assert submissions == [payload]
+    assert responses == [expected, expected]
+
+
+def test_http_retry_from_two_live_clients_dispatches_once(tmp_path, monkeypatch) -> None:
+    from http.client import HTTPConnection
+    import logging
+
+    journal = RecoveryJournal(tmp_path)
+    payload = {"action": "submit", "root": str(tmp_path), "task": "live HTTP idempotence"}
+    publish_started = threading.Event()
+    release_publish = threading.Event()
+    duplicate_waiting = threading.Event()
+    handler_started = threading.Event()
+    journal_begin_started = threading.Event()
+    journal_begin_finished = threading.Event()
+    journal_begin_result: dict[str, Any] = {}
+    submissions: list[dict[str, Any]] = []
+
+    def submit(_tenant: str, value: dict[str, Any]) -> dict[str, Any]:
+        submissions.append(dict(value))
+        publish_started.set()
+        if not release_publish.wait(10.0):
+            raise TimeoutError("test did not release first publication")
+        return {"success": True, "work_id": "live-work-one"}
+
+    telemetry = SimpleNamespace(record_live=lambda **_kwargs: None, record_http=lambda **_kwargs: None)
+    app = SimpleNamespace(
+        # Keep replay wait above the 5s synchronization barrier for loaded CI.
+        config={"resilience": {"singleflight_wait_timeout_seconds": 10.0}, "observability": {}},
+        recovery=journal,
+        telemetry=telemetry,
+        logger=logging.getLogger("test.http-idempotence"),
+        work_orchestrator=SimpleNamespace(enabled=True, submit=submit),
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
+
+    original_do_post = http_server.Handler.do_POST
+
+    def observed_do_post(self) -> None:
+        handler_started.set()
+        original_do_post(self)
+
+    monkeypatch.setattr(http_server.Handler, "do_POST", observed_do_post)
+
+    original_begin = journal.begin
+
+    def observed_begin(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        journal_begin_started.set()
+        try:
+            result = original_begin(*args, **kwargs)
+            journal_begin_result.update({"claimed": result.get("claimed"), "state": result.get("state")})
+            return result
+        except Exception as exc:
+            journal_begin_result["error"] = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            journal_begin_finished.set()
+
+    monkeypatch.setattr(journal, "begin", observed_begin)
+
+    wait_for = journal.wait_for
+
+    def observed_wait(*args: Any, **kwargs: Any) -> dict[str, Any] | None:
+        duplicate_waiting.set()
+        return wait_for(*args, **kwargs)
+
+    monkeypatch.setattr(journal, "wait_for", observed_wait)
+
+    server = http_server.ThreadingHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    host, port = server.server_address
+
+    def send_request() -> tuple[int, dict[str, Any]]:
+        connection = HTTPConnection(host, port, timeout=10.0)
+        try:
+            connection.request(
+                "POST",
+                "/api/work-orders",
+                body=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-LocalAI-Request-ID": "req-live-two-clients",
+                },
+            )
+            response = connection.getresponse()
+            return response.status, json.loads(response.read().decode("utf-8"))
+        finally:
+            connection.close()
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first_client = pool.submit(send_request)
+            if not publish_started.wait(10.0):
+                first_result: Any = "pending"
+                if first_client.done():
+                    try:
+                        first_result = first_client.result()
+                    except Exception as exc:
+                        first_result = f"{type(exc).__name__}: {exc}"
+                raise AssertionError(
+                    "live HTTP request did not reach submit callback; "
+                    f"handler_started={handler_started.is_set()}, "
+                    f"journal_begin_started={journal_begin_started.is_set()}, "
+                    f"journal_begin_finished={journal_begin_finished.is_set()}, "
+                    f"journal_begin_result={journal_begin_result!r}, "
+                    f"first_client={first_result!r}"
+                )
+            second_client = pool.submit(send_request)
+            try:
+                assert duplicate_waiting.wait(5.0)
+            finally:
+                release_publish.set()
+            first_response = first_client.result(timeout=10.0)
+            second_response = second_client.result(timeout=10.0)
+    finally:
+        release_publish.set()
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5.0)
+
+    expected = (200, {"success": True, "work_id": "live-work-one"})
+    assert submissions == [payload]
+    assert first_response == second_response == expected
+    assert not server_thread.is_alive()
 
 
 def test_http_retry_after_response_loss_publishes_one_durable_event(tmp_path, monkeypatch) -> None:
