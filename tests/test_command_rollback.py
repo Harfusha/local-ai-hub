@@ -4,10 +4,25 @@ import hashlib
 import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 import pytest
 from local_ai_hub import commands as commands_module
 from local_ai_hub.commands import CommandBroker, _get_windows_dacl, _windows_dacl_bytes
 from local_ai_hub.process_utils import hidden_run_kwargs
+
+
+class _FakeTaskStore:
+    def __init__(self, worktree_path: str) -> None:
+        self.worktree_path = worktree_path
+
+    def get(self, task_id: str):
+        if task_id != "task-owned":
+            return None
+        return SimpleNamespace(
+            checkpoint=SimpleNamespace(
+                state_data={"worktree": {"success": True, "worktree_path": self.worktree_path}}
+            )
+        )
 
 
 def test_command_rollback_on_failure_preserves_unowned_changes(tmp_path: Path, monkeypatch) -> None:
@@ -33,6 +48,7 @@ def test_command_rollback_on_failure_preserves_unowned_changes(tmp_path: Path, m
     external_alias.write_text("foreign bytes", encoding="utf-8")
 
     broker = CommandBroker({"server": {"state_dir": str(tmp_path)}}, artifacts=None, repo_state=None)
+    broker.set_task_store(_FakeTaskStore(str(tmp_path)))
     original_execute = broker._execute
 
     def execute_with_concurrent_change(*args, **kwargs):
@@ -52,6 +68,7 @@ def test_command_rollback_on_failure_preserves_unowned_changes(tmp_path: Path, m
         cmd,
         str(tmp_path),
         force=True,
+        task_id="task-owned",
         rollback_on_failure=True,
         rollback_paths=["app.py", "unwanted.tmp"],
     )
@@ -69,6 +86,7 @@ def test_command_rollback_on_failure_preserves_unowned_changes(tmp_path: Path, m
 
 def test_command_rollback_requires_explicit_scope(tmp_path: Path) -> None:
     broker = CommandBroker({"server": {"state_dir": str(tmp_path)}}, artifacts=None, repo_state=None)
+    broker.set_task_store(_FakeTaskStore(str(tmp_path)))
 
     result = broker.run(
         'python -c "import pathlib, sys; pathlib.Path(\'keep.tmp\').write_text(\'keep\'); sys.exit(1)"',
@@ -83,17 +101,155 @@ def test_command_rollback_requires_explicit_scope(tmp_path: Path) -> None:
     assert not (tmp_path / "keep.tmp").exists()
 
 
+def test_patch_and_verify_rollback_preserves_concurrent_foreign_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", *args], cwd=str(tmp_path), capture_output=True,
+            text=True, check=True, **hidden_run_kwargs()
+        )
+
+    git("init")
+    git("config", "user.name", "Test")
+    git("config", "user.email", "test@example.com")
+    owned = tmp_path / "owned.txt"
+    foreign = tmp_path / "foreign.txt"
+    owned.write_text("before\n", encoding="utf-8")
+    foreign.write_text("committed\n", encoding="utf-8")
+    git("add", "owned.txt", "foreign.txt")
+    git("commit", "-m", "initial")
+    foreign.write_text("pre-existing dirty edit\n", encoding="utf-8")
+    unknown = tmp_path / "unknown.tmp"
+    broker = CommandBroker({"server": {"state_dir": str(tmp_path)}}, artifacts=None, repo_state=None)
+    broker.set_task_store(_FakeTaskStore(str(tmp_path)))
+
+    def fail_after_foreign_changes(*_args: object, **_kwargs: object) -> dict[str, object]:
+        foreign.write_text("concurrent foreign edit\n", encoding="utf-8")
+        unknown.write_text("unknown untracked file\n", encoding="utf-8")
+        return {"success": False, "exit_code": 1, "stdout": "", "stderr": "failed"}
+
+    monkeypatch.setattr(broker, "run", fail_after_foreign_changes)
+    patch = "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-before\n+after\n"
+
+    result = broker.patch_and_verify(
+        patch, str(tmp_path), "tenant", command="verify", task_id="task-owned", auto_rollback=True
+    )
+
+    assert result["success"] is False
+    assert result["rolled_back"] is True
+    assert owned.read_text(encoding="utf-8") == "before\n"
+    assert foreign.read_text(encoding="utf-8") == "concurrent foreign edit\n"
+    assert unknown.read_text(encoding="utf-8") == "unknown untracked file\n"
+
+
+def test_patch_and_verify_rejects_symlink_write_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_file = outside / "target.txt"
+    outside_file.write_text("outside baseline\n", encoding="utf-8")
+    linked = tmp_path / "linked"
+    real_is_symlink = Path.is_symlink
+    monkeypatch.setattr(
+        Path,
+        "is_symlink",
+        lambda path: path == linked or real_is_symlink(path),
+    )
+
+    broker = CommandBroker({"server": {"state_dir": str(tmp_path)}}, artifacts=None, repo_state=None)
+    broker.set_task_store(_FakeTaskStore(str(tmp_path)))
+    patch = "--- a/linked/target.txt\n+++ b/linked/target.txt\n@@ -1 +1 @@\n-outside baseline\n+outside changed\n"
+
+    result = broker.patch_and_verify(
+        patch, str(tmp_path), "tenant", command="verify", task_id="task-owned", auto_rollback=True
+    )
+
+    assert result["success"] is False
+    assert result["applied"] is False
+    assert "symlink" in result["error"]
+    assert outside_file.read_text(encoding="utf-8") == "outside baseline\n"
+
+
+def test_mutating_command_requires_registered_task_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = CommandBroker(
+        {"server": {"state_dir": str(tmp_path)}, "commands": {"allow_mutating": True}},
+        artifacts=None,
+        repo_state=None,
+    )
+    launched = False
+
+    def fail_if_executed(*_args: object, **_kwargs: object) -> dict[str, object]:
+        nonlocal launched
+        launched = True
+        raise AssertionError("mutation reached command execution without task worktree")
+
+    monkeypatch.setattr(broker, "_execute", fail_if_executed)
+    result = broker.run(
+        'python -c "pass"',
+        str(tmp_path),
+        force=True,
+        task_id="task-without-registration",
+        rollback_on_failure=True,
+        rollback_paths=["owned.txt"],
+    )
+
+    assert result["success"] is False
+    assert result["mutation_worktree_required"] is True
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+    assert launched is False
+
+
+def test_mutating_git_command_rejects_shared_worktree_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owned = tmp_path / "owned"
+    shared = tmp_path / "shared"
+    owned.mkdir()
+    shared.mkdir()
+    broker = CommandBroker(
+        {"server": {"state_dir": str(tmp_path)}, "commands": {"allow_mutating": True}},
+        artifacts=None,
+        repo_state=None,
+    )
+    broker.set_task_store(_FakeTaskStore(str(owned)))
+    launched = False
+
+    def fail_if_executed(*_args: object, **_kwargs: object) -> dict[str, object]:
+        nonlocal launched
+        launched = True
+        raise AssertionError("Git command reached shared worktree")
+
+    monkeypatch.setattr(broker, "_execute", fail_if_executed)
+    result = broker.run(
+        f'git -C "{shared}" checkout -- owned.txt',
+        str(owned),
+        force=True,
+        task_id="task-owned",
+    )
+
+    assert result["success"] is False
+    assert "outside the registered task worktree" in result["error"]
+    assert launched is False
+
+
 def test_rollback_snapshot_does_not_change_file_access_time(tmp_path: Path) -> None:
     target = tmp_path / "preserve-atime.txt"
     target.write_text("baseline", encoding="utf-8")
     os.utime(target, ns=(1_000_000_000, 2_000_000_000))
     original_atime = target.stat().st_atime_ns
     broker = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}})
+    broker.set_task_store(_FakeTaskStore(str(tmp_path)))
 
     result = broker.run(
         'python -c "pass"',
         str(tmp_path),
         force=True,
+        task_id="task-owned",
         rollback_on_failure=True,
         rollback_paths=[target.name],
     )
@@ -118,6 +274,7 @@ def test_command_rollback_rejects_path_escape(tmp_path: Path) -> None:
         'python -c "import pathlib, sys; pathlib.Path(\'must_not_run.tmp\').touch(); sys.exit(1)"',
         str(tmp_path),
         force=True,
+        task_id="task-owned",
         rollback_on_failure=True,
         rollback_paths=["../outside.txt"],
     )
@@ -199,10 +356,12 @@ def test_command_rollback_preserves_filesystem_security_metadata(tmp_path: Path)
         before = os.getxattr(target, metadata_name)
 
     broker = CommandBroker({"server": {"state_dir": str(tmp_path)}}, artifacts=None, repo_state=None)
+    broker.set_task_store(_FakeTaskStore(str(tmp_path)))
     result = broker.run(
         'python -c "import pathlib, sys; pathlib.Path(\'metadata.txt\').write_text(\'changed\'); sys.exit(1)"',
         str(tmp_path),
         force=True,
+        task_id="task-owned",
         rollback_on_failure=True,
         rollback_paths=["metadata.txt"],
     )
@@ -223,6 +382,7 @@ def test_command_rollback_runs_when_execution_raises_timeout(tmp_path: Path, mon
     target = tmp_path / "timed-out.txt"
     target.write_text("before", encoding="utf-8")
     broker = CommandBroker({"server": {"state_dir": str(tmp_path)}}, artifacts=None, repo_state=None)
+    broker.set_task_store(_FakeTaskStore(str(tmp_path)))
 
     def timeout_after_write(*_args, **_kwargs):
         target.write_text("partial", encoding="utf-8")
@@ -233,6 +393,7 @@ def test_command_rollback_runs_when_execution_raises_timeout(tmp_path: Path, mon
         'python -c "print(1)"',
         str(tmp_path),
         force=True,
+        task_id="task-owned",
         rollback_on_failure=True,
         rollback_paths=["timed-out.txt"],
     )

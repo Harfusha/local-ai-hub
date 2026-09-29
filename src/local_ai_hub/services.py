@@ -3244,10 +3244,18 @@ class LocalAIServices:
         return prune_git_worktrees(root)
 
 
-    def spawn_daemon(self, command: str, cwd: str, name: str = "", env: dict[str, str] | None = None) -> dict[str, Any]:
+    def spawn_daemon(
+        self,
+        command: str | list[str],
+        cwd: str,
+        name: str = "",
+        env: dict[str, str] | None = None,
+        *,
+        task_id: str = "",
+    ) -> dict[str, Any]:
         if not self.commands:
             return {"success": False, "error": "command broker unavailable"}
-        return self.commands.spawn_daemon(command, cwd, name=name, env=env)
+        return self.commands.spawn_daemon(command, cwd, name=name, env=env, task_id=task_id)
 
     def daemon_status(self, daemon_id: str | None = None) -> dict[str, Any]:
         if not self.commands:
@@ -5488,7 +5496,14 @@ class LocalAIServices:
         if action == "lint_fix":
             return self.lint_fix(str(args.get("cwd", args.get("root", "."))), command=args.get("command"), paths=args.get("paths"), tenant=tenant, timeout=args.get("timeout"))
         if action == "spawn_daemon":
-            return self.spawn_daemon(str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))), name=str(args.get("name", args.get("task_id", ""))), env=args.get("env"))
+            daemon_command = args.get("argv") if args.get("argv") is not None else str(args.get("command", ""))
+            return self.spawn_daemon(
+                daemon_command,
+                str(args.get("cwd", args.get("root", "."))),
+                name=str(args.get("name", "")),
+                env=args.get("env"),
+                task_id=str(args.get("task_id", "")),
+            )
         if action == "daemon_status":
             return self.daemon_status(args.get("daemon_id", args.get("task_id", args.get("command"))))
         if action == "stop_daemon":
