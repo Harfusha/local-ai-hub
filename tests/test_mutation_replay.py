@@ -100,7 +100,7 @@ def test_repair_loop_does_not_replay_failed_user_whitelisted_command(tmp_path, m
     assert target.read_text(encoding="utf-8") == "before"
 
 
-def test_repair_loop_honors_explicit_unsafe_validation_replay_safety(tmp_path, monkeypatch) -> None:
+def test_repair_loop_fails_closed_when_validation_omits_replay_safety(tmp_path, monkeypatch) -> None:
     broker = _broker(tmp_path)
     executions: list[str] = []
     generator_calls: list[str] = []
@@ -117,7 +117,7 @@ def test_repair_loop_honors_explicit_unsafe_validation_replay_safety(tmp_path, m
     monkeypatch.setattr(
         broker,
         "classify",
-        lambda _command: {"class": "validation", "allowed": True, "replay_safe": False},
+        lambda _command: {"class": "validation", "allowed": True},
     )
 
     result = broker.repair_loop(
