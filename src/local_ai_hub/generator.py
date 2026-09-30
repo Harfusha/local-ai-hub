@@ -11,6 +11,7 @@ from .json_utils import dumps as json_dumps
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from local_ai_hub.operation_contracts import (
     MCP_OPERATION_CONTRACTS,
     STATUS_ACTIONS,
     STATUS_DETAILS,
+    action_specific_schema_constraints,
     enabled_schema_keys,
     operation_description,
     repo_pipeline_step_schema,
@@ -1145,6 +1147,19 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
     schemas = {schema_key: schema for schema_key, schema in schemas.items() if schema_key in enabled}
     for schema_key, schema in schemas.items():
         schema["description"] += operation_description(contracts[schema_key])
+        parameters = schema.get("parameters")
+        constraints = action_specific_schema_constraints(schema_key)
+        if isinstance(parameters, dict) and constraints:
+            parameters["allOf"] = [*parameters.get("allOf", []), *constraints]
+    # Reuse live schemas only when MCP is already loaded. Schema generation also
+    # runs in setup/doctor contexts where importing the runtime server is unsafe.
+    runtime_mcp = sys.modules.get(f"{__package__}.mcp_server")
+    if runtime_mcp is not None and cfg == runtime_mcp.CFG:
+        # Generate the active configuration from the same schemas enforced by MCP.
+        for schema_key, schema in schemas.items():
+            runtime_parameters = runtime_mcp._mcp_contract_schema(schema_key)
+            if runtime_parameters is not None:
+                schema["parameters"] = runtime_parameters
     return schemas
 
 

@@ -39,11 +39,13 @@ from local_ai_hub.operation_contracts import (
     STATUS_ACTIONS,
     STATUS_ALIASES,
     STATUS_DETAILS,
+    action_specific_schema_constraints,
     _portable_property_schema,
     contract_error,
     operation_description,
     repo_pipeline_step_schema,
     validate_repo_pipeline_step,
+    validate_action_specific_fields,
     validate_schema_object,
 )
 from local_ai_hub.ollama_subagents import OllamaSubagentCatalog
@@ -1023,6 +1025,144 @@ def _tool_catalog_schema_tokens() -> int:
         return 0
 
 
+_MCP_MODE_GATE_RETRY_SECONDS = 5.0
+_MCP_MODE_GATE_MAX_RETRY_SECONDS = 30.0
+_MCP_MODE_GATE_READ_ACTIONS = {
+    "context_compile", "event_delta", "events", "get", "leases", "list",
+    "memory_find", "memory_get", "memo_get", "memo_search", "pubsub_poll",
+    "negative_knowledge_find", "relation_find", "relation_traverse", "result",
+    "status", "swarm_list", "swarm_status", "task_get", "task_list", "wait",
+    "workspaces", "cancel",
+}
+_MCP_MODE_GATE_TASK_READ_ACTIONS = {"cancel", "result", "status", "wait", "evaluation_report"}
+_MCP_MODE_GATE_REPO_HEAVY_ACTIONS = {
+    "semantic", "intelligence", "context", "delegate", "route", "solve", "review_diff",
+    "generate_tests", "generate_tests_for_diff", "mutation_test", "test_matrix",
+    "refactor_impact", "resolve_imports", "profile_digest", "cross_project_graph",
+    "cross_project_symbols", "cross_project_impact", "cross_repo_graph",
+    "cross_repo_symbols", "cross_repo_impact", "call_graph_diff", "semantic_diff",
+    "topology", "ast_refactor", "generate_mocks", "synthesize_rules", "generate_dataset",
+    "preprocess", "preprocess_refresh", "batch_replace", "pipeline",
+}
+_MCP_MODE_GATE_RAG_HEAVY_ACTIONS = {
+    "index", "search", "docset_index", "docset_search", "ingest_document", "ingest_diagram",
+}
+_MCP_MODE_GATE_COMMAND_HEAVY_ACTIONS = {
+    "run", "run_affected", "auto_fix", "format", "lint_fix", "patch_and_verify",
+    "repair_loop", "spawn_daemon", "stop_daemon", "stash_save", "stash_restore",
+    "record_mock", "replay_mock", "diff_hunk_stage", "flaky_detect", "webhook_replay",
+    "mock_server", "mock_server_start", "mock_server_stop", "speculative_lint",
+}
+
+
+def _mcp_requires_heavy_work(tool_name: str, arguments: Mapping[str, Any]) -> bool:
+    """Keep bounded reads available while gating inference and state-changing work."""
+    action = str(arguments.get("action") or "").strip().lower().replace("-", "_")
+    if tool_name in {"local_ai_status", "local_ai_artifact"}:
+        return False
+    tool_kind = tool_name.removeprefix("local_ai_")
+    action = _resolve_action(tool_kind, action)
+    action_type = {
+        "task": globals().get("TaskAction"),
+        "repo": globals().get("RepoAction"),
+        "rag": globals().get("RagAction"),
+        "command": globals().get("CommandAction"),
+        "coord": globals().get("CoordAction"),
+        "work": globals().get("WorkAction"),
+    }.get(tool_kind)
+    valid_actions = getattr(action_type, "__args__", ())
+    if valid_actions and action not in valid_actions:
+        return False
+    if tool_name == "local_ai_task":
+        return action not in _MCP_MODE_GATE_TASK_READ_ACTIONS
+    if tool_name == "local_ai_repo":
+        return action in _MCP_MODE_GATE_REPO_HEAVY_ACTIONS or action in REPO_PIPELINE_MUTATING_ACTIONS
+    if tool_name == "local_ai_rag":
+        return action in _MCP_MODE_GATE_RAG_HEAVY_ACTIONS or action.startswith("ingest_")
+    if tool_name == "local_ai_command":
+        return action in _MCP_MODE_GATE_COMMAND_HEAVY_ACTIONS
+    if tool_name == "local_ai_coord":
+        return action not in _MCP_MODE_GATE_READ_ACTIONS
+    if tool_name == "local_ai_work":
+        return action not in _MCP_MODE_GATE_READ_ACTIONS
+    return False
+
+
+def _mcp_operational_mode_api() -> tuple[Any, Any]:
+    loader = globals().get("load_operational_mode")
+    gate_error = globals().get("operational_mode_gate_error")
+    if callable(loader) and callable(gate_error):
+        return loader, gate_error
+    try:
+        from importlib import import_module
+
+        module = import_module(".operational_mode", package=__package__)
+    except Exception:
+        return None, None
+    loader = getattr(module, "load_operational_mode", None)
+    gate_error = getattr(module, "operational_mode_gate_error", None)
+    return (
+        loader if callable(loader) else None,
+        gate_error if callable(gate_error) else None,
+    )
+
+
+def _mcp_operational_mode_block(tool_name: str, arguments: Mapping[str, Any]) -> dict[str, Any] | None:
+    if not _mcp_requires_heavy_work(tool_name, arguments):
+        return None
+    action = str(arguments.get("action") or "").strip().lower().replace("-", "_")
+    action = _resolve_action(tool_name.removeprefix("local_ai_"), action)
+    loader, gate_error = _mcp_operational_mode_api()
+    if not callable(loader) or not callable(gate_error):
+        return {
+            "success": False,
+            "status_code": 503,
+            "error_code": "operational_mode_unavailable",
+            "error": "Hub operational mode is unavailable; retry shortly",
+            "retry_after_seconds": _MCP_MODE_GATE_RETRY_SECONDS,
+            "retryable": True,
+            "terminal": False,
+        }
+    state_dir = (CFG.get("server", {}) or {}).get("state_dir")
+    try:
+        snapshot = loader(state_dir=state_dir)
+        blocked = gate_error(snapshot, action, requires_heavy_work=True)
+    except Exception:
+        return {
+            "success": False,
+            "status_code": 503,
+            "error_code": "operational_mode_unavailable",
+            "error": "Hub operational mode could not be read; retry shortly",
+            "retry_after_seconds": _MCP_MODE_GATE_RETRY_SECONDS,
+            "retryable": True,
+            "terminal": False,
+        }
+    if blocked is None:
+        return None
+    if not isinstance(blocked, Mapping):
+        return {
+            "success": False,
+            "status_code": 503,
+            "error_code": "operational_mode_unavailable",
+            "error": "Hub operational mode returned an invalid gate result; retry shortly",
+            "retry_after_seconds": _MCP_MODE_GATE_RETRY_SECONDS,
+            "retryable": True,
+            "terminal": False,
+        }
+    result = dict(blocked)
+    try:
+        delay = float(result.get("retry_after_seconds", _MCP_MODE_GATE_RETRY_SECONDS))
+    except (TypeError, ValueError):
+        delay = _MCP_MODE_GATE_RETRY_SECONDS
+    result["retry_after_seconds"] = min(
+        _MCP_MODE_GATE_MAX_RETRY_SECONDS,
+        max(0.5, delay),
+    )
+    result["retryable"] = True
+    result["terminal"] = False
+    return result
+
+
 def _instrumented_tool():
     def decorator(fn: Any) -> Any:
         signature = inspect.signature(fn)
@@ -1057,7 +1197,8 @@ def _instrumented_tool():
             )
             metadata = {}
             try:
-                result = fn(*args, **kwargs)
+                mode_block = _mcp_operational_mode_block(fn.__name__, arguments)
+                result = mode_block if mode_block is not None else fn(*args, **kwargs)
             except Exception:
                 _record_adoption(fn.__name__, arguments, None, (time.monotonic() - started) * 1000, failed=True)
                 raise
@@ -2948,6 +3089,9 @@ def _mcp_contract_schema(schema_key: str) -> dict[str, Any] | None:
         properties["after_seq"] = {
             "type": "integer", "minimum": 0, "maximum": MAX_EVENT_SEQUENCE, "default": 0
         }
+    action_constraints = action_specific_schema_constraints(tool_name)
+    if action_constraints:
+        schema["allOf"] = [*schema.get("allOf", []), *action_constraints]
     return schema
 
 
@@ -2977,6 +3121,10 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             if validation_error:
                 payload = contract_error(validation_error)
                 return ([mcp_types.TextContent(type="text", text=json_dumps(payload))], payload)
+        validation_error = validate_action_specific_fields(name, arguments)
+        if validation_error:
+            payload = contract_error(validation_error)
+            return ([mcp_types.TextContent(type="text", text=json_dumps(payload))], payload)
         try:
             raw = await mcp._tool_manager.call_tool(name, arguments, convert_result=False)
         except Exception as exc:
@@ -3002,5 +3150,18 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
     mcp._mcp_server.call_tool(validate_input=False)(_compact_mcp_call_tool)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Start the Hub daemon before accepting MCP calls that may mutate state."""
+    if bool(getattr(CLIENT, "auto_start", True)):
+        try:
+            startup_timeout = float(getattr(CLIENT, "startup_wait", 15.0))
+            ready = CLIENT.ensure_server(timeout=startup_timeout)
+        except Exception:
+            ready = False
+        if not ready:
+            raise SystemExit("Local AI Hub did not become ready within the configured startup timeout")
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

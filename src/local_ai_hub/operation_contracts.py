@@ -98,6 +98,11 @@ STATUS_ALIASES = ("status", "health", "check", "info")
 REPO_PHASES = ("", "plan", "edit", "review", "test", "handoff")
 MAX_REPO_PIPELINE_PARALLEL_STEPS = 4
 MAX_EVENT_SEQUENCE = (1 << 63) - 1
+ACTION_SPECIFIC_FIELDS: dict[str, dict[str, frozenset[str]]] = {
+    # Pipeline definitions are meaningful only to the repository pipeline
+    # action; accepting them on other actions silently ignores caller intent.
+    "local_ai_repo": {"steps": frozenset({"pipeline"})},
+}
 REPO_PIPELINE_MUTATING_ACTIONS = frozenset(
     {
         "batch_replace",
@@ -288,6 +293,34 @@ def validate_schema_object(value: Any, schema: Mapping[str, Any], path: str = "a
         error = validate_schema_value(item, properties[name], f"{path}.{name}")
         if error:
             return error
+    return None
+
+
+def action_specific_schema_constraints(tool_name: str) -> list[dict[str, Any]]:
+    """Return standard JSON Schema rules for fields scoped to one action."""
+    constraints: list[dict[str, Any]] = []
+    for field, allowed_actions in ACTION_SPECIFIC_FIELDS.get(tool_name, {}).items():
+        if len(allowed_actions) == 1:
+            condition: dict[str, Any] = {"const": next(iter(allowed_actions))}
+        else:
+            condition = {"enum": sorted(allowed_actions)}
+        constraints.append({
+            "if": {"properties": {"action": condition}, "required": ["action"]},
+            "then": {"properties": {field: {}}},
+            "else": {"not": {"required": [field]}},
+        })
+    return constraints
+
+
+def validate_action_specific_fields(
+    tool_name: str, arguments: Mapping[str, Any], path: str = "arguments"
+) -> str | None:
+    """Reject known fields when their owning action is not selected."""
+    action = str(arguments.get("action", "")).strip().lower().replace("-", "_")
+    for field, allowed_actions in ACTION_SPECIFIC_FIELDS.get(tool_name, {}).items():
+        if field in arguments and action not in allowed_actions:
+            allowed = ", ".join(sorted(allowed_actions))
+            return f"{path}.{field} is only valid for action {allowed}"
     return None
 
 

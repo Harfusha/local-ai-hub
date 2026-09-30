@@ -146,6 +146,13 @@ class HubClient:
             )
 
     @staticmethod
+    def _invalid_json_response(request_id: str, *, outcome_unknown: bool = False) -> dict[str, Any]:
+        payload: dict[str, Any] = {"error": "invalid JSON response", "request_id": request_id}
+        if outcome_unknown:
+            payload.update({"outcome_unknown": True, "retryable": False, "terminal": True})
+        return normalize_transport_error(502, payload)
+
+    @staticmethod
     def _uncertain_response(request_id: str, *, retried: bool = False) -> dict[str, Any]:
         result = {
             "success": False,
@@ -307,7 +314,10 @@ class HubClient:
                 kwargs = {}
             if sys.platform != "win32":
                 kwargs["start_new_session"] = True
-            process = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+            try:
+                process = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+            except OSError:
+                return False
             _retain_detached_child(process)
             while remaining() > 0:
                 if self._online(remaining()):
@@ -352,7 +362,10 @@ class HubClient:
             }
             if self.api_token:
                 headers["X-LocalAI-Token"] = self.api_token
-            return json.loads(self._pooled_open("POST", path, body, headers, attempt_timeout).decode("utf-8"))
+            result = json.loads(self._pooled_open("POST", path, body, headers, attempt_timeout).decode("utf-8"))
+            if not isinstance(result, dict):
+                return self._invalid_json_response(request_id, outcome_unknown=not replay_safe)
+            return result
 
         def execute() -> dict[str, Any]:
             duplicate_deadline = time.monotonic() + timeout
@@ -400,7 +413,7 @@ class HubClient:
                         except Exception as retry_exc: return {"success": False, "error": str(retry_exc), "request_id": request_id, "retried": True}
                 return self._uncertain_response(request_id)
             except (UnicodeDecodeError, json.JSONDecodeError):
-                return self._uncertain_response(request_id)
+                return self._invalid_json_response(request_id, outcome_unknown=not replay_safe)
             except Exception as exc:
                 return {"success": False, "error": str(exc), "request_id": request_id}
 
@@ -432,7 +445,9 @@ class HubClient:
 
         def once(attempt_timeout: float) -> dict[str, Any]:
             result = json.loads(self._pooled_open("GET", path, None, headers, attempt_timeout).decode("utf-8"))
-            return result if isinstance(result, dict) else {"success": False, "error": "invalid JSON response"}
+            if not isinstance(result, dict):
+                return self._invalid_json_response(request_id)
+            return result
 
         def execute() -> dict[str, Any]:
             deadline = time.monotonic() + timeout
@@ -440,6 +455,8 @@ class HubClient:
                 return once(timeout)
             except HTTPError as exc:
                 return self._error_response(exc, request_id)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return self._invalid_json_response(request_id)
             except (URLError, OSError, http.client.HTTPException) as exc:
                 self._drop_connection()
                 remaining = deadline - time.monotonic()
@@ -853,8 +870,8 @@ class HubClient:
                         cur_event = line[len("event:"):].strip()
                     elif line.startswith("data:"):
                         cur_data.append(line[len("data:"):].strip())
-        except HTTPError:
-            raise
+        except HTTPError as exc:
+            yield "error", self._error_response(exc, request_id)
         except (URLError, OSError, http.client.HTTPException):
             if cancel_event is None or not cancel_event.is_set():
                 result = self._uncertain_response(request_id)

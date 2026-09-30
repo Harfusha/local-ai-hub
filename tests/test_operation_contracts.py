@@ -501,6 +501,53 @@ def test_mcp_rejects_invalid_phase_and_numeric_bounds_before_handler(
     assert payload["retryable"] is False
 
 
+def test_mcp_repo_rejects_pipeline_steps_for_non_pipeline_action_before_backend(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import asyncio
+    import local_ai_hub.mcp_server as mcp_server
+
+    class NeverCallClient:
+        def post(self, *args: Any, **kwargs: Any):
+            raise AssertionError("cross-action pipeline fields reached the backend")
+
+    monkeypatch.setattr(mcp_server, "CLIENT", NeverCallClient())
+    _blocks, payload = asyncio.run(
+        mcp_server.mcp.call_tool(
+            "local_ai_repo",
+            {
+                "action": "context",
+                "root": str(tmp_path),
+                "query": "valid context query",
+                "steps": [{"action": "affected_tests"}],
+            },
+        )
+    )
+
+    assert payload["status_code"] == 400
+    assert payload["terminal"] is True
+    assert payload["retryable"] is False
+
+
+def test_mcp_repo_action_schema_scopes_pipeline_steps() -> None:
+    import local_ai_hub.mcp_server as mcp_server
+    from local_ai_hub.operation_contracts import validate_action_specific_fields
+
+    schema = mcp_server._mcp_contract_schema("local_ai_repo")
+    assert schema is not None
+    action_rule = next(
+        rule for rule in schema.get("allOf", [])
+        if rule.get("else", {}).get("not", {}).get("required") == ["steps"]
+    )
+    assert action_rule["if"]["properties"]["action"]["const"] == "pipeline"
+    assert validate_action_specific_fields(
+        "local_ai_repo", {"action": "context", "steps": []}
+    ) == "arguments.steps is only valid for action pipeline"
+    assert validate_action_specific_fields(
+        "local_ai_repo", {"action": "pipeline", "steps": []}
+    ) is None
+
+
 def test_repo_context_rejects_empty_query_before_backend(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     import local_ai_hub.mcp_server as mcp_server
 
@@ -780,6 +827,187 @@ def test_status_alias_schema_and_runtime_match() -> None:
         )
     assert tuple(runtime["properties"]["action"]["enum"]) == STATUS_ACTIONS
     assert tuple(runtime["properties"]["detail"]["enum"]) == STATUS_DETAILS
+
+
+def test_status_output_schema_stays_generic_until_all_actions_are_contracted() -> None:
+    import local_ai_hub.mcp_server as mcp_server
+    from local_ai_hub.operation_contracts import STATUS_ALIASES
+
+    output_schema = mcp_server.mcp._tool_manager._tools["local_ai_status"].output_schema
+    assert output_schema["type"] == "object"
+    assert output_schema["additionalProperties"] is True
+    assert "anyOf" not in output_schema
+    assert set(STATUS_ALIASES) == {"status", "health", "check", "info"}
+
+
+def test_mcp_foreground_client_uses_bounded_hub_autostart_on_connection_refusal(
+    tmp_path, monkeypatch
+) -> None:
+    from urllib.error import URLError
+
+    from local_ai_hub import client as client_module
+    import local_ai_hub.mcp_server as mcp_server
+    from local_ai_hub.client import HubClient
+
+    config = tmp_path / "mcp-autostart.toml"
+    state_dir = (tmp_path / "state").resolve()
+    config.write_text(
+        "[server]\nbind='127.0.0.1'\nport=39124\nstate_dir='"
+        + state_dir.as_posix()
+        + "'\n[client]\nstartup_wait_seconds=1\nstartup_poll_seconds=0.05\n",
+        encoding="utf-8",
+    )
+    client = HubClient(config_path=str(config), auto_start=True)
+    monkeypatch.setattr(mcp_server, "CLIENT", client)
+    opened: list[float] = []
+    spawned: list[object] = []
+
+    def pooled_open(_method, _path, _body, _headers, timeout):
+        opened.append(float(timeout))
+        if len(opened) == 1:
+            raise URLError("Hub daemon is not listening")
+        return b'{"success":true,"hub_online":true}'
+
+    class FakeProcess:
+        @staticmethod
+        def poll():
+            return None
+
+    def popen(*_args, **_kwargs):
+        process = FakeProcess()
+        spawned.append(process)
+        return process
+
+    assert client.auto_start is True
+    monkeypatch.setattr(client, "_pooled_open", pooled_open)
+    monkeypatch.setattr(client, "_online", lambda _timeout=None: bool(spawned))
+    monkeypatch.setattr(client_module.subprocess, "Popen", popen)
+    monkeypatch.setattr(client_module, "_retain_detached_child", lambda _process: None)
+
+    response = client.get("/api/live/status", timeout=0.8)
+
+    assert response == {"success": True, "hub_online": True}
+    assert len(opened) == 2
+    assert len(spawned) == 1
+    assert opened[1] <= 0.8
+
+
+def test_client_spawn_failure_returns_false_and_cleans_start_lock(
+    tmp_path, monkeypatch
+) -> None:
+    from local_ai_hub import client as client_module
+    from local_ai_hub.client import HubClient
+
+    state_dir = (tmp_path / "state").resolve()
+    config = tmp_path / "mcp-autostart-spawn-failure.toml"
+    config.write_text(
+        "[server]\nbind='127.0.0.1'\nport=39125\nstate_dir='"
+        + state_dir.as_posix()
+        + "'\n[client]\nstartup_wait_seconds=1\n",
+        encoding="utf-8",
+    )
+    client = HubClient(config_path=str(config), auto_start=True)
+
+    monkeypatch.setattr(client, "_online", lambda _timeout=None: False)
+    monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: None)
+
+    def fail_to_spawn(*_args, **_kwargs):
+        raise OSError("python executable unavailable")
+
+    monkeypatch.setattr(client_module.subprocess, "Popen", fail_to_spawn)
+
+    assert client.ensure_server(timeout=0.5) is False
+    assert not (state_dir / "hub.start.lock").exists()
+
+
+def test_status_alias_enums_are_present_in_mcp_tools_list_response() -> None:
+    import asyncio
+
+    import mcp.types as mcp_types
+
+    import local_ai_hub.mcp_server as mcp_server
+    from local_ai_hub.generator import generate_mcp_tool_schemas
+    from local_ai_hub.operation_contracts import STATUS_ACTIONS, STATUS_DETAILS
+
+    request = mcp_types.ListToolsRequest(method="tools/list")
+    response = asyncio.run(
+        mcp_server.mcp._mcp_server.request_handlers[mcp_types.ListToolsRequest](request)
+    )
+    assert hasattr(response, "root")
+    wire_result = response.root.model_dump(mode="json", by_alias=True)
+    status_tool = next(tool for tool in wire_result["tools"] if tool["name"] == "local_ai_status")
+    wire_parameters = status_tool["inputSchema"]
+    wire_output_schema = status_tool["outputSchema"]
+    generated_parameters = generate_mcp_tool_schemas(mcp_server.CFG)["local_ai_status"]["parameters"]
+
+    assert wire_parameters["properties"]["action"]["enum"] == list(STATUS_ACTIONS)
+    assert wire_parameters["properties"]["detail"]["enum"] == list(STATUS_DETAILS)
+    assert wire_parameters["properties"]["action"]["enum"] == generated_parameters["properties"]["action"]["enum"]
+    assert wire_parameters["properties"]["detail"]["enum"] == generated_parameters["properties"]["detail"]["enum"]
+    assert wire_output_schema == mcp_server.mcp._tool_manager._tools["local_ai_status"].output_schema
+
+
+def test_mcp_dispatch_rejects_unknown_action_before_handler_dispatch(monkeypatch) -> None:
+    import asyncio
+
+    import local_ai_hub.mcp_server as mcp_server
+
+    calls: list[str] = []
+
+    async def fake_call_tool(name, _arguments, *, convert_result=False):
+        calls.append(name)
+        return {"success": True}
+
+    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
+    result = asyncio.run(
+        mcp_server._compact_mcp_call_tool("local_ai_status", {"action": "not-supported"})
+    )
+
+    payload = result[1]
+    assert payload["success"] is False
+    assert payload["status_code"] == 400
+    assert "action" in payload["error"]
+    assert calls == []
+
+
+def test_status_alias_enums_survive_mcp_stdio_tools_list(tmp_path) -> None:
+    import json
+    import os
+    from pathlib import Path
+    import sys
+
+    from local_ai_hub.external_tools import MCPStdioClient
+    from local_ai_hub.operation_contracts import STATUS_ACTIONS, STATUS_DETAILS
+
+    repository_root = Path(__file__).resolve().parents[1]
+    config_path = tmp_path / "mcp-stdio.toml"
+    state_dir = (tmp_path / "hub-state").resolve()
+    config_path.write_text(
+        "[server]\nstate_dir = " + json.dumps(state_dir.as_posix()) + "\n",
+        encoding="utf-8",
+    )
+    python_paths = [str(repository_root / "src")]
+    python_paths.extend(filter(None, os.environ.get("PYTHONPATH", "").split(os.pathsep)))
+    client = MCPStdioClient(
+        [sys.executable, "-m", "local_ai_hub.mcp_server"],
+        cwd=str(repository_root),
+        env={
+            "LOCAL_AI_CONFIG": str(config_path),
+            "PYTHONPATH": os.pathsep.join(python_paths),
+        },
+        startup_timeout=15.0,
+        call_timeout=8.0,
+    )
+    try:
+        client._spawn()
+        wire_result = client._request("tools/list", {}, timeout=8.0, ensure_started=False)
+    finally:
+        client.close()
+
+    status_tool = next(tool for tool in wire_result["tools"] if tool["name"] == "local_ai_status")
+    input_schema = status_tool["inputSchema"]
+    assert input_schema["properties"]["action"]["enum"] == list(STATUS_ACTIONS)
+    assert input_schema["properties"]["detail"]["enum"] == list(STATUS_DETAILS)
 
 
 def test_rag_ingest_fields_match_live_and_generated_schemas() -> None:
@@ -1185,6 +1413,8 @@ def test_mutating_http_post_uses_identity_bound_recovery_journal(
     payload = {"topic": "t03-real", "message": {"value": 1}, "publisher": "agent-a"}
 
     def post(identity: str, request_payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        import json
+
         handler = http_server.Handler.__new__(http_server.Handler)
         handler.path = "/api/coord/pubsub_publish"
         handler.headers = {
@@ -1198,7 +1428,16 @@ def test_mutating_http_post_uses_identity_bound_recovery_journal(
         handler._read_json = lambda limit=None: request_payload
         handler._validate_payload = lambda _path, _payload: None
         responses: list[tuple[int, dict[str, Any]]] = []
-        handler._send = lambda status, body: responses.append((status, body))
+        response_status: dict[str, int] = {}
+        handler.send_response = lambda status: response_status.update(status=status)
+        handler.send_header = lambda *_args: None
+        handler.end_headers = lambda: None
+        handler._common_headers = lambda: None
+        handler._finish_debug_trace = lambda *_args, **_kwargs: None
+        handler._close_trace_context = lambda: None
+        handler.wfile = SimpleNamespace(
+            write=lambda body: responses.append((response_status["status"], json.loads(body.decode("utf-8"))))
+        )
         handler.do_POST()
         assert len(responses) == 1
         return responses[0]
@@ -1276,6 +1515,7 @@ def test_http_send_applies_optional_response_headers(monkeypatch: pytest.MonkeyP
     ("status", "payload", "expected_retryable", "expected_terminal"),
     [
         (401, {"error": "unauthorized"}, False, True),
+        (409, {"error": "conflict"}, False, True),
         (429, {"error": "rate limited"}, True, False),
         (503, {"success": True, "error": "backend down", "retryable": False, "terminal": True, "degraded": True}, False, True),
     ],
@@ -1319,6 +1559,7 @@ def test_http_error_responses_have_transport_state(
     ("status", "payload", "expected_retryable", "expected_terminal"),
     [
         (400, {"success": True, "error": "bad input"}, False, True),
+        (409, {"error": "conflict"}, False, True),
         (429, {"error": "rate limited"}, True, False),
         (503, {"success": True, "error": "offline", "retryable": False, "terminal": True, "degraded": True}, False, True),
     ],
@@ -1582,6 +1823,47 @@ def test_operation_registry_schema_keys_bind_to_live_and_generated_schemas() -> 
         assert normalize(live_schema) == normalize(generated_parameters)
 
 
+def test_generated_repo_schema_scopes_steps_without_runtime_mcp() -> None:
+    import sys
+
+    from local_ai_hub import generator
+
+    module_name = f"{generator.__package__}.mcp_server"
+    runtime_mcp = sys.modules.pop(module_name, None)
+    try:
+        generated = generator.generate_mcp_tool_schemas({})
+        assert module_name not in sys.modules
+    finally:
+        if runtime_mcp is not None:
+            sys.modules[module_name] = runtime_mcp
+
+    parameters = generated["local_ai_repo"]["parameters"]
+    action_rule = next(
+        rule for rule in parameters.get("allOf", [])
+        if rule.get("else", {}).get("not", {}).get("required") == ["steps"]
+    )
+    assert action_rule["if"]["properties"]["action"]["const"] == "pipeline"
+    assert action_rule["then"]["properties"] == {"steps": {}}
+
+
+def test_schema_generation_does_not_import_runtime_mcp(monkeypatch: pytest.MonkeyPatch) -> None:
+    import builtins
+
+    from local_ai_hub import generator
+
+    original_import = builtins.__import__
+
+    def reject_runtime_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if "mcp_server" in fromlist and level:
+            raise AssertionError("schema generation must not import the runtime MCP server")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", reject_runtime_import)
+    generated = generator.generate_mcp_tool_schemas({})
+
+    assert "local_ai_status" in generated
+
+
 def test_http_send_rejects_transfer_encoding_override() -> None:
     from types import SimpleNamespace
 
@@ -1681,3 +1963,171 @@ def test_task_list_query_is_forwarded_by_http_routes(monkeypatch: pytest.MonkeyP
     invalid_handler._validate_payload = lambda _path, _payload: None
     invalid_handler.do_POST()
     assert invalid_responses[0][0] == 400
+
+
+def _contract_client(tmp_path):
+    from local_ai_hub.client import HubClient
+
+    config = tmp_path / "client.toml"
+    config.write_text(
+        "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n"
+        "[client]\nmax_request_timeout_seconds=5\n",
+        encoding="utf-8",
+    )
+    return HubClient(config_path=str(config), auto_start=False)
+
+
+def test_stream_events_normalizes_http_error_with_status_and_body_metadata(tmp_path, monkeypatch):
+    from urllib.error import HTTPError
+
+    from local_ai_hub import client as client_module
+
+    client = _contract_client(tmp_path)
+    body = (
+        b'{"success":false,"error":"backend unavailable","degraded":true,'
+        b'"stale":true,"evidence":[{"id":"E-stream"}],"cancelled":true}'
+    )
+
+    def fail_open(*_args, **_kwargs):
+        raise HTTPError("http://localhost/api/agent-state/events/stream", 503, "Unavailable", {}, io.BytesIO(body))
+
+    monkeypatch.setattr(client_module, "urlopen", fail_open)
+    events = list(client.stream_events(timeout=1))
+
+    assert events[-1][0] == "error"
+    error = events[-1][1]
+    assert error["status_code"] == 503
+    assert error["retryable"] is True
+    assert error["terminal"] is False
+    assert error["request_id"].startswith("req_")
+    assert error["degraded"] is True
+    assert error["stale"] is True
+    assert error["evidence"] == [{"id": "E-stream"}]
+    assert error["cancelled"] is True
+
+
+def test_get_non_object_json_returns_normalized_protocol_error(tmp_path, monkeypatch):
+    client = _contract_client(tmp_path)
+    monkeypatch.setattr(client, "_pooled_open", lambda *_args, **_kwargs: b"[]")
+
+    result = client.get("/api/test")
+
+    assert result["success"] is False
+    assert result["error"] == "invalid JSON response"
+    assert result["status_code"] == 502
+    assert result["retryable"] is True
+    assert result["terminal"] is False
+    assert result["request_id"].startswith("req_")
+
+
+def test_post_non_object_json_returns_normalized_protocol_error(tmp_path, monkeypatch):
+    client = _contract_client(tmp_path)
+    monkeypatch.setattr(client, "_pooled_open", lambda *_args, **_kwargs: b'["unexpected"]')
+
+    result = client.request("/api/test", {"value": 1})
+
+    assert isinstance(result, dict)
+    assert result["success"] is False
+    assert result["error"] == "invalid JSON response"
+    assert result["status_code"] == 502
+    assert result["outcome_unknown"] is True
+    assert result["retryable"] is False
+    assert result["terminal"] is True
+    assert result["request_id"].startswith("req_")
+
+
+def test_get_invalid_json_returns_normalized_protocol_error(tmp_path, monkeypatch):
+    client = _contract_client(tmp_path)
+    monkeypatch.setattr(client, "_pooled_open", lambda *_args, **_kwargs: b"{")
+
+    result = client.get("/api/test")
+
+    assert result["success"] is False
+    assert result["error"] == "invalid JSON response"
+    assert result["status_code"] == 502
+    assert result["retryable"] is True
+    assert result["terminal"] is False
+    assert result["request_id"].startswith("req_")
+
+
+def test_replay_safe_post_invalid_json_remains_retryable(tmp_path, monkeypatch):
+    client = _contract_client(tmp_path)
+    monkeypatch.setattr(client, "_pooled_open", lambda *_args, **_kwargs: b"[]")
+
+    result = client.request("/api/test", {"action": "read"}, replay_safe=True)
+
+    assert result["success"] is False
+    assert result["error"] == "invalid JSON response"
+    assert result["status_code"] == 502
+    assert result["retryable"] is True
+    assert result["terminal"] is False
+    assert "outcome_unknown" not in result
+
+
+def test_mutating_post_invalid_json_reports_unknown_outcome(tmp_path, monkeypatch):
+    client = _contract_client(tmp_path)
+    monkeypatch.setattr(client, "_pooled_open", lambda *_args, **_kwargs: b"{")
+
+    result = client.request("/api/test", {"action": "write"})
+
+    assert result["success"] is False
+    assert result["error"] == "invalid JSON response"
+    assert result["status_code"] == 502
+    assert result["outcome_unknown"] is True
+    assert result["retryable"] is False
+    assert result["terminal"] is True
+    assert result["request_id"].startswith("req_")
+
+
+def test_contract_state_metadata_survives_mcp_compaction(monkeypatch):
+    import local_ai_hub.mcp_server as mcp_server
+
+    monkeypatch.setattr(mcp_server, "_REUSE_DIGESTS", mcp_server.OrderedDict())
+    monkeypatch.setattr(mcp_server, "_REUSE_VALUES", mcp_server.OrderedDict())
+    expected = {
+        "success": False,
+        "status_code": 503,
+        "error": "backend unavailable",
+        "terminal": False,
+        "retryable": True,
+        "degraded": True,
+        "stale": True,
+        "evidence": [{"evidence_id": "E1", "source": "indexed"}],
+        "cancel": {"cancelled": True, "reason": "client_disconnect"},
+        "cancelled": True,
+        "timed_out": False,
+    }
+    value = {
+        **expected,
+        "summary": "compact this response",
+        "results": [{"path": f"src/{index}.py", "text": "x" * 500} for index in range(30)],
+    }
+    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set(
+        {
+            "max_response_tokens": 220,
+            "response_profile": "compact",
+            "reuse_key": "contract-state-compaction",
+            "tool": "local_ai_repo",
+        }
+    )
+    try:
+        result = mcp_server._compact(value, "search")
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
+
+    assert result["response_budget"]["truncated"] is True
+    for key, expected_value in expected.items():
+        assert result[key] == expected_value
+
+
+def test_operation_contract_policy_is_synced_to_both_prompts():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    policy = (
+        "For operation contract changes, treat `src/local_ai_hub/operation_contracts.py` as canonical; "
+        "keep generated schemas and live MCP `tools/list` aligned. Sync this rule into both prompt files."
+    )
+    for name in ("INSTALL_PROMPT.md", "UPDATE_PROMPT.md"):
+        prompt = (root / "docs" / name).read_text(encoding="utf-8")
+        assert prompt.count(policy) == 1
