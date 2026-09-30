@@ -1232,7 +1232,7 @@ class CodeIndex:
                     (resolved_root,),
                 ).fetchall()]
         except sqlite3.DatabaseError as exc:
-            return {"success": False, "root": resolved_root, "error": str(exc), "busy": is_busy_error(exc), "confidence": 0.0}
+            return {"success": False, "root": resolved_root, "error": str(exc), "busy": is_busy_error(exc), "confidence": 0.0, "graph_complete": False}
 
         changed_stems = {Path(p).stem.lower().replace("test_", "").replace("_test", "").replace(".test", "").replace("_spec", "").replace(".spec", "") for p in changed}
         symbol_names_l = [str(x["name"]).lower() for x in changed_symbols]
@@ -1260,6 +1260,7 @@ class CodeIndex:
             "confidence": confidence,
             "indexed_changed_files": indexed_count,
             "changed_files_count": len(changed),
+            "graph_complete": False,
         }
 
     def inspect_symbol(self, root: str, symbol_name: str) -> dict[str, Any]:

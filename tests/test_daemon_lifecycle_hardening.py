@@ -345,3 +345,49 @@ def test_restart_reconciliation_rejects_pid_reuse(tmp_path: Path) -> None:
         assert first.daemon_status(daemon["daemon_id"])["running"] is True
     finally:
         first.stop_daemon(daemon["daemon_id"])
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux /proc ownership proof required")
+def test_restart_recovers_and_stops_owned_group_after_leader_exits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(CommandBroker, "_watch_daemon_exit", lambda *_args: None)
+    first = _broker(tmp_path)
+    child_pid_file = tmp_path / "daemon-child.pid"
+    parent_code = (
+        "import pathlib, subprocess, sys; "
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid), encoding='ascii')"
+    )
+    daemon = first.spawn_daemon(
+        [sys.executable, "-c", parent_code, str(child_pid_file)],
+        str(tmp_path),
+        name="leaderless-group-recovery",
+    )
+    assert daemon["success"] is True
+
+    recovered: CommandBroker | None = None
+    try:
+        deadline = time.monotonic() + 5
+        while (not child_pid_file.exists() or not child_pid_file.stat().st_size) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert child_pid_file.exists() and child_pid_file.stat().st_size
+        child_pid = int(child_pid_file.read_text(encoding="ascii"))
+        first._daemons[daemon["daemon_id"]]["process"].wait(timeout=5)
+        assert commands_module.process_identity(daemon["pid"]) is None
+
+        recovered = _broker(tmp_path)
+        status = recovered.daemon_status(daemon["daemon_id"])
+        assert status["success"] is True
+        assert status["running"] is True
+        assert status["pid"] == daemon["pid"]
+
+        stopped = recovered.stop_daemon(daemon["daemon_id"])
+        assert stopped["success"] is True
+        assert stopped["process_tree_stopped"] is True
+        assert commands_module.process_identity(child_pid) is None
+    finally:
+        if recovered is not None and daemon["daemon_id"] in recovered._daemons:
+            recovered.stop_daemon(daemon["daemon_id"])
+        if daemon["daemon_id"] in first._daemons:
+            first.stop_daemon(daemon["daemon_id"])

@@ -12,11 +12,21 @@ import shutil
 import subprocess
 import time
 import uuid
+from dataclasses import dataclass
 from typing import Any, Sequence
 
 
 _LOW_PRIORITY_VALUES = {"idle", "below_normal", "normal"}
 _POST_TERMINATION_DRAIN_SECONDS = 0.5
+
+
+@dataclass(frozen=True)
+class _CleanupOutcome:
+    stdout: Any
+    stderr: Any
+    cleanup_confirmed: bool
+    process: subprocess.Popen[Any]
+    process_group: int | None
 
 
 class _FILETIME(ctypes.Structure):
@@ -307,41 +317,10 @@ def terminate_tree(
             return cp.returncode in {0, 128}
         except Exception:
             return not pid_alive(pid)
-    group_id = pid if process_group in (None, 0) else int(process_group)
-
-    def group_alive() -> bool:
-        try:
-            os.killpg(group_id, 0)
-            return True
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        except OSError:
-            return pid_alive(pid)
-
-    try:
-        # Runtime children are started in their own sessions. Prefer the group, then
-        # fall back to the process itself for older/recovered installations.
-        try:
-            os.killpg(group_id, signal.SIGTERM)
-        except OSError:
-            os.kill(pid, signal.SIGTERM)
-        deadline = time.monotonic() + max(0.1, grace_seconds)
-        while time.monotonic() < deadline:
-            if not group_alive():
-                return True
-            time.sleep(0.05)
-        try:
-            os.killpg(group_id, signal.SIGKILL)
-        except OSError:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
-        return not group_alive()
-    except OSError:
-        return True
+    # POSIX process groups have no stable signal handle here. A numeric PGID (or
+    # PID fallback) can be reused after an ownership check and before killpg/kill.
+    # Fail closed until cleanup is passed a continuously held owner capability.
+    return False
 
 
 def _resume_suspended_process(process: subprocess.Popen[Any]) -> bool:
@@ -491,22 +470,27 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
                 process_group = process.pid if int(requested_group) == 0 else int(requested_group)
             elif opts.get("start_new_session"):
                 process_group = process.pid
-        stdout, stderr = _terminate_and_drain(process, process_group=process_group)
-        raise subprocess.TimeoutExpired(
+        cleanup = _terminate_and_drain(process, process_group=process_group)
+        error = subprocess.TimeoutExpired(
             command,
             timeout,
-            output=stdout if stdout is not None else timeout_error.output,
-            stderr=stderr if stderr is not None else timeout_error.stderr,
-        ) from None
-    except BaseException:
-        _terminate_and_drain(process)
+            output=cleanup.stdout if cleanup.stdout is not None else timeout_error.output,
+            stderr=cleanup.stderr if cleanup.stderr is not None else timeout_error.stderr,
+        )
+        _attach_cleanup_outcome(error, cleanup)
+        raise error from None
+    except BaseException as error:
+        cleanup = _terminate_and_drain(process)
+        _attach_cleanup_outcome(error, cleanup)
         raise
 
     returncode = process.wait()
     if job_handle and not _release_process_job(process):
-        _terminate_and_drain(process)
+        cleanup = _terminate_and_drain(process)
         if getattr(process, "_local_ai_job_handle", None):
-            raise OSError("Unable to close Windows Job Object after process completion")
+            error = OSError("Unable to close Windows Job Object after process completion")
+            _attach_cleanup_outcome(error, cleanup)
+            raise error
     completed = subprocess.CompletedProcess(command, returncode, stdout, stderr)
     if check and returncode:
         raise subprocess.CalledProcessError(returncode, command, stdout, stderr)
@@ -515,54 +499,97 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
 
 def _terminate_and_drain(
     process: subprocess.Popen[Any], *, process_group: int | None = None
-) -> tuple[Any, Any]:
+) -> _CleanupOutcome:
     cleanup_kwargs = {"process_group": process_group} if process_group is not None else {}
     job_handle = getattr(process, "_local_ai_job_handle", None)
+    cleanup_confirmed = False
     if job_handle:
-        if not _release_process_job(process):
-            try:
-                terminate_tree(process.pid, **cleanup_kwargs)
-            except Exception:
-                pass
+        cleanup_confirmed = _release_process_job(process)
+        if not cleanup_confirmed:
+            cleanup_confirmed = _request_tree_cleanup(process, cleanup_kwargs)
     else:
+        cleanup_confirmed = _request_tree_cleanup(process, cleanup_kwargs)
+
+    # Popen.kill uses a stable process HANDLE on Windows. On POSIX it signals the
+    # numeric PID after a liveness check, so never use it when tree ownership was
+    # not continuously held by a safe signal target.
+    if os.name == "nt" and not cleanup_confirmed:
         try:
-            terminate_tree(process.pid, **cleanup_kwargs)
-        except Exception:
+            if process.poll() is None:
+                process.kill()
+        except OSError:
             pass
-    try:
-        if process.poll() is None:
-            process.kill()
-    except OSError:
-        pass
 
     try:
-        return process.communicate(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+        stdout, stderr = process.communicate(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+        return _CleanupOutcome(stdout, stderr, cleanup_confirmed, process, process_group)
     except subprocess.TimeoutExpired as drain_error:
-        for stream in (process.stdout, process.stderr):
-            if stream is not None:
+        retry_confirmed = _request_tree_cleanup(process, cleanup_kwargs)
+        cleanup_confirmed = cleanup_confirmed or retry_confirmed
+        final_output = drain_error.output
+        final_stderr = drain_error.stderr
+        try:
+            stdout, stderr = process.communicate(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+            return _CleanupOutcome(
+                stdout,
+                stderr,
+                cleanup_confirmed,
+                process,
+                process_group,
+            )
+        except subprocess.TimeoutExpired as final_drain_error:
+            if final_drain_error.output is not None:
+                final_output = final_drain_error.output
+            if final_drain_error.stderr is not None:
+                final_stderr = final_drain_error.stderr
+        except Exception:
+            pass
+        if cleanup_confirmed:
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+            if os.name == "nt":
                 try:
-                    stream.close()
+                    process.kill()
                 except OSError:
                     pass
-        try:
-            process.kill()
-        except OSError:
-            pass
-        try:
-            process.wait(timeout=_POST_TERMINATION_DRAIN_SECONDS)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        return drain_error.output, drain_error.stderr
+            try:
+                process.wait(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        return _CleanupOutcome(final_output, final_stderr, cleanup_confirmed, process, process_group)
     except Exception:
-        try:
-            process.kill()
-        except OSError:
-            pass
-        try:
-            process.wait(timeout=_POST_TERMINATION_DRAIN_SECONDS)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        return None, None
+        if cleanup_confirmed:
+            if os.name == "nt":
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+            try:
+                process.wait(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        return _CleanupOutcome(None, None, cleanup_confirmed, process, process_group)
+
+
+def _request_tree_cleanup(
+    process: subprocess.Popen[Any], cleanup_kwargs: dict[str, int]
+) -> bool:
+    try:
+        return bool(terminate_tree(process.pid, **cleanup_kwargs))
+    except Exception:
+        return False
+
+
+def _attach_cleanup_outcome(error: BaseException, outcome: _CleanupOutcome) -> None:
+    error.cleanup_confirmed = outcome.cleanup_confirmed
+    error.cleanup_unconfirmed = not outcome.cleanup_confirmed
+    if not outcome.cleanup_confirmed:
+        error.cleanup_process = outcome.process
+        error.cleanup_process_group = outcome.process_group
 
 
 def _find_listening_pid_win32(port: int) -> int | None:

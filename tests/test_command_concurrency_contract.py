@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -13,7 +14,9 @@ from collections import deque
 
 import pytest
 
-from local_ai_hub.commands import CommandBroker
+import local_ai_hub.commands as commands_module
+import local_ai_hub.process_utils as process_utils_module
+from local_ai_hub.commands import CommandBroker, CommandInvocation
 from local_ai_hub.process_utils import pid_alive
 
 
@@ -339,6 +342,60 @@ def test_mutating_call_bypasses_existing_singleflight_entry(tmp_path, monkeypatc
     assert results["first"]["stdout"] != results["second"]["stdout"]
 
 
+def test_timeout_drain_escalates_group_before_rejoining_pipe_readers(monkeypatch) -> None:
+    events: list[tuple[str, object]] = []
+
+    class Pipe:
+        def close(self) -> None:
+            events.append(("close", self))
+
+    class StuckProcess:
+        pid = 24569
+
+        def __init__(self) -> None:
+            self.stdout = Pipe()
+            self.stderr = Pipe()
+            self.communicate_calls = 0
+
+        def poll(self) -> int | None:
+            return None
+
+        def kill(self) -> None:
+            events.append(("kill_leader", self.pid))
+
+        def wait(self, timeout: float) -> int:
+            events.append(("wait", timeout))
+            return 0
+
+        def communicate(self, timeout: float) -> tuple[bytes, bytes]:
+            self.communicate_calls += 1
+            events.append((f"communicate_{self.communicate_calls}", timeout))
+            if self.communicate_calls == 1:
+                raise subprocess.TimeoutExpired(
+                    "fake command", timeout, output=b"partial", stderr=b"partial-error"
+                )
+            return b"drained", b"drained-error"
+
+    process = StuckProcess()
+    cleanup_calls = 0
+
+    def terminate_tree(pid: int, **kwargs) -> bool:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        events.append((f"terminate_group_{cleanup_calls}", (pid, kwargs)))
+        return cleanup_calls > 1
+
+    monkeypatch.setattr(process_utils_module, "terminate_tree", terminate_tree)
+
+    output = process_utils_module._terminate_and_drain(process, process_group=process.pid)
+
+    assert (output.stdout, output.stderr) == (b"drained", b"drained-error")
+    assert output.cleanup_confirmed is True
+    event_names = [name for name, _value in events]
+    assert event_names.index("terminate_group_2") < event_names.index("communicate_2")
+    assert "close" not in event_names
+
+
 def test_stdout_and_stderr_flood_are_drained_without_blocking(tmp_path) -> None:
     broker = _broker(tmp_path, max_output_chars=2048)
     script = (
@@ -448,9 +505,18 @@ def test_pipe_reader_start_failure_kills_and_reaps_command(tmp_path, monkeypatch
         encoding="utf-8",
     )
     real_start = commands_module.threading.Thread.start
+    reader_start_count = 0
 
     def fail_reader_start(thread, *args, **kwargs):
+        nonlocal reader_start_count
         if getattr(getattr(thread, "_target", None), "__name__", "") == "_reader":
+            reader_start_count += 1
+            if reader_start_count == 1:
+                return real_start(thread, *args, **kwargs)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not pid_path.exists():
+                time.sleep(0.01)
+            assert pid_path.exists(), "child did not start before pipe reader failure injection"
             raise RuntimeError("injected reader thread startup failure")
         return real_start(thread, *args, **kwargs)
 
@@ -461,11 +527,124 @@ def test_pipe_reader_start_failure_kills_and_reaps_command(tmp_path, monkeypatch
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline and not pid_path.exists():
         time.sleep(0.02)
+    assert reader_start_count == 2
     assert result["success"] is False
     assert result["cleanup_unconfirmed"] is False
     assert "reader" in result["error"].lower()
     assert pid_path.exists()
     assert not pid_alive(int(pid_path.read_text(encoding="utf-8")))
+
+
+def test_pipe_read_error_fails_closed_and_is_not_cached(tmp_path, monkeypatch) -> None:
+    broker = _broker(tmp_path)
+    command = "python -m pytest -q"
+    assert broker.classify(command)["cacheable"] is True
+    script_path = tmp_path / "reader_error_at_eof.py"
+    script_path.write_text(
+        "print('PIPE_BEFORE_ERROR', flush=True)\n"
+        "print('PIPE_AFTER_ERROR', flush=True)\n",
+        encoding="utf-8",
+    )
+    real_popen = commands_module.subprocess.Popen
+    spawned_pids: list[int] = []
+
+    class ReadErrorAtEof:
+        def __init__(self, stream):
+            self._stream = stream
+            self._raised = False
+
+        def readline(self, size=-1):
+            line = self._stream.readline(size)
+            if line or self._raised:
+                return line
+            self._raised = True
+            raise OSError("injected stdout pipe read failure")
+
+        @property
+        def closed(self):
+            return self._stream.closed
+
+        def close(self):
+            self._stream.close()
+
+    def popen_with_stdout_read_error(*_args, **kwargs):
+        process = real_popen([sys.executable, str(script_path)], **kwargs)
+        spawned_pids.append(process.pid)
+        if process.stdout is not None:
+            process.stdout = ReadErrorAtEof(process.stdout)
+        return process
+
+    monkeypatch.setattr(commands_module.subprocess, "Popen", popen_with_stdout_read_error)
+    result = broker.run(command, str(tmp_path), "tenant", timeout=8)
+
+    assert result["success"] is False
+    assert result["output_capture_unconfirmed"] is True
+    assert "PIPE_BEFORE_ERROR" in result["stdout"]
+    assert "PIPE_AFTER_ERROR" in result["stdout"]
+    assert "stdout" in result["error"].lower()
+    assert result["cleanup_unconfirmed"] is False
+
+    retry = broker.run(command, str(tmp_path), "tenant", timeout=8)
+    assert retry["cache_hit"] is False
+    assert len(spawned_pids) == 2
+
+
+@pytest.mark.parametrize("uncertainty_field", ["cleanup_unconfirmed", "log_callback_delivery_unconfirmed"])
+def test_uncertain_command_results_are_not_cached(tmp_path, monkeypatch, uncertainty_field) -> None:
+    broker = _broker(tmp_path)
+    command = "python -m pytest -q"
+    assert broker.classify(command)["cacheable"] is True
+    monkeypatch.setattr(broker, "_unavailable_executable", lambda _command, _cwd: None)
+    executions: list[int] = []
+
+    def execute(_command, _cwd, _timeout, *_args, **_kwargs):
+        executions.append(len(executions) + 1)
+        result = _execution_result(f"run-{len(executions)}\n")
+        if len(executions) == 1:
+            result[uncertainty_field] = True
+            if uncertainty_field == "cleanup_unconfirmed":
+                result["success"] = False
+                result["exit_code"] = -9
+        return result
+
+    monkeypatch.setattr(broker, "_execute", execute)
+    first = broker.run(command, str(tmp_path), "tenant", timeout=4)
+    second = broker.run(command, str(tmp_path), "tenant", timeout=4)
+
+    assert first["cache_hit"] is False
+    assert second["cache_hit"] is False
+    assert executions == [1, 2]
+    assert second["stdout"] == "run-2\n"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object startup failure path")
+def test_spawn_setup_failure_reports_unconfirmed_cleanup(tmp_path, monkeypatch) -> None:
+    broker = _broker(tmp_path)
+    monkeypatch.setattr(broker, "_unavailable_executable", lambda _command, _cwd: None)
+    monkeypatch.setattr(commands_module, "create_job_object_kill_on_close", lambda: object())
+    monkeypatch.setattr(commands_module, "assign_process_to_job", lambda *_args: False)
+    monkeypatch.setattr(commands_module, "_terminate_and_confirm_windows_job_empty", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(commands_module, "close_job_object", lambda *_args: False)
+
+    class UnreapedProcess:
+        pid = 4242
+        returncode = None
+
+        def kill(self):
+            raise OSError("injected process kill failure")
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("fake command", timeout)
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(commands_module.subprocess, "Popen", lambda *_args, **_kwargs: UnreapedProcess())
+    result = broker.run("python -m pytest -q", str(tmp_path), "tenant", timeout=4)
+
+    assert result["success"] is False
+    assert result["cleanup_unconfirmed"] is True
+    assert "failed to spawn process" in result["error"]
 
 
 def test_slow_log_callback_does_not_block_command_pipe_drain(tmp_path) -> None:
@@ -695,6 +874,48 @@ def test_repeatable_cache_reuses_results_and_tracks_repository_revision(tmp_path
     assert revised["stdout"] == "revision-b\n"
 
 
+def test_repo_state_cache_does_not_reuse_result_after_immediate_file_change(tmp_path, monkeypatch) -> None:
+    from local_ai_hub.repo_state import RepoStateTracker
+
+    _init_patch_repo(tmp_path, {"src/app.py": "value = 1\n"})
+    source = tmp_path / "src" / "app.py"
+    repo_state = RepoStateTracker({"workspace_cache": {"fingerprint_ttl_seconds": 60.0}})
+    broker = CommandBroker(
+        {
+            "server": {"state_dir": str(tmp_path.parent / f"{tmp_path.name}-hub-state")},
+            "commands": {
+                "enabled": True,
+                "coalesced_wait_seconds": 2,
+                "max_output_chars": 4096,
+                "allow_mutating": False,
+            },
+        },
+        _Artifacts(),
+        repo_state,
+    )
+    command = "python -m pytest -q"
+    executions: list[str] = []
+    monkeypatch.setattr(broker, "_unavailable_executable", lambda _command, _cwd: None)
+
+    def execute(_command, _cwd, _timeout, cancel_event=None, log_callback=None):
+        value = source.read_text(encoding="utf-8")
+        executions.append(value)
+        return _execution_result(value)
+
+    monkeypatch.setattr(broker, "_execute", execute)
+
+    first = broker.run(command, str(tmp_path), "tenant")
+    repeated = broker.run(command, str(tmp_path), "tenant")
+    source.write_text("value = 2\n", encoding="utf-8")
+    changed = broker.run(command, str(tmp_path), "tenant")
+
+    assert first["cache_hit"] is False
+    assert repeated["cache_hit"] is True
+    assert changed["cache_hit"] is False
+    assert changed["stdout"] == "value = 2\n"
+    assert executions == ["value = 1\n", "value = 2\n"]
+
+
 def test_environment_change_invalidates_repeatable_cache(tmp_path, monkeypatch) -> None:
     broker = _broker(tmp_path)
     broker.config["commands"]["environment_keys"] = ["T15_CACHE_SCOPE"]
@@ -817,7 +1038,7 @@ def test_cold_warm_command_benchmark_reports_paired_phase_percentiles(tmp_path) 
     )
     observations: list[dict] = []
 
-    for pair in range(10):
+    for pair in range(30):
         command = f'"{sys.executable}" -c "print(\'T15_PAIR_{pair}\')"'
         if pair % 2 == 0:
             cold_started = time.perf_counter()
@@ -885,8 +1106,23 @@ def test_cold_warm_command_benchmark_reports_paired_phase_percentiles(tmp_path) 
         },
         "observations": observations,
     }
-    print("T15_COMMAND_BENCHMARK " + json.dumps(report, sort_keys=True, separators=(",", ":")))
-    assert len(observations) == 10
+    benchmark_summary = {
+        "pairs": len(observations),
+        "cold_median_elapsed_ms": round(report["cold_median_elapsed_ms"], 3),
+        "warm_median_elapsed_ms": round(report["warm_median_elapsed_ms"], 3),
+        "warm_median_lower": report["warm_median_elapsed_ms"] < report["cold_median_elapsed_ms"],
+        "phases_ms": {
+            stage: {key: round(value, 3) for key, value in values.items()}
+            for stage, values in report["phases_ms"].items()
+        },
+        "all_runs_successful": all(item["cold_success"] and item["warm_success"] for item in observations),
+        "all_cold_misses_warm_hits": all(not item["cold_cache_hit"] and item["warm_cache_hit"] for item in observations),
+        "paired_outputs_match": all(item["cold_stdout"] == item["warm_stdout"] and item["cold_stderr"] == item["warm_stderr"] for item in observations),
+        "paired_exit_codes_match": all(item["cold_exit_code"] == item["warm_exit_code"] for item in observations),
+        "paired_revisions_match": all(item["cold_repository_revision"] == item["warm_repository_revision"] for item in observations),
+    }
+    print("T15_COMMAND_BENCHMARK " + json.dumps(benchmark_summary, sort_keys=True, separators=(",", ":")))
+    assert len(observations) == 30
     assert all(item["cold_success"] and item["warm_success"] for item in observations)
     assert all(not item["cold_cache_hit"] and item["warm_cache_hit"] for item in observations)
     assert all(item["cold_exit_code"] == item["warm_exit_code"] == 0 for item in observations)
@@ -933,23 +1169,27 @@ def _init_patch_repo(root, files: dict[str, str]) -> None:
     subprocess.run(["git", "commit", "-m", "baseline"], cwd=str(root), capture_output=True, check=True)
 
 
-def test_uncertain_affected_test_selection_widens_to_full_suite(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("confidence", "candidate_tests"),
+    [(0.2, []), (0.99, ["tests/test_app.py"])],
+)
+def test_uncertain_affected_test_selection_widens_to_full_suite(tmp_path, monkeypatch, confidence, candidate_tests) -> None:
     from local_ai_hub.deterministic import DeterministicEngine
 
     _init_patch_repo(
         tmp_path,
         {"src/app.py": "value = 1\n", "tests/test_app.py": "def test_app():\n    assert True\n"},
     )
-    monkeypatch.setattr(
-        DeterministicEngine,
-        "affected_tests",
-        lambda *_args, **_kwargs: {
+    def select_tests(*_args, **_kwargs):
+        return {
             "success": True,
             "framework": "pytest",
-            "test_files": [],
-            "confidence": 0.2,
-        },
-    )
+            "test_files": candidate_tests,
+            "confidence": confidence,
+            "selection_complete": False,
+        }
+
+    monkeypatch.setattr(DeterministicEngine, "affected_tests", select_tests)
     monkeypatch.setattr(
         DeterministicEngine,
         "test_matrix",
@@ -990,20 +1230,22 @@ def test_uncertain_affected_test_selection_without_runner_rolls_back(tmp_path, m
         {"src/app.py": "value = 1\n", "tests/test_app.py": "def test_app():\n    assert True\n"},
     )
     target = tmp_path / "src" / "app.py"
-    monkeypatch.setattr(
-        DeterministicEngine,
-        "affected_tests",
-        lambda *_args, **_kwargs: {"success": True, "test_files": [], "confidence": 0.2},
-    )
-    monkeypatch.setattr(
-        DeterministicEngine,
-        "test_matrix",
-        lambda *_args, **_kwargs: {
+    selection_calls = {"affected_tests": 0, "test_matrix": 0}
+
+    def affected_tests(*_args, **_kwargs):
+        selection_calls["affected_tests"] += 1
+        return {"success": True, "test_files": [], "confidence": 0.2}
+
+    def test_matrix(*_args, **_kwargs):
+        selection_calls["test_matrix"] += 1
+        return {
             "framework": "pytest",
             "run_all_command": "",
             "test_files": [{"path": "tests/test_app.py"}],
-        },
-    )
+        }
+
+    monkeypatch.setattr(DeterministicEngine, "affected_tests", affected_tests)
+    monkeypatch.setattr(DeterministicEngine, "test_matrix", test_matrix)
     broker = _broker(tmp_path)
 
     def forbidden_run(*_args, **_kwargs):
@@ -1025,9 +1267,13 @@ def test_uncertain_affected_test_selection_without_runner_rolls_back(tmp_path, m
         auto_rollback=True,
     )
 
+    assert selection_calls == {
+        "affected_tests": 1,
+        "test_matrix": 1,
+    }, (selection_calls, result)
     assert result["success"] is False
-    assert result["applied"] is False
-    assert result["rolled_back"] is True
+    assert result["applied"] is False, result
+    assert result["rolled_back"] is True, result
     assert result["affected_test_selection_widened"] is True
     assert "no full-suite runner" in result["error"]
     assert target.read_text(encoding="utf-8") == "value = 1\n"
@@ -1407,3 +1653,657 @@ def test_early_preflight_does_not_acquire_rollback_guard(tmp_path, monkeypatch) 
     assert result["preflight"] is True
     assert broker._active_commands == {}
     assert broker._inflight == {}
+
+
+def _project_context_for_tests(root, *, config_digest: str, env_references: dict[str, str]):
+    settings = type("ProjectSettingsStub", (), {})()
+    settings.commands = {}
+    settings.affected_tests_mapping = {}
+    settings.env_references = dict(env_references)
+    settings.verification_rules = {}
+    context = type("ProjectContextStub", (), {})()
+    context.root = str(root)
+    context.settings = settings
+    context.config_digest = config_digest
+    return context
+
+
+def test_project_context_env_resolution_is_cached_by_config_and_env_fingerprint(tmp_path, monkeypatch) -> None:
+    broker = _broker(tmp_path)
+    monkeypatch.setattr(broker, "_unavailable_executable", lambda _command, _cwd: None)
+    monkeypatch.setenv("PROJECT_CI_TOKEN", "secret-a")
+    envs: list[dict[str, str]] = []
+
+    def execute(_command, _cwd, _timeout, cancel_event=None, log_callback=None, *, argv_override=None, env_overrides=None):
+        envs.append(dict(env_overrides or {}))
+        return _execution_result("ok\n")
+
+    monkeypatch.setattr(broker, "_execute", execute)
+    context = _project_context_for_tests(
+        tmp_path,
+        config_digest="config-a",
+        env_references={"CI_TOKEN": "PROJECT_CI_TOKEN"},
+    )
+
+    first = broker.run("python -m pytest -q", str(tmp_path), "tenant", project_context=context)
+    cached = broker.run("python -m pytest -q", str(tmp_path), "tenant", project_context=context)
+    monkeypatch.setenv("PROJECT_CI_TOKEN", "secret-b")
+    changed_env = broker.run("python -m pytest -q", str(tmp_path), "tenant", project_context=context)
+    context.config_digest = "config-b"
+    changed_config = broker.run("python -m pytest -q", str(tmp_path), "tenant", project_context=context)
+
+    assert first["cache_hit"] is False
+    assert cached["cache_hit"] is True
+    assert changed_env["cache_hit"] is False
+    assert changed_config["cache_hit"] is False
+    assert envs == [
+        {"CI_TOKEN": "secret-a"},
+        {"CI_TOKEN": "secret-b"},
+        {"CI_TOKEN": "secret-b"},
+    ]
+    assert "secret-a" not in json.dumps([first, cached, changed_env, changed_config])
+    assert "secret-b" not in json.dumps([first, cached, changed_env, changed_config])
+
+
+def test_project_context_missing_env_reference_fails_before_spawn(tmp_path, monkeypatch) -> None:
+    broker = _broker(tmp_path)
+    monkeypatch.setattr(broker, "_unavailable_executable", lambda _command, _cwd: None)
+    monkeypatch.delenv("MISSING_PROJECT_TOKEN", raising=False)
+    executions: list[str] = []
+    monkeypatch.setattr(
+        broker,
+        "_execute",
+        lambda command, *_args, **_kwargs: (executions.append(command) or _execution_result("unexpected\n")),
+    )
+    context = _project_context_for_tests(
+        tmp_path,
+        config_digest="config-a",
+        env_references={"CI_TOKEN": "MISSING_PROJECT_TOKEN"},
+    )
+
+    result = broker.run("python -m pytest -q", str(tmp_path), "tenant", project_context=context)
+
+    assert result["success"] is False
+    assert executions == []
+    assert "MISSING_PROJECT_TOKEN" not in json.dumps(result)
+
+
+def test_structured_command_invocation_preserves_argv_without_shell_rendering(tmp_path, monkeypatch) -> None:
+    broker = _broker(tmp_path)
+    monkeypatch.setattr(broker, "_unavailable_executable", lambda _command, _cwd, **_kwargs: None)
+    invocations: list[list[str] | None] = []
+
+    def execute(_command, _cwd, _timeout, cancel_event=None, log_callback=None, *, argv_override=None, env_overrides=None):
+        invocations.append(list(argv_override) if argv_override is not None else None)
+        return _execution_result("ok\n")
+
+    monkeypatch.setattr(broker, "_execute", execute)
+    argv = ["python", "-m", "pytest", "-q", "--junitxml=literal;pipe|arg.xml"]
+    invocation = CommandInvocation(argv=argv, cwd=str(tmp_path), shell=False)
+
+    result = broker.run(invocation, str(tmp_path), "tenant")
+
+    assert result["success"] is True
+    assert invocations == [argv]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pytest -q",
+        "python -m pytest -q",
+        "python -m coverage run -m pytest -q",
+        "python tools/validate_report.py",
+        ["python", "-m", "pytest", "-q", "--junitxml=literal;pipe|arg.xml"],
+        'pwsh -NoProfile -Command "Invoke-Pester -Path tests"',
+        'pwsh -NoProfile -Command "Test-RepositoryState"',
+    ],
+)
+def test_explicit_python_and_powershell_validation_is_replay_safe(tmp_path, command) -> None:
+    broker = _broker(tmp_path)
+
+    result = broker.classify(command)
+
+    assert result["class"] == "validation"
+    assert result["replay_safe"] is True
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("python -m pytest -q && python -m unittest", True),
+        ("python -m pytest -q && git add changed.py", False),
+        ("python -m pytest -q | grep failed", True),
+        ("python -m pytest -q | Out-File report.txt", False),
+        ("python -m compileall -q src", False),
+        ('python -c "assert True; open(\'changed.py\', \'w\').write(\'x\')"', False),
+        ('pwsh -NoProfile -Command "Invoke-Pester; git add changed.py"', False),
+        ("python -m unknown_module", False),
+    ],
+)
+def test_replay_safety_composes_and_fails_closed(tmp_path, command, expected) -> None:
+    broker = _broker(tmp_path, allow_mutating=True)
+
+    assert broker.classify(command)["replay_safe"] is expected
+
+
+def test_user_whitelisted_validation_is_not_replay_safe_or_cacheable(tmp_path) -> None:
+    broker = _broker(tmp_path)
+    broker.config["commands"]["extra_allowed_tools"] = ["custom-validator"]
+
+    direct = broker.classify("custom-validator check")
+    powershell = broker.classify(
+        'pwsh -NoProfile -Command "Invoke-Pester; custom-validator -Target tests"'
+    )
+
+    assert direct["class"] == "validation"
+    assert direct["replay_safe"] is False
+    assert direct["cacheable"] is False
+    assert powershell["replay_safe"] is False
+    assert powershell["cacheable"] is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["python -m pytest -q", 'pwsh -NoProfile -Command "Test-RepositoryState"'],
+)
+def test_repair_loop_retries_explicit_validation(tmp_path, monkeypatch, command) -> None:
+    broker = _broker(tmp_path)
+    executions: list[str] = []
+    generator_calls: list[str] = []
+
+    def run(actual_command: str, *_args, **_kwargs):
+        executions.append(actual_command)
+        return {"success": True, "exit_code": 0}
+
+    def generate(actual_command: str, *_args):
+        generator_calls.append(actual_command)
+        return {"changed.py": "value = 1\n"}
+
+    monkeypatch.setattr(broker, "run", run)
+    result = broker.repair_loop(
+        command,
+        str(tmp_path),
+        "tenant",
+        max_attempts=1,
+        fix_generator=generate,
+        initial_result={"success": False, "exit_code": 1, "stderr": "assertion failed"},
+    )
+
+    assert result["success"] is True
+    assert result["attempts"] == 1
+    assert executions == [command]
+    assert generator_calls == [command]
+
+
+@pytest.mark.parametrize(
+    "initial_result",
+    [
+        {"success": False, "timed_out": True, "outcome_unknown": True},
+        {"success": False, "cancelled": True, "outcome_unknown": True},
+        {"success": False, "outcome_unknown": True},
+    ],
+)
+def test_repair_loop_skips_uncertain_validation_result(tmp_path, monkeypatch, initial_result) -> None:
+    broker = _broker(tmp_path)
+    generator_calls: list[str] = []
+
+    def generate(command: str, *_args):
+        generator_calls.append(command)
+        return {"changed.py": "value = 1\n"}
+
+    result = broker.repair_loop(
+        "python -m pytest -q",
+        str(tmp_path),
+        "tenant",
+        max_attempts=2,
+        fix_generator=generate,
+        initial_result=initial_result,
+    )
+
+    assert result["success"] is False
+    assert result["repair_skipped"] is True
+    assert result["outcome_unknown"] is True
+    assert result["attempts"] == 0
+    assert generator_calls == []
+
+
+def test_repair_loop_skips_non_replay_safe_validation(tmp_path) -> None:
+    broker = _broker(tmp_path)
+    generator_calls: list[str] = []
+
+    def generate(command: str, *_args):
+        generator_calls.append(command)
+        return {"changed.py": "value = 1\n"}
+
+    result = broker.repair_loop(
+        "python -m compileall -q src",
+        str(tmp_path),
+        "tenant",
+        max_attempts=2,
+        fix_generator=generate,
+        initial_result={"success": False, "exit_code": 1},
+    )
+
+    assert result["success"] is False
+    assert result["repair_skipped"] is True
+    assert result["outcome_unknown"] is False
+    assert result["attempts"] == 0
+    assert generator_calls == []
+
+
+def test_structured_invocation_identity_uses_selected_executable(tmp_path, monkeypatch) -> None:
+    broker = _broker(tmp_path)
+    selected = str(tmp_path / "powershell.exe")
+    alternative = str(tmp_path / "pwsh.exe")
+    available = {"powershell": selected, "pwsh": alternative}
+    monkeypatch.setattr(commands_module.shutil, "which", lambda name, *_args, **_kwargs: available.get(name))
+
+    identity = broker._tool_identity("powershell", str(tmp_path), argv_override=["powershell", "-NoProfile"])
+    assert identity["path"] == selected
+
+    available["powershell"] = None
+    unavailable = broker._unavailable_executable("powershell", str(tmp_path), argv_override=["powershell", "-NoProfile"])
+    assert unavailable == "powershell"
+
+
+def test_command_job_cleanup_requires_empty_job_confirmation(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(commands_module, "terminate_job_object", lambda handle: calls.append(("terminate", handle)) or True)
+    monkeypatch.setattr(commands_module, "_wait_windows_job_empty", lambda handle, timeout_ms=2500: calls.append(("wait", handle)) or False)
+
+    assert commands_module._terminate_and_confirm_windows_job_empty("job") is False
+    assert calls == [("terminate", "job"), ("wait", "job")]
+
+
+def test_recovered_daemon_requests_leaderless_group_cleanup_without_claiming_success(monkeypatch) -> None:
+    pid = 24569
+    identity = {"pid": pid, "executable": "test-daemon", "creation_identity": 2}
+    digest = "a" * 64
+    terminated: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
+    monkeypatch.setattr(
+        commands_module,
+        "_daemon_process_group_owned",
+        lambda group_id, token_digest: group_id == pid and token_digest == digest,
+    )
+    monkeypatch.setattr(
+        commands_module,
+        "terminate_tree",
+        lambda *args, **kwargs: terminated.append((args, kwargs)) or False,
+    )
+
+    process = commands_module._RecoveredDaemonProcess(
+        pid, identity, process_group_id=pid, ownership_token_digest=digest
+    )
+
+    assert process.poll() is None
+    assert process.kill() is False
+    assert terminated == [((pid,), {"process_group": pid, "grace_seconds": 0.1})]
+
+
+def test_recovered_daemon_rejects_reused_leader_even_when_group_is_alive(monkeypatch) -> None:
+    pid = 24569
+    identity = {"pid": pid, "executable": "test-daemon", "creation_identity": 2}
+    reused_identity = {**identity, "creation_identity": 999}
+    terminated: list[int] = []
+    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: reused_identity)
+    monkeypatch.setattr(
+        commands_module, "_daemon_process_group_owned", lambda *_args: True
+    )
+    monkeypatch.setattr(
+        commands_module,
+        "terminate_tree",
+        lambda current_pid, **_kwargs: terminated.append(current_pid) or True,
+    )
+
+    process = commands_module._RecoveredDaemonProcess(
+        pid, identity, process_group_id=pid, ownership_token_digest="a" * 64
+    )
+
+    assert process.poll() == 0
+    process.kill()
+    assert terminated == []
+
+
+def test_recovered_daemon_rejects_leaderless_group_without_ownership_proof(monkeypatch) -> None:
+    pid = 24569
+    identity = {"pid": pid, "executable": "test-daemon", "creation_identity": 2}
+    terminated: list[int] = []
+    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
+    monkeypatch.setattr(
+        commands_module, "_daemon_process_group_owned", lambda *_args: False
+    )
+    monkeypatch.setattr(
+        commands_module,
+        "terminate_tree",
+        lambda current_pid, **_kwargs: terminated.append(current_pid) or True,
+    )
+
+    process = commands_module._RecoveredDaemonProcess(pid, identity, process_group_id=pid)
+
+    assert process.poll() == 0
+    process.kill()
+    assert terminated == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX daemon process groups only")
+@pytest.mark.parametrize("group_verified", [True, False])
+def test_daemon_restart_requires_proof_for_leaderless_group(
+    tmp_path, monkeypatch, group_verified: bool
+) -> None:
+    seed = _broker(tmp_path)
+    daemon_id = "dmn_" + "b" * 32
+    pid = 24570
+    digest = "b" * 64
+    log_path = seed._daemon_state_dir / f"{daemon_id}.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_bytes(b"")
+    seed._daemon_registry_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "daemons": [
+                    {
+                        "daemon_id": daemon_id,
+                        "pid": pid,
+                        "identity": {
+                            "pid": pid,
+                            "executable": "test-daemon",
+                            "creation_identity": 2,
+                        },
+                        "owner_id": seed._daemon_owner_id,
+                        "process_group_id": pid,
+                        "ownership_token_digest": digest,
+                        "name": "daemon",
+                        "command": "test-daemon",
+                        "started_at": time.time(),
+                        "expires_at": time.time() + 60,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
+    monkeypatch.setattr(
+        commands_module,
+        "_daemon_process_group_owned",
+        lambda group_id, token_digest: (
+            group_verified and group_id == pid and token_digest == digest
+        ),
+    )
+
+    recovered = _broker(tmp_path)
+    try:
+        status = recovered.daemon_status(daemon_id)
+        assert status.get("running", False) is group_verified
+        assert status.get("success", False) is group_verified
+    finally:
+        info = recovered._daemons.get(daemon_id)
+        if info is not None:
+            timer = info.get("ttl_timer")
+            if timer is not None:
+                timer.cancel()
+            recovered._close_daemon_log(info)
+            recovered._release_daemon_slot(info)
+
+
+def test_linux_daemon_group_marker_requires_matching_group_and_digest(tmp_path) -> None:
+    pid = 24569
+    token = b"daemon-test-token"
+    digest = hashlib.sha256(token).hexdigest()
+    proc_dir = tmp_path / str(pid)
+    proc_dir.mkdir()
+    fields = ["S", "1", str(pid), *(["0"] * 16), "1234"]
+    (proc_dir / "stat").write_bytes(
+        f"{pid} (test-daemon) {' '.join(fields)}".encode()
+    )
+    (proc_dir / "environ").write_bytes(
+        b"PATH=/usr/bin\0LOCAL_AI_HUB_DAEMON_OWNERSHIP_TOKEN=" + token + b"\0"
+    )
+
+    assert commands_module._linux_group_member_owns_token(pid, digest, tmp_path) is True
+    assert commands_module._linux_group_member_owns_token(
+        pid, "0" * 64, tmp_path
+    ) is False
+    assert commands_module._linux_group_member_owns_token(
+        pid + 1, digest, tmp_path
+    ) is False
+
+
+def test_linux_group_marker_rejects_pgid_reuse_during_scan(tmp_path, monkeypatch) -> None:
+    from io import BytesIO
+    from pathlib import Path
+
+    pid = 24569
+    token = b"daemon-test-token"
+    digest = hashlib.sha256(token).hexdigest()
+    proc_dir = tmp_path / str(pid)
+    proc_dir.mkdir()
+    before_fields = ["S", "1", str(pid), *(["0"] * 16), "1234"]
+    after_fields = ["S", "1", str(pid + 1), *(["0"] * 16), "1234"]
+    before_stat = f"{pid} (test-daemon) {' '.join(before_fields)}".encode()
+    reused_stat = f"{pid} (test-daemon) {' '.join(after_fields)}".encode()
+    (proc_dir / "stat").write_bytes(before_stat)
+    (proc_dir / "environ").write_bytes(
+        b"PATH=/usr/bin\0LOCAL_AI_HUB_DAEMON_OWNERSHIP_TOKEN=" + token + b"\0"
+    )
+    original_open = Path.open
+    stat_reads = 0
+
+    def open_with_group_reuse(path, mode="r", *args, **kwargs):
+        nonlocal stat_reads
+        if path == proc_dir / "stat":
+            stat_reads += 1
+            return BytesIO(before_stat if stat_reads == 1 else reused_stat)
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_with_group_reuse)
+
+    assert commands_module._linux_group_member_owns_token(pid, digest, tmp_path) is False
+    assert stat_reads == 2
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX daemon process groups only")
+def test_daemon_registry_persists_verified_leaderless_process_group(tmp_path, monkeypatch) -> None:
+    broker = _broker(tmp_path)
+    daemon_id = "dmn_" + "a" * 32
+    pid = 24569
+    digest = "a" * 64
+
+    class ExitedProcess:
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
+    monkeypatch.setattr(
+        commands_module,
+        "_daemon_process_group_owned",
+        lambda group_id, token_digest: group_id == pid and token_digest == digest,
+    )
+    broker._daemons[daemon_id] = {
+        "process": ExitedProcess(),
+        "pid": pid,
+        "identity": {"pid": pid, "executable": "test-daemon", "creation_identity": 2},
+        "process_group_id": pid,
+        "ownership_token_digest": digest,
+        "owner_id": broker._daemon_owner_id,
+        "name": "daemon",
+        "command": "test-daemon",
+        "started_at": 100.0,
+        "expires_at": 200.0,
+    }
+
+    assert broker._persist_daemon_registry() is True
+    payload = json.loads(broker._daemon_registry_path.read_text(encoding="utf-8"))
+    row = payload["daemons"][0]
+    assert row["pid"] == pid
+    assert row["process_group_id"] == pid
+    assert row["ownership_token_digest"] == digest
+
+
+def test_posix_numeric_process_group_cleanup_fails_closed_without_signals(monkeypatch) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    class PosixOsProxy:
+        name = "posix"
+
+        @staticmethod
+        def killpg(group_id, _sig):
+            calls.append(("killpg", group_id))
+            raise ProcessLookupError
+
+        @staticmethod
+        def kill(pid, _sig):
+            calls.append(("kill", pid))
+            raise ProcessLookupError
+
+    monkeypatch.setattr(process_utils_module, "os", PosixOsProxy())
+
+    result = process_utils_module.terminate_tree(24569, process_group=24569, grace_seconds=0.1)
+
+    assert result is False
+    assert calls == []
+
+
+def test_run_hidden_timeout_preserves_unconfirmed_posix_process_without_pid_kill(monkeypatch) -> None:
+    class PosixOsProxy:
+        name = "posix"
+
+    class TimedOutProcess:
+        pid = 24569
+
+        class Pipe:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def close(self) -> None:
+                self.closed = True
+
+        def __init__(self) -> None:
+            self.stdout = self.Pipe()
+            self.stderr = self.Pipe()
+            self.kill_calls = 0
+            self.wait_calls = 0
+            self.communicate_calls = 0
+
+        def communicate(self, input=None, timeout=None):
+            self.communicate_calls += 1
+            raise subprocess.TimeoutExpired(
+                ["fake"], timeout, output=b"partial", stderr=b"partial-error"
+            )
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            self.kill_calls += 1
+
+        def wait(self, timeout=None):
+            self.wait_calls += 1
+            raise subprocess.TimeoutExpired(["fake"], timeout)
+
+    process = TimedOutProcess()
+    termination_calls: list[tuple[int, dict[str, object]]] = []
+
+    def refuse_numeric_group(pid: int, **kwargs) -> bool:
+        termination_calls.append((pid, kwargs))
+        return False
+
+    monkeypatch.setattr(process_utils_module, "os", PosixOsProxy())
+    monkeypatch.setattr(
+        process_utils_module.subprocess, "Popen", lambda *_args, **_kwargs: process
+    )
+    monkeypatch.setattr(process_utils_module, "terminate_tree", refuse_numeric_group)
+
+    with pytest.raises(subprocess.TimeoutExpired) as raised:
+        process_utils_module.run_hidden(["fake"], timeout=0.01, capture_output=True)
+
+    error = raised.value
+    assert process.kill_calls == 0
+    assert process.wait_calls == 0
+    assert process.stdout.closed is False
+    assert process.stderr.closed is False
+    assert len(termination_calls) == 2
+    assert error.cleanup_unconfirmed is True
+    assert error.cleanup_process is process
+    assert error.cleanup_process_group == process.pid
+
+
+def test_posix_terminate_tree_refuses_unowned_numeric_pid_and_group(monkeypatch) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    class PosixOsProxy:
+        name = "posix"
+
+        @staticmethod
+        def killpg(group_id, sig):
+            calls.append(("killpg", group_id, sig))
+
+        @staticmethod
+        def kill(pid, sig):
+            calls.append(("kill", pid, sig))
+
+    monkeypatch.setattr(process_utils_module, "os", PosixOsProxy())
+    monkeypatch.setattr(process_utils_module.signal, "SIGKILL", 9, raising=False)
+
+    assert process_utils_module.terminate_tree(24569, grace_seconds=0.1) is False
+    assert process_utils_module.terminate_tree(
+        24569, process_group=24569, grace_seconds=0.1
+    ) is False
+    assert calls == []
+
+
+def test_explicit_process_group_reports_unknown_liveness_without_pid_fallback(monkeypatch) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    class PosixOsProxy:
+        name = "posix"
+
+        @staticmethod
+        def killpg(group_id, sig):
+            calls.append(("killpg", group_id, sig))
+            raise OSError(22, "group state unavailable")
+
+        @staticmethod
+        def kill(pid, _sig):
+            calls.append(("kill", pid))
+            raise ProcessLookupError
+
+    monkeypatch.setattr(process_utils_module, "os", PosixOsProxy())
+    monkeypatch.setattr(process_utils_module.signal, "SIGKILL", 9, raising=False)
+
+    result = process_utils_module.terminate_tree(24569, process_group=24569, grace_seconds=0.1)
+
+    assert result is False
+    assert calls == []
+
+
+def test_posix_cleanup_does_not_report_success_when_signals_are_denied(monkeypatch) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    class PosixOsProxy:
+        name = "posix"
+
+        @staticmethod
+        def killpg(group_id, sig):
+            calls.append(("killpg", group_id, sig))
+            raise PermissionError("group signal denied")
+
+        @staticmethod
+        def kill(pid, sig):
+            calls.append(("kill", pid, sig))
+            raise PermissionError("leader signal denied")
+
+    monkeypatch.setattr(process_utils_module, "os", PosixOsProxy())
+    monkeypatch.setattr(process_utils_module.signal, "SIGKILL", 9, raising=False)
+    monkeypatch.setattr(process_utils_module, "pid_alive", lambda _pid: True)
+
+    result = process_utils_module.terminate_tree(
+        24569, process_group=24569, grace_seconds=0.1
+    )
+
+    assert result is False
+    assert calls == []
