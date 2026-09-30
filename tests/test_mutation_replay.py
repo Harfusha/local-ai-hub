@@ -792,6 +792,86 @@ def test_maintenance_get_routes_are_read_only(monkeypatch) -> None:
     assert not server_thread.is_alive()
 
 
+@pytest.mark.parametrize(
+    ("headers", "expected_request_id"),
+    [({"X-LocalAI-Request-ID": "caller-request-1"}, "caller-request-1"), ({}, None)],
+)
+def test_async_delivery_uses_only_caller_request_id(monkeypatch, headers, expected_request_id) -> None:
+    submitted: list[dict[str, Any]] = []
+    app = SimpleNamespace(
+        config={},
+        telemetry=SimpleNamespace(http_latency_estimate=lambda _path: {"samples": 5}),
+        async_jobs=SimpleNamespace(
+            submit=lambda _tenant, _action, payload: submitted.append(dict(payload)) or {"job_id": "job-1"}
+        ),
+        debug_traces=None,
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server, "decide_delivery", lambda *_args, **_kwargs: {"mode": "async"})
+    handler = object.__new__(http_server.Handler)
+    handler.headers = headers
+    handler._trace_request_id = "server-generated-trace-id"
+
+    status, _result = http_server.Handler._async_delivery(
+        handler, "/api/reason", {"delivery": "async", "task": "bounded task"}, "tenant-a"
+    )
+
+    assert status == 200
+    assert len(submitted) == 1
+    assert submitted[0].get("request_id") == expected_request_id
+
+
+def test_direct_async_submit_carries_caller_request_id(tmp_path, monkeypatch) -> None:
+    from local_ai_hub.resilience import RecoveryJournal
+
+    submitted: list[dict[str, Any]] = []
+    app = SimpleNamespace(
+        config={},
+        recovery=RecoveryJournal(tmp_path),
+        async_jobs=SimpleNamespace(
+            submit=lambda _tenant, _action, payload: submitted.append(dict(payload)) or {"success": True}
+        ),
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(
+        http_server.Handler,
+        "_begin_trace",
+        lambda self, _path: setattr(self, "_trace_request_id", "caller-request-2"),
+    )
+    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda _self: True)
+    monkeypatch.setattr(http_server.Handler, "_agent", lambda _self: "agent-a")
+    monkeypatch.setattr(http_server.Handler, "_tenant", lambda _self: "tenant-a")
+    monkeypatch.setattr(
+        http_server.Handler,
+        "_read_json",
+        lambda _self: {"action": "submit", "job_action": "reason", "task": "bounded task"},
+    )
+    monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda _self, _path, _payload: None)
+    responses: list[tuple[int, dict[str, Any]]] = []
+
+    def respond(self, status: int, body: dict[str, Any]) -> None:
+        if not getattr(self, "_journal_finished", False):
+            app.recovery.finish(self._journal_request_id, status < 400, status_code=status, response=body)
+            self._journal_finished = True
+        responses.append((status, body))
+
+    monkeypatch.setattr(http_server.Handler, "_send", respond)
+
+    def request() -> None:
+        handler = object.__new__(http_server.Handler)
+        handler.path = "/api/async-jobs"
+        handler.headers = {"Content-Type": "application/json", "X-LocalAI-Request-ID": "caller-request-2"}
+        http_server.Handler.do_POST(handler)
+
+    request()
+    request()
+
+    assert [status for status, _body in responses] == [200, 200]
+    assert responses[1][1] == responses[0][1]
+    assert len(submitted) == 1
+    assert submitted[0]["request_id"] == "caller-request-2"
+
+
 def test_post_journal_failure_prevents_mutation_dispatch(monkeypatch) -> None:
     class _UnavailableJournal:
         @staticmethod
