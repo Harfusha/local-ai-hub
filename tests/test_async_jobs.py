@@ -143,7 +143,7 @@ def test_wait_clamps_to_ninety_seconds_without_polling(tmp_path):
     manager.close()
 
 
-def test_recovery_requeues_persisted_job_once(tmp_path):
+def test_recovery_marks_persisted_job_without_request_id_unknown(tmp_path):
     manager, scheduler = _manager(tmp_path)
     now = time.time()
     with closing(manager._connect()) as con:
@@ -153,8 +153,8 @@ def test_recovery_requeues_persisted_job_once(tmp_path):
         )
         con.commit()
 
-    assert manager.recover() == 1
-    assert manager.wait("tenant-a", "persisted", 1)["state"] == "done"
+    assert manager.recover() == 0
+    assert manager.status("tenant-a", "persisted")["state"] == "outcome_unknown"
     assert scheduler.calls == []
     manager.close()
 
@@ -226,7 +226,7 @@ def test_recovered_async_job_reopens_terminal_trace(tmp_path):
         with closing(manager._connect()) as con:
             con.execute(
                 "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at,trace_id) VALUES(?,?,?,?,?,'running',?,?,?,?)",
-                ("persisted", "tenant-a", "reason", "persisted-hash", '{"task":"recover me"}', now, now, now + 600, trace_id),
+                ("persisted", "tenant-a", "reason", "persisted-hash", '{"request_id":"persisted-job-001","task":"recover me"}', now, now, now + 600, trace_id),
             )
             con.commit()
         assert store.recover_incomplete(reason="hub restarted")["recovered_sessions"] == 1
@@ -246,10 +246,10 @@ def test_async_jobs_tick_evicts_terminal_events(tmp_path):
     mgr = AsyncJobManager(
         {"server": {"state_dir": str(tmp_path / "state")}},
         _Scheduler(),
-        None,
+        _Artifacts(),
         lambda _action, _payload, _tenant: {"success": True},
     )
-    res = mgr.submit("tenant-1", "reason", {"task": "hello"})
+    res = mgr.submit("tenant-1", "reason", {"request_id": "tick-job-001", "task": "hello"})
     assert res["success"] is True
     job_id = res["job_id"]
     assert job_id in mgr._events
