@@ -261,6 +261,33 @@ def test_successful_repo_evidence_exposes_typed_semantic_handoff(monkeypatch) ->
     assert result["routing"]["semantic_handoff"] == semantic_handoff_hint("local_ai_repo", "search", True)
 
 
+def test_async_task_submit_reuses_explicit_request_id(monkeypatch) -> None:
+    assert "request_id" in inspect.signature(local_ai_mcp.local_ai_task).parameters
+    schema = local_ai_mcp.mcp._tool_manager._tools["local_ai_task"].parameters["properties"]
+    assert "request_id" in schema
+    calls: list[tuple[str, dict, dict]] = []
+
+    def post(path: str, payload: dict, **kwargs) -> dict:
+        calls.append((path, payload, kwargs))
+        return {"success": True, "status": "submitted", "request_id": kwargs.get("request_id")}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", post)
+
+    first = local_ai_mcp.local_ai_task(
+        action="submit", task="bounded recovery task", request_id="stable-job-request"
+    )
+    retry = local_ai_mcp.local_ai_task(
+        action="submit", task="bounded recovery task", request_id="stable-job-request"
+    )
+
+    assert first["success"] is True
+    assert retry["success"] is True
+    assert [path for path, _, _ in calls] == ["/api/async-jobs", "/api/async-jobs"]
+    assert [options.get("request_id") for _, _, options in calls] == [
+        "stable-job-request", "stable-job-request"
+    ]
+
+
 def test_status_disabled_repo_evidence_omits_status_bypass_metadata(monkeypatch) -> None:
     monkeypatch.setattr(local_ai_mcp.FEATURES, "status", False)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)

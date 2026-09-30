@@ -2038,6 +2038,19 @@ class CommandBroker:
                 is_validation = False
                 try:
                     tree = ast.parse(dash_c)
+
+                    def _literal_only(node: ast.AST) -> bool:
+                        if isinstance(node, ast.Constant):
+                            return True
+                        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+                            return all(_literal_only(item) for item in node.elts)
+                        if isinstance(node, ast.Dict):
+                            return all(
+                                key is not None and _literal_only(key) and _literal_only(value)
+                                for key, value in zip(node.keys, node.values)
+                            )
+                        return False
+
                     for node in ast.walk(tree):
                         if isinstance(node, ast.Call):
                             func_name = ""
@@ -2047,6 +2060,27 @@ class CommandBroker:
                                 func_name = node.func.attr
                             if func_name in {"exec", "eval", "compile"}:
                                 return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"python -c inline code contains dangerous call: {func_name}"}
+                            if func_name == "open":
+                                return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code accesses files with unknown side effects"}
+                            if func_name in {"write_text", "write_bytes", "touch", "unlink", "mkdir", "rmdir", "rename", "replace"}:
+                                return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"python -c inline code may mutate files: {func_name}"}
+                            safe_builtin_calls = {
+                                "abs", "all", "any", "bool", "dict", "enumerate", "float", "int",
+                                "len", "list", "max", "min", "print", "range", "repr", "round",
+                                "set", "sorted", "str", "sum", "tuple", "zip",
+                            }
+                            if (
+                                not isinstance(node.func, ast.Name)
+                                or func_name not in safe_builtin_calls
+                                or not all(_literal_only(arg) for arg in node.args)
+                                or not all(_literal_only(keyword.value) for keyword in node.keywords)
+                            ):
+                                return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"python -c inline code has unverified call: {func_name or 'dynamic'}"}
+                        elif isinstance(node, ast.Import):
+                            if any(alias.name != "sys" for alias in node.names):
+                                return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code imports module with unknown side effects"}
+                        elif isinstance(node, ast.ImportFrom):
+                            return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code imports module with unknown side effects"}
                         elif isinstance(node, ast.Assert):
                             is_validation = True
                 except SyntaxError:
@@ -3410,6 +3444,27 @@ class CommandBroker:
                 "result": initial,
                 "message": "command passed without repair",
             }
+
+        classification = self.classify(command)
+        replay_safe = bool(classification.get("replay_safe", False))
+        outcome_unknown = bool(
+            initial.get("outcome_unknown")
+            or initial.get("timed_out")
+            or initial.get("cancelled")
+            or not replay_safe
+        )
+        if outcome_unknown:
+            uncertain = dict(initial)
+            uncertain["outcome_unknown"] = True
+            return {
+                "success": False,
+                "repaired": False,
+                "repair_skipped": True,
+                "outcome_unknown": True,
+                "attempts": 0,
+                "result": uncertain,
+                "message": "repair skipped because command outcome or side effects are not safe to replay",
+        }
 
         original_files: dict[Path, str | None] = {}
         attempt_history: list[dict[str, Any]] = []
