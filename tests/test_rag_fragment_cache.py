@@ -206,8 +206,8 @@ def test_indexed_chunk_reuse_isolated_by_embedding_space(tmp_path):
     assert [row[0] for row in spaces] == ["model-a@revision-1", "model-b@revision-1"]
 
 
-def test_reused_chunks_keep_original_space_when_embedder_falls_back(tmp_path):
-    class _FallbackServices(_Services):
+def test_changed_embedding_space_reembeds_reused_chunks_without_mixing_spaces(tmp_path):
+    class _ChangingSpaceServices(_Services):
         def __init__(self):
             super().__init__()
             self.space_id = "model-a@revision-1"
@@ -218,7 +218,7 @@ def test_reused_chunks_keep_original_space_when_embedder_falls_back(tmp_path):
             result["embedding_space_id"] = self.output_space
             return result
 
-    services = _FallbackServices()
+    services = _ChangingSpaceServices()
     store = _store(tmp_path, services)
     source_root = tmp_path / "source"
     source_root.mkdir()
@@ -245,7 +245,7 @@ def test_reused_chunks_keep_original_space_when_embedder_falls_back(tmp_path):
                 "SELECT path,embedding_space FROM chunks WHERE tenant=? AND workspace=?",
                 (store._scope_key("tenant"), workspace),
             ).fetchall())
-        assert spaces["shared.py"] == "model-a@revision-1"
+        assert spaces["shared.py"] == "model-b@revision-2"
         assert spaces["new.py"] == "model-b@revision-2"
 
 

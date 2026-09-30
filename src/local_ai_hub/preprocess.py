@@ -19,6 +19,12 @@ from .cache import stable_hash
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
 from .worktrees import discover_worktree_roots
 from .process_utils import canonical_root, set_current_thread_priority
+from .project_policy_adapter import (
+    custom_extension_kind,
+    path_allowed as project_path_allowed,
+    phase_allowed as project_phase_allowed,
+    resolve_project_context,
+)
 
 
 CARD_SCHEMA = {
@@ -650,9 +656,40 @@ class ProjectPreprocessor:
             return None
         name = rel_path.name.lower()
         suffix = rel_path.suffix.lower()
-        if self.repo_tools.extensions and suffix not in self.repo_tools.extensions and name not in self.repo_tools.special_filenames:
+        config_names = {".local-ai.toml", ".local-ai.local.toml", ".local-ai.worktree.toml"}
+        if name in config_names:
+            return str(rel_path).replace("\\", "/")
+        context = self._project_context(root)
+        custom_kind = custom_extension_kind(context, changed)
+        if self.repo_tools.extensions and suffix not in self.repo_tools.extensions and name not in self.repo_tools.special_filenames and custom_kind != "text":
             return None
+        # Watchers can deliver create events before a file becomes visible.
+        # Unknown paths remain candidates and are policy-checked during
+        # incremental inventory; deletions are removed only when indexed.
+        present = changed.is_file()
+        if present:
+            try:
+                size = changed.stat().st_size
+            except OSError:
+                return None
+            allowed, _kind = project_path_allowed(
+                root, changed, context, phase="preprocess", size_bytes=size,
+            )
+            if not allowed and not self._is_indexed_path(
+                str(root), str(rel_path).replace("\\", "/")
+            ):
+                return None
         return str(rel_path).replace("\\", "/")
+
+    def _is_indexed_path(self, root: str, rel_path: str) -> bool:
+        try:
+            with self._db_lock, closing(self._connect()) as con:
+                return con.execute(
+                    "SELECT 1 FROM file_refs WHERE root=? AND path=?",
+                    (self._root(root), rel_path),
+                ).fetchone() is not None
+        except Exception:
+            return False
 
     def _consume_dirty_paths(self, root: str) -> set[str]:
         with self._dirty_lock:
@@ -679,6 +716,15 @@ class ProjectPreprocessor:
                 continue
             root = str(root_path)
             matched_any = True
+            if Path(rel).name.lower() in {".local-ai.toml", ".local-ai.local.toml", ".local-ai.worktree.toml"}:
+                try:
+                    self.refresh(root)
+                except Exception:
+                    pass
+                with self._dirty_lock:
+                    self._watch_revisions[root] = self._watch_revisions.get(root, 0) + 1
+                matched_roots.append(root)
+                continue
             with self._dirty_lock:
                 paths = self._dirty_paths.setdefault(root, set())
                 first = not paths
@@ -1813,6 +1859,9 @@ class ProjectPreprocessor:
             return False
         phase = str(row.get("phase") or "inventory")
         self._set_project(root, status="running")
+        project_phase = {"rag": "rag", "modules": "modules"}.get(phase)
+        if project_phase and not project_phase_allowed(self._project_context(root), project_phase):
+            return self._skip_preprocess_phase(root, phase, str(row.get("workspace") or ""))
         if phase == "inventory":
             return self._step_inventory(row)
         if phase == "hash":
@@ -1839,6 +1888,31 @@ class ProjectPreprocessor:
             return self._step_diagnostics(row)
         return self._step_complete(row)
 
+    def _project_context(self, root: str | Path) -> Any | None:
+        return resolve_project_context(root, self.state_dir)
+
+    def _skip_preprocess_phase(self, root: str, phase: str, workspace: str) -> bool:
+        if phase == "rag":
+            self.rag.prune_missing(root, "__preprocess__", workspace, [])
+            with self._db_lock, closing(self._connect()) as con:
+                con.execute(
+                    "UPDATE file_refs SET rag_hash=content_hash WHERE root=? AND needs_hash=0",
+                    (root,),
+                )
+                con.commit()
+            self._set_project(root, phase="files")
+            return True
+        if phase == "modules":
+            with self._db_lock, closing(self._connect()) as con:
+                con.execute("DELETE FROM module_cards WHERE root=?", (root,))
+                con.execute("DELETE FROM project_cards WHERE root=?", (root,))
+                con.execute("DELETE FROM hot_query_state WHERE root=?", (root,))
+                con.execute("DELETE FROM task_capsules WHERE root=?", (root,))
+                con.commit()
+            self._set_project(root, phase="project")
+            return True
+        return False
+
     def _step_incremental_inventory(self, row: dict[str, Any], dirty_paths: set[str]) -> bool:
         """Apply watcher-confirmed path changes without rescanning the repository."""
         root = str(row["root"])
@@ -1864,6 +1938,7 @@ class ProjectPreprocessor:
         present: dict[str, tuple[int, int]] = {}
         deleted: set[str] = set()
         topology_changed = False
+        project_context = self._project_context(root)
         for rel in paths:
             target = (base / rel).resolve(strict=False)
             try:
@@ -1876,6 +1951,14 @@ class ProjectPreprocessor:
                 except OSError:
                     continue
                 size, mtime_ns = int(stat.st_size), int(stat.st_mtime_ns)
+                allowed, _kind = project_path_allowed(
+                    root, target, project_context, phase="preprocess", size_bytes=size,
+                )
+                if not allowed:
+                    if rel in old:
+                        deleted.add(rel)
+                        topology_changed = True
+                    continue
                 present[rel] = (size, mtime_ns)
                 topology_changed = topology_changed or rel not in old
             elif rel in old:
@@ -2050,12 +2133,13 @@ class ProjectPreprocessor:
         structure = [(p, Path(p).suffix.lower()) for p, x in sorted(new_files.items())]
         structural_hash = stable_hash({
             "structure": structure,
+            "project_config_digest": inventory.get("project_config_digest"),
             "models": {k: self.config.get("models", {}).get(k) for k in ("fast_code", "heavy_code", "reasoning")},
             "analyzer": __version__,
         })
         force = bool(row.get("force_refresh"))
         now = time.time()
-        if not changed and not force and row.get("last_complete_at"):
+        if not changed and not force and row.get("last_complete_at") and row.get("structural_hash") == structural_hash:
             with self._db_lock, closing(self._connect()) as con:
                 uncarded = con.execute("SELECT COUNT(*) FROM file_refs WHERE root=? AND card_key IS NULL", (root,)).fetchone()[0]
                 unragged = con.execute("SELECT COUNT(*) FROM file_refs WHERE root=? AND (rag_hash IS NULL OR rag_hash<>content_hash)", (root,)).fetchone()[0]

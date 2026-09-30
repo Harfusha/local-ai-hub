@@ -241,6 +241,7 @@ def test_bundle_roundtrip_current_schema_and_binary_embedding(tmp_path: Path):
             assert con.execute("SELECT COUNT(*) FROM facts WHERE root=?", (root,)).fetchone()[0] == 1
         with closing(app.rag._connect()) as con:
             raw = con.execute("SELECT embedding FROM chunks WHERE tenant=? AND workspace=?", (scope,workspace)).fetchone()[0]
+        assert isinstance(raw, (bytes, bytearray, memoryview))
         assert bytes(raw) == bytes(blob)
     finally:
         app.close()

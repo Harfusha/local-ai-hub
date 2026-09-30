@@ -32,6 +32,7 @@ from .diff_parsers import (
     extract_ts_diff_defs,
 )
 from .process_utils import canonical_root, hidden_run_kwargs
+from .project_policy_adapter import phase_allowed as project_phase_allowed, resolve_project_context
 from .state_paths import configured_state_dir
 
 
@@ -2567,6 +2568,16 @@ class DeterministicEngine:
     def call_graph_diff(self, root: str | Path, diff: str | None = None) -> dict[str, Any]:
         """Analyze breaking function/class signature changes against all call sites in the repository."""
         root_path = Path(root).resolve()
+        project_context = resolve_project_context(root_path, self.db_path.parent)
+        if not project_phase_allowed(project_context, "call_graph"):
+            return {
+                "success": True,
+                "skipped": True,
+                "modified_symbols": [],
+                "breaking_callers": [],
+                "impacted_files": [],
+                "summary": "Call graph analysis skipped by project configuration.",
+            }
         if diff is None:
             try:
                 from .process_utils import hidden_run_kwargs

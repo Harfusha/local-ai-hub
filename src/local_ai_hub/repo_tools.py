@@ -18,6 +18,13 @@ from typing import Any, Iterable, Mapping
 from .budget import chars_for_tokens, estimate_tokens
 from .normalizer import tokenize_query_terms
 from .process_utils import canonical_root, hidden_run_kwargs, terminate_tree
+from .project_policy_adapter import (
+    custom_extension_kind,
+    may_descend,
+    path_allowed,
+    project_config_api,
+    resolve_project_context,
+)
 
 
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_./:-]{1,80}")
@@ -221,8 +228,33 @@ class RepositoryTools:
         finally:
             flight.release()
 
-    def iter_files(self, root: str, max_depth: int = 25) -> Iterable[Path]:
+    def iter_files(
+        self,
+        root: str,
+        max_depth: int = 25,
+        *,
+        project_context: Any | None = None,
+        phase: str = "preprocess",
+    ) -> Iterable[Path]:
         base = self._root(root)
+        settings = project_context.settings if project_context is not None else None
+        max_file_bytes = self.max_file_bytes
+        if settings is not None and settings.max_file_size_bytes is not None:
+            max_file_bytes = min(max_file_bytes, int(settings.max_file_size_bytes))
+
+        def extension_allowed(path: Path) -> bool:
+            if path.suffix.lower() in self.ignore_extensions:
+                return False
+            if not self.extensions or path.suffix.lower() in self.extensions or path.name.lower() in self.special_filenames:
+                return True
+            return custom_extension_kind(project_context, path) == "text"
+
+        def directory_allowed(path: Path) -> bool:
+            hard_denied = path.name.lower() in self.ignore_dirs
+            return may_descend(
+                base, path, project_context, phase=phase, hard_denied=hard_denied
+            )
+
         git_files = self._git_files(base)
         if git_files is not None:
             candidates = git_files
@@ -234,7 +266,10 @@ class RepositoryTools:
             except Exception:
                 pass
             for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
-                dirnames[:] = [d for d in dirnames if d.lower() not in self.ignore_dirs]
+                dirnames[:] = [
+                    d for d in dirnames
+                    if d.lower() not in self.ignore_dirs and directory_allowed(Path(dirpath) / d)
+                ]
                 try:
                     rel_parts = Path(dirpath).relative_to(base).parts
                     if len(rel_parts) >= max_depth:
@@ -258,9 +293,7 @@ class RepositoryTools:
 
                 for name in filenames:
                     p = Path(dirpath) / name
-                    if p.suffix.lower() in self.ignore_extensions:
-                        continue
-                    if self.extensions and p.suffix.lower() not in self.extensions and p.name.lower() not in self.special_filenames:
+                    if not extension_allowed(p):
                         continue
                     candidates.append(p)
                     if len(candidates) >= self.max_files:
@@ -280,14 +313,19 @@ class RepositoryTools:
             # must never feed back into Local AI Hub's own repository inventory.
             if any(part.lower() in self.ignore_dirs for part in relative.parts[:-1]):
                 continue
-            if path.suffix.lower() in self.ignore_extensions:
-                continue
-            if self.extensions and path.suffix.lower() not in self.extensions and path.name.lower() not in self.special_filenames:
+            if not extension_allowed(path):
                 continue
             try:
-                if path.stat().st_size > self.max_file_bytes:
+                size_bytes = int(path.stat().st_size)
+                if size_bytes > max_file_bytes:
                     continue
             except OSError:
+                continue
+            allowed, kind = path_allowed(
+                base, path, project_context, phase=phase, size_bytes=size_bytes,
+                hard_denied=path.suffix.lower() in self.ignore_extensions,
+            )
+            if not allowed or kind == "binary":
                 continue
             count += 1
             yield path
@@ -1651,15 +1689,23 @@ class RepositoryTools:
             "scanned_files": search.get("scanned_files", 0), "targeted": True,
         }
 
-    def file_inventory(self, root: str, include_hashes: bool = True) -> dict[str, Any]:
+    def file_inventory(
+        self,
+        root: str,
+        include_hashes: bool = True,
+    ) -> dict[str, Any]:
         """Return a deterministic file inventory backed by the shared snapshot cache.
 
         Preprocessing uses this as its durable content-addressed source of truth.
         """
         base = self._root(root)
+        state_dir = self.config.get("server", {}).get("state_dir", "state")
+        project_context = resolve_project_context(base, state_dir)
         items: list[dict[str, Any]] = []
         total_bytes = 0
-        for path in self.iter_files(str(base)):
+        for path in self.iter_files(
+            str(base), project_context=project_context, phase="preprocess"
+        ):
             try:
                 stat = path.stat()
                 rel = str(path.relative_to(base)).replace("\\", "/")
@@ -1678,7 +1724,12 @@ class RepositoryTools:
         digest = hashlib.sha256(
             "\n".join(f"{x['path']}:{x.get('sha256','')}:{x['size']}" for x in items).encode("utf-8")
         ).hexdigest()
-        return {"success": True, "root": str(base), "files": items, "file_count": len(items), "total_bytes": total_bytes, "inventory_sha256": digest}
+        return {
+            "success": True, "root": str(base), "files": items,
+            "file_count": len(items), "total_bytes": total_bytes,
+            "inventory_sha256": digest,
+            "project_config_digest": getattr(project_context, "config_digest", None),
+        }
 
     def file_slice(self, root: str, path: str, start_line: int = 1, end_line: int = 240, max_chars: int = 16000) -> dict[str, Any]:
         """Read an exact bounded source slice through the snapshot cache."""

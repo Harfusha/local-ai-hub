@@ -10,6 +10,7 @@ from .cache import SQLiteCache, SingleFlightGroup, TieredCache, stable_hash
 from .priority_gate import CooperativePriorityGate
 from .accelerators import openvino_cache_dir, openvino_device_candidates
 from .state_paths import configured_state_dir
+from .model_lifecycle import acquire_locks, load_model, release_model, uses_torch_cuda
 
 
 class Reranker:
@@ -123,7 +124,11 @@ class Reranker:
                 if cache_dir is not None:
                     ov_model_kwargs["ov_config"] = {"CACHE_DIR": str(cache_dir)}
                 kwargs["model_kwargs"] = ov_model_kwargs
-            self._model = CrossEncoder(self.model_name, **kwargs)
+            self._model = load_model(
+                self,
+                uses_cuda=uses_torch_cuda(backend, device),
+                factory=lambda: CrossEncoder(self.model_name, **kwargs),
+            )
             self.active_backend = backend
             self.active_device = str(device)
             self._load_error = None
@@ -153,14 +158,37 @@ class Reranker:
                     return True
             return False
 
+    def release(self, timeout_seconds: float = 3.0) -> bool:
+        """Synchronously unload the reranker; safe to call repeatedly."""
+        with acquire_locks((self._predict_lock, self._load_lock), timeout_seconds) as acquired:
+            if not acquired:
+                return False
+            model = self._model
+            if model is None:
+                return False
+            used_cuda = uses_torch_cuda(self.active_backend, self.active_device)
+            self._model = None
+            self.active_backend = None
+            self.active_device = None
+            self._candidates = None
+            self._candidate_index = -1
+            del model
+            release_model(self, used_cuda=used_cuda)
+            return True
+
     def _predict(self, pairs: list[tuple[str, str]], *, priority: int) -> Any | None:
         while True:
-            if not self._ensure_model() or self._model is None:
+            if not self._ensure_model():
                 return None
+            if self._model is None:
+                continue
             try:
                 with self._cpu_gate.slot(priority):
                     with self._predict_lock:
-                        return self._model.predict(pairs, batch_size=self.batch_size, show_progress_bar=False)
+                        model = self._model
+                        if model is None:
+                            continue
+                        return model.predict(pairs, batch_size=self.batch_size, show_progress_bar=False)
             except Exception as exc:
                 if self.backend == "openvino" and self.active_backend == "openvino":
                     failed = self.active_device or "openvino"

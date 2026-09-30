@@ -14,6 +14,7 @@ from .priority_gate import CooperativePriorityGate
 from .accelerators import openvino_cache_dir, openvino_device_candidates
 from .state_paths import configured_state_dir
 from .json_utils import dumps as json_dumps
+from .model_lifecycle import acquire_locks, load_model, release_model, uses_torch_cuda
 
 
 class EmbeddingModel:
@@ -339,29 +340,38 @@ class EmbeddingModel:
                 if cache_dir is not None:
                     ov_model_kwargs["ov_config"] = {"CACHE_DIR": str(cache_dir)}
                 kwargs["model_kwargs"] = ov_model_kwargs
-            try:
-                model = SentenceTransformer(self.model_name, **kwargs)
-            except Exception:
-                if self.model_name == "BAAI/bge-small-en-v1.5":
-                    raise
-                fallback_kwargs = dict(kwargs)
-                fallback_kwargs["trust_remote_code"] = False
-                fallback_kwargs.pop("revision", None)
-                model = SentenceTransformer("BAAI/bge-small-en-v1.5", **fallback_kwargs)
-                loaded_model_name = "BAAI/bge-small-en-v1.5"
-            if hasattr(model, "max_seq_length"):
-                max_pos = getattr(model, "max_seq_length", 512) or 512
+            def create_model():
+                nonlocal loaded_model_name
                 try:
-                    max_pos = int(getattr(model[0].auto_model.config, "max_position_embeddings", max_pos) or max_pos)
+                    model = SentenceTransformer(self.model_name, **kwargs)
                 except Exception:
-                    pass
-                model.max_seq_length = min(self.max_seq_length, max_pos)
-                if backend == "openvino" and str(device).upper().startswith("NPU"):
-                    ov_model = getattr(model[0], "auto_model", None)
-                    if ov_model is None:
-                        raise RuntimeError("OpenVINO NPU model does not expose a reshapeable transformer")
-                    ov_model.reshape(1, int(model.max_seq_length))
-                    ov_model.compile()
+                    if self.model_name == "BAAI/bge-small-en-v1.5":
+                        raise
+                    fallback_kwargs = dict(kwargs)
+                    fallback_kwargs["trust_remote_code"] = False
+                    fallback_kwargs.pop("revision", None)
+                    loaded_model_name = "BAAI/bge-small-en-v1.5"
+                    model = SentenceTransformer(loaded_model_name, **fallback_kwargs)
+                if hasattr(model, "max_seq_length"):
+                    max_pos = getattr(model, "max_seq_length", 512) or 512
+                    try:
+                        max_pos = int(getattr(model[0].auto_model.config, "max_position_embeddings", max_pos) or max_pos)
+                    except Exception:
+                        pass
+                    model.max_seq_length = min(self.max_seq_length, max_pos)
+                    if backend == "openvino" and str(device).upper().startswith("NPU"):
+                        ov_model = getattr(model[0], "auto_model", None)
+                        if ov_model is None:
+                            raise RuntimeError("OpenVINO NPU model does not expose a reshapeable transformer")
+                        ov_model.reshape(1, int(model.max_seq_length))
+                        ov_model.compile()
+                return model
+
+            model = load_model(
+                self,
+                uses_cuda=uses_torch_cuda(backend, device),
+                factory=create_model,
+            )
             self._model = model
             self._loaded_model_name = loaded_model_name
             self.active_backend = backend
@@ -391,6 +401,27 @@ class EmbeddingModel:
                 if self._load_candidate(index, ollama_fallback=ollama_fallback):
                     return True
             return False
+
+    def release(self, timeout_seconds: float = 3.0) -> bool:
+        """Synchronously unload the local model; safe to call repeatedly."""
+        with acquire_locks((self._encoder_lock, self._load_lock), timeout_seconds) as acquired:
+            if not acquired:
+                return False
+            model = self._model
+            if model is None:
+                return False
+            used_cuda = uses_torch_cuda(self.active_backend, self.active_device)
+            self._model = None
+            self.active_backend = None
+            self.active_device = None
+            self._st_candidates = None
+            self._st_candidate_index = -1
+            self._loaded_model_name = self.model_name
+            self._active_cache_identity = None
+            self._active_embedding_dimension = None
+            del model
+            release_model(self, used_cuda=used_cuda)
+            return True
 
     def _ensure_model(self) -> bool:
         if not self.enabled:

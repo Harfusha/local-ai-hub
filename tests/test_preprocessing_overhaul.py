@@ -253,17 +253,18 @@ def test_worktree_cache_inheritance(mock_repo: Path, tmp_path: Path):
 
     p_root = pre._root(str(parent_repo))
     w_root = pre._root(str(worktree_repo))
+    parent_hash = repo_tools._hash_file_only(parent_repo / "foo.py")
 
     # Seed parent data
     with pre._db_lock, closing(pre._connect()) as con:
         con.execute(
             """INSERT INTO file_refs(root, path, content_hash, size, mtime_ns, needs_hash, card_key, rag_hash, generation, last_accessed_at, updated_at)
                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (p_root, "foo.py", "hash_foo_123", (parent_repo / "foo.py").stat().st_size, 1000, 0, "card_foo", "rag_foo", 1, 10.0, 10.0),
+            (p_root, "foo.py", parent_hash, (parent_repo / "foo.py").stat().st_size, 1000, 0, "card_foo", "rag_foo", 1, 10.0, 10.0),
         )
         con.execute(
             "INSERT INTO source_index(root, path, content_hash, text, updated_at) VALUES(?, ?, ?, ?, ?)",
-            (p_root, "foo.py", "hash_foo_123", "def hello(): pass", 10.0),
+            (p_root, "foo.py", parent_hash, "def hello(): pass", 10.0),
         )
         con.commit()
 
@@ -286,7 +287,7 @@ def test_worktree_cache_inheritance(mock_repo: Path, tmp_path: Path):
     with pre._db_lock, closing(pre._connect()) as con:
         row = con.execute("SELECT content_hash, card_key FROM file_refs WHERE root=? AND path='foo.py'", (w_root,)).fetchone()
         assert row is not None
-        assert row["content_hash"] == "hash_foo_123"
+        assert row["content_hash"] == parent_hash
         assert row["card_key"] == "card_foo"
 
     with closing(det._connect()) as con:

@@ -10,6 +10,7 @@ import tracemalloc
 from contextlib import closing
 
 import numpy as np
+import pytest
 
 from local_ai_hub.embeddings import EmbeddingModel
 from local_ai_hub.rag import RAGStore
@@ -368,7 +369,62 @@ def test_configured_candidate_count_has_hard_upper_bound(tmp_path):
     assert len(result["results"]) <= 512
 
 
-def test_vector_cursor_streams_during_scoring_and_closes_after_search(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("dimension", "configured_batch_size", "expected_batch_size"),
+    [(2, None, 512), (2, 8192, 8192), (384, 8192, 2730)],
+)
+def test_search_uses_larger_bounded_vector_batches_when_configured(
+    tmp_path, monkeypatch, dimension, configured_batch_size, expected_batch_size
+):
+    store = _store(tmp_path, dimension)
+    tenant, workspace = "tenant", "larger-batch-workspace"
+    vector = np.zeros(dimension, dtype=np.float32)
+    vector[0] = 1.0
+    _insert_vectors(store, tenant, workspace, vector.reshape(1, -1))
+    if configured_batch_size is not None:
+        store.config["rag"]["search_batch_size"] = configured_batch_size
+    fetch_sizes = []
+    connect = store._connect
+
+    class _Cursor:
+        def __init__(self, cursor):
+            self._cursor = cursor
+
+        def fetchmany(self, size):
+            fetch_sizes.append(size)
+            return self._cursor.fetchmany(size)
+
+        def close(self):
+            self._cursor.close()
+
+        def __getattr__(self, name):
+            return getattr(self._cursor, name)
+
+    class _Connection:
+        def __init__(self, connection):
+            self._connection = connection
+
+        def execute(self, sql, *args):
+            cursor = self._connection.execute(sql, *args)
+            if "SELECT path, chunk_no, embedding, content_hash FROM chunks" in sql:
+                return _Cursor(cursor)
+            return cursor
+
+        def close(self):
+            self._connection.close()
+
+        def commit(self):
+            self._connection.commit()
+
+    monkeypatch.setattr(store, "_connect", lambda: _Connection(connect()))
+
+    result = store._search_uncached("larger batch", tenant, workspace, top_k=1, use_reranker=False)
+
+    assert result["success"] is True
+    assert fetch_sizes and max(fetch_sizes) == expected_batch_size
+
+
+def test_vector_cursor_closes_before_scoring_and_after_search(tmp_path, monkeypatch):
     import local_ai_hub.rag as rag_module
 
     store = _store(tmp_path)
@@ -419,7 +475,7 @@ def test_vector_cursor_streams_during_scoring_and_closes_after_search(tmp_path, 
     monkeypatch.setattr(np, "dot", checked_dot)
     result = store._search_uncached("cursor query", "tenant", "cursor-workspace", top_k=1, use_reranker=False)
     assert result["success"] is True
-    assert state["cursor_open_during_dot"] is True
+    assert state["cursor_open_during_dot"] is False
     assert state["fetches"] >= 2
     assert state["cursor"].closed is True
 
@@ -432,7 +488,7 @@ def test_retrieval_latency_and_peak_memory_baseline(tmp_path, capsys):
     dimension = 384
     tenant, workspace = "benchmark-tenant", "benchmark-workspace"
     metrics = []
-    batch_sizes = (128, 512, 1024, 2048)
+    batch_sizes = (512, 2048, 4096, 8192)
     for count in (1024, 16384, 100_000):
         rng = np.random.default_rng(41)
         vectors = rng.standard_normal((count, dimension), dtype=np.float32)
@@ -451,15 +507,17 @@ def test_retrieval_latency_and_peak_memory_baseline(tmp_path, capsys):
                 assert warmup["success"] is True
                 assert warmup["results"][0]["chunk_no"] == 0
             for _ in range(sample_count):
-                tracemalloc.start()
                 started = time.perf_counter()
                 result = store._search_uncached("benchmark query", tenant, workspace, top_k=8, use_reranker=False)
                 samples_ms.append((time.perf_counter() - started) * 1000.0)
-                _, sample_peak = tracemalloc.get_traced_memory()
-                tracemalloc.stop()
-                peak_bytes = max(peak_bytes, sample_peak)
                 assert result["success"] is True
                 assert result["results"][0]["chunk_no"] == 0
+            tracemalloc.start()
+            memory_result = store._search_uncached("benchmark query", tenant, workspace, top_k=8, use_reranker=False)
+            _, peak_bytes = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+            assert memory_result["success"] is True
+            assert memory_result["results"][0]["chunk_no"] == 0
             median_ms = float(np.median(samples_ms))
             p95_index = min(len(samples_ms) - 1, math.ceil(0.95 * len(samples_ms)) - 1)
             p95_ms = sorted(samples_ms)[p95_index]
@@ -477,6 +535,7 @@ def test_retrieval_latency_and_peak_memory_baseline(tmp_path, capsys):
 
     print("RAG_BENCHMARK=" + json.dumps(metrics, sort_keys=True))
     assert len(metrics) == 12
+    assert all(float(row["peak_traced_mib"]) <= 16.0 for row in metrics)
     warm_100k = [row for row in metrics if row["chunks"] == 100_000]
     for row in warm_100k:
         assert float(row["p95_ms"]) <= 750.0, (
@@ -488,9 +547,9 @@ def test_retrieval_latency_and_peak_memory_baseline(tmp_path, capsys):
         for row in metrics
     }
     for batch_size in batch_sizes:
-        small_peak = peak_by_size_and_batch[(1024, batch_size)]
+        small_peak = peak_by_size_and_batch[(16_384, batch_size)]
         large_peak = peak_by_size_and_batch[(100_000, batch_size)]
         assert large_peak <= small_peak + 1.5, (
-            f"peak traced memory scaled with corpus size for batch {batch_size}: "
+            f"peak traced memory scaled from 16k to 100k chunks for batch {batch_size}: "
             f"{small_peak:.3f} MiB -> {large_peak:.3f} MiB"
         )

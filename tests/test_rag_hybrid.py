@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 
+from local_ai_hub.agent_events import AgentEvent, AgentStateStore
 from local_ai_hub.rag import RAGStore, _fragment_hash
 
 
@@ -106,7 +108,7 @@ def test_search_excludes_vectors_from_other_embedding_spaces(tmp_path):
     }
     tenant = "tenant"
     workspace = "mixed-spaces"
-    with store._connect() as con:
+    with closing(store._connect()) as con:
         con.executemany(
             "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
             "VALUES(?,?,?,?,?,?,?,?)",
@@ -131,7 +133,7 @@ def test_search_reports_degraded_when_index_has_no_matching_embedding_space(tmp_
     }
     tenant = "tenant"
     workspace = "stale-space"
-    with store._connect() as con:
+    with closing(store._connect()) as con:
         con.execute(
             "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
             "VALUES(?,?,?,?,?,?,?,?)",
@@ -156,7 +158,7 @@ def test_search_reports_pending_rebuild_for_partial_embedding_space(tmp_path):
     }
     tenant = "tenant"
     workspace = "partial-spaces"
-    with store._connect() as con:
+    with closing(store._connect()) as con:
         con.executemany(
             "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
             "VALUES(?,?,?,?,?,?,?,?)",
@@ -173,7 +175,7 @@ def test_search_reports_pending_rebuild_for_partial_embedding_space(tmp_path):
     assert result["degraded"] is True
     assert result["reindex_required"] is True
     assert "embedding_space_rebuild_pending" in result["fallbacks"]
-    with store._connect() as con:
+    with closing(store._connect()) as con:
         assert store._stored_workspace_embedding_space(con, store._scope_key(tenant), workspace) == "space-current"
 
 
@@ -193,7 +195,7 @@ def test_search_cache_key_tracks_runtime_embedding_space(tmp_path):
 
     store.services.embed = embed
     tenant, workspace = "tenant", "cache-spaces"
-    with store._connect() as con:
+    with closing(store._connect()) as con:
         con.executemany(
             "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
             "VALUES(?,?,?,?,?,?,?,?)",
@@ -288,3 +290,75 @@ def test_rag_index_paths_step_retries_publish_lock_without_reembedding(tmp_path,
     assert result["success"] is True
     assert state["begins"] == 2
     assert len(store.services.calls) == 1
+
+
+def test_legacy_rag_schema_reset_preserves_agent_state_history(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    agent_state = AgentStateStore(state_dir / "agent_state.sqlite3")
+    event = AgentEvent.create("task:durable", "task_created", {"task_id": "durable"})
+    assert agent_state.append(event).seq == 1
+
+    rag_path = state_dir / "rag.sqlite3"
+    with closing(sqlite3.connect(rag_path)) as con:
+        con.execute(
+            "CREATE TABLE chunks (tenant TEXT, workspace TEXT, path TEXT, chunk_no INTEGER, "
+            "content_hash TEXT, text TEXT, embedding BLOB, PRIMARY KEY "
+            "(tenant, workspace, path, chunk_no))"
+        )
+        con.execute(
+            "INSERT INTO chunks VALUES ('tenant', 'workspace', 'old.py', 0, 'hash', 'old', X'00')"
+        )
+        con.commit()
+
+    store = _store(tmp_path)
+
+    assert store.db_path == rag_path
+    assert agent_state.db_path == state_dir / "agent_state.sqlite3"
+    assert store.index_reset is True
+    with closing(sqlite3.connect(agent_state.db_path)) as con:
+        rows = con.execute(
+            "SELECT stream_id, seq, event_id FROM agent_events WHERE stream_id=?",
+            ("task:durable",),
+        ).fetchall()
+    assert rows == [("task:durable", 1, event.event_id)]
+    with closing(sqlite3.connect(rag_path)) as con:
+        assert con.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] == 0
+
+
+def test_rag_fingerprint_reset_and_corruption_recovery_preserve_agent_state_history(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    agent_state = AgentStateStore(state_dir / "agent_state.sqlite3")
+    event = AgentEvent.create("task:durable", "task_created", {"task_id": "durable"})
+    assert agent_state.append(event).seq == 1
+
+    store = _store(tmp_path)
+    rag_path = store.db_path
+    with closing(store._connect()) as con:
+        con.execute(
+            "INSERT INTO chunks "
+            "(tenant, workspace, path, chunk_no, content_hash, text, embedding, embedding_space) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("tenant", "workspace", "old.py", 0, "hash", "old", "[1.0, 0.0]", "space"),
+        )
+        con.commit()
+
+    store.config["rag"]["chunk_chars"] += 1
+    reset_store = RAGStore(store.config, store.services, store.reranker)
+    assert reset_store.index_reset is True
+    with closing(reset_store._connect()) as con:
+        assert con.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] == 0
+
+    rag_path.write_bytes(b"not a SQLite database")
+    recovered_store = RAGStore(store.config, store.services, store.reranker)
+    assert recovered_store.db_path.exists()
+    assert list(state_dir.glob("rag.sqlite3.corrupt-*"))
+
+    assert agent_state.db_path.exists()
+    with closing(sqlite3.connect(agent_state.db_path)) as con:
+        rows = con.execute(
+            "SELECT stream_id, seq, event_id FROM agent_events WHERE stream_id=?",
+            ("task:durable",),
+        ).fetchall()
+    assert rows == [("task:durable", 1, event.event_id)]

@@ -1135,6 +1135,13 @@ class LocalAIApp:
                 continue
             if not isinstance(tbl_rows, list) or len(tbl_rows) > max_rows or any(not isinstance(row, dict) for row in tbl_rows):
                 return {"success": False, "error": f"invalid or oversized bundle table: {name}"}
+        if any(
+            "embedding" in row
+            and row["embedding"] is not None
+            and not isinstance(row["embedding"], (str, bytes, bytearray, memoryview))
+            for row in tables.get("rag_chunks", [])
+        ):
+            return {"success": False, "error": "invalid RAG chunk embedding"}
 
         orig_root = str(data.get("root", ""))
         root = str(target_root or orig_root)
