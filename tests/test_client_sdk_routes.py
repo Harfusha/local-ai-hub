@@ -108,6 +108,47 @@ def test_sdk_convenience_methods_map_to_production_http_handlers(live_client, tm
     ]
 
 
+def test_sdk_coord_pubsub_poll_maps_payload_to_production_handler(live_client, http_post_paths, monkeypatch):
+    from local_ai_hub import http_server
+
+    app, client = live_client
+    received = []
+    payloads = []
+    original_read_json = http_server.Handler._read_json
+
+    def capture_payload(handler):
+        payload = original_read_json(handler)
+        payloads.append(payload)
+        return payload
+
+    monkeypatch.setattr(http_server.Handler, "_read_json", capture_payload)
+
+    def poll(topic, since_timestamp=0.0, limit=50):
+        received.append((topic, since_timestamp, limit))
+        return {"success": True, "messages": [{"topic": topic, "message": "ready"}]}
+
+    app.services.pubsub_poll = poll
+    before = len(http_post_paths)
+    result = client.coord(
+        "pubsub_poll",
+        root="C:/sdk-fixture",
+        topic="release",
+        since_timestamp=123.5,
+        limit=3,
+    )
+
+    assert result["success"] is True
+    assert result["messages"] == [{"topic": "release", "message": "ready"}]
+    assert http_post_paths[before:] == ["/api/coord/pubsub_poll"]
+    assert payloads == [{
+        "root": "C:/sdk-fixture",
+        "topic": "release",
+        "since_timestamp": 123.5,
+        "limit": 3,
+    }]
+    assert received == [("release", 123.5, 3)]
+
+
 def test_callers_finds_real_python_call_through_sdk_handler(live_client, tmp_path, http_post_paths):
     _app, client = live_client
     repo = tmp_path / "sdk-caller-repo"
