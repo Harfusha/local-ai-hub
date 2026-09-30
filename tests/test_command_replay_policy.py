@@ -38,20 +38,15 @@ def test_builtin_python_and_powershell_validation_classifiers_declare_replay_saf
     assert result.get("replay_safe") is True
 
 
-def test_repair_loop_keeps_retrying_validation_when_classifier_omits_replay_safety(
+def test_repair_loop_skips_validation_when_classifier_omits_replay_safety(
     tmp_path, monkeypatch
 ) -> None:
     broker = _broker(tmp_path)
     executions: list[str] = []
-    generator_calls: list[str] = []
 
     def run(command: str, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
         executions.append(command)
-        return {"success": len(executions) > 1, "exit_code": 0 if len(executions) > 1 else 1}
-
-    def generate(command: str, *_args: Any) -> dict[str, str]:
-        generator_calls.append(command)
-        return {"changed.py": "value = 1\n"}
+        return {"success": False, "exit_code": 1}
 
     monkeypatch.setattr(broker, "run", run)
     monkeypatch.setattr(
@@ -61,12 +56,12 @@ def test_repair_loop_keeps_retrying_validation_when_classifier_omits_replay_safe
 
     result = broker.repair_loop(
         "unclassified-validator", str(tmp_path), "tenant", max_attempts=1,
-        fix_generator=generate,
+        fix_generator=lambda *_args: pytest.fail("unclassified validation must not trigger repair"),
     )
 
-    assert result["success"] is True
-    assert executions == ["unclassified-validator", "unclassified-validator"]
-    assert generator_calls == ["unclassified-validator"]
+    assert result["repair_skipped"] is True
+    assert result["outcome_unknown"] is True
+    assert executions == ["unclassified-validator"]
 
 
 def test_repair_loop_honors_explicit_unsafe_validation_classification(
