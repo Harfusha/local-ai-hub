@@ -4,8 +4,8 @@ index 5aa37cc..3d71315 100644
 +++ b/tests/test_mutation_replay.py
 @@ -649,6 +666,159 @@ def test_http_retry_replays_outcome_and_rejects_changed_payload(tmp_path, monkey
      assert changed == {"state": "conflict", "error": "request id already belongs to a different identity, operation, or payload"}
- 
- 
+
+
 +def test_http_retry_from_two_clients_dispatches_once(tmp_path, monkeypatch) -> None:
 +    journal = RecoveryJournal(tmp_path)
 +    payload = {"action": "submit", "work_id": "work-two-clients"}
