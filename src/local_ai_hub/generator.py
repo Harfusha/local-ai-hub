@@ -24,7 +24,9 @@ from local_ai_hub.operation_contracts import (
     action_specific_schema_constraints,
     enabled_schema_keys,
     operation_description,
+    operation_tool_output_schema,
     repo_pipeline_step_schema,
+    repo_path_hints_schema,
 )
 from local_ai_hub.prompt_contracts import capability_for
 
@@ -926,6 +928,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 },
             },
         }
+        schemas["local_ai_repo"]["parameters"]["properties"]["path_hints"] = repo_path_hints_schema()
         if fs.batch_replacement:
             schemas["local_ai_repo"]["parameters"]["properties"].update({
                 "dry_run": {"type": "boolean", "default": False},
@@ -1148,7 +1151,14 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
     for schema_key, schema in schemas.items():
         schema["description"] += operation_description(contracts[schema_key])
         parameters = schema.get("parameters")
-        constraints = action_specific_schema_constraints(schema_key)
+        properties = parameters.get("properties", {}) if isinstance(parameters, dict) else {}
+        action_schema = properties.get("action", {}) if isinstance(properties, dict) else {}
+        action_enum = action_schema.get("enum") if isinstance(action_schema, dict) else None
+        constraints = action_specific_schema_constraints(
+            schema_key,
+            available_fields=set(properties) if isinstance(properties, dict) else set(),
+            available_actions={str(item) for item in action_enum} if isinstance(action_enum, list) else None,
+        )
         if isinstance(parameters, dict) and constraints:
             parameters["allOf"] = [*parameters.get("allOf", []), *constraints]
     # Reuse live schemas only when MCP is already loaded. Schema generation also
@@ -1160,6 +1170,18 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
             runtime_parameters = runtime_mcp._mcp_contract_schema(schema_key)
             if runtime_parameters is not None:
                 schema["parameters"] = runtime_parameters
+    for tool_name, schema in schemas.items():
+        parameters = schema.get("parameters", {})
+        properties = parameters.get("properties", {}) if isinstance(parameters, dict) else {}
+        action_schema = properties.get("action", {}) if isinstance(properties, dict) else {}
+        actions = action_schema.get("enum", []) if isinstance(action_schema, dict) else []
+        if isinstance(actions, list):
+            schema["output_schema"] = operation_tool_output_schema(tool_name, actions)
+        if runtime_mcp is not None and cfg == runtime_mcp.CFG:
+            runtime_tool = runtime_mcp.mcp._tool_manager._tools.get(tool_name)
+            runtime_output = getattr(runtime_tool, "output_schema", None)
+            if isinstance(runtime_output, dict):
+                schema["output_schema"] = runtime_output
     return schemas
 
 

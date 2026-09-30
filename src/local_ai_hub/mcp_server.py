@@ -5,6 +5,7 @@ import contextvars
 import functools
 import hashlib
 import inspect
+import ntpath
 import os
 import queue
 import re
@@ -13,11 +14,11 @@ from concurrent.futures import ThreadPoolExecutor
 import time
 from collections import OrderedDict
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Literal, TypeAlias
 from urllib.parse import quote
 
-from local_ai_hub.client import HubClient
+from local_ai_hub.client import HubClient, bounded_startup_wait
 from local_ai_hub.compact import compact_result
 from local_ai_hub.response_budget import (
     _CONTEXT_PROTECTED_KEYS,
@@ -43,10 +44,13 @@ from local_ai_hub.operation_contracts import (
     _portable_property_schema,
     contract_error,
     operation_description,
+    operation_tool_output_schema,
     repo_pipeline_step_schema,
+    repo_path_hints_schema,
     validate_repo_pipeline_step,
     validate_action_specific_fields,
     validate_schema_object,
+    validate_schema_value,
 )
 from local_ai_hub.ollama_subagents import OllamaSubagentCatalog
 from local_ai_hub.process_utils import canonical_root, is_rooted_path
@@ -142,6 +146,61 @@ def _client_root(r: str = "") -> str:
         return canonical_root(p)
     except Exception:
         return _workspace
+
+
+def _normalize_repo_search_path_hints(
+    root: str, path_hints: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    if not isinstance(path_hints, list):
+        return None, "path_hints must be an array"
+    if len(path_hints) > 64:
+        return None, "path_hints exceeds 64 items"
+    canonical = _client_root(root)
+    windows_root = PureWindowsPath(canonical)
+    normalized: list[dict[str, Any]] = []
+    for index, hint in enumerate(path_hints):
+        if not isinstance(hint, Mapping):
+            return None, f"path_hints[{index}] must be an object"
+        raw_path = hint.get("path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            return None, f"path_hints[{index}].path must be a non-empty string"
+        try:
+            if windows_root.drive:
+                raw_windows = PureWindowsPath(raw_path.strip())
+                if raw_windows.drive and not raw_windows.is_absolute():
+                    raise ValueError("drive-relative hint")
+                if raw_windows.drive or raw_windows.root:
+                    candidate_text = str(raw_windows)
+                    if raw_windows.root and not raw_windows.drive:
+                        candidate_text = windows_root.drive + candidate_text
+                else:
+                    candidate_text = ntpath.join(str(windows_root), str(raw_windows))
+                root_text = ntpath.normpath(str(windows_root))
+                candidate_text = ntpath.normpath(candidate_text)
+                common = ntpath.commonpath((root_text, candidate_text))
+                if ntpath.normcase(common) != ntpath.normcase(root_text):
+                    raise ValueError("hint escapes repository root")
+                if os.name == "nt":
+                    relative = Path(candidate_text).resolve().relative_to(Path(root_text).resolve())
+                    relative_text = relative.as_posix()
+                else:
+                    relative_text = ntpath.relpath(candidate_text, root_text).replace("\\", "/")
+            else:
+                if PureWindowsPath(raw_path).drive:
+                    raise ValueError("foreign drive hint")
+                root_path = Path(canonical).resolve()
+                raw_candidate = Path(raw_path.replace("\\", "/")).expanduser()
+                if is_rooted_path(raw_path) and not raw_candidate.is_absolute():
+                    raise ValueError("foreign rooted hint")
+                candidate = raw_candidate if raw_candidate.is_absolute() else root_path / raw_candidate
+                relative = candidate.resolve().relative_to(root_path)
+                relative_text = relative.as_posix()
+        except (OSError, RuntimeError, ValueError):
+            return None, f"path_hints[{index}].path must resolve within root"
+        hint_copy = dict(hint)
+        hint_copy["path"] = relative_text or "."
+        normalized.append(hint_copy)
+    return normalized, None
 
 
 _ACTION_ALIASES: dict[str, dict[str, str]] = {
@@ -2488,15 +2547,46 @@ def local_ai_repo(
     is_worktree: bool = False,
     parent_root: str = "",
     steps: list[dict[str, Any]] | None = None,
+    path_hints: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
+    forward: dict[str, Any] = {}
+    if path_hints is not None:
+        if _resolve_action("repo", action) != "search":
+            return contract_error("path_hints is only valid for action search")
+        validation_error = validate_schema_value(path_hints, repo_path_hints_schema(), "arguments.path_hints")
+        if validation_error is not None:
+            return contract_error(validation_error)
+        normalized_hints, error = _normalize_repo_search_path_hints(root, path_hints)
+        if error is not None:
+            return contract_error(error)
+        if normalized_hints:
+            try:
+                parameters = inspect.signature(_local_ai_repo_impl).parameters
+            except (TypeError, ValueError):
+                parameters = {}
+            hint_parameter = parameters.get("path_hints")
+            supports_hints = (
+                hint_parameter.kind is not inspect.Parameter.POSITIONAL_ONLY
+                if hint_parameter is not None
+                else any(
+                    item.kind is inspect.Parameter.VAR_KEYWORD
+                    for item in parameters.values()
+                )
+            )
+            if not supports_hints:
+                return {
+                    **contract_error("path_hints are not supported by this repository consumer", status_code=501),
+                    "unsupported": True,
+                }
+            forward["path_hints"] = normalized_hints
     return _local_ai_repo_impl(
         action, root, query, diff, task, workspace, path, base, staged, dry_run,
         max_tokens, evidence, mode, relation, language, profile, receipt, task_id,
         include_code, include_tests, edits, extra_fields, max_response_tokens, response_profile, reuse_key,
         include_diagnostics, clone_id, worktree_id, branch, repository_id, session_id, repository_revision,
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
-        token_budget, is_worktree, parent_root, steps,
+        token_budget, is_worktree, parent_root, steps, **forward,
     )
 
 
@@ -3073,6 +3163,7 @@ def _mcp_contract_schema(schema_key: str) -> dict[str, Any] | None:
     if tool_name == "local_ai_repo":
         if "phase" in properties:
             properties["phase"] = {"type": "string", "enum": list(REPO_PHASES), "default": ""}
+        properties["path_hints"] = repo_path_hints_schema()
         properties["steps"] = {
             "type": "array",
             "items": repo_pipeline_step_schema(properties, FEATURES.supported_repo_actions()),
@@ -3089,9 +3180,17 @@ def _mcp_contract_schema(schema_key: str) -> dict[str, Any] | None:
         properties["after_seq"] = {
             "type": "integer", "minimum": 0, "maximum": MAX_EVENT_SEQUENCE, "default": 0
         }
-    action_constraints = action_specific_schema_constraints(tool_name)
+    action_schema = properties.get("action", {})
+    action_enum = action_schema.get("enum") if isinstance(action_schema, Mapping) else None
+    action_constraints = action_specific_schema_constraints(
+        tool_name,
+        available_fields=set(properties),
+        available_actions={str(item) for item in action_enum} if isinstance(action_enum, list) else None,
+    )
     if action_constraints:
-        schema["allOf"] = [*schema.get("allOf", []), *action_constraints]
+        all_of = list(schema.get("allOf", []))
+        all_of.extend(item for item in action_constraints if item not in all_of)
+        schema["allOf"] = all_of
     return schema
 
 
@@ -3103,6 +3202,10 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools"):
         if _contract_schema is not None and isinstance(_parameters, dict):
             _parameters.clear()
             _parameters.update(_contract_schema)
+        _properties = getattr(_tool, "parameters", {}).get("properties", {})
+        _action_enum = _properties.get("action", {}).get("enum", []) if isinstance(_properties, dict) else []
+        if isinstance(_action_enum, list):
+            _tool.output_schema = operation_tool_output_schema(_tool_name, _action_enum)
 
 if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types is not None:
     from local_ai_hub.json_utils import dumps as json_dumps
@@ -3121,7 +3224,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             if validation_error:
                 payload = contract_error(validation_error)
                 return ([mcp_types.TextContent(type="text", text=json_dumps(payload))], payload)
-        validation_error = validate_action_specific_fields(name, arguments)
+        validation_error = validate_action_specific_fields(name, arguments, schema=contract_schema)
         if validation_error:
             payload = contract_error(validation_error)
             return ([mcp_types.TextContent(type="text", text=json_dumps(payload))], payload)
@@ -3154,7 +3257,7 @@ def main() -> None:
     """Start the Hub daemon before accepting MCP calls that may mutate state."""
     if bool(getattr(CLIENT, "auto_start", True)):
         try:
-            startup_timeout = float(getattr(CLIENT, "startup_wait", 15.0))
+            startup_timeout = bounded_startup_wait(getattr(CLIENT, "startup_wait", 15.0))
             ready = CLIENT.ensure_server(timeout=startup_timeout)
         except Exception:
             ready = False

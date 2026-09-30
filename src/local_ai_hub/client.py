@@ -6,6 +6,7 @@ import copy
 import http.client
 import io
 import json
+import math
 import os
 import threading
 import uuid
@@ -15,13 +16,27 @@ import time
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
-from .process_utils import find_listening_pid, pid_alive
+from .process_utils import find_listening_pid, pid_alive, process_identity, terminate_tree
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .config import load_config
-from .operation_contracts import normalize_transport_error
+from .operation_contracts import MAX_EVENT_SEQUENCE, normalize_transport_error
+
+
+MAX_STARTUP_WAIT_SECONDS = 60.0
+
+
+def bounded_startup_wait(value: Any) -> float:
+    """Return finite startup budget within safe process-lifecycle bounds."""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError, OverflowError):
+        seconds = 15.0
+    if not math.isfinite(seconds):
+        seconds = 15.0
+    return min(MAX_STARTUP_WAIT_SECONDS, max(1.0, seconds))
 
 
 _DETACHED_CHILDREN_LOCK = threading.Lock()
@@ -38,12 +53,96 @@ def _retain_detached_child(process: subprocess.Popen[Any]) -> None:
 def _live_start_lock(path: Path, stale_seconds: float) -> bool:
     """Return whether a startup lock still belongs to a live, recent process."""
     try:
-        parts = path.read_text(encoding="utf-8").strip().split()
-        pid = int(parts[0]) if parts else 0
         age = max(0.0, time.time() - path.stat().st_mtime)
-        return age <= max(1.0, stale_seconds) and pid_alive(pid)
     except (OSError, ValueError):
         return False
+    try:
+        parts = path.read_text(encoding="utf-8").strip().split()
+    except OSError:
+        # Windows may briefly deny a read while the owner publishes the PID.
+        return age <= 1.0
+    if not parts:
+        # Keep a newly-created lock during the short create-then-write window.
+        return age <= 1.0
+    try:
+        pid = int(parts[0])
+    except ValueError:
+        return age <= 1.0
+    if len(parts) >= 3:
+        pid_path = path.with_name(f"{path.name}.{parts[2]}.pid")
+        try:
+            sidecar = pid_path.read_text(encoding="ascii").strip().split()
+            pid = int(sidecar[0])
+        except (OSError, ValueError, IndexError):
+            # The sidecar may be briefly incomplete while it is published.
+            # Keep the lock until a later check can verify its owner.
+            try:
+                if pid_path.exists():
+                    return True
+            except OSError:
+                return age <= max(1.0, stale_seconds)
+        else:
+            if len(sidecar) >= 3:
+                # Include process creation identity so PID reuse cannot keep a
+                # dead daemon's lock alive indefinitely.
+                identity = process_identity(pid)
+                return bool(
+                    identity
+                    and identity.get("creation_identity_type") == sidecar[1]
+                    and str(identity.get("creation_identity")) == sidecar[2]
+                )
+            # A legacy PID-only marker is live only within the normal stale
+            # window; new markers carry a process creation identity.
+            return age <= max(1.0, stale_seconds) and pid_alive(pid)
+    if len(parts) >= 5:
+        owner_identity = process_identity(pid)
+        if (
+            owner_identity
+            and owner_identity.get("creation_identity_type") == parts[3]
+            and str(owner_identity.get("creation_identity")) == parts[4]
+        ):
+            # Before daemon metadata is published, the launcher owns the lock.
+            return True
+    return age <= max(1.0, stale_seconds) and pid_alive(pid)
+
+
+def _try_start_lock_guard(path: Path) -> int | None:
+    """Acquire the short cross-process guard for startup-lock transitions."""
+    try:
+        fd = os.open(str(path), os.O_CREAT | os.O_RDWR)
+    except OSError:
+        return None
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except OSError:
+        os.close(fd)
+        return None
+
+
+def _release_start_lock_guard(fd: int) -> None:
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 class HubClient:
@@ -62,9 +161,12 @@ class HubClient:
         self.auto_start = bool(auto_start)
         client_cfg = self.config.get("client", {})
         self.health_timeout = max(0.2, float(client_cfg.get("health_timeout_seconds", 0.75)))
-        self.startup_wait = max(1.0, float(client_cfg.get("startup_wait_seconds", 15.0)))
+        self.startup_wait = bounded_startup_wait(client_cfg.get("startup_wait_seconds", 15.0))
         self.startup_poll = max(0.05, float(client_cfg.get("startup_poll_seconds", 0.15)))
-        self.start_lock_stale = max(self.startup_wait, float(client_cfg.get("start_lock_stale_seconds", 20.0)))
+        self.start_lock_stale = max(
+            self.startup_wait,
+            bounded_startup_wait(client_cfg.get("start_lock_stale_seconds", 20.0)),
+        )
         self.max_request_timeout = max(5.0, float(client_cfg.get("max_request_timeout_seconds", 1800.0)))
         self._transport_local = threading.local()
         self._connections_lock = threading.Lock()
@@ -209,7 +311,17 @@ class HubClient:
             return False
 
     def ensure_server(self, timeout: float | None = None) -> bool:
-        budget = self.startup_wait if timeout is None else min(self.startup_wait, max(0.0, float(timeout)))
+        startup_cap = bounded_startup_wait(self.startup_wait)
+        if timeout is None:
+            budget = startup_cap
+        else:
+            try:
+                requested_budget = float(timeout)
+            except (TypeError, ValueError, OverflowError):
+                requested_budget = 0.0
+            if math.isnan(requested_budget):
+                requested_budget = 0.0
+            budget = min(startup_cap, max(0.0, requested_budget))
         deadline = time.monotonic() + budget
 
         def remaining() -> float:
@@ -245,50 +357,97 @@ class HubClient:
         if find_listening_pid(port):
             return False
         lock_path = state_dir / "hub.start.lock"
+        lock_nonce = uuid.uuid4().hex
+        lock_token = f"{os.getpid()} {time.time()} {lock_nonce}"
+        owner_identity = process_identity(os.getpid())
+        if owner_identity is not None:
+            lock_token += (
+                f" {owner_identity['creation_identity_type']}"
+                f" {owner_identity['creation_identity']}"
+            )
+        lock_pid_path = lock_path.with_name(f"{lock_path.name}.{lock_nonce}.pid")
         owner = False
+        keep_lock = False
 
-        # Cross-process startup lock: several CLI agents often connect at once. Only
-        # one should spawn the singleton; the others wait for its cheap /health.
-        for _ in range(2):
-            acquired_lock = False
-            try:
-                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                acquired_lock = True
+        def publish_lock_pid(pid: int) -> None:
+            for _ in range(5):
                 try:
-                    os.write(fd, f"{os.getpid()} {time.time()}".encode("ascii", errors="ignore"))
-                finally:
-                    os.close(fd)
-                owner = True
-                break
-            except FileExistsError:
-                # Dead/crashed startup owners should never consume the full wait budget.
-                if not _live_start_lock(lock_path, self.start_lock_stale):
-                    try:
-                        lock_path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-                    continue
-                lock_deadline = min(deadline, time.monotonic() + self.startup_wait)
-                while time.monotonic() < lock_deadline:
+                    # Nonce-scoped metadata cannot overwrite a replacement lock.
+                    if pid > 0:
+                        identity = process_identity(pid)
+                        if identity is not None:
+                            marker = (
+                                f"{pid} {identity['creation_identity_type']} "
+                                f"{identity['creation_identity']}"
+                            )
+                        else:
+                            marker = str(pid)
+                    else:
+                        marker = "0"
+                    lock_pid_path.write_text(marker, encoding="ascii")
+                    return
+                except OSError:
+                    # A contender may hold a short-lived read handle on Windows.
+                    time.sleep(0.01)
+
+        # Serialize lock creation, stale removal, and release across processes.
+        # The guard itself is an OS lock, so crashes release it automatically.
+        guard_path = state_dir / "hub.start.guard"
+        lock_wait_deadline: float | None = None
+        while remaining() > 0 and not owner:
+            guard_fd = None
+            while guard_fd is None and remaining() > 0:
+                guard_fd = _try_start_lock_guard(guard_path)
+                if guard_fd is None:
                     if self._online(remaining()):
                         return True
-                    if not _live_start_lock(lock_path, self.start_lock_stale):
+                    time.sleep(min(self.startup_poll, remaining()))
+            if guard_fd is None:
+                break
+
+            wait_for_owner = False
+            fatal_lock_error = False
+            try:
+                if self._online(remaining()):
+                    return True
+                try:
+                    fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    try:
+                        os.write(fd, lock_token.encode("ascii"))
+                    except OSError:
                         try:
                             lock_path.unlink(missing_ok=True)
                         except OSError:
                             pass
-                        break
-                    time.sleep(min(self.startup_poll, max(0.0, lock_deadline - time.monotonic())))
-                else:
+                        fatal_lock_error = True
+                    finally:
+                        os.close(fd)
+                    owner = not fatal_lock_error
+                except FileExistsError:
+                    if _live_start_lock(lock_path, self.start_lock_stale):
+                        wait_for_owner = True
+                    else:
+                        try:
+                            lock_path.unlink(missing_ok=True)
+                        except OSError:
+                            wait_for_owner = True
+                except OSError:
+                    fatal_lock_error = True
+            finally:
+                _release_start_lock_guard(guard_fd)
+
+            if owner:
+                break
+            if fatal_lock_error:
+                return False
+            if wait_for_owner:
+                if lock_wait_deadline is None:
+                    lock_wait_deadline = min(deadline, time.monotonic() + self.startup_wait)
+                if time.monotonic() >= lock_wait_deadline:
                     return self._online(remaining())
-                continue
-            except OSError:
-                if acquired_lock:
-                    try:
-                        lock_path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-                continue
+                if self._online(remaining()):
+                    return True
+                time.sleep(min(self.startup_poll, remaining(), lock_wait_deadline - time.monotonic()))
 
         if not owner:
             return self._online(remaining())
@@ -296,6 +455,7 @@ class HubClient:
             if self._online(remaining()):
                 return True
             if remaining() <= 0:
+                publish_lock_pid(0)
                 return False
             env = os.environ.copy()
             env["LOCAL_AI_CONFIG"] = config_path
@@ -317,15 +477,75 @@ class HubClient:
             try:
                 process = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
             except OSError:
+                publish_lock_pid(0)
                 return False
+            child_pid = getattr(process, "pid", os.getpid())
+            publish_lock_pid(child_pid)
             _retain_detached_child(process)
             while remaining() > 0:
                 if self._online(remaining()):
                     return True
                 time.sleep(min(self.startup_poll, remaining()))
-            return self._online(remaining())
+            if self._online(remaining()):
+                return True
+            # Reap only the child created by this startup attempt. A listener
+            # may belong to another successful starter while health warms.
+            if process.poll() is None and not find_listening_pid(port):
+                try:
+                    terminate_tree(process.pid, process_group=process.pid, grace_seconds=0.25)
+                except Exception:
+                    pass
+                try:
+                    process.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+                    try:
+                        process.wait(timeout=1.0)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            if process.poll() is None:
+                publish_lock_pid(child_pid)
+                keep_lock = True
+            else:
+                publish_lock_pid(0)
+            return False
         finally:
-            lock_path.unlink(missing_ok=True)
+            if not keep_lock:
+                lock_released = False
+                guard_fd = None
+                for _ in range(5):
+                    guard_fd = _try_start_lock_guard(guard_path)
+                    if guard_fd is not None:
+                        break
+                    time.sleep(0.01)
+                if guard_fd is not None:
+                    try:
+                        for _ in range(5):
+                            try:
+                                if lock_path.read_text(encoding="ascii") != lock_token:
+                                    lock_released = True
+                                    break
+                                lock_path.unlink(missing_ok=True)
+                                lock_released = True
+                                break
+                            except FileNotFoundError:
+                                lock_released = True
+                                break
+                            except OSError:
+                                # A concurrent contender can briefly hold the lock on Windows.
+                                time.sleep(0.01)
+                    finally:
+                        _release_start_lock_guard(guard_fd)
+                if lock_released:
+                    try:
+                        lock_pid_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
     @staticmethod
     def _terminal_preflight(path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -647,11 +867,22 @@ class HubClient:
                 "publisher": kwargs.get("publisher") or kwargs.get("approver", "agent"),
             })
         if act == "pubsub_poll":
+            after_seq = kwargs.get("after_seq", 0)
+            if isinstance(after_seq, bool) or not isinstance(after_seq, int) or not 0 <= after_seq <= MAX_EVENT_SEQUENCE:
+                return normalize_transport_error(
+                    400,
+                    {"error": f"after_seq must be an integer between 0 and {MAX_EVENT_SEQUENCE}"},
+                )
+            limit = kwargs.get("limit", 50)
+            if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+                return normalize_transport_error(
+                    400, {"error": "limit must be an integer between 1 and 1000"}
+                )
             return self.post("/api/coord/pubsub_poll", {
                 "root": kwargs.get("root", "."),
                 "topic": kwargs.get("topic") or kwargs.get("key", "default"),
-                "since_timestamp": float(kwargs.get("since_timestamp", 0.0)),
-                "limit": int(kwargs.get("limit", 50)),
+                "after_seq": after_seq,
+                "limit": limit,
             })
         if act == "simulate_merge":
             return self.post("/api/coord/simulate_merge", {

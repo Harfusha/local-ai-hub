@@ -537,7 +537,7 @@ def test_mcp_repo_action_schema_scopes_pipeline_steps() -> None:
     assert schema is not None
     action_rule = next(
         rule for rule in schema.get("allOf", [])
-        if rule.get("else", {}).get("not", {}).get("required") == ["steps"]
+        if rule.get("then", {}).get("properties") == {"steps": {}}
     )
     assert action_rule["if"]["properties"]["action"]["const"] == "pipeline"
     assert validate_action_specific_fields(
@@ -545,6 +545,297 @@ def test_mcp_repo_action_schema_scopes_pipeline_steps() -> None:
     ) == "arguments.steps is only valid for action pipeline"
     assert validate_action_specific_fields(
         "local_ai_repo", {"action": "pipeline", "steps": []}
+    ) is None
+
+
+def test_repo_path_hints_schema_is_bounded_and_search_only() -> None:
+    import local_ai_hub.mcp_server as mcp_server
+    from local_ai_hub.generator import generate_mcp_tool_schemas
+    from local_ai_hub.operation_contracts import (
+        validate_action_specific_fields,
+        validate_schema_object,
+    )
+
+    live_schema = mcp_server._mcp_contract_schema("local_ai_repo")
+    generated_schema = generate_mcp_tool_schemas({})["local_ai_repo"]["parameters"]
+    assert live_schema is not None
+
+    for schema in (live_schema, generated_schema):
+        field = schema["properties"]["path_hints"]
+        assert field["type"] == "array"
+        assert field["maxItems"] == 64
+        item = field["items"]
+        assert item["required"] == ["path", "purpose", "scope"]
+        assert set(item["properties"]) == {
+            "path", "purpose", "scope", "evidence_id", "provenance",
+            "repository_revision", "config_digest", "expires_at",
+        }
+        assert item["properties"]["path"]["minLength"] == 1
+        assert item["properties"]["path"]["maxLength"] == 1024
+        assert item["additionalProperties"] is False
+        assert "path_hints" not in schema["properties"]["steps"]["items"]["properties"]
+
+    valid = {
+        "action": "search",
+        "path_hints": [{
+            "path": "src/auth.py",
+            "purpose": "repository_search",
+            "scope": "repo_search",
+        }],
+    }
+    assert validate_schema_object(valid, live_schema) is None
+    assert validate_action_specific_fields("local_ai_repo", valid, schema=live_schema) is None
+    assert validate_action_specific_fields(
+        "local_ai_repo", {"action": "context", "path_hints": []}, schema=live_schema
+    ) == "arguments.path_hints is only valid for action search"
+    assert validate_schema_object(
+        {"action": "search", "path_hints": [{"path": "src/auth.py", "purpose": "repository_search"}]},
+        live_schema,
+    ) is not None
+    assert validate_schema_object(
+        {"action": "search", "path_hints": [{"path": "x" * 1025, "purpose": "repository_search", "scope": "repo_search"}]},
+        live_schema,
+    ) is not None
+    assert validate_schema_object(
+        {"action": "search", "path_hints": [{"path": "x", "purpose": "repository_search", "scope": "repo_search", "other": "value"}]},
+        live_schema,
+    ) is not None
+    assert validate_schema_object(
+        {"action": "search", "path_hints": [{"path": "x"}] * 65}, live_schema
+    ) is not None
+
+
+def test_local_ai_repo_path_hints_forward_only_when_consumer_supports_them(monkeypatch) -> None:
+    import inspect
+
+    from local_ai_hub import mcp_server
+
+    hints = [{"path": "src/auth.py", "purpose": "repository_search", "scope": "repo_search"}]
+    captured = {}
+
+    def supported_consumer(*args, path_hints=None):
+        captured["args"] = args
+        captured["path_hints"] = path_hints
+        return {"success": True}
+
+    monkeypatch.setattr(mcp_server, "_local_ai_repo_impl", supported_consumer)
+    assert "path_hints" in inspect.signature(mcp_server.local_ai_repo).parameters
+    assert mcp_server.local_ai_repo("search", path_hints=hints) == {"success": True}
+    assert captured["path_hints"] == hints
+
+    def unsupported_consumer(*args):
+        raise AssertionError("unsupported consumer must not be called")
+
+    monkeypatch.setattr(mcp_server, "_local_ai_repo_impl", unsupported_consumer)
+    response = mcp_server.local_ai_repo("search", path_hints=hints)
+    assert response["success"] is False
+    assert response["unsupported"] is True
+
+    def positional_only_consumer(path_hints, /, **kwargs):
+        raise AssertionError("positional-only consumer must not receive keyword hints")
+
+    monkeypatch.setattr(mcp_server, "_local_ai_repo_impl", positional_only_consumer)
+    response = mcp_server.local_ai_repo("search", path_hints=hints)
+    assert response["success"] is False
+    assert response["unsupported"] is True
+
+
+@pytest.mark.parametrize(
+    ("root", "hint_path"),
+    [
+        ("C:/docs", r"C:\docs\sub"),
+        (r"C:\docs", "C:/docs/sub"),
+    ],
+)
+def test_local_ai_repo_search_normalizes_windows_path_hints_within_root(
+    root: str, hint_path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from local_ai_hub import mcp_server
+
+    captured: dict[str, Any] = {}
+
+    def supported_consumer(*args: Any, path_hints: list[dict[str, str]] | None = None):
+        captured["args"] = args
+        captured["path_hints"] = path_hints
+        return {"success": True}
+
+    monkeypatch.setattr(mcp_server, "_local_ai_repo_impl", supported_consumer)
+    result = mcp_server.local_ai_repo(
+        "search",
+        root=root,
+        path_hints=[{"path": hint_path, "purpose": "repository_search", "scope": "repo_search"}],
+    )
+
+    assert result == {"success": True}
+    assert captured["path_hints"][0]["path"] == "sub"
+
+
+@pytest.mark.parametrize(
+    "hint_path",
+    ["../secret", "C:/outside/secret", r"C:\docs\..\outside\secret"],
+)
+def test_local_ai_repo_search_rejects_path_hints_outside_root_before_dispatch(
+    hint_path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from local_ai_hub import mcp_server
+
+    calls: list[tuple[Any, ...]] = []
+
+    def supported_consumer(*args: Any, path_hints: list[dict[str, str]] | None = None):
+        calls.append(args)
+        return {"success": True}
+
+    monkeypatch.setattr(mcp_server, "_local_ai_repo_impl", supported_consumer)
+    result = mcp_server.local_ai_repo(
+        "search",
+        root="C:/docs",
+        path_hints=[{"path": hint_path, "purpose": "repository_search", "scope": "repo_search"}],
+    )
+
+    assert result["success"] is False
+    assert result["status_code"] == 400
+    assert calls == []
+
+
+def test_local_ai_repo_search_rejects_backslash_traversal_for_posix_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from local_ai_hub import mcp_server
+
+    calls: list[tuple[Any, ...]] = []
+
+    def supported_consumer(*args: Any, path_hints: list[dict[str, str]] | None = None):
+        calls.append(args)
+        return {"success": True}
+
+    monkeypatch.setattr(mcp_server, "_client_root", lambda _root: "/repo/docs")
+    monkeypatch.setattr(mcp_server, "_local_ai_repo_impl", supported_consumer)
+    result = mcp_server.local_ai_repo(
+        "search",
+        root="/repo/docs",
+        path_hints=[{"path": r"..\secret", "purpose": "repository_search", "scope": "repo_search"}],
+    )
+
+    assert result["success"] is False
+    assert result["status_code"] == 400
+    assert calls == []
+
+
+def test_action_specific_rules_follow_active_schema_fields_and_actions() -> None:
+    from local_ai_hub.operation_contracts import (
+        action_specific_schema_constraints,
+        validate_action_specific_fields,
+    )
+
+    schema = {
+        "type": "object",
+        "properties": {"action": {"enum": ["context", "pipeline"]}, "steps": {}},
+        "additionalProperties": True,
+    }
+    assert validate_action_specific_fields(
+        "local_ai_repo", {"action": "context", "edits": []}, schema=schema
+    ) == "arguments.edits is not supported by this configuration"
+    rules = action_specific_schema_constraints(
+        "local_ai_repo",
+        available_fields={"action", "steps"},
+        available_actions={"context", "pipeline"},
+    )
+    assert all("edits" not in str(rule) and "dry_run" not in str(rule) for rule in rules)
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("local_ai_status", {"action": "full", "detail": "brief"}),
+        ("local_ai_task", {"action": "reason", "image_artifact_id": "image-1"}),
+        ("local_ai_rag", {"action": "search", "content": "unexpected ingest body"}),
+        ("local_ai_command", {"action": "format", "rollback_on_failure": True}),
+        ("local_ai_coord", {"action": "pubsub_publish", "after_seq": 7}),
+        ("local_ai_coord", {"action": "pubsub_poll", "ttl_seconds": 1001}),
+        ("local_ai_artifact", {"action": "list", "artifact_id": "artifact-1"}),
+        ("local_ai_work", {"action": "status", "work_id": "work-1", "task": "ignored task"}),
+    ],
+)
+def test_mcp_action_scoped_fields_reject_conflicts_before_handler(
+    tool_name: str, arguments: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    import local_ai_hub.mcp_server as mcp_server
+
+    calls: list[str] = []
+
+    async def fake_call_tool(name: str, _arguments: dict[str, Any], *, convert_result: bool = False):
+        calls.append(name)
+        return {"success": True}
+
+    monkeypatch.setattr(mcp_server, "FEATURES", SimpleNamespace(enabled_tools={tool_name}))
+    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
+    result = asyncio.run(mcp_server._compact_mcp_call_tool(tool_name, arguments))
+    payload = result[1]
+
+    assert payload["success"] is False
+    assert payload["status_code"] == 400
+    assert payload["terminal"] is True
+    assert payload["retryable"] is False
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("local_ai_task", {"action": "continue"}),
+        ("local_ai_artifact", {"action": "get"}),
+        ("local_ai_work", {"action": "submit", "task": "  "}),
+        ("local_ai_work", {"action": "status"}),
+        ("local_ai_work", {"action": "continue", "work_id": "work-1"}),
+    ],
+)
+def test_mcp_action_required_fields_reject_before_handler(
+    tool_name: str, arguments: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    import local_ai_hub.mcp_server as mcp_server
+
+    calls: list[str] = []
+
+    async def fake_call_tool(name: str, _arguments: dict[str, Any], *, convert_result: bool = False):
+        calls.append(name)
+        return {"success": True}
+
+    monkeypatch.setattr(mcp_server, "FEATURES", SimpleNamespace(enabled_tools={tool_name}))
+    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
+    result = asyncio.run(mcp_server._compact_mcp_call_tool(tool_name, arguments))
+    payload = result[1]
+
+    assert payload["success"] is False
+    assert payload["status_code"] == 400
+    assert payload["terminal"] is True
+    assert payload["retryable"] is False
+    assert calls == []
+
+
+def test_action_scoped_input_defaults_and_omitted_default_actions_remain_valid() -> None:
+    from local_ai_hub.operation_contracts import validate_action_specific_fields
+
+    assert validate_action_specific_fields("local_ai_status", {"detail": "brief"}) is None
+    assert validate_action_specific_fields(
+        "local_ai_artifact", {"artifact_id": "artifact-1"}
+    ) is None
+    assert validate_action_specific_fields(
+        "local_ai_rag", {"action": "search", "content": ""}
+    ) is None
+    assert validate_action_specific_fields(
+        "local_ai_task", {"action": "reason", "image_artifact_id": ""}
+    ) is None
+    assert validate_action_specific_fields(
+        "local_ai_coord", {"action": "pubsub_publish", "after_seq": 0}
+    ) is None
+    assert validate_action_specific_fields(
+        "local_ai_work", {"action": "status", "work_id": "work-1", "task": "", "root": "."}
     ) is None
 
 
@@ -829,15 +1120,11 @@ def test_status_alias_schema_and_runtime_match() -> None:
     assert tuple(runtime["properties"]["detail"]["enum"]) == STATUS_DETAILS
 
 
-def test_status_output_schema_stays_generic_until_all_actions_are_contracted() -> None:
+def test_status_output_schema_stays_general_until_all_details_are_contracted() -> None:
     import local_ai_hub.mcp_server as mcp_server
-    from local_ai_hub.operation_contracts import STATUS_ALIASES
 
     output_schema = mcp_server.mcp._tool_manager._tools["local_ai_status"].output_schema
-    assert output_schema["type"] == "object"
-    assert output_schema["additionalProperties"] is True
-    assert "anyOf" not in output_schema
-    assert set(STATUS_ALIASES) == {"status", "health", "check", "info"}
+    assert output_schema == {"type": "object", "additionalProperties": True}
 
 
 def test_mcp_foreground_client_uses_bounded_hub_autostart_on_connection_refusal(
@@ -970,6 +1257,34 @@ def test_mcp_dispatch_rejects_unknown_action_before_handler_dispatch(monkeypatch
     assert calls == []
 
 
+def test_status_detail_rejects_conflicting_action_before_handler_dispatch(monkeypatch) -> None:
+    import asyncio
+
+    import local_ai_hub.mcp_server as mcp_server
+    from local_ai_hub.generator import generate_mcp_tool_schemas
+
+    calls: list[str] = []
+
+    async def fake_call_tool(name, _arguments, *, convert_result=False):
+        calls.append(name)
+        return {"success": True}
+
+    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
+    runtime = mcp_server._mcp_contract_schema("local_ai_status")
+    generated = generate_mcp_tool_schemas({})["local_ai_status"]["parameters"]
+    assert runtime is not None
+    assert runtime["allOf"] == generated["allOf"]
+
+    result = asyncio.run(mcp_server._compact_mcp_call_tool(
+        "local_ai_status", {"action": "full", "detail": "brief"}
+    ))
+    payload = result[1]
+    assert payload["success"] is False
+    assert payload["status_code"] == 400
+    assert "detail" in payload["error"]
+    assert calls == []
+
+
 def test_status_alias_enums_survive_mcp_stdio_tools_list(tmp_path) -> None:
     import json
     import os
@@ -1024,6 +1339,8 @@ def test_rag_ingest_fields_match_live_and_generated_schemas() -> None:
 
 def test_rag_ingest_explicit_fields_reach_http_client(monkeypatch: pytest.MonkeyPatch) -> None:
     import local_ai_hub.mcp_server as mcp_server
+    monkeypatch.setattr(mcp_server.FEATURES, "rag", True)
+    monkeypatch.setattr(mcp_server, "_mcp_operational_mode_block", lambda *_args: None)
 
     requests: list[tuple[str, dict[str, Any]]] = []
 
@@ -1840,10 +2157,19 @@ def test_generated_repo_schema_scopes_steps_without_runtime_mcp() -> None:
     parameters = generated["local_ai_repo"]["parameters"]
     action_rule = next(
         rule for rule in parameters.get("allOf", [])
-        if rule.get("else", {}).get("not", {}).get("required") == ["steps"]
+        if rule.get("then", {}).get("properties") == {"steps": {}}
     )
     assert action_rule["if"]["properties"]["action"]["const"] == "pipeline"
     assert action_rule["then"]["properties"] == {"steps": {}}
+    assert "edits" not in parameters["properties"]
+    assert "dry_run" not in parameters["properties"]
+    assert all("batch_replace" not in str(rule) for rule in parameters.get("allOf", []))
+
+    enabled = generator.generate_mcp_tool_schemas({"features": {"batch_replacement": True}})
+    enabled_parameters = enabled["local_ai_repo"]["parameters"]
+    assert "edits" in enabled_parameters["properties"]
+    assert "dry_run" in enabled_parameters["properties"]
+    assert any("batch_replace" in str(rule) for rule in enabled_parameters.get("allOf", []))
 
 
 def test_schema_generation_does_not_import_runtime_mcp(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1893,6 +2219,8 @@ def test_task_list_query_is_action_scoped_and_task_create_keeps_query_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import local_ai_hub.mcp_server as mcp_server
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server, "_mcp_operational_mode_block", lambda *_args: None)
 
     calls: list[dict[str, Any]] = []
 
@@ -1975,6 +2303,58 @@ def _contract_client(tmp_path):
         encoding="utf-8",
     )
     return HubClient(config_path=str(config), auto_start=False)
+
+
+def test_client_coord_pubsub_poll_forwards_after_seq_contract(tmp_path, monkeypatch) -> None:
+    client = _contract_client(tmp_path)
+    requests: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_post(path: str, payload: dict[str, Any]):
+        requests.append((path, payload))
+        return {"success": True}
+
+    monkeypatch.setattr(client, "post", fake_post)
+    result = client.coord("pubsub_poll", root="C:/repo", topic="events", after_seq=17, limit=12)
+
+    assert result["success"] is True
+    assert requests == [(
+        "/api/coord/pubsub_poll",
+        {"root": "C:/repo", "topic": "events", "after_seq": 17, "limit": 12},
+    )]
+
+
+@pytest.mark.parametrize("after_seq", [True, -1, 1.5, (1 << 63)])
+def test_client_coord_pubsub_poll_rejects_invalid_cursor_before_http(
+    after_seq: Any, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _contract_client(tmp_path)
+    requests: list[str] = []
+    monkeypatch.setattr(client, "post", lambda path, _payload: requests.append(path))
+
+    result = client.coord("pubsub_poll", after_seq=after_seq)
+
+    assert result["success"] is False
+    assert result["status_code"] == 400
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+    assert requests == []
+
+
+@pytest.mark.parametrize("limit", [True, 0, 1001, 1.5])
+def test_client_coord_pubsub_poll_rejects_invalid_limit_before_http(
+    limit: Any, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _contract_client(tmp_path)
+    requests: list[str] = []
+    monkeypatch.setattr(client, "post", lambda path, _payload: requests.append(path))
+
+    result = client.coord("pubsub_poll", after_seq=0, limit=limit)
+
+    assert result["success"] is False
+    assert result["status_code"] == 400
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+    assert requests == []
 
 
 def test_stream_events_normalizes_http_error_with_status_and_body_metadata(tmp_path, monkeypatch):
@@ -2126,7 +2506,9 @@ def test_operation_contract_policy_is_synced_to_both_prompts():
     root = Path(__file__).resolve().parents[1]
     policy = (
         "For operation contract changes, treat `src/local_ai_hub/operation_contracts.py` as canonical; "
-        "keep generated schemas and live MCP `tools/list` aligned. Sync this rule into both prompt files."
+        "keep generated schemas and live MCP `tools/list` aligned. Keep MCP output schemas general until "
+        "source-backed contracts cover every enabled action; then type stable fields and leave variable "
+        "payload extensions open. Sync this rule into both prompt files."
     )
     for name in ("INSTALL_PROMPT.md", "UPDATE_PROMPT.md"):
         prompt = (root / "docs" / name).read_text(encoding="utf-8")

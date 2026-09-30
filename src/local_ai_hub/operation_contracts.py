@@ -99,10 +99,405 @@ REPO_PHASES = ("", "plan", "edit", "review", "test", "handoff")
 MAX_REPO_PIPELINE_PARALLEL_STEPS = 4
 MAX_EVENT_SEQUENCE = (1 << 63) - 1
 ACTION_SPECIFIC_FIELDS: dict[str, dict[str, frozenset[str]]] = {
-    # Pipeline definitions are meaningful only to the repository pipeline
-    # action; accepting them on other actions silently ignores caller intent.
-    "local_ai_repo": {"steps": frozenset({"pipeline"})},
+    # `action` is the detail alias. Reject two selectors so the caller's
+    # explicit detail cannot be silently ignored when action is present.
+    "local_ai_status": {"detail": frozenset({""})},
+    "local_ai_task": {
+        **{
+            name: frozenset({"vision"})
+            for name in (
+                "image_artifact_id", "screenshot_artifact_id", "bundle_artifact_id",
+                "dom_artifact_id", "accessibility_artifact_id", "computed_styles_artifact_id",
+                "runtime_artifact_id", "network_artifact_id", "source", "cloud_fallback",
+                "dom", "accessibility", "computed_styles", "runtime", "viewport", "page",
+                "bundle", "html", "accessibility_snapshot", "computed_style_data", "runtime_context",
+            )
+        },
+        "candidate_data": frozenset({"candidate_create", "prompt_eval"}),
+        "approver": frozenset({"candidate_promote"}),
+        "evaluation_task_id": frozenset({"candidate_promote", "evaluation_record"}),
+        "evaluation_cohort": frozenset({"evaluation_record"}),
+        "quality_pass": frozenset({"evaluation_record"}),
+        "test_pass": frozenset({"evaluation_record"}),
+        "evaluation_duration_ms": frozenset({"evaluation_record"}),
+        "evaluation_days": frozenset({"evaluation_report"}),
+        "cases": frozenset({"eval_suite"}),
+        "tasks": frozenset({"batch", "submit", "status", "wait", "result", "cancel"}),
+        "job_action": frozenset({"submit", "status", "wait", "result", "cancel"}),
+        "job_id": frozenset({"submit", "status", "wait", "result", "cancel"}),
+        "timeout_seconds": frozenset({"submit", "status", "wait", "result", "cancel"}),
+        "conversation_id": frozenset({"continue"}),
+        "conversation": frozenset({"delegate", "explore", "reason"}),
+        "delivery": frozenset({"delegate", "explore", "reason", "review", "second_opinion", "compress", "route", "batch"}),
+        "latency_budget_ms": frozenset({"delegate", "explore", "reason", "review", "second_opinion", "compress", "route", "batch"}),
+        "format": frozenset({"delegate", "explore", "reason", "review"}),
+        "json_schema": frozenset({"delegate", "explore", "reason", "review", "vision"}),
+        "language": frozenset({"scaffold"}),
+    },
+    "local_ai_rag": {
+        "content": frozenset({"ingest_document"}),
+        "title": frozenset({"ingest_document"}),
+        "metadata": frozenset({"ingest_document", "ingest_diagram"}),
+        "image_path": frozenset({"ingest_diagram"}),
+        "caption": frozenset({"ingest_diagram"}),
+        "top_k": frozenset({"search", "docset_search"}),
+        "extra_fields": frozenset({"ingest_diagram"}),
+    },
+    "local_ai_command": {
+        "rollback_on_failure": frozenset({"run"}),
+        "lint_action": frozenset({"speculative_lint"}),
+    },
+    "local_ai_coord": {
+        "paths": frozenset({"claim", "context_compile", "swarm_dispatch"}),
+        "contract": frozenset({
+            "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition",
+            "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat",
+        }),
+        "include_stale": frozenset({
+            "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition",
+            "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat",
+        }),
+        "checkpoint": frozenset({
+            "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition",
+            "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat",
+            "verify_receipt", "blackboard_update", "blackboard_get", "blackboard_list",
+            "blackboard_merge", "blackboard_delete",
+        }),
+        "since_hash": frozenset({"context_compile"}),
+        "include_diagnostics": frozenset({"context_compile"}),
+        "focus": frozenset({"context_compile"}),
+        "preload_profile": frozenset({"context_compile"}),
+        "phase": frozenset({"context_compile"}),
+        "repository_revision": frozenset({"context_compile"}),
+        "fingerprint": frozenset({"incident_decision"}),
+        "tool_outcome": frozenset({"incident_decision"}),
+        "after_seq": frozenset({"pubsub_poll"}),
+    },
+    "local_ai_artifact": {
+        "artifact_id": frozenset({"", "get", "slice"}),
+    },
+    "local_ai_work": {
+        "root": frozenset({"submit"}),
+        "task": frozenset({"submit"}),
+        "acceptance_criteria": frozenset({"submit"}),
+        "constraints": frozenset({"submit"}),
+        "mode": frozenset({"submit"}),
+        "permissions": frozenset({"submit"}),
+        "budget": frozenset({"submit"}),
+        "keep_failed_workspace": frozenset({"submit"}),
+        "work_id": frozenset({"status", "wait", "get", "cancel", "continue"}),
+        "timeout_seconds": frozenset({"wait"}),
+        "answer": frozenset({"continue"}),
+        "response_profile": frozenset({"submit", "get"}),
+        "return_fields": frozenset({"submit", "get"}),
+        "max_output_tokens": frozenset({"submit", "get"}),
+    },
+    # Pipeline and experimental batch fields only apply to their owning actions.
+    "local_ai_repo": {
+        "steps": frozenset({"pipeline"}),
+        "edits": frozenset({"batch_replace", "pipeline"}),
+        "dry_run": frozenset({"batch_replace", "pipeline"}),
+        "include_code": frozenset({"investigate", "search", "code_index", "pipeline"}),
+        "include_tests": frozenset({"complexity", "pipeline"}),
+        "language": frozenset({"resolve_imports", "pipeline"}),
+        "path_hints": frozenset({"search"}),
+    },
 }
+
+ACTION_SPECIFIC_FIELD_DEFAULTS: dict[str, dict[str, Any]] = {
+    "local_ai_task": {
+        "cloud_fallback": False, "candidate_data": None, "quality_pass": None,
+        "test_pass": None, "evaluation_duration_ms": 0.0, "evaluation_days": 30,
+        "cases": None, "tasks": None, "job_action": "reason", "job_id": "",
+        "timeout_seconds": 90, "conversation_id": "", "conversation": False,
+        "delivery": "sync", "latency_budget_ms": 0.0, "format": None,
+        "json_schema": None, "language": "auto",
+        **{name: "" for name in (
+            "image_artifact_id", "screenshot_artifact_id", "bundle_artifact_id",
+            "dom_artifact_id", "accessibility_artifact_id", "computed_styles_artifact_id",
+            "runtime_artifact_id", "network_artifact_id", "source", "approver",
+            "evaluation_task_id", "evaluation_cohort",
+        )},
+        **{name: None for name in (
+            "dom", "accessibility", "computed_styles", "runtime", "viewport", "page",
+            "bundle", "html", "accessibility_snapshot", "computed_style_data", "runtime_context",
+        )},
+    },
+    "local_ai_rag": {
+        "content": "", "title": "", "metadata": None, "image_path": "",
+        "caption": "", "top_k": 6, "extra_fields": None,
+    },
+    "local_ai_command": {"rollback_on_failure": False, "lint_action": "submit"},
+    "local_ai_coord": {
+        "paths": None, "contract": None, "include_stale": False, "checkpoint": None,
+        "since_hash": "", "include_diagnostics": False, "focus": None,
+        "preload_profile": "", "phase": "", "repository_revision": "",
+        "fingerprint": None, "tool_outcome": None, "after_seq": 0,
+    },
+    "local_ai_artifact": {"artifact_id": ""},
+    "local_ai_repo": {
+        "steps": None, "edits": None, "dry_run": False, "include_code": False,
+        "include_tests": False, "language": "auto",
+    },
+    "local_ai_work": {
+        "root": ".", "task": "", "acceptance_criteria": None, "constraints": None,
+        "mode": "execute", "permissions": None, "budget": None, "work_id": "",
+        "timeout_seconds": 90.0, "answer": "", "response_profile": "compact",
+        "return_fields": None, "max_output_tokens": 0, "keep_failed_workspace": False,
+    },
+}
+
+ACTION_DEFAULTS = {"local_ai_status": "", "local_ai_artifact": "get"}
+ACTION_REQUIRED_FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
+    "local_ai_task": {"continue": ("conversation_id",)},
+    "local_ai_artifact": {"get": ("artifact_id",), "slice": ("artifact_id",)},
+    "local_ai_work": {
+        "submit": ("task",),
+        "status": ("work_id",),
+        "wait": ("work_id",),
+        "get": ("work_id",),
+        "cancel": ("work_id",),
+        "continue": ("work_id", "answer"),
+    },
+}
+ACTION_REQUIRED_NONEMPTY_FIELDS = frozenset({"artifact_id", "conversation_id", "task", "work_id", "answer"})
+ACTION_SPECIFIC_BOUNDS: dict[str, dict[str, dict[str, dict[str, int]]]] = {
+    # `ttl_seconds` carries PubSub page size at this action boundary; zero keeps
+    # the documented default while positive values match the HTTP limit range.
+    "local_ai_coord": {"ttl_seconds": {"pubsub_poll": {"minimum": 0, "maximum": 1000}}},
+}
+
+_OPEN_OBJECT = {"type": "object", "additionalProperties": True}
+_OUTPUT_ENVELOPE_PROPERTIES: dict[str, dict[str, Any]] = {
+    "success": {"type": "boolean"},
+    "status_code": {"type": "integer"},
+    "error": {"type": "string"},
+    "hub_online": {"type": "boolean"},
+    "terminal": {"type": "boolean"},
+    "retryable": {"type": "boolean"},
+    "degraded": {"type": "boolean"},
+    "stale": {"type": "boolean"},
+    "retry_after_seconds": {"type": "number"},
+    "outcome_unknown": {"type": "boolean"},
+    "request_not_sent": {"type": "boolean"},
+    "retried": {"type": "boolean"},
+    "evidence_ids": {"type": "array", "items": {"type": "string"}},
+    "evidence": {"type": "array", "items": _OPEN_OBJECT},
+    "cancel": _OPEN_OBJECT,
+    "cancelled": {"type": "boolean"},
+    "timed_out": {"type": "boolean"},
+    "request_id": {"type": "string"},
+    "unsupported": {"type": "boolean"},
+}
+
+_OUTPUT_ACTION_PROPERTIES: dict[str, dict[str, dict[str, Any]]] = {
+    "local_ai_status": {
+        "brief": {
+            "version": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "ollama_online": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+            "active_model": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "queued": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+            "inflight": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+            "net_cloud_token_delta_est": {"type": "number"},
+            "cache_hits": {"type": "integer"},
+            "coalesced_waiters": {"type": "integer"},
+            "vram_pressure": {"type": "string"},
+            "context_budget_factor": {"type": "number"},
+        },
+        "cache": {
+            **{name: {"anyOf": [_OPEN_OBJECT, {"type": "null"}]} for name in (
+                "generation_cache", "semantic_cache", "repo_cache", "repo_snapshots",
+                "commands", "lossless_router", "pipeline", "preprocessing", "tool_agent",
+                "circuit_breakers", "embeddings", "reranker", "token_saving", "context_ledger",
+            )},
+        },
+        "telemetry": {
+            "window": _OPEN_OBJECT,
+            "summary": {
+                "type": "object",
+                "properties": {name: {"type": "number"} for name in (
+                    "events", "cache_hits", "coalesced", "input_tokens", "output_tokens",
+                    "avoided_cloud_tokens", "avg_duration_ms", "failure_rate", "avg_queue_wait_ms",
+                    "fallback_count", "degraded_count", "retry_count", "cache_hit_rate",
+                    "net_cloud_token_delta_est",
+                )},
+                "additionalProperties": True,
+            },
+            "queue": _OPEN_OBJECT,
+            "hotspots": {"type": "array", "items": _OPEN_OBJECT},
+            "by_operation": {"type": "array", "items": _OPEN_OBJECT},
+            "error_fingerprints": {"type": "array", "items": _OPEN_OBJECT},
+            "detail": _OPEN_OBJECT,
+            "decision_grade": _OPEN_OBJECT,
+        },
+        "full": {
+            "hub_pid": {"type": "integer"},
+            "hub_online": {"type": "boolean"},
+            "version": {"type": "string"},
+            "uptime_seconds": {"type": "integer"},
+            "features": _OPEN_OBJECT,
+            "models": _OPEN_OBJECT,
+            "hardware": _OPEN_OBJECT,
+            "accelerators": _OPEN_OBJECT,
+            "ollama_online": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+            "online": {"type": "boolean"},
+            "ollama_version": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "installed_models": {"type": "array", "items": {"type": "string"}},
+            "loaded_models": {"type": "array", "items": {"type": "string"}},
+            "loaded_model_details": {"type": "array", "items": _OPEN_OBJECT},
+            **{name: _OPEN_OBJECT for name in (
+                "capabilities", "code_intelligence", "runtime_profile", "scheduler", "headless",
+                "background_gpu", "ollama_profile", "model_execution", "vram_balancer", "benchmark",
+                "debug_traces", "observability", "preprocessing", "runtime_stats", "agent_state",
+                "semantic_cache", "repo_cache", "commands", "repo_snapshots", "lossless_router",
+                "pipeline", "tool_agent", "code_index", "deterministic", "evidence_store",
+                "learning", "autotune", "circuit_breakers", "recovery", "embeddings", "reranker",
+                "token_saving", "http_concurrency",
+            )},
+            "fallback_count": {"type": "integer"},
+        },
+        "agent_state": {
+            "enabled": {"type": "boolean"},
+            "active_tasks": {"type": "array", "items": {"type": "string"}},
+            "tasks_count": {"type": "integer"},
+            "incidents_count": {"type": "integer"},
+            "candidates_count": {"type": "integer"},
+            "status": {"type": "string"},
+        },
+    },
+    "local_ai_task": {
+        "candidate_create": {"candidate": _OPEN_OBJECT},
+        "candidate_promote": {"decision": _OPEN_OBJECT},
+    },
+    "local_ai_coord": {
+        **{
+            action: {"task": _OPEN_OBJECT}
+            for action in (
+                "task_create", "task_get", "task_checkpoint", "task_transition",
+                "task_resume", "task_rollback", "task_complete", "task_fail", "task_heartbeat",
+            )
+        },
+        "task_list": {"tasks": {"type": "array", "items": _OPEN_OBJECT}},
+        "task_zombie_reap": {
+            "reaped": {"type": "array"},
+            "count": {"type": "number"},
+        },
+        **{
+            action: {"record": _OPEN_OBJECT}
+            for action in ("memory_record", "memory_get", "memory_promote")
+        },
+        "memory_find": {"records": {"type": "array", "items": _OPEN_OBJECT}},
+        "memory_reap": {"reaped_count": {"type": "number"}},
+        "relation_record": {"relation": _OPEN_OBJECT},
+        "relation_find": {"relations": {"type": "array"}},
+        "context_compile": {
+            "complete": {"type": "boolean"},
+            "partial": {"type": "boolean"},
+            "context_id": {"type": "string"},
+            "etag": {"type": "string"},
+            "context": _OPEN_OBJECT,
+            "task_context": _OPEN_OBJECT,
+            "text": {"type": "string"},
+            "evidence_ids": {"type": "array", "items": {"type": "string"}},
+            "repo_revision": {"type": "string"},
+            "source_layers": {"type": "array"},
+            "stale": {"type": "boolean"},
+            "truncated": {"type": "boolean"},
+            "omitted_sections": {"type": "array", "items": {"type": "string"}},
+            "next_action": {"type": "string"},
+            "estimated_tokens": {"type": "integer"},
+            "warnings": {"type": "array"},
+            "unchanged": {"type": "boolean"},
+        },
+        "verify_receipt": {"receipt": _OPEN_OBJECT},
+        "verify_completion": {"completion": _OPEN_OBJECT},
+        "incident_decision": {"decision": _OPEN_OBJECT},
+        "negative_knowledge_record": {
+            "incident": {"anyOf": [_OPEN_OBJECT, {"type": "null"}]}
+        },
+        "negative_knowledge_find": {
+            "incidents": {"type": "array", "items": _OPEN_OBJECT}
+        },
+        **{
+            action: {"incident": {"anyOf": [_OPEN_OBJECT, {"type": "null"}]}}
+            for action in (
+                "incident_record", "incident_resolve", "incident_ignore", "incident_unignore",
+            )
+        },
+        "blackboard_list": {
+            "boards": {"type": "array"},
+            "count": {"type": "number"},
+        },
+    },
+    # Pipeline results are stable; each step result remains open because the
+    # selected repo action defines its payload.
+    "local_ai_repo": {
+        "pipeline": {
+            "steps_total": {"type": "integer"},
+            "steps_attempted": {"type": "integer"},
+            "steps_completed": {"type": "integer"},
+            "steps_failed": {"type": "integer"},
+            "step_results": {"type": "array", "items": _OPEN_OBJECT},
+            "results": {"type": "object", "additionalProperties": _OPEN_OBJECT},
+        },
+    },
+    "local_ai_rag": {
+        "search": {
+            "results": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"chunk_no": {"type": "integer"}},
+                    "additionalProperties": True,
+                },
+            },
+        },
+    },
+    "local_ai_command": {"run": {"stdout": {"type": "string"}}},
+    "local_ai_work": {
+        "submit": {"work_id": {"type": "string"}, "status": {"type": "string"}},
+        "status": {"status": {"type": "string"}},
+    },
+    "local_ai_artifact": {
+        "slice": {
+            "text": {"type": "string"},
+            "next_offset": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        },
+    },
+}
+
+_STATUS_OUTPUT_ALIASES = {"": "brief", "status": "brief", "health": "brief", "check": "brief", "info": "brief"}
+
+
+def operation_output_schema(tool_name: str, action: str) -> dict[str, Any]:
+    """Return typed, action-scoped envelope plus source-backed payload fields.
+
+    Upstream action payloads remain open where handlers proxy heterogeneous
+    backend responses. Known stable fields are still described explicitly.
+    """
+    canonical = _STATUS_OUTPUT_ALIASES.get(action, action) if tool_name == "local_ai_status" else action
+    properties = deepcopy(_OUTPUT_ENVELOPE_PROPERTIES)
+    properties.update(deepcopy(_OUTPUT_ACTION_PROPERTIES.get(tool_name, {}).get(canonical, {})))
+    if tool_name == "local_ai_task":
+        properties.update({
+            "task_context_id": {"type": "string"},
+            "task_context_etag": {"type": "string"},
+            "task_context_evidence_ids": {"type": "array", "items": {"type": "string"}},
+        })
+    return {
+        "type": "object",
+        "x-operation-action": action,
+        "properties": properties,
+        "additionalProperties": True,
+    }
+
+
+def operation_tool_output_schema(tool_name: str, actions: list[str] | tuple[str, ...]) -> dict[str, Any]:
+    """Keep outputs open until every public action has a source-backed contract."""
+    del tool_name, actions
+    return {"type": "object", "additionalProperties": True}
+
+
 REPO_PIPELINE_MUTATING_ACTIONS = frozenset(
     {
         "batch_replace",
@@ -191,7 +586,7 @@ def repo_pipeline_step_schema(
         {
             name: _portable_property_schema(schema)
             for name, schema in repo_properties.items()
-            if name not in {"action", "steps"}
+            if name not in {"action", "steps", "path_hints"}
         }
     )
     for name in ("max_tokens", "token_budget", "max_response_tokens"):
@@ -213,6 +608,31 @@ def repo_pipeline_step_schema(
     }
 
 
+def repo_path_hints_schema() -> dict[str, Any]:
+    """Closed, bounded path hints accepted by the public repository search action."""
+    metadata = {
+        name: {"type": "string"}
+        for name in (
+            "evidence_id", "provenance", "repository_revision", "config_digest", "expires_at",
+        )
+    }
+    return {
+        "type": "array",
+        "maxItems": 64,
+        "items": {
+            "type": "object",
+            "required": ["path", "purpose", "scope"],
+            "properties": {
+                "path": {"type": "string", "minLength": 1, "maxLength": 1024},
+                "purpose": {"type": "string", "minLength": 1},
+                "scope": {"type": "string", "minLength": 1},
+                **metadata,
+            },
+            "additionalProperties": False,
+        },
+    }
+
+
 def validate_schema_value(value: Any, schema: Mapping[str, Any], path: str) -> str | None:
     """Small bounded JSON-schema subset for the MCP tool's declared inputs."""
     expected = schema.get("type")
@@ -230,6 +650,8 @@ def validate_schema_value(value: Any, schema: Mapping[str, Any], path: str) -> s
     if "enum" in schema and value not in schema["enum"]:
         return f"{path} must be one of: {', '.join(map(str, schema['enum']))}"
     if isinstance(value, str):
+        if "minLength" in schema and len(value) < schema["minLength"]:
+            return f"{path} must contain at least {schema['minLength']} characters"
         if "maxLength" in schema and len(value) > schema["maxLength"]:
             return f"{path} exceeds {schema['maxLength']} characters"
     if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -242,6 +664,8 @@ def validate_schema_value(value: Any, schema: Mapping[str, Any], path: str) -> s
         if error:
             return error
     if isinstance(value, list) and isinstance(schema.get("items"), Mapping):
+        if "maxItems" in schema and len(value) > schema["maxItems"]:
+            return f"{path} exceeds {schema['maxItems']} items"
         for index, item in enumerate(value):
             error = validate_schema_value(item, schema["items"], f"{path}[{index}]")
             if error:
@@ -296,29 +720,133 @@ def validate_schema_object(value: Any, schema: Mapping[str, Any], path: str = "a
     return None
 
 
-def action_specific_schema_constraints(tool_name: str) -> list[dict[str, Any]]:
+def action_specific_schema_constraints(
+    tool_name: str,
+    available_fields: set[str] | None = None,
+    available_actions: set[str] | None = None,
+) -> list[dict[str, Any]]:
     """Return standard JSON Schema rules for fields scoped to one action."""
     constraints: list[dict[str, Any]] = []
+    field_defaults = ACTION_SPECIFIC_FIELD_DEFAULTS.get(tool_name, {})
+    default_action = ACTION_DEFAULTS.get(tool_name)
     for field, allowed_actions in ACTION_SPECIFIC_FIELDS.get(tool_name, {}).items():
+        if available_fields is not None and field not in available_fields:
+            continue
+        if available_actions is not None:
+            allowed_actions = allowed_actions & available_actions
+            if not allowed_actions:
+                continue
         if len(allowed_actions) == 1:
             condition: dict[str, Any] = {"const": next(iter(allowed_actions))}
         else:
             condition = {"enum": sorted(allowed_actions)}
+        action_condition: dict[str, Any] = {
+            "properties": {"action": condition}, "required": ["action"]
+        }
+        if default_action in allowed_actions:
+            action_condition = {"anyOf": [action_condition, {"not": {"required": ["action"]}}]}
+        otherwise = (
+            {"properties": {field: {"const": field_defaults[field]}}}
+            if field in field_defaults else {"not": {"required": [field]}}
+        )
         constraints.append({
-            "if": {"properties": {"action": condition}, "required": ["action"]},
+            "if": action_condition,
             "then": {"properties": {field: {}}},
-            "else": {"not": {"required": [field]}},
+            "else": otherwise,
         })
+    for action, required_fields in ACTION_REQUIRED_FIELDS.get(tool_name, {}).items():
+        if available_actions is not None and action not in available_actions:
+            continue
+        action_condition = {
+            "properties": {"action": {"const": action}}, "required": ["action"]
+        }
+        if ACTION_DEFAULTS.get(tool_name) == action:
+            action_condition = {"anyOf": [action_condition, {"not": {"required": ["action"]}}]}
+        constraints.append({
+            "if": action_condition,
+            "then": {
+                "required": list(required_fields),
+                "properties": {
+                    field: {"minLength": 1}
+                    for field in required_fields
+                    if field in ACTION_REQUIRED_NONEMPTY_FIELDS
+                },
+            },
+        })
+    for field, actions in ACTION_SPECIFIC_BOUNDS.get(tool_name, {}).items():
+        if available_fields is not None and field not in available_fields:
+            continue
+        for action, bounds in actions.items():
+            if available_actions is not None and action not in available_actions:
+                continue
+            constraints.append({
+                "if": {"properties": {"action": {"const": action}}, "required": ["action"]},
+                "then": {"properties": {field: dict(bounds)}},
+            })
     return constraints
 
 
 def validate_action_specific_fields(
-    tool_name: str, arguments: Mapping[str, Any], path: str = "arguments"
+    tool_name: str,
+    arguments: Mapping[str, Any],
+    path: str = "arguments",
+    schema: Mapping[str, Any] | None = None,
 ) -> str | None:
     """Reject known fields when their owning action is not selected."""
-    action = str(arguments.get("action", "")).strip().lower().replace("-", "_")
+    action = str(arguments.get("action", ACTION_DEFAULTS.get(tool_name, ""))).strip().lower().replace("-", "_")
+    available_fields: set[str] | None = None
+    available_actions: set[str] | None = None
+    if isinstance(schema, Mapping):
+        properties = schema.get("properties", {})
+        if isinstance(properties, Mapping):
+            available_fields = set(properties)
+            action_property = properties.get("action", {})
+            if isinstance(action_property, Mapping):
+                enum = action_property.get("enum")
+                if isinstance(enum, list):
+                    available_actions = {str(item) for item in enum}
+        for field in ACTION_SPECIFIC_FIELDS.get(tool_name, {}):
+            if field in arguments and available_fields is not None and field not in available_fields:
+                return f"{path}.{field} is not supported by this configuration"
+    for required_action, required_fields in ACTION_REQUIRED_FIELDS.get(tool_name, {}).items():
+        if available_actions is not None and required_action not in available_actions:
+            continue
+        if action != required_action:
+            continue
+        missing = [field for field in required_fields if field not in arguments]
+        if missing:
+            return f"{path} requires for action {action}: {', '.join(missing)}"
+        empty = [
+            field for field in required_fields
+            if field in ACTION_REQUIRED_NONEMPTY_FIELDS
+            and (not isinstance(arguments[field], str) or not arguments[field].strip())
+        ]
+        if empty:
+            return f"{path}.{empty[0]} must not be empty for action {action}"
+    for field, action_bounds in ACTION_SPECIFIC_BOUNDS.get(tool_name, {}).items():
+        if available_fields is not None and field not in available_fields:
+            continue
+        bounds = action_bounds.get(action)
+        if bounds is None or field not in arguments:
+            continue
+        value = arguments[field]
+        if isinstance(value, bool) or not isinstance(value, int):
+            return f"{path}.{field} must be an integer for action {action}"
+        if "minimum" in bounds and value < bounds["minimum"]:
+            return f"{path}.{field} must be at least {bounds['minimum']} for action {action}"
+        if "maximum" in bounds and value > bounds["maximum"]:
+            return f"{path}.{field} must be at most {bounds['maximum']} for action {action}"
+    field_defaults = ACTION_SPECIFIC_FIELD_DEFAULTS.get(tool_name, {})
     for field, allowed_actions in ACTION_SPECIFIC_FIELDS.get(tool_name, {}).items():
+        if available_fields is not None and field not in available_fields:
+            continue
+        if available_actions is not None:
+            allowed_actions = allowed_actions & available_actions
+            if not allowed_actions:
+                continue
         if field in arguments and action not in allowed_actions:
+            if field in field_defaults and arguments[field] == field_defaults[field]:
+                continue
             allowed = ", ".join(sorted(allowed_actions))
             return f"{path}.{field} is only valid for action {allowed}"
     return None
