@@ -152,6 +152,9 @@ def test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources():
             continue
         if any(part in skip_parts for part in path.parts) or path.name in skip_files or path.name.startswith(".coverage"):
             continue
+        # MANIFEST.in excludes release-plan docs from the source distribution.
+        if path.relative_to(ROOT).parts[:2] == ("docs", "superpowers"):
+            continue
         if path.suffix in {".pyc", ".sqlite3", ".db", ".zip", ".pkl"} or ".local-ai-hub-backup-" in path.name:
             continue
         try:
