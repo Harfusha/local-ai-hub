@@ -1191,6 +1191,9 @@ class Handler(BaseHTTPRequestHandler):
         if decision["mode"] != "async":
             return None
         job_payload = dict(payload)
+        supplied_request_id = self.headers.get("X-LocalAI-Request-ID")
+        if supplied_request_id:
+            job_payload["request_id"] = supplied_request_id
         job_payload.pop("delivery", None); job_payload.pop("latency_budget_ms", None)
         if job_action == "reason":
             job_payload["task"] = str(job_payload.get("problem", job_payload.get("task", "")))
@@ -2243,7 +2246,11 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/async-jobs":
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
                 if action == "submit":
-                    self._send(200, APP.async_jobs.submit(tenant, str(payload.get("job_action", "reason")), payload)); return
+                    job_payload = dict(payload)
+                    supplied_request_id = self.headers.get("X-LocalAI-Request-ID")
+                    if supplied_request_id:
+                        job_payload["request_id"] = supplied_request_id
+                    self._send(200, APP.async_jobs.submit(tenant, str(payload.get("job_action", "reason")), job_payload)); return
                 if action == "status":
                     self._send(200, APP.async_jobs.status(tenant, str(payload.get("job_id", "")))); return
                 if action == "wait":
