@@ -34,6 +34,7 @@ Convenience methods use `post()`'s 360-second default timeout, subject to the co
 | Verify a change | `client.verify_receipt(task_id, criterion, evidence_id=...)` | `POST /api/agent-state/verification` with action `receipt` | Writes a durable verification receipt; requires Agent OS enabled |
 | Continue a conversation | `client.continue_conversation(conversation_id, prompt)` | `POST /api/conversations/continue`; `prompt` maps to `task` | Updates conversation state and may require an available model runtime |
 | Cancel an async job | `client.cancel_job(job_id)` | `POST /api/async-jobs` with action `cancel` | Mutates job state; job may already be terminal |
+| Poll pub/sub messages | `client.coord("pubsub_poll", topic=..., since_timestamp=0.0, limit=50)` | `POST /api/coord/pubsub_poll` with `root`, `topic`, `since_timestamp`, and `limit` | Does not publish. Prunes expired in-memory topic messages during poll. Returns normalized topic, count of returned messages, and messages with `timestamp > since_timestamp` |
 | Resume a task | `client.coord("task_resume", task_id=task_id)` | `POST /api/agent-state/tasks` with action `resume` | Sets task status to `ACTIVE` and preserves checkpoint metadata; does not restore workspace files. Requires Agent OS enabled |
 | Look up evidence | `client.get_evidence(evidence_id, verify=True)` | `POST /api/evidence/get` with `evidence_id`, `verify` | Read-only; verification checks evidence freshness |
 
@@ -48,10 +49,11 @@ The production-handler fixtures below measure the first direct SDK call and exac
 | Cancel async job | success | 1 | `test_sdk_convenience_methods_map_to_production_http_handlers` |
 | Look up evidence | success | 1 | `test_sdk_convenience_methods_map_to_production_http_handlers` |
 | Continue conversation | success | 1 | `test_hub_client_continues_through_production_route_and_preserves_transcript` |
+| Poll pub/sub messages | success | 1 | `test_sdk_coord_pubsub_poll_maps_payload_to_production_handler` |
 | Resume task | success | 1 | `test_sdk_resume_and_verification_use_real_agent_state_handlers` |
 | Verify change | success | 1 | `test_sdk_resume_and_verification_use_real_agent_state_handlers` |
 
-Fixture total: **7/7 successful workflows on first direct call; 7 HTTP requests total**. Error fixtures assert machine-readable retry guidance: invalid context mode returns `terminal=true`, `retryable=false`, and `context mode must be adaptive, full or fast`; expired conversation returns `terminal=true`, `retryable=false`, and `conversation not found`; a competing continuation returns `in_progress=true`, `retryable=true`. These assertions do not measure whether a human caller finds the wording clear. Reproduce with `python -m pytest -q --tb=short tests/test_client_sdk_routes.py tests/test_conversation_continue_route_contract.py`.
+Fixture total: **8/8 successful workflows on first direct call; 8 HTTP requests total**. Error fixtures assert machine-readable retry guidance: invalid context mode returns `terminal=true`, `retryable=false`, and `context mode must be adaptive, full or fast`; expired conversation returns `terminal=true`, `retryable=false`, and `conversation not found`; a competing continuation returns `in_progress=true`, `retryable=true`. These assertions do not measure whether a human caller finds the wording clear. Reproduce with `python -m pytest -q --tb=short tests/test_client_sdk_routes.py tests/test_conversation_continue_route_contract.py`.
 
 ## Failure recovery
 
