@@ -2665,7 +2665,12 @@ def local_ai_work(
 @mcp.tool()
 @_instrumented_tool()
 def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", binary: bool = False) -> dict[str, Any]:
-    """Fetch one needed artifact section, exact evidence slice, or list artifacts. Evidence IDs start with E. Actions: get, slice, list."""
+    """Fetch an artifact section, exact evidence slice, or artifact list.
+
+    Use when: source text, logs, or evidence details are needed.
+    Skip when: repository discovery or semantic retrieval is the task.
+    Evidence IDs start with E. Actions: get, slice, list.
+    """
     if not FEATURES.artifacts:
         return {"success": False, "unsupported": True, "error": "local_ai_artifact is disabled in configuration"}
     if action == "list":
