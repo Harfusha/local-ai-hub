@@ -1251,6 +1251,7 @@ def local_ai_task(
     latency_budget_ms: float = 0.0,
     job_action: str = "reason",
     job_id: str = "",
+    request_id: str = "",
     timeout_seconds: float = 90,
     evaluation_task_id: str = "",
     evaluation_cohort: str = "",
@@ -1351,7 +1352,7 @@ def local_ai_task(
             "action": action, "job_action": job_action, "job_id": job_id, "timeout_seconds": timeout_seconds,
             "task": task, "context": context, "candidate": candidate, "complexity": complexity,
             "max_tokens": max_tokens, "tasks": tasks or [], "profile": profile, "root": root, "workspace": workspace,
-        }, timeout=_timeout("quick")), "status")
+        }, timeout=_timeout("quick"), request_id=request_id or None), "status")
     budgeted_actions = {"continue", "delegate", "explore", "reason", "review", "second_opinion", "compress"}
     if task_id.strip() and action in budgeted_actions and ROOT_FAMILY_BUDGET.default_limit:
         family_key = hashlib.sha1(_client_root(root).encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:16]
