@@ -1694,7 +1694,7 @@ class RAGStore:
                             batch_h = missing_hashes[i:i + 500]
                             placeholders = ",".join("?" for _ in batch_h)
                             rows = con.execute(
-                                f"SELECT content_hash, embedding FROM chunks WHERE tenant=? AND (embedding_space=? OR embedding_space='' OR embedding_space IS NULL) AND content_hash IN ({placeholders})",
+                                f"SELECT content_hash, embedding FROM chunks WHERE tenant=? AND embedding_space=? AND content_hash IN ({placeholders})",
                                 (scope_key, embedding_space, *batch_h),
                             ).fetchall()
                             for r in rows:
@@ -2425,7 +2425,18 @@ class RAGStore:
         tenant: str = "default",
     ) -> dict[str, Any]:
         """Ingest raw document or specification content into a RAG workspace."""
-        clean_text = str(content or "").strip()
+        raw_text = str(content or "")
+        rag_cfg = self.config.get("rag", {})
+        max_bytes = max(0, int(rag_cfg.get("max_file_bytes", 2_000_000)))
+        content_bytes = len(raw_text.encode("utf-8"))
+        if content_bytes > max_bytes:
+            return {
+                "success": False,
+                "error": "document content exceeds configured file size limit",
+                "content_bytes": content_bytes,
+                "max_file_bytes": max_bytes,
+            }
+        clean_text = raw_text.strip()
         if not clean_text:
             return {"success": False, "error": "content is required"}
 
@@ -2439,6 +2450,14 @@ class RAGStore:
         if doc_metadata:
             index_parts.append(f"Metadata: {json_dumps(doc_metadata, sort_keys=True, default=str)}")
         index_parts.append(f"Content:\n{clean_text}")
+        indexed_bytes = sum(len(part.encode("utf-8")) for part in index_parts) + len(index_parts) - 1
+        if indexed_bytes > max_bytes:
+            return {
+                "success": False,
+                "error": "indexed document exceeds configured file size limit",
+                "indexed_bytes": indexed_bytes,
+                "max_file_bytes": max_bytes,
+            }
         indexed_text = "\n".join(index_parts)
 
         raw_chunks = self._text_chunks(indexed_text, size=1000, overlap=100)
@@ -2560,18 +2579,38 @@ class RAGStore:
             return {"success": False, "error": f"unsupported diagram format: {suffix}"}
 
         clean_ws = str(workspace or "default").strip()
-        doc_title = f"diagram_{p_img.stem}"
+        doc_title = f"diagram_{p_img.stem}_{_fragment_hash(str(p_img))[:16]}"
 
         diagram_text = ""
         svg_text_nodes: list[str] = []
         if suffix == ".svg":
             try:
-                raw_svg = p_img.read_text(encoding="utf-8", errors="replace")
+                rag_cfg = self.config.get("rag", {})
+                max_bytes = max(0, int(rag_cfg.get("max_file_bytes", 2_000_000)))
+                if int(p_img.stat().st_size) > max_bytes:
+                    return {
+                        "success": False,
+                        "error": "diagram exceeds configured file size limit",
+                        "diagram_indexed": False,
+                    }
+                with p_img.open("rb") as svg_file:
+                    raw_bytes = svg_file.read(max_bytes + 1)
+                if len(raw_bytes) > max_bytes:
+                    return {
+                        "success": False,
+                        "error": "diagram exceeds configured file size limit",
+                        "diagram_indexed": False,
+                    }
+                raw_svg = raw_bytes.decode("utf-8", errors="replace")
                 texts = re.findall(r"<text[^>]*>(.*?)</text>", raw_svg, re.DOTALL | re.I)
                 svg_text_nodes = [t.strip() for t in texts if t.strip()]
                 diagram_text = f"SVG Diagram: {p_img.name}\nCaption: {caption}\nText nodes:\n" + "\n".join(svg_text_nodes)
             except Exception:
-                diagram_text = f"SVG Diagram: {p_img.name}\nCaption: {caption}"
+                return {
+                    "success": False,
+                    "error": "diagram could not be read",
+                    "diagram_indexed": False,
+                }
         else:
             file_size_kb = round(p_img.stat().st_size / 1024, 1)
             diagram_text = f"Architectural Diagram / Visual Asset: {p_img.name}\nFormat: {suffix.lstrip('.')}\nSize: {file_size_kb} KB\nCaption: {caption}\nFile path: {str(p_img)}"
@@ -2584,7 +2623,7 @@ class RAGStore:
             tenant=tenant,
         )
         if isinstance(res, dict):
-            res["diagram_indexed"] = True
+            res["diagram_indexed"] = bool(res.get("success"))
             res["image_path"] = str(p_img)
             res["diagram_content_mode"] = "svg_text_nodes" if svg_text_nodes else "metadata_only"
             res["vision_or_ocr_used"] = False

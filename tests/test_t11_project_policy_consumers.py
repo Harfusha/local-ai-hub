@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import sqlite3
+import subprocess
 import sys
 import threading
 from contextlib import closing
@@ -435,14 +436,26 @@ def test_explicit_rag_ingestion_removes_policy_rejected_source_paths(
         ).fetchone()[0] == 0
 
 
-def test_worktree_consumers_inherit_parent_project_path_policy(tmp_path: Path, monkeypatch):
-    project_config = pytest.importorskip("local_ai_hub.project_config")
+def test_rag_worktree_consumer_inherits_committed_project_path_policy(tmp_path: Path):
+    pytest.importorskip("local_ai_hub.project_config")
     primary = tmp_path / "primary"
-    common = primary / ".git"
     worktree = tmp_path / "worktrees" / "feature"
-    common.joinpath("info").mkdir(parents=True)
-    worktree.mkdir(parents=True)
-    _files(worktree)
+    primary.mkdir()
+    worktree.parent.mkdir(parents=True)
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(primary), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout.strip()
+
+    git("init", "--quiet")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Test")
+    _files(primary)
     (primary / ".local-ai.toml").write_text(
         'exclude_paths = ["private/secret.py"]\n'
         'force_include_paths = ["private/keep.py", "private/secret.py"]\n'
@@ -451,15 +464,11 @@ def test_worktree_consumers_inherit_parent_project_path_policy(tmp_path: Path, m
         '[file_limits]\nmax_file_size_bytes = 8\n',
         encoding="utf-8",
     )
-    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: common)
-    monkeypatch.setattr(
-        project_config,
-        "_git_primary_worktree_root",
-        lambda _root, _common: primary,
-    )
-    cfg = _config(tmp_path)
+    git("add", ".")
+    git("commit", "--quiet", "-m", "project policy fixture")
+    git("worktree", "add", "--quiet", "--detach", str(worktree), "HEAD")
 
-    inventory = RepositoryTools(cfg).file_inventory(str(worktree), include_hashes=False)
+    cfg = _config(tmp_path)
     rag_store = RAGStore(cfg)
     rag_paths = {
         path.relative_to(worktree).as_posix()
@@ -468,11 +477,51 @@ def test_worktree_consumers_inherit_parent_project_path_policy(tmp_path: Path, m
             rag_store.project_context(worktree),
         )
     }
-    expected = {"src/app.py", "private/keep.py", "guide.mdx"}
-    expected_rag = expected | {"build/generated.py"}
+    expected_rag = {"src/app.py", "private/keep.py", "guide.mdx", "build/generated.py"}
 
-    assert {item["path"] for item in inventory["files"]} == expected
     assert rag_paths == expected_rag
     assert rag_store.project_context(worktree).settings.force_include_paths == (
         "private/keep.py", "private/secret.py"
     )
+
+
+def test_rag_policy_change_invalidates_cached_search_results(tmp_path: Path, monkeypatch):
+    class _EmbeddingServices:
+        space_id = "policy-cache-test-space"
+
+        def embed(self, texts, _tenant, **_kwargs):
+            return {
+                "success": True,
+                "embeddings": [[float(len(text)), 1.0] for text in texts],
+                "embedding_space_id": "policy-cache-test-space",
+            }
+
+    context = _install_policy(monkeypatch)
+    context.settings.exclude_paths = ()
+    digest = {"value": "allow-policy"}
+    context.api.resolve_project_context = lambda root, _state_dir=None: SimpleNamespace(
+        root=Path(root), settings=context.settings, config_digest=digest["value"]
+    )
+    root = tmp_path / "project"
+    (root / "private").mkdir(parents=True)
+    (root / "private" / "secret.py").write_text("secret\n", encoding="utf-8")
+    store = RAGStore(_config(tmp_path), services=_EmbeddingServices())
+    workspace = store.workspace_id(str(root.resolve()))
+
+    indexed = store.index(str(root), "tenant", workspace)
+    before = store.search("secret", "tenant", workspace, use_reranker=False)
+    warm = store.search("secret", "tenant", workspace, use_reranker=False)
+
+    assert indexed["success"] is True
+    assert [item["path"] for item in before["results"]] == ["private/secret.py"]
+    assert before["search_cache"]["hit"] is False
+    assert warm["search_cache"]["hit"] is True
+
+    context.settings.exclude_paths = ("private/secret.py",)
+    digest["value"] = "deny-policy"
+    pruned = store.index_paths_step(str(root), "tenant", workspace, [])
+    after = store.search("secret", "tenant", workspace, use_reranker=False)
+
+    assert pruned["success"] is True
+    assert after["search_cache"]["hit"] is False
+    assert all(item["path"] != "private/secret.py" for item in after["results"])

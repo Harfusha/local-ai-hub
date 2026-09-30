@@ -5,12 +5,15 @@ import json
 import os
 import sqlite3
 import struct
+import sys
 from contextlib import closing
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from local_ai_hub import mcp_server
 from local_ai_hub.rag import RAGStore
+from local_ai_hub import reranker as reranker_module
+from local_ai_hub.reranker import Reranker
 
 
 def _store(tmp_path):
@@ -693,7 +696,7 @@ def test_raster_diagram_reports_metadata_only_and_indexes_caption_metadata(tmp_p
     assert result["success"] is True
     assert result["diagram_content_mode"] == "metadata_only"
     assert result["vision_or_ocr_used"] is False
-    indexed = _chunk_text(store, "default", "diagrams", "doc:diagram_network")
+    indexed = _chunk_text(store, "default", "diagrams", f"doc:{result['document_title']}")
     assert "Caption: Private edge routing" in indexed
     assert '"owner":"platform"' in indexed
 
@@ -707,7 +710,7 @@ def test_svg_diagram_reports_extracted_text_provenance(tmp_path):
 
     assert result["diagram_content_mode"] == "svg_text_nodes"
     assert result["vision_or_ocr_used"] is False
-    indexed = _chunk_text(store, "default", "diagrams", "doc:diagram_flow")
+    indexed = _chunk_text(store, "default", "diagrams", f"doc:{result['document_title']}")
     assert "Queue Drain" in indexed
     assert "Caption: Drain workflow" in indexed
 
@@ -856,6 +859,70 @@ def test_t11_live_ollama_rag_ingest_and_reranker_truthfulness(tmp_path):
         }, sort_keys=True))
     finally:
         app.close()
+
+
+def test_offline_missing_reranker_weights_degrade_without_false_reranked_claim(tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+    sentence_transformers = ModuleType("sentence_transformers")
+    sentence_transformers.CrossEncoder = object
+    monkeypatch.setitem(sys.modules, "sentence_transformers", sentence_transformers)
+    loader_attempts = []
+
+    def missing_offline_weights(_owner, *, uses_cuda, factory):
+        assert uses_cuda is False
+        assert callable(factory)
+        assert os.environ["HF_HUB_OFFLINE"] == "1"
+        assert os.environ["TRANSFORMERS_OFFLINE"] == "1"
+        loader_attempts.append(True)
+        raise OSError("offline reranker weights missing from cache")
+
+    monkeypatch.setattr(reranker_module, "load_model", missing_offline_weights)
+    store = _store(tmp_path)
+
+    def deterministic_embed(texts, _tenant, **_kwargs):
+        batch = list(texts)
+        return {
+            "success": True,
+            "embedding_space_id": "offline-missing-reranker-test-space",
+            "embeddings": [[float(len(text)), 1.0] for text in batch],
+        }
+
+    store.services.embed = deterministic_embed
+    reranker = Reranker({
+        "server": {"state_dir": str(tmp_path / "state")},
+        "models": {
+            "reranker": "BAAI/bge-reranker-base",
+            "reranker_backend": "torch",
+            "reranker_device": "cpu",
+        },
+        "cpu_retrieval": {"reranker_batch_size": 4},
+        "features": {"reranker": True},
+        "cache": {"reranker": False},
+    })
+    store.reranker = reranker
+    root = tmp_path / "offline-reranker-project"
+    root.mkdir()
+    (root / "auth.py").write_text(
+        "def authenticate_token(token):\n    return token\n", encoding="utf-8"
+    )
+    assert store.index_step(str(root), "tenant", max_files=8)["success"] is True
+
+    result = store.search(
+        "authenticate token",
+        "tenant",
+        store.workspace_id(str(root)),
+        use_reranker=True,
+    )
+
+    assert loader_attempts == [True]
+    assert result["success"] is True
+    assert result["results"]
+    assert result["reranked"] is False
+    assert result["degraded"] is True
+    assert result["fallback"] == "heuristic_rerank"
+    assert reranker.status()["loaded"] is False
+    assert "offline reranker weights missing from cache" in reranker.status()["load_error"]
 
 
 @pytest.mark.parametrize("entrypoint", ["index", "index_paths_step", "index_step"])
@@ -1045,3 +1112,117 @@ def test_mcp_rag_ingest_forwards_explicit_fields_only(monkeypatch):
             },
         ),
     ]
+
+
+def test_diagram_ingest_rejects_svg_over_configured_file_limit(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    store.config["rag"]["max_file_bytes"] = 8
+    image = tmp_path / "oversized.svg"
+    image.write_bytes(b"<svg>content too large</svg>")
+    calls = []
+    monkeypatch.setattr(store, "ingest_document", lambda **kwargs: calls.append(kwargs))
+
+    result = store.ingest_diagram("diagrams", str(image))
+
+    assert result["success"] is False
+    assert calls == []
+
+
+def test_diagram_ingest_bounds_svg_read_when_file_grows_after_stat(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    store.config["rag"]["max_file_bytes"] = 8
+    image = tmp_path / "growing.svg"
+    image.write_bytes(b"<svg>content grew after stat</svg>")
+    path_type = type(image)
+    original_stat = path_type.stat
+
+    def report_small_file(path, *args, **kwargs):
+        result = original_stat(path, *args, **kwargs)
+        if path == image:
+            return SimpleNamespace(st_mode=result.st_mode, st_size=1)
+        return result
+
+    monkeypatch.setattr(path_type, "stat", report_small_file)
+    calls = []
+    monkeypatch.setattr(store, "ingest_document", lambda **kwargs: calls.append(kwargs))
+
+    result = store.ingest_diagram("diagrams", str(image))
+
+    assert result["success"] is False
+    assert calls == []
+
+
+def test_diagram_ingest_uses_path_identity_for_same_stem_files(tmp_path):
+    store = _store(tmp_path)
+    first = tmp_path / "one" / "architecture.svg"
+    second = tmp_path / "two" / "architecture.svg"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_text("<svg><text>first</text></svg>", encoding="utf-8")
+    second.write_text("<svg><text>second</text></svg>", encoding="utf-8")
+
+    assert store.ingest_diagram("diagrams", str(first))["success"] is True
+    assert store.ingest_diagram("diagrams", str(second))["success"] is True
+    assert store.ingest_diagram("diagrams", str(first))["success"] is True
+
+    with closing(store._connect()) as con:
+        paths = con.execute(
+            "SELECT path FROM files WHERE tenant=? AND workspace=? ORDER BY path",
+            (store._scope_key("default"), "diagrams"),
+        ).fetchall()
+    assert len(paths) == 2
+
+
+def test_diagram_ingest_reports_document_publish_failure(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    image = tmp_path / "diagram.svg"
+    image.write_text("<svg><text>diagram</text></svg>", encoding="utf-8")
+    monkeypatch.setattr(
+        store,
+        "ingest_document",
+        lambda **kwargs: {"success": False, "error": "publish failed"},
+    )
+
+    result = store.ingest_diagram("diagrams", str(image))
+
+    assert result["success"] is False
+    assert result["diagram_indexed"] is False
+
+
+def test_document_ingest_rejects_content_over_configured_file_limit(tmp_path):
+    store = _store(tmp_path)
+    store.config["rag"]["max_file_bytes"] = 12
+
+    result = store.ingest_document("specs", "x" * 13, title="oversized")
+
+    assert result["success"] is False
+    with closing(store._connect()) as con:
+        count = con.execute(
+            "SELECT COUNT(*) FROM files WHERE tenant=? AND workspace=?",
+            (store._scope_key("default"), "specs"),
+        ).fetchone()[0]
+    assert count == 0
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"title": "t" * 80},
+        {"metadata": {"description": "m" * 80}},
+    ],
+    ids=("title", "metadata"),
+)
+def test_document_ingest_rejects_indexed_fields_over_configured_file_limit(tmp_path, fields):
+    store = _store(tmp_path)
+    store.config["rag"]["max_file_bytes"] = 64
+
+    result = store.ingest_document("specs", "ok", **fields)
+
+    assert result["success"] is False
+    assert result["error"] == "indexed document exceeds configured file size limit"
+    with closing(store._connect()) as con:
+        count = con.execute(
+            "SELECT COUNT(*) FROM files WHERE tenant=? AND workspace=?",
+            (store._scope_key("default"), "specs"),
+        ).fetchone()[0]
+    assert count == 0

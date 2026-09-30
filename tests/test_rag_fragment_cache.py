@@ -559,6 +559,33 @@ def test_legacy_unidentified_embedding_is_not_reused(tmp_path):
     assert len(services.calls) == 1
 
 
+def test_incremental_index_does_not_reuse_unidentified_embedding_for_known_space(tmp_path):
+    services = _Services(space_id="model-a@revision-1")
+    store = _store(tmp_path, services)
+    text = "def shared_incremental():\n    return 11\n"
+    with closing(store._connect()) as con:
+        con.execute(
+            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (store._scope_key("tenant"), "legacy-empty", "shared.py", 0, _fragment_hash(text), text, json.dumps([99.0, 99.0]), ""),
+        )
+        con.commit()
+    root = tmp_path / "incremental-target"
+    root.mkdir()
+    (root / "shared.py").write_text(text, encoding="utf-8")
+
+    result = store.index_step(str(root), "tenant")
+
+    assert result["success"] is True
+    assert len(services.calls) == 1
+    with closing(store._connect()) as con:
+        row = con.execute(
+            "SELECT embedding_space FROM chunks WHERE tenant=? AND workspace=? AND path=?",
+            (store._scope_key("tenant"), result["workspace"], "shared.py"),
+        ).fetchone()
+    assert row == ("model-a@revision-1",)
+
+
 def test_index_publish_disk_full_keeps_previous_snapshot(tmp_path, monkeypatch):
     root = tmp_path / "project"
     root.mkdir()
