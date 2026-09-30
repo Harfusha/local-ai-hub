@@ -6,6 +6,7 @@ import json
 import threading
 from types import SimpleNamespace
 from typing import Any
+from urllib.error import URLError
 
 import pytest
 import sqlite3
@@ -58,6 +59,173 @@ def test_repair_loop_does_not_replay_failed_mutating_command(tmp_path, monkeypat
     assert result["outcome_unknown"] is True
     assert executions == ["git add changed.py"]
     assert generator_calls == []
+
+
+@pytest.mark.parametrize("command", [
+    "custom_tool --apply",
+    "custom_tool --apply && echo done",
+    'pwsh -Command "custom_tool --apply"',
+    'powershell -Command "custom_tool --apply"',
+])
+def test_repair_loop_does_not_replay_failed_user_whitelisted_command(tmp_path, monkeypatch, command: str) -> None:
+    broker = _broker(tmp_path)
+    broker.config["commands"]["extra_allowed_tools"] = ["custom_tool"]
+    target = tmp_path / "target.txt"
+    target.write_text("before", encoding="utf-8")
+    executions: list[str] = []
+    generator_calls: list[str] = []
+
+    def run(command: str, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        executions.append(command)
+        return {"success": False, "exit_code": 1, "stderr": "partial mutation"}
+
+    def generate(command: str, *_args: Any) -> dict[str, str]:
+        generator_calls.append(command)
+        return {"target.txt": "after"}
+
+    monkeypatch.setattr(broker, "run", run)
+
+    result = broker.repair_loop(
+        command,
+        str(tmp_path),
+        "tenant",
+        max_attempts=2,
+        fix_generator=generate,
+    )
+
+    assert executions == [command]
+    assert generator_calls == []
+    assert result.get("repair_skipped") is True
+    assert result.get("outcome_unknown") is True
+    assert target.read_text(encoding="utf-8") == "before"
+
+
+def test_repair_loop_requires_explicit_validation_replay_safety(tmp_path, monkeypatch) -> None:
+    broker = _broker(tmp_path)
+    executions: list[str] = []
+    generator_calls: list[str] = []
+
+    def run(command: str, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        executions.append(command)
+        return {"success": False, "exit_code": 1}
+
+    def generate(command: str, *_args: Any) -> dict[str, str]:
+        generator_calls.append(command)
+        return {"changed.py": "value = 1\n"}
+
+    monkeypatch.setattr(broker, "run", run)
+    monkeypatch.setattr(broker, "classify", lambda _command: {"class": "validation", "allowed": True})
+
+    result = broker.repair_loop(
+        "unclassified-validation",
+        str(tmp_path),
+        "tenant",
+        max_attempts=1,
+        fix_generator=generate,
+    )
+
+    assert result["repair_skipped"] is True
+    assert result["outcome_unknown"] is True
+    assert executions == ["unclassified-validation"]
+    assert generator_calls == []
+
+
+@pytest.mark.parametrize("command", [
+    "python -m pytest -q",
+    'pwsh -Command "Invoke-Pester"',
+])
+def test_repair_loop_retries_failed_builtin_validation(tmp_path, monkeypatch, command: str) -> None:
+    broker = _broker(tmp_path)
+    executions: list[str] = []
+    generator_calls: list[str] = []
+
+    def run(command: str, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        executions.append(command)
+        if len(executions) == 1:
+            return {"success": False, "exit_code": 1}
+        return {"success": True, "exit_code": 0}
+
+    def generate(command: str, *_args: Any) -> dict[str, str]:
+        generator_calls.append(command)
+        return {"changed.py": "value = 1\n"}
+
+    monkeypatch.setattr(broker, "run", run)
+
+    result = broker.repair_loop(
+        command,
+        str(tmp_path),
+        "tenant",
+        max_attempts=1,
+        fix_generator=generate,
+    )
+
+    assert result["success"] is True
+    assert executions == [command, command]
+    assert generator_calls == [command]
+
+
+def test_repair_loop_retries_failed_builtin_python_validation_pipeline(tmp_path, monkeypatch) -> None:
+    broker = _broker(tmp_path)
+    command = "python -m pytest -q | tail -n 1"
+    executions: list[str] = []
+    generator_calls: list[str] = []
+
+    def run(command: str, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        executions.append(command)
+        if len(executions) == 1:
+            return {"success": False, "exit_code": 1}
+        return {"success": True, "exit_code": 0}
+
+    def generate(command: str, *_args: Any) -> dict[str, str]:
+        generator_calls.append(command)
+        return {"changed.py": "value = 1\n"}
+
+    monkeypatch.setattr(broker, "run", run)
+
+    result = broker.repair_loop(
+        command,
+        str(tmp_path),
+        "tenant",
+        max_attempts=1,
+        fix_generator=generate,
+    )
+
+    assert result["success"] is True
+    assert executions == [command, command]
+    assert generator_calls == [command]
+
+
+@pytest.mark.parametrize("command", [
+    "pytest -q",
+    "python -m pytest -q",
+    "python -m unittest",
+    'pwsh -Command "Invoke-Pester"',
+    'pwsh -Command "Test-Path ."',
+    'powershell -Command "Test-Path ."',
+    'python -c "assert True"',
+    "python scripts/check_project.py",
+    "python -m pytest -q && echo done",
+    "python -m pytest -q | tail -n 1",
+])
+def test_builtin_validation_commands_explicitly_set_replay_safety(tmp_path, command: str) -> None:
+    result = _broker(tmp_path).classify(command)
+
+    assert result["class"] == "validation"
+    assert result["replay_safe"] is True
+
+
+def test_classify_does_not_infer_replay_safety_from_validation_class(tmp_path, monkeypatch) -> None:
+    broker = _broker(tmp_path)
+    monkeypatch.setattr(
+        broker,
+        "_classify_single",
+        lambda _command: {"class": "validation", "allowed": True},
+    )
+
+    result = broker.classify("custom-validation")
+
+    assert result["class"] == "validation"
+    assert result.get("replay_safe") is not True
 
 
 def test_repair_loop_stops_after_timed_out_command_outcome_is_unknown(tmp_path, monkeypatch) -> None:
@@ -404,6 +572,25 @@ def test_rag_index_publish_failure_keeps_previous_snapshot(tmp_path) -> None:
     assert file_hash == old_file_hash
 
 
+def test_client_coord_pubsub_poll_uses_current_after_seq_cursor(tmp_path, monkeypatch) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("[client]\n", encoding="utf-8")
+    client = HubClient(config_path=str(config), auto_start=False)
+    captured: list[dict[str, Any]] = []
+
+    def capture_post(path: str, payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+        captured.append({"path": path, "payload": payload})
+        return {"success": True}
+
+    monkeypatch.setattr(client, "post", capture_post)
+    client.coord("pubsub_poll", root="repo", topic="updates")
+    client.coord("pubsub_poll", root="repo", topic="updates", after_seq=17)
+
+    assert [call["path"] for call in captured] == ["/api/coord/pubsub_poll"] * 2
+    assert [call["payload"]["after_seq"] for call in captured] == [0, 17]
+    assert all("since_timestamp" not in call["payload"] for call in captured)
+
+
 def test_client_allows_explicit_retry_with_the_same_request_id(tmp_path, monkeypatch) -> None:
     config = tmp_path / "config.toml"
     config.write_text(
@@ -423,6 +610,32 @@ def test_client_allows_explicit_retry_with_the_same_request_id(tmp_path, monkeyp
 
     assert first == retry == {"success": True, "checkpoint_id": "cp-1"}
     assert seen_request_ids == ["t07-checkpoint-1", "t07-checkpoint-1"]
+
+
+def test_client_safe_transport_retry_reuses_request_id(tmp_path, monkeypatch) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
+        encoding="utf-8",
+    )
+    client = HubClient(config_path=str(config), auto_start=False)
+    seen_request_ids: list[str] = []
+
+    def open_request(_method: str, _path: str, _body: bytes, headers: dict[str, str], _timeout: float) -> bytes:
+        seen_request_ids.append(headers["X-LocalAI-Request-ID"])
+        if len(seen_request_ids) == 1:
+            raise URLError("connection refused before request dispatch")
+        return b'{"success":true,"checkpoint_id":"cp-1"}'
+
+    monkeypatch.setattr(client, "_pooled_open", open_request)
+    result = client.post(
+        "/api/repo/complexity",
+        {"root": str(tmp_path)},
+        request_id="t07-pre-send-retry-1",
+    )
+
+    assert result == {"success": True, "checkpoint_id": "cp-1"}
+    assert seen_request_ids == ["t07-pre-send-retry-1", "t07-pre-send-retry-1"]
 
 
 @pytest.mark.parametrize("request_id", ["", "bad request", "bad\nid", "café"])
@@ -749,6 +962,9 @@ def test_post_rejects_malformed_request_id_before_mutation_dispatch(tmp_path, mo
 
     assert submitted == []
     assert responses[0][0] == 400
+    assert responses[0][1]["terminal"] is True
+    assert responses[0][1]["retryable"] is False
+    assert "request_id" in responses[0][1]["error"]
     with closing(journal._connect()) as con:
         assert con.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == 0
 
@@ -793,7 +1009,9 @@ def test_send_normalizes_http_error_before_journaling_and_serializing(monkeypatc
     ("path", "payload", "expected_call"),
     [
         ("/api/rag/index", {"root": "project"}, "rag-index"),
+        ("/api/rag/docset/index", {"name": "docs", "root": "project"}, "rag-docset-index"),
         ("/api/rag/ingest_document", {"workspace": "default", "content": "doc"}, "rag-ingest"),
+        ("/api/rag/ingest_diagram", {"workspace": "default", "image_path": "diagram.png"}, "rag-diagram"),
         ("/api/work-orders", {"action": "submit", "work_id": "work-1"}, "work-submit"),
         ("/api/agent-state/tasks", {"action": "checkpoint", "task_id": "task-1", "phase": "testing", "next_action": "verify"}, "task-checkpoint"),
         ("/api/command", {"command": "pytest"}, "command"),
@@ -818,7 +1036,9 @@ def test_http_partial_publish_failure_replays_without_dispatching_twice(
         recovery=journal,
         rag=SimpleNamespace(
             index=lambda *_args, **_kwargs: failed_publish("rag-index"),
+            docset_index=lambda *_args, **_kwargs: failed_publish("rag-docset-index"),
             ingest_document=lambda *_args, **_kwargs: failed_publish("rag-ingest"),
+            ingest_diagram=lambda *_args, **_kwargs: failed_publish("rag-diagram"),
         ),
         work_orchestrator=SimpleNamespace(
             enabled=True,
@@ -843,6 +1063,86 @@ def test_http_partial_publish_failure_replays_without_dispatching_twice(
         if not getattr(self, "_journal_finished", False):
             success = http_server._journal_outcome_success(status, data)
             journal.finish("req-1", success, status_code=status, response=data)
+            self._journal_finished = True
+        responses.append((status, data))
+
+    monkeypatch.setattr(http_server.Handler, "_send", respond)
+
+    for _ in range(2):
+        handler = object.__new__(http_server.Handler)
+        handler.path = path
+        handler.headers = {"Content-Type": "application/json"}
+        http_server.Handler.do_POST(handler)
+
+    assert calls == [expected_call]
+    assert len(responses) == 2
+    assert responses[1] == responses[0]
+
+
+@pytest.mark.parametrize(
+    ("path", "payload", "expected_call"),
+    [
+        ("/api/models/manage", {"action": "pull", "model": "test-model"}, "model-pull"),
+        (
+            "/api/agent-state/learning",
+            {"action": "observe", "candidate_id": "candidate-1", "observation": {"latency_ms": 1}},
+            "learning-observe",
+        ),
+        ("/api/agent-state/cleanup", {"retention_days": 7}, "agent-state-cleanup"),
+        (
+            "/api/agent-state/tasks",
+            {"action": "cleanup_worktree", "task_id": "task-1"},
+            "worktree-cleanup",
+        ),
+    ],
+)
+def test_http_request_journal_replays_action_mutations_once(
+    tmp_path, monkeypatch, path: str, payload: dict[str, Any], expected_call: str
+) -> None:
+    journal = RecoveryJournal(tmp_path)
+    calls: list[str] = []
+    responses: list[tuple[int, dict[str, Any]]] = []
+
+    def effect(name: str, result: Any = None) -> Any:
+        calls.append(name)
+        return result if result is not None else {"success": True, "effect": name}
+
+    app = SimpleNamespace(
+        config={"agent_state": {"retention_days": 30}},
+        recovery=journal,
+        rag=SimpleNamespace(),
+        agent_state=SimpleNamespace(enabled=True, cleanup=lambda **_kwargs: effect("agent-state-cleanup")),
+        agent_tasks=SimpleNamespace(
+            enabled=True,
+            state_store=SimpleNamespace(enabled=True),
+            cleanup_worktree=lambda *_args, **_kwargs: effect("worktree-cleanup"),
+        ),
+        agent_learning=SimpleNamespace(
+            state_store=SimpleNamespace(enabled=True),
+            observe=lambda *_args, **_kwargs: calls.append("learning-observe") or None,
+        ),
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-action-family"))
+    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
+    monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
+    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
+    monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: dict(payload))
+    monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
+    monkeypatch.setattr(
+        http_server.Handler,
+        "_handle_models_action",
+        lambda _self, action, _model: effect(f"model-{action}"),
+    )
+
+    def respond(self, status: int, data: dict[str, Any]) -> None:
+        if not getattr(self, "_journal_finished", False):
+            journal.finish(
+                "req-action-family",
+                http_server._journal_outcome_success(status, data),
+                status_code=status,
+                response=data,
+            )
             self._journal_finished = True
         responses.append((status, data))
 
