@@ -4234,9 +4234,28 @@ def test_{sym}_regression_edge_cases():
                 if s and (s == t_stem or s in t_stem or t_stem in s):
                     test_paths_set.add(t_path)
 
-        if self.code_index is not None:
+        code_index = self.code_index
+        if code_index is None:
+            # Direct DeterministicEngine callers may not receive the shared index
+            # that services inject. Build it lazily from RepositoryTools' bounded
+            # inventory so dependency traversal still selects transitive tests.
             try:
-                imp = self.code_index.impact(str(resolved_root), norm_changed)
+                from .code_index import CodeIndex
+
+                candidate_index = CodeIndex(self.config, self.repo_tools)
+                candidate_paths = [
+                    path.relative_to(resolved_root).as_posix()
+                    for path in self.repo_tools.iter_files(str(resolved_root))
+                ]
+                indexed = candidate_index.update_files_batch(str(resolved_root), candidate_paths)
+                if indexed.get("success"):
+                    self.code_index = candidate_index
+                    code_index = candidate_index
+            except Exception:
+                code_index = None
+        if code_index is not None:
+            try:
+                imp = code_index.impact(str(resolved_root), norm_changed)
                 for st in imp.get("suggested_tests", []):
                     test_paths_set.add(st["path"].replace("\\", "/"))
             except Exception:
