@@ -5,6 +5,7 @@ import threading
 import time
 from contextlib import closing
 
+import local_ai_hub.async_jobs as async_jobs_module
 from local_ai_hub.async_jobs import AsyncJobManager
 from local_ai_hub.debug_traces import DebugTraceStore
 
@@ -149,7 +150,7 @@ def test_recovery_requeues_persisted_job_once(tmp_path):
     with closing(manager._connect()) as con:
         con.execute(
             "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,'running',?,?,?)",
-            ("persisted", "tenant-a", "reason", "persisted-hash", '{"task":"resume"}', now, now, now + 600),
+            ("persisted", "tenant-a", "reason", "persisted-hash", '{"request_id":"recovery-requeue-001","task":"resume"}', now, now, now + 600),
         )
         con.commit()
 
@@ -209,7 +210,7 @@ def test_async_job_trace_links_prompt_scheduler_and_terminal_state(tmp_path):
     manager.close()
 
 
-def test_recovered_async_job_reopens_terminal_trace(tmp_path):
+def test_recovered_async_job_reopens_terminal_trace(tmp_path, monkeypatch):
     config = {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}, "debug_traces": {"enabled": True}}
     store = DebugTraceStore(config)
     manager = AsyncJobManager(
@@ -226,12 +227,13 @@ def test_recovered_async_job_reopens_terminal_trace(tmp_path):
         with closing(manager._connect()) as con:
             con.execute(
                 "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at,trace_id) VALUES(?,?,?,?,?,'running',?,?,?,?)",
-                ("persisted", "tenant-a", "reason", "persisted-hash", '{"task":"recover me"}', now, now, now + 600, trace_id),
+                ("persisted", "tenant-a", "reason", "persisted-hash", '{"request_id":"trace-recovery-001","task":"recover me"}', now, now, now + 600, trace_id),
             )
             con.commit()
         assert store.recover_incomplete(reason="hub restarted")["recovered_sessions"] == 1
         assert store.detail(trace_id)["terminal"] is True
 
+        monkeypatch.setattr(manager, "_dispatch", lambda _job_id: None)
         assert manager.recover() == 1
         detail = store.detail(trace_id)
         assert detail["session"]["state"] == "queued"
@@ -246,10 +248,10 @@ def test_async_jobs_tick_evicts_terminal_events(tmp_path):
     mgr = AsyncJobManager(
         {"server": {"state_dir": str(tmp_path / "state")}},
         _Scheduler(),
-        None,
+        _Artifacts(),
         lambda _action, _payload, _tenant: {"success": True},
     )
-    res = mgr.submit("tenant-1", "reason", {"task": "hello"})
+    res = mgr.submit("tenant-1", "reason", {"task": "hello"}, dispatch_delay_seconds=30)
     assert res["success"] is True
     job_id = res["job_id"]
     assert job_id in mgr._events
@@ -313,6 +315,80 @@ def test_cancelling_queued_job_is_idempotent(tmp_path):
         assert first["state"] == second["state"] == "cancelled"
         assert first["terminal"] is second["terminal"] is True
         assert manager.status("tenant-a", submitted["job_id"])["state"] == "cancelled"
+    finally:
+        manager.close()
+
+
+def test_early_delayed_dispatch_callback_preserves_queued_cancellation(tmp_path, monkeypatch):
+    manager, _scheduler = _manager(tmp_path)
+    timer_instances = []
+    executions = []
+    manager.executor = lambda action, payload, tenant: executions.append((action, tenant)) or {"success": True}
+    real_threading = async_jobs_module.threading
+
+    class ManualTimer:
+        def __init__(self, _interval, function, args=(), kwargs=None):
+            self.function = function
+            self.args = args
+            self.kwargs = kwargs or {}
+            self.daemon = False
+            self.cancelled = False
+
+        def start(self):
+            timer_instances.append(self)
+
+        def cancel(self):
+            self.cancelled = True
+
+        def fire(self):
+            self.function(*self.args, **self.kwargs)
+
+    class InlineThread:
+        def __init__(self, target, name=None, daemon=None):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+            self._alive = False
+
+        def start(self):
+            self._alive = True
+            try:
+                self.target()
+            finally:
+                self._alive = False
+
+        def is_alive(self):
+            return self._alive
+
+        def join(self, timeout=None):
+            return None
+
+    class ThreadingProxy:
+        Timer = ManualTimer
+        Thread = InlineThread
+
+        def __getattr__(self, name):
+            return getattr(real_threading, name)
+
+    monkeypatch.setattr(async_jobs_module, "threading", ThreadingProxy())
+    try:
+        submitted = manager.submit(
+            "tenant-a", "reason", {"task": "early dispatch callback"}, dispatch_delay_seconds=30
+        )
+        job_id = submitted["job_id"]
+
+        timer_instances[0].fire()
+
+        assert executions == []
+        assert manager.status("tenant-a", job_id)["state"] == "queued"
+        assert len(timer_instances) == 2
+        assert manager._delayed_dispatch[job_id] is timer_instances[1]
+
+        cancelled = manager.cancel("tenant-a", job_id)
+        assert cancelled["state"] == "cancelled"
+        timer_instances[1].fire()
+        assert executions == []
+        assert manager.status("tenant-a", job_id)["state"] == "cancelled"
     finally:
         manager.close()
 

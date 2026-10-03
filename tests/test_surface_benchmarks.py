@@ -8,7 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from tools.benchmark_surfaces import _plan_grade_reasons, compare_records, main, run_benchmark, summarize_samples
+from tools import benchmark_surfaces
+from tools.benchmark_surfaces import (
+    _BenchmarkCheckpoint,
+    _plan_grade_reasons,
+    compare_records,
+    main,
+    run_benchmark,
+    summarize_samples,
+)
 from local_ai_hub.async_jobs import AsyncJobManager
 
 _REQUIRED_GOLDEN_OPERATIONS = (
@@ -136,6 +144,84 @@ def test_summarize_samples_reports_percentiles_and_throughput() -> None:
     assert summary["p95_ms"] == 38.5
     assert summary["p99_ms"] == 39.7
     assert summary["throughput_per_second"] == 40.0
+
+
+def test_benchmark_checkpoint_resumes_completed_stages_and_incomplete_progress(tmp_path: Path) -> None:
+    scratch_path = tmp_path / "scratch"
+    scratch_path.mkdir()
+    checkpoint_path = tmp_path / "state" / "checkpoint.json"
+
+    checkpoint = _BenchmarkCheckpoint(
+        checkpoint_path,
+        run_fingerprint="run-config-sha256",
+        scratch_path=scratch_path,
+    )
+    checkpoint.complete_stage("hub_health", {"status": "passed", "samples_ms": [1.0]})
+    checkpoint.save_progress(
+        "hub_queue_admission",
+        {"concurrency": 4, "next_repetition": 25, "samples_ms": [2.0] * 100},
+    )
+
+    resumed = _BenchmarkCheckpoint(
+        checkpoint_path,
+        run_fingerprint="run-config-sha256",
+        scratch_path=scratch_path,
+        resume=True,
+    )
+
+    assert resumed.completed_stage("hub_health") == {"status": "passed", "samples_ms": [1.0]}
+    assert resumed.stage_progress("hub_queue_admission")["next_repetition"] == 25
+    assert resumed.stage_progress("hub_queue_admission")["samples_ms"] == [2.0] * 100
+    assert list((tmp_path / "state").glob(".checkpoint.json.*.tmp")) == []
+    with pytest.raises(ValueError, match="configuration mismatch"):
+        _BenchmarkCheckpoint(
+            checkpoint_path,
+            run_fingerprint="different-config-sha256",
+            scratch_path=scratch_path,
+            resume=True,
+        )
+
+
+def test_run_benchmark_resumes_missing_phase_and_reuses_completed_phases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_dir = tmp_path / "state"
+    scratch_dir = tmp_path / "scratch"
+    checkpoint_path = tmp_path / "run.checkpoint.json"
+    options = {
+        "state_dir": state_dir, "scratch_dir": scratch_dir, "file_count": 2, "rag_chunks": 2,
+        "repetitions": 1, "light_repetitions": 3, "paired_repetitions": 1, "concurrency": (1,),
+        "checkpoint_path": checkpoint_path,
+    }
+    first = run_benchmark(**options)
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["completed_stages"].pop("hub_health")
+    cold_sample = first["stages"]["hub_queue_admission"]["samples_by_regime"]["cold"][0]
+    checkpoint["completed_stages"].pop("hub_queue_admission")
+    checkpoint["progress"]["hub_queue_admission"] = {"by_concurrency": {"1": {
+        "next_repetition": 1, "samples_ms": [cold_sample], "cold_samples_ms": [cold_sample],
+        "warm_samples_ms": [], "error_count": 0, "error_types": [], "batch_seconds": 0.001,
+    }}}
+    checkpoint["completed_stages"].pop("__run__")
+    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+
+    calls: list[str] = []
+    original_measure = benchmark_surfaces._measure_stage
+
+    def recording_measure(name, *args, **kwargs):
+        calls.append(name)
+        return original_measure(name, *args, **kwargs)
+
+    monkeypatch.setattr(benchmark_surfaces, "_measure_stage", recording_measure)
+    resumed = run_benchmark(**options, resume=True)
+
+    assert resumed["success"] is True
+    assert resumed["stages"]["transport"] == first["stages"]["transport"]
+    assert len(resumed["stages"]["hub_queue_admission"]["samples_ms"]) == 3
+    assert resumed["stages"]["hub_queue_admission"]["samples_ms"][0] == cold_sample
+    assert "GET /health; exact HTTP response body bytes" in calls
+    assert "loopback_tcp_connect_to_Hub_server" not in calls
+    assert json.loads(checkpoint_path.read_text(encoding="utf-8"))["completed_stages"]["__run__"]
 
 
 def test_plan_grade_gate_rejects_malformed_metadata_without_crashing() -> None:

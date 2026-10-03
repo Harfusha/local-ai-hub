@@ -1,0 +1,183 @@
+diff --git a/src/local_ai_hub/async_jobs.py b/src/local_ai_hub/async_jobs.py
+--- a/src/local_ai_hub/async_jobs.py
++++ b/src/local_ai_hub/async_jobs.py
+@@ -773,9 +773,8 @@
+             return
+         with self._mode_transition_lock:
+             self._cancel_jobs_blocked_by_mode(self._operational_mode_snapshot())
+-            with self._lock:
++            with self._lock, closing(self._connect()) as con:
+                 self._delayed_dispatch.pop(job_id, None)
+-            with self._lock, closing(self._connect()) as con:
+                 con.row_factory = sqlite3.Row
+                 row = con.execute("SELECT * FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
+                 now = time.time()
+@@ -783,9 +782,15 @@
+                     not row
+                     or row["state"] != "queued"
+                     or row["cancel_requested"]
+-                    or float(row["dispatch_not_before"] or 0) > now
+                     or float(row["lease_until"] or 0) > now
+                 ):
++                    return
++                dispatch_not_before = float(row["dispatch_not_before"] or 0)
++                if dispatch_not_before > now:
++                    timer = threading.Timer(dispatch_not_before - now, self._dispatch, args=(job_id,))
++                    timer.daemon = True
++                    self._delayed_dispatch[job_id] = timer
++                    timer.start()
+                     return
+                 if self._resource_release_tokens:
+                     self._resource_release_waiters.add(str(job_id))
+@@ -1106,11 +1111,10 @@
+         return {"success": True, "job_id": job_id, "state": "done", "artifact_id": artifact_id, "result": value, "terminal": True, "retryable": False}
+ 
+     def cancel(self, tenant: str, job_id: str) -> dict[str, Any]:
+-        with self._lock:
++        with self._lock, closing(self._connect()) as con:
+             delayed = self._delayed_dispatch.pop(job_id, None)
+             if delayed is not None:
+                 delayed.cancel()
+-        with self._lock, closing(self._connect()) as con:
+             row = con.execute("SELECT state,trace_id FROM async_jobs WHERE job_id=? AND tenant=?", (job_id, tenant)).fetchone()
+             if not row: return {"success": False, "error": "async job not found", "terminal": True, "retryable": False}
+             state = str(row[0])
+diff --git a/tests/test_async_jobs.py b/tests/test_async_jobs.py
+--- a/tests/test_async_jobs.py
++++ b/tests/test_async_jobs.py
+@@ -6,6 +6,7 @@
+ import time
+ from contextlib import closing
+ 
++import local_ai_hub.async_jobs as async_jobs_module
+ from local_ai_hub.async_jobs import AsyncJobManager
+ from local_ai_hub.debug_traces import DebugTraceStore
+ 
+@@ -240,7 +241,7 @@
+     manager.close()
+ 
+ 
+-def test_recovered_async_job_reopens_terminal_trace(tmp_path):
++def test_recovered_async_job_reopens_terminal_trace(tmp_path, monkeypatch):
+     config = {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}, "debug_traces": {"enabled": True}}
+     store = DebugTraceStore(config)
+     manager = AsyncJobManager(
+@@ -263,6 +264,7 @@
+         assert store.recover_incomplete(reason="hub restarted")["recovered_sessions"] == 1
+         assert store.detail(trace_id)["terminal"] is True
+ 
++        monkeypatch.setattr(manager, "_dispatch", lambda _job_id: None)
+         assert manager.recover() == 1
+         detail = store.detail(trace_id)
+         assert detail["session"]["state"] == "queued"
+@@ -341,7 +343,7 @@
+         _Artifacts(),
+         lambda _action, _payload, _tenant: {"success": True},
+     )
+-    res = mgr.submit("tenant-1", "reason", {"task": "hello"})
++    res = mgr.submit("tenant-1", "reason", {"task": "hello"}, dispatch_delay_seconds=30)
+     assert res["success"] is True
+     job_id = res["job_id"]
+     assert job_id in mgr._events
+@@ -405,6 +407,80 @@
+         assert first["state"] == second["state"] == "cancelled"
+         assert first["terminal"] is second["terminal"] is True
+         assert manager.status("tenant-a", submitted["job_id"])["state"] == "cancelled"
++    finally:
++        manager.close()
++
++
++def test_early_delayed_dispatch_callback_preserves_queued_cancellation(tmp_path, monkeypatch):
++    manager, _scheduler = _manager(tmp_path)
++    timer_instances = []
++    executions = []
++    manager.executor = lambda action, payload, tenant: executions.append((action, tenant)) or {"success": True}
++    real_threading = async_jobs_module.threading
++
++    class ManualTimer:
++        def __init__(self, _interval, function, args=(), kwargs=None):
++            self.function = function
++            self.args = args
++            self.kwargs = kwargs or {}
++            self.daemon = False
++            self.cancelled = False
++
++        def start(self):
++            timer_instances.append(self)
++
++        def cancel(self):
++            self.cancelled = True
++
++        def fire(self):
++            self.function(*self.args, **self.kwargs)
++
++    class InlineThread:
++        def __init__(self, target, name=None, daemon=None):
++            self.target = target
++            self.name = name
++            self.daemon = daemon
++            self._alive = False
++
++        def start(self):
++            self._alive = True
++            try:
++                self.target()
++            finally:
++                self._alive = False
++
++        def is_alive(self):
++            return self._alive
++
++        def join(self, timeout=None):
++            return None
++
++    class ThreadingProxy:
++        Timer = ManualTimer
++        Thread = InlineThread
++
++        def __getattr__(self, name):
++            return getattr(real_threading, name)
++
++    monkeypatch.setattr(async_jobs_module, "threading", ThreadingProxy())
++    try:
++        submitted = manager.submit(
++            "tenant-a", "reason", {"task": "early dispatch callback"}, dispatch_delay_seconds=30
++        )
++        job_id = submitted["job_id"]
++
++        timer_instances[0].fire()
++
++        assert executions == []
++        assert manager.status("tenant-a", job_id)["state"] == "queued"
++        assert len(timer_instances) == 2
++        assert manager._delayed_dispatch[job_id] is timer_instances[1]
++
++        cancelled = manager.cancel("tenant-a", job_id)
++        assert cancelled["state"] == "cancelled"
++        timer_instances[1].fire()
++        assert executions == []
++        assert manager.status("tenant-a", job_id)["state"] == "cancelled"
+     finally:
+         manager.close()
+ 
+diff --git a/tests/test_async_coordination_reliability.py b/tests/test_async_coordination_reliability.py
+--- a/tests/test_async_coordination_reliability.py
++++ b/tests/test_async_coordination_reliability.py
+@@ -61,7 +61,7 @@
+         _Artifacts(),
+         _fail_first,
+     )
+-    submitted = manager.submit("tenant-a", "reason", {"task": "retry-job"}, dispatch_delay_seconds=30.0)
++    submitted = manager.submit("tenant-a", "reason", {"request_id": "retry-job-001", "task": "retry-job"}, dispatch_delay_seconds=30.0)
+     job_id = submitted["job_id"]
+ 
+     # First attempt fails -> should requeue because attempts (1) < max_attempts (2)
+@@ -107,7 +107,7 @@
+         _Artifacts(),
+         lambda a, p, t: {"success": True},
+     )
+-    submitted = manager.submit("tenant-a", "reason", {"task": "stuck-job"}, dispatch_delay_seconds=30.0)
++    submitted = manager.submit("tenant-a", "reason", {"request_id": "stuck-job-001", "task": "stuck-job"}, dispatch_delay_seconds=30.0)
+     job_id = submitted["job_id"]
+ 
+     # Artificially set job to running with an expired lease

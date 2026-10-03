@@ -1,0 +1,37 @@
+{
+  "task": "T02",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "patch": "C:\\Users\\Adam\\.codex\\worktrees\\t02-quality-baseline-resume\\.local-ai-hub\\artifacts\\t02-root-current-async.patch",
+  "patch_sha256": "9bf1c38e0a0c7e4cd6ccdaa13640525883a0c0859dda676ba5bf5fe5e50ada3e",
+  "root_preimage_sha256": {
+    "src/local_ai_hub/async_jobs.py": "dbdca670731b9ac9e10f7066543cdb374aab7679329323c46e3a60806aaff1d7",
+    "tests/test_async_jobs.py": "15b9d64b92c6fc71a0e6c50a1ecf9a83b88f0ba059197afb8b525e587c70384a",
+    "tests/test_async_coordination_reliability.py": "ace2b52486a5c8f5f45602c64f71624001a716608902d11864a1bc2e885d3619"
+  },
+  "root_postimage_sha256_if_applied": {
+    "src/local_ai_hub/async_jobs.py": "98c5e08b35aeb72ae67c838287a3ac83646bc46ccc9437660b5f285c55b814d3",
+    "tests/test_async_jobs.py": "dd27b2537ae7ac08d97db4d450eb073915397404b7c97d640712d16ac903cebe",
+    "tests/test_async_coordination_reliability.py": "5936a76040e1c42de53fda91874d0e927d7955591ba980d9dad9c90e5c3864e9"
+  },
+  "included_changes": [
+    "re-arm early delayed-dispatch callback using existing DB dispatch_not_before",
+    "make timer removal and cancellation state transition atomic under manager lock",
+    "add deterministic early-callback regression test",
+    "isolate trace-recovery test from automatic dispatch",
+    "delay tick-eviction fixture dispatch",
+    "supply request IDs to retry/recovery fixtures"
+  ],
+  "root_writes": 0,
+  "git_apply_check": "pending",
+  "test_receipt": {
+    "command": "pytest -q tests/test_async_jobs.py tests/test_async_job_reliability_contract.py tests/test_async_coordination_reliability.py tests/test_resource_backpressure.py --tb=short",
+    "result": "48 passed in 14.90s",
+    "run_in_T02_recovery_worktree": true
+  },
+  "benchmark_receipt": {
+    "path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t02-root-baseline-state-20261003\\partial-run-receipt.json",
+    "sha256": "93A29B592347731732DF43256389163CE3D30347303382410FD3CACBC35D7D87",
+    "diagnosis": "Captured stdout is empty and no stage summary exists; the process was manually interrupted with Ctrl+C (exit 1) while async-job state continued to grow. This proves an incomplete run, not a performance regression or benchmark assertion failure.",
+    "next_safe_measurement": "Use a fresh output and scratch directory. First run one bounded CPU/index smoke profile with no model load and per-stage receipts. Only after smoke receipt, run the required 1000 light/30 paired profile with a hard overall timeout and progress checkpoint per stage; keep inference and GPU disabled."
+  }
+}

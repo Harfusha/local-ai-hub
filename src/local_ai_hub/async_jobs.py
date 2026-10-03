@@ -53,6 +53,7 @@ class AsyncJobManager:
         self._lock = threading.RLock()
         self._events: dict[str, threading.Event] = {}
         self._delayed_dispatch: dict[str, threading.Timer] = {}
+        self._dispatch_not_before: dict[str, float] = {}
         self._dispatchers: set[threading.Thread] = set()
         self._workers: set[threading.Thread] = set()
         self._processes: dict[str, list[Any]] = {}
@@ -283,6 +284,7 @@ class AsyncJobManager:
             timer.daemon = True
             with self._lock:
                 self._delayed_dispatch[job_id] = timer
+                self._dispatch_not_before[job_id] = time.time() + delay
             timer.start()
         else:
             self._dispatch_background(job_id)
@@ -300,13 +302,22 @@ class AsyncJobManager:
             return
         with self._lock:
             self._delayed_dispatch.pop(job_id, None)
-        with self._lock, closing(self._connect()) as con:
-            con.row_factory = sqlite3.Row
-            row = con.execute("SELECT * FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
-            if not row or row["state"] != "queued" or row["cancel_requested"] or float(row["lease_until"] or 0) > time.time():
+            dispatch_not_before = self._dispatch_not_before.get(job_id)
+            now = time.time()
+            if dispatch_not_before is not None and dispatch_not_before > now:
+                timer = threading.Timer(dispatch_not_before - now, self._dispatch, args=(job_id,))
+                timer.daemon = True
+                self._delayed_dispatch[job_id] = timer
+                timer.start()
                 return
-            con.execute("UPDATE async_jobs SET lease_until=?,updated_at=? WHERE job_id=? AND state='queued'", (time.time() + self.lease_seconds, time.time(), job_id))
-            con.commit()
+            self._dispatch_not_before.pop(job_id, None)
+            with closing(self._connect()) as con:
+                con.row_factory = sqlite3.Row
+                row = con.execute("SELECT * FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
+                if not row or row["state"] != "queued" or row["cancel_requested"] or float(row["lease_until"] or 0) > now:
+                    return
+                con.execute("UPDATE async_jobs SET lease_until=?,updated_at=? WHERE job_id=? AND state='queued'", (now + self.lease_seconds, now, job_id))
+                con.commit()
 
         def run() -> None:
             try:
@@ -542,11 +553,11 @@ class AsyncJobManager:
         return {"success": True, "job_id": job_id, "state": "done", "artifact_id": artifact_id, "result": value, "terminal": True, "retryable": False}
 
     def cancel(self, tenant: str, job_id: str) -> dict[str, Any]:
-        with self._lock:
+        with self._lock, closing(self._connect()) as con:
             delayed = self._delayed_dispatch.pop(job_id, None)
+            self._dispatch_not_before.pop(job_id, None)
             if delayed is not None:
                 delayed.cancel()
-        with self._lock, closing(self._connect()) as con:
             row = con.execute("SELECT state,trace_id FROM async_jobs WHERE job_id=? AND tenant=?", (job_id, tenant)).fetchone()
             if not row: return {"success": False, "error": "async job not found", "terminal": True, "retryable": False}
             state = str(row[0])
@@ -660,6 +671,7 @@ class AsyncJobManager:
             dispatchers = list(self._dispatchers)
             delayed = list(self._delayed_dispatch.values())
             self._delayed_dispatch.clear()
+            self._dispatch_not_before.clear()
         with self._lock, closing(self._connect()) as con:
             con.execute("UPDATE async_jobs SET cancel_requested=1,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,updated_at=? WHERE state IN ('queued','running')", (time.time(),))
             con.commit()
