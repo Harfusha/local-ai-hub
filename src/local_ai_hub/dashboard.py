@@ -582,6 +582,16 @@ document.head.insertAdjacentHTML('beforeend','<style>.vision-review-modal{width:
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])), escJs=v=>esc(JSON.stringify(v));
 const n=v=>Number(v||0).toLocaleString(), ms=v=>{v=Number(v||0);return v>=1000?(v/1000).toFixed(v>=10000?1:2)+' s':Math.round(v)+' ms'}, durSec=s=>{s=Number(s||0);if(s<60)return Math.round(s)+'s';if(s<3600)return Math.floor(s/60)+'m '+Math.round(s%60)+'s';if(s<86400)return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';return Math.floor(s/86400)+'d '+Math.floor((s%86400)/3600)+'h'}, age=msv=>durSec(Number(msv||0)/1000);
 
+function dashboardHealthBadge(status={}){
+  const dependencies=status.dependency_status&&typeof status.dependency_status==='object'&&!Array.isArray(status.dependency_status)?Object.values(status.dependency_status):[];
+  const degradedCount=dependencies.filter(item=>item&&item.degraded===true).length;
+  const degraded=status.success===false||degradedCount>0;
+  const ollamaState=status.ollama_status||((status.ollama_online==null)?'unknown':status.ollama_online?'online':'offline');
+  const className=status.hub_online?(degraded||ollamaState!=='online'?'warn-t':'ok'):'bad-t';
+  const degradedLabel=degradedCount?` / ${String(degradedCount)} degraded check${degradedCount===1?'':'s'}`:degraded?' / status degraded':'';
+  return {className,degradedCount,degradedLabel};
+}
+
 function dashboardHealth(snapshot={}){
   const current=snapshot.current||snapshot.live||snapshot.headless||snapshot;
   const observability=snapshot.observability||{},cohorts=observability.cohorts||{},agentHttp=cohorts.agent_http||{},policy=cohorts.policy_rejection||{},inference=cohorts.inference||{};
@@ -4902,7 +4912,8 @@ function render(s){
   const worktreeRoot=$('worktreeRoot');
   if(firstProject&&worktreeRoot&&!worktreeRoot.value)worktreeRoot.value=firstProject.root;
 
-  $('health').innerHTML=`<span class="${s.hub_online&&s.ollama_online?'ok':s.hub_online?'warn-t':'bad-t'}">${s.hub_online?'hub ✓':'hub ✗'} / ${s.ollama_online?'ollama ✓':'ollama ✗'} / ${esc(h.state||'n/a')}</span>`;
+  const statusBadge=dashboardHealthBadge(s);
+  $('health').innerHTML=`<span class="${statusBadge.className}">${s.hub_online?'hub ✓':'hub ✗'} / ${s.ollama_online?'ollama ✓':'ollama ✗'} / ${esc(h.state||'n/a')}${statusBadge.degradedLabel}</span>`;
   $('uptime').textContent='uptime '+durSec(s.uptime_seconds)+' · supervisor restarts '+n(h.restarts);
 
   const ep=(rp.execution||{}).models||[];
