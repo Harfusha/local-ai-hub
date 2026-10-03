@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import copy
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import hashlib
@@ -54,6 +55,85 @@ _REQUIRED_COMPARISON_STAGES = {
     "hub_sqlite_db_read", "hub_code_index", "hub_context_pack",
     "hub_queue_admission", "hub_rag_chunking",
 }
+
+
+class _BenchmarkCheckpoint:
+    """Atomic phase results and resumable progress for one immutable run config."""
+
+    SCHEMA_VERSION = 1
+
+    def __init__(
+        self,
+        path: Path | str,
+        *,
+        run_fingerprint: str,
+        scratch_path: Path | str,
+        resume: bool = False,
+    ) -> None:
+        self.path = Path(path).expanduser().resolve()
+        self.scratch_path = Path(scratch_path).expanduser().resolve()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if resume:
+            try:
+                state = json.loads(self.path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError("benchmark checkpoint cannot be read") from exc
+            if (
+                not isinstance(state, dict)
+                or state.get("schema_version") != self.SCHEMA_VERSION
+                or state.get("run_fingerprint") != run_fingerprint
+                or state.get("scratch_path") != str(self.scratch_path)
+            ):
+                raise ValueError("benchmark checkpoint configuration mismatch")
+            if not self.scratch_path.is_dir():
+                raise ValueError("benchmark checkpoint scratch directory is missing")
+            self._state = state
+            self._state.setdefault("completed_stages", {})
+            self._state.setdefault("progress", {})
+        else:
+            if self.path.exists():
+                raise FileExistsError("benchmark checkpoint exists; pass resume=True")
+            self._state = {
+                "schema_version": self.SCHEMA_VERSION,
+                "run_fingerprint": run_fingerprint,
+                "scratch_path": str(self.scratch_path),
+                "completed_stages": {},
+                "progress": {},
+            }
+            self._write_atomic()
+
+    def completed_stage(self, name: str) -> dict[str, Any] | None:
+        result = self._state["completed_stages"].get(name)
+        return copy.deepcopy(result) if isinstance(result, dict) else None
+
+    def stage_progress(self, name: str) -> dict[str, Any]:
+        result = self._state["progress"].get(name)
+        return copy.deepcopy(result) if isinstance(result, dict) else {}
+
+    def complete_stage(self, name: str, result: dict[str, Any]) -> None:
+        self._state["completed_stages"][name] = copy.deepcopy(result)
+        self._state["progress"].pop(name, None)
+        self._write_atomic()
+
+    def save_progress(self, name: str, progress: dict[str, Any]) -> None:
+        self._state["progress"][name] = copy.deepcopy(progress)
+        self._write_atomic()
+
+    def _write_atomic(self) -> None:
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", newline="\n", dir=self.path.parent,
+                prefix=f".{self.path.name}.", suffix=".tmp", delete=False,
+            ) as stream:
+                temporary_path = Path(stream.name)
+                stream.write(json.dumps(self._state, indent=2, ensure_ascii=False) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_path, self.path)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
 
 @dataclass(frozen=True)
@@ -686,6 +766,9 @@ def run_benchmark(
     inference_runner: Any = None,
     include_inference: bool = False,
     baseline_record: dict[str, Any] | None = None,
+    checkpoint_path: Path | str | None = None,
+    resume: bool = False,
+    checkpoint_batch_size: int = 25,
 ) -> dict[str, Any]:
     """Run synthetic stages and persist samples, aggregates, and optional comparison."""
     if file_count < 1 or rag_chunks < 1 or repetitions < 1:
@@ -708,16 +791,63 @@ def run_benchmark(
         raise ValueError("full benchmark sizes must use the documented file and RAG matrices")
     if include_inference and inference_runner is None:
         raise ValueError("inference opt-in requires an explicit benchmark runner")
+    if checkpoint_batch_size < 1:
+        raise ValueError("checkpoint_batch_size must be positive")
+    if resume and checkpoint_path is None:
+        raise ValueError("resume requires --checkpoint")
+    if checkpoint_path is not None and scratch_dir is None:
+        raise ValueError("checkpointing requires --scratch-dir to retain resumable data")
 
     output_dir = _resolve_outside_repo(Path(state_dir), "state_dir")
     output_dir.mkdir(parents=True, exist_ok=True)
-    if scratch_dir is None:
+    run_config = {
+        "file_count": file_count, "rag_chunks": rag_chunks, "repetitions": repetitions,
+        "light_repetitions": light_repetitions, "paired_repetitions": paired_repetitions,
+        "concurrency": list(concurrency), "full": full, "inference": include_inference,
+        "checkpoint_batch_size": checkpoint_batch_size,
+        "baseline_digest": hashlib.sha256(json.dumps(baseline_record, sort_keys=True).encode()).hexdigest()
+        if baseline_record is not None else None,
+    }
+    run_fingerprint = hashlib.sha256(json.dumps({
+        "config": run_config, "implementation": _implementation_fingerprint(),
+    }, sort_keys=True).encode()).hexdigest()
+    checkpoint: _BenchmarkCheckpoint | None = None
+    owned_scratch: tempfile.TemporaryDirectory[str] | None = None
+    if checkpoint_path is not None:
+        scratch_parent = _resolve_outside_repo(Path(scratch_dir), "scratch_dir")
+        scratch_parent.mkdir(parents=True, exist_ok=True)
+        checkpoint_file = _resolve_outside_repo(Path(checkpoint_path), "checkpoint_path")
+        if resume:
+            try:
+                previous_checkpoint = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+                scratch = Path(previous_checkpoint["scratch_path"]).expanduser().resolve()
+            except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+                raise ValueError("benchmark checkpoint cannot be read") from exc
+            try:
+                scratch.relative_to(scratch_parent)
+            except ValueError as exc:
+                raise ValueError("checkpoint scratch directory must stay under --scratch-dir") from exc
+        else:
+            scratch = Path(tempfile.mkdtemp(prefix="local-ai-hub-benchmark-", dir=scratch_parent))
+        checkpoint = _BenchmarkCheckpoint(
+            checkpoint_file, run_fingerprint=run_fingerprint, scratch_path=scratch, resume=resume,
+        )
+        if _resolve_outside_repo(scratch, "checkpoint scratch_dir") != scratch:
+            raise ValueError("checkpoint scratch directory must be outside the repository")
+        completed_run = checkpoint.completed_stage("__run__") if resume else None
+        if completed_run is not None:
+            completed_path = Path(str(completed_run.get("record_path", "")))
+            if completed_path.is_file():
+                completed_record = json.loads(completed_path.read_text(encoding="utf-8"))
+                return {**completed_record, "record_path": str(completed_path)}
+    elif scratch_dir is None:
         owned_scratch = tempfile.TemporaryDirectory(prefix="local-ai-hub-benchmark-")
+        scratch = Path(owned_scratch.name)
     else:
         scratch_parent = _resolve_outside_repo(Path(scratch_dir), "scratch_dir")
         scratch_parent.mkdir(parents=True, exist_ok=True)
         owned_scratch = tempfile.TemporaryDirectory(prefix="local-ai-hub-benchmark-", dir=scratch_parent)
-    scratch = Path(owned_scratch.name)
+        scratch = Path(owned_scratch.name)
     started = time.perf_counter()
     stages: dict[str, Any] = {}
     inference_vram_samples: list[int] = []
@@ -729,12 +859,24 @@ def run_benchmark(
     try:
         synthetic: dict[str, Any] = {}
 
+        def measure_phase(name: str, operation: Callable[[], dict[str, Any]], *, rerun: bool = False) -> dict[str, Any]:
+            cached = checkpoint.completed_stage(name) if checkpoint is not None and not rerun else None
+            if cached is not None:
+                return cached
+            result = operation()
+            if checkpoint is not None:
+                checkpoint.complete_stage(name, result)
+            return result
+
         def setup_synthetic_inputs() -> dict[str, int]:
             files, test_path, corpus_path = _build_synthetic_repo(scratch, file_count, rag_chunks)
             synthetic.update(files=files, test_path=test_path, corpus_path=corpus_path)
             return {"file_count": len(files), "rag_chunk_count": rag_chunks}
 
-        stages["synthetic_setup"] = _measure_stage("synthetic_fixture_generation", setup_synthetic_inputs, 1)
+        stages["synthetic_setup"] = measure_phase(
+            "synthetic_setup", lambda: _measure_stage("synthetic_fixture_generation", setup_synthetic_inputs, 1),
+            rerun=True,
+        )
         files = synthetic["files"]
         test_path = synthetic["test_path"]
         corpus_path = synthetic["corpus_path"]
@@ -773,13 +915,13 @@ def run_benchmark(
                     raise RuntimeError("Hub returned an unexpected operation result")
             return response
 
-        stages["transport"] = _measure_stage(
+        stages["transport"] = measure_phase("transport", lambda: _measure_stage(
             "loopback_tcp_connect_to_Hub_server", lambda: _transport_sample(server), light_repetitions,
-        )
-        stages["hub_health"] = _measure_stage(
+        ))
+        stages["hub_health"] = measure_phase("hub_health", lambda: _measure_stage(
             "GET /health; exact HTTP response body bytes",
             lambda: require_http(_http_request(server, "/health"), 200, None), light_repetitions,
-        )
+        ))
         invalid_context_payload = {
             "root": str(scratch / "repo"), "query": "invalid benchmark probe", "max_tokens": "not-an-integer",
         }
@@ -792,10 +934,10 @@ def run_benchmark(
                 raise RuntimeError("Hub validation contract changed")
             return response
 
-        stages["hub_validation"] = _measure_stage(
+        stages["hub_validation"] = measure_phase("hub_validation", lambda: _measure_stage(
             "POST /api/context/pack invalid max_tokens; expected HTTP 400",
             invalid_context_request, paired_repetitions,
-        )
+        ))
 
         repo_root = scratch / "repo"
         relative_files = [path.relative_to(repo_root).as_posix() for path in files]
@@ -809,10 +951,10 @@ def run_benchmark(
                 "symbols_indexed": int(result.get("symbols", 0)),
             }
 
-        stages["hub_sqlite_index"] = _measure_stage(
+        stages["hub_sqlite_index"] = measure_phase("hub_sqlite_index", lambda: _measure_stage(
             "CodeIndex.update_files_batch persisted to isolated Hub SQLite index",
             populate_code_index, paired_repetitions,
-        )
+        ))
 
         def sqlite_index_read() -> dict[str, int]:
             connection = app.code_index._connect()
@@ -822,11 +964,11 @@ def run_benchmark(
                 connection.close()
             return {"symbol_rows": symbol_count}
 
-        stages["hub_sqlite_db_read"] = _measure_stage_regimes(
+        stages["hub_sqlite_db_read"] = measure_phase("hub_sqlite_db_read", lambda: _measure_stage_regimes(
             "CodeIndex SQLite symbol-row count query",
             lambda _index: sqlite_index_read(), lambda _index: sqlite_index_read(), paired_repetitions,
             definition="Fresh CodeIndex SQLite connections for both groups; no OS cache flush; database contains only synthetic source.",
-        )
+        ))
 
         def code_index_request(query: str) -> _HTTPObservation:
             payload = {"root": str(repo_root), "query": query, "limit": 10, "include_code": False}
@@ -843,14 +985,14 @@ def run_benchmark(
             isinstance(item, dict) and item.get("name") == "symbol_0"
             for item in symbol_payload.get("symbols", [])
         )
-        stages["hub_code_index"] = _measure_stage_regimes(
+        stages["hub_code_index"] = measure_phase("hub_code_index", lambda: _measure_stage_regimes(
             "POST /api/repo/code-index; real CodeIndex query and service cache",
             cold_symbol_query,
             lambda _index: code_index_request(warm_symbol_query),
             paired_repetitions,
             warm_prepare=lambda _index: code_index_request(warm_symbol_query),
             definition="Cold group uses a distinct query cache key per sample. Warm group repeats a fixed query pre-seeded outside the timer. No OS cache flush.",
-        )
+        ))
 
         def context_request(query: str) -> _HTTPObservation:
             payload = {
@@ -870,14 +1012,14 @@ def run_benchmark(
             and isinstance(context_golden_response.payload.get("context"), str)
         )
         warm_context_query = "symbol_0 context warmprobe"
-        stages["hub_context_pack"] = _measure_stage_regimes(
+        stages["hub_context_pack"] = measure_phase("hub_context_pack", lambda: _measure_stage_regimes(
             "POST /api/context/pack unguarded fast mode; exact HTTP response body bytes",
             lambda index: context_request(f"symbol_0 context coldprobe_{index}"),
             lambda _index: context_request(warm_context_query),
             paired_repetitions,
             warm_prepare=lambda _index: context_request(warm_context_query),
             definition="Cold group uses a distinct request cache key per sample. Warm group repeats a fixed request pre-seeded outside the timer. No OS cache flush.",
-        )
+        ))
 
         graph_edges = _call_graph(files[0])
         affected = _affected_tests(test_path, "graph_target")
@@ -916,11 +1058,11 @@ def run_benchmark(
         def chunk_synthetic_source() -> dict[str, int]:
             return {"chunk_count": len(app.rag._chunks(rag_sample, files[0].name))}
 
-        stages["hub_rag_chunking"] = _measure_stage_regimes(
+        stages["hub_rag_chunking"] = measure_phase("hub_rag_chunking", lambda: _measure_stage_regimes(
             "RAGStore._chunks_chunker_only", lambda _index: chunk_synthetic_source(),
             lambda _index: chunk_synthetic_source(), paired_repetitions,
             definition="Direct LocalAIApp RAGStore._chunks calls on one synthetic source file; excludes retrieval, embeddings, reranking, and model inference.",
-        )
+        ))
 
         def queue_admission_attempt(_value: int) -> tuple[float, str | None]:
             queued_at = time.perf_counter()
@@ -948,26 +1090,53 @@ def run_benchmark(
         queue_measurements: dict[str, Any] = {}
         total_admissions = 0
         total_batch_seconds = 0.0
+        queue_progress = checkpoint.stage_progress("hub_queue_admission") if checkpoint is not None else {}
+        progress_by_concurrency = queue_progress.setdefault("by_concurrency", {})
+        batch_limit = checkpoint_batch_size if checkpoint is not None else light_repetitions
         for level in concurrency:
-            level_samples: list[float] = []
-            level_errors = 0
-            level_batch_seconds = 0.0
-            for repetition_index in range(light_repetitions):
+            level_progress = progress_by_concurrency.setdefault(str(level), {
+                "next_repetition": 0, "samples_ms": [], "cold_samples_ms": [], "warm_samples_ms": [],
+                "error_count": 0, "error_types": [], "batch_seconds": 0.0,
+            })
+            level_samples = [float(value) for value in level_progress["samples_ms"]]
+            level_cold_samples = [float(value) for value in level_progress["cold_samples_ms"]]
+            level_warm_samples = [float(value) for value in level_progress["warm_samples_ms"]]
+            level_errors = int(level_progress["error_count"])
+            level_types = set(level_progress["error_types"])
+            level_batch_seconds = float(level_progress["batch_seconds"])
+            repetition_index = int(level_progress["next_repetition"])
+            while repetition_index < light_repetitions:
+                batch_count = min(batch_limit, light_repetitions - repetition_index)
                 batch_started = time.perf_counter()
-                with ThreadPoolExecutor(max_workers=level) as pool:
-                    outcomes = list(pool.map(queue_admission_attempt, range(level)))
-                batch_seconds = time.perf_counter() - batch_started
-                level_batch_seconds += batch_seconds
-                total_batch_seconds += batch_seconds
-                total_admissions += level
-                for elapsed_ms, error_type in outcomes:
-                    level_samples.append(elapsed_ms)
-                    queue_samples.append(elapsed_ms)
-                    (queue_cold_samples if repetition_index == 0 else queue_warm_samples).append(elapsed_ms)
-                    if error_type:
-                        level_errors += 1
-                        queue_error_count += 1
-                        queue_error_types.add(error_type)
+                for batch_offset in range(batch_count):
+                    with ThreadPoolExecutor(max_workers=level) as pool:
+                        outcomes = list(pool.map(queue_admission_attempt, range(level)))
+                    batch_seconds = time.perf_counter() - batch_started
+                    level_batch_seconds += batch_seconds
+                    sample_regime = level_cold_samples if repetition_index + batch_offset == 0 else level_warm_samples
+                    for elapsed_ms, error_type in outcomes:
+                        level_samples.append(elapsed_ms)
+                        sample_regime.append(elapsed_ms)
+                        if error_type:
+                            level_errors += 1
+                            level_types.add(error_type)
+                    batch_started = time.perf_counter()
+                repetition_index += batch_count
+                level_progress.update({
+                    "next_repetition": repetition_index, "samples_ms": level_samples,
+                    "cold_samples_ms": level_cold_samples, "warm_samples_ms": level_warm_samples,
+                    "error_count": level_errors, "error_types": sorted(level_types),
+                    "batch_seconds": level_batch_seconds,
+                })
+                if checkpoint is not None:
+                    checkpoint.save_progress("hub_queue_admission", queue_progress)
+            total_batch_seconds += level_batch_seconds
+            total_admissions += len(level_samples)
+            queue_samples.extend(level_samples)
+            queue_cold_samples.extend(level_cold_samples)
+            queue_warm_samples.extend(level_warm_samples)
+            queue_error_count += level_errors
+            queue_error_types.update(level_types)
             queue_measurements[str(level)] = {
                 **summarize_samples(level_samples),
                 "error_count": level_errors,
@@ -995,6 +1164,8 @@ def run_benchmark(
             "concurrent_admissions_per_second": round(total_admissions / total_batch_seconds, 3) if total_batch_seconds else None,
             "by_concurrency": queue_measurements,
         }
+        if checkpoint is not None:
+            checkpoint.complete_stage("hub_queue_admission", stages["hub_queue_admission"])
 
         stages["model_load"] = _skipped_stage("not requested; runtime load time is not inferred")
         stages["inference"] = _skipped_stage("not requested")
@@ -1152,6 +1323,8 @@ def run_benchmark(
             os.replace(temporary_path, record_path)
         finally:
             temporary_path.unlink(missing_ok=True)
+        if checkpoint is not None:
+            checkpoint.complete_stage("__run__", {"record_path": str(record_path)})
         return {**record, "record_path": str(record_path)}
     finally:
         try:
@@ -1172,7 +1345,8 @@ def run_benchmark(
                     if http_server_module is not None:
                         http_server_module.APP = previous_http_app
                 finally:
-                    owned_scratch.cleanup()
+                    if owned_scratch is not None:
+                        owned_scratch.cleanup()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1189,6 +1363,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--inference", action="store_true", help="explicitly run one synthetic hardware inference")
     parser.add_argument("--config", type=Path, help="Hub config required by --inference")
     parser.add_argument("--compare-with", type=Path, help="compare against a previous benchmark JSON record")
+    parser.add_argument("--checkpoint", type=Path, help="atomically persist completed phases and resumable progress")
+    parser.add_argument("--resume", action="store_true", help="resume the matching run saved in --checkpoint")
+    parser.add_argument("--checkpoint-batch-size", type=int, default=25, help="queue repetitions per durable checkpoint")
     args = parser.parse_args(argv)
     app = None
     try:
@@ -1217,6 +1394,8 @@ def main(argv: list[str] | None = None) -> int:
             concurrency=tuple(args.concurrency), full=args.full,
             inference_runner=inference_runner, include_inference=args.inference,
             baseline_record=baseline_record,
+            checkpoint_path=args.checkpoint, resume=args.resume,
+            checkpoint_batch_size=args.checkpoint_batch_size,
         )
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
