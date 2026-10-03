@@ -26,6 +26,13 @@ def _init_treesitter() -> bool:
         return bool(_PARSERS)
     _INIT_ATTEMPTED = True
 
+    # Do not import native Tree-sitter bindings on Windows Python 3.13+; the
+    # language-pack wheels can access-violate while walking otherwise valid trees.
+    # The deterministic Python AST and language-specific fallbacks remain available.
+    if os.name == "nt" and sys.version_info >= (3, 13):
+        logger.warning("Tree-sitter disabled on Windows Python 3.13+; using safe fallbacks")
+        return False
+
     try:
         import tree_sitter_language_pack as tslp
         mapping = {
@@ -50,13 +57,6 @@ def _init_treesitter() -> bool:
             return True
     except Exception as exc:
         logger.debug("tree_sitter_language_pack unavailable: %s", exc)
-
-    # The bundled native Tree-sitter wheels currently access-violate on Windows
-    # with Python 3.13 while walking some Unity/Go syntax trees. All callers have
-    # safe language-specific fallbacks, so keep the Hub process stable here.
-    if os.name == "nt" and sys.version_info >= (3, 13):
-        logger.warning("Tree-sitter disabled on Windows Python 3.13+; using safe fallbacks")
-        return False
 
     try:
         from tree_sitter import Language, Parser
