@@ -67,17 +67,18 @@ from .work_orchestrator import WorkOrchestrator
 
 
 _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
-_STATUS_MAX_INFLIGHT_DEPENDENCIES = 8
+_STATUS_MAX_WORKERS = 8
+_STATUS_MAX_INFLIGHT_DEPENDENCIES = 32
 
 
 def _new_status_dependency_executor() -> ThreadPoolExecutor:
     executor = ThreadPoolExecutor(
-        max_workers=_STATUS_MAX_INFLIGHT_DEPENDENCIES,
+        max_workers=_STATUS_MAX_WORKERS,
         thread_name_prefix="local-ai-status",
     )
-    ready = threading.Barrier(_STATUS_MAX_INFLIGHT_DEPENDENCIES)
+    ready = threading.Barrier(_STATUS_MAX_WORKERS)
     try:
-        warmers = [executor.submit(ready.wait, timeout=2.0) for _ in range(_STATUS_MAX_INFLIGHT_DEPENDENCIES)]
+        warmers = [executor.submit(ready.wait, timeout=2.0) for _ in range(_STATUS_MAX_WORKERS)]
         for warmer in warmers:
             warmer.result(timeout=2.5)
     except Exception:
@@ -110,8 +111,8 @@ def _accelerator_status_fallback(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _status_dependency(callback, fallback, *, key, lock, inflight, slots, executor, deadline=None, diagnostic=None):
-    """Reuse active status work and cap workers that remain stuck past their deadline."""
+def _schedule_status_dependency(callback, fallback, *, key, lock, inflight, slots, executor, deadline, diagnostic=None):
+    """Start or reuse bounded status work without waiting for its result."""
     def mark_degraded(reason, error=None):
         if diagnostic is None:
             return
@@ -119,21 +120,19 @@ def _status_dependency(callback, fallback, *, key, lock, inflight, slots, execut
         if error is not None:
             diagnostic["error_type"] = type(error).__name__
 
-    if deadline is None:
-        deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         mark_degraded("deadline_exhausted")
-        return fallback, False
+        return {"fallback": fallback, "healthy": False}
     if not lock.acquire(timeout=remaining):
         mark_degraded("lock_timeout")
-        return fallback, False
+        return {"fallback": fallback, "healthy": False}
     try:
         entry = inflight.get(key)
         if entry is None:
             if not slots.acquire(blocking=False):
                 mark_degraded("worker_capacity_exhausted")
-                return fallback, False
+                return {"fallback": fallback, "healthy": False}
             entry = {"completed": threading.Event(), "outcome": {}}
             inflight[key] = entry
 
@@ -157,18 +156,48 @@ def _status_dependency(callback, fallback, *, key, lock, inflight, slots, execut
                 del inflight[key]
                 slots.release()
                 mark_degraded("executor_submit_error", exc)
-                return fallback, False
+                return {"fallback": fallback, "healthy": False}
     finally:
         lock.release()
-    remaining = deadline - time.monotonic()
-    if remaining <= 0 or not entry["completed"].wait(remaining):
-        mark_degraded("probe_timeout")
-        return fallback, False
+    return {"entry": entry, "fallback": fallback}
+
+
+def _resolve_status_dependency(handle, *, deadline, diagnostic=None):
+    fallback = handle["fallback"]
+    if "healthy" in handle:
+        return fallback, handle["healthy"]
+    entry = handle["entry"]
+    if not entry["completed"].is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not entry["completed"].wait(remaining):
+            if diagnostic is not None:
+                diagnostic["reason"] = "probe_timeout"
+            return fallback, False
     outcome = entry["outcome"]
     if "error" in outcome:
-        mark_degraded("probe_error", outcome["error"])
+        if diagnostic is not None:
+            diagnostic["reason"] = "probe_error"
+            diagnostic["error_type"] = type(outcome["error"]).__name__
         return fallback, False
     return outcome.get("value", fallback), True
+
+
+def _status_dependency(callback, fallback, *, key, lock, inflight, slots, executor, deadline=None, diagnostic=None):
+    """Reuse active status work and cap workers that remain stuck past their deadline."""
+    if deadline is None:
+        deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
+    handle = _schedule_status_dependency(
+        callback,
+        fallback,
+        key=key,
+        lock=lock,
+        inflight=inflight,
+        slots=slots,
+        executor=executor,
+        deadline=deadline,
+        diagnostic=diagnostic,
+    )
+    return _resolve_status_dependency(handle, deadline=deadline, diagnostic=diagnostic)
 
 
 def _runtime_is_available(runtime: Any) -> bool:
@@ -798,11 +827,17 @@ class LocalAIApp:
                 return result
             degraded = False
             dependency_status: dict[str, dict[str, Any]] = {}
+            pending_dependencies: dict[str, tuple[dict[str, Any], Any, dict[str, Any]]] = {}
 
             def read(key, callback, fallback):
                 nonlocal degraded
-                diagnostic: dict[str, Any] = {}
-                value, healthy = dependency(key, callback, fallback, diagnostic)
+                pending = pending_dependencies.pop(key, None)
+                if pending is None:
+                    diagnostic: dict[str, Any] = {}
+                    value, healthy = dependency(key, callback, fallback, diagnostic)
+                else:
+                    handle, fallback, diagnostic = pending
+                    value, healthy = _resolve_status_dependency(handle, deadline=deadline, diagnostic=diagnostic)
                 degraded = degraded or not healthy
                 dependency_status[key] = {
                     "degraded": not healthy,
@@ -826,6 +861,49 @@ class LocalAIApp:
             # Runtime availability is a separate probe phase. A slow runtime must
             # not consume the status snapshot's budget for independent Hub state.
             deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
+            status_probes = {
+                "scheduler": (self.scheduler.status, {}),
+                "accelerators": (lambda: accelerator_status(self.config), _accelerator_status_fallback(self.config)),
+                "telemetry.summary": (lambda: self.telemetry.summary(scope=scope, _flush=False), {}),
+                "model_execution": (self.services.model_policy.summary, {}),
+                "ollama_profile": (self.runtime.managed_profile_status, {}),
+                "background_gpu": (self.background_gpu.status, {}),
+                "generation_cache": (self.services.generation_cache.stats, {}),
+                "semantic_cache": (self.services.semantic_cache.stats, {}),
+                "repo_cache": (self.services.repo_cache.stats, {}),
+                "commands": (self.commands.stats, {}),
+                "repo_snapshots": (self.repo_tools.snapshot_stats, {}),
+                "lossless_router": (self.token_router.stats, {}),
+                "pipeline": (self.pipeline.stats, {}),
+                "preprocessing": (self.preprocessor.stats, {}),
+                "tool_agent": (self.tool_agent.stats, {}),
+                "code_index": (self.code_index.status, {}),
+                "deterministic": (self.deterministic.status, {}),
+                "evidence_store": (self.evidence.stats, {}),
+                "learning": (self.learner.stats, {}),
+                "autotune": (self.tuner.stats, {}),
+                "circuit_breakers": (self.services.breakers.status, {}),
+                "recovery": (lambda: self.recovery.status(limit=8), {}),
+                "embeddings": (self.embeddings.status, {}),
+                "reranker": (self.reranker.status, {}),
+                "code_intelligence": (self.external_tools.status, {}),
+                "debug_traces": (self.debug_traces.stats, {}),
+                "agent_state": (self._agent_state_summary, {"enabled": False}),
+            }
+            for key, (callback, fallback) in status_probes.items():
+                diagnostic: dict[str, Any] = {}
+                handle = _schedule_status_dependency(
+                    callback,
+                    fallback,
+                    key=key,
+                    lock=self._status_dependency_lock,
+                    inflight=self._status_dependency_inflight,
+                    slots=self._status_dependency_slots,
+                    executor=self._status_dependency_executor,
+                    deadline=deadline,
+                    diagnostic=diagnostic,
+                )
+                pending_dependencies[key] = (handle, fallback, diagnostic)
             scheduler = read("scheduler", self.scheduler.status, {})
             accelerators = read(
                 "accelerators",

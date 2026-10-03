@@ -258,6 +258,7 @@ def test_status_uses_one_deadline_across_slow_dependencies(monkeypatch):
     assert result["model_execution"] == {}
     assert result["background_gpu"] == {}
     assert result["scheduler"] == {"state": "ready"}
+    assert result["dependency_status"]["reranker"]["degraded"] is False
 
 
 def test_slow_accelerator_probe_degrades_within_deadline_and_keeps_shape(monkeypatch):
