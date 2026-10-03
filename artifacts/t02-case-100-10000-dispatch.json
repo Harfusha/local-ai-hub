@@ -31,5 +31,20 @@
     "release_error": "worktree ownership identifier is required",
     "released": false
   },
+  "coordinator_reported_release_check": {
+    "source": "T20 coordination message; not independently verified",
+    "action": "release",
+    "arguments": ["lease_id", "task_id"],
+    "result": {
+      "success": true,
+      "released_rows": 0
+    },
+    "leases_query": {
+      "terminal": true,
+      "retryable": false,
+      "error": "HubClient._singleflight() got an unexpected keyword argument 'request_id'"
+    },
+    "release_proven": false
+  },
   "note": "No benchmark or test run was queued after the broker rejection and stop instruction. Existing T02 candidate smoke/test receipts remain unchanged."
 }
