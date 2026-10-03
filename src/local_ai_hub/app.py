@@ -9,6 +9,7 @@ import sqlite3
 import threading
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -69,12 +70,69 @@ _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
 _STATUS_MAX_INFLIGHT_DEPENDENCIES = 8
 
 
-def _status_dependency(callback, fallback, *, key, lock, inflight, slots):
+def _new_status_dependency_executor() -> ThreadPoolExecutor:
+    executor = ThreadPoolExecutor(
+        max_workers=_STATUS_MAX_INFLIGHT_DEPENDENCIES,
+        thread_name_prefix="local-ai-status",
+    )
+    ready = threading.Barrier(_STATUS_MAX_INFLIGHT_DEPENDENCIES)
+    try:
+        warmers = [executor.submit(ready.wait, timeout=2.0) for _ in range(_STATUS_MAX_INFLIGHT_DEPENDENCIES)]
+        for warmer in warmers:
+            warmer.result(timeout=2.5)
+    except Exception:
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    return executor
+
+
+def _accelerator_status_fallback(config: dict[str, Any]) -> dict[str, Any]:
+    models = config.get("models", {}) if isinstance(config, dict) else {}
+    if not isinstance(models, dict):
+        models = {}
+    return {
+        "openvino": {
+            "installed": None,
+            "available": None,
+            "devices": [],
+            "error": "status probe unavailable within request deadline",
+        },
+        "embedding": {
+            "backend": models.get("embedding_backend", "sentence-transformers"),
+            "requested_device": models.get("embedding_device", "cpu"),
+            "candidates": [],
+        },
+        "reranker": {
+            "backend": models.get("reranker_backend", "torch"),
+            "requested_device": models.get("reranker_device", "cpu"),
+            "candidates": [],
+        },
+    }
+
+
+def _status_dependency(callback, fallback, *, key, lock, inflight, slots, executor, deadline=None, diagnostic=None):
     """Reuse active status work and cap workers that remain stuck past their deadline."""
-    with lock:
+    def mark_degraded(reason, error=None):
+        if diagnostic is None:
+            return
+        diagnostic["reason"] = reason
+        if error is not None:
+            diagnostic["error_type"] = type(error).__name__
+
+    if deadline is None:
+        deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        mark_degraded("deadline_exhausted")
+        return fallback, False
+    if not lock.acquire(timeout=remaining):
+        mark_degraded("lock_timeout")
+        return fallback, False
+    try:
         entry = inflight.get(key)
         if entry is None:
             if not slots.acquire(blocking=False):
+                mark_degraded("worker_capacity_exhausted")
                 return fallback, False
             entry = {"completed": threading.Event(), "outcome": {}}
             inflight[key] = entry
@@ -94,15 +152,21 @@ def _status_dependency(callback, fallback, *, key, lock, inflight, slots):
                         entry["completed"].set()
 
             try:
-                threading.Thread(target=run, daemon=True).start()
-            except Exception:
+                executor.submit(run)
+            except Exception as exc:
                 del inflight[key]
                 slots.release()
+                mark_degraded("executor_submit_error", exc)
                 return fallback, False
-    if not entry["completed"].wait(max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))):
+    finally:
+        lock.release()
+    remaining = deadline - time.monotonic()
+    if remaining <= 0 or not entry["completed"].wait(remaining):
+        mark_degraded("probe_timeout")
         return fallback, False
     outcome = entry["outcome"]
     if "error" in outcome:
+        mark_degraded("probe_error", outcome["error"])
         return fallback, False
     return outcome.get("value", fallback), True
 
@@ -184,6 +248,7 @@ class LocalAIApp:
         self._status_dependency_lock = threading.Lock()
         self._status_dependency_inflight: dict[str, dict[str, Any]] = {}
         self._status_dependency_slots = threading.BoundedSemaphore(_STATUS_MAX_INFLIGHT_DEPENDENCIES)
+        self._status_dependency_executor = _new_status_dependency_executor()
 
         self.logger = configure_logging(state_dir, self.config)
         fast_runtime = OllamaRuntime(self.config)
@@ -554,19 +619,56 @@ class LocalAIApp:
                 return result
             headless = self._headless_status()
             ollama = headless.get("ollama_online") if headless.get("supervisor") else None
+            deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
+            runtime_healthy = True
+            profile_healthy = True
+            dependency_status: dict[str, dict[str, Any]] = {}
             # The supervisor status file is asynchronous and can lag behind a
             # live endpoint during restart/recovery. Prefer the runtime probe
             # for the public live/doctor status so stale supervisor state does
             # not report a healthy Ollama process as offline.
             runtime = getattr(self, "runtime", None)
             if runtime is not None:
-                try:
-                    ollama = bool(runtime.is_online())
-                    if isinstance(headless, dict) and headless.get("supervisor"):
-                        headless = dict(headless)
-                        headless["ollama_online"] = ollama
-                except Exception:
-                    pass
+                runtime_diagnostic: dict[str, Any] = {}
+                ollama, runtime_healthy = _status_dependency(
+                    runtime.is_online,
+                    False,
+                    key="runtime.online",
+                    lock=self._status_dependency_lock,
+                    inflight=self._status_dependency_inflight,
+                    slots=self._status_dependency_slots,
+                    executor=self._status_dependency_executor,
+                    deadline=deadline,
+                    diagnostic=runtime_diagnostic,
+                )
+                dependency_status["runtime.online"] = {
+                    "degraded": not runtime_healthy,
+                    "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
+                    **runtime_diagnostic,
+                }
+                ollama = bool(ollama)
+                if isinstance(headless, dict) and headless.get("supervisor"):
+                    headless = dict(headless)
+                    headless["ollama_online"] = ollama
+                profile_diagnostic: dict[str, Any] = {}
+                ollama_profile, profile_healthy = _status_dependency(
+                    runtime.managed_profile_status,
+                    {},
+                    key="ollama_profile",
+                    lock=self._status_dependency_lock,
+                    inflight=self._status_dependency_inflight,
+                    slots=self._status_dependency_slots,
+                    executor=self._status_dependency_executor,
+                    deadline=deadline,
+                    diagnostic=profile_diagnostic,
+                )
+                dependency_status["ollama_profile"] = {
+                    "degraded": not profile_healthy,
+                    "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
+                    **profile_diagnostic,
+                }
+            else:
+                ollama_profile = {}
             scheduler = self.scheduler.status()
             prep_stats = self.preprocessor.stats()
             try:
@@ -582,8 +684,26 @@ class LocalAIApp:
             from .features import FeatureSet
             fs = FeatureSet.from_config(self.config)
             observability = self.telemetry.realtime_summary(scope=scope)
+            accelerator_diagnostic: dict[str, Any] = {}
+            accelerators, accelerator_healthy = _status_dependency(
+                lambda: accelerator_status(self.config),
+                _accelerator_status_fallback(self.config),
+                key="accelerators",
+                lock=self._status_dependency_lock,
+                inflight=self._status_dependency_inflight,
+                slots=self._status_dependency_slots,
+                executor=self._status_dependency_executor,
+                deadline=deadline,
+                diagnostic=accelerator_diagnostic,
+            )
+            dependency_status["accelerators"] = {
+                "degraded": not accelerator_healthy,
+                "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
+                **accelerator_diagnostic,
+            }
             result = {
-                "success": True, "hub_online": True, "version": __version__,
+                "success": runtime_healthy and profile_healthy and accelerator_healthy, "hub_online": True, "version": __version__,
+                "dependency_status": dependency_status,
                 "uptime_seconds": max(0, int(time.time() - self.started_at)),
                 "features": {
                     "status": fs.status,
@@ -602,7 +722,7 @@ class LocalAIApp:
                 },
                 "models": dict(self.config.get("models", {})),
                 "hardware": dict(self.config.get("_hardware", {})),
-                "accelerators": accelerator_status(self.config),
+                "accelerators": accelerators,
                 "code_intelligence": self.external_tools.status(),
                 "runtime_profile": {
                     "tiered_models": self.config.get("models", {}).get("heavy_code") != self.config.get("models", {}).get("fast_code"),
@@ -615,7 +735,7 @@ class LocalAIApp:
                 "ollama_online": ollama, "scheduler": scheduler,
                 "headless": headless,
                 "background_gpu": self.background_gpu.status(),
-                "ollama_profile": self.runtime.managed_profile_status() if getattr(self, "runtime", None) else {},
+                "ollama_profile": ollama_profile,
                 "model_execution": self.services.model_policy.summary() if getattr(self, "services", None) and getattr(self.services, "model_policy", None) else {},
                 "vram_balancer": self.vram_balancer.status() if getattr(self, "vram_balancer", None) else {},
                 "benchmark": self.benchmark_runner.get_latest_summary() if getattr(self, "benchmark_runner", None) else {"available": False},
@@ -648,12 +768,13 @@ class LocalAIApp:
             return dict(result)
 
     def status(self, *, scope: str = "process") -> dict[str, Any]:
+        deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
         scope = str(scope).strip().lower()
         if scope not in {"process", "window"}:
             scope = "process"
         import os
 
-        def dependency(key, callback, fallback):
+        def dependency(key, callback, fallback, diagnostic=None):
             return _status_dependency(
                 callback,
                 fallback,
@@ -661,6 +782,9 @@ class LocalAIApp:
                 lock=self._status_dependency_lock,
                 inflight=self._status_dependency_inflight,
                 slots=self._status_dependency_slots,
+                executor=self._status_dependency_executor,
+                deadline=deadline,
+                diagnostic=diagnostic,
             )
 
         with self._status_full_cache_lock:
@@ -673,23 +797,45 @@ class LocalAIApp:
                 result["agent_state"] = agent_state
                 return result
             degraded = False
+            dependency_status: dict[str, dict[str, Any]] = {}
 
             def read(key, callback, fallback):
                 nonlocal degraded
-                value, healthy = dependency(key, callback, fallback)
+                diagnostic: dict[str, Any] = {}
+                value, healthy = dependency(key, callback, fallback, diagnostic)
                 degraded = degraded or not healthy
+                dependency_status[key] = {
+                    "degraded": not healthy,
+                    "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
+                    **diagnostic,
+                }
                 return value
 
-            online = read("runtime.online", self.runtime.is_online, False)
+            runtime_diagnostic: dict[str, Any] = {}
+            online, runtime_healthy = dependency("runtime.online", self.runtime.is_online, False, runtime_diagnostic)
+            degraded = degraded or not runtime_healthy
+            dependency_status["runtime.online"] = {
+                "degraded": not runtime_healthy,
+                "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
+                **runtime_diagnostic,
+            }
             version = read("runtime.version", self.runtime.version, None) if online else None
             installed: list[str] = read("runtime.installed_models", self.runtime.installed_models, []) if online else []
             loaded_details: list[dict[str, Any]] = read("runtime.loaded_model_details", self.runtime.loaded_model_details, []) if online else []
             loaded = [str(row.get("name", "")) for row in loaded_details if row.get("name")]
+            # Runtime availability is a separate probe phase. A slow runtime must
+            # not consume the status snapshot's budget for independent Hub state.
+            deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
+            scheduler = read("scheduler", self.scheduler.status, {})
+            accelerators = read(
+                "accelerators",
+                lambda: accelerator_status(self.config),
+                _accelerator_status_fallback(self.config),
+            )
             telemetry_summary = read("telemetry.summary", lambda: self.telemetry.summary(scope=scope, _flush=False), {})
             model_execution = read("model_execution", self.services.model_policy.summary, {})
             ollama_profile = read("ollama_profile", self.runtime.managed_profile_status, {})
             background_gpu = read("background_gpu", self.background_gpu.status, {})
-            scheduler = read("scheduler", self.scheduler.status, {})
             generation_cache = read("generation_cache", self.services.generation_cache.stats, {})
             semantic_cache = read("semantic_cache", self.services.semantic_cache.stats, {})
             repo_cache = read("repo_cache", self.services.repo_cache.stats, {})
@@ -713,6 +859,7 @@ class LocalAIApp:
             agent_state = read("agent_state", self._agent_state_summary, {"enabled": False})
             res = {
                 "success": not degraded, "hub_pid": os.getpid(), "hub_online": True, "version": __version__,
+                "dependency_status": dependency_status,
                 "ollama_online": online, "online": online, "ollama_version": version,
                 "installed_models": installed, "loaded_models": loaded, "loaded_model_details": loaded_details, "models": dict(self.config["models"]),
                 "model_execution": model_execution, "ollama_profile": ollama_profile,
@@ -727,7 +874,7 @@ class LocalAIApp:
                 "circuit_breakers": circuit_breakers, "recovery": recovery,
                 "fallback_count": self.services.fallback_count, "embeddings": embeddings,
                 "reranker": reranker, "features": dict(self.config.get("features", {})),
-                "hardware": dict(self.config.get("_hardware", {})), "accelerators": accelerator_status(self.config),
+                "hardware": dict(self.config.get("_hardware", {})), "accelerators": accelerators,
                 "code_intelligence": code_intelligence,
                 "observability": telemetry_summary, "token_saving": telemetry_summary, "debug_traces": debug_traces,
             }
@@ -1623,6 +1770,10 @@ class LocalAIApp:
                 return
             self._closed = True
         self._shutdown.set()
+        try:
+            self._status_dependency_executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
         # Stop helper loops before tearing down the services they periodically touch.
         # They are daemon threads as a final safety net, but bounded joins make normal
         # restart/shutdown deterministic and avoid late telemetry/preprocessor calls.
