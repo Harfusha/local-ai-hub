@@ -56,5 +56,11 @@
     },
     "release_proven": false
   },
+  "latest_t20_slot_snapshot": {
+    "source": "T20 coordination message; not independently verified",
+    "lease_owner": "T02",
+    "lease_id": "lease_fc36c8e2e311",
+    "slot_free": false
+  },
   "note": "No benchmark or test run was queued after the broker rejection and stop instruction. Existing T02 candidate smoke/test receipts remain unchanged."
 }
