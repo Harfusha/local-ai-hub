@@ -3,6 +3,7 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import copy
+import errno
 import http.client
 import io
 import json
@@ -16,11 +17,49 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 from .process_utils import find_listening_pid, pid_alive
-from typing import Any
+from typing import Any, Mapping, Protocol, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .config import load_config
+
+
+class PathHint(Protocol):
+    """Typed request-scoped path hint, compatible with project_config.PathHint."""
+
+    path: str
+    purpose: str
+    scope: str
+    evidence_id: str | None
+    provenance: str | None
+    repository_revision: str | None
+    config_digest: str | None
+    expires_at: str | None
+
+
+_PATH_HINT_FIELDS = frozenset(
+    {"path", "purpose", "scope", "evidence_id", "provenance", "repository_revision", "config_digest", "expires_at"}
+)
+_PATH_HINT_REQUIRED_FIELDS = ("path", "purpose", "scope")
+
+
+class _InProcessTransport(Protocol):
+    def open(
+        self, method: str, path: str, body: bytes | None,
+        headers: Mapping[str, str], timeout: float,
+        operational_action: str | None = None,
+        requires_heavy_work: bool = True,
+    ) -> bytes: ...
+
+    def close(self) -> None: ...
+
+
+class _TransportFailure(OSError):
+    """Transport error with evidence whether any request bytes could be sent."""
+
+    def __init__(self, cause: BaseException, *, request_not_sent: bool) -> None:
+        super().__init__(str(cause))
+        self.request_not_sent = request_not_sent
 
 
 _DETACHED_CHILDREN_LOCK = threading.Lock()
@@ -34,19 +73,79 @@ def _retain_detached_child(process: subprocess.Popen[Any]) -> None:
         _DETACHED_CHILDREN.append(process)
 
 
-def _live_start_lock(path: Path, stale_seconds: float) -> bool:
-    """Return whether a startup lock still belongs to a live, recent process."""
+def _stop_owned_child(process: subprocess.Popen[Any]) -> None:
+    """Stop and reap only the child created by this startup attempt."""
     try:
-        parts = path.read_text(encoding="utf-8").strip().split()
-        pid = int(parts[0]) if parts else 0
+        if process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=0.25)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=0.25)
+    except Exception:
+        pass
+
+
+def _write_start_lock_owner(handle: Any) -> None:
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"{os.getpid()} {time.time()}".encode("ascii", errors="ignore"))
+    handle.flush()
+
+
+def _acquire_start_lock(path: Path, stale_seconds: float = 20.0) -> Any | None:
+    """Serialize marker recovery; a held OS lock cannot expire during startup."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+b")
+    locked = False
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            if not handle.read(1):
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        locked = True
+        handle.seek(0)
+        marker = handle.read().decode("ascii", errors="ignore").split()
+        try:
+            owner_pid = int(marker[0]) if marker else 0
+        except ValueError:
+            owner_pid = 0
         age = max(0.0, time.time() - path.stat().st_mtime)
-        return age <= max(1.0, stale_seconds) and pid_alive(pid)
-    except (OSError, ValueError):
-        return False
+        if pid_alive(owner_pid) and age <= max(1.0, stale_seconds):
+            handle.close()
+            return None
+        _write_start_lock_owner(handle)
+        return handle
+    except OSError as exc:
+        handle.close()
+        if not locked and exc.errno in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+            return None
+        raise
+    except BaseException:
+        handle.close()
+        raise
 
 
 class HubClient:
-    def __init__(self, tenant: str | None = None, config_path: str | None = None, *, auto_start: bool = True):
+    def __init__(
+        self,
+        tenant: str | None = None,
+        config_path: str | None = None,
+        *,
+        auto_start: bool = True,
+        inprocess_transport: _InProcessTransport | None = None,
+    ):
         self.config = load_config(config_path)
         server = self.config["server"]
         bind_host = str(server.get("bind", "127.0.0.1"))
@@ -59,6 +158,7 @@ class HubClient:
         self.tenant = tenant or os.environ.get("LOCAL_AI_TENANT") or f"agent-{os.getpid()}"
         self.agent = os.environ.get("LOCAL_AI_AGENT_PROFILE") or os.environ.get("LOCAL_AI_AGENT") or "generic"
         self.auto_start = bool(auto_start)
+        self._inprocess_transport = inprocess_transport
         client_cfg = self.config.get("client", {})
         self.health_timeout = max(0.2, float(client_cfg.get("health_timeout_seconds", 0.75)))
         self.startup_wait = max(1.0, float(client_cfg.get("startup_wait_seconds", 15.0)))
@@ -93,6 +193,12 @@ class HubClient:
             try: conn.close()
             except Exception: pass
 
+        if self._inprocess_transport is not None:
+            try:
+                self._inprocess_transport.close()
+            except Exception:
+                pass
+
     def __del__(self) -> None:
         try: self.close()
         except Exception: pass
@@ -113,14 +219,42 @@ class HubClient:
         return conn
 
     def _pooled_open(self, method: str, path: str, body: bytes | None, headers: dict[str, str], timeout: float) -> bytes:
+        conn: http.client.HTTPConnection | None = None
+        original_send: Any = None
+        request_send_started = False
+        connect_refused_before_write = False
         try:
             conn = self._connection(timeout)
+            original_send = getattr(conn, "send", None)
+
+            def tracked_send(data: Any) -> None:
+                nonlocal connect_refused_before_write, request_send_started
+                if conn.sock is None:
+                    try:
+                        conn.connect()
+                    except OSError as exc:
+                        connect_refused_before_write = (
+                            isinstance(exc, ConnectionRefusedError)
+                            or getattr(exc, "errno", None) == errno.ECONNREFUSED
+                        )
+                        raise
+                request_send_started = True
+                return original_send(data)
+
+            if original_send is not None:
+                conn.send = tracked_send  # type: ignore[method-assign]
             conn.request(method, path, body=body, headers=headers)
             response = conn.getresponse()
             raw = response.read()
-        except (OSError, http.client.HTTPException):
+        except (OSError, http.client.HTTPException) as exc:
             self._drop_connection()
-            raise
+            raise _TransportFailure(
+                exc,
+                request_not_sent=connect_refused_before_write and not request_send_started,
+            ) from exc
+        finally:
+            if conn is not None and original_send is not None:
+                conn.send = original_send  # type: ignore[method-assign]
         if bool(getattr(response, "will_close", False)):
             self._drop_connection()
         if int(response.status) >= 400:
@@ -128,6 +262,20 @@ class HubClient:
             raise HTTPError(f"{self.base_url}{path}", int(response.status), str(response.reason), response_headers, io.BytesIO(raw))
         return raw
 
+    def _open(
+        self, method: str, path: str, body: bytes | None,
+        headers: dict[str, str], timeout: float, *,
+        operational_action: str | None = None,
+        requires_heavy_work: bool = True,
+    ) -> bytes:
+        transport = self._inprocess_transport
+        if transport is not None:
+            return transport.open(
+                method, path, body, headers, timeout,
+                operational_action=operational_action,
+                requires_heavy_work=requires_heavy_work,
+            )
+        return self._pooled_open(method, path, body, headers, timeout)
     @staticmethod
     def _error_response(exc: HTTPError, request_id: str) -> dict[str, Any]:
         try:
@@ -144,6 +292,20 @@ class HubClient:
             return {"success": False, "error": f"HTTP {exc.code}: {exc.reason}", "status_code": exc.code, "request_id": request_id}
 
     @staticmethod
+    def _invalid_json_response(request_id: str, *, outcome_unknown: bool = False) -> dict[str, Any]:
+        result = {
+            "success": False,
+            "error": "invalid JSON response",
+            "status_code": 502,
+            "request_id": request_id,
+        }
+        if outcome_unknown:
+            result.update({"outcome_unknown": True, "retryable": False, "terminal": True})
+        else:
+            result.update({"retryable": True, "terminal": False})
+        return result
+
+    @staticmethod
     def _uncertain_response(request_id: str, *, retried: bool = False) -> dict[str, Any]:
         result = {
             "success": False,
@@ -155,11 +317,35 @@ class HubClient:
             result["retried"] = True
         return result
 
-    def _singleflight(self, key: str, timeout: float, execute: Any) -> dict[str, Any]:
+    @staticmethod
+    def _transport_failure_response(
+        request_id: str,
+        *failures: BaseException,
+        retried: bool = False,
+        prior_send_possible: bool = False,
+    ) -> dict[str, Any]:
+        if (
+            not prior_send_possible
+            and failures
+            and all(bool(getattr(exc, "request_not_sent", False)) for exc in failures)
+        ):
+            result = {
+                "success": False,
+                "error": "request was not sent because transport failed before write",
+                "request_not_sent": True,
+                "outcome_unknown": False,
+                "request_id": request_id,
+            }
+            if retried:
+                result["retried"] = True
+            return result
+        return HubClient._uncertain_response(request_id, retried=retried)
+
+    def _singleflight(self, key: str, timeout: float, execute: Any, *, request_id: str = "") -> dict[str, Any]:
         with self._flight_lock:
             flight = self._flights.get(key)
             if flight is None:
-                flight = {"event": threading.Event(), "result": None, "error": None}
+                flight = {"event": threading.Event(), "result": None, "error": None, "request_id": request_id}
                 self._flights[key] = flight
                 owner = True
             else:
@@ -177,7 +363,9 @@ class HubClient:
                 raise flight["error"]
             return flight["result"]
         if not flight["event"].wait(timeout):
-            raise TimeoutError("coalesced hub request timed out")
+            error = TimeoutError("coalesced hub request timed out")
+            error.request_id = flight.get("request_id", request_id)
+            raise error
         if flight["error"] is not None:
             raise flight["error"]
         result = copy.deepcopy(flight["result"])
@@ -206,19 +394,27 @@ class HubClient:
         def remaining() -> float:
             return max(0.0, deadline - time.monotonic())
 
+        def wait_until_ready() -> bool:
+            while remaining() > 0:
+                if self._online(remaining()):
+                    return True
+                time.sleep(min(self.startup_poll, remaining()))
+            return self._online(remaining())
+
         if self._online(remaining()):
             return True
-        config_path = self.config["_config_path"]
         state_dir = Path(self.config["server"]["state_dir"])
+        try:
+            from .operational_mode import load_operational_mode
+
+            operational_mode = load_operational_mode(state_dir)
+        except Exception:
+            return False
+        if getattr(operational_mode, "mode", None) != "active" or getattr(operational_mode, "degraded", True):
+            return False
+        config_path = self.config["_config_path"]
         state_dir.mkdir(parents=True, exist_ok=True)
         if bool(self.config.get("headless", {}).get("respect_disabled_marker", True)) and (state_dir / "service.disabled").exists():
-            return False
-        # Once service.py has claimed this installation, only its supervisor may
-        # create the hub. supervisor.pid is necessarily absent for a short window
-        # during a managed restart; treating that window as an invitation for every
-        # MCP client to spawn its own pythonw tree causes duplicate processes and an
-        # unpredictable port owner.
-        if (state_dir / "service.managed").exists():
             return False
         # Managed mode has one supervisor responsible for startup/recovery. During
         # its cold-start interval MCP clients must not bypass it with direct pythonw
@@ -226,7 +422,7 @@ class HubClient:
         try:
             supervisor_pid = int((state_dir / "supervisor.pid").read_text(encoding="utf-8").strip() or 0)
             if pid_alive(supervisor_pid):
-                return False
+                return wait_until_ready()
         except (OSError, ValueError):
             pass
         # A listener can be alive before its health endpoint is ready (cold model/
@@ -234,55 +430,42 @@ class HubClient:
         # trees and competing supervisors; let the caller retry its request instead.
         port = int(self.config.get("server", {}).get("port", 11435))
         if find_listening_pid(port):
-            return False
+            return wait_until_ready()
         lock_path = state_dir / "hub.start.lock"
         owner = False
+        owner_lock = None
 
-        # Cross-process startup lock: several CLI agents often connect at once. Only
-        # one should spawn the singleton; the others wait for its cheap /health.
+        # The OS lock protects startup while held. After a failed bounded attempt,
+        # its PID marker blocks duplicates only for the configured retry cooldown.
         for _ in range(2):
-            acquired_lock = False
             try:
-                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                acquired_lock = True
-                try:
-                    os.write(fd, f"{os.getpid()} {time.time()}".encode("ascii", errors="ignore"))
-                finally:
-                    os.close(fd)
+                owner_lock = _acquire_start_lock(lock_path, self.start_lock_stale)
+            except OSError:
+                continue
+            if owner_lock is not None:
                 owner = True
                 break
-            except FileExistsError:
-                # Dead/crashed startup owners should never consume the full wait budget.
-                if not _live_start_lock(lock_path, self.start_lock_stale):
-                    try:
-                        lock_path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-                    continue
-                lock_deadline = min(deadline, time.monotonic() + self.startup_wait)
-                while time.monotonic() < lock_deadline:
-                    if self._online(remaining()):
-                        return True
-                    if not _live_start_lock(lock_path, self.start_lock_stale):
-                        try:
-                            lock_path.unlink(missing_ok=True)
-                        except OSError:
-                            pass
-                        break
-                    time.sleep(min(self.startup_poll, max(0.0, lock_deadline - time.monotonic())))
-                else:
-                    return self._online(remaining())
-                continue
-            except OSError:
-                if acquired_lock:
-                    try:
-                        lock_path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-                continue
+
+            lock_deadline = min(deadline, time.monotonic() + self.startup_wait)
+            while time.monotonic() < lock_deadline:
+                if self._online(remaining()):
+                    return True
+                try:
+                    owner_lock = _acquire_start_lock(lock_path, self.start_lock_stale)
+                except OSError:
+                    owner_lock = None
+                if owner_lock is not None:
+                    owner = True
+                    break
+                time.sleep(min(self.startup_poll, max(0.0, lock_deadline - time.monotonic())))
+            if owner:
+                break
+            return self._online(remaining())
 
         if not owner:
             return self._online(remaining())
+        ready = False
+        keep_lock = False
         try:
             if self._online(remaining()):
                 return True
@@ -292,28 +475,50 @@ class HubClient:
             env["LOCAL_AI_CONFIG"] = config_path
             src_dir = str(Path(__file__).resolve().parents[1])
             env["PYTHONPATH"] = src_dir + (os.pathsep + env["PYTHONPATH"] if "PYTHONPATH" in env else "")
-            py_exe = sys.executable
-            if sys.platform == "win32":
-                pyw_candidate = Path(sys.executable).parent / "pythonw.exe"
-                if pyw_candidate.exists():
-                    py_exe = str(pyw_candidate)
-            cmd = [py_exe, "-m", "local_ai_hub", "--config", config_path]
+            service_script = Path(__file__).resolve().parents[2] / "tools" / "service.py"
+            if not service_script.is_file():
+                return False
             try:
                 from .process_utils import hidden_run_kwargs
-                kwargs = hidden_run_kwargs(detached=True)
+                kwargs = hidden_run_kwargs()
             except Exception:
                 kwargs = {}
-            if sys.platform != "win32":
-                kwargs["start_new_session"] = True
-            process = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
-            _retain_detached_child(process)
+            try:
+                completed = subprocess.run(
+                    [sys.executable, str(service_script), "start"],
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=max(0.1, remaining()),
+                    **kwargs,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                ready = wait_until_ready()
+                keep_lock = not ready
+                return ready
+            if completed.returncode != 0:
+                ready = wait_until_ready()
+                keep_lock = not ready
+                return ready
             while remaining() > 0:
                 if self._online(remaining()):
+                    ready = True
                     return True
                 time.sleep(min(self.startup_poll, remaining()))
-            return self._online(remaining())
+            ready = self._online(remaining())
+            keep_lock = not ready
+            return ready
         finally:
-            lock_path.unlink(missing_ok=True)
+            if owner_lock is not None:
+                if not keep_lock:
+                    try:
+                        owner_lock.seek(0)
+                        owner_lock.truncate()
+                        owner_lock.flush()
+                    except OSError:
+                        pass
+                owner_lock.close()
 
     @staticmethod
     def _terminal_preflight(path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -334,14 +539,41 @@ class HubClient:
                     pass
         return None
 
-    def request(self, path: str, payload: dict[str, Any] | None = None, *, timeout: float = 30.0, replay_safe: bool = False) -> dict[str, Any]:
+    @staticmethod
+    def _valid_request_id(request_id: Any) -> bool:
+        return (
+            isinstance(request_id, str)
+            and 1 <= len(request_id) <= 128
+            and request_id.isascii()
+            and all(0x21 <= ord(char) <= 0x7E for char in request_id)
+        )
+
+    def request(
+        self,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        timeout: float = 30.0,
+        replay_safe: bool = False,
+        request_id: str | None = None,
+        operational_action: str | None = None,
+        requires_heavy_work: bool = True,
+    ) -> dict[str, Any]:
+        if request_id is not None and not self._valid_request_id(request_id):
+            return {
+                "success": False,
+                "error": "request_id must be 1-128 visible ASCII characters without whitespace",
+                "terminal": True,
+                "retryable": False,
+                "preflight": True,
+            }
         timeout = min(self.max_request_timeout, max(0.2, float(timeout)))
         clean_payload = payload or {}
         preflight = self._terminal_preflight(path, clean_payload)
         if preflight is not None:
             return preflight
         body = json_dumps(clean_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str).encode("utf-8")
-        request_id = f"req_{uuid.uuid4().hex[:12]}"
+        request_id = request_id if request_id is not None else f"req_{uuid.uuid4().hex[:12]}"
 
         def once(attempt_timeout: float) -> dict[str, Any]:
             headers = {
@@ -350,7 +582,19 @@ class HubClient:
             }
             if self.api_token:
                 headers["X-LocalAI-Token"] = self.api_token
-            return json.loads(self._pooled_open("POST", path, body, headers, attempt_timeout).decode("utf-8"))
+            try:
+                result = json.loads(
+                    self._open(
+                        "POST", path, body, headers, attempt_timeout,
+                        operational_action=operational_action,
+                        requires_heavy_work=requires_heavy_work,
+                    ).decode("utf-8")
+                )
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return self._invalid_json_response(request_id, outcome_unknown=not replay_safe)
+            if not isinstance(result, dict):
+                return self._invalid_json_response(request_id, outcome_unknown=not replay_safe)
+            return result
 
         def execute() -> dict[str, Any]:
             duplicate_deadline = time.monotonic() + timeout
@@ -382,42 +626,68 @@ class HubClient:
                 return self._error_response(exc, request_id)
             except (URLError, OSError, http.client.HTTPException) as exc:
                 self._drop_connection()
-                # Only callers that explicitly classify this POST as replay safe may retry.
-                if replay_safe:
+                pre_send_refusal = bool(getattr(exc, "request_not_sent", False))
+                if self._inprocess_transport is not None and pre_send_refusal:
+                    return self._transport_failure_response(request_id, exc)
+                if replay_safe or (self.auto_start and pre_send_refusal):
                     remaining = duplicate_deadline - time.monotonic()
-                    server_ready = self.ensure_server(timeout=remaining) if self.auto_start and remaining > 0 else not self.auto_start
+                    try:
+                        if self._inprocess_transport is not None:
+                            server_ready = bool(replay_safe or pre_send_refusal)
+                        else:
+                            server_ready = self.ensure_server(timeout=remaining) if self.auto_start and remaining > 0 else not self.auto_start
+                    except Exception:
+                        server_ready = False
                     if server_ready:
                         remaining = duplicate_deadline - time.monotonic()
                         if remaining <= 0:
-                            return self._uncertain_response(request_id)
-                        try: return once(remaining)
+                            return self._transport_failure_response(
+                                request_id, exc, prior_send_possible=not pre_send_refusal
+                            )
+                        try:
+                            retry_result = once(remaining)
+                            if retry_result.get("outcome_unknown"):
+                                retry_result["retried"] = True
+                            return retry_result
                         except HTTPError as retry_http: return self._error_response(retry_http, request_id)
-                        except (URLError, OSError, http.client.HTTPException):
+                        except (URLError, OSError, http.client.HTTPException) as retry_exc:
                             self._drop_connection()
+                            return self._transport_failure_response(
+                                request_id, exc, retry_exc, retried=True,
+                                prior_send_possible=not pre_send_refusal,
+                            )
+                        except Exception:
                             return self._uncertain_response(request_id, retried=True)
-                        except Exception as retry_exc: return {"success": False, "error": str(retry_exc), "request_id": request_id, "retried": True}
-                return self._uncertain_response(request_id)
+                return self._transport_failure_response(request_id, exc)
             except (UnicodeDecodeError, json.JSONDecodeError):
+                return self._invalid_json_response(request_id, outcome_unknown=not replay_safe)
+            except Exception:
                 return self._uncertain_response(request_id)
-            except Exception as exc:
-                return {"success": False, "error": str(exc), "request_id": request_id}
 
         if not replay_safe:
             return execute()
 
         key = f"POST|{self.tenant}|{self.agent}|{path}|{body.decode('utf-8')}"
         try:
-            return self._singleflight(key, timeout, execute)
-        except TimeoutError:
+            return self._singleflight(key, timeout, execute, request_id=request_id)
+        except TimeoutError as exc:
             return {
                 "success": False,
                 "error": "coalesced request timed out before result was available",
                 "retry_timeout": True,
                 "coalesced": True,
-                "request_id": request_id,
+                "outcome_unknown": True,
+                "in_progress": True,
+                "retryable": True,
+                "terminal": False,
+                "request_id": getattr(exc, "request_id", request_id),
             }
 
-    def get(self, path: str, timeout: float = 15.0) -> dict[str, Any]:
+    def get(
+        self, path: str, timeout: float = 15.0, *,
+        operational_action: str | None = None,
+        requires_heavy_work: bool = True,
+    ) -> dict[str, Any]:
         timeout = min(self.max_request_timeout, max(0.2, float(timeout)))
         request_id = f"req_{uuid.uuid4().hex[:12]}"
         headers = {
@@ -429,8 +699,17 @@ class HubClient:
             headers["X-LocalAI-Token"] = self.api_token
 
         def once(attempt_timeout: float) -> dict[str, Any]:
-            result = json.loads(self._pooled_open("GET", path, None, headers, attempt_timeout).decode("utf-8"))
-            return result if isinstance(result, dict) else {"success": False, "error": "invalid JSON response"}
+            try:
+                result = json.loads(
+                    self._open(
+                        "GET", path, None, headers, attempt_timeout,
+                        operational_action=operational_action,
+                        requires_heavy_work=requires_heavy_work,
+                    ).decode("utf-8")
+                )
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return self._invalid_json_response(request_id, outcome_unknown=False)
+            return result if isinstance(result, dict) else self._invalid_json_response(request_id, outcome_unknown=False)
 
         def execute() -> dict[str, Any]:
             deadline = time.monotonic() + timeout
@@ -438,10 +717,13 @@ class HubClient:
                 return once(timeout)
             except HTTPError as exc:
                 return self._error_response(exc, request_id)
-            except (URLError, OSError, http.client.HTTPException) as exc:
+            except (URLError, OSError, http.client.HTTPException):
                 self._drop_connection()
                 remaining = deadline - time.monotonic()
-                server_ready = self.ensure_server(timeout=remaining) if self.auto_start and remaining > 0 else not self.auto_start
+                if self._inprocess_transport is not None:
+                    server_ready = remaining > 0
+                else:
+                    server_ready = self.ensure_server(timeout=remaining) if self.auto_start and remaining > 0 else not self.auto_start
                 if server_ready:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -451,21 +733,26 @@ class HubClient:
                     except (URLError, OSError, http.client.HTTPException):
                         self._drop_connection()
                         return self._uncertain_response(request_id, retried=True)
-                    except Exception as retry_exc: return {"success": False, "error": str(retry_exc), "request_id": request_id, "retried": True}
+                    except Exception:
+                        return self._uncertain_response(request_id, retried=True)
                 return self._uncertain_response(request_id)
-            except Exception as exc:
-                return {"success": False, "error": str(exc), "request_id": request_id}
+            except Exception:
+                return self._uncertain_response(request_id)
 
         key = f"GET|{self.tenant}|{self.agent}|{path}"
         try:
-            return self._singleflight(key, timeout, execute)
-        except TimeoutError:
+            return self._singleflight(key, timeout, execute, request_id=request_id)
+        except TimeoutError as exc:
             return {
                 "success": False,
                 "error": "coalesced request timed out before result was available",
                 "retry_timeout": True,
                 "coalesced": True,
-                "request_id": request_id,
+                "outcome_unknown": True,
+                "in_progress": True,
+                "retryable": True,
+                "terminal": False,
+                "request_id": getattr(exc, "request_id", request_id),
             }
 
     @staticmethod
@@ -501,9 +788,42 @@ class HubClient:
         }
         return action in read_actions.get(path, set())
 
-    def post(self, path: str, payload: dict[str, Any] | None = None, timeout: float = 360.0) -> dict[str, Any]:
-        replay_safe = self._post_replay_safe(path, payload)
-        return self.request(path, payload, timeout=timeout, replay_safe=replay_safe)
+    def post(
+        self,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        timeout: float = 360.0,
+        *,
+        request_id: str | None = None,
+        path_hints: Sequence[PathHint | Mapping[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        clean_payload = dict(payload or {})
+        route = path.lower().split("?", 1)[0]
+        if route in {"/api/search", "/api/command"}:
+            explicit_path = isinstance(clean_payload.get("path"), str) and bool(clean_payload["path"].strip())
+            if explicit_path:
+                clean_payload.pop("path_hints", None)
+            elif path_hints is not None:
+                records = []
+                for hint in path_hints[:64]:
+                    if isinstance(hint, Mapping):
+                        record = dict(hint)
+                    else:
+                        record = {
+                            key: getattr(hint, key)
+                            for key in _PATH_HINT_FIELDS
+                            if hasattr(hint, key) and getattr(hint, key) is not None
+                        }
+                    if any(not isinstance(record.get(key), str) for key in _PATH_HINT_REQUIRED_FIELDS):
+                        continue
+                    if any(key in record and not isinstance(record[key], str) for key in _PATH_HINT_FIELDS):
+                        continue
+                    records.append({key: value for key, value in record.items() if key in _PATH_HINT_FIELDS})
+                clean_payload["path_hints"] = records
+        replay_safe = self._post_replay_safe(path, clean_payload)
+        if request_id is None:
+            return self.request(path, clean_payload, timeout=timeout, replay_safe=replay_safe)
+        return self.request(path, clean_payload, timeout=timeout, replay_safe=replay_safe, request_id=request_id)
 
     def status(self, detail: str = "brief", scope: str = "process") -> dict[str, Any]:
         if detail == "agent_state":
@@ -687,10 +1007,17 @@ class HubClient:
     def get_task(self, task_id: str) -> dict[str, Any]:
         return self.post("/api/agent-state/tasks", {"action": "get", "task_id": task_id})
 
-    def list_tasks(self, status: str | None = None, limit: int = 100) -> dict[str, Any]:
+    def list_tasks(
+        self,
+        status: str | None = None,
+        limit: int = 100,
+        query: str | None = None,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {"action": "list", "limit": limit}
         if status:
             payload["status"] = status
+        if query is not None:
+            payload["query"] = query
         return self.post("/api/agent-state/tasks", payload)
 
     def complete_task(self, task_id: str, reason: str = "completed by agent") -> dict[str, Any]:
@@ -776,9 +1103,10 @@ class HubClient:
         """Yield parsed SSE events (event_type, data_dict) from /api/agent-state/events/stream."""
         import urllib.parse
         requested_timeout = max(0.0, float(timeout))
-        stream_timeout = min(self.max_request_timeout, requested_timeout)
+        max_request_timeout = float(getattr(self, "max_request_timeout", 1800.0))
+        stream_timeout = min(max_request_timeout, requested_timeout)
         transport_timeout = min(
-            self.max_request_timeout,
+            max_request_timeout,
             max(0.2, stream_timeout + 5.0 if stream_timeout > 0 else 60.0),
         )
         params = []
@@ -840,6 +1168,8 @@ class HubClient:
                             try:
                                 parsed_data = json.loads(data_str)
                             except Exception:
+                                parsed_data = {"raw": data_str}
+                            if not isinstance(parsed_data, dict):
                                 parsed_data = {"raw": data_str}
                             yield cur_event or "message", parsed_data
                         cur_event = ""
