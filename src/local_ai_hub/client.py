@@ -483,6 +483,9 @@ class HubClient:
                 kwargs = hidden_run_kwargs()
             except Exception:
                 kwargs = {}
+            launch_timeout = remaining()
+            if launch_timeout <= 0:
+                return False
             try:
                 completed = subprocess.run(
                     [sys.executable, str(service_script), "start"],
@@ -490,7 +493,7 @@ class HubClient:
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    timeout=max(0.1, remaining()),
+                    timeout=launch_timeout,
                     **kwargs,
                 )
             except (OSError, subprocess.TimeoutExpired):
