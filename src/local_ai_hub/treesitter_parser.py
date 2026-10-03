@@ -173,28 +173,27 @@ def parse_treesitter(
 
     parser = _PARSERS[key]
     source_bytes = text.encode("utf-8", errors="replace")
+    lines = text.splitlines()
     try:
-        # Parser instances are mutable in the native Tree-sitter bindings and are
-        # shared per language. Serialize calls so concurrent preprocessing cannot
-        # corrupt parser state and crash the Python process.
+        # Parser instances and their native tree nodes are shared with concurrent
+        # indexing workers. Keep parse and node traversal in one critical section:
+        # reusing a parser before its returned tree has been walked can invalidate
+        # native node state in some Windows bindings.
         with _PARSER_LOCK:
             tree = parser.parse(source_bytes)
+            if key == "csharp":
+                return _extract_csharp(tree.root_node, lines, source_bytes)
+            elif key in ("typescript", "tsx", "javascript"):
+                return _extract_js_ts(tree.root_node, lines, source_bytes)
+            elif key == "python":
+                return _extract_python(tree.root_node, lines, source_bytes)
+            elif key == "go":
+                return _extract_go(tree.root_node, lines, source_bytes)
+            elif key == "rust":
+                return _extract_rust(tree.root_node, lines, source_bytes)
     except Exception as exc:
-        logger.debug("Tree-sitter parse failed for %s: %s", language, exc)
+        logger.debug("Tree-sitter parse or extraction failed for %s: %s", language, exc)
         return None
-
-    lines = text.splitlines()
-
-    if key == "csharp":
-        return _extract_csharp(tree.root_node, lines, source_bytes)
-    elif key in ("typescript", "tsx", "javascript"):
-        return _extract_js_ts(tree.root_node, lines, source_bytes)
-    elif key == "python":
-        return _extract_python(tree.root_node, lines, source_bytes)
-    elif key == "go":
-        return _extract_go(tree.root_node, lines, source_bytes)
-    elif key == "rust":
-        return _extract_rust(tree.root_node, lines, source_bytes)
 
     return None
 
@@ -440,6 +439,30 @@ def _extract_js_ts(
                 stack.pop()
                 return
 
+        if ntype == "variable_declarator":
+            name_node = node.child_by_field_name("name")
+            value_node = node.child_by_field_name("value")
+            name = _node_text(name_node, source_bytes) if name_node else ""
+            if name and value_node and value_node.type == "arrow_function":
+                container = "/".join(stack)
+                name_path = f"{container}/{name}" if container else name
+                syms.append({
+                    "name": name,
+                    "kind": "method" if stack else "function",
+                    "line": node.start_point.row + 1,
+                    "end_line": node.end_point.row + 1,
+                    "container": container,
+                    "name_path": name_path,
+                    "signature": _first_line_sig(node, lines),
+                    "access": "public",
+                    "docstring": "",
+                })
+                stack.append(name)
+                for child in value_node.children:
+                    visit(child)
+                stack.pop()
+                return
+
         if ntype in ("function_declaration", "method_definition"):
             name_node = node.child_by_field_name("name")
             name = _node_text(name_node, source_bytes) if name_node else ""
@@ -496,9 +519,10 @@ def _extract_python(
     syms: list[dict[str, Any]] = []
     refs: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
-    stack: list[str] = []
+    pending: list[tuple[Any, tuple[str, ...]]] = [(root, ())]
 
-    def visit(node: Any) -> None:
+    while pending:
+        node, scope = pending.pop()
         ntype = node.type
 
         if ntype in ("import_statement", "import_from_statement"):
@@ -519,13 +543,15 @@ def _extract_python(
                     "kind": "imports",
                     "line": node.start_point.row + 1,
                 })
-            return
+            continue
+
+        child_scope = scope
 
         if ntype == "class_definition":
             name_node = node.child_by_field_name("name")
             name = _node_text(name_node, source_bytes) if name_node else ""
             if name:
-                container = "/".join(stack)
+                container = "/".join(scope)
                 name_path = f"{container}/{name}" if container else name
                 sig = _first_line_sig(node, lines)
 
@@ -554,24 +580,19 @@ def _extract_python(
                     "access": "public" if not name.startswith("_") else "private",
                     "docstring": "",
                 })
-
-                stack.append(name)
-                for child in node.children:
-                    visit(child)
-                stack.pop()
-                return
+                child_scope = (*scope, name)
 
         if ntype == "function_definition":
             name_node = node.child_by_field_name("name")
             name = _node_text(name_node, source_bytes) if name_node else ""
             if name:
-                container = "/".join(stack)
+                container = "/".join(scope)
                 name_path = f"{container}/{name}" if container else name
                 sig = _first_line_sig(node, lines)
 
                 syms.append({
                     "name": name,
-                    "kind": "method" if stack else "function",
+                    "kind": "method" if scope else "function",
                     "line": node.start_point.row + 1,
                     "end_line": node.end_point.row + 1,
                     "container": container,
@@ -580,11 +601,7 @@ def _extract_python(
                     "access": "public" if not name.startswith("_") else "private",
                     "docstring": "",
                 })
-                stack.append(name)
-                for child in node.children:
-                    visit(child)
-                stack.pop()
-                return
+                child_scope = (*scope, name)
 
         if ntype == "call":
             fn_node = node.child_by_field_name("function")
@@ -598,16 +615,14 @@ def _extract_python(
                         "kind": "call",
                     })
                     edges.append({
-                        "src": "/".join(stack) or "<module>",
+                        "src": "/".join(scope) or "<module>",
                         "dst": leaf_name,
                         "kind": "calls",
                         "line": node.start_point.row + 1,
                     })
 
-        for child in node.children:
-            visit(child)
+        pending.extend((child, child_scope) for child in reversed(node.children))
 
-    visit(root)
     return syms, refs, edges
 
 
