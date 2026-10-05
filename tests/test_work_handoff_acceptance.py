@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import sys
 import threading
 import time as _real_time
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,7 +19,18 @@ from local_ai_hub.work_orchestrator import WorkOrchestrator, _JournalEntry
 
 class _Leases:
     def claim_batch(self, tenant, root, paths, ttl_seconds=900, purpose=""):
-        return {"success": True, "lease_id": f"lease-{len(paths)}", "paths": paths}
+        return {
+            "success": True, "lease_id": f"lease-{len(paths)}", "paths": paths,
+            "fencing_tokens": {str(path): 1 for path in paths},
+        }
+
+    @contextmanager
+    def fence_guard(self, tenant, lease_id, root, paths, fencing_tokens):
+        yield
+
+    @contextmanager
+    def fence_guard_many(self, claims):
+        yield
 
     def release(self, tenant, lease_id=""):
         return {"success": True}
@@ -264,6 +277,7 @@ def test_recovery_requeues_after_crash_between_journal_clear_and_state_update(
     finally:
         orchestrator.close()
 
+    config["work_orchestrator"]["enabled"] = False
     recovered = WorkOrchestrator(
         config,
         state_dir,
@@ -280,6 +294,111 @@ def test_recovery_requeues_after_crash_between_journal_clear_and_state_update(
         assert target.read_text(encoding="utf-8") == "old\n"
     finally:
         recovered.close()
+
+
+def test_recovery_retries_preimage_restore_after_crash_before_journal_clear(
+    tmp_path: Path,
+) -> None:
+    orchestrator, root, state_dir, config = _make_orchestrator(tmp_path)
+    work_id = "work-crash-after-preimage-restore"
+    lease_store = ScopeLeaseStore(state_dir / "leases")
+    orchestrator.leases = lease_store
+    lease_store.release = lambda tenant, lease_id="": {"success": True, "released_rows": 0}
+    target = root / "owned.txt"
+    target.write_bytes(b"postimage\n")
+    orchestrator.submit("tenant", _payload(root, work_id))
+    orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
+    journal = [
+        _JournalEntry(
+            "owned.txt", True, b"preimage\n", True,
+            hashlib.sha256(b"postimage\n").hexdigest(),
+        )
+    ]
+    orchestrator._persist_journal(work_id, journal)
+    rollback = orchestrator._rollback
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    def restore_then_crash(current_root: Path, entries: list[_JournalEntry]) -> None:
+        rollback(current_root, entries)
+        raise SimulatedProcessCrash()
+
+    orchestrator._rollback = restore_then_crash
+    with pytest.raises(SimulatedProcessCrash):
+        orchestrator._recover()
+    assert target.read_bytes() == b"preimage\n"
+    assert orchestrator._load_journal(work_id) == journal
+    orchestrator.close()
+
+    recovery_config = {
+        **config,
+        "work_orchestrator": {**config["work_orchestrator"], "enabled": False},
+    }
+    recovered = WorkOrchestrator(
+        recovery_config,
+        state_dir,
+        services=object(),
+        commands=object(),
+        leases=ScopeLeaseStore(state_dir / "leases"),
+        artifacts=_Artifacts(),
+    )
+    try:
+        row = recovered._row(work_id, "tenant")
+        assert row is not None and row["state"] == "queued"
+        assert target.read_bytes() == b"preimage\n"
+        assert recovered._load_journal(work_id) == []
+    finally:
+        recovered.close()
+
+
+def test_rollback_refuses_symlink_targets_without_touching_outside_file(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    target = outside / "victim.txt"
+    target.write_bytes(b"postimage\n")
+    alias = root / "alias"
+    try:
+        os.symlink(outside, alias, target_is_directory=True)
+    except OSError as exc:
+        if sys.platform == "win32" and getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege unavailable (WinError 1314); symlink rollback behavior unverified")
+        raise
+
+    entry = _JournalEntry("alias/victim.txt", True, b"preimage\n")
+    with pytest.raises(ValueError, match="symlink|reparse|escape"):
+        WorkOrchestrator._rollback(root, [entry])
+    assert target.read_bytes() == b"postimage\n"
+
+
+def test_rollback_preflights_all_reparse_targets_before_restoring_any_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    safe = root / "safe.txt"
+    safe.write_bytes(b"postimage\n")
+    alias = root / "junction"
+    alias.mkdir()
+    original_lstat = Path.lstat
+
+    def mark_junction(path: Path):
+        if path == alias:
+            return SimpleNamespace(st_mode=0, st_file_attributes=0x400)
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", mark_junction)
+    journal = [
+        _JournalEntry("junction/victim.txt", True, b"preimage\n"),
+        _JournalEntry("safe.txt", True, b"preimage\n"),
+    ]
+    with pytest.raises(ValueError, match="reparse"):
+        WorkOrchestrator._rollback(root, journal)
+    assert safe.read_bytes() == b"postimage\n"
 
 
 def test_restart_rolls_back_patch_using_postimage_journaled_before_mutation(

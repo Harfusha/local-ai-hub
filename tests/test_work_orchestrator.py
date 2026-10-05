@@ -5,6 +5,7 @@ import subprocess
 import threading
 import time
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,16 @@ class FakeArtifacts:
 
 class FakeLeases:
     def claim_batch(self, tenant, root, paths, ttl_seconds=900, purpose=""):
-        return {"success": True, "lease_id": "lease1", "paths": paths}
+        return {
+            "success": True, "lease_id": "lease1", "paths": paths,
+            "fencing_tokens": {str(path): 1 for path in paths},
+        }
+    @contextmanager
+    def fence_guard(self, tenant, lease_id, root, paths, fencing_tokens):
+        yield
+    @contextmanager
+    def fence_guard_many(self, claims):
+        yield
     def release(self, tenant, lease_id=""):
         return {"success": True}
 

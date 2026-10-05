@@ -6,7 +6,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
@@ -92,8 +92,16 @@ class ScopeLeaseStore:
                             purpose TEXT NOT NULL,
                             created_at REAL NOT NULL,
                             expires_at REAL NOT NULL,
+                            fencing_token INTEGER NOT NULL DEFAULT 0,
                             PRIMARY KEY(lease_id, path)
                         )"""
+                    )
+                    columns = {str(row[1]) for row in con.execute("PRAGMA table_info(leases)")}
+                    if "fencing_token" not in columns:
+                        con.execute("ALTER TABLE leases ADD COLUMN fencing_token INTEGER NOT NULL DEFAULT 0")
+                    con.execute(
+                        "CREATE TABLE IF NOT EXISTS lease_fence_counters ("
+                        "root_id TEXT PRIMARY KEY, last_token INTEGER NOT NULL)"
                     )
                     con.execute("CREATE INDEX IF NOT EXISTS idx_leases_root ON leases(root_id, expires_at)")
                     con.execute(
@@ -218,20 +226,96 @@ class ScopeLeaseStore:
                         "conflicts": conflicts,
                     }
 
+                # Fence tokens are monotonic per repository namespace. A claim
+                # advances the token only after every requested path is available.
+                counter = con.execute(
+                    "SELECT last_token FROM lease_fence_counters WHERE root_id=?",
+                    (root_id,),
+                ).fetchone()
+                fencing_token = int(counter[0]) + 1 if counter else 1
+                con.execute(
+                    "INSERT INTO lease_fence_counters(root_id,last_token) VALUES(?,?) "
+                    "ON CONFLICT(root_id) DO UPDATE SET last_token=excluded.last_token",
+                    (root_id, fencing_token),
+                )
+
                 # Successfully acquire all requested paths atomically
                 con.execute("DELETE FROM lease_waits WHERE tenant=?", (tenant,))
                 con.executemany(
-                    "INSERT INTO leases(lease_id,tenant,root_id,root_path,path,purpose,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)",
-                    [(lease_id, tenant, root_id, root_path, p, purpose[:300], now, expires) for p in rels],
+                    "INSERT INTO leases(lease_id,tenant,root_id,root_path,path,purpose,created_at,expires_at,fencing_token) VALUES(?,?,?,?,?,?,?,?,?)",
+                    [(lease_id, tenant, root_id, root_path, p, purpose[:300], now, expires, fencing_token) for p in rels],
                 )
                 con.execute("COMMIT")
-                return {"success": True, "lease_id": lease_id, "root": root_path, "paths": rels, "expires_at": expires}
+                return {
+                    "success": True, "lease_id": lease_id, "root": root_path,
+                    "paths": rels, "expires_at": expires,
+                    "fencing_tokens": {p: fencing_token for p in rels},
+                }
 
         return retry_busy(write, retries=4)
 
     def claim_batch(self, tenant: str, root: str, paths: list[str], ttl_seconds: int = 900, purpose: str = "agent edit") -> dict[str, Any]:
         """Atomic multi-path batch lease claim with rollback and cycle detection."""
         return self.claim(tenant=tenant, root=root, paths=paths, ttl_seconds=ttl_seconds, purpose=purpose)
+
+    @contextmanager
+    def fence_guard(
+        self, tenant: str, lease_id: str, root: str, paths: list[str],
+        fencing_tokens: dict[str, int],
+    ):
+        claim = {
+            "tenant": tenant, "lease_id": lease_id, "root": root,
+            "paths": paths, "fencing_tokens": fencing_tokens,
+        }
+        with self.fence_guard_many([claim]):
+            yield
+
+    @contextmanager
+    def fence_guard_many(self, claims: list[dict[str, Any]]):
+        """Hold the lease database write lock while validating all work fences."""
+        if not claims:
+            raise RuntimeError("fenced commit requires at least one lease")
+        con = self._connect()
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            now = time.time()
+            authorized_lease_ids = {str(claim.get("lease_id", "")) for claim in claims}
+            for claim in claims:
+                tenant = str(claim.get("tenant", ""))
+                lease_id = str(claim.get("lease_id", ""))
+                root_path, root_id = self._root(str(claim.get("root", "")))
+                paths = sorted({_norm_rel(str(path), root=root_path) for path in claim.get("paths", [])})
+                raw_tokens = claim.get("fencing_tokens", {})
+                tokens = {str(path): int(token) for path, token in raw_tokens.items()}
+                if not tenant or not lease_id or not paths:
+                    raise RuntimeError("stale fencing token: incomplete lease claim")
+                rows = con.execute(
+                    "SELECT lease_id,tenant,path,expires_at,fencing_token FROM leases "
+                    "WHERE root_id=? AND expires_at>?",
+                    (root_id, now),
+                ).fetchall()
+                for path in paths:
+                    token = tokens.get(path)
+                    if token is None:
+                        raise RuntimeError("stale fencing token: missing path token")
+                    exact = any(
+                        row[0] == lease_id and row[1] == tenant and row[2] == path
+                        and int(row[4]) == token for row in rows
+                    )
+                    superseded = any(
+                        row[0] not in authorized_lease_ids and _overlap(path, str(row[2]))
+                        and int(row[4]) > token for row in rows
+                    )
+                    if not exact or superseded:
+                        raise RuntimeError("stale fencing token")
+            yield
+            con.execute("COMMIT")
+        except BaseException:
+            if con.in_transaction:
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
 
     def release(self, tenant: str, lease_id: str = "") -> dict[str, Any]:
         def write() -> int:
