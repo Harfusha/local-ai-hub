@@ -14,6 +14,27 @@ import os
 from pathlib import Path
 from typing import Any
 
+
+T21_HANDOFF_CONTRACT = """Project configuration and PathHint core are integrated. `resolve_project_context(root, state_dir)` returns immutable effective settings and a `config_digest`; project configuration stays in the project or Git common directory, while `state_dir` stores only bounded, evidence-bound path hints. Maps merge by key, lists replace as a whole, and explicit excludes and hard boundaries take precedence over force includes. Overrides cannot bypass root containment, binary policy, configured size limits, or preprocessing exclusions; walkers check every directory and file.
+
+`verification_rules` maps exact task acceptance-criterion names to receipt requirements: `true` requires configured `lint` and `test` receipts, and an array names exact configured command aliases. `required_commands` is not a global switch; it applies only when the task criterion has that exact name. The root evaluator and persisted completion gate are integrated. The HTTP completion wrapper rejects invalid configuration or incomplete verification before checkpointing and completion. A positive HTTP case passed; the broader owner, tenant, revision, criterion, and memory-audit matrix remains open.
+
+`shared_namespace` exposes a server-derived coordination identity and shares bounded hints across linked worktrees under one Git common directory. It does not replace the physical repository root. Memory and lease consumers have not adopted this identity yet.
+
+`ProjectContext.prioritize_paths(...)` ranks the complete candidate list in this order: literal `entry_points`, request-scoped `path_hints`, then saved hints matching scope, repository revision, and config digest. It preserves every candidate and returns `PathHintUsage`; `hint_helped` stays unknown until measured. When a hint does not help, consumers use their broader fallback. Telemetry exposes usage flags without candidate paths. Save only verified hints.
+
+The HTTP `/api/search` adapter accepts typed `path_hints`. `HubClient.post` forwards them only to `/api/search` and strips them from `/api/command`. T21's private MCP search dispatch forwards typed hints internally, but the installed public `local_ai_repo` argument and output schema remain owned by T03 and pending its schema release. `/api/context/pack` does not accept or use hints. Do not infer public wire support from internal methods.
+
+Hints are repository-relative paths beneath the trusted project root; reject absolute, traversal, glob, missing, and symlink or junction escape paths. Request hints may omit evidence metadata. Learned hints require evidence ID, provenance, matching repository revision, and config digest. Revalidate saved paths when reading them, and never write raw paths or hint contents to telemetry."""
+
+T19_RUNTIME_PARITY_CONTRACT = """Use the installed `tools/list` input/output schema; action-specific fields and result shapes are not interchangeable. Schema presence is not authorization.
+
+`hubctl pause` sets `gaming` and `hubctl resume` sets `active`. When Hub is offline, `pause` and `resume` update persisted mode without starting the server; offline `mode` and `status` read that persisted state.
+
+For durable work, create and checkpoint one Agent OS task contract before edits. On restart, resume the existing task with the same `task_id`. Record memory with scope-appropriate provenance; repository-scoped memory requires provenance tied to the trusted project root.
+
+If Hub is unavailable, make one bounded health/retry attempt, then use one native fallback. Native validation still requires `terminal=true` and `retryable=false`; never poll or repeat an identical operation."""
+
 from local_ai_hub.features import FeatureSet
 from local_ai_hub.prompt_contracts import capability_for
 
@@ -400,6 +421,14 @@ Stop escalating when evidence is sufficient; reuse cached results and bounded ev
 
 Do not fan out overlapping retrieval layers. Stop escalating when evidence is sufficient. Local AI Hub handles its own bounded work; Codex handles native-subagent design and integration.
 {subagents_section}{agent_os_section}
+
+## Project-config and PathHint status
+
+{T21_HANDOFF_CONTRACT}
+
+## Installed API and operational contracts
+
+{T19_RUNTIME_PARITY_CONTRACT}
 """
 
 
@@ -578,6 +607,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
             f"\nLocal model policy: `{fs.background_model}` is preprocessing-only, `{fs.fast_model}` handles quick/simple tasks,"
             f" `{fs.general_model}` handles ordinary tasks, `{fs.smart_model}` handles more involved work, and {reasoning_tier} handles the hardest or highest-risk reasoning."
             " Use deterministic and indexed Hub actions first for exact facts, symbols, diff and tests. For semantic generation, reasoning, review, independent second opinions and semantic compression, call `local_ai_task`."
+            " Model routes above are resolved from active config. Keep hard and extreme reasoning as distinct tiers; see `docs/MODEL_CAPABILITIES.md` for the full matrix."
         )
 
     repo_task_first = ""

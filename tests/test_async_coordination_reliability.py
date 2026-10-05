@@ -45,10 +45,12 @@ class _Artifacts:
 
 def test_async_jobs_retry_on_execution_failure(tmp_path: Path):
     call_count = 0
+    request_ids = []
 
     def _fail_first(action, payload, tenant):
         nonlocal call_count
         call_count += 1
+        request_ids.append(payload.get("request_id"))
         if call_count == 1:
             raise RuntimeError("transient worker crash")
         return {"success": True, "action": action}
@@ -59,7 +61,7 @@ def test_async_jobs_retry_on_execution_failure(tmp_path: Path):
         _Artifacts(),
         _fail_first,
     )
-    submitted = manager.submit("tenant-a", "reason", {"task": "retry-job"}, dispatch_delay_seconds=30.0)
+    submitted = manager.submit("tenant-a", "reason", {"request_id": "retry-job-001", "task": "retry-job"}, dispatch_delay_seconds=30.0)
     job_id = submitted["job_id"]
 
     # First attempt fails -> should requeue because attempts (1) < max_attempts (2)
@@ -67,12 +69,14 @@ def test_async_jobs_retry_on_execution_failure(tmp_path: Path):
     st = manager.status("tenant-a", job_id)
     assert st["state"] == "queued"
     assert st["attempts"] == 1
+    assert request_ids[0]
 
     # Second attempt succeeds
     manager._execute(job_id)
     st2 = manager.status("tenant-a", job_id)
     assert st2["state"] == "done"
     assert st2["attempts"] == 2
+    assert request_ids == [request_ids[0], request_ids[0]]
     manager.close()
 
 
@@ -103,7 +107,7 @@ def test_async_jobs_tick_reclaims_stuck_running_job(tmp_path: Path):
         _Artifacts(),
         lambda a, p, t: {"success": True},
     )
-    submitted = manager.submit("tenant-a", "reason", {"task": "stuck-job"}, dispatch_delay_seconds=30.0)
+    submitted = manager.submit("tenant-a", "reason", {"request_id": "stuck-job-001", "task": "stuck-job"}, dispatch_delay_seconds=30.0)
     job_id = submitted["job_id"]
 
     # Artificially set job to running with an expired lease

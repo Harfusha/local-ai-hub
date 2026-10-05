@@ -1,0 +1,81 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+import local_ai_hub.project_config as project_config
+
+
+def _state_snapshot(state_dir: Path) -> dict[str, bytes]:
+    if not state_dir.exists():
+        return {}
+    return {
+        path.relative_to(state_dir).as_posix(): path.read_bytes()
+        for path in state_dir.rglob("*")
+        if path.is_file()
+    }
+
+
+def _context(tmp_path: Path, monkeypatch, name: str, common: Path | None, *, namespace: str = "team"):
+    root = tmp_path / name
+    root.mkdir()
+    (root / ".local-ai.toml").write_text(
+        f'shared_namespace = "{namespace}"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: common)
+    monkeypatch.setattr(project_config, "_git_primary_worktree_root", lambda *_args: None)
+    return project_config.resolve_project_context(root, tmp_path / "state")
+
+
+def test_coordination_identity_reuses_existing_git_common_namespace_identity(tmp_path, monkeypatch):
+    common = tmp_path / "primary" / ".git"
+    common.mkdir(parents=True)
+    primary = _context(tmp_path, monkeypatch, "primary-root", common)
+    linked = _context(tmp_path, monkeypatch, "linked", common)
+    state_before_identity_read = _state_snapshot(tmp_path / "state")
+
+    assert primary.coordination_id == linked.coordination_id
+    assert primary.coordination_id == primary._hint_store.project_id
+    assert linked.coordination_id == linked._hint_store.project_id
+    assert primary.root != linked.root
+    assert primary.root == tmp_path / "primary-root"
+    assert linked.root == tmp_path / "linked"
+    assert _state_snapshot(tmp_path / "state") == state_before_identity_read
+
+
+@pytest.mark.parametrize("different_common", [False, True])
+def test_coordination_identity_never_merges_different_namespace_or_repository(tmp_path, monkeypatch, different_common):
+    common = tmp_path / "primary" / ".git"
+    other_common = tmp_path / "other" / ".git"
+    common.mkdir(parents=True)
+    other_common.mkdir(parents=True)
+    primary = _context(tmp_path, monkeypatch, "primary-root", common)
+    other = _context(
+        tmp_path,
+        monkeypatch,
+        "other-root",
+        other_common if different_common else common,
+        namespace="team" if different_common else "other-team",
+    )
+
+    assert primary.coordination_id != other.coordination_id
+
+
+def test_coordination_identity_for_non_git_roots_stays_root_scoped(tmp_path, monkeypatch):
+    first = _context(tmp_path, monkeypatch, "first", None)
+    second = _context(tmp_path, monkeypatch, "second", None)
+
+    assert first.coordination_id != second.coordination_id
+
+
+def test_invalid_configuration_cannot_supply_shared_coordination_identity(tmp_path, monkeypatch):
+    context = _context(tmp_path, monkeypatch, "repo", None)
+    (context.root / ".local-ai.toml").write_bytes(b"\xff")
+    invalid = project_config.resolve_project_context(context.root, tmp_path / "state")
+    state_before_identity_read = _state_snapshot(tmp_path / "state")
+
+    assert invalid.resolution.error_codes
+    assert invalid.coordination_id is None
+    assert invalid.root == context.root
+    assert _state_snapshot(tmp_path / "state") == state_before_identity_read
