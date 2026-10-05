@@ -500,7 +500,7 @@ def _desc_repo() -> str:
 
 def _desc_rag() -> str:
     if LEAN_SCHEMAS:
-        return "Semantic RAG & documentation search with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: search, index, docset_search, ingest_document."
+        return "Semantic RAG and documentation search with aggregate-bounded responses; response controls: max_response_tokens, response_profile (minimal, compact, delta), reuse_key, extra_fields for additional safe response fields. Actions: search, index, list, docset_index, docset_search, ingest_document, ingest_diagram."
     if not FEATURES.rag:
         return (
             "Semantic retrieval — RAG backend is disabled on this installation (`features.rag=false`)."
@@ -513,6 +513,7 @@ def _desc_rag() -> str:
         " Keep queries bounded and use it only for bounded semantic retrieval, not open-ended agent orchestration."
         f"{_actions_note(FEATURES.supported_rag_actions())}"
         f"{_specialized_note('local_ai_rag')}"
+        " Response controls: max_response_tokens; response_profile minimal|compact|delta; reuse_key; extra_fields selects additional safe response fields retained by the compact projector."
         " Index is file-incremental and query-cached."
         " Do not trigger index repeatedly for a fresh stable workspace."
         " Use when: cheaper indexed repository paths cannot answer a bounded semantic retrieval question."
@@ -572,11 +573,11 @@ def _desc_coord() -> str:
 
 def _desc_work() -> str:
     if LEAN_SCHEMAS:
-        return "Delegate closed, low-risk work with a verified handoff and aggregate-bounded response; optional max_response_tokens, response_profile, reuse_key. Skip micro-edits and live discussion. Actions: submit, status, wait, get, cancel."
+        return "Delegate closed, low-risk work with a verified handoff and aggregate-bounded response. Common controls: max_response_tokens, response_profile (minimal, compact, delta), reuse_key, extra_fields for additional safe response fields. Work projection controls: return_fields selects top-level fields; max_output_tokens bounds handoff text; work profiles are minimal, compact, standard, debug. Skip micro-edits and live discussion. Actions: submit, status, wait, get, cancel, continue."
     return (
         "Delegate one closed, low-risk work item with a verified handoff to Local AI Hub: plan a bounded dependency DAG, execute the smallest independently verifiable steps, "
         "apply transactional leased edits, run safe validation, verify the integrated result against the original request, and return a compact handoff. "
-        "Actions: submit, status, wait, get, cancel, continue. response_profile=minimal|compact|standard|debug; return_fields selects only needed top-level fields; "
+        "Actions: submit, status, wait, get, cancel, continue. Common response controls: max_response_tokens, response_profile=minimal|compact|delta, reuse_key, extra_fields; work projection profile=minimal|compact|standard|debug; return_fields selects only needed top-level fields; "
         "max_output_tokens bounds the handoff while full details remain artifact-backed. Use when: the task can be delegated as a self-contained repository outcome. "
         "Skip when: the agent must make an unresolved product decision, credentials/network are required, only one tiny lookup is needed, or work is micro-edits/live discussion."
     )

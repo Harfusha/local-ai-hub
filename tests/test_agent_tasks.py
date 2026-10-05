@@ -15,6 +15,7 @@ from local_ai_hub.agent_tasks import (
     CompletionGateError,
     GoalContract,
     InvalidTransitionError,
+    MAX_TASK_QUERY_SCAN_ROWS,
     TaskCheckpoint,
     TaskState,
     TaskStatus,
@@ -80,6 +81,117 @@ def test_task_creation_and_retrieval(store: TaskStore):
     assert fetched is not None
     assert fetched.task_id == "t-1"
     assert fetched.contract.goal == "Implement feature"
+
+
+def test_task_query_bounds_rows_scanned(store: TaskStore):
+    task = store.create(contract_with_criteria("tests"), task_context(), task_id="scan-seed")
+    con = connect_sqlite(store.state_store.db_path)
+    try:
+        rows = [
+            (
+                f"scan-{index:05d}",
+                TaskStatus.PLANNED.value,
+                "",
+                "",
+                "{" if index == 10_000 else "{}",
+                "{}",
+                "{}",
+                "{}",
+                0.0,
+                0.0,
+                0.0 if index == 10_000 else float(index + 1),
+            )
+            for index in range(10_001)
+        ]
+        con.executemany(
+            """
+            INSERT INTO agent_tasks_projection (
+                task_id, status, owner, lease_id, contract, context, checkpoint, receipts,
+                heartbeat_expires_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    assert store.list_tasks(query="absent-query", limit=1) == []
+
+
+def test_task_query_scan_window_is_bounded_before_stale_filter(store: TaskStore):
+    store.create(contract_with_criteria("tests"), task_context(), task_id="stale-scan-seed")
+    con = connect_sqlite(store.state_store.db_path)
+    try:
+        rows = [
+            (
+                f"stale-scan-{index:05d}",
+                TaskStatus.PLANNED.value,
+                "",
+                "",
+                "{}",
+                "{}",
+                "{}",
+                "{}",
+                1.0,
+                0.0,
+                float(MAX_TASK_QUERY_SCAN_ROWS - index),
+            )
+            for index in range(MAX_TASK_QUERY_SCAN_ROWS)
+        ]
+        rows.append((
+            "fresh-scan-match",
+            TaskStatus.PLANNED.value,
+            "",
+            "",
+            '{"goal":"needle after bounded stale window"}',
+            "{}",
+            "{}",
+            "{}",
+            0.0,
+            0.0,
+            0.0,
+        ))
+        con.executemany(
+            """
+            INSERT INTO agent_tasks_projection (
+                task_id, status, owner, lease_id, contract, context, checkpoint, receipts,
+                heartbeat_expires_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    tasks = store.list_tasks(query="needle", limit=1)
+
+    assert tasks == []
+    assert tasks.query_truncated is True
+
+
+def test_task_query_skips_stale_candidate_before_page_limit(store: TaskStore):
+    stale = store.create(GoalContract(goal="page-needle stale"), task_context(), task_id="stale-page-match")
+    fresh = store.create(GoalContract(goal="page-needle fresh"), task_context(), task_id="fresh-page-match")
+    con = connect_sqlite(store.state_store.db_path)
+    try:
+        con.execute(
+            "UPDATE agent_tasks_projection SET heartbeat_expires_at=?, updated_at=? WHERE task_id=?",
+            (1.0, 2.0, stale.task_id),
+        )
+        con.execute(
+            "UPDATE agent_tasks_projection SET heartbeat_expires_at=?, updated_at=? WHERE task_id=?",
+            (0.0, 1.0, fresh.task_id),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    tasks = store.list_tasks(query="page-needle", limit=1)
+
+    assert [task.task_id for task in tasks] == ["fresh-page-match"]
+    assert tasks.query_truncated is False
 
 
 def test_completed_requires_all_criteria_to_have_fresh_receipts(store: TaskStore):
