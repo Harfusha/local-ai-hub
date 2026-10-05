@@ -4744,11 +4744,7 @@ function renderStepper(currIdx, isComplete, status) {
 
 let projectQuery='',projectFilter='all',projectSort='priority';
 function projectIdentity(project){
-  const root=String(project?.canonical_root||project?.root||project?.project||'').replace(/\\/g,'/').replace(/\/+$/,'');
-  const worktreeAt=root.toLowerCase().indexOf('/.worktrees/');
-  if(worktreeAt>=0)return root.slice(0,worktreeAt)||root;
-  const gitWorktreeAt=root.toLowerCase().indexOf('/worktrees/');
-  return gitWorktreeAt>=0?root.slice(0,gitWorktreeAt)||root:root;
+  return String(project?.git_common_dir||project?.canonical_root||project?.root||project?.project||'').replace(/\\/g,'/').replace(/\/+$/,'');
 }
 function projectState(x){
   const progress=Number(x.overall_progress_pct||0);
@@ -4762,7 +4758,7 @@ function projectState(x){
 
 function groupedProjects(items){
   const list=Array.isArray(items)?items:[];
-  if(!$('projectGroupWorktrees')?.checked)return list.map(x=>({...x,repository_identity:projectIdentity(x),variants:[x]}));
+  if(!$('projectGroupWorktrees')?.checked)return list.map(x=>({...x,repository_identity:x.root||x.project||'',variants:[x]}));
   const groups=new Map();
   list.forEach(item=>{
     const identity=projectIdentity(item)||String(item.project||'unknown');
@@ -4771,7 +4767,7 @@ function groupedProjects(items){
   const rank={error:0,running:1,waiting:2,queued:3,paused:4,ready:5};
   return [...groups.entries()].map(([identity,variants])=>{
     const ordered=[...variants].sort((a,b)=>(rank[projectState(a)]??9)-(rank[projectState(b)]??9));
-    return {...ordered[0],canonical_root:identity,repository_identity:identity,variants};
+    return {...ordered[0],canonical_root:ordered[0].root||identity,repository_identity:ordered[0].root||identity,variants};
   });
 }
 
@@ -4791,7 +4787,7 @@ function renderProjects(items){
   const summary=$('projectSummary');
   if(summary)summary.textContent=`${visible.length} of ${source.length} repository identities · ${entries.length} project entries`;
   rows('projectsBody',visible,x=>{
-    const state=projectState(x),tot=Math.max(1,Number(x.files||0)),ragFiles=Number(x.rag_files||0),cards=Number(x.file_cards||0),ragPct=Math.round(ragFiles/tot*100),cardPct=Math.round(cards/tot*100),overall=Math.max(0,Math.min(100,Number(x.overall_progress_pct||0))),phasePct=Math.max(0,Math.min(100,Number(x.phase_progress_pct||0))),isComplete=state==='ready',isWorktree=(x.root||'').toLowerCase().includes('worktree');
+    const state=projectState(x),tot=Math.max(1,Number(x.files||0)),ragFiles=Number(x.rag_files||0),cards=Number(x.file_cards||0),ragPct=Math.round(ragFiles/tot*100),cardPct=Math.round(cards/tot*100),overall=Math.max(0,Math.min(100,Number(x.overall_progress_pct||0))),phasePct=Math.max(0,Math.min(100,Number(x.phase_progress_pct||0))),isComplete=state==='ready',isWorktree=x.is_worktree===true;
     const badge={running:['badge-running','Running','<span class="pulse-dot"></span>'],waiting:['badge-waiting','Waiting',''],paused:['badge-paused','Paused',''],error:['badge-error','Error',''],ready:['badge-complete','Ready','✓ ']}[state]||['badge-waiting','Queued',''];
     const activityText=x.active_detail||(isComplete?'100% synchronized · real-time sync':state==='paused'?(x.global_paused?'Globally paused':'Project paused'):state==='waiting'?'Waiting for preprocessing slot':state==='error'?(x.last_error_short||'Pipeline error'):'Processing queue');
     const activityCls=isComplete?'ok':state==='error'?'bad-t':state==='paused'?'warn-t':state==='waiting'?'muted':'';
