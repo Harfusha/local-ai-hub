@@ -8,14 +8,16 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import subprocess
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from .process_utils import hidden_run_kwargs, is_rooted_path
@@ -279,6 +281,30 @@ class _JournalEntry:
     path: str
     existed: bool
     data: bytes
+    postimage_existed: bool | None = None
+    postimage_sha256: str = ""
+
+
+def _safe_work_target(root: Path, relative: str) -> Path:
+    root = root.resolve()
+    rel = Path(relative)
+    if rel.is_absolute() or any(part in {"..", ""} for part in rel.parts):
+        raise ValueError("unsafe work journal path")
+    target = root
+    for part in rel.parts:
+        target = target / part
+        try:
+            metadata = target.lstat()
+        except FileNotFoundError:
+            continue
+        reparse = bool(getattr(metadata, "st_file_attributes", 0) & 0x400)
+        if stat.S_ISLNK(metadata.st_mode) or reparse:
+            raise ValueError(f"refusing symlink or reparse path: {relative}")
+    try:
+        target.resolve(strict=False).relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"work journal path escapes repository: {relative}") from exc
+    return target
 
 
 class WorkOrchestrator:
@@ -320,6 +346,7 @@ class WorkOrchestrator:
         self._waiters: dict[str, threading.Event] = {}
         self._workers: list[threading.Thread] = []
         self._lock = threading.RLock()
+        self._work_fence_claims: dict[str, list[dict[str, Any]]] = {}
         self._init_db()
         self._recover()
         # Work execution is lazy. Most LocalAIApp instances only use retrieval or
@@ -339,11 +366,15 @@ class WorkOrchestrator:
             CREATE TABLE IF NOT EXISTS work_orders(
               work_id TEXT PRIMARY KEY, tenant TEXT NOT NULL, root TEXT NOT NULL, task TEXT NOT NULL,
               state TEXT NOT NULL, payload_json TEXT NOT NULL, result_json TEXT NOT NULL DEFAULT '{}',
-              cancel_requested INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL, updated_at REAL NOT NULL
+              cancel_requested INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL, updated_at REAL NOT NULL,
+              request_hash TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_work_orders_state_created ON work_orders(state, created_at);
             CREATE INDEX IF NOT EXISTS idx_work_orders_tenant_updated ON work_orders(tenant, updated_at DESC);
             """)
+            columns = {str(row[1]) for row in con.execute("PRAGMA table_info(work_orders)")}
+            if "request_hash" not in columns:
+                con.execute("ALTER TABLE work_orders ADD COLUMN request_hash TEXT NOT NULL DEFAULT ''")
 
     def _journal_path(self, work_id: str) -> Path:
         text = str(work_id)
@@ -365,7 +396,12 @@ class WorkOrchestrator:
         except OSError:
             pass
         payload = [
-            {"path": entry.path, "existed": entry.existed, "data": base64.b64encode(entry.data).decode("ascii")}
+            {
+                "path": entry.path, "existed": entry.existed,
+                "data": base64.b64encode(entry.data).decode("ascii"),
+                "postimage_existed": entry.postimage_existed,
+                "postimage_sha256": entry.postimage_sha256,
+            }
             for entry in journal
         ]
         tmp = path.with_suffix(".tmp")
@@ -389,7 +425,17 @@ class WorkOrchestrator:
                 rel = str(item.get("path", "")).replace("\\", "/")
                 if not rel or rel.startswith("/") or re.match(r"^[A-Za-z]:/", rel) or any(x in {"", ".", ".."} for x in rel.split("/")):
                     raise ValueError("unsafe work journal path")
-                entries.append(_JournalEntry(rel, bool(item.get("existed")), base64.b64decode(str(item.get("data", "")), validate=True)))
+                postimage_existed = item.get("postimage_existed")
+                if postimage_existed is not None and not isinstance(postimage_existed, bool):
+                    raise ValueError("invalid work journal postimage state")
+                postimage_sha256 = str(item.get("postimage_sha256", ""))
+                if postimage_sha256 and not re.fullmatch(r"[0-9a-f]{64}", postimage_sha256):
+                    raise ValueError("invalid work journal postimage hash")
+                entries.append(_JournalEntry(
+                    rel, bool(item.get("existed")),
+                    base64.b64decode(str(item.get("data", "")), validate=True),
+                    postimage_existed, postimage_sha256,
+                ))
             return entries
         except Exception:
             # A corrupt recovery journal must never be used to write repository files.
@@ -402,7 +448,7 @@ class WorkOrchestrator:
         transient = ("planning", "executing", "verifying", "integrating")
         with closing(self._connect()) as con:
             rows = con.execute(
-                "SELECT work_id,root,state FROM work_orders WHERE state IN (?,?,?,?)", transient
+                "SELECT work_id,tenant,root,state FROM work_orders WHERE state IN (?,?,?,?)", transient
             ).fetchall()
         now = time.time()
         for row in rows:
@@ -410,12 +456,36 @@ class WorkOrchestrator:
             journal = self._load_journal(work_id)
             recovered = journal is not None
             if journal:
+                lease_id = ""
                 try:
                     root = Path(str(row["root"])).resolve(strict=False)
-                    self._rollback(root, journal)
-                    self._clear_journal(work_id)
+                    tenant = str(row["tenant"])
+                    claim = self.leases.claim_batch(
+                        tenant, str(root), [entry.path for entry in journal],
+                        ttl_seconds=900, purpose=f"work-recovery:{work_id}",
+                    )
+                    if not claim.get("success"):
+                        raise RuntimeError("recovery lease unavailable")
+                    lease_id = str(claim.get("lease_id", ""))
+                    with self.leases.fence_guard(
+                        tenant, lease_id, str(root), list(claim.get("paths", [])),
+                        dict(claim.get("fencing_tokens", {})),
+                    ):
+                        self._rollback(root, journal)
+                        with closing(self._connect()) as con:
+                            con.execute(
+                                "UPDATE work_orders SET result_json=? WHERE work_id=?",
+                                (json_dumps({"recovery_restored": True}, separators=(",", ":")), work_id),
+                            )
+                        self._clear_journal(work_id)
                 except Exception:
                     recovered = False
+                finally:
+                    if lease_id:
+                        try:
+                            self.leases.release(str(row["tenant"]), lease_id)
+                        except Exception:
+                            pass
             elif journal == []:
                 # A missing journal is safe only when there is no evidence that a
                 # prior process had already mutated the workspace.
@@ -423,7 +493,7 @@ class WorkOrchestrator:
                     with closing(self._connect()) as con:
                         result_row = con.execute("SELECT result_json FROM work_orders WHERE work_id=?", (work_id,)).fetchone()
                     result = json.loads(str(result_row[0] or "{}")) if result_row else {}
-                    if result.get("changed_files"):
+                    if result.get("changed_files") and not result.get("recovery_restored"):
                         recovered = False
                 except Exception:
                     recovered = False
@@ -443,6 +513,15 @@ class WorkOrchestrator:
                         "UPDATE work_orders SET state='needs_agent',result_json=?,updated_at=? WHERE work_id=?",
                         (result, now, work_id),
                     )
+
+        # Completion is the durable commit point. A crash before journal deletion
+        # must preserve committed files and only discard the now-orphaned journal.
+        with closing(self._connect()) as con:
+            completed = con.execute("SELECT work_id FROM work_orders WHERE state='complete'").fetchall()
+        for row in completed:
+            work_id = str(row["work_id"])
+            if self._load_journal(work_id):
+                self._clear_journal(work_id)
 
     def _has_queued_work(self) -> bool:
         with closing(self._connect()) as con:
@@ -506,27 +585,51 @@ class WorkOrchestrator:
             "max_output_tokens": _bounded_int(payload.get("max_output_tokens"), self.default_max_output_tokens, 0, 4096),
             "keep_failed_workspace": bool(payload.get("keep_failed_workspace", False)),
         }
+        request_hash = hashlib.sha256(json.dumps(
+            {"tenant": tenant, "root": str(root), "task": task, "payload": normalized},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
         now = time.time()
+        replay_result: dict[str, Any] | None = None
         try:
             with closing(self._connect()) as con:
                 # Serialize admission so concurrent submitters cannot all observe the
                 # same free slot and overflow the configured bounded queue.
                 con.execute("BEGIN IMMEDIATE")
                 try:
-                    pending = con.execute(
-                        "SELECT COUNT(*) FROM work_orders WHERE state IN ('queued','planning','executing','integrating','verifying')"
-                    ).fetchone()
-                    if pending and int(pending[0]) >= self.max_pending:
-                        con.execute("ROLLBACK")
-                        return {"success": False, "error": "work-order queue is full", "retryable": True, "terminal": False}
-                    con.execute("INSERT INTO work_orders(work_id,tenant,root,task,state,payload_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-                                (work_id, tenant, str(root), task, "queued", json_dumps(normalized, separators=(",", ":")), now, now))
+                    existing = con.execute("SELECT * FROM work_orders WHERE work_id=?", (work_id,)).fetchone()
+                    if existing is not None:
+                        if str(existing["tenant"]) != tenant or str(existing["request_hash"] or "") != request_hash:
+                            con.execute("ROLLBACK")
+                            return {
+                                "success": False,
+                                "error": "work_id already exists with different request",
+                                "work_id": work_id,
+                                "terminal": True,
+                            }
+                        replay_result = self._canonical(existing)
+                    else:
+                        pending = con.execute(
+                            "SELECT COUNT(*) FROM work_orders WHERE state IN ('queued','planning','executing','integrating','verifying')"
+                        ).fetchone()
+                        if pending and int(pending[0]) >= self.max_pending:
+                            con.execute("ROLLBACK")
+                            return {"success": False, "error": "work-order queue is full", "retryable": True, "terminal": False}
+                        con.execute(
+                            "INSERT INTO work_orders(work_id,tenant,root,task,state,payload_json,created_at,updated_at,request_hash) VALUES(?,?,?,?,?,?,?,?,?)",
+                            (work_id, tenant, str(root), task, "queued", json_dumps(normalized, separators=(",", ":")), now, now, request_hash),
+                        )
                     con.execute("COMMIT")
                 except Exception:
                     con.execute("ROLLBACK")
                     raise
         except sqlite3.IntegrityError:
             return {"success": False, "error": "work_id already exists", "work_id": work_id, "terminal": True}
+        if replay_result is not None:
+            if replay_result.get("status") == "queued":
+                self._ensure_workers()
+                self._wake.set()
+            return replay_result
         self._ensure_workers(); self._wake.set()
         return self._project({"success": True, "status": "queued", "work_id": work_id, "summary": "whole task accepted"}, normalized)
 
@@ -602,13 +705,22 @@ class WorkOrchestrator:
             pass
 
     def cancel(self, tenant: str, work_id: str) -> dict[str, Any]:
-        row = self._row(work_id, tenant)
-        if not row:
-            return {"success": False, "error": "work order not found", "work_id": work_id}
         with closing(self._connect()) as con:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT * FROM work_orders WHERE work_id=? AND tenant=?", (work_id, tenant)
+            ).fetchone()
+            if row is None:
+                con.execute("ROLLBACK")
+                return {"success": False, "error": "work order not found", "work_id": work_id}
             if str(row["state"]) in _TERMINAL:
+                con.execute("COMMIT")
                 return self._canonical(row)
-            con.execute("UPDATE work_orders SET cancel_requested=1,updated_at=? WHERE work_id=?", (time.time(), work_id))
+            con.execute(
+                "UPDATE work_orders SET cancel_requested=1,updated_at=? WHERE work_id=? AND tenant=? AND state NOT IN ('complete','failed','cancelled','needs_agent','partial')",
+                (time.time(), work_id, tenant),
+            )
+            con.execute("COMMIT")
         self._wake.set(); self._event(work_id).set()
         return {"success": True, "status": "cancelling", "work_id": work_id}
 
@@ -622,8 +734,16 @@ class WorkOrchestrator:
         if not payload["agent_answer"]:
             return {"success": False, "error": "answer is required", "work_id": work_id}
         with closing(self._connect()) as con:
-            con.execute("UPDATE work_orders SET state='queued',payload_json=?,cancel_requested=0,updated_at=? WHERE work_id=?",
-                        (json_dumps(payload, separators=(",", ":")), time.time(), work_id))
+            con.execute("BEGIN IMMEDIATE")
+            updated = con.execute(
+                "UPDATE work_orders SET state='queued',payload_json=?,cancel_requested=0,updated_at=? "
+                "WHERE work_id=? AND tenant=? AND state='needs_agent'",
+                (json_dumps(payload, separators=(",", ":")), time.time(), work_id, tenant),
+            )
+            if int(updated.rowcount or 0) != 1:
+                con.execute("ROLLBACK")
+                return {"success": False, "error": "work order is not waiting for agent input", "work_id": work_id}
+            con.execute("COMMIT")
         self._ensure_workers(); self._wake.set(); self._event(work_id).set()
         return {"success": True, "status": "queued", "work_id": work_id}
 
@@ -648,6 +768,25 @@ class WorkOrchestrator:
                 event.set()
                 if state in _TERMINAL:
                     self._waiters.pop(work_id, None)
+
+    def _complete_if_not_cancelled(self, work_id: str, result: dict[str, Any]) -> bool:
+        with closing(self._connect()) as con:
+            con.execute("BEGIN IMMEDIATE")
+            updated = con.execute(
+                "UPDATE work_orders SET state='complete',result_json=?,updated_at=? "
+                "WHERE work_id=? AND state IN ('verifying','integrating') AND cancel_requested=0",
+                (json_dumps(result, ensure_ascii=False, separators=(",", ":")), time.time(), work_id),
+            )
+            if int(updated.rowcount or 0) != 1:
+                con.execute("ROLLBACK")
+                return False
+            con.execute("COMMIT")
+        with self._lock:
+            event = self._waiters.get(work_id)
+            if event is not None:
+                event.set()
+                self._waiters.pop(work_id, None)
+        return True
 
     def _cancelled(self, work_id: str) -> bool:
         row = self._row(work_id)
@@ -794,28 +933,73 @@ class WorkOrchestrator:
         root = root.resolve()
         entries=[]
         for rel in paths:
-            raw_path = root / rel
-            cursor = root
-            for part in Path(rel).parts:
-                cursor = cursor / part
-                if cursor.is_symlink():
-                    raise ValueError(f"refusing to edit symlink path: {rel}")
-            p=raw_path.resolve(strict=False)
-            try: p.relative_to(root)
-            except ValueError: raise ValueError("patch path escapes repository")
+            p = _safe_work_target(root, rel)
             if p.exists() and p.is_dir(): raise ValueError(f"refusing to patch directory: {rel}")
             data=p.read_bytes() if p.exists() else b""
             if b"\x00" in data[:8192]: raise ValueError(f"refusing to edit binary file: {rel}")
             entries.append(_JournalEntry(rel,p.exists(),data))
         return entries
 
+    def _prepare_postimages(self, root: Path, patch: str, entries: list[_JournalEntry]) -> list[_JournalEntry]:
+        """Predict patch outputs in a private tree so rollback guards precede writes."""
+        with TemporaryDirectory(prefix="local-ai-work-preview-") as temp_dir:
+            preview = Path(temp_dir)
+            for entry in entries:
+                if not entry.existed:
+                    continue
+                target = preview / entry.path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(entry.data)
+            result = subprocess.run(
+                ["git", "-C", str(preview), "apply", "--whitespace=nowarn", "-"],
+                input=patch, capture_output=True, text=True, timeout=12,
+                check=False, **hidden_run_kwargs(),
+            )
+            if result.returncode != 0:
+                raise ValueError((result.stderr or result.stdout or "git apply preview failed")[:1000])
+            prepared = []
+            for entry in entries:
+                target = preview / entry.path
+                exists = target.is_file()
+                if target.exists() and not exists:
+                    raise ValueError(f"patch preview produced a non-file target: {entry.path}")
+                data = target.read_bytes() if exists else b""
+                prepared.append(replace(
+                    entry, postimage_existed=exists,
+                    postimage_sha256=hashlib.sha256(data).hexdigest() if exists else "",
+                ))
+            return prepared
+
     @staticmethod
     def _rollback(root: Path, journal: list[_JournalEntry]) -> None:
         root = root.resolve()
-        for entry in reversed(journal):
-            p = root / entry.path
+        reversed_entries = list(reversed(journal))
+        targets = [_safe_work_target(root, entry.path) for entry in reversed_entries]
+        allowed_states: dict[str, set[tuple[bool, str]]] = {}
+        for entry in journal:
+            states = allowed_states.setdefault(entry.path, set())
+            preimage_hash = hashlib.sha256(entry.data).hexdigest() if entry.existed else ""
+            states.add((entry.existed, preimage_hash))
+            if entry.postimage_existed is not None:
+                states.add((entry.postimage_existed, entry.postimage_sha256 if entry.postimage_existed else ""))
+        checked: set[str] = set()
+        for entry, target in zip(reversed_entries, targets):
+            if entry.path in checked or not any(item.postimage_existed is not None for item in journal if item.path == entry.path):
+                continue
+            checked.add(entry.path)
+            exists = target.exists()
+            if exists and target.is_dir():
+                raise RuntimeError(f"rollback target is not a file: {entry.path}")
+            current_hash = hashlib.sha256(target.read_bytes()).hexdigest() if exists else ""
+            if (exists, current_hash) not in allowed_states[entry.path]:
+                raise RuntimeError(f"rollback postimage changed: {entry.path}")
+        for entry, p in zip(reversed_entries, targets):
+            # Recheck immediately before each restore in case a path changed
+            # after the all-target preflight.
+            p = _safe_work_target(root, entry.path)
             if entry.existed:
                 p.parent.mkdir(parents=True, exist_ok=True)
+                p = _safe_work_target(root, entry.path)
                 p.write_bytes(entry.data)
             else:
                 try:
@@ -831,9 +1015,24 @@ class WorkOrchestrator:
             # The caller explicitly owns the partially-mutated workspace from here.
             self._clear_journal(work_id)
             return False
-        self._rollback(root, journal)
-        journal.clear()
-        self._clear_journal(work_id)
+        claims = self._work_fence_claims.get(work_id, [])
+        with self.leases.fence_guard_many(claims):
+            self._rollback(root, journal)
+            journal.clear()
+            self._clear_journal(work_id)
+        return True
+
+    def _commit_handoff(self, work_id: str, handoff: dict[str, Any], claims: list[dict[str, Any]] | None = None) -> bool:
+        active_claims = self._work_fence_claims.get(work_id, []) if claims is None else claims
+        if active_claims:
+            with self.leases.fence_guard_many(active_claims):
+                if not self._complete_if_not_cancelled(work_id, handoff):
+                    return False
+                self._clear_journal(work_id)
+        else:
+            if not self._complete_if_not_cancelled(work_id, handoff):
+                return False
+            self._clear_journal(work_id)
         return True
 
     def _apply_patch(self, root: Path, patch: str, tenant: str, work_id: str, journal: list[_JournalEntry], *, permissions: dict[str, Any] | None = None, lease_ttl_seconds: int = 900) -> tuple[list[str], str]:
@@ -851,21 +1050,37 @@ class WorkOrchestrator:
         claim=self.leases.claim_batch(tenant, str(root), paths, ttl_seconds=lease_ttl_seconds, purpose=f"work-order:{work_id}")
         if not claim.get("success"): raise RuntimeError(f"edit lease unavailable: {claim.get('error','conflict')}")
         lease_id=str(claim.get("lease_id", ""))
-        snap=self._snapshot(root, paths)
-        journal.extend(snap)
-        # Persist the rollback journal before the first mutating subprocess. A hard
-        # process crash can therefore restore the repository before re-queuing work.
-        self._persist_journal(work_id, journal)
+        fencing_tokens = dict(claim.get("fencing_tokens", {}))
+        fence_claim = {
+            "tenant": tenant, "lease_id": lease_id, "root": str(root),
+            "paths": list(claim.get("paths", paths)), "fencing_tokens": fencing_tokens,
+        }
+        snap: list[_JournalEntry] = []
+        journal_extended = False
+        guard_entered = False
         try:
+            snap = self._prepare_postimages(root, patch, self._snapshot(root, paths))
+            journal.extend(snap)
+            journal_extended = True
+            self._persist_journal(work_id, journal)
             check=subprocess.run(["git","-C",str(root),"apply","--check","--whitespace=nowarn","-"], input=patch, capture_output=True, text=True, timeout=12, check=False, **hidden_run_kwargs())
             if check.returncode != 0: raise ValueError((check.stderr or check.stdout or "git apply --check failed")[:1000])
-            applied=subprocess.run(["git","-C",str(root),"apply","--whitespace=nowarn","-"], input=patch, capture_output=True, text=True, timeout=12, check=False, **hidden_run_kwargs())
-            if applied.returncode != 0: raise ValueError((applied.stderr or applied.stdout or "git apply failed")[:1000])
+            with self.leases.fence_guard(tenant, lease_id, str(root), fence_claim["paths"], fencing_tokens):
+                guard_entered = True
+                try:
+                    applied=subprocess.run(["git","-C",str(root),"apply","--whitespace=nowarn","-"], input=patch, capture_output=True, text=True, timeout=12, check=False, **hidden_run_kwargs())
+                    if applied.returncode != 0: raise ValueError((applied.stderr or applied.stdout or "git apply failed")[:1000])
+                except Exception:
+                    self._rollback(root, snap)
+                    del journal[-len(snap):]
+                    self._persist_journal(work_id, journal)
+                    raise
+            self._work_fence_claims.setdefault(work_id, []).append(fence_claim)
             return paths, lease_id
         except Exception:
-            self._rollback(root, snap)
-            del journal[-len(snap):]
-            self._persist_journal(work_id, journal)
+            if journal_extended and not guard_entered:
+                del journal[-len(snap):]
+                self._persist_journal(work_id, journal)
             try: self.leases.release(tenant, lease_id)
             except Exception: pass
             raise
@@ -1048,8 +1263,14 @@ class WorkOrchestrator:
             report={"original_task":task,"plan":plan,"steps":step_results,"changed_files":changed,"diff":diff,"validation":validation,"verification":verification,"llm_calls":llm_calls,"replans":replans,"elapsed_seconds":round(time.monotonic()-started,2)}
             artifact=self.artifacts.put(json_dumps(report,ensure_ascii=False,indent=2),tenant,"work-handoff")
             handoff={"summary":str(verification.get("summary") or plan.get("summary") or "work complete")[:900],"changed_files":changed,"validation":{"passed":all(v.get("success") for v in validation),"commands":len(validation)},"verification":verification,"risks":verification.get("risks",[])[:8],"handoff_id":artifact,"artifact_id":artifact,"available_details":["plan","steps","diff","validation","verification"]}
-            self._clear_journal(work_id)
-            self._set_state(work_id,"complete",handoff)
+            if not self._commit_handoff(work_id, handoff):
+                rolled = self._rollback_transaction(work_id, root, journal)
+                if rolled:
+                    changed = []
+                self._set_state(work_id, "cancelled", {
+                    "summary": "work order cancelled before commit",
+                    "changed_files": changed, "rolled_back": rolled,
+                })
         except InterruptedError:
             rolled = self._rollback_transaction(work_id, root, journal, keep=bool(payload.get("keep_failed_workspace")))
             if rolled:
@@ -1074,6 +1295,7 @@ class WorkOrchestrator:
             for lid in lease_ids:
                 try: self.leases.release(tenant,lid)
                 except Exception: pass
+            self._work_fence_claims.pop(work_id, None)
 
     def close(self) -> None:
         self._stop.set(); self._wake.set()
